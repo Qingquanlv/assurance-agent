@@ -51,8 +51,6 @@ from assurance_agent.workflow.graph.models import CompiledWorkflow
 from assurance_agent.workflow.graph.replay_schema import (
     LayerTopologySpec,
     PinnedLayerTopology,
-    classify_pinned_layer_topology_v4,
-    classify_pinned_layer_topology_v5,
     classify_pinned_layer_topology_v6,
     validate_params_only_expression,
 )
@@ -106,7 +104,6 @@ ReplayReasonCode = Literal[
 ]
 
 _ASSURANCE_BRANCH_NODES = ("api", "e2e", "fuzz", "performance")
-_SPECIALTY_LAYERS = frozenset({"fuzz", "performance"})
 
 
 class ReplayBindingError(Exception):
@@ -578,68 +575,8 @@ def _validate_topology_compatibility_receipts(
     root_started: GraphInvocationStartedEvent,
     historical_roles: DiscoveredHistoricalAssuranceRoles,
 ) -> None:
-    """Exact receipt replay is idempotent; identity/payload drift is corruption."""
-    from assurance_agent.workflow.core.graph_events import TopologySafetyCompatibilityRecordedEvent
-    from assurance_agent.workflow.graph.resume_compatibility import event_to_receipt
-    from assurance_agent.workflow.graph.topology_semantics import (
-        topology_safety_semantics_digest,
-        topology_safety_semantics_object_digest,
-    )
-
-    if root_started.event_schema_version < 4 or root_started.event_schema_version >= 6:
-        return
-    seen: dict[str, dict[str, object]] = {}
-    for item in sequenced:
-        raw = item.payload
-        if raw.get("source") != "graph" or raw.get("type") != "topology_safety_compatibility_recorded":
-            continue
-        if raw.get("invocation_id") != root_invocation_id:
-            raise ReplayBindingError(
-                "topology_compatibility_receipt_corrupt",
-                f"topology receipt belongs to another root: {raw.get('invocation_id')}",
-            )
-        payload = {k: v for k, v in raw.items() if k not in {"seq", "ts"}}
-        try:
-            event = TopologySafetyCompatibilityRecordedEvent.model_validate(payload)
-            receipt = event_to_receipt(event)
-        except Exception as exc:  # noqa: BLE001 — normalize fold/validation failures
-            raise ReplayBindingError(
-                "topology_compatibility_receipt_corrupt",
-                str(exc),
-            ) from exc
-        dumped = receipt.model_dump(mode="json")
-        prior = seen.get(receipt.receipt_id)
-        if prior is not None and prior != dumped:
-            raise ReplayBindingError(
-                "topology_compatibility_receipt_corrupt",
-                f"conflicting topology receipt payload for {receipt.receipt_id}",
-            )
-        seen[receipt.receipt_id] = dumped
-        if receipt.graph_digest != root_started.graph_digest:
-            raise ReplayBindingError(
-                "topology_compatibility_receipt_corrupt",
-                "topology receipt graph_digest does not match root",
-            )
-        if receipt.discovered_roles_digest != historical_roles.canonical_digest:
-            raise ReplayBindingError(
-                "topology_compatibility_receipt_corrupt",
-                "topology receipt discovered_roles_digest does not match pinned roles",
-            )
-        if receipt.topology_safety_semantics_object_id != topology_safety_semantics_object_digest():
-            raise ReplayBindingError(
-                "topology_compatibility_receipt_corrupt",
-                "topology receipt semantics object id mismatch",
-            )
-        if receipt.topology_safety_semantics_digest != topology_safety_semantics_digest():
-            raise ReplayBindingError(
-                "topology_compatibility_receipt_corrupt",
-                "topology receipt semantics digest mismatch",
-            )
-        if len(seen) > 1:
-            raise ReplayBindingError(
-                "topology_compatibility_receipt_corrupt",
-                "multiple distinct topology receipts for one root",
-            )
+    """v4/v5 topology receipt replay is gone; v6 roots pin topology on started."""
+    del sequenced, root_invocation_id, root_started, historical_roles
 
 
 def _require_root_started(
@@ -756,73 +693,20 @@ def _bind_profile_and_topologies(
     dict[str, bool],
     dict[str, PinnedLayerTopology],
 ]:
-    version = root_started.event_schema_version
-
-    def _classify(spec: LayerTopologySpec) -> PinnedLayerTopology:
-        if version >= 6:
-            _require_verified_v6_topology_semantics(change_dir, root_started)
-            return classify_pinned_layer_topology_v6(schema, spec, historical_roles=historical_roles)
-        if version >= 5:
-            return classify_pinned_layer_topology_v5(schema, spec)
-        return classify_pinned_layer_topology_v4(schema, spec)
-
-    if version >= 5:
-        manifest = _load_v5_profile_snapshot(change_dir, root_started.assurance_profile_digest)
-        specs = _specs_from_manifest(manifest)
-        topologies = {spec.layer: _classify(spec) for spec in specs}
-        compatibility = _profile_compatibility_from_manifest(manifest)
-        return manifest, specs, compatibility, topologies
-
-    current_bytes = assurance_profile_bytes()
-    current_digest = hashlib.sha256(current_bytes).hexdigest()
-    digest_compatible = root_started.assurance_profile_digest == current_digest
-    if digest_compatible:
-        manifest = parse_assurance_profile_snapshot(current_bytes)
-        specs = _specs_from_manifest(manifest)
-        topologies = {spec.layer: _classify(spec) for spec in specs}
-        topologies = _force_specialty_incomplete_without_snapshot(topologies)
-        compatibility = {layer: True for layer in LAYER_NAMES}
-        return manifest, specs, compatibility, topologies
-
-    specs = _construct_provisional_specs()
-    topologies = {spec.layer: _classify(spec) for spec in specs}
-    topologies = _force_specialty_incomplete_without_snapshot(topologies)
-    compatibility = {layer: False for layer in LAYER_NAMES}
-    return None, specs, compatibility, topologies
-
-
-def _force_specialty_incomplete_without_snapshot(
-    topologies: dict[str, PinnedLayerTopology],
-) -> dict[str, PinnedLayerTopology]:
-    updated = dict(topologies)
-    for layer in _SPECIALTY_LAYERS:
-        topology = updated.get(layer)
-        if topology is None:
-            continue
-        if topology.status == "wired":
-            updated[layer] = PinnedLayerTopology(
-                layer=topology.layer,
-                status="partial",
-                assurance_node_id=topology.assurance_node_id,
-                branch_graph_id=topology.branch_graph_id,
-                cycle_call_node_id=topology.cycle_call_node_id,
-                cycle_graph_id=topology.cycle_graph_id,
-                applicability_node_id=topology.applicability_node_id,
-                reviewer_node_id=topology.reviewer_node_id,
-                mechanical_node_id=topology.mechanical_node_id,
-                gate_node_id=topology.gate_node_id,
-                human_review_node_id=topology.human_review_node_id,
-                knowledge_remediation_node_id=topology.knowledge_remediation_node_id,
-                codegen_precondition_node_id=topology.codegen_precondition_node_id,
-                codegen_node_id=topology.codegen_node_id,
-                diagnostics=(
-                    *topology.diagnostics,
-                    f"layer:{layer}: complete activation without profile snapshot is incomplete",
-                ),
-                semantics_id=topology.semantics_id,
-                semantics_bound=topology.semantics_bound,
-            )
-    return updated
+    if root_started.event_schema_version != 6:
+        raise ReplayBindingError(
+            "pinned_schema_digest_mismatch",
+            "only event_schema_version 6 replay bindings are supported",
+        )
+    _require_verified_v6_topology_semantics(change_dir, root_started)
+    manifest = _load_v5_profile_snapshot(change_dir, root_started.assurance_profile_digest)
+    specs = _specs_from_manifest(manifest)
+    topologies = {
+        spec.layer: classify_pinned_layer_topology_v6(schema, spec, historical_roles=historical_roles)
+        for spec in specs
+    }
+    compatibility = _profile_compatibility_from_manifest(manifest)
+    return manifest, specs, compatibility, topologies
 
 
 def _load_v5_profile_snapshot(change_dir: Path, digest: str) -> AssuranceProfileManifest:
@@ -862,22 +746,6 @@ def _specs_from_manifest(manifest: AssuranceProfileManifest) -> tuple[LayerTopol
             gate_id=entry.gate_id,
         )
         for entry in manifest.profiles
-    )
-
-
-def _construct_provisional_specs() -> tuple[LayerTopologySpec, ...]:
-    return tuple(
-        LayerTopologySpec(
-            layer=layer,
-            plan_artifacts=(),
-            review_artifact=(
-                "review/plan-review.json" if layer == "e2e" else f"review/{layer}-plan-review.json"
-            ),
-            review_alias="plan_review" if layer == "e2e" else f"{layer}_plan_review",
-            checks_artifact=f"review/{layer}-plan-checks.json",
-            gate_id=f"{layer}-plan-review-gate",
-        )
-        for layer in LAYER_NAMES
     )
 
 

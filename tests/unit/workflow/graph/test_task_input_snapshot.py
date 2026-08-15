@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
 from assurance_agent.workflow.core.events import read_events_strict
+from tests.helpers_graph_v6 import v6_started_bindings
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.agent_api import AgentRequest, build_node_prompt
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore, fold_invocation_events
@@ -358,6 +359,7 @@ def _seed_invocation(change: Path, tree_id: str) -> None:
             "graph_id": "g",
             "graph_digest": "e" * 64,
             "contract_digests": {"skill:aa-api-plan": "c" * 64},
+            **v6_started_bindings(),
             "params": {},
             "params_sha256": "f" * 64,
             "root_tree_id": tree_id,
@@ -576,11 +578,11 @@ def test_ast_consumer_set_guards_for_snapshot_and_runtime_context_fields() -> No
     repo = Path(__file__).resolve().parents[4]
     inventory = {
         "input_snapshot_id": {
-            "assurance_agent/workflow/graph/scheduler.py": {
+            "assurance_agent/workflow/graph/attempt_engine.py": {
                 "_begin_attempt",
                 "_persist_success",
             },
-            "assurance_agent/workflow/graph/checkpoint.py": {"fold_invocation_events"},
+            "assurance_agent/workflow/graph/ledger_fold.py": {"fold_invocation_events"},
             "assurance_agent/workflow/core/graph_events.py": {
                 "TaskAttemptStartedEvent",
                 "TaskAttemptSucceededEvent",
@@ -592,11 +594,11 @@ def test_ast_consumer_set_guards_for_snapshot_and_runtime_context_fields() -> No
             },
         },
         "runtime_context_sha256": {
-            "assurance_agent/workflow/graph/scheduler.py": {
+            "assurance_agent/workflow/graph/attempt_engine.py": {
                 "_begin_attempt",
                 "_persist_success",
             },
-            "assurance_agent/workflow/graph/checkpoint.py": {"fold_invocation_events"},
+            "assurance_agent/workflow/graph/ledger_fold.py": {"fold_invocation_events"},
             "assurance_agent/workflow/graph/agent_api.py": {
                 "AgentRequest",
                 "build_node_prompt",

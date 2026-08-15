@@ -48,6 +48,7 @@ from assurance_agent.workflow.graph.supersede import (
     subtree_digest_for,
 )
 from assurance_agent.workflow.graph.status import supersede_audit_id
+from tests.helpers_graph_v6 import v6_semantic_bindings
 
 # Pinned after leaf-aware resume anchors joined the commit-safety semantics.
 _PINNED_COMMIT_SAFETY_DIGEST = "1ba77a6e59880f97a05b2883b085d781bf139fca08cdc1f7ee39d06d9c003f3e"
@@ -59,7 +60,7 @@ def _projection(
     entrypoint: str = "full",
     parent: str | None = None,
     terminal: str | None = None,
-    event_schema_version: int = 5,
+    event_schema_version: int = 6,
     event_seq: int = 10,
     params: dict[str, object] | None = None,
     tasks: dict[str, TaskProjection] | None = None,
@@ -92,7 +93,7 @@ def _blocked_decision(root_id: str = "root-1") -> ResumeCompatibilityDecision:
         audit_triggered=True,
         requires_receipt=True,
         remaining_work_class="commit_safety_bearing",
-        event_schema_version=5,
+        event_schema_version=6,
         root_invocation_id=root_id,
     )
 
@@ -210,7 +211,7 @@ def test_eligibility_rejects_child_non_latest_terminal_and_non_blocked(tmp_path:
     allowed = ResumeCompatibilityDecision(
         schema_version="1",
         allowed=True,
-        event_schema_version=5,
+        event_schema_version=6,
         root_invocation_id="root-1",
     )
     elig = evaluate_supersede_eligibility(
@@ -439,7 +440,7 @@ def test_recover_prepared_fence_commits_when_event_exists_else_aborts(tmp_path: 
         descendant_invocation_ids=[],
         subtree_digest=digest,
         source_sequence=1,
-        event_schema_version=5,
+        event_schema_version=6,
     )
     raw = {"source": "graph", "seq": 2, "ts": "2026-08-01T00:00:00Z", **event.model_dump(mode="json")}
     recovered = recover_prepared_fence(fence, root_invocation_id="root-1", events=[raw])
@@ -456,13 +457,14 @@ def test_terminal_fence_projects_stopped_and_audit_queryable() -> None:
         "entrypoint": "full",
         "graph_id": "main",
         "graph_digest": "g",
-        "event_schema_version": 5,
+        "event_schema_version": 6,
         "ingest_catalog_digest": "c",
         "contract_digests": {},
         "policy_digest": "policy",
         "policy_origin": "packaged",
         "gate_semantics_digest": "gate",
         "assurance_profile_digest": "profile",
+        **v6_semantic_bindings(),
         "params": {"run_mode": "full"},
         "params_sha256": canonical_digest({"run_mode": "full"}),
         "root_tree_id": "t",
@@ -511,7 +513,7 @@ def test_terminal_fence_projects_stopped_and_audit_queryable() -> None:
         descendant_invocation_ids=list(descendants),
         subtree_digest=digest,
         source_sequence=2,
-        event_schema_version=5,
+        event_schema_version=6,
     )
     events = [
         started,
@@ -543,7 +545,7 @@ def test_exact_replay_idempotent_conflicting_payload_is_corruption() -> None:
         descendant_invocation_ids=[],
         subtree_digest=digest,
         source_sequence=1,
-        event_schema_version=5,
+        event_schema_version=6,
     )
     raw = {"source": "graph", "seq": 1, "ts": "t", **event.model_dump(mode="json")}
     assert find_supersede_event([raw, raw], "root-1") is not None
@@ -588,7 +590,7 @@ def test_replacement_authorization_id_deterministic_and_stop_null(tmp_path: Path
         action="rerun-v6",
         who="op",
         reason="rerun",
-        event_schema_version=5,
+        event_schema_version=6,
         checkpoint_ns="root-1",
         staged=staged,
     )
@@ -612,7 +614,7 @@ def test_replacement_authorization_id_deterministic_and_stop_null(tmp_path: Path
         action="stop",
         who="op",
         reason="stop",
-        event_schema_version=5,
+        event_schema_version=6,
         checkpoint_ns="root-1",
         staged=None,
     )

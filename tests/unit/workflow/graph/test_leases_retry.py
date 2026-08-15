@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from assurance_agent.workflow.core.events import append_event_strict, read_events_strict
+from tests.helpers_graph_v6 import v6_started_bindings
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.checkpoint import fold_invocation_events
 from assurance_agent.workflow.graph.contracts import ResourceClaims, load_execution_contracts
@@ -110,6 +111,7 @@ def _started(inv: str = "inv-1") -> dict:
         "graph_id": "main",
         "graph_digest": "gd-1",
         "contract_digests": {"skill:fix": "cd-1"},
+        **v6_started_bindings(),
         "params": {},
         "params_sha256": "ps-1",
         "root_tree_id": "tree-0",

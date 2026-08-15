@@ -29,7 +29,7 @@ class GraphInvocationStartedEvent(_GraphEvent):
     entrypoint: str
     graph_id: str
     graph_digest: str
-    event_schema_version: int = 1
+    event_schema_version: int = 6
     ir_digest: str = ""
     ingest_catalog_digest: str = ""
     contract_digests: dict[str, str]
@@ -55,16 +55,15 @@ class GraphInvocationStartedEvent(_GraphEvent):
     replacement_authorization_id: str | None = None
 
     @model_validator(mode="after")
-    def _require_v4_definition_binding(self) -> Self:
-        if self.event_schema_version >= 4:
-            if not self.policy_digest:
-                raise ValueError("policy_digest is required for event_schema_version >= 4")
-            if not self.policy_origin:
-                raise ValueError("policy_origin is required for event_schema_version >= 4")
-            if not self.gate_semantics_digest:
-                raise ValueError("gate_semantics_digest is required for event_schema_version >= 4")
-            if not self.assurance_profile_digest:
-                raise ValueError("assurance_profile_digest is required for event_schema_version >= 4")
+    def _require_v6_definition_binding(self) -> Self:
+        if self.event_schema_version != 6:
+            raise ValueError("only event_schema_version 6 is supported")
+        if not self.policy_digest:
+            raise ValueError("policy_digest is required for event_schema_version 6")
+        if not self.policy_origin:
+            raise ValueError("policy_origin is required for event_schema_version 6")
+        if not self.assurance_profile_digest:
+            raise ValueError("assurance_profile_digest is required for event_schema_version 6")
         v6_fields = (
             ("gate_semantics_object_id", self.gate_semantics_object_id),
             ("gate_semantics_digest", self.gate_semantics_digest),
@@ -73,24 +72,9 @@ class GraphInvocationStartedEvent(_GraphEvent):
             ("commit_safety_semantics_object_id", self.commit_safety_semantics_object_id),
             ("commit_safety_semantics_digest", self.commit_safety_semantics_digest),
         )
-        new_fields = (
-            self.gate_semantics_object_id,
-            self.topology_safety_semantics_object_id,
-            self.topology_safety_semantics_digest,
-            self.commit_safety_semantics_object_id,
-            self.commit_safety_semantics_digest,
-        )
-        if self.event_schema_version >= 6:
-            for name, value in v6_fields:
-                if not value:
-                    raise ValueError(f"{name} is required for event_schema_version >= 6")
-        else:
-            # v1-v5 remain valid without object-ID/topology/commit-safety fields and
-            # must not receive synthetic v6 semantic identities.
-            if any(new_fields):
-                if not all(new_fields):
-                    raise ValueError("v6 semantic binding fields must be all-or-none")
-                raise ValueError("v6 semantic binding fields require event_schema_version >= 6")
+        for name, value in v6_fields:
+            if not value:
+                raise ValueError(f"{name} is required for event_schema_version 6")
         replacement_fields = (self.supersedes_invocation_id, self.replacement_authorization_id)
         if any(replacement_fields) and not all(replacement_fields):
             raise ValueError("supersedes_invocation_id and replacement_authorization_id must be all-or-none")

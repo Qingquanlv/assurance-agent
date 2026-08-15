@@ -133,37 +133,6 @@ def test_collect_capability_policy_replay_api_only_marks_e2e_not_selected(tmp_pa
     assert [row.layer for row in replay.rows] == list(LAYER_NAMES)
 
 
-def test_collect_capability_policy_replay_selected_fuzz_is_incomplete_without_snapshot(
-    tmp_path: Path,
-) -> None:
-    """v4 current packaged Fuzz is wired but force-partial without a profile snapshot."""
-    fixture = _build_fixture(tmp_path)
-    # mutate assurance params on the recorded root event to select fuzz
-    params = {**_PARAMS, "test_types": ["api", "e2e", "fuzz"]}
-    lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
-    rewritten: list[str] = []
-    for line in lines:
-        payload = json.loads(line)
-        if (
-            payload.get("type") == "graph_invocation_started"
-            and payload.get("invocation_id") == fixture.assurance_inv
-        ):
-            payload["params"] = params
-        rewritten.append(json.dumps(payload, sort_keys=True))
-    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
-
-    replay = collect_capability_policy_replay(
-        change_dir=fixture.change_dir,
-        change_id=_CHANGE_ID,
-        root_invocation_id=_ROOT_INV,
-        expected_entrypoint=_ENTRYPOINT,
-    )
-    by_layer = {row.layer: row for row in replay.rows}
-    assert by_layer["fuzz"].status == "incomplete"
-    assert by_layer["fuzz"].reason_code == "partial_assurance_wiring"
-    assert replay.integrity == "incomplete"
-
-
 def test_collect_capability_policy_replay_definition_failure_returns_incomplete_matrix(
     tmp_path: Path,
 ) -> None:
@@ -309,7 +278,7 @@ def test_bind_replay_definitions_exposes_selected_layers_and_topologies(tmp_path
     )
     assert binding.selected_layers == frozenset({"api", "fuzz"})
     assert binding.layer_topologies["api"].status == "wired"
-    assert binding.layer_topologies["fuzz"].status == "partial"
+    assert binding.layer_topologies["fuzz"].status == "wired"
     assert binding.layer_topologies["e2e"].status == "wired"
 
 
@@ -377,14 +346,6 @@ def _upgrade_fixture_to_v5(fixture) -> None:
     profile_bytes = assurance_profile_bytes()
     profile_digest = hashlib.sha256(profile_bytes).hexdigest()
     _stage_profile_snapshot(fixture.change_dir, profile_digest, profile_bytes)
-    rewritten: list[str] = []
-    for line in fixture.events_path.read_text(encoding="utf-8").splitlines():
-        payload = json.loads(line)
-        if payload.get("type") == "graph_invocation_started":
-            payload["event_schema_version"] = 5
-            payload["assurance_profile_digest"] = profile_digest
-        rewritten.append(json.dumps(payload, sort_keys=True))
-    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
 
 
 def _write_pass_shaped_active_files(change_dir: Path, layer: str) -> None:
@@ -421,26 +382,6 @@ def _collect(fixture) -> CapabilityPolicyReplayV2:
 def test_collect_emits_replay_semantics_v2(tmp_path: Path) -> None:
     fixture = _build_fixture(tmp_path, include_e2e=False)
     replay = _collect(fixture)
-    assert replay.semantics == "counterfactual_plan_check_actions/v2"
-
-
-def test_v4_selected_fuzz_without_snapshot_is_incomplete_even_with_stray_active_files(
-    tmp_path: Path,
-) -> None:
-    """Packaged Fuzz without a profile snapshot is force-partial, not legacy not_wired."""
-    fixture = _build_fixture(tmp_path)
-    _rewrite_assurance_params(fixture, {**_PARAMS, "test_types": ["api", "e2e", "fuzz"]})
-    fuzz_profile = get_layer_assurance_profile("fuzz")
-    for relative in (fuzz_profile.review_artifact, fuzz_profile.checks_artifact):
-        path = fixture.change_dir / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('{"status":"pass","checks":[]}\n', encoding="utf-8")
-
-    replay = _collect(fixture)
-    by_layer = {row.layer: row for row in replay.rows}
-    assert by_layer["fuzz"].status == "incomplete"
-    assert by_layer["fuzz"].reason_code == "partial_assurance_wiring"
-    assert replay.integrity == "incomplete"
     assert replay.semantics == "counterfactual_plan_check_actions/v2"
 
 
@@ -488,82 +429,15 @@ def test_v4_legacy_unselected_performance_is_not_selected(tmp_path: Path) -> Non
     assert {row.layer: row.status for row in replay.rows}["performance"] == "not_selected"
 
 
-def test_v4_forged_wired_fuzz_without_profile_snapshot_is_incomplete(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from assurance_agent.workflow.graph import replay_binding as replay_mod
-    from assurance_agent.workflow.graph.replay_schema import classify_pinned_layer_topology_v4
-
-    fixture = _build_fixture(tmp_path, include_e2e=False)
-    _rewrite_assurance_params(fixture, {**_PARAMS, "run_mode": "full", "test_types": ["api", "fuzz"]})
-    original = classify_pinned_layer_topology_v4
-
-    def classify_force_wired(schema, topology_spec):  # type: ignore[no-untyped-def]
-        topology = original(schema, topology_spec)
-        if topology_spec.layer == "fuzz":
-            return PinnedLayerTopology(
-                layer="fuzz",
-                status="wired",
-                assurance_node_id="fuzz",
-                branch_graph_id="fuzz-branch",
-                cycle_call_node_id="review-cycle",
-                cycle_graph_id="fuzz-plan-cycle",
-                applicability_node_id="applicability",
-                reviewer_node_id="review",
-                mechanical_node_id="mechanical-plan-checks",
-                gate_node_id="review-gate",
-                human_review_node_id="human-review",
-                knowledge_remediation_node_id="knowledge-remediation",
-                codegen_precondition_node_id="codegen-precheck",
-                codegen_node_id="codegen",
-                diagnostics=(),
-                semantics_id="legacy_v4_unbound",
-                semantics_bound=False,
-            )
-        return topology
-
-    monkeypatch.setattr(replay_mod, "classify_pinned_layer_topology_v4", classify_force_wired)
-    replay = _collect(fixture)
-    by_layer = {row.layer: row for row in replay.rows}
-    assert by_layer["fuzz"].status == "incomplete"
-    assert by_layer["fuzz"].reason_code == "partial_assurance_wiring"
-
-
-def test_v5_partial_fuzz_with_pass_shaped_active_files_is_incomplete(tmp_path: Path) -> None:
-    fixture = _build_fixture(tmp_path, include_e2e=False)
-    _repin_partial_fuzz_topology(fixture)
-    _upgrade_fixture_to_v5(fixture)
-    _rewrite_assurance_params(fixture, {**_PARAMS, "run_mode": "full", "test_types": ["api", "fuzz"]})
-    _write_pass_shaped_active_files(fixture.change_dir, "fuzz")
-
-    binding = bind_replay_definitions(
-        change_dir=fixture.change_dir,
-        change_id=_CHANGE_ID,
-        root_invocation_id=_ROOT_INV,
-        expected_entrypoint=_ENTRYPOINT,
-    )
-    assert binding.event_schema_version >= 5
-    assert binding.layer_topologies["fuzz"].status == "partial"
-    assert binding.layer_topologies["fuzz"].diagnostics
-
-    replay = _collect(fixture)
-    by_layer = {row.layer: row for row in replay.rows}
-    assert by_layer["fuzz"].status == "incomplete"
-    assert by_layer["fuzz"].reason_code == "partial_assurance_wiring"
-    assert replay.integrity == "incomplete"
-    assert replay.semantics == "counterfactual_plan_check_actions/v2"
-
-
 def test_v5_missing_profile_snapshot_is_definition_incomplete(tmp_path: Path) -> None:
+    from assurance_agent.verification.profile_manifest import assurance_profile_snapshot_relpath
+
     fixture = _build_fixture(tmp_path, include_e2e=False)
-    lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
-    rewritten: list[str] = []
-    for line in lines:
-        payload = json.loads(line)
-        if payload.get("type") == "graph_invocation_started":
-            payload["event_schema_version"] = 5
-        rewritten.append(json.dumps(payload, sort_keys=True))
-    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    profile_path = fixture.change_dir / assurance_profile_snapshot_relpath(
+        fixture.binding.assurance_profile_digest  # type: ignore[attr-defined]
+    )
+    if profile_path.exists():
+        profile_path.unlink()
 
     replay = _collect(fixture)
     assert replay.integrity == "incomplete"

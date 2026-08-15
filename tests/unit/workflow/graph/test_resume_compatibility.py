@@ -50,7 +50,7 @@ def _packaged() -> tuple[WorkflowSchemaV2, ExecutionContractCatalog, CompiledWor
 
 def _projection(
     *,
-    event_schema_version: int = 5,
+    event_schema_version: int = 6,
     params: dict[str, object] | None = None,
     tasks: dict[str, TaskProjection] | None = None,
     terminal: str | None = None,
@@ -152,7 +152,6 @@ def test_safe_topology_pending_codegen_skips_legacy_audit(tmp_path: Path) -> Non
     from assurance_agent.verification.profile_manifest import assurance_profile_digest
 
     projection = _projection(
-        event_schema_version=5,
         tasks=_pending_codegen_tasks(compiled),
         assurance_profile_digest=assurance_profile_digest(),
         graph_digest=compiled.digest,
@@ -205,12 +204,11 @@ def test_bypass_topology_skips_legacy_audit() -> None:
     assert decision.reason is None
 
 
-def test_v4_unreconstructable_profile_skips_legacy_audit() -> None:
+def test_unreconstructable_profile_skips_legacy_audit() -> None:
     schema, contracts, compiled = _packaged()
     roles, _ = discover_historical_assurance_roles(schema)
     assert roles is not None
     projection = _projection(
-        event_schema_version=4,
         tasks=_pending_codegen_tasks(compiled),
         assurance_profile_digest="not-the-current-profile",
         graph_digest=compiled.digest,
@@ -264,8 +262,7 @@ def test_report_terminal_only_continues_without_commit_safety_binding() -> None:
     assert receipt is None
 
 
-@pytest.mark.parametrize("event_schema_version", [4, 5])
-def test_success_before_superstep_skips_legacy_audit(event_schema_version: int) -> None:
+def test_success_before_superstep_skips_legacy_audit() -> None:
     schema, contracts, compiled = _packaged()
     roles, _ = discover_historical_assurance_roles(schema)
     assert roles is not None
@@ -283,7 +280,6 @@ def test_success_before_superstep_skips_legacy_audit(event_schema_version: int) 
     from assurance_agent.verification.profile_manifest import assurance_profile_digest
 
     projection = _projection(
-        event_schema_version=event_schema_version,
         tasks=tasks,
         assurance_profile_digest=assurance_profile_digest(),
         graph_digest=compiled.digest,
@@ -301,10 +297,7 @@ def test_success_before_superstep_skips_legacy_audit(event_schema_version: int) 
     assert decision.reason is None
 
 
-@pytest.mark.parametrize("event_schema_version", [4, 5])
-def test_success_before_publication_effect_skips_legacy_audit(
-    event_schema_version: int,
-) -> None:
+def test_success_before_publication_effect_skips_legacy_audit() -> None:
     schema, contracts, compiled = _packaged()
     roles, _ = discover_historical_assurance_roles(schema)
     assert roles is not None
@@ -323,7 +316,6 @@ def test_success_before_publication_effect_skips_legacy_audit(
     from assurance_agent.verification.profile_manifest import assurance_profile_digest
 
     projection = _projection(
-        event_schema_version=event_schema_version,
         tasks=tasks,
         assurance_profile_digest=assurance_profile_digest(),
         graph_digest=compiled.digest,
@@ -473,7 +465,7 @@ def test_driver_state_surfaces_typed_decision_without_parsing_text() -> None:
         audit_triggered=True,
         requires_receipt=True,
         remaining_work_class="commit_safety_bearing",
-        event_schema_version=5,
+        event_schema_version=6,
         root_invocation_id="root-1",
     )
     err = RuntimeBarrier(blocked)

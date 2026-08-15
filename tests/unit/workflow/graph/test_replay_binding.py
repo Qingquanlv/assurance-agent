@@ -18,7 +18,10 @@ from assurance_agent.artifacts.policy import load_policy, normalized_policy_byte
 from assurance_agent.artifacts.models.assurance import LayerName
 from assurance_agent.verification.checks.base import CheckContext
 from assurance_agent.verification.checks.registry import run_plan_checks
-from assurance_agent.verification.profile_manifest import assurance_profile_digest
+from assurance_agent.verification.profile_manifest import (
+    assurance_profile_digest,
+    assurance_profile_snapshot_relpath,
+)
 from assurance_agent.workflow.core.graph_events import (
     GraphInvocationStartedEvent,
     GraphTerminalEvent,
@@ -38,8 +41,11 @@ from assurance_agent.workflow.graph.definition_pinning import (
     PinnedDefinitionError,
     _pinned_reason_for_compile_error,
     bind_root_definitions,
+    commit_safety_semantics_snapshot_relpath,
+    gate_semantics_snapshot_relpath,
     load_pinned_execution_definition,
     policy_snapshot_relpath,
+    topology_semantics_snapshot_relpath,
 )
 from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
 from assurance_agent.workflow.graph.replay_binding import (
@@ -295,7 +301,7 @@ class ReplayBindingFixture:
             entrypoint=entrypoint,
             graph_id=graph_id,
             graph_digest=compiled.digest,  # type: ignore[attr-defined]
-            event_schema_version=4,
+            event_schema_version=6,
             ir_digest=compiled.digest,  # type: ignore[attr-defined]
             ingest_catalog_digest=compiled.ingest_catalog_digest or "cat-digest",  # type: ignore[attr-defined]
             contract_digests=dict(compiled.contract_digests),  # type: ignore[attr-defined]
@@ -303,6 +309,11 @@ class ReplayBindingFixture:
             policy_origin=self.binding.policy_origin,  # type: ignore[attr-defined]
             gate_semantics_digest=self.binding.gate_semantics_digest,  # type: ignore[attr-defined]
             assurance_profile_digest=self.binding.assurance_profile_digest,  # type: ignore[attr-defined]
+            gate_semantics_object_id=self.binding.gate_semantics_object_id,  # type: ignore[attr-defined]
+            topology_safety_semantics_object_id=self.binding.topology_safety_semantics_object_id,  # type: ignore[attr-defined]
+            topology_safety_semantics_digest=self.binding.topology_safety_semantics_digest,  # type: ignore[attr-defined]
+            commit_safety_semantics_object_id=self.binding.commit_safety_semantics_object_id,  # type: ignore[attr-defined]
+            commit_safety_semantics_digest=self.binding.commit_safety_semantics_digest,  # type: ignore[attr-defined]
             params=params,
             params_sha256=canonical_digest(params),
             root_tree_id=root_tree_id or self.root_tree,
@@ -613,6 +624,35 @@ def _stage_pinned_definition_snapshots(
         (contract_dir / f"{digest}.json").write_bytes(payload)
 
 
+def _stage_v6_binding_snapshots(change_dir: Path, binding: object) -> None:
+    profile_bytes = getattr(binding, "assurance_profile_bytes", None)
+    if isinstance(profile_bytes, bytes):
+        path = change_dir / assurance_profile_snapshot_relpath(binding.assurance_profile_digest)  # type: ignore[attr-defined]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(profile_bytes)
+    for relpath_fn, object_id, data in (
+        (
+            gate_semantics_snapshot_relpath,
+            getattr(binding, "gate_semantics_object_id", ""),
+            getattr(binding, "gate_semantics_bytes", None),
+        ),
+        (
+            topology_semantics_snapshot_relpath,
+            getattr(binding, "topology_safety_semantics_object_id", ""),
+            getattr(binding, "topology_safety_semantics_bytes", None),
+        ),
+        (
+            commit_safety_semantics_snapshot_relpath,
+            getattr(binding, "commit_safety_semantics_object_id", ""),
+            getattr(binding, "commit_safety_semantics_bytes", None),
+        ),
+    ):
+        if object_id and isinstance(data, bytes):
+            path = change_dir / relpath_fn(object_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+
+
 def _build_fixture(
     tmp_path: Path, *, include_e2e: bool = True, api_applicable: bool = True
 ) -> ReplayBindingFixture:
@@ -641,6 +681,7 @@ def _build_fixture(
     binding = bind_root_definitions(store=store, root_tree_id=root_tree)
     (change_dir / policy_snapshot_relpath(binding.policy_digest)).parent.mkdir(parents=True, exist_ok=True)
     (change_dir / policy_snapshot_relpath(binding.policy_digest)).write_bytes(binding.policy_bytes)
+    _stage_v6_binding_snapshots(change_dir, binding)
 
     fixture = ReplayBindingFixture(
         project=project,
@@ -789,11 +830,11 @@ def test_bind_replay_definitions_happy_path(tmp_path: Path) -> None:
     )
     assert binding.root_invocation_id == _ROOT_INV
     assert binding.assurance_invocation_id == fixture.assurance_inv
-    assert binding.event_schema_version == 4
+    assert binding.event_schema_version == 6
     assert binding.layer_topologies["api"].status == "wired"
     assert binding.layer_topologies["e2e"].status == "wired"
-    assert binding.layer_topologies["fuzz"].status == "partial"
-    assert binding.layer_topologies["performance"].status == "partial"
+    assert binding.layer_topologies["fuzz"].status == "wired"
+    assert binding.layer_topologies["performance"].status == "wired"
     assert binding.gate_semantics_compatible is True
     assert binding.profile_compatibility["api"] is True
     assert "api" in binding.selected_layers
@@ -906,7 +947,7 @@ def test_bind_replay_definitions_gate_semantics_mismatch(tmp_path: Path) -> None
         expected_entrypoint=_ENTRYPOINT,
     )
     assert binding.gate_semantics_compatible is False
-    assert binding.layer_topologies["fuzz"].status == "partial"
+    assert binding.layer_topologies["fuzz"].status == "wired"
     with pytest.raises(ReplayBindingError, match="gate_semantics_mismatch"):
         recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
 
@@ -921,16 +962,13 @@ def test_bind_replay_definitions_assurance_profile_mismatch(tmp_path: Path) -> N
             payload["assurance_profile_digest"] = "0" * 64
         mutated.append(json.dumps(payload, sort_keys=True))
     fixture.events_path.write_text("\n".join(mutated) + "\n", encoding="utf-8")
-    binding = bind_replay_definitions(
-        change_dir=fixture.change_dir,
-        change_id=_CHANGE_ID,
-        root_invocation_id=_ROOT_INV,
-        expected_entrypoint=_ENTRYPOINT,
-    )
-    assert binding.profile_compatibility["api"] is False
-    assert binding.layer_topologies["fuzz"].status == "partial"
-    with pytest.raises(ReplayBindingError, match="profile_definition_incompatible"):
-        recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
+    with pytest.raises(ReplayBindingError, match="profile_snapshot_missing"):
+        bind_replay_definitions(
+            change_dir=fixture.change_dir,
+            change_id=_CHANGE_ID,
+            root_invocation_id=_ROOT_INV,
+            expected_entrypoint=_ENTRYPOINT,
+        )
 
 
 def test_bind_replay_definitions_ambiguous_assurance_invocation(tmp_path: Path) -> None:
@@ -1733,7 +1771,7 @@ def test_load_pinned_execution_definition_succeeds_when_current_loaders_explode(
         graph_digest=fixture.compiled.digest,  # type: ignore[attr-defined]
         ingest_catalog_digest=fixture.compiled.ingest_catalog_digest,  # type: ignore[attr-defined]
         contract_digests=tuple(sorted(fixture.compiled.contract_digests.items())),  # type: ignore[attr-defined]
-        event_schema_version=4,
+        event_schema_version=6,
         gate_semantics_digest=fixture.binding.gate_semantics_digest,  # type: ignore[attr-defined]
         assurance_profile_digest=fixture.binding.assurance_profile_digest,  # type: ignore[attr-defined]
     )
@@ -1756,7 +1794,7 @@ def test_load_pinned_execution_definition_missing_snapshot_fails_closed(tmp_path
         graph_digest=fixture.compiled.digest,  # type: ignore[attr-defined]
         ingest_catalog_digest=fixture.compiled.ingest_catalog_digest,  # type: ignore[attr-defined]
         contract_digests=tuple(sorted(fixture.compiled.contract_digests.items())),  # type: ignore[attr-defined]
-        event_schema_version=4,
+        event_schema_version=6,
         gate_semantics_digest=fixture.binding.gate_semantics_digest,  # type: ignore[attr-defined]
         assurance_profile_digest=fixture.binding.assurance_profile_digest,  # type: ignore[attr-defined]
     )
@@ -1800,7 +1838,7 @@ def test_load_pinned_execution_definition_maps_structural_compile_failure(
         graph_digest=fixture.compiled.digest,  # type: ignore[attr-defined]
         ingest_catalog_digest=fixture.compiled.ingest_catalog_digest,  # type: ignore[attr-defined]
         contract_digests=tuple(sorted(fixture.compiled.contract_digests.items())),  # type: ignore[attr-defined]
-        event_schema_version=4,
+        event_schema_version=6,
         gate_semantics_digest=fixture.binding.gate_semantics_digest,  # type: ignore[attr-defined]
         assurance_profile_digest=fixture.binding.assurance_profile_digest,  # type: ignore[attr-defined]
     )
@@ -1847,21 +1885,12 @@ def _v5_profile_spy(layer: str) -> object:
     raise AssertionError("v5 topology binding must not call get_layer_assurance_profile")
 
 
-def test_bind_replay_definitions_v5_missing_profile_snapshot(tmp_path: Path) -> None:
-    from assurance_agent.verification.profile_manifest import assurance_profile_bytes
-
+def test_bind_replay_definitions_missing_profile_snapshot(tmp_path: Path) -> None:
     fixture = _build_fixture(tmp_path)
-    profile_bytes = assurance_profile_bytes()
-    digest = hashlib.sha256(profile_bytes).hexdigest()
-    lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
-    rewritten = []
-    for line in lines:
-        payload = json.loads(line)
-        if payload.get("type") == "graph_invocation_started":
-            payload["event_schema_version"] = 5
-            payload["assurance_profile_digest"] = digest
-        rewritten.append(json.dumps(payload, sort_keys=True))
-    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    profile_path = fixture.change_dir / assurance_profile_snapshot_relpath(
+        fixture.binding.assurance_profile_digest  # type: ignore[attr-defined]
+    )
+    profile_path.unlink()
     with pytest.raises(ReplayBindingError, match="profile_snapshot_missing"):
         bind_replay_definitions(
             change_dir=fixture.change_dir,
@@ -1871,22 +1900,12 @@ def test_bind_replay_definitions_v5_missing_profile_snapshot(tmp_path: Path) -> 
         )
 
 
-def test_bind_replay_definitions_v5_tampered_profile_snapshot(tmp_path: Path) -> None:
-    from assurance_agent.verification.profile_manifest import assurance_profile_bytes
-
+def test_bind_replay_definitions_tampered_profile_snapshot(tmp_path: Path) -> None:
     fixture = _build_fixture(tmp_path)
-    profile_bytes = assurance_profile_bytes()
-    digest = hashlib.sha256(profile_bytes).hexdigest()
+    digest = fixture.binding.assurance_profile_digest  # type: ignore[attr-defined]
+    profile_bytes = fixture.binding.assurance_profile_bytes  # type: ignore[attr-defined]
+    assert isinstance(profile_bytes, bytes)
     _stage_profile_snapshot(fixture.change_dir, digest, profile_bytes[:-2] + b"x\n")
-    lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
-    rewritten = []
-    for line in lines:
-        payload = json.loads(line)
-        if payload.get("type") == "graph_invocation_started":
-            payload["event_schema_version"] = 5
-            payload["assurance_profile_digest"] = digest
-        rewritten.append(json.dumps(payload, sort_keys=True))
-    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
     with pytest.raises(ReplayBindingError, match="profile_snapshot_digest_mismatch"):
         bind_replay_definitions(
             change_dir=fixture.change_dir,
@@ -1907,17 +1926,6 @@ def test_v5_topology_specs_ignore_current_profile_mutations(
 
     fixture = _build_fixture(tmp_path)
     profile_bytes = assurance_profile_bytes()
-    digest = hashlib.sha256(profile_bytes).hexdigest()
-    _stage_profile_snapshot(fixture.change_dir, digest, profile_bytes)
-    lines = fixture.events_path.read_text(encoding="utf-8").splitlines()
-    rewritten = []
-    for line in lines:
-        payload = json.loads(line)
-        if payload.get("type") == "graph_invocation_started":
-            payload["event_schema_version"] = 5
-            payload["assurance_profile_digest"] = digest
-        rewritten.append(json.dumps(payload, sort_keys=True))
-    fixture.events_path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
 
     first = bind_replay_definitions(
         change_dir=fixture.change_dir,
@@ -2051,57 +2059,8 @@ def test_recover_requires_pinned_contract_digest(tmp_path: Path) -> None:
         recover_layer_inputs(binding, layer="api", change_dir=fixture.change_dir)
 
 
-def test_v4_activated_specialty_without_snapshot_is_partial(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from assurance_agent.workflow.graph import replay_binding as replay_mod
-    from assurance_agent.workflow.graph.replay_schema import (
-        PinnedLayerTopology,
-        classify_pinned_layer_topology_v4,
-    )
-
-    fixture = _build_fixture(tmp_path, include_e2e=False)
-    original = classify_pinned_layer_topology_v4
-
-    def classify_force_wired(schema, topology_spec):  # type: ignore[no-untyped-def]
-        topology = original(schema, topology_spec)
-        if topology_spec.layer == "fuzz":
-            return PinnedLayerTopology(
-                layer="fuzz",
-                status="wired",
-                assurance_node_id="fuzz",
-                branch_graph_id="fuzz-branch",
-                cycle_call_node_id="review-cycle",
-                cycle_graph_id="fuzz-plan-review-cycle",
-                applicability_node_id="applicability",
-                reviewer_node_id="review",
-                mechanical_node_id="mechanical-plan-checks",
-                gate_node_id="review-gate",
-                human_review_node_id="human-review",
-                knowledge_remediation_node_id="knowledge-remediation",
-                codegen_precondition_node_id="codegen-precheck",
-                codegen_node_id="codegen",
-                diagnostics=(),
-                semantics_id="legacy_v4_unbound",
-                semantics_bound=False,
-            )
-        return topology
-
-    monkeypatch.setattr(replay_mod, "classify_pinned_layer_topology_v4", classify_force_wired)
-    binding = bind_replay_definitions(
-        change_dir=fixture.change_dir,
-        change_id=_CHANGE_ID,
-        root_invocation_id=_ROOT_INV,
-        expected_entrypoint=_ENTRYPOINT,
-    )
-    assert binding.layer_topologies["fuzz"].status == "partial"
-    assert any("without profile snapshot" in item for item in binding.layer_topologies["fuzz"].diagnostics)
-    with pytest.raises(ReplayBindingError, match="partial_assurance_wiring"):
-        recover_layer_inputs(binding, layer="fuzz", change_dir=fixture.change_dir)
-
-
-def test_topology_compatibility_receipt_graph_digest_mismatch_is_corrupt(tmp_path: Path) -> None:
-    """Same-root receipt with drifted graph_digest fails closed during replay bind."""
+def test_topology_compatibility_receipt_is_ignored_for_v6_roots(tmp_path: Path) -> None:
+    """v6 roots pin topology on started; leftover receipts are not replayed."""
     from assurance_agent.workflow.core.graph_events import TopologySafetyCompatibilityRecordedEvent
     from assurance_agent.workflow.core.progression import transaction
     from assurance_agent.workflow.graph.topology_semantics import (
@@ -2117,7 +2076,7 @@ def test_topology_compatibility_receipt_graph_digest_mismatch_is_corrupt(tmp_pat
                 invocation_id=_ROOT_INV,
                 checkpoint_ns=_ROOT_INV,
                 receipt_id="cafebabe" * 8,
-                event_schema_version=4,
+                event_schema_version=6,
                 graph_digest="not-the-root-digest",
                 ingest_catalog_digest="c",
                 contract_digests={},
@@ -2133,10 +2092,10 @@ def test_topology_compatibility_receipt_graph_digest_mismatch_is_corrupt(tmp_pat
                 source_sequence=1,
             )
         )
-    with pytest.raises(ReplayBindingError, match="topology_compatibility_receipt_corrupt"):
-        bind_replay_definitions(
-            change_dir=fixture.change_dir,
-            change_id=_CHANGE_ID,
-            root_invocation_id=_ROOT_INV,
-            expected_entrypoint=_ENTRYPOINT,
-        )
+    binding = bind_replay_definitions(
+        change_dir=fixture.change_dir,
+        change_id=_CHANGE_ID,
+        root_invocation_id=_ROOT_INV,
+        expected_entrypoint=_ENTRYPOINT,
+    )
+    assert binding.event_schema_version == 6

@@ -847,6 +847,7 @@ def test_v5_source_decision_cannot_cross_revised_tree_epoch(tmp_path: Path) -> N
 
     from assurance_agent.workflow.core.events import append_event_strict, read_events_strict
     from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
+    from tests.helpers_graph_v6 import v6_started_bindings
     from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
     from tests.integration._graph_fault_worker import (
         _REVISION_FIXTURES,
@@ -897,12 +898,8 @@ def test_v5_source_decision_cannot_cross_revised_tree_epoch(tmp_path: Path) -> N
             "entrypoint": "leaf",
             "graph_id": "g-leaf",
             "graph_digest": "dg",
-            "event_schema_version": 5,
             "contract_digests": {},
-            "policy_digest": "p",
-            "policy_origin": "packaged_default",
-            "gate_semantics_digest": "s",
-            "assurance_profile_digest": "a",
+            **v6_started_bindings(),
             "params": {},
             "params_sha256": "",
             "root_tree_id": source_tree,
@@ -968,7 +965,7 @@ def test_v5_source_decision_cannot_cross_revised_tree_epoch(tmp_path: Path) -> N
         state_values={},
         node_results={},
         audit_events_dir=epoch_change,
-        event_schema_version=5,
+        event_schema_version=6,
         invocation_id=leaf_id,
     )
     matched = replace(base_ctx, committed_tree_id=source_tree)

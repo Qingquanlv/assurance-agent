@@ -1373,7 +1373,7 @@ def _build_pinning_aware_runtime(
 
     live_models = validate_ingest_model_map(live_catalog)
     live_runner, live_scheduler = services_for(live_compiled, live_contracts)
-    live_request = request_for_compiled(live_compiled, event_schema_version=5)
+    live_request = request_for_compiled(live_compiled, event_schema_version=6)
     cache: dict[Any, ResolvedExecutionBundle] = {
         live_request: ResolvedExecutionBundle(
             request=live_request,

@@ -717,7 +717,7 @@ def test_pinned_definition_request_differs_when_one_contract_digest_changes() ->
         graph_digest="g" * 64,
         ingest_catalog_digest="i" * 64,
         contract_digests=(("operation:a", "a" * 64), ("operation:b", "b" * 64)),
-        event_schema_version=4,
+        event_schema_version=6,
         gate_semantics_digest="s" * 64,
         assurance_profile_digest="p" * 64,
     )

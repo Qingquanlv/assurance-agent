@@ -382,3 +382,32 @@ def test_assert_same_selected_wave_rejects_identity_drift(tmp_path: Path) -> Non
     )
     with pytest.raises(SelectedWaveDriftError, match="identity drifted"):
         assert_same_selected_wave(wave, mutated)
+
+
+def test_preview_reuses_supplied_plan_without_replanning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    compiled = _compile(_LINEAR_GRAPH)
+    projection = _projection(compiled)
+    context = _context(tmp_path)
+    artifacts = _FakeArtifacts()
+    plan = plan_superstep(compiled, projection, context, artifacts)
+    calls = {"n": 0}
+    original = plan_superstep
+
+    def _count(*args: object, **kwargs: object):
+        calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("assurance_agent.workflow.graph.selected_wave.plan_superstep", _count)
+    wave = preview_selected_wave(
+        compiled,
+        projection,
+        context,
+        artifacts,
+        max_parallel_tasks=4,
+        plan=plan,
+    )
+    assert wave is not None
+    assert wave.plan is plan
+    assert calls["n"] == 0

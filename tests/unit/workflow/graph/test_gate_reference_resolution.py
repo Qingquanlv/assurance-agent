@@ -18,6 +18,7 @@ import yaml
 
 from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
+from tests.helpers_graph_v6 import v6_started_bindings
 from assurance_agent.workflow.orchestration.schema import normalize_gates
 
 GATES = normalize_gates(
@@ -96,6 +97,8 @@ def test_reference_readjudication_applies_anchored_accept_risk(tmp_path: Path) -
             "checkpoint": "leaf-gate",
             "actions": ["accept_risk", "stop"],
             "audited_reads_sha256": {"review/leaf.json": review_sha256},
+            "source_gate_attempt_id": "ga-1",
+            "source_gate_tree_id": "tree-src",
         },
     )
     append_event_strict(
@@ -111,9 +114,29 @@ def test_reference_readjudication_applies_anchored_accept_risk(tmp_path: Path) -
             "who": "benchmark",
             "audited_reads_sha256": {"review/leaf.json": review_sha256},
             "payload": {},
+            "source_gate_attempt_id": "ga-1",
+            "source_gate_tree_id": "tree-src",
         },
     )
-    context = replace(context, audit_events_dir=coordinator_dir)
+    append_event_strict(
+        coordinator_dir,
+        {
+            "source": "graph",
+            "type": "task_attempt_succeeded",
+            "invocation_id": "review-invocation",
+            "checkpoint_ns": "root/review-cycle/review-invocation",
+            "superstep_id": "ss-1",
+            "task_id": "gate-task",
+            "attempt_id": "ga-1",
+            "gate_report": {"gate_id": "leaf-gate", "verdict": "needs_human_review"},
+        },
+    )
+    context = replace(
+        context,
+        audit_events_dir=coordinator_dir,
+        committed_tree_id="tree-src",
+        invocation_id="review-invocation",
+    )
 
     report = check_gate_in_view(GATES, "referring-gate", context)
 
@@ -213,12 +236,8 @@ def test_v5_decision_requires_matching_source_gate_epoch(tmp_path: Path) -> None
             "entrypoint": "full",
             "graph_id": "g",
             "graph_digest": "dg",
-            "event_schema_version": 5,
             "contract_digests": {},
-            "policy_digest": "p",
-            "policy_origin": "packaged_default",
-            "gate_semantics_digest": "s",
-            "assurance_profile_digest": "a",
+            **v6_started_bindings(),
             "params": {},
             "params_sha256": "",
             "root_tree_id": "tree-src",
@@ -278,7 +297,7 @@ def test_v5_decision_requires_matching_source_gate_epoch(tmp_path: Path) -> None
         context,
         audit_events_dir=context.change_dir,
         committed_tree_id="tree-src",
-        event_schema_version=5,
+        event_schema_version=6,
         invocation_id="leaf",
     )
     assert check_gate_in_view(GATES, "leaf-gate", matched).verdict.value == "pass"
@@ -300,12 +319,8 @@ def test_pairless_resume_is_ineligible_as_v5_gate_override(tmp_path: Path) -> No
             "entrypoint": "full",
             "graph_id": "g",
             "graph_digest": "dg",
-            "event_schema_version": 5,
             "contract_digests": {},
-            "policy_digest": "p",
-            "policy_origin": "packaged_default",
-            "gate_semantics_digest": "s",
-            "assurance_profile_digest": "a",
+            **v6_started_bindings(),
             "params": {},
             "params_sha256": "",
             "root_tree_id": "tree-src",
@@ -360,7 +375,7 @@ def test_pairless_resume_is_ineligible_as_v5_gate_override(tmp_path: Path) -> No
         context,
         audit_events_dir=context.change_dir,
         committed_tree_id="tree-src",
-        event_schema_version=5,
+        event_schema_version=6,
         invocation_id="leaf",
     )
     assert check_gate_in_view(GATES, "leaf-gate", context).verdict.value == "needs_human_review"

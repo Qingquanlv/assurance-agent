@@ -17,12 +17,13 @@ from assurance_agent.workflow.core.events import (
     append_event_strict,
     read_events_strict,
 )
+from tests.helpers_graph_v6 import v6_started_bindings
 from assurance_agent.workflow.graph.checkpoint import (
     CheckpointStore,
-    _verify_candidate_receipts_in_store,
     fold_invocation_events,
     project_invocation,
 )
+from assurance_agent.workflow.graph.ledger_fold import _verify_candidate_receipts_in_store
 from assurance_agent.workflow.graph.contracts import (
     ContractError,
     ExecutionContract,
@@ -216,6 +217,7 @@ def _seed_invocation(change: Path, tree_id: str) -> None:
             "graph_id": "main",
             "graph_digest": _DIGEST,
             "contract_digests": {},
+            **v6_started_bindings(),
             "params": {},
             "params_sha256": "p" * 64,
             "root_tree_id": tree_id,
@@ -888,6 +890,7 @@ def test_fold_requires_receipt_when_precommit_validator_named() -> None:
             "graph_id": "main",
             "graph_digest": "gd-1",
             "contract_digests": {},
+            **v6_started_bindings(),
             "params": {},
             "params_sha256": "p" * 64,
             "root_tree_id": "tree-0",

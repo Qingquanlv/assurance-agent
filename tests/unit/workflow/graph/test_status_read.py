@@ -23,6 +23,7 @@ from assurance_agent.workflow.graph.status import (
     pending_write_sets,
     read_latest_graph_status,
 )
+from tests.helpers_graph_v6 import v6_started_bindings
 
 INV = "inv-1"
 
@@ -41,6 +42,7 @@ def _started(invocation_id: str = INV, entrypoint: str = "full") -> GraphInvocat
         max_parallel_tasks=1,
         checkpoint_ns=invocation_id,
         structural_path=invocation_id,
+        **v6_started_bindings(),
     )
 
 
@@ -298,12 +300,8 @@ def test_recovery_state_from_open_revision_prefix(tmp_path: Path) -> None:
         entrypoint="full",
         graph_id="workflow",
         graph_digest="dg",
-        event_schema_version=5,
         contract_digests={},
-        policy_digest="p",
-        policy_origin="packaged_default",
-        gate_semantics_digest="s",
-        assurance_profile_digest="a",
+        **v6_started_bindings(),
         params={},
         params_sha256="",
         root_tree_id="tree",

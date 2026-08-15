@@ -9,6 +9,7 @@ from assurance_agent.workflow.graph.checkpoint import (
     fold_invocation_events,
     project_workflow_state,
 )
+from tests.helpers_graph_v6 import v6_started_bindings
 
 
 GRAPH_ROOT = Path(graph_package.__file__).resolve().parent
@@ -23,8 +24,8 @@ def test_derive_graph_state_matches_fold_then_project() -> None:
             "entrypoint": "full",
             "graph_id": "main",
             "graph_digest": "gd-1",
-            "event_schema_version": 1,
             "contract_digests": {"skill:noop": "cd-1"},
+            **v6_started_bindings(),
             "params": {"run_mode": "full"},
             "params_sha256": "ps-1",
             "root_tree_id": "tree-0",

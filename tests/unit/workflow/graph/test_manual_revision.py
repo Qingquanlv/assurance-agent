@@ -648,18 +648,6 @@ class _ManualRevisionRuntimeFixture:
     revision_view: str
 
 
-def _force_v5_binding(monkeypatch: pytest.MonkeyPatch) -> None:
-    from assurance_agent.workflow.graph import definition_pinning, runtime as runtime_mod
-
-    original = definition_pinning.bind_root_definitions
-
-    def _bind_v5(*, store, root_tree_id, event_schema_version=4):  # type: ignore[no-untyped-def]
-        return original(store=store, root_tree_id=root_tree_id, event_schema_version=5)
-
-    monkeypatch.setattr(definition_pinning, "bind_root_definitions", _bind_v5)
-    monkeypatch.setattr(runtime_mod, "bind_root_definitions", _bind_v5)
-
-
 def _manual_revision_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> _ManualRevisionRuntimeFixture:
@@ -683,8 +671,6 @@ def _manual_revision_runtime(
     from tests.helpers_aa import write_aa_config
     from assurance_agent.workflow.driver.runtime_factory import one_definition_resolver
     from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
-
-    _force_v5_binding(monkeypatch)
 
     project = tmp_path / "proj"
     change = project / "qa" / "changes" / "CH-1"

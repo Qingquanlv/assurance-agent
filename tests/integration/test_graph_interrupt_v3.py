@@ -120,67 +120,6 @@ def test_resume_payload_passes_through_to_first_layer(tmp_path: Path) -> None:
             assert event.get("payload") in (None, {})
 
 
-def test_legacy_resume_event_preserves_payload_on_first_layer(tmp_path: Path) -> None:
-    project = _make_project(tmp_path)
-    compiled, contracts = _compile(_SINGLE_INTERRUPT)
-    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
-    context = _context(project)
-    result = runtime.run(compiled, "full", context)
-    interrupt = result.status.pending_interrupts[0]
-    legacy_projection = runtime._checkpoints.project(result.invocation_id).model_copy(  # noqa: SLF001
-        update={"event_schema_version": 2}
-    )
-
-    runtime._commit_resume_command(  # noqa: SLF001
-        legacy_projection,
-        context,
-        ResumeCommand(
-            interrupt_id=interrupt.interrupt_id,
-            action="accept_risk",
-            reason="accept legacy payload",
-            who="reviewer",
-            payload={"expected_problem_version": 2, "evidence_refs": ["OCC-1"]},
-        ),
-    )
-
-    resumed = [
-        event for event in read_events_strict(context.change_dir) if event.get("type") == "graph_resumed"
-    ]
-    assert resumed[0].get("payload") == {"expected_problem_version": 2, "evidence_refs": ["OCC-1"]}
-
-
-def test_nested_legacy_resume_copies_payload_only_to_first_layer(tmp_path: Path) -> None:
-    project = _make_project(tmp_path)
-    compiled, contracts = _compile(_THREE_LEVEL_INTERRUPT)
-    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
-    context = _context(project)
-    result = runtime.run(compiled, "full", context)
-    interrupt = result.status.pending_interrupts[0]
-    legacy_projection = runtime._checkpoints.project(result.invocation_id).model_copy(  # noqa: SLF001
-        update={"event_schema_version": 2}
-    )
-    payload = {"expected_problem_version": 2, "evidence_refs": ["OCC-1"]}
-
-    runtime._commit_resume_command(  # noqa: SLF001
-        legacy_projection,
-        context,
-        ResumeCommand(
-            interrupt_id=interrupt.interrupt_id,
-            action="accept_risk",
-            reason="accept nested legacy payload",
-            who="reviewer",
-            payload=payload,
-        ),
-    )
-
-    resumed = [
-        event for event in read_events_strict(context.change_dir) if event.get("type") == "graph_resumed"
-    ]
-    assert len(resumed) == 3
-    assert resumed[0].get("payload") == payload
-    assert [event.get("payload") for event in resumed[1:]] == [{}, {}]
-
-
 def test_three_level_nested_interrupt_resume_v3_integration(tmp_path: Path) -> None:
     """Fresh-process style: run → interrupt → resume completes with per-layer v3 anchors."""
     project = _make_project(tmp_path)
