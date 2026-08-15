@@ -205,7 +205,7 @@ def validate_import(
     node_results_by_structural_path: dict[str, dict[str, dict[str, object]]] = {}
     if projection is not None:
         _seed_node_results_from_projection(projection, node_results_by_structural_path)
-    state_values = _state_values_from_change(context)
+    state_values = state_values_for_import(context, projection)
 
     for task in manifest.completed:
         structural_path = _resolve_structural_path(compiled, manifest.entrypoint, task)
@@ -250,6 +250,7 @@ def validate_import(
             state_values=state_values,
             # Per-structural-path locals (MERGE_HEAD); not a missing global.
             node_results=local_results,
+            projection=projection,
         )
         if gate_report is not None:
             gate_payload = local_payload.setdefault("gate", {})
@@ -614,6 +615,13 @@ def _assert_predecessor_closure(
         )
 
 
+def state_values_for_import(context: RuntimeContext, projection: GraphProjection | None) -> dict[str, object]:
+    """Gate ``state.*`` for import-checkpoint: ledger projection wins over YAML."""
+    if projection is not None:
+        return dict(projection.state_values)
+    return _state_values_from_change(context)
+
+
 def _state_values_from_change(context: RuntimeContext) -> dict[str, object]:
     """Load workflow-state.yaml into gate ``state.*`` (legacy phase/run_context stamps)."""
     path = context.change_dir / "workflow-state.yaml"
@@ -650,6 +658,7 @@ def _reevaluate_gate(
     checkpoint_ns: str,
     state_values: Mapping[str, object] | None = None,
     node_results: Mapping[str, object] | None = None,
+    projection: GraphProjection | None = None,
 ) -> dict[str, object] | None:
     node = compiled.graphs[task.graph].nodes[task.node]
     gate_id = _resolved_gate_id(node.definition)
@@ -669,7 +678,9 @@ def _reevaluate_gate(
         change_dir=context.change_dir,
         change_id=context.change_id,
         params=context.params,
-        state_values=dict(state_values) if state_values is not None else _state_values_from_change(context),
+        state_values=(
+            dict(state_values) if state_values is not None else state_values_for_import(context, projection)
+        ),
         node_results=dict(node_results) if node_results is not None else {},
         audit_events_dir=context.change_dir,
         checkpoint_ns=checkpoint_ns,
@@ -1651,5 +1662,6 @@ __all__ = [
     "project_invocation",
     "project_workflow_state",
     "render_workflow_state_yaml",
+    "state_values_for_import",
     "validate_import",
 ]
