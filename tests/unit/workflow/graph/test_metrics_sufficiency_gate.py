@@ -46,13 +46,13 @@ from assurance_agent.workflow.orchestration.schema import Verdict
 
 ASSURANCE_GRAPH = "assurance"
 HEALING_GRAPH = "healing"
-COLLECT = "collect-pr-metrics-batch"
 MATERIALIZE = "materialize-pr-metrics"
 GATE_NODE = "metrics-sufficiency"
 INTERRUPT_NODE = "metrics-sufficiency-review"
 TRACE_GATE_NODE = "trace-sufficiency"
 GATE_ID = "metrics-sufficiency-gate"
 COLLECT_TARGET = "operation:collect-pr-metrics-batch"
+COMPOSITE_TARGET = "operation:run-tests-and-collect-pr-metrics"
 MATERIALIZE_TARGET = "operation:materialize-pr-metrics"
 METRICS_REL = "inspect/metrics.json"
 TERMINALS = frozenset({"END", "STOP", "FAIL"})
@@ -136,21 +136,19 @@ def _check(tmp_path: Path, change_dir: Path) -> str:
 
 
 def test_assurance_collects_pr_metrics_after_execution() -> None:
-    node = _assurance().nodes[COLLECT]
-    assert node.uses == COLLECT_TARGET
+    node = _assurance().nodes["execution"]
+    assert node.uses == COMPOSITE_TARGET
     edge_pairs = {(e.from_, e.to) for e in _assurance().edges}
-    assert ("execution", COLLECT) in edge_pairs
-    assert (COLLECT, "inspect-with-issues") in edge_pairs
-    assert ("execution", "inspect-with-issues") not in edge_pairs
+    assert ("execution", "inspect-with-issues") in edge_pairs
+    assert "collect-pr-metrics-batch" not in _assurance().nodes
 
 
 def test_healing_collects_pr_metrics_after_rerun() -> None:
-    node = _healing().nodes[COLLECT]
-    assert node.uses == COLLECT_TARGET
+    node = _healing().nodes["rerun"]
+    assert node.uses == COMPOSITE_TARGET
     edge_pairs = {(e.from_, e.to) for e in _healing().edges}
-    assert ("rerun", COLLECT) in edge_pairs
-    assert (COLLECT, "inspect-with-issues") in edge_pairs
-    assert ("rerun", "inspect-with-issues") not in edge_pairs
+    assert ("rerun", "inspect-with-issues") in edge_pairs
+    assert "collect-pr-metrics-batch" not in _healing().nodes
 
 
 def test_materialize_runs_after_healing_before_the_metrics_gate() -> None:
@@ -166,6 +164,7 @@ def test_materialize_runs_after_healing_before_the_metrics_gate() -> None:
 def test_collect_and_materialize_resolve_to_registered_handlers() -> None:
     ops = default_operations()
     assert COLLECT_TARGET in ops
+    assert COMPOSITE_TARGET in ops
     assert MATERIALIZE_TARGET in ops
 
 
@@ -260,8 +259,7 @@ def _reachable(graph: GraphDef, *, without: frozenset[str] = frozenset(), frm: s
 def test_assurance_spine_is_collect_inspect_heal_materialize_metrics_trace_report() -> None:
     """Task 8 path + coverage-repair, with the existing trace gate preserved before report."""
     edge_pairs = {(e.from_, e.to) for e in _assurance().edges}
-    assert ("execution", COLLECT) in edge_pairs
-    assert (COLLECT, "inspect-with-issues") in edge_pairs
+    assert ("execution", "inspect-with-issues") in edge_pairs
     assert ("inspect-with-issues", "healing") in edge_pairs
     assert ("healing", "coverage-repair") in edge_pairs
     assert ("coverage-repair", MATERIALIZE) in edge_pairs

@@ -901,6 +901,7 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:verify-plan-mechanical",
         "operation:derive-plan-layer-applicability",
         "operation:run-tests",
+        "operation:run-tests-and-collect-pr-metrics",
         "operation:allocate-healing-attempt",
         "operation:fixer-authority-ready",
         "operation:record-fixer-approval",

@@ -163,6 +163,7 @@ EXPECTED_CONTRACTS = {
     "operation:materialize-c-layer-metrics",
     # PR metrics aggregate + single authoritative write (metrics M1 Task 7/8)
     "operation:collect-pr-metrics-batch",
+    "operation:run-tests-and-collect-pr-metrics",
     "operation:materialize-pr-metrics",
     # Nightly metrics carrier (metrics M2 Task 1; collectors stubbed for later tasks)
     "operation:load-latest-pr-metrics",
@@ -935,15 +936,16 @@ def test_improvement_reviewer_receives_only_bound_canonical_and_agent_subject() 
 
 
 def test_assurance_uses_inspect_with_issues_subgraph() -> None:
-    """execution → collect → inspect → healing → coverage-repair → materialize → metrics → trace."""
+    """execution → inspect → healing → coverage-repair → materialize → metrics → trace."""
     compiled, _ = _load_compiled()
     assurance = compiled.schema.graphs["assurance"]
     # The assurance graph calls inspect-with-issues as a subgraph, not directly.
     assert assurance.nodes["inspect-with-issues"].uses == "graph:inspect-with-issues"
     assert "inspect" not in assurance.nodes  # old direct inspect node is gone
     edge_pairs = {(e.from_, e.to) for e in assurance.edges}
-    assert ("execution", "collect-pr-metrics-batch") in edge_pairs
-    assert ("collect-pr-metrics-batch", "inspect-with-issues") in edge_pairs
+    assert ("execution", "inspect-with-issues") in edge_pairs
+    assert "collect-pr-metrics-batch" not in assurance.nodes
+    assert assurance.nodes["execution"].uses == "operation:run-tests-and-collect-pr-metrics"
     assert ("inspect-with-issues", "healing") in edge_pairs
     assert ("healing", "coverage-repair") in edge_pairs
     assert ("coverage-repair", "materialize-pr-metrics") in edge_pairs
@@ -951,6 +953,7 @@ def test_assurance_uses_inspect_with_issues_subgraph() -> None:
     assert ("materialize-pr-metrics", "metrics-sufficiency") in edge_pairs
     assert ("healing", "report") not in edge_pairs
     assert ("healing", "trace-sufficiency") not in edge_pairs
+    assert "materialize-pr-metrics" in assurance.nodes
 
 
 def test_assurance_report_uses_deterministic_report_operation() -> None:
@@ -965,15 +968,28 @@ def test_assurance_report_uses_deterministic_report_operation() -> None:
 
 
 def test_healing_uses_inspect_with_issues_subgraph() -> None:
-    """healing.rerun → collect-pr-metrics-batch → inspect-with-issues → decide."""
+    """healing.rerun → inspect-with-issues → decide."""
     compiled, _ = _load_compiled()
     healing = compiled.schema.graphs["healing"]
     assert healing.nodes["inspect-with-issues"].uses == "graph:inspect-with-issues"
     assert "reinspect" not in healing.nodes  # old direct reinspect node is gone
-    edge_pairs = {(e.from_, e.to) for e in healing.edges}
-    assert ("rerun", "collect-pr-metrics-batch") in edge_pairs
-    assert ("collect-pr-metrics-batch", "inspect-with-issues") in edge_pairs
-    assert ("inspect-with-issues", "decide") in edge_pairs
+    healing_edge_pairs = {(e.from_, e.to) for e in healing.edges}
+    assert ("rerun", "inspect-with-issues") in healing_edge_pairs
+    assert "collect-pr-metrics-batch" not in healing.nodes
+    assert healing.nodes["rerun"].uses == "operation:run-tests-and-collect-pr-metrics"
+    assert ("inspect-with-issues", "decide") in healing_edge_pairs
+    assert "materialize-pr-metrics" not in healing.nodes
+
+
+def test_coverage_repair_uses_inspect_with_issues_subgraph() -> None:
+    """coverage-repair.rerun → inspect-with-issues; collect is folded into rerun."""
+    compiled, _ = _load_compiled()
+    coverage_repair = compiled.schema.graphs["coverage-repair"]
+    coverage_edge_pairs = {(e.from_, e.to) for e in coverage_repair.edges}
+    assert ("rerun", "inspect-with-issues") in coverage_edge_pairs
+    assert "collect-pr-metrics-batch" not in coverage_repair.nodes
+    assert coverage_repair.nodes["rerun"].uses == "operation:run-tests-and-collect-pr-metrics"
+    assert "materialize-pr-metrics" not in coverage_repair.nodes
 
 
 def test_run_tests_false_skips_execution_and_issue_subgraph(tmp_path: Path) -> None:

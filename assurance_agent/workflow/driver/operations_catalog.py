@@ -8,7 +8,7 @@ imports domain callables and binds them to ``operation:*`` targets. Callers
 
 from __future__ import annotations
 
-from assurance_agent.workflow.execution.graph_ops import run_tests
+from assurance_agent.workflow.execution.graph_ops import run_tests, run_tests_and_collect_pr_metrics
 from assurance_agent.workflow.graph.handlers.operation import (
     OperationFn,
     no_op,
@@ -124,6 +124,7 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:verify-plan-mechanical": verify_plan_mechanical,
         "operation:derive-plan-layer-applicability": derive_plan_layer_applicability,
         "operation:run-tests": run_tests,
+        "operation:run-tests-and-collect-pr-metrics": run_tests_and_collect_pr_metrics,
         "operation:inspect": inspect_operation,
         "operation:generate-report": generate_report_operation,
         "operation:allocate-healing-attempt": operation_allocate_healing_attempt,

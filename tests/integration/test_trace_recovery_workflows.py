@@ -435,6 +435,7 @@ def _assurance_stub_ops() -> dict[str, OperationFn]:
 
     return {
         "operation:run-tests": stub_run_tests,
+        "operation:run-tests-and-collect-pr-metrics": stub_run_tests,
         "operation:inspect": stub_inspect,
         "operation:collect-observations": stub_collect,
         "operation:generate-report": stub_report,

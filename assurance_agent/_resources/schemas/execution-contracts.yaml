@@ -83,6 +83,49 @@ contracts:
     retryable_errors:
     - timeout
     - transport
+  operation:run-tests-and-collect-pr-metrics:
+    handler: operation
+    reads:
+    - repo:tests/api/**
+    - repo:tests/e2e/**
+    - repo:tests/fuzz/**
+    - repo:tests/perf/**
+    - change:codegen/**
+    - change:cases/**
+    - change:execution/**
+    - project:.aa/policy.yaml
+    - project:.aa/cache/diff-base/**
+    - repo:tests/**
+    - repo:.aa/data-knowledge.yaml
+    - change:trace/minimum-coverage-matrix.yaml
+    - change:inspect/trace-projection.json
+    - change:explore/advisory.json
+    - change:risk-advisory/advisory.json
+    - change:inspect/quarantine-projection.json
+    writes:
+    - change:execution/**
+    - project:.aa/cache/diff-base/**
+    - change:execution/runs/*/coverage-diff.json
+    - change:execution/runs/*/constraint-coverage.json
+    - change:execution/runs/*/auth-matrix.json
+    - change:execution/runs/*/journey-coverage.json
+    - change:execution/runs/*/perf-slack.json
+    authorization_writes:
+    - change:execution/**
+    - project:.aa/cache/diff-base/**
+    - change:execution/runs/*/coverage-diff.json
+    - change:execution/runs/*/constraint-coverage.json
+    - change:execution/runs/*/auth-matrix.json
+    - change:execution/runs/*/journey-coverage.json
+    - change:execution/runs/*/perf-slack.json
+    synchronized:
+    - project:.aa/cache/diff-base/**
+    exclusive:
+    - repo:test-runtime
+    - project:diff-base-cache
+    retryable_errors:
+    - timeout
+    - transport
   operation:inspect:
     handler: operation
     reads:

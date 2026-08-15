@@ -404,9 +404,8 @@ def test_stop_worthy_metrics_do_not_prevent_healing(tmp_path: Path) -> None:
     change_dir = _project(tmp_path, GAPPED)
     run = _drive_healing(tmp_path, change_dir, decide="exit")
     assert "fix-api" in run.order
-    assert COLLECT in run.order
+    assert COLLECT not in run.order
     assert "rerun" in run.order
-    assert run.order.index("rerun") < run.order.index(COLLECT)
     assert GATE_NODE not in run.order
     assert run.order[-1] == "complete-resolved"
 
