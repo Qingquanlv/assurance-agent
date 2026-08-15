@@ -10,9 +10,11 @@ import pytest
 from assurance_agent.workflow.graph.compiler import canonical_digest, compile_workflow
 from assurance_agent.workflow.graph.contracts import ResourcePath, parse_execution_contracts
 from assurance_agent.workflow.graph.models import (
+    ArtifactReader,
     CompiledWorkflow,
     ExecutableTask,
     GraphProjection,
+    PlanResult,
     ResolvedArtifact,
     RuntimeContext,
     TaskProjection,
@@ -395,9 +397,14 @@ def test_preview_reuses_supplied_plan_without_replanning(
     calls = {"n": 0}
     original = plan_superstep
 
-    def _count(*args: object, **kwargs: object):
+    def _count(
+        compiled: CompiledWorkflow,
+        projection: GraphProjection,
+        context: RuntimeContext,
+        artifacts: ArtifactReader,
+    ) -> PlanResult:
         calls["n"] += 1
-        return original(*args, **kwargs)
+        return original(compiled, projection, context, artifacts)
 
     monkeypatch.setattr("assurance_agent.workflow.graph.selected_wave.plan_superstep", _count)
     wave = preview_selected_wave(

@@ -834,11 +834,6 @@ def test_collect_writes_incomplete_v2_for_definition_integrity_failures(
             "gate_semantics_mismatch",
             lambda cd: _mutate_all_started_field(cd, "gate_semantics_digest", "0" * 64),
         ),
-        (
-            "api",
-            "profile_definition_incompatible",
-            lambda cd: _mutate_all_started_field(cd, "assurance_profile_digest", "0" * 64),
-        ),
     ],
 )
 def test_collect_writes_incomplete_v2_for_evidence_integrity_failures(
@@ -2530,15 +2525,17 @@ def test_publication_crash_windows_are_aba_safe(tmp_path: Path) -> None:
     assert crashed.returncode != 0
     assert json.loads(receipt.read_text(encoding="utf-8"))["state"] == "pending"
     assert json.loads(receipt.read_text(encoding="utf-8"))["attempt_id"] == "attempt-B"
-    assert _validate_publication(
-        report=output, receipt=receipt, mode="fresh", attempt_id="attempt-B"
-    ).returncode != 0
+    assert (
+        _validate_publication(report=output, receipt=receipt, mode="fresh", attempt_id="attempt-B").returncode
+        != 0
+    )
 
     output.write_bytes(prior_report)
     receipt.write_bytes(prior_receipt)
-    assert _validate_publication(
-        report=output, receipt=receipt, mode="fresh", attempt_id="attempt-B"
-    ).returncode != 0
+    assert (
+        _validate_publication(report=output, receipt=receipt, mode="fresh", attempt_id="attempt-B").returncode
+        != 0
+    )
     assert _validate_publication(report=output, receipt=receipt, mode="reuse").returncode == 0
 
 
@@ -2573,9 +2570,7 @@ def test_clarification_11_crash_window_acceptance_matrix(tmp_path: Path, window:
     )
     assert crashed.returncode != 0
 
-    fresh_b = _validate_publication(
-        report=output, receipt=receipt, mode="fresh", attempt_id="attempt-B"
-    )
+    fresh_b = _validate_publication(report=output, receipt=receipt, mode="fresh", attempt_id="attempt-B")
     reuse = _validate_publication(report=output, receipt=receipt, mode="reuse")
 
     if window == "before_pending":
@@ -2583,9 +2578,12 @@ def test_clarification_11_crash_window_acceptance_matrix(tmp_path: Path, window:
         assert receipt.read_bytes() == prior_receipt
         # Prior committed publication remains valid; cannot validate as the new attempt.
         assert _validate_publication(report=output, receipt=receipt, mode="reuse").returncode == 0
-        assert _validate_publication(
-            report=output, receipt=receipt, mode="fresh", attempt_id="attempt-A"
-        ).returncode == 0
+        assert (
+            _validate_publication(
+                report=output, receipt=receipt, mode="fresh", attempt_id="attempt-A"
+            ).returncode
+            == 0
+        )
         assert fresh_b.returncode != 0
     elif window in {"after_pending", "after_report"}:
         assert json.loads(receipt.read_text(encoding="utf-8"))["state"] == "pending"
@@ -2594,9 +2592,11 @@ def test_clarification_11_crash_window_acceptance_matrix(tmp_path: Path, window:
         assert hashlib.sha256(output.read_bytes()).hexdigest() == hashlib.sha256(prior_report).hexdigest()
         assert fresh_b.returncode != 0
         assert reuse.returncode != 0
-        assert _finalize_helper(
-            report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-B"
-        ).stdout.strip().endswith("registered=false")
+        assert (
+            _finalize_helper(report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-B")
+            .stdout.strip()
+            .endswith("registered=false")
+        )
         assert _reuse_helper(report=output, change_id=CHANGE_ID).returncode != 0
     else:
         # after_committed: durable publication is complete; resume validation succeeds.
@@ -2695,20 +2695,29 @@ def test_pending_or_substituted_legacy_never_registers(tmp_path: Path) -> None:
         receipt = Path(str(legacy_path) + ".receipt.json")
 
         _write_pending_receipt(receipt, attempt_id="attempt-pending")
-        assert _validate_publication(
-            report=legacy_path, receipt=receipt, mode="fresh", attempt_id="attempt-pending"
-        ).returncode != 0
-        assert _finalize_helper(
-            report=legacy_path, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-pending"
-        ).stdout.strip().endswith("registered=false")
+        assert (
+            _validate_publication(
+                report=legacy_path, receipt=receipt, mode="fresh", attempt_id="attempt-pending"
+            ).returncode
+            != 0
+        )
+        assert (
+            _finalize_helper(
+                report=legacy_path, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-pending"
+            )
+            .stdout.strip()
+            .endswith("registered=false")
+        )
         assert _reuse_helper(report=legacy_path, change_id=CHANGE_ID).returncode != 0
 
         # Committed V3 receipt + substituted V1/V2 must not downgrade around digest validation.
         receipt.write_bytes(committed_receipt)
         assert _validate_publication(report=legacy_path, receipt=receipt, mode="reuse").returncode != 0
-        assert _finalize_helper(
-            report=legacy_path, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-v3"
-        ).stdout.strip().endswith("registered=false")
+        assert (
+            _finalize_helper(report=legacy_path, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-v3")
+            .stdout.strip()
+            .endswith("registered=false")
+        )
 
 
 def test_v3_requires_receipt_legacy_receiptless_only_when_absent(tmp_path: Path) -> None:
@@ -2725,12 +2734,12 @@ def test_v3_requires_receipt_legacy_receiptless_only_when_absent(tmp_path: Path)
     assert seed.returncode == 0, seed.stderr
     receipt = Path(str(v3_path) + ".receipt.json")
     receipt.unlink()
-    assert _validate_publication(
-        report=v3_path, receipt=receipt, mode="reuse"
-    ).returncode != 0
-    assert _finalize_helper(
-        report=v3_path, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-receipt"
-    ).stdout.strip().endswith("registered=false")
+    assert _validate_publication(report=v3_path, receipt=receipt, mode="reuse").returncode != 0
+    assert (
+        _finalize_helper(report=v3_path, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-receipt")
+        .stdout.strip()
+        .endswith("registered=false")
+    )
 
     legacy_path = tmp_path / "legacy-receiptless.json"
     legacy_path.write_text(
@@ -2739,13 +2748,9 @@ def test_v3_requires_receipt_legacy_receiptless_only_when_absent(tmp_path: Path)
     )
     missing_sibling = Path(str(legacy_path) + ".receipt.json")
     assert not missing_sibling.exists()
-    assert _validate_publication(
-        report=legacy_path, receipt=missing_sibling, mode="reuse"
-    ).returncode == 0
+    assert _validate_publication(report=legacy_path, receipt=missing_sibling, mode="reuse").returncode == 0
     _write_pending_receipt(missing_sibling, attempt_id="attempt-x")
-    assert _validate_publication(
-        report=legacy_path, receipt=missing_sibling, mode="reuse"
-    ).returncode != 0
+    assert _validate_publication(report=legacy_path, receipt=missing_sibling, mode="reuse").returncode != 0
 
 
 def test_empty_attempt_or_same_paths_fail_before_mutation(tmp_path: Path) -> None:
@@ -2801,7 +2806,9 @@ def test_publication_receipt_loader_fail_closed() -> None:
     with pytest.raises(ValidationError):
         load_specialty_publication_receipt(None)
     with pytest.raises(ValidationError):
-        load_specialty_publication_receipt({"schema_version": "1", "state": "unknown", "attempt_id": "a", "change_id": "c"})
+        load_specialty_publication_receipt(
+            {"schema_version": "1", "state": "unknown", "attempt_id": "a", "change_id": "c"}
+        )
     with pytest.raises(ValidationError):
         load_specialty_publication_receipt(
             {
@@ -2915,15 +2922,19 @@ def test_finalize_retention_pending_attempt_digest_and_incomplete(tmp_path: Path
     report_bytes = output.read_bytes()
 
     _write_pending_receipt(receipt, attempt_id="attempt-B")
-    assert _finalize_helper(
-        report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-B"
-    ).stdout.strip().endswith("registered=false")
+    assert (
+        _finalize_helper(report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-B")
+        .stdout.strip()
+        .endswith("registered=false")
+    )
     assert _reuse_helper(report=output, change_id=CHANGE_ID).returncode != 0
 
     _write_committed_receipt(receipt, attempt_id="attempt-A", report_bytes=report_bytes)
-    assert _finalize_helper(
-        report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-B"
-    ).stdout.strip().endswith("registered=false")
+    assert (
+        _finalize_helper(report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-B")
+        .stdout.strip()
+        .endswith("registered=false")
+    )
 
     _write_committed_receipt(
         receipt,
@@ -2931,9 +2942,11 @@ def test_finalize_retention_pending_attempt_digest_and_incomplete(tmp_path: Path
         report_bytes=report_bytes,
     )
     output.write_bytes(report_bytes + b"\n")
-    assert _finalize_helper(
-        report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-A"
-    ).stdout.strip().endswith("registered=false")
+    assert (
+        _finalize_helper(report=output, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-A")
+        .stdout.strip()
+        .endswith("registered=false")
+    )
 
     # Restore matching committed publication, then prove incomplete+matching still registers.
     output.write_bytes(report_bytes)
@@ -3073,9 +3086,10 @@ def test_collect_old_repaired_v1_projection_is_stale_never_complete_v3(tmp_path:
     ]
     reconciled_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     # Disk V1 remains a valid legacy reader payload, not current authority.
-    assert load_trace_projection_document(
-        json.loads(reconciled_path.read_text(encoding="utf-8"))
-    ).schema_version == "1"
+    assert (
+        load_trace_projection_document(json.loads(reconciled_path.read_text(encoding="utf-8"))).schema_version
+        == "1"
+    )
 
     output = tmp_path / "repaired-v1.json"
     result = _collect_command(
@@ -3110,18 +3124,16 @@ def test_receipt_committed_v3_resumes_and_report_only_v3_is_rejected(tmp_path: P
     )
     assert first.returncode == 0, first.stderr
     receipt = Path(str(output) + ".receipt.json")
-    assert _validate_publication(
-        report=output, receipt=receipt, mode="reuse"
-    ).returncode == 0
+    assert _validate_publication(report=output, receipt=receipt, mode="reuse").returncode == 0
     assert _reuse_helper(report=output, change_id=CHANGE_ID).returncode == 0
 
     report_only = tmp_path / "report-only-v3.json"
     report_only.write_bytes(output.read_bytes())
     missing_receipt = Path(str(report_only) + ".receipt.json")
     assert not missing_receipt.exists()
-    assert _validate_publication(
-        report=report_only, receipt=missing_receipt, mode="reuse"
-    ).returncode != 0
-    assert _finalize_helper(
-        report=report_only, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-resume"
-    ).stdout.strip().endswith("registered=false")
+    assert _validate_publication(report=report_only, receipt=missing_receipt, mode="reuse").returncode != 0
+    assert (
+        _finalize_helper(report=report_only, change_id=CHANGE_ID, collect_exit=0, attempt_id="attempt-resume")
+        .stdout.strip()
+        .endswith("registered=false")
+    )

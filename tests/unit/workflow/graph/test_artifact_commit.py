@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.core.graph_events import (
@@ -75,7 +78,7 @@ def _projection(**updates: object) -> GraphProjection:
     return GraphProjection.model_validate(payload)
 
 
-def _seed(change_dir: Path, events: list[object]) -> None:
+def _seed(change_dir: Path, events: list[Mapping[str, object] | BaseModel]) -> None:
     change_dir.mkdir(parents=True, exist_ok=True)
     with transaction(change_dir) as txn:
         for event in events:

@@ -1430,6 +1430,7 @@ def test_opencode_loop_runs_and_gates_verified_metrics_lifecycle() -> None:
     assert resume_coverage < resume_metrics < resume_archive
     assert fresh_coverage < fresh_metrics < fresh_archive
 
+
 def _write_workflow_result(
     path: Path,
     *,
@@ -1453,6 +1454,7 @@ def _write_workflow_result(
         + "\n",
         encoding="utf-8",
     )
+
 
 def test_trace_verify_collection_persists_json_and_reports_pass(tmp_path: Path) -> None:
     fake = _install_fake_aa(tmp_path)
@@ -1479,6 +1481,7 @@ def test_trace_verify_collection_persists_json_and_reports_pass(tmp_path: Path) 
         "verify --change CH-1 --json",
     ]
 
+
 def test_trace_verify_collection_preserves_nonzero_verify_verdict(tmp_path: Path) -> None:
     fake = _install_fake_aa(tmp_path)
     trace_path = tmp_path / "trace.json"
@@ -1496,6 +1499,7 @@ def test_trace_verify_collection_preserves_nonzero_verify_verdict(tmp_path: Path
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "CH-2|raw|none|0|complete|0|30|needs_human|0|0"
+
 
 def test_trace_verify_collection_wraps_empty_error_outputs_as_json(tmp_path: Path) -> None:
     fake = _install_fake_aa(tmp_path)
@@ -1529,6 +1533,7 @@ def test_trace_verify_collection_wraps_empty_error_outputs_as_json(tmp_path: Pat
         "schema_version": "1",
     }
 
+
 def test_resolve_aa_python_uses_console_script_interpreter(tmp_path: Path) -> None:
     aa_console = tmp_path / "aa"
     aa_console.write_text(f"#!{sys.executable}\n", encoding="utf-8")
@@ -1541,6 +1546,7 @@ def test_resolve_aa_python_uses_console_script_interpreter(tmp_path: Path) -> No
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == sys.executable
+
 
 def test_resolve_cursor_project_root_honors_external_sut_override(tmp_path: Path) -> None:
     script_dir = tmp_path / "tool" / "benchmark"
@@ -1555,6 +1561,7 @@ def test_resolve_cursor_project_root_honors_external_sut_override(tmp_path: Path
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == str(sut_root.resolve())
+
 
 def test_benchmark_env_preserves_caller_trace_verify_override(tmp_path: Path) -> None:
     result = subprocess.run(
@@ -1572,6 +1579,7 @@ def test_benchmark_env_preserves_caller_trace_verify_override(tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
     assert result.stdout == "false"
 
+
 def test_benchmark_env_preserves_caller_smoke_scope_and_cleanup_override(tmp_path: Path) -> None:
     result = subprocess.run(
         [
@@ -1579,7 +1587,7 @@ def test_benchmark_env_preserves_caller_smoke_scope_and_cleanup_override(tmp_pat
             "-c",
             (
                 f"set -u; source {shlex.quote(str(_BENCHMARK_ENV))}; "
-                "printf '%s|%s|%s|%s' \"${BENCHMARK_ITEMS[*]}\" \"$TEST_TYPES\" "
+                'printf \'%s|%s|%s|%s\' "${BENCHMARK_ITEMS[*]}" "$TEST_TYPES" '
                 '"$CLEAN_ARTIFACTS" "$STATUS_POLL_INTERVAL"'
             ),
         ],
@@ -1597,9 +1605,8 @@ def test_benchmark_env_preserves_caller_smoke_scope_and_cleanup_override(tmp_pat
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == (
-        "RET-user-management:requirements/user-management.md|fuzz|false|60"
-    )
+    assert result.stdout == ("RET-user-management:requirements/user-management.md|fuzz|false|60")
+
 
 def test_benchmark_evidence_gate_requires_successful_trace_and_verify(tmp_path: Path) -> None:
     passing = _run_helper(
@@ -1620,6 +1627,7 @@ def test_benchmark_evidence_gate_requires_successful_trace_and_verify(tmp_path: 
     assert needs_human.returncode == 1
     assert malformed.returncode == 1
     assert disabled.returncode == 0, disabled.stderr
+
 
 def test_pin_workflow_root_writes_stable_json_for_new_root(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
@@ -1642,6 +1650,7 @@ def test_pin_workflow_root_writes_stable_json_for_new_root(tmp_path: Path) -> No
         "root_invocation_id": "inv-root-1",
     }
 
+
 def test_pin_workflow_root_skips_creation_when_started_new_root_false(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     result_file = tmp_path / "workflow-result.json"
@@ -1654,6 +1663,7 @@ def test_pin_workflow_root_skips_creation_when_started_new_root_false(tmp_path: 
 
     assert result.returncode == 0, result.stderr
     assert not (run_dir / "CH-1.workflow-root.json").exists()
+
 
 def test_pin_workflow_root_rejects_identity_drift(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
@@ -1676,6 +1686,7 @@ def test_pin_workflow_root_rejects_identity_drift(tmp_path: Path) -> None:
     assert drift.returncode != 0
     assert "workflow_root_invocation_mismatch" in drift.stderr
 
+
 def test_validate_workflow_command_result_rejects_missing_invocation(tmp_path: Path) -> None:
     result_file = tmp_path / "workflow-result.json"
     result_file.write_text(
@@ -1697,6 +1708,7 @@ def test_validate_workflow_command_result_rejects_missing_invocation(tmp_path: P
     )
     assert result.returncode != 0
     assert "workflow_result_invocation_missing" in result.stderr
+
 
 def test_read_workflow_root_state_never_calls_aa_status(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
@@ -1723,6 +1735,7 @@ def test_read_workflow_root_state_never_calls_aa_status(tmp_path: Path) -> None:
     assert result.stdout.strip() == "inv-root-1|full"
     assert not (tmp_path / "aa-calls.log").exists()
 
+
 def test_specialty_collect_helper_omits_schema_root_escape_hatch() -> None:
     helpers = _HELPERS.read_text(encoding="utf-8")
     reporter = (
@@ -1746,6 +1759,7 @@ def test_specialty_collect_helper_omits_schema_root_escape_hatch() -> None:
         '"$AA_REPO_ROOT"'
         not in stage.split("collect_benchmark_specialty_report", maxsplit=1)[1].split("||", maxsplit=1)[0]
     )
+
 
 def test_raw_evidence_row_uses_ten_columns_and_unknown(tmp_path: Path) -> None:
     import os
@@ -1778,6 +1792,7 @@ def test_raw_evidence_row_uses_ten_columns_and_unknown(tmp_path: Path) -> None:
     assert parts[4] == "unknown"
     assert parts[5] == "unknown"
 
+
 def test_parse_evidence_row_rejects_unknown_collection_status(tmp_path: Path) -> None:
     bad = _run_helper(tmp_path, "parse_evidence_row_fields 'CH-1|weird|none|0|complete|0|0|pass|0|0'")
     assert bad.returncode != 0
@@ -1786,6 +1801,7 @@ def test_parse_evidence_row_rejects_unknown_collection_status(tmp_path: Path) ->
         "parse_evidence_row_fields 'CH-1|incomplete|execution_projection_missing|0|unknown|unknown|0|unknown|unknown|unknown'",
     )
     assert good.returncode == 0, good.stderr
+
 
 def test_parse_evidence_row_rejects_unknown_reason_and_zero_substituted_incomplete(
     tmp_path: Path,
@@ -1811,15 +1827,13 @@ def test_parse_evidence_row_rejects_unknown_reason_and_zero_substituted_incomple
 
     zero_substituted = _run_helper(
         tmp_path,
-        "parse_evidence_row_fields "
-        "'CH-1|incomplete|execution_projection_missing|0|0|0|0|0|0|0'",
+        "parse_evidence_row_fields 'CH-1|incomplete|execution_projection_missing|0|0|0|0|0|0|0'",
     )
     assert zero_substituted.returncode != 0
 
     complete_with_reason = _run_helper(
         tmp_path,
-        "parse_evidence_row_fields "
-        "'CH-1|complete|verify_result_missing|0|complete|0|0|pass|0|0'",
+        "parse_evidence_row_fields 'CH-1|complete|verify_result_missing|0|complete|0|0|pass|0|0'",
     )
     assert complete_with_reason.returncode != 0
 
@@ -1829,6 +1843,7 @@ def test_parse_evidence_row_rejects_unknown_reason_and_zero_substituted_incomple
     )
     assert raw_with_reason.returncode != 0
 
+
 def test_finalize_and_reuse_register_nothing_for_pending_or_mismatched_receipt(
     tmp_path: Path,
 ) -> None:
@@ -1837,9 +1852,7 @@ def test_finalize_and_reuse_register_nothing_for_pending_or_mismatched_receipt(
 
     from benchmark.specialty.specialty_models import SpecialtyReportV3
 
-    reporter = (
-        _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
-    )
+    reporter = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
     # Minimal committed-shaped V3 incomplete report bytes for retention gates.
     report_payload = {
         "schema_version": "3",
@@ -1984,6 +1997,7 @@ def test_finalize_and_reuse_register_nothing_for_pending_or_mismatched_receipt(
     assert reuse_ok.returncode == 0, reuse_ok.stderr
     assert reuse_ok.stdout.startswith("CH-1|incomplete|execution_projection_missing|")
 
+
 def test_evidence_row_cli_ten_columns_for_v3_and_legacy_without_schema_root(tmp_path: Path) -> None:
     """evidence-row emits the frozen ten-column contract; reporter has no --schema-root."""
     from benchmark.specialty.specialty_models import SpecialtyReportV3, load_specialty_report
@@ -1993,9 +2007,7 @@ def test_evidence_row_cli_ten_columns_for_v3_and_legacy_without_schema_root(tmp_
     )
     from tests.unit.eval.test_specialty_models import _canonical_complete_v3, incomplete_v3
 
-    reporter = (
-        _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
-    )
+    reporter = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
     assert "--schema-root" not in reporter.read_text(encoding="utf-8")
 
     complete = _canonical_complete_v3()
@@ -2010,8 +2022,20 @@ def test_evidence_row_cli_ten_columns_for_v3_and_legacy_without_schema_root(tmp_
             "incomplete",
             "reconciled_projection_missing",
         ),
-        ("CH-LEGACY-V2", "legacy-v2.json", _synthetic_v2_report(change_id="CH-LEGACY-V2"), "legacy_unlayered", "none"),
-        ("CH-LEGACY-V1", "legacy-v1.json", _legacy_v1_report(change_id="CH-LEGACY-V1"), "legacy_unlayered", "none"),
+        (
+            "CH-LEGACY-V2",
+            "legacy-v2.json",
+            _synthetic_v2_report(change_id="CH-LEGACY-V2"),
+            "legacy_unlayered",
+            "none",
+        ),
+        (
+            "CH-LEGACY-V1",
+            "legacy-v1.json",
+            _legacy_v1_report(change_id="CH-LEGACY-V1"),
+            "legacy_unlayered",
+            "none",
+        ),
     ]
     for change_id, name, model, status, reason in cases:
         path = tmp_path / name
@@ -2049,7 +2073,5 @@ def test_evidence_row_cli_ten_columns_for_v3_and_legacy_without_schema_root(tmp_
             assert parts[7] == "unknown"
             assert parts[8] == "unknown"
             assert parts[9] == "unknown"
-        parsed = _run_helper(
-            tmp_path, f"parse_evidence_row_fields {shlex.quote(result.stdout.strip())}"
-        )
+        parsed = _run_helper(tmp_path, f"parse_evidence_row_fields {shlex.quote(result.stdout.strip())}")
         assert parsed.returncode == 0, parsed.stderr

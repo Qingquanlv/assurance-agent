@@ -46,9 +46,7 @@ def last_committed_tree_edge(
             last_publication_id = raw_checkpoint_id if isinstance(raw_checkpoint_id, str) else None
             raw_ids = raw.get("write_set_ids")
             last_write_set_ids = tuple(
-                value
-                for value in (raw_ids if isinstance(raw_ids, list) else [])
-                if isinstance(value, str)
+                value for value in (raw_ids if isinstance(raw_ids, list) else []) if isinstance(value, str)
             )
             cursor = target_tree
     return CommittedTreeEdge(last_prev, last_target, last_publication_id, last_write_set_ids)
@@ -183,9 +181,7 @@ def repair_ordinary_materialization(
                 overlaid_target,
                 source_base_tree_id=source_base,
                 destination_base_tree_id=source_base,
-                acceptable_live_tree_ids=tuple(
-                    overlays.get(tree_id, tree_id) for tree_id in targets[:-1]
-                ),
+                acceptable_live_tree_ids=tuple(overlays.get(tree_id, tree_id) for tree_id in targets[:-1]),
             )
             return
     try:

@@ -1190,10 +1190,7 @@ class GraphRuntime:
         pending = projection.interrupts.get(command.interrupt_id)
         if pending is None:
             raise GraphRuntimeError(f"interrupt {command.interrupt_id} is not pending")
-        uses_manual_revision = (
-            command.action == "fix_and_proceed"
-            and pending.revision_view is not None
-        )
+        uses_manual_revision = command.action == "fix_and_proceed" and pending.revision_view is not None
         # After a crash that wrote root resume ordinal(s), the root interrupt is
         # already resolved while the revision resume suffix may still be open.
         # Identical fix_and_proceed retries must still reach the revision commit
@@ -1767,21 +1764,6 @@ class GraphRuntime:
             event = TopologySafetyCompatibilityRecordedEvent.model_validate(payload)
             return event_to_receipt(event)
         return None
-
-    def _legacy_profile_reconstructable(
-        self,
-        projection: GraphProjection,
-        change_dir: Path,
-    ) -> bool:
-        from assurance_agent.verification.profile_manifest import (
-            assurance_profile_digest,
-            assurance_profile_snapshot_relpath,
-        )
-
-        if not projection.assurance_profile_digest:
-            return False
-        path = change_dir / assurance_profile_snapshot_relpath(projection.assurance_profile_digest)
-        return path.is_file()
 
     def _recovery_work_remains(
         self,
