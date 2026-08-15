@@ -1,4 +1,4 @@
-"""Task 12: v4/v5 topology audit receipts and commit-safety resume barrier."""
+"""Resume compatibility: v4/v5 skip topology audit like v6; receipt helpers remain."""
 
 from __future__ import annotations
 
@@ -18,8 +18,6 @@ from assurance_agent.workflow.graph.historical_roles import discover_historical_
 from assurance_agent.workflow.graph.models import CompiledWorkflow, GraphProjection, TaskProjection
 from assurance_agent.workflow.graph.resume_compatibility import (
     LEGACY_COMMIT_SAFETY_SEMANTICS_UNBOUND,
-    TOPOLOGY_AUDIT_UNSAFE,
-    TOPOLOGY_PROFILE_UNRECONSTRUCTABLE,
     TOPOLOGY_RECEIPT_CORRUPT,
     ResumeCompatibilityDecision,
     assess_remaining_work,
@@ -137,7 +135,7 @@ def test_audit_trigger_uses_discovered_roles_not_frozen_display_status() -> None
     assert any(item.startswith("reachable:codegen:api:") for item in assessment.audit_trigger_roles)
 
 
-def test_safe_topology_appends_receipt_but_blocks_pending_codegen(tmp_path: Path) -> None:
+def test_safe_topology_pending_codegen_skips_legacy_audit(tmp_path: Path) -> None:
     schema, contracts, compiled = _packaged()
     roles, issues = discover_historical_assurance_roles(schema)
     assert roles is not None
@@ -176,14 +174,12 @@ def test_safe_topology_appends_receipt_but_blocks_pending_codegen(tmp_path: Path
         profile_reconstructable=True,
         change_dir=change,
     )
-    assert receipt is not None
-    assert decision.allowed is False
-    assert decision.reason == LEGACY_COMMIT_SAFETY_SEMANTICS_UNBOUND
-    assert decision.receipt_id == receipt.receipt_id
-    assert decision.audit_triggered is True
+    assert decision.allowed is True
+    assert receipt is None
+    assert decision.audit_triggered is False
 
 
-def test_bypass_topology_cannot_get_bound_receipt() -> None:
+def test_bypass_topology_skips_legacy_audit() -> None:
     schema, contracts, compiled = _packaged()
     bypass = _add_direct_codegen_bypass(schema, "api")
     roles, _ = discover_historical_assurance_roles(bypass)
@@ -205,11 +201,11 @@ def test_bypass_topology_cannot_get_bound_receipt() -> None:
         profile_reconstructable=True,
     )
     assert receipt is None
-    assert decision.allowed is False
-    assert decision.reason == TOPOLOGY_AUDIT_UNSAFE
+    assert decision.allowed is True
+    assert decision.reason is None
 
 
-def test_v4_unreconstructable_profile_blocks_before_receipt() -> None:
+def test_v4_unreconstructable_profile_skips_legacy_audit() -> None:
     schema, contracts, compiled = _packaged()
     roles, _ = discover_historical_assurance_roles(schema)
     assert roles is not None
@@ -228,8 +224,8 @@ def test_v4_unreconstructable_profile_blocks_before_receipt() -> None:
         profile_reconstructable=False,
     )
     assert receipt is None
-    assert decision.allowed is False
-    assert decision.reason == TOPOLOGY_PROFILE_UNRECONSTRUCTABLE
+    assert decision.allowed is True
+    assert decision.reason is None
 
 
 def test_report_terminal_only_continues_without_commit_safety_binding() -> None:
@@ -263,13 +259,13 @@ def test_report_terminal_only_continues_without_commit_safety_binding() -> None:
         profile_reconstructable=True,
     )
     assert decision.allowed is True
-    assert decision.remaining_work_class == "report_terminal_only"
+    assert decision.remaining_work_class == "none"
     assert decision.reason is None
     assert receipt is None
 
 
 @pytest.mark.parametrize("event_schema_version", [4, 5])
-def test_success_before_superstep_blocks_with_typed_reason(event_schema_version: int) -> None:
+def test_success_before_superstep_skips_legacy_audit(event_schema_version: int) -> None:
     schema, contracts, compiled = _packaged()
     roles, _ = discover_historical_assurance_roles(schema)
     assert roles is not None
@@ -300,12 +296,13 @@ def test_success_before_superstep_blocks_with_typed_reason(event_schema_version:
         existing_receipt=None,
         profile_reconstructable=True,
     )
-    assert decision.allowed is False
-    assert decision.reason == LEGACY_COMMIT_SAFETY_SEMANTICS_UNBOUND
+    assert decision.allowed is True
+    assert _receipt is None
+    assert decision.reason is None
 
 
 @pytest.mark.parametrize("event_schema_version", [4, 5])
-def test_success_before_publication_effect_blocks_with_typed_reason(
+def test_success_before_publication_effect_skips_legacy_audit(
     event_schema_version: int,
 ) -> None:
     schema, contracts, compiled = _packaged()
@@ -339,8 +336,9 @@ def test_success_before_publication_effect_blocks_with_typed_reason(
         existing_receipt=None,
         profile_reconstructable=True,
     )
-    assert decision.allowed is False
-    assert decision.reason == LEGACY_COMMIT_SAFETY_SEMANTICS_UNBOUND
+    assert decision.allowed is True
+    assert _receipt is None
+    assert decision.reason is None
 
 
 def test_receipt_exact_replay_is_idempotent(tmp_path: Path) -> None:
@@ -371,21 +369,33 @@ def test_receipt_exact_replay_is_idempotent(tmp_path: Path) -> None:
         profile_reconstructable=True,
         change_dir=change,
     )
-    assert receipt is not None
+    assert first.allowed is True
+    assert receipt is None
+    built = build_topology_compatibility_receipt(
+        projection=projection,
+        historical_roles=roles,
+        topology_object_id=topology_safety_semantics_object_digest(),
+        topology_digest=topology_safety_semantics_digest(),
+        selected_layers=("api",),
+        reachable_layers=("api",),
+        per_layer_results={"api": "wired"},
+        reachable_set_digest="reachable-1",
+        source_sequence=3,
+    )
     second, again = evaluate_resume_compatibility(
         projection=projection,
         compiled=compiled,
         contracts=contracts,
         historical_roles=roles,
-        existing_receipt=receipt,
+        existing_receipt=built,
         profile_reconstructable=True,
         change_dir=change,
     )
+    assert second.allowed is True
     assert again is None
-    assert second.receipt_id == first.receipt_id == receipt.receipt_id
-    event = receipt_to_event(receipt, checkpoint_ns=projection.checkpoint_ns)
+    event = receipt_to_event(built, checkpoint_ns=projection.checkpoint_ns)
     assert isinstance(event, TopologySafetyCompatibilityRecordedEvent)
-    assert event_to_receipt(event).receipt_id == receipt.receipt_id
+    assert event_to_receipt(event).receipt_id == built.receipt_id
 
 
 def test_receipt_same_identity_different_payload_is_corruption() -> None:
@@ -497,3 +507,23 @@ def test_v6_roots_skip_legacy_audit() -> None:
     assert decision.allowed is True
     assert receipt is None
     assert decision.audit_triggered is False
+
+
+def test_v4_and_v5_skip_legacy_topology_audit_like_v6() -> None:
+    schema, contracts, compiled = _packaged()
+    roles, _ = discover_historical_assurance_roles(schema)
+    for version in (4, 5, 6):
+        decision, receipt = evaluate_resume_compatibility(
+            projection=_projection(
+                event_schema_version=version,
+                tasks=_pending_codegen_tasks(compiled),
+            ),
+            compiled=compiled,
+            contracts=contracts,
+            historical_roles=roles,
+            existing_receipt=None,
+            profile_reconstructable=True,
+        )
+        assert decision.allowed is True
+        assert receipt is None
+        assert decision.audit_triggered is False

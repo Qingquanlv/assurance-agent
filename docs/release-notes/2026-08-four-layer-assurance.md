@@ -27,7 +27,7 @@ Every v6 root/child projection binds these six fields (digests + object IDs):
 - `commit_safety_semantics_digest`
 - `commit_safety_semantics_object_id`
 
-v1–v5 roots remain parseable/displayable. Topology receipts prove topology safety only; they are **not** commit-safety proof. Remaining commit-safety-bearing work on unbound legacy roots blocks with `legacy_commit_safety_semantics_unbound`.
+v1–v5 roots remain parseable/displayable. Topology receipts prove topology safety only; they are **not** commit-safety proof. Same-definition resume skips the legacy topology audit for all schema versions. `legacy_commit_safety_semantics_unbound` remains the typed supersede eligibility reason.
 
 ## Validator IDs
 
@@ -51,7 +51,7 @@ Effects survive success/commit/domain/ack cuts and use independent due-time retr
 ## Legacy resume narrowing and supersede
 
 - Report-only / terminal-only legacy work may continue.
-- Pending assurance commit work on unbound legacy roots stops with `legacy_commit_safety_semantics_unbound`.
+- Same-definition v4/v5 resume continues like v6 (no topology receipt). `legacy_commit_safety_semantics_unbound` remains the typed reason for supersede eligibility.
 - `aa workflow supersede` is the sole audited operator exit, with actions `rerun-v6` (one replacement root) and `stop` (terminal disposition only).
 - Imported-codegen healing is intentionally narrowed: imported codegen roots are not auto-healed (`unverified_imported_codegen`). Non-imported API/E2E codegen can bind ready fixer authority from committed `generated_files_candidate/v1` write sets on the packaged allocate path; a full packaged GraphRuntime E2E healing drive (approval → intent → record) is covered by unit/integration operation proofs, not a single end-to-end healing matrix run.
 

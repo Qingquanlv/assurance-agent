@@ -128,12 +128,9 @@ from assurance_agent.workflow.graph.effect_retry import (
     RootTerminalFenceError,
     parse_rfc3339_z,
 )
-from assurance_agent.workflow.graph.historical_roles import discover_historical_assurance_roles
 from assurance_agent.workflow.graph.resume_compatibility import (
     ResumeCompatibilityDecision,
-    evaluate_resume_compatibility,
     event_to_receipt,
-    receipt_to_event,
 )
 from assurance_agent.workflow.graph.workspace import (
     TaskWorkspace,
@@ -593,31 +590,12 @@ class GraphRuntime:
         context: RuntimeContext,
     ) -> ResumeCompatibilityDecision:
         """Evaluate resume compatibility without appending a new receipt."""
-        if projection.event_schema_version < 4 or projection.event_schema_version >= 6:
-            return ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=True,
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
-            )
-        root_id = projection.parent_invocation_id or projection.invocation_id
-        root_projection = (
-            projection if projection.invocation_id == root_id else self._checkpoints.project(root_id)
+        return ResumeCompatibilityDecision(
+            schema_version="1",
+            allowed=True,
+            event_schema_version=projection.event_schema_version,
+            root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
         )
-        bundle = self._resolve_bundle(root_projection)
-        roles, _issues = discover_historical_assurance_roles(bundle.compiled.schema)
-        existing = self._load_topology_compatibility_receipt(root_id, context.change_dir)
-        profile_ok = self._legacy_profile_reconstructable(root_projection, context.change_dir)
-        decision, _new = evaluate_resume_compatibility(
-            projection=root_projection,
-            compiled=bundle.compiled,
-            contracts=bundle.contracts,
-            historical_roles=roles,
-            existing_receipt=existing,
-            profile_reconstructable=profile_ok,
-            change_dir=context.change_dir,
-        )
-        return decision
 
     def import_checkpoint(
         self,
@@ -1797,38 +1775,13 @@ class GraphRuntime:
         projection: GraphProjection,
         context: RuntimeContext,
     ) -> ResumeCompatibilityDecision:
-        """Audit v4/v5 roots; append/reuse topology receipt; type-block unbound commit safety."""
-        if projection.event_schema_version < 4 or projection.event_schema_version >= 6:
-            return ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=True,
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
-            )
-
-        root_id = projection.parent_invocation_id or projection.invocation_id
-        root_projection = (
-            projection if projection.invocation_id == root_id else self._checkpoints.project(root_id)
+        """Skip topology audit; same-definition resume is allowed for all schema versions."""
+        return ResumeCompatibilityDecision(
+            schema_version="1",
+            allowed=True,
+            event_schema_version=projection.event_schema_version,
+            root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
         )
-        # Load pinned bundle for audit only (no handler dispatch yet).
-        bundle = self._resolve_bundle(root_projection)
-        roles, _issues = discover_historical_assurance_roles(bundle.compiled.schema)
-        existing = self._load_topology_compatibility_receipt(root_id, context.change_dir)
-        profile_ok = self._legacy_profile_reconstructable(root_projection, context.change_dir)
-        decision, new_receipt = evaluate_resume_compatibility(
-            projection=root_projection,
-            compiled=bundle.compiled,
-            contracts=bundle.contracts,
-            historical_roles=roles,
-            existing_receipt=existing,
-            profile_reconstructable=profile_ok,
-            change_dir=context.change_dir,
-        )
-        if new_receipt is not None:
-            event = receipt_to_event(new_receipt, checkpoint_ns=root_projection.checkpoint_ns)
-            with transaction(context.change_dir) as txn:
-                txn.append_strict(event)
-        return decision
 
     def _load_topology_compatibility_receipt(
         self,
