@@ -116,7 +116,7 @@ OPENCODE_SERVER="${OPENCODE_SERVER:-http://127.0.0.1:4096}"
 OPENCODE_BIN="${OPENCODE_BIN:-opencode}"
 OPENCODE_MODEL="${OPENCODE_MODEL:-}"
 if [ -n "$OPENCODE_MODEL" ]; then
-  printf 'ERROR: OPENCODE_MODEL must be empty for the Luna/Terra OpenAI benchmark\n' >&2
+  printf 'ERROR: OPENCODE_MODEL must be empty for the Terra-only OpenAI benchmark\n' >&2
   exit 1
 fi
 OPENCODE_MAX_WORKFLOW_ATTEMPTS="${OPENCODE_MAX_WORKFLOW_ATTEMPTS:-3}"

@@ -1,8 +1,8 @@
-default: openai/gpt-5.6-luna
+default: openai/gpt-5.6-terra
 strict_routes: true
 routes:
-  aa-explore: openai/gpt-5.6-luna
-  aa-fact-baseline: openai/gpt-5.6-luna
+  aa-explore: openai/gpt-5.6-terra
+  aa-fact-baseline: openai/gpt-5.6-terra
 
   aa-case-design: openai/gpt-5.6-terra
   aa-case-fixer: openai/gpt-5.6-terra
@@ -14,27 +14,27 @@ routes:
   aa-performance-plan: openai/gpt-5.6-terra
   aa-coverage-repair: openai/gpt-5.6-terra
 
-  aa-case-reviewer: openai/gpt-5.6-luna
-  aa-api-plan-reviewer: openai/gpt-5.6-luna
-  aa-e2e-plan-reviewer: openai/gpt-5.6-luna
-  aa-fuzz-plan-reviewer: openai/gpt-5.6-luna
-  aa-performance-plan-reviewer: openai/gpt-5.6-luna
+  aa-case-reviewer: openai/gpt-5.6-terra
+  aa-api-plan-reviewer: openai/gpt-5.6-terra
+  aa-e2e-plan-reviewer: openai/gpt-5.6-terra
+  aa-fuzz-plan-reviewer: openai/gpt-5.6-terra
+  aa-performance-plan-reviewer: openai/gpt-5.6-terra
 
-  aa-api-codegen: openai/gpt-5.6-luna
-  aa-api-codegen-fixer: openai/gpt-5.6-luna
-  aa-e2e-codegen: openai/gpt-5.6-luna
-  aa-e2e-codegen-fixer: openai/gpt-5.6-luna
-  aa-fuzz-codegen: openai/gpt-5.6-luna
-  aa-performance-codegen: openai/gpt-5.6-luna
-  aa-fix-proposal: openai/gpt-5.6-luna
-  aa-issue-analyzer: openai/gpt-5.6-luna
-  aa-issue-triage-advisor: openai/gpt-5.6-luna
-  aa-archive: openai/gpt-5.6-luna
+  aa-api-codegen: openai/gpt-5.6-terra
+  aa-api-codegen-fixer: openai/gpt-5.6-terra
+  aa-e2e-codegen: openai/gpt-5.6-terra
+  aa-e2e-codegen-fixer: openai/gpt-5.6-terra
+  aa-fuzz-codegen: openai/gpt-5.6-terra
+  aa-performance-codegen: openai/gpt-5.6-terra
+  aa-fix-proposal: openai/gpt-5.6-terra
+  aa-issue-analyzer: openai/gpt-5.6-terra
+  aa-issue-triage-advisor: openai/gpt-5.6-terra
+  aa-archive: openai/gpt-5.6-terra
 
-  aa-retro-issue-analysis: openai/gpt-5.6-luna
-  aa-retro-workflow-analysis: openai/gpt-5.6-luna
-  aa-retro-eval-analysis: openai/gpt-5.6-luna
-  aa-retro: openai/gpt-5.6-luna
+  aa-retro-issue-analysis: openai/gpt-5.6-terra
+  aa-retro-workflow-analysis: openai/gpt-5.6-terra
+  aa-retro-eval-analysis: openai/gpt-5.6-terra
+  aa-retro: openai/gpt-5.6-terra
   aa-improvement-reviewer: openai/gpt-5.6-terra
 
 escalation:
