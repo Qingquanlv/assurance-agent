@@ -939,10 +939,10 @@ def test_packaged_graph_inspect_before_decide_and_report() -> None:
     schema = _load_packaged_schema()
 
     assurance_edges = _edge_pairs(schema, "assurance")
-    # Task 8 spine: execution → collect-pr-metrics-batch → inspect-with-issues
-    assert ("execution", "collect-pr-metrics-batch") in assurance_edges
-    assert ("collect-pr-metrics-batch", "inspect-with-issues") in assurance_edges
-    assert ("execution", "inspect-with-issues") not in assurance_edges
+    # Task 8 spine: execution (run-tests + collect) → inspect-with-issues
+    assert ("execution", "inspect-with-issues") in assurance_edges
+    assert ("execution", "collect-pr-metrics-batch") not in assurance_edges
+    assert ("collect-pr-metrics-batch", "inspect-with-issues") not in assurance_edges
     assert ("inspect-with-issues", "healing") in assurance_edges
     # After healing: coverage-repair, then materialize authoritative metrics,
     # then metrics gate, then case-evidence adjudication. `report` is reached
@@ -964,9 +964,9 @@ def test_packaged_graph_inspect_before_decide_and_report() -> None:
     assert trace_route.cases["reject"] == "report"
 
     healing_edges = _edge_pairs(schema, "healing")
-    assert ("rerun", "collect-pr-metrics-batch") in healing_edges
-    assert ("collect-pr-metrics-batch", "inspect-with-issues") in healing_edges
-    assert ("rerun", "inspect-with-issues") not in healing_edges
+    assert ("rerun", "inspect-with-issues") in healing_edges
+    assert ("rerun", "collect-pr-metrics-batch") not in healing_edges
+    assert ("collect-pr-metrics-batch", "inspect-with-issues") not in healing_edges
     assert ("inspect-with-issues", "decide") in healing_edges
 
     full_reachable = _reachable_graphs(schema, "full")

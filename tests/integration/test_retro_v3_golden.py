@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
+from tests.helpers_graph_v6 import patch_started_event, v6_started_bindings
 from tests.unit.workflow.graph.test_retro_workflow import (
     EmptyAnalysisInvoker,
     _build_runtime,
@@ -67,6 +68,7 @@ def _seed_structured_archive_cause(events_path: Path) -> None:
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
     seeded = 0
     for event in events:
+        patch_started_event(event)
         report = event.get("gate_report")
         if not isinstance(report, dict):
             continue
@@ -133,6 +135,7 @@ def _install_healthy_fixture(project: Path) -> None:
             "max_parallel_tasks": 1,
             "checkpoint_ns": "inv-healthy",
             "structural_path": "/",
+            **v6_started_bindings(),
         },
         {
             "seq": 2,

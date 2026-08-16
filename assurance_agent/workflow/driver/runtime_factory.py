@@ -27,10 +27,7 @@ from assurance_agent.workflow.graph.compiler import (
     compile_workflow,
 )
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog, load_execution_contracts
-from assurance_agent.workflow.graph.definition_pinning import (
-    load_pinned_execution_definition,
-    request_for_compiled,
-)
+from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
 from assurance_agent.workflow.graph.ingest_catalog import (
     IngestArtifactCatalog,
     model_schema_digest,
@@ -305,22 +302,10 @@ def assemble_graph_runtime(
                 cache[request] = bundle
                 return bundle
 
-            pinned = load_pinned_execution_definition(change_dir, request)
-            pinned_models = validate_ingest_model_map(pinned.ingest_catalog)
-            runner, scheduler = _services_for(
-                pinned.compiled, pinned.contracts, pinned.ingest_catalog, pinned_models
+            raise GraphDefinitionChanged(
+                "graph_definition_changed: live compiled identity does not match "
+                "the invocation pin; start a new invocation"
             )
-            bundle = ResolvedExecutionBundle(
-                request=request,
-                compiled=pinned.compiled,
-                contracts=pinned.contracts,
-                ingest_catalog=pinned.ingest_catalog,
-                model_map=pinned_models,
-                node_runner=runner,
-                scheduler=scheduler,
-            )
-            cache[request] = bundle
-            return bundle
 
         resolve_definition = _resolve_definition
 

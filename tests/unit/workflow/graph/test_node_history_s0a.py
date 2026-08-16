@@ -10,6 +10,7 @@ from assurance_agent.workflow.graph.migrate_events import migrate_graph_event_st
 from assurance_agent.workflow.graph.models import GraphProjection
 from assurance_agent.workflow.graph.node_history import node_history_key
 from assurance_agent.workflow.graph.planner import _next_generation_ordinal
+from tests.helpers_graph_v6 import v6_started_bindings
 
 
 def _started(inv: str = "inv-1") -> dict:
@@ -21,6 +22,7 @@ def _started(inv: str = "inv-1") -> dict:
         "graph_id": "main",
         "graph_digest": "gd-1",
         "contract_digests": {"skill:noop": "cd-1"},
+        **v6_started_bindings(),
         "params": {"run_mode": "full"},
         "params_sha256": "ps-1",
         "root_tree_id": "tree-0",
@@ -39,6 +41,7 @@ def test_migration_backfills_generation_ordinal_on_activate_and_skip() -> None:
             "graph_id": "main",
             "graph_digest": "gd-1",
             "contract_digests": {},
+            **v6_started_bindings(),
             "params": {},
             "params_sha256": "ps",
             "root_tree_id": "tree-0",
@@ -210,7 +213,7 @@ def test_next_generation_ordinal_uses_node_history() -> None:
 def test_invocation_started_maps_ir_digest() -> None:
     projection = fold_invocation_events("inv-1", [_started()])
     assert projection.ir_digest == "gd-1"
-    assert projection.event_schema_version == 1
+    assert projection.event_schema_version == 6
 
 
 def _task_started(node_id: str, task_id: str) -> dict:

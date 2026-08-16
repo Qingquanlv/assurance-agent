@@ -308,7 +308,6 @@ def _collect_referenced_object_ids(slice_model: RootEventSliceV1) -> dict[Object
     for item in slice_model.events:
         event = item.event
         payload = event.model_dump(mode="json")
-        schema_version = int(payload.get("schema_version") or payload.get("event_schema_version") or 0)
 
         # Digests alone are not exportable object IDs. Only explicit object-id /
         # snapshot / receipt / write-set keys participate in the closure.
@@ -336,13 +335,6 @@ def _collect_referenced_object_ids(slice_model: RootEventSliceV1) -> dict[Object
             for value in contracts.values():
                 if isinstance(value, str) and value:
                     wanted["execution_contract"].add(value)
-
-        # Historical sparsity: v6 requires three semantics; older schemas only
-        # contribute kinds they actually pin (already gated by key presence).
-        if schema_version < 6:
-            for kind in ("gate_semantics", "topology_semantics", "commit_safety_semantics"):
-                # Keep only ids already observed on this event; do not invent.
-                pass
 
         if isinstance(event, GraphInvocationStartedEvent):
             pass

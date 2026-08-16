@@ -110,7 +110,7 @@ aa workflow run --change <id> --entrypoint full --adapter opencode --server http
 | `aa heal ...` | Healing 支持命令（fix-proposal 校验等） |
 | `aa workflow run --change <id> --entrypoint full\|intake\|execute\|case\|archive\|retro --adapter opencode\|headless [...]` | GraphRuntime 主循环；退出码 0 completed / 20 stopped / 30 interrupted / 40 error |
 | `aa workflow run --detach ...` | detached 后台启动（OpenCode `workflow_start`；立刻返回启动成败） |
-| `aa workflow resume --change <id> [--interrupt <id> --action <a> --reason <text>]` | 续跑或解决 interrupt；unbound legacy commit-safety work may return `legacy_commit_safety_semantics_unbound` |
+| `aa workflow resume --change <id> [--interrupt <id> --action <a> --reason <text>]` | 续跑或解决 interrupt；same-definition resume skips the legacy topology audit for all schema versions |
 | `aa workflow import-checkpoint --change <id> --manifest <path>` | 校验后导入 fixture/benchmark checkpoint |
 | `aa workflow supersede --change <id> --action rerun-v6\|stop --who <who> --reason <text>` | Sole audited legacy exit: `rerun-v6` starts one replacement root; `stop` is terminal only |
 | `aa skill refresh [--sync-agents] [--dry-run]` | 同步 skills 到 `skills/`（始终）；`--sync-agents` 追加 `.opencode/{agents,tools,plugins}` |

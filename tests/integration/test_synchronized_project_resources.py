@@ -382,6 +382,7 @@ def test_two_changes_apply_exact_synchronized_updates_without_lost_events(
 ) -> None:
     from assurance_agent.workflow.core.events import append_event_strict
     from assurance_agent.workflow.graph.workspace import TreeStore
+    from tests.helpers_graph_v6 import v6_started_bindings
 
     project = tmp_path / "project"
     issue = project / "qa/issues/ISSUE-1.json"
@@ -412,6 +413,7 @@ def test_two_changes_apply_exact_synchronized_updates_without_lost_events(
                 "max_parallel_tasks": 1,
                 "checkpoint_ns": invocation_id,
                 "structural_path": "main",
+                **v6_started_bindings(),
             },
         )
         bases[change_id] = (invocation_id, tree_id)

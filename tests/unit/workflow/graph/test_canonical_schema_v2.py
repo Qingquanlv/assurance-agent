@@ -149,8 +149,9 @@ EXPECTED_CONTRACTS = {
     "operation:reconcile-issues",
     # Reconciled trace projection + the independent trace-sufficiency gate
     "operation:materialize-trace-projection",
-    # Dual-source Lane B gap signals (graph wiring deferred)
+    # Dual-source Lane B gap signals (callable + contract; inspect folds them into materialize)
     "operation:build-coverage-gap-signals",
+    "operation:materialize-trace-and-coverage-gaps",
     # Deterministic MRC × execution join (metrics M1 Task 5; graph wiring deferred)
     "operation:materialize-minimum-coverage",
     # PR cadence collectors (metrics M1 Task 6; graph wiring deferred)
@@ -163,6 +164,7 @@ EXPECTED_CONTRACTS = {
     "operation:materialize-c-layer-metrics",
     # PR metrics aggregate + single authoritative write (metrics M1 Task 7/8)
     "operation:collect-pr-metrics-batch",
+    "operation:run-tests-and-collect-pr-metrics",
     "operation:materialize-pr-metrics",
     # Nightly metrics carrier (metrics M2 Task 1; collectors stubbed for later tasks)
     "operation:load-latest-pr-metrics",
@@ -172,6 +174,7 @@ EXPECTED_CONTRACTS = {
     "operation:collect-adversarial-yield",
     "operation:aggregate-nightly-metrics",
     "operation:evaluate-retrospective-shortboards",
+    "operation:run-nightly-metrics-pipeline",
     # Issue review (Task 12)
     "operation:load-problem-review-context",
     "operation:apply-problem-review",
@@ -934,15 +937,16 @@ def test_improvement_reviewer_receives_only_bound_canonical_and_agent_subject() 
 
 
 def test_assurance_uses_inspect_with_issues_subgraph() -> None:
-    """execution → collect → inspect → healing → coverage-repair → materialize → metrics → trace."""
+    """execution → inspect → healing → coverage-repair → materialize → metrics → trace."""
     compiled, _ = _load_compiled()
     assurance = compiled.schema.graphs["assurance"]
     # The assurance graph calls inspect-with-issues as a subgraph, not directly.
     assert assurance.nodes["inspect-with-issues"].uses == "graph:inspect-with-issues"
     assert "inspect" not in assurance.nodes  # old direct inspect node is gone
     edge_pairs = {(e.from_, e.to) for e in assurance.edges}
-    assert ("execution", "collect-pr-metrics-batch") in edge_pairs
-    assert ("collect-pr-metrics-batch", "inspect-with-issues") in edge_pairs
+    assert ("execution", "inspect-with-issues") in edge_pairs
+    assert "collect-pr-metrics-batch" not in assurance.nodes
+    assert assurance.nodes["execution"].uses == "operation:run-tests-and-collect-pr-metrics"
     assert ("inspect-with-issues", "healing") in edge_pairs
     assert ("healing", "coverage-repair") in edge_pairs
     assert ("coverage-repair", "materialize-pr-metrics") in edge_pairs
@@ -950,6 +954,7 @@ def test_assurance_uses_inspect_with_issues_subgraph() -> None:
     assert ("materialize-pr-metrics", "metrics-sufficiency") in edge_pairs
     assert ("healing", "report") not in edge_pairs
     assert ("healing", "trace-sufficiency") not in edge_pairs
+    assert "materialize-pr-metrics" in assurance.nodes
 
 
 def test_assurance_report_uses_deterministic_report_operation() -> None:
@@ -964,15 +969,28 @@ def test_assurance_report_uses_deterministic_report_operation() -> None:
 
 
 def test_healing_uses_inspect_with_issues_subgraph() -> None:
-    """healing.rerun → collect-pr-metrics-batch → inspect-with-issues → decide."""
+    """healing.rerun → inspect-with-issues → decide."""
     compiled, _ = _load_compiled()
     healing = compiled.schema.graphs["healing"]
     assert healing.nodes["inspect-with-issues"].uses == "graph:inspect-with-issues"
     assert "reinspect" not in healing.nodes  # old direct reinspect node is gone
-    edge_pairs = {(e.from_, e.to) for e in healing.edges}
-    assert ("rerun", "collect-pr-metrics-batch") in edge_pairs
-    assert ("collect-pr-metrics-batch", "inspect-with-issues") in edge_pairs
-    assert ("inspect-with-issues", "decide") in edge_pairs
+    healing_edge_pairs = {(e.from_, e.to) for e in healing.edges}
+    assert ("rerun", "inspect-with-issues") in healing_edge_pairs
+    assert "collect-pr-metrics-batch" not in healing.nodes
+    assert healing.nodes["rerun"].uses == "operation:run-tests-and-collect-pr-metrics"
+    assert ("inspect-with-issues", "decide") in healing_edge_pairs
+    assert "materialize-pr-metrics" not in healing.nodes
+
+
+def test_coverage_repair_uses_inspect_with_issues_subgraph() -> None:
+    """coverage-repair.rerun → inspect-with-issues; collect is folded into rerun."""
+    compiled, _ = _load_compiled()
+    coverage_repair = compiled.schema.graphs["coverage-repair"]
+    coverage_edge_pairs = {(e.from_, e.to) for e in coverage_repair.edges}
+    assert ("rerun", "inspect-with-issues") in coverage_edge_pairs
+    assert "collect-pr-metrics-batch" not in coverage_repair.nodes
+    assert coverage_repair.nodes["rerun"].uses == "operation:run-tests-and-collect-pr-metrics"
+    assert "materialize-pr-metrics" not in coverage_repair.nodes
 
 
 def test_run_tests_false_skips_execution_and_issue_subgraph(tmp_path: Path) -> None:
@@ -995,10 +1013,12 @@ def test_inspect_with_issues_subgraph_structure() -> None:
     assert g.nodes["analyze-issues"].uses == "skill:aa-issue-analyzer"
     assert g.nodes["record-empty-analysis"].uses == "operation:record-empty-issue-analysis"
     assert g.nodes["reconcile-issues"].uses == "operation:reconcile-issues"
-    assert g.nodes["materialize-trace-projection"].uses == "operation:materialize-trace-projection"
+    assert "build-coverage-gap-signals" not in g.nodes
+    assert g.nodes["materialize-trace-projection"].uses == "operation:materialize-trace-and-coverage-gaps"
     assert set(g.nodes["materialize-trace-projection"].outputs) == {
         "change:inspect/trace-projection.json",
         "change:inspect/trace-sufficiency.json",
+        "change:inspect/coverage-gaps.json",
     }
     assert g.nodes["record-analysis-failure"].uses == "operation:record-issue-analysis-failure"
     assert g.nodes["record-project-sync-pending"].uses == "operation:record-project-sync-pending"
@@ -1083,10 +1103,9 @@ def test_inspect_with_issues_both_analysis_paths_reach_reconcile() -> None:
     assert ("analyze-issues", "reconcile-issues") in edge_pairs
     # record-empty-analysis -> reconcile-issues
     assert ("record-empty-analysis", "reconcile-issues") in edge_pairs
-    # reconcile-issues -> the reconciled projection -> completion
+    # reconcile-issues -> the reconciled projection (plus coverage gaps) -> completion
     assert ("reconcile-issues", "materialize-trace-projection") in edge_pairs
-    assert ("materialize-trace-projection", "build-coverage-gap-signals") in edge_pairs
-    assert ("build-coverage-gap-signals", "inspect-complete") in edge_pairs
+    assert ("materialize-trace-projection", "inspect-complete") in edge_pairs
     assert ("reconcile-issues", "inspect-complete") not in edge_pairs
     # inspect-complete -> END
     assert ("inspect-complete", "END") in edge_pairs
@@ -1147,13 +1166,12 @@ def test_schema_and_contract_digests_stable_across_two_loads() -> None:
 
 EXPECTED_TRACE_TERMINALS = {
     "inspect-with-issues": {
-        # HEAD inserts coverage-gap signals between materialize and complete.
-        "ordinary": ("reconcile-issues", "materialize-trace-projection", "build-coverage-gap-signals"),
+        "ordinary": ("reconcile-issues", "materialize-trace-projection", "inspect-complete"),
         "recoveries": {
             "analyze-issues": ("record-analysis-failure", "materialize-trace-projection"),
             "reconcile-issues": ("record-project-sync-pending", "materialize-trace-projection"),
         },
-        "successor": "build-coverage-gap-signals",
+        "successor": "inspect-complete",
     },
     "issue-analyze-workflow": {
         "ordinary": ("reconcile-issues", "materialize-trace-projection", "END"),
@@ -1193,11 +1211,13 @@ def assert_trace_terminal_invariants(compiled: CompiledWorkflow) -> None:
     for graph_id, expected in EXPECTED_TRACE_TERMINALS.items():
         graph = compiled.schema.graphs[graph_id]
         materializer = graph.nodes[_MATERIALIZER]
-        assert materializer.uses == "operation:materialize-trace-projection"
         expected_outputs = {"change:inspect/trace-projection.json"}
         if graph_id == "inspect-with-issues":
-            # Feature-branch inspect path still publishes sufficiency facts here.
+            assert materializer.uses == "operation:materialize-trace-and-coverage-gaps"
             expected_outputs.add("change:inspect/trace-sufficiency.json")
+            expected_outputs.add("change:inspect/coverage-gaps.json")
+        else:
+            assert materializer.uses == "operation:materialize-trace-projection"
         assert set(materializer.outputs) == expected_outputs
 
         ordinary = expected["ordinary"]

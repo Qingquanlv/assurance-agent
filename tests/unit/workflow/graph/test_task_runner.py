@@ -901,6 +901,7 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:verify-plan-mechanical",
         "operation:derive-plan-layer-applicability",
         "operation:run-tests",
+        "operation:run-tests-and-collect-pr-metrics",
         "operation:allocate-healing-attempt",
         "operation:fixer-authority-ready",
         "operation:record-fixer-approval",
@@ -971,11 +972,13 @@ def test_default_operations_registry_has_exact_keys() -> None:
         "operation:compute-baseline-drift",
         "operation:aggregate-nightly-metrics",
         "operation:evaluate-retrospective-shortboards",
+        "operation:run-nightly-metrics-pipeline",
         # Adversarial discovery yield + flaky quarantine (metrics M3 Tasks 2/4)
         "operation:collect-adversarial-yield",
         "operation:materialize-quarantine-projection",
         # Dual-source Lane B gap signals and the report-only C-layer aggregate (M4)
         "operation:build-coverage-gap-signals",
+        "operation:materialize-trace-and-coverage-gaps",
         "operation:materialize-c-layer-metrics",
     }
 

@@ -29,11 +29,8 @@ def build_graph_interrupted_event(
     parent_anchor_ref: str | None = None,
 ) -> GraphInterruptedEvent:
     ns = checkpoint_ns if checkpoint_ns is not None else interrupt.checkpoint_ns
-    anchor = (
-        interrupt_anchor(invocation_id=task.invocation_id, checkpoint_ns=ns, interrupt=interrupt)
-        if event_schema_version >= 3
-        else None
-    )
+    del event_schema_version
+    anchor = interrupt_anchor(invocation_id=task.invocation_id, checkpoint_ns=ns, interrupt=interrupt)
     return GraphInterruptedEvent(
         type="graph_interrupted",
         invocation_id=task.invocation_id,

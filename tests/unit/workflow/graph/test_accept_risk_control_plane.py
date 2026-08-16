@@ -105,6 +105,8 @@ def _project(tmp_path: Path) -> Path:
         json.dumps({"decision": "needs_human_review"}), encoding="utf-8"
     )
     write_aa_config(project)
+    store = TreeStore(change_dir)
+    (change_dir / ".source-tree-id").write_text(store.capture(project), encoding="utf-8")
     return project
 
 
@@ -116,6 +118,13 @@ def _context(project: Path) -> RuntimeContext:
         change_id="CH-1",
         params={},
     )
+
+
+def _source_tree_id(change_dir: Path) -> str | None:
+    marker = change_dir / ".source-tree-id"
+    if not marker.exists():
+        return None
+    return marker.read_text(encoding="utf-8")
 
 
 def _workspace(project: Path, task_id: str) -> TaskWorkspace:
@@ -181,6 +190,8 @@ def _append_acceptance(
 ) -> None:
     digest = audited_digest or canonical_digest({"decision": "needs_human_review"})
     audited = audited_hashes or {"review/leaf.json": digest}
+    if source_gate_attempt_id is not None and source_gate_tree_id is None:
+        source_gate_tree_id = _source_tree_id(change_dir)
     layers = _layer_namespaces(full_ns)
     interrupted_events: list[dict[str, object]] = []
     for invocation_id, _, node_id in layers:
@@ -257,6 +268,90 @@ def _append_acceptance(
         if resume_before_interrupt
         else [*interrupted_events, *resumed_events]
     )
+    invocation_id = layers[0][0] if layers else full_ns.split("/")[0]
+    if source_gate_attempt_id is not None and source_gate_tree_id is not None:
+        from tests.helpers_graph_v6 import v6_started_bindings
+
+        append_event_strict(
+            change_dir,
+            {
+                "source": "graph",
+                "type": "graph_invocation_started",
+                "invocation_id": invocation_id,
+                "entrypoint": "full",
+                "graph_id": "main",
+                "graph_digest": "dg",
+                "contract_digests": {},
+                **v6_started_bindings(),
+                "params": {},
+                "params_sha256": "",
+                "root_tree_id": source_gate_tree_id,
+                "max_parallel_tasks": 1,
+                "checkpoint_ns": invocation_id,
+                "structural_path": "main",
+            },
+        )
+        append_event_strict(
+            change_dir,
+            {
+                "source": "graph",
+                "type": "superstep_planned",
+                "invocation_id": invocation_id,
+                "checkpoint_ns": invocation_id,
+                "superstep_id": "ss-1",
+                "checkpoint_id": "cp-0",
+                "task_ids": ["gate-task"],
+            },
+        )
+        append_event_strict(
+            change_dir,
+            {
+                "source": "graph",
+                "type": "node_activated",
+                "invocation_id": invocation_id,
+                "checkpoint_ns": invocation_id,
+                "graph_id": "main",
+                "node_id": "precheck",
+                "generation_ordinal": 0,
+                "activation_id": "precheck-g0",
+                "input_sha256": "in-1",
+                "source_reads_sha256": {},
+            },
+        )
+        append_event_strict(
+            change_dir,
+            {
+                "source": "graph",
+                "type": "task_attempt_started",
+                "invocation_id": invocation_id,
+                "checkpoint_ns": invocation_id,
+                "superstep_id": "ss-1",
+                "task_id": "gate-task",
+                "attempt_id": source_gate_attempt_id,
+                "node_id": "precheck",
+                "input_sha256": "in-1",
+                "graph_digest": "dg",
+                "contract_digest": "cd-1",
+                "attempt_number": 1,
+                "lease_expires_at": "2026-07-19T00:00:00+00:00",
+                "started_at": "2026-07-19T00:00:00+00:00",
+            },
+        )
+        append_event_strict(
+            change_dir,
+            {
+                "source": "graph",
+                "type": "task_attempt_succeeded",
+                "invocation_id": invocation_id,
+                "checkpoint_ns": full_ns,
+                "superstep_id": "ss-1",
+                "task_id": "gate-task",
+                "attempt_id": source_gate_attempt_id,
+                "write_set_id": "ws-1",
+                "outputs_sha256": {},
+                "gate_report": {"gate_id": checkpoint, "verdict": "needs_human_review"},
+            },
+        )
     for event in ordered_events:
         append_event_strict(change_dir, event)
 
@@ -338,6 +433,7 @@ def test_later_unrelated_root_does_not_shadow_the_current_roots_acceptance(tmp_p
         full_ns="current-root",
         interrupt_id="current-interrupt",
         audited_digest=digest,
+        source_gate_attempt_id="ga-1",
     )
     _append_acceptance(
         _context(project).change_dir,
@@ -512,6 +608,7 @@ def test_nested_ancestor_acceptance_is_projected_without_rewriting_findings_as_p
         _context(project).change_dir,
         full_ns="root/mid/mid-inv/review/review-inv",
         audited_digest=_actual_review_digest(project),
+        source_gate_attempt_id="ga-1",
     )
 
     prompt = _agent_prompt(project, checkpoint_ns="root/mid/mid-inv/codegen/codegen-inv")
@@ -527,10 +624,12 @@ def test_gate_reference_applies_acceptance_to_a_frozen_attached_gate_report(
     tmp_path: Path,
 ) -> None:
     project = _project(tmp_path)
+    change_dir = _context(project).change_dir
     _append_acceptance(
-        _context(project).change_dir,
+        change_dir,
         full_ns="root",
         audited_digest=_actual_review_digest(project),
+        source_gate_attempt_id="ga-1",
     )
     frozen_gate = {
         "gate_id": "leaf-gate",
@@ -540,13 +639,15 @@ def test_gate_reference_applies_acceptance_to_a_frozen_attached_gate_report(
     context = GateEvaluationContext(
         project_root=project,
         repo_root=project,
-        change_dir=_context(project).change_dir,
+        change_dir=change_dir,
         change_id="CH-1",
         params={},
         state_values={},
         node_results={"review": {"gate": frozen_gate}},
-        audit_events_dir=_context(project).change_dir,
+        audit_events_dir=change_dir,
         checkpoint_ns="root",
+        committed_tree_id=_source_tree_id(change_dir),
+        invocation_id="root",
     )
 
     report = check_gate_in_view(_compiled().schema.gates, "referring-gate", context)
@@ -698,7 +799,7 @@ def test_packaged_codegen_precondition_accepts_exact_risk_without_dropping_hard_
         audit_events_dir=change_dir,
         checkpoint_ns=f"root/{layer}/{layer}-inv",
         invocation_id=f"{layer}-inv",
-        event_schema_version=5,
+        event_schema_version=6,
         committed_tree_id="tree-1",
     )
     gates = load_workflow_v2(Path.cwd()).gates

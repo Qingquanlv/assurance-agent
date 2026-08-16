@@ -124,7 +124,9 @@ def request_for_compiled(
     profile_digest: str | None = None,
 ) -> PinnedDefinitionRequest:
     """Build a pinned definition request from a compiled workflow identity."""
-    v6 = current_v6_semantic_identity() if event_schema_version >= 6 else None
+    if event_schema_version != 6:
+        raise PolicyError("only event_schema_version 6 definition requests are supported")
+    v6 = current_v6_semantic_identity()
     return PinnedDefinitionRequest(
         graph_digest=compiled.digest,
         ingest_catalog_digest=compiled.ingest_catalog_digest,
@@ -191,31 +193,26 @@ def commit_safety_semantics_snapshot_relpath(object_id: str) -> str:
 
 
 def is_definition_binding_replayable(projection: GraphProjection) -> bool:
-    if projection.event_schema_version < 4:
+    if projection.event_schema_version != 6:
         return False
-    if not (
+    return bool(
         projection.policy_digest
         and projection.policy_origin
         and projection.gate_semantics_digest
         and projection.assurance_profile_digest
-    ):
-        return False
-    if projection.event_schema_version >= 6:
-        return bool(
-            projection.gate_semantics_object_id
-            and projection.topology_safety_semantics_object_id
-            and projection.topology_safety_semantics_digest
-            and projection.commit_safety_semantics_object_id
-            and projection.commit_safety_semantics_digest
-        )
-    return True
+        and projection.gate_semantics_object_id
+        and projection.topology_safety_semantics_object_id
+        and projection.topology_safety_semantics_digest
+        and projection.commit_safety_semantics_object_id
+        and projection.commit_safety_semantics_digest
+    )
 
 
 def bind_root_definitions(
     *,
     store: TreeStore,
     root_tree_id: str,
-    event_schema_version: int = 4,
+    event_schema_version: int = 6,
 ) -> InvocationDefinitionBinding:
     origin = f"tree {root_tree_id}:{_POLICY_LOGICAL_PATH}"
     try:
@@ -226,6 +223,8 @@ def bind_root_definitions(
         raise PolicyError(f"cannot read {origin}: {exc}") from exc
     else:
         snap = load_policy_snapshot_bytes(data, origin="project")
+    if event_schema_version != 6:
+        raise PolicyError("only event_schema_version 6 root bindings are supported")
     return _binding_from_snapshot(snap, event_schema_version=event_schema_version)
 
 
@@ -235,39 +234,35 @@ def inherit_child_definitions(
     change_dir: Path,
 ) -> InvocationDefinitionBinding:
     """Inherit exact parent definition bindings without assurance classification."""
+    if parent.event_schema_version != 6:
+        raise PolicyError("only event_schema_version 6 parent bindings can be inherited")
     if not parent.policy_digest:
         raise PolicyError("parent invocation has no pinned policy digest")
-    profile_bytes: bytes | None = None
-    if parent.event_schema_version >= 5:
-        profile_bytes = _read_pinned_profile_bytes(change_dir, parent.assurance_profile_digest)
-    gate_bytes: bytes | None = None
-    topology_bytes: bytes | None = None
-    commit_bytes: bytes | None = None
-    if parent.event_schema_version >= 6:
-        gate_bytes = _read_pinned_semantics_bytes(
-            change_dir,
-            gate_semantics_snapshot_relpath(parent.gate_semantics_object_id),
-            object_id=parent.gate_semantics_object_id,
-            semantic_digest=parent.gate_semantics_digest,
-            semantics_id=GATE_SEMANTICS_ID,
-            label="gate semantics",
-        )
-        topology_bytes = _read_pinned_semantics_bytes(
-            change_dir,
-            topology_semantics_snapshot_relpath(parent.topology_safety_semantics_object_id),
-            object_id=parent.topology_safety_semantics_object_id,
-            semantic_digest=parent.topology_safety_semantics_digest,
-            semantics_id=TOPOLOGY_SAFETY_SEMANTICS_ID,
-            label="topology semantics",
-        )
-        commit_bytes = _read_pinned_semantics_bytes(
-            change_dir,
-            commit_safety_semantics_snapshot_relpath(parent.commit_safety_semantics_object_id),
-            object_id=parent.commit_safety_semantics_object_id,
-            semantic_digest=parent.commit_safety_semantics_digest,
-            semantics_id=COMMIT_SAFETY_SEMANTICS_ID,
-            label="commit-safety semantics",
-        )
+    profile_bytes = _read_pinned_profile_bytes(change_dir, parent.assurance_profile_digest)
+    gate_bytes = _read_pinned_semantics_bytes(
+        change_dir,
+        gate_semantics_snapshot_relpath(parent.gate_semantics_object_id),
+        object_id=parent.gate_semantics_object_id,
+        semantic_digest=parent.gate_semantics_digest,
+        semantics_id=GATE_SEMANTICS_ID,
+        label="gate semantics",
+    )
+    topology_bytes = _read_pinned_semantics_bytes(
+        change_dir,
+        topology_semantics_snapshot_relpath(parent.topology_safety_semantics_object_id),
+        object_id=parent.topology_safety_semantics_object_id,
+        semantic_digest=parent.topology_safety_semantics_digest,
+        semantics_id=TOPOLOGY_SAFETY_SEMANTICS_ID,
+        label="topology semantics",
+    )
+    commit_bytes = _read_pinned_semantics_bytes(
+        change_dir,
+        commit_safety_semantics_snapshot_relpath(parent.commit_safety_semantics_object_id),
+        object_id=parent.commit_safety_semantics_object_id,
+        semantic_digest=parent.commit_safety_semantics_digest,
+        semantics_id=COMMIT_SAFETY_SEMANTICS_ID,
+        label="commit-safety semantics",
+    )
     binding = InvocationDefinitionBinding(
         event_schema_version=parent.event_schema_version,
         policy_digest=parent.policy_digest,
@@ -341,25 +336,26 @@ def stage_pinned_definitions(
             assurance_profile_snapshot_relpath(binding.assurance_profile_digest),
             binding.assurance_profile_bytes,
         )
-    if binding.event_schema_version >= 6:
-        if (
-            binding.gate_semantics_bytes is None
-            or binding.topology_safety_semantics_bytes is None
-            or binding.commit_safety_semantics_bytes is None
-        ):
-            raise PolicyError("v6 definition binding requires staged semantics object bytes")
-        txn.write_runtime_file_once(
-            gate_semantics_snapshot_relpath(binding.gate_semantics_object_id),
-            binding.gate_semantics_bytes,
-        )
-        txn.write_runtime_file_once(
-            topology_semantics_snapshot_relpath(binding.topology_safety_semantics_object_id),
-            binding.topology_safety_semantics_bytes,
-        )
-        txn.write_runtime_file_once(
-            commit_safety_semantics_snapshot_relpath(binding.commit_safety_semantics_object_id),
-            binding.commit_safety_semantics_bytes,
-        )
+    if binding.event_schema_version != 6:
+        raise PolicyError("only event_schema_version 6 definition bindings can be staged")
+    if (
+        binding.gate_semantics_bytes is None
+        or binding.topology_safety_semantics_bytes is None
+        or binding.commit_safety_semantics_bytes is None
+    ):
+        raise PolicyError("v6 definition binding requires staged semantics object bytes")
+    txn.write_runtime_file_once(
+        gate_semantics_snapshot_relpath(binding.gate_semantics_object_id),
+        binding.gate_semantics_bytes,
+    )
+    txn.write_runtime_file_once(
+        topology_semantics_snapshot_relpath(binding.topology_safety_semantics_object_id),
+        binding.topology_safety_semantics_bytes,
+    )
+    txn.write_runtime_file_once(
+        commit_safety_semantics_snapshot_relpath(binding.commit_safety_semantics_object_id),
+        binding.commit_safety_semantics_bytes,
+    )
 
 
 def verify_pinned_definitions(binding: InvocationDefinitionBinding, change_dir: Path) -> None:
@@ -370,51 +366,51 @@ def verify_pinned_definitions(binding: InvocationDefinitionBinding, change_dir: 
         and binding.assurance_profile_digest
     ):
         raise PolicyError("definition binding is incomplete for replay")
+    if binding.event_schema_version != 6:
+        raise PolicyError("only event_schema_version 6 definition bindings can be verified")
     _read_pinned_policy_bytes(change_dir, binding.policy_digest)
-    if binding.event_schema_version >= 5:
-        if binding.assurance_profile_bytes is None:
-            raise PolicyError("v5 definition binding requires assurance profile snapshot bytes")
-        pinned = _read_pinned_profile_bytes(change_dir, binding.assurance_profile_digest)
-        if pinned != binding.assurance_profile_bytes:
-            raise PolicyError("assurance profile snapshot bytes do not match binding")
-    if binding.event_schema_version >= 6:
-        _verify_v6_binding_fields(binding)
-        if (
-            binding.gate_semantics_bytes is None
-            or binding.topology_safety_semantics_bytes is None
-            or binding.commit_safety_semantics_bytes is None
-        ):
-            raise PolicyError("v6 definition binding requires semantics object bytes")
-        gate_pinned = _read_pinned_semantics_bytes(
-            change_dir,
-            gate_semantics_snapshot_relpath(binding.gate_semantics_object_id),
-            object_id=binding.gate_semantics_object_id,
-            semantic_digest=binding.gate_semantics_digest,
-            semantics_id=GATE_SEMANTICS_ID,
-            label="gate semantics",
-        )
-        if gate_pinned != binding.gate_semantics_bytes:
-            raise PolicyError("gate semantics object bytes do not match binding")
-        topology_pinned = _read_pinned_semantics_bytes(
-            change_dir,
-            topology_semantics_snapshot_relpath(binding.topology_safety_semantics_object_id),
-            object_id=binding.topology_safety_semantics_object_id,
-            semantic_digest=binding.topology_safety_semantics_digest,
-            semantics_id=TOPOLOGY_SAFETY_SEMANTICS_ID,
-            label="topology semantics",
-        )
-        if topology_pinned != binding.topology_safety_semantics_bytes:
-            raise PolicyError("topology semantics object bytes do not match binding")
-        commit_pinned = _read_pinned_semantics_bytes(
-            change_dir,
-            commit_safety_semantics_snapshot_relpath(binding.commit_safety_semantics_object_id),
-            object_id=binding.commit_safety_semantics_object_id,
-            semantic_digest=binding.commit_safety_semantics_digest,
-            semantics_id=COMMIT_SAFETY_SEMANTICS_ID,
-            label="commit-safety semantics",
-        )
-        if commit_pinned != binding.commit_safety_semantics_bytes:
-            raise PolicyError("commit-safety semantics object bytes do not match binding")
+    if binding.assurance_profile_bytes is None:
+        raise PolicyError("v6 definition binding requires assurance profile snapshot bytes")
+    pinned = _read_pinned_profile_bytes(change_dir, binding.assurance_profile_digest)
+    if pinned != binding.assurance_profile_bytes:
+        raise PolicyError("assurance profile snapshot bytes do not match binding")
+    _verify_v6_binding_fields(binding)
+    if (
+        binding.gate_semantics_bytes is None
+        or binding.topology_safety_semantics_bytes is None
+        or binding.commit_safety_semantics_bytes is None
+    ):
+        raise PolicyError("v6 definition binding requires semantics object bytes")
+    gate_pinned = _read_pinned_semantics_bytes(
+        change_dir,
+        gate_semantics_snapshot_relpath(binding.gate_semantics_object_id),
+        object_id=binding.gate_semantics_object_id,
+        semantic_digest=binding.gate_semantics_digest,
+        semantics_id=GATE_SEMANTICS_ID,
+        label="gate semantics",
+    )
+    if gate_pinned != binding.gate_semantics_bytes:
+        raise PolicyError("gate semantics object bytes do not match binding")
+    topology_pinned = _read_pinned_semantics_bytes(
+        change_dir,
+        topology_semantics_snapshot_relpath(binding.topology_safety_semantics_object_id),
+        object_id=binding.topology_safety_semantics_object_id,
+        semantic_digest=binding.topology_safety_semantics_digest,
+        semantics_id=TOPOLOGY_SAFETY_SEMANTICS_ID,
+        label="topology semantics",
+    )
+    if topology_pinned != binding.topology_safety_semantics_bytes:
+        raise PolicyError("topology semantics object bytes do not match binding")
+    commit_pinned = _read_pinned_semantics_bytes(
+        change_dir,
+        commit_safety_semantics_snapshot_relpath(binding.commit_safety_semantics_object_id),
+        object_id=binding.commit_safety_semantics_object_id,
+        semantic_digest=binding.commit_safety_semantics_digest,
+        semantics_id=COMMIT_SAFETY_SEMANTICS_ID,
+        label="commit-safety semantics",
+    )
+    if commit_pinned != binding.commit_safety_semantics_bytes:
+        raise PolicyError("commit-safety semantics object bytes do not match binding")
 
 
 @lru_cache(maxsize=1)
@@ -437,24 +433,26 @@ def current_v6_semantic_identity() -> _V6SemanticIdentity:
 
 
 def _binding_from_snapshot(snap: PolicySnapshot, *, event_schema_version: int) -> InvocationDefinitionBinding:
-    profile_data = assurance_profile_bytes() if event_schema_version >= 5 else None
-    v6 = current_v6_semantic_identity() if event_schema_version >= 6 else None
+    if event_schema_version != 6:
+        raise PolicyError("only event_schema_version 6 snapshot bindings are supported")
+    profile_data = assurance_profile_bytes()
+    v6 = current_v6_semantic_identity()
     return InvocationDefinitionBinding(
         event_schema_version=event_schema_version,
         policy_digest=snap.digest,
         policy_origin=snap.origin,
         policy_bytes=snap.canonical_bytes,
-        gate_semantics_digest=gate_semantics_digest() if v6 is None else v6.gate_digest,
+        gate_semantics_digest=v6.gate_digest,
         assurance_profile_digest=assurance_profile_digest(),
         assurance_profile_bytes=profile_data,
-        gate_semantics_object_id="" if v6 is None else v6.gate_object_id,
-        gate_semantics_bytes=None if v6 is None else v6.gate_bytes,
-        topology_safety_semantics_object_id="" if v6 is None else v6.topology_object_id,
-        topology_safety_semantics_digest="" if v6 is None else v6.topology_digest,
-        topology_safety_semantics_bytes=None if v6 is None else v6.topology_bytes,
-        commit_safety_semantics_object_id="" if v6 is None else v6.commit_object_id,
-        commit_safety_semantics_digest="" if v6 is None else v6.commit_digest,
-        commit_safety_semantics_bytes=None if v6 is None else v6.commit_bytes,
+        gate_semantics_object_id=v6.gate_object_id,
+        gate_semantics_bytes=v6.gate_bytes,
+        topology_safety_semantics_object_id=v6.topology_object_id,
+        topology_safety_semantics_digest=v6.topology_digest,
+        topology_safety_semantics_bytes=v6.topology_bytes,
+        commit_safety_semantics_object_id=v6.commit_object_id,
+        commit_safety_semantics_digest=v6.commit_digest,
+        commit_safety_semantics_bytes=v6.commit_bytes,
     )
 
 

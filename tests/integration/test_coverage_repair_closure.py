@@ -340,6 +340,7 @@ def _stub_post_repair_ops(
 
     return {
         "operation:run-tests": run_tests,
+        "operation:run-tests-and-collect-pr-metrics": run_tests,
         "operation:collect-pr-metrics-batch": collect,
     }
 

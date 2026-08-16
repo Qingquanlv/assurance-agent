@@ -1290,21 +1290,6 @@ bad_child:
     assert interrupted.exit_code == 30
     assert marker.read_text(encoding="utf-8") == "previous benchmark item\n"
 
-    assurance_started = next(
-        event
-        for event in read_events_strict(_context(project).change_dir)
-        if event.get("type") == "graph_invocation_started" and event.get("graph_id") == "assurance"
-    )
-    assurance_projection = runtime._checkpoints.project(  # noqa: SLF001
-        str(assurance_started["invocation_id"])
-    )
-    runtime._scheduler_for(assurance_projection)._repair_ordinary_materialization(  # noqa: SLF001
-        assurance_projection,
-        _context(project),
-        {},
-    )
-    assert marker.read_text(encoding="utf-8") == "marker\n"
-
     del runtime
     gc.collect()
     runtime = _build_runtime(project, compiled, contracts, ops=_ops())
@@ -1811,7 +1796,7 @@ def test_build_graph_interrupted_event_carries_revision_lineage_fields() -> None
     event = build_graph_interrupted_event(
         task=task,
         interrupt=interrupt,
-        event_schema_version=5,
+        event_schema_version=6,
     )
     assert event.revision_owner_invocation_id == "leaf"
     assert event.revision_base_tree_id == "tree-base"

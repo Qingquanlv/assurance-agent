@@ -16,6 +16,7 @@ import pytest
 from pydantic import ValidationError
 
 from assurance_agent.workflow.core.events import append_event_strict, read_events_strict
+from tests.helpers_graph_v6 import v6_started_bindings
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore, project_invocation
 from assurance_agent.workflow.graph.contracts import (
@@ -177,6 +178,7 @@ def _seed_invocation(change: Path, tree_id: str, *, compiled=None) -> None:
         "graph_id": "main",
         "graph_digest": compiled.digest if compiled is not None else _DIGEST,
         "contract_digests": dict(compiled.contract_digests) if compiled is not None else {},
+        **v6_started_bindings(),
         "params": {},
         "params_sha256": "p" * 64,
         "root_tree_id": tree_id,
@@ -1283,6 +1285,7 @@ def _seed_child_invocation(
             "graph_id": entrypoint,
             "graph_digest": compiled.digest,
             "contract_digests": dict(compiled.contract_digests),
+            **v6_started_bindings(),
             "params": {},
             "params_sha256": "p" * 64,
             "root_tree_id": tree_id,
@@ -2185,7 +2188,7 @@ def test_deferred_child_outer_wave_reserves_footprint_locks_before_run_child(
 
 def test_current_change_repo_path_prefers_write_set_roots_for_child_context(tmp_path: Path) -> None:
     """Child contexts bind project_root to a task workspace; host change_dir must still resolve."""
-    from assurance_agent.workflow.graph.scheduler import _current_change_repo_path
+    from assurance_agent.workflow.graph.attempt_engine import _current_change_repo_path
     from assurance_agent.workflow.graph.workspace import WriteEntry, WriteSet
 
     host_project = tmp_path / "sut"

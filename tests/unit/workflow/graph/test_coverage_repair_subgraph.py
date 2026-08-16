@@ -607,6 +607,7 @@ def _stub_post_repair_ops(batch_id: str = BATCH_AFTER_RERUN) -> dict[str, Any]:
 
     return {
         "operation:run-tests": run_tests,
+        "operation:run-tests-and-collect-pr-metrics": run_tests,
         "operation:collect-pr-metrics-batch": collect,
     }
 

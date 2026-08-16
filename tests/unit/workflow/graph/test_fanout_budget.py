@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from tests.helpers_graph_v6 import v6_started_bindings
 
 from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.core.graph_events import (
@@ -920,6 +921,7 @@ def _started(graph_digest: str = "gd-1") -> dict:
         "graph_id": "main",
         "graph_digest": graph_digest,
         "contract_digests": {},
+        **v6_started_bindings(),
         "params": {},
         "params_sha256": "ps-1",
         "root_tree_id": "tree-0",

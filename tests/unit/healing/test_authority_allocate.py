@@ -28,6 +28,7 @@ from assurance_agent.workflow.healing.operations import (
     operation_fixer_authority_ready,
 )
 from tests.helpers_aa import write_aa_config
+from tests.helpers_graph_v6 import v6_started_bindings
 
 
 def _context(project: Path) -> RuntimeContext:
@@ -381,6 +382,7 @@ def _seed_committed_api_codegen_events(
             "max_parallel_tasks": 4,
             "checkpoint_ns": inv,
             "structural_path": "main",
+            **v6_started_bindings(),
         },
     )
     append_event_strict(
@@ -671,6 +673,7 @@ def test_imported_codegen_stop_reason_remains_distinct(tmp_path: Path) -> None:
             "max_parallel_tasks": 4,
             "checkpoint_ns": "inv-root",
             "structural_path": "main",
+            **v6_started_bindings(),
         },
     )
     append_event_strict(

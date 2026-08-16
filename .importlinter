@@ -86,13 +86,13 @@ ignore_imports =
     assurance_agent.workflow.graph.finalize -> assurance_agent.workflow.healing.safety
     assurance_agent.workflow.graph.finalize -> assurance_agent.workflow.issues.identity
     assurance_agent.workflow.graph.handlers.trace_projection -> assurance_agent.workflow.execution.evidence
-    assurance_agent.workflow.graph.checkpoint -> assurance_agent.workflow.execution.tree_hash
+    assurance_agent.workflow.graph.import_validation -> assurance_agent.workflow.execution.tree_hash
     assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.issues.analyzer_output
     assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.improvements.reviewer_output
     assurance_agent.workflow.graph.runtime -> assurance_agent.workflow.execution.tree_hash
     assurance_agent.workflow.graph.handlers.plan_checks -> assurance_agent.workflow.improvements.ledger
     assurance_agent.workflow.graph.handlers.interrupt -> assurance_agent.workflow.execution.tree_hash
-    assurance_agent.workflow.graph.scheduler -> assurance_agent.workflow.healing.allocation
+    assurance_agent.workflow.graph.attempt_engine -> assurance_agent.workflow.healing.allocation
     # V6 durable-effect / precommit / healing-projection seams from main.
     assurance_agent.workflow.graph.durable_effects -> assurance_agent.workflow.healing.effects
     assurance_agent.workflow.graph.runtime_commit_safety -> assurance_agent.workflow.healing.effects

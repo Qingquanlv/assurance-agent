@@ -187,6 +187,7 @@ def test_pr_metrics_operations_registered_under_exact_keys() -> None:
     ops = default_operations()
     assert ops["operation:collect-pr-metrics-batch"] is collect_pr_metrics_batch_operation
     assert ops["operation:materialize-pr-metrics"] is materialize_pr_metrics_operation
+    assert "operation:run-tests-and-collect-pr-metrics" in ops
 
 
 def test_complete_batch_requires_all_five_evidence_files(tmp_path: Path) -> None:

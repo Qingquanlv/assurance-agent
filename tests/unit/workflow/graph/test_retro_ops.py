@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from tests.helpers_graph_v6 import v6_started_bindings
+
 from assurance_agent.artifacts.models.retro_batch import RetroPipelineFailure
 from assurance_agent.workflow.retro_ops import (
     _selection_from_params,
@@ -116,6 +118,7 @@ def _write_terminal_archived_change(
             "graph_id": "main",
             "graph_digest": "sha256:" + "a" * 64,
             "contract_digests": {},
+            **v6_started_bindings(),
             "params": {},
             "params_sha256": "sha256:" + "b" * 64,
             "root_tree_id": "tree-1",

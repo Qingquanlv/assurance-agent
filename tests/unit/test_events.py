@@ -159,6 +159,8 @@ def test_events_are_jsonl(tmp_path: Path):
 
 
 def _invocation_started_payload(invocation_id: str = "i") -> dict:
+    from tests.helpers_graph_v6 import v6_started_bindings
+
     return {
         "source": "graph",
         "type": "graph_invocation_started",
@@ -173,19 +175,24 @@ def _invocation_started_payload(invocation_id: str = "i") -> dict:
         "max_parallel_tasks": 2,
         "checkpoint_ns": invocation_id,
         "structural_path": "main",
+        **v6_started_bindings(),
+        "ir_digest": "d",
+        "ingest_catalog_digest": "cat",
     }
 
 
 def test_read_events_strict_rejects_bad_json_and_sequence_gap(tmp_path: Path) -> None:
+    import json
+
     change = tmp_path / "CH-1"
     change.mkdir()
+    first = {
+        "seq": 1,
+        "ts": "x",
+        **_invocation_started_payload("i"),
+    }
     (change / "events.jsonl").write_text(
-        '{"seq":1,"ts":"x","source":"graph","type":"graph_invocation_started",'
-        '"invocation_id":"i","entrypoint":"full","graph_id":"main",'
-        '"graph_digest":"d","contract_digests":{},"params":{},'
-        '"params_sha256":"p","root_tree_id":"t","max_parallel_tasks":2,'
-        '"checkpoint_ns":"i","structural_path":"main"}\n'
-        "{bad}\n",
+        json.dumps(first, sort_keys=True) + "\n{bad}\n",
         encoding="utf-8",
     )
     with pytest.raises(LedgerIntegrityError, match="line 2"):
@@ -250,7 +257,7 @@ def test_graph_event_requires_declared_fields(tmp_path: Path) -> None:
         )
 
 
-def test_migration_accepts_v5_and_rejects_future_versions() -> None:
+def test_migration_rejects_pre_v6_and_future_versions() -> None:
     v5 = {
         "type": "graph_invocation_started",
         "invocation_id": "inv",
@@ -272,12 +279,8 @@ def test_migration_accepts_v5_and_rejects_future_versions() -> None:
         "checkpoint_ns": "inv",
         "structural_path": "main",
     }
-    migrated = migrate_graph_event_stream([v5])
-    assert migrated[0]["event_schema_version"] == 5
-    assert migrated[0]["policy_origin"] == "project"
-    assert migrated[0]["gate_semantics_object_id"] == ""
-    assert migrated[0]["topology_safety_semantics_digest"] == ""
-    assert "revision_transition_id" not in migrated[0]
+    with pytest.raises(ValueError, match="event_schema_version 6"):
+        migrate_graph_event_stream([v5])
 
     incomplete_v6: dict[str, object] = dict(v5, event_schema_version=6)
     with pytest.raises(ValueError, match="event_schema_version 6 requires complete"):
@@ -420,7 +423,7 @@ def test_graph_interrupted_accepts_optional_revision_fields() -> None:
     assert event.source_gate_attempt_id == "ga-1"
 
 
-def test_migration_backfills_empty_binding_fields_for_legacy_versions() -> None:
+def test_migration_rejects_legacy_started_without_backfill() -> None:
     legacy = {
         "type": "graph_invocation_started",
         "invocation_id": "inv",
@@ -436,7 +439,5 @@ def test_migration_backfills_empty_binding_fields_for_legacy_versions() -> None:
         "checkpoint_ns": "inv",
         "structural_path": "main",
     }
-    migrated = migrate_graph_event_stream([legacy])[0]
-    assert migrated["policy_origin"] == ""
-    assert migrated["gate_semantics_digest"] == ""
-    assert migrated["assurance_profile_digest"] == ""
+    with pytest.raises(ValueError, match="event_schema_version 6"):
+        migrate_graph_event_stream([legacy])

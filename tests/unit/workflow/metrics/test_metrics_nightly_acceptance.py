@@ -31,7 +31,7 @@ from assurance_agent.verification.baseline_history import (
 )
 from assurance_agent.verification.mutation_runner import MutantOutcome, MutantResult
 from assurance_agent.verification.mutation_sampling import MutantCandidate, SelectedMutant
-from assurance_agent.workflow.graph.models import RuntimeContext
+from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 from assurance_agent.workflow.metrics.mutation import MUTATION_EVIDENCE_REL
 from assurance_agent.workflow.metrics.nightly import (
@@ -41,6 +41,7 @@ from assurance_agent.workflow.metrics.nightly import (
     NIGHTLY_SHORTBOARDS_REL,
     NIGHTLY_SOURCE_REL,
     run_metrics_nightly_graph,
+    run_nightly_metrics_pipeline_operation,
 )
 from tests.helpers_aa import write_aa_config
 
@@ -444,4 +445,47 @@ def test_insufficient_baseline_samples_stay_not_evaluated_with_pending_path(tmp_
     assert any(b.code == "sample_insufficient" and b.metric == "baseline_drift" for b in nightly.shortboards)
     assert nightly.metrics["adversarial_yield"].status == "not_evaluated"
     assert any(b.code == "pending_nightly" and b.metric == "adversarial_yield" for b in nightly.shortboards)
+    assert workspace.change_dir.joinpath(PR_METRICS_REL).read_bytes() == planted
+
+
+def test_nightly_host_fail_fast_does_not_write_nightly_json_after_earlier_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed collector must stop the host; later artifacts stay unwritten."""
+    root = _project(tmp_path)
+    workspace = _workspace(root)
+    planted = _plant_pr_metrics(workspace.change_dir)
+    failure = TaskResult(status="failed", error_kind="internal", error="collector exploded")
+
+    def _fail_mutation(*_args: object, **_kwargs: object) -> TaskResult:
+        return failure
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.metrics.nightly.run_mutation_sample_operation",
+        _fail_mutation,
+    )
+    results = run_metrics_nightly_graph(
+        workspace,
+        _context(root, mutation_budget_seconds=60, mutation_seed=7),
+    )
+    assert [result.status for result in results] == ["succeeded", "failed"]
+    assert results[-1] is failure
+    assert not (workspace.change_dir / NIGHTLY_METRICS_REL).exists()
+    assert not (workspace.change_dir / NIGHTLY_SHORTBOARDS_REL).exists()
+
+    host = run_nightly_metrics_pipeline_operation(
+        ExecutableTask.model_construct(
+            task_id="t-run-nightly-metrics-pipeline",
+            node_id="run-nightly-metrics-pipeline",
+            graph_id="metrics-nightly-workflow",
+            target="operation:run-nightly-metrics-pipeline",
+            input={"with": {}},
+        ),
+        workspace,
+        _context(root, mutation_budget_seconds=60, mutation_seed=7),
+    )
+    assert host is failure
+    assert host.status == "failed"
+    assert host.error == "collector exploded"
+    assert not (workspace.change_dir / NIGHTLY_METRICS_REL).exists()
     assert workspace.change_dir.joinpath(PR_METRICS_REL).read_bytes() == planted

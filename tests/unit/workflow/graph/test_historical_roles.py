@@ -391,7 +391,7 @@ def test_load_pinned_fails_closed_on_missing_unique_role(
         graph_digest=fixture.compiled.digest,  # type: ignore[attr-defined]
         ingest_catalog_digest=fixture.compiled.ingest_catalog_digest,  # type: ignore[attr-defined]
         contract_digests=tuple(sorted(fixture.compiled.contract_digests.items())),  # type: ignore[attr-defined]
-        event_schema_version=4,
+        event_schema_version=6,
         gate_semantics_digest=fixture.binding.gate_semantics_digest,  # type: ignore[attr-defined]
         assurance_profile_digest=fixture.binding.assurance_profile_digest,  # type: ignore[attr-defined]
     )
