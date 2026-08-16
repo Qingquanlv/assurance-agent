@@ -59,6 +59,14 @@ from assurance_agent.workflow.graph.manual_revision import (
     transition_from_committed_revision,
 )
 from assurance_agent.workflow.execution.tree_hash import sha256_file
+from assurance_agent.workflow.graph.invocation_bootstrap import append_invocation_bootstrap
+from assurance_agent.workflow.graph.artifact_commit import (
+    committed_tree_targets as _committed_tree_targets_fn,
+    last_committed_tree_edge as _last_committed_tree_edge_fn,
+    latest_resolved_interrupt_tree as _latest_resolved_interrupt_tree_fn,
+    ordinary_materialization_drift as _ordinary_materialization_drift_fn,
+    repair_ordinary_materialization as _repair_ordinary_materialization_fn,
+)
 from assurance_agent.workflow.graph.checkpoint import (
     CheckpointImportError,
     CheckpointStore,
@@ -128,12 +136,9 @@ from assurance_agent.workflow.graph.effect_retry import (
     RootTerminalFenceError,
     parse_rfc3339_z,
 )
-from assurance_agent.workflow.graph.historical_roles import discover_historical_assurance_roles
 from assurance_agent.workflow.graph.resume_compatibility import (
     ResumeCompatibilityDecision,
-    evaluate_resume_compatibility,
     event_to_receipt,
-    receipt_to_event,
 )
 from assurance_agent.workflow.graph.workspace import (
     TaskWorkspace,
@@ -234,27 +239,28 @@ def assert_live_semantic_compatibility(request: PinnedDefinitionRequest) -> None
         raise GraphDefinitionChanged(
             "graph_definition_changed: assurance profile digest does not match current executable"
         )
-    if request.event_schema_version >= 6:
-        v6 = current_v6_semantic_identity()
-        expected = {
-            "gate_semantics_object_id": v6.gate_object_id,
-            "topology_safety_semantics_object_id": v6.topology_object_id,
-            "topology_safety_semantics_digest": v6.topology_digest,
-            "commit_safety_semantics_object_id": v6.commit_object_id,
-            "commit_safety_semantics_digest": v6.commit_digest,
-        }
-        actual = {
-            "gate_semantics_object_id": request.gate_semantics_object_id,
-            "topology_safety_semantics_object_id": request.topology_safety_semantics_object_id,
-            "topology_safety_semantics_digest": request.topology_safety_semantics_digest,
-            "commit_safety_semantics_object_id": request.commit_safety_semantics_object_id,
-            "commit_safety_semantics_digest": request.commit_safety_semantics_digest,
-        }
-        for name, value in expected.items():
-            if actual[name] != value:
-                raise GraphDefinitionChanged(
-                    f"graph_definition_changed: {name} does not match current executable"
-                )
+    if request.event_schema_version != 6:
+        raise GraphDefinitionChanged("graph_definition_changed: only event_schema_version 6 is supported")
+    v6 = current_v6_semantic_identity()
+    expected = {
+        "gate_semantics_object_id": v6.gate_object_id,
+        "topology_safety_semantics_object_id": v6.topology_object_id,
+        "topology_safety_semantics_digest": v6.topology_digest,
+        "commit_safety_semantics_object_id": v6.commit_object_id,
+        "commit_safety_semantics_digest": v6.commit_digest,
+    }
+    actual = {
+        "gate_semantics_object_id": request.gate_semantics_object_id,
+        "topology_safety_semantics_object_id": request.topology_safety_semantics_object_id,
+        "topology_safety_semantics_digest": request.topology_safety_semantics_digest,
+        "commit_safety_semantics_object_id": request.commit_safety_semantics_object_id,
+        "commit_safety_semantics_digest": request.commit_safety_semantics_digest,
+    }
+    for name, value in expected.items():
+        if actual[name] != value:
+            raise GraphDefinitionChanged(
+                f"graph_definition_changed: {name} does not match current executable"
+            )
 
 
 class GraphIntegrityError(GraphRuntimeError):
@@ -593,31 +599,12 @@ class GraphRuntime:
         context: RuntimeContext,
     ) -> ResumeCompatibilityDecision:
         """Evaluate resume compatibility without appending a new receipt."""
-        if projection.event_schema_version < 4 or projection.event_schema_version >= 6:
-            return ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=True,
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
-            )
-        root_id = projection.parent_invocation_id or projection.invocation_id
-        root_projection = (
-            projection if projection.invocation_id == root_id else self._checkpoints.project(root_id)
+        return ResumeCompatibilityDecision(
+            schema_version="1",
+            allowed=True,
+            event_schema_version=projection.event_schema_version,
+            root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
         )
-        bundle = self._resolve_bundle(root_projection)
-        roles, _issues = discover_historical_assurance_roles(bundle.compiled.schema)
-        existing = self._load_topology_compatibility_receipt(root_id, context.change_dir)
-        profile_ok = self._legacy_profile_reconstructable(root_projection, context.change_dir)
-        decision, _new = evaluate_resume_compatibility(
-            projection=root_projection,
-            compiled=bundle.compiled,
-            contracts=bundle.contracts,
-            historical_roles=roles,
-            existing_receipt=existing,
-            profile_reconstructable=profile_ok,
-            change_dir=context.change_dir,
-        )
-        return decision
 
     def import_checkpoint(
         self,
@@ -686,19 +673,11 @@ class GraphRuntime:
         imported_task_ids: list[str] = []
         try:
             with transaction(context.change_dir) as txn:
-                txn.append_strict(started)
-                self._stage_pinned_definitions(txn, schema, binding)
-                txn.write_runtime_file(
-                    f".graph-runtime/invocations/{invocation_id}.json",
-                    json.dumps(
-                        {
-                            "project_root": str(context.project_root),
-                            "repo_root": str(context.repo_root),
-                            "change_id": context.change_id,
-                            "parent_session_id": context.parent_session_id,
-                        },
-                        sort_keys=True,
-                    ).encode("utf-8"),
+                append_invocation_bootstrap(
+                    txn,
+                    started=started,
+                    context=context,
+                    stage_pins=lambda txn: self._stage_pinned_definitions(txn, schema, binding),
                 )
                 for item in validated.resolved:
                     txn.append_strict(
@@ -858,21 +837,15 @@ class GraphRuntime:
                 parent_task_id=parent_task.task_id,
             )
             with transaction(context.change_dir) as txn:
-                txn.append_strict(started)
-                self._stage_pinned_definitions(txn, compiled, binding)
-                txn.write_runtime_file(
-                    f".graph-runtime/invocations/{child_invocation_id}.json",
-                    json.dumps(
-                        {
-                            "project_root": str(workspace.project_root),
-                            "repo_root": str(workspace.repo_root),
-                            "change_id": context.change_id,
-                            "parent_session_id": context.parent_session_id,
-                            "parent_invocation_id": parent_task.invocation_id,
-                            "parent_task_id": parent_task.task_id,
-                        },
-                        sort_keys=True,
-                    ).encode("utf-8"),
+                append_invocation_bootstrap(
+                    txn,
+                    started=started,
+                    context=child_context,
+                    stage_pins=lambda txn: self._stage_pinned_definitions(txn, compiled, binding),
+                    extra_meta={
+                        "parent_invocation_id": parent_task.invocation_id,
+                        "parent_task_id": parent_task.task_id,
+                    },
                 )
         else:
             try:
@@ -1083,19 +1056,11 @@ class GraphRuntime:
                             "conflicting_supersede",
                             "replacement params digest mismatch",
                         )
-                txn.append_strict(started)
-                self._stage_pinned_definitions(txn, compiled, binding)
-                txn.write_runtime_file(
-                    f".graph-runtime/invocations/{invocation_id}.json",
-                    json.dumps(
-                        {
-                            "project_root": str(context.project_root),
-                            "repo_root": str(context.repo_root),
-                            "change_id": context.change_id,
-                            "parent_session_id": context.parent_session_id,
-                        },
-                        sort_keys=True,
-                    ).encode("utf-8"),
+                append_invocation_bootstrap(
+                    txn,
+                    started=started,
+                    context=context,
+                    stage_pins=lambda txn: self._stage_pinned_definitions(txn, compiled, binding),
                 )
         except SupersedeError:
             raise
@@ -1199,8 +1164,6 @@ class GraphRuntime:
     ) -> bool:
         if command is None or command.action != "fix_and_proceed":
             return False
-        if projection.event_schema_version < 5:
-            return False
         pending = projection.interrupts.get(command.interrupt_id)
         return pending is not None and pending.revision_view is not None
 
@@ -1227,11 +1190,7 @@ class GraphRuntime:
         pending = projection.interrupts.get(command.interrupt_id)
         if pending is None:
             raise GraphRuntimeError(f"interrupt {command.interrupt_id} is not pending")
-        uses_manual_revision = (
-            command.action == "fix_and_proceed"
-            and projection.event_schema_version >= 5
-            and pending.revision_view is not None
-        )
+        uses_manual_revision = command.action == "fix_and_proceed" and pending.revision_view is not None
         # After a crash that wrote root resume ordinal(s), the root interrupt is
         # already resolved while the revision resume suffix may still be open.
         # Identical fix_and_proceed retries must still reach the revision commit
@@ -1262,59 +1221,39 @@ class GraphRuntime:
             interrupt_id=pending.interrupt_id,
             owner_invocation_id=resume_invocation_ids[-1],
         )
-        source_attempt = pending.source_gate_attempt_id if projection.event_schema_version >= 5 else None
-        source_tree = pending.source_gate_tree_id if projection.event_schema_version >= 5 else None
+        source_attempt = pending.source_gate_attempt_id
+        source_tree = pending.source_gate_tree_id
         with transaction(context.change_dir) as txn:
-            if projection.event_schema_version >= 3:
-                parent_anchor_ref: str | None = None
-                for index, invocation_id in enumerate(resume_invocation_ids):
-                    layer_ns = _checkpoint_ns_for_invocation(pending.checkpoint_ns, invocation_id)
-                    layer_node = _node_id_for_invocation(
-                        pending.checkpoint_ns, invocation_id, leaf_interrupt.node_id
-                    )
-                    anchor = ResumeAnchor(
+            parent_anchor_ref: str | None = None
+            for index, invocation_id in enumerate(resume_invocation_ids):
+                layer_ns = _checkpoint_ns_for_invocation(pending.checkpoint_ns, invocation_id)
+                layer_node = _node_id_for_invocation(
+                    pending.checkpoint_ns, invocation_id, leaf_interrupt.node_id
+                )
+                anchor = ResumeAnchor(
+                    invocation_id=invocation_id,
+                    checkpoint_ns=layer_ns,
+                    node_id=layer_node,
+                    interrupt_id=command.interrupt_id,
+                )
+                txn.append_strict(
+                    GraphResumedEvent(
+                        type="graph_resumed",
                         invocation_id=invocation_id,
                         checkpoint_ns=layer_ns,
-                        node_id=layer_node,
                         interrupt_id=command.interrupt_id,
+                        action=command.action,
+                        reason=command.reason,
+                        who=command.who,
+                        audited_reads_sha256=audited if index == 0 else {},
+                        anchor=anchor,
+                        parent_anchor_ref=parent_anchor_ref,
+                        payload=command.payload if index == 0 else {},
+                        source_gate_attempt_id=source_attempt,
+                        source_gate_tree_id=source_tree,
                     )
-                    txn.append_strict(
-                        GraphResumedEvent(
-                            type="graph_resumed",
-                            invocation_id=invocation_id,
-                            checkpoint_ns=layer_ns,
-                            interrupt_id=command.interrupt_id,
-                            action=command.action,
-                            reason=command.reason,
-                            who=command.who,
-                            audited_reads_sha256=audited if index == 0 else {},
-                            anchor=anchor,
-                            parent_anchor_ref=parent_anchor_ref,
-                            payload=command.payload if index == 0 else {},
-                            source_gate_attempt_id=source_attempt,
-                            source_gate_tree_id=source_tree,
-                        )
-                    )
-                    parent_anchor_ref = canonical_digest(anchor.model_dump(mode="json"))
-            else:
-                resumed = GraphResumedEvent(
-                    type="graph_resumed",
-                    invocation_id=resume_invocation_ids[0],
-                    checkpoint_ns=pending.checkpoint_ns,
-                    interrupt_id=command.interrupt_id,
-                    action=command.action,
-                    reason=command.reason,
-                    who=command.who,
-                    audited_reads_sha256=audited,
-                    payload=command.payload,
                 )
-                for index, invocation_id in enumerate(resume_invocation_ids):
-                    if index == 0:
-                        txn.append_strict(resumed)
-                    else:
-                        txn.append_strict(
-                            resumed.model_copy(update={"invocation_id": invocation_id, "payload": {}})
-                        )
+                parent_anchor_ref = canonical_digest(anchor.model_dump(mode="json"))
             if command.action == "stop":
                 txn.append_strict(
                     GraphTerminalEvent(
@@ -1548,6 +1487,7 @@ class GraphRuntime:
                 artifacts,  # type: ignore[arg-type]
                 max_parallel_tasks=compiled.schema.policies.scheduler.max_parallel_tasks,
                 child_projections=child_projections,
+                plan=plan,
             )
             uses_prepared = prepared_entry is not None or (
                 selected is not None and (selected.synchronized_paths or selected.lock_tokens)
@@ -1797,38 +1737,13 @@ class GraphRuntime:
         projection: GraphProjection,
         context: RuntimeContext,
     ) -> ResumeCompatibilityDecision:
-        """Audit v4/v5 roots; append/reuse topology receipt; type-block unbound commit safety."""
-        if projection.event_schema_version < 4 or projection.event_schema_version >= 6:
-            return ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=True,
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
-            )
-
-        root_id = projection.parent_invocation_id or projection.invocation_id
-        root_projection = (
-            projection if projection.invocation_id == root_id else self._checkpoints.project(root_id)
+        """Skip topology audit; same-definition resume is allowed for all schema versions."""
+        return ResumeCompatibilityDecision(
+            schema_version="1",
+            allowed=True,
+            event_schema_version=projection.event_schema_version,
+            root_invocation_id=projection.parent_invocation_id or projection.invocation_id,
         )
-        # Load pinned bundle for audit only (no handler dispatch yet).
-        bundle = self._resolve_bundle(root_projection)
-        roles, _issues = discover_historical_assurance_roles(bundle.compiled.schema)
-        existing = self._load_topology_compatibility_receipt(root_id, context.change_dir)
-        profile_ok = self._legacy_profile_reconstructable(root_projection, context.change_dir)
-        decision, new_receipt = evaluate_resume_compatibility(
-            projection=root_projection,
-            compiled=bundle.compiled,
-            contracts=bundle.contracts,
-            historical_roles=roles,
-            existing_receipt=existing,
-            profile_reconstructable=profile_ok,
-            change_dir=context.change_dir,
-        )
-        if new_receipt is not None:
-            event = receipt_to_event(new_receipt, checkpoint_ns=root_projection.checkpoint_ns)
-            with transaction(context.change_dir) as txn:
-                txn.append_strict(event)
-        return decision
 
     def _load_topology_compatibility_receipt(
         self,
@@ -1849,24 +1764,6 @@ class GraphRuntime:
             event = TopologySafetyCompatibilityRecordedEvent.model_validate(payload)
             return event_to_receipt(event)
         return None
-
-    def _legacy_profile_reconstructable(
-        self,
-        projection: GraphProjection,
-        change_dir: Path,
-    ) -> bool:
-        from assurance_agent.verification.profile_manifest import (
-            assurance_profile_digest,
-            assurance_profile_snapshot_relpath,
-        )
-
-        if not projection.assurance_profile_digest:
-            return False
-        if projection.event_schema_version >= 5:
-            path = change_dir / assurance_profile_snapshot_relpath(projection.assurance_profile_digest)
-            return path.is_file()
-        # v4: uniquely reconstruct only when recorded digest equals current runtime bytes.
-        return projection.assurance_profile_digest == assurance_profile_digest()
 
     def _recovery_work_remains(
         self,
@@ -2096,127 +1993,43 @@ class GraphRuntime:
         projection: GraphProjection,
         context: RuntimeContext,
     ) -> None:
-        if not self._ordinary_materialization_drift(projection, context):
-            return
-        # A nested interrupt can bubble out before the parent superstep commits.
-        # In that state the leaf gate tree is newer than the parent's
-        # ``current_tree_id``, but it is still ledger-pinned and already
-        # materialized in the canonical workspace.  After the resume command is
-        # committed, validate/rehydrate that exact tree instead of treating the
-        # child's ordinary outputs as external drift against the stale parent
-        # edge.  ``apply_tree`` with an identical base/target remains fail-closed
-        # for arbitrary repo bytes while allowing runtime-owned change artifacts
-        # to be restored.
-        prev, target, _, _write_set_ids = self._last_committed_tree_edge(projection)
-        resumed_gate_tree = self._latest_resolved_interrupt_tree(projection)
-        if resumed_gate_tree is not None and target == resumed_gate_tree:
-            try:
-                self._objects.apply_tree(
-                    context.project_root,
-                    resumed_gate_tree,
-                    base_tree_id=resumed_gate_tree,
-                    restore_change_drift=True,
-                )
-            except WorkspaceError as exc:
-                raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
-            return
-        assert target is not None
+        events = read_events_strict(self._checkpoints.change_dir)
         try:
-            if projection.parent_task_id is not None:
-                # A resumed nested invocation gets a freshly materialized
-                # parent-task workspace. It may therefore be at the child root,
-                # or at any exact committed prefix, rather than at the base of
-                # only the last edge. Replay the cumulative child delta and
-                # whitelist only ledger-pinned intermediate trees; arbitrary
-                # external bytes still fail closed in apply_tree_delta.
-                committed_targets = self._committed_tree_targets(projection)
-                self._objects.apply_tree_delta(
-                    context.project_root,
-                    target,
-                    source_base_tree_id=projection.root_tree_id,
-                    destination_base_tree_id=projection.root_tree_id,
-                    acceptable_live_tree_ids=committed_targets[:-1],
-                )
-            else:
-                base = prev if prev is not None else projection.root_tree_id
-                self._objects.apply_tree(
-                    context.project_root,
-                    target,
-                    base_tree_id=base,
-                    restore_change_drift=True,
-                )
+            _repair_ordinary_materialization_fn(self._objects, projection, context, events)
         except WorkspaceError as exc:
             raise GraphRuntimeError(f"failed to repair materialization: {exc}") from exc
 
     @staticmethod
     def _latest_resolved_interrupt_tree(projection: GraphProjection) -> str | None:
-        for interrupt in reversed(tuple(projection.interrupts.values())):
-            if (
-                interrupt.resolved_action is not None
-                and interrupt.source_gate_tree_id is not None
-                and interrupt.checkpoint_ns.rsplit("/", 1)[-1] == projection.invocation_id
-            ):
-                return interrupt.source_gate_tree_id
-        return None
+        return _latest_resolved_interrupt_tree_fn(projection)
 
     def _committed_tree_targets(self, projection: GraphProjection) -> tuple[str, ...]:
-        targets: list[str] = []
-        for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
-            if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
-                continue
-            if raw.get("type") != "superstep_committed":
-                continue
-            target = raw.get("target_tree_id")
-            if isinstance(target, str):
-                targets.append(target)
-        return tuple(targets)
+        return _committed_tree_targets_fn(
+            read_events_strict(self._checkpoints.change_dir),
+            projection.invocation_id,
+        )
 
     def _ordinary_materialization_drift(
         self,
         projection: GraphProjection,
         context: RuntimeContext,
     ) -> bool:
-        prev, target, publication_id, write_set_ids = self._last_committed_tree_edge(projection)
-        if target is None or publication_id is None:
-            return False
-        if write_set_ids:
-            write_sets = [self._objects.load_write_set(write_set_id) for write_set_id in write_set_ids]
-            if any(write_set.synchronized_paths for write_set in write_sets):
-                return False
-        try:
-            current = self._objects.capture(context.project_root, repo_root=context.repo_root)
-        except WorkspaceError:
-            return False
-        return current != target
+        return _ordinary_materialization_drift_fn(
+            self._objects,
+            projection,
+            context,
+            read_events_strict(self._checkpoints.change_dir),
+        )
 
     def _last_committed_tree_edge(
         self,
         projection: GraphProjection,
     ) -> tuple[str | None, str | None, str | None, tuple[str, ...]]:
-        cursor = projection.root_tree_id
-        last_prev: str | None = None
-        last_target: str | None = None
-        last_publication_id: str | None = None
-        last_write_set_ids: tuple[str, ...] = ()
-        for raw in read_events_strict(self._checkpoints._change_dir):  # noqa: SLF001
-            if raw.get("source") != "graph" or raw.get("invocation_id") != projection.invocation_id:
-                continue
-            if raw.get("type") != "superstep_committed":
-                continue
-            target_tree = raw.get("target_tree_id")
-            if isinstance(target_tree, str):
-                last_prev = cursor
-                last_target = target_tree
-                raw_checkpoint_id = raw.get("checkpoint_id")
-                last_publication_id = raw_checkpoint_id if isinstance(raw_checkpoint_id, str) else None
-                raw_ids = raw.get("write_set_ids")
-                last_write_set_ids = tuple(
-                    value
-                    for value in (raw_ids if isinstance(raw_ids, list) else [])
-                    if isinstance(value, str)
-                )
-                cursor = target_tree
-        return last_prev, last_target, last_publication_id, last_write_set_ids
+        edge = _last_committed_tree_edge_fn(
+            read_events_strict(self._checkpoints.change_dir),
+            projection,
+        )
+        return edge.prev_tree_id, edge.target_tree_id, edge.publication_id, edge.write_set_ids
 
     def _last_uncommitted_plan(self, invocation_id: str) -> dict[str, str] | None:
         last_plan: dict[str, str] | None = None

@@ -837,22 +837,13 @@ graphs:
           mode: all_active
 
       execution:
-        uses: operation:run-tests
+        uses: operation:run-tests-and-collect-pr-metrics
         when: >
           params.run_tests == true and
           params.run_mode in ['full','api-only','e2e-only','codegen-only']
         outputs: [change:execution/execution-manifest.yaml]
         retry: cli-transient
         timeout: cli
-
-      # Batch-scoped PR metric evidence after each authoritative run-tests
-      # (initial execution, healing.rerun, and coverage-repair.rerun share this
-      # op). Does not write inspect/metrics.json — that is materialize-pr-metrics
-      # once, after coverage-repair returns.
-      collect-pr-metrics-batch:
-        uses: operation:collect-pr-metrics-batch
-        retry: never
-        timeout: local-operation
 
       inspect-with-issues:
         uses: graph:inspect-with-issues
@@ -954,8 +945,7 @@ graphs:
       - {from: performance, to: generation-join}
       - {from: generation-join, to: execution, when: "params.run_tests == true"}
       - {from: generation-join, to: END, when: "params.run_tests == false"}
-      - {from: execution, to: collect-pr-metrics-batch}
-      - {from: collect-pr-metrics-batch, to: inspect-with-issues}
+      - {from: execution, to: inspect-with-issues}
       - {from: inspect-with-issues, to: healing}
       - {from: healing, to: coverage-repair}
       - {from: coverage-repair, to: materialize-pr-metrics}
@@ -1708,16 +1698,10 @@ graphs:
       # `needs_human_review` would suspend the loop mid-attempt. The judgement
       # happens once, in `assurance`, after healing returns.
       materialize-trace-projection:
-        uses: operation:materialize-trace-projection
+        uses: operation:materialize-trace-and-coverage-gaps
         outputs:
           - change:inspect/trace-projection.json
           - change:inspect/trace-sufficiency.json
-        retry: never
-        timeout: local-operation
-
-      build-coverage-gap-signals:
-        uses: operation:build-coverage-gap-signals
-        outputs:
           - change:inspect/coverage-gaps.json
         retry: never
         timeout: local-operation
@@ -1735,8 +1719,7 @@ graphs:
       - {from: record-empty-analysis, to: reconcile-issues}
       - {from: analyze-issues, to: reconcile-issues}
       - {from: reconcile-issues, to: materialize-trace-projection}
-      - {from: materialize-trace-projection, to: build-coverage-gap-signals}
-      - {from: build-coverage-gap-signals, to: inspect-complete}
+      - {from: materialize-trace-projection, to: inspect-complete}
       - {from: inspect-complete, to: END}
 
   healing:
@@ -1884,17 +1867,10 @@ graphs:
           actions: [accept_risk, stop]
 
       rerun:
-        uses: operation:run-tests
+        uses: operation:run-tests-and-collect-pr-metrics
         outputs: [change:execution/execution-manifest.yaml]
         retry: cli-transient
         timeout: cli
-
-      # Same batch collect as assurance.execution — healing must not invent a
-      # second write path for inspect/metrics.json (materialize stays outside).
-      collect-pr-metrics-batch:
-        uses: operation:collect-pr-metrics-batch
-        retry: never
-        timeout: local-operation
 
       inspect-with-issues:
         uses: graph:inspect-with-issues
@@ -1943,8 +1919,7 @@ graphs:
       - {from: record-e2e, to: fixer-join}
       - {from: fixer-join, to: combine-fixer-safety}
       - {from: combine-fixer-safety, to: safety}
-      - {from: rerun, to: collect-pr-metrics-batch}
-      - {from: collect-pr-metrics-batch, to: inspect-with-issues}
+      - {from: rerun, to: inspect-with-issues}
       - {from: inspect-with-issues, to: decide}
       - {from: complete-not-needed, to: END}
       - {from: complete-resolved, to: END}
@@ -2098,15 +2073,10 @@ graphs:
           actions: [accept_risk, stop]
 
       rerun:
-        uses: operation:run-tests
+        uses: operation:run-tests-and-collect-pr-metrics
         outputs: [change:execution/execution-manifest.yaml]
         retry: cli-transient
         timeout: cli
-
-      collect-pr-metrics-batch:
-        uses: operation:collect-pr-metrics-batch
-        retry: never
-        timeout: local-operation
 
       inspect-with-issues:
         uses: graph:inspect-with-issues
@@ -2146,8 +2116,7 @@ graphs:
       - {from: allocate, to: repair}
       - {from: repair, to: compute-safety}
       - {from: compute-safety, to: safety}
-      - {from: rerun, to: collect-pr-metrics-batch}
-      - {from: collect-pr-metrics-batch, to: inspect-with-issues}
+      - {from: rerun, to: inspect-with-issues}
       - {from: inspect-with-issues, to: probe-loop}
       - {from: probe-loop, to: decide}
       - {from: complete-not-eligible, to: END}
@@ -2494,68 +2463,16 @@ graphs:
   metrics-nightly-workflow:
     max_supersteps: 14
     nodes:
-      load-latest-pr-metrics:
-        uses: operation:load-latest-pr-metrics
+      run-nightly-metrics-pipeline:
+        uses: operation:run-nightly-metrics-pipeline
         retry: never
         timeout: local-operation
-
-      run-mutation-sample:
-        uses: operation:run-mutation-sample
-        retry: never
-        timeout: local-operation
-
-      compute-assertion-strength:
-        uses: operation:compute-assertion-strength
-        retry: never
-        timeout: local-operation
-
-      compute-baseline-drift:
-        uses: operation:compute-baseline-drift
-        retry: never
-        timeout: local-operation
-
-      collect-adversarial-yield:
-        uses: operation:collect-adversarial-yield
-        retry: never
-        timeout: local-operation
-
-      materialize-quarantine-projection:
-        uses: operation:materialize-quarantine-projection
-        outputs:
-          - change:inspect/quarantine-projection.json
-        retry: never
-        timeout: local-operation
-
-      materialize-c-layer-metrics:
-        uses: operation:materialize-c-layer-metrics
-        outputs:
-          - change:inspect/metrics-c-layer.json
-        retry: never
-        timeout: local-operation
-
-      aggregate-nightly-metrics:
-        uses: operation:aggregate-nightly-metrics
         outputs:
           - change:inspect/metrics-nightly.json
-        retry: never
-        timeout: local-operation
-
-      evaluate-retrospective-shortboards:
-        uses: operation:evaluate-retrospective-shortboards
-        retry: never
-        timeout: local-operation
-
+          - change:inspect/metrics-nightly-shortboards.json
     edges:
-      - {from: START, to: load-latest-pr-metrics}
-      - {from: load-latest-pr-metrics, to: run-mutation-sample}
-      - {from: run-mutation-sample, to: compute-assertion-strength}
-      - {from: compute-assertion-strength, to: compute-baseline-drift}
-      - {from: compute-baseline-drift, to: collect-adversarial-yield}
-      - {from: collect-adversarial-yield, to: materialize-quarantine-projection}
-      - {from: materialize-quarantine-projection, to: materialize-c-layer-metrics}
-      - {from: materialize-c-layer-metrics, to: aggregate-nightly-metrics}
-      - {from: aggregate-nightly-metrics, to: evaluate-retrospective-shortboards}
-      - {from: evaluate-retrospective-shortboards, to: END}
+      - {from: START, to: run-nightly-metrics-pipeline}
+      - {from: run-nightly-metrics-pipeline, to: END}
 
 gates:
   registry-gate:

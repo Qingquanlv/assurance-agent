@@ -23,6 +23,7 @@ from assurance_agent.workflow.graph.checkpoint import (
 )
 from assurance_agent.workflow.graph.definition_pinning import is_definition_binding_replayable
 from assurance_agent.workflow.graph.models import GraphProjection
+from tests.helpers_graph_v6 import v6_started_bindings
 
 _ROOT = "root"
 _BRANCH = "branch"
@@ -37,7 +38,7 @@ _TARGET = "tree-target"
 _TRANSITION = "rt-leaf-1"
 
 
-def _started(inv: str = "inv-1", *, schema_version: int = 1) -> dict:
+def _started(inv: str = "inv-1", *, schema_version: int = 6) -> dict:
     payload = {
         "source": "graph",
         "type": "graph_invocation_started",
@@ -45,7 +46,6 @@ def _started(inv: str = "inv-1", *, schema_version: int = 1) -> dict:
         "entrypoint": "full",
         "graph_id": "main",
         "graph_digest": "gd-1",
-        "event_schema_version": schema_version,
         "contract_digests": {"skill:noop": "cd-1"},
         "params": {"run_mode": "full"},
         "params_sha256": "ps-1",
@@ -53,18 +53,9 @@ def _started(inv: str = "inv-1", *, schema_version: int = 1) -> dict:
         "max_parallel_tasks": 2,
         "checkpoint_ns": inv,
         "structural_path": "main",
+        **v6_started_bindings(),
+        "event_schema_version": schema_version,
     }
-    if schema_version >= 4:
-        payload.update(
-            {
-                "ir_digest": "gd-1",
-                "ingest_catalog_digest": "cat-1",
-                "policy_digest": "a" * 64,
-                "policy_origin": "project",
-                "gate_semantics_digest": "b" * 64,
-                "assurance_profile_digest": "c" * 64,
-            }
-        )
     return payload
 
 
@@ -643,29 +634,26 @@ def test_workflow_state_yaml_rebuilds_semantically_identical(tmp_path: Path) -> 
     assert yaml.safe_load(state_file.read_text(encoding="utf-8")) == yaml.safe_load(original.decode("utf-8"))
 
 
-def test_projection_folds_v4_definition_binding_fields(tmp_path: Path) -> None:
+def test_projection_folds_v6_definition_binding_fields(tmp_path: Path) -> None:
     change = tmp_path / "CH-1"
     change.mkdir()
-    _append_all(change, [_started(schema_version=4)])
+    _append_all(change, [_started()])
 
     projection = project_invocation(change, "inv-1")
-    assert projection.event_schema_version == 4
+    assert projection.event_schema_version == 6
     assert projection.policy_digest == "a" * 64
     assert projection.policy_origin == "project"
-    assert projection.gate_semantics_digest == "b" * 64
     assert projection.assurance_profile_digest == "c" * 64
     assert is_definition_binding_replayable(projection)
 
 
-def test_legacy_projection_is_not_replayable(tmp_path: Path) -> None:
+def test_pre_v6_started_is_not_readable(tmp_path: Path) -> None:
     change = tmp_path / "CH-1"
     change.mkdir()
-    _append_all(change, [_started(schema_version=2)])
+    from assurance_agent.workflow.core.events import EventWriteError
 
-    projection = project_invocation(change, "inv-1")
-    assert projection.event_schema_version == 2
-    assert projection.policy_origin == ""
-    assert not is_definition_binding_replayable(projection)
+    with pytest.raises((EventWriteError, LedgerIntegrityError, ValueError), match="event_schema_version"):
+        _append_all(change, [_started(schema_version=5)])
 
 
 def test_corrupt_workflow_state_yaml_does_not_affect_projection(tmp_path: Path) -> None:
@@ -712,7 +700,7 @@ def _nested_started(
     *,
     tree_id: str,
     checkpoint_ns: str,
-    schema_version: int = 5,
+    schema_version: int = 6,
     parent_invocation_id: str | None = None,
     parent_task_id: str | None = None,
     structural_path: str = "main",
@@ -827,7 +815,7 @@ def _nested_resumed(
     return payload
 
 
-def _root_branch_leaf_prefix(*, schema_version: int = 5) -> list[dict]:
+def _root_branch_leaf_prefix(*, schema_version: int = 6) -> list[dict]:
     return [
         _nested_started(_ROOT, tree_id=_ROOT_BASE, checkpoint_ns=_ROOT, schema_version=schema_version),
         _nested_started(
@@ -1044,9 +1032,9 @@ def test_v5_pairless_interrupt_requires_pairless_resume() -> None:
 
 def test_v4_epoch_rejects_manual_revision_and_revision_tagged_resume() -> None:
     v4_prefix = _root_branch_leaf_prefix(schema_version=4)
-    with pytest.raises(LedgerIntegrityError, match="event_schema_version"):
+    with pytest.raises((LedgerIntegrityError, ValueError), match="event_schema_version"):
         fold_invocation_events(_LEAF, [*v4_prefix, _manual_revision()])
-    with pytest.raises(LedgerIntegrityError, match="event_schema_version"):
+    with pytest.raises((LedgerIntegrityError, ValueError), match="event_schema_version"):
         fold_invocation_events(
             _LEAF,
             [

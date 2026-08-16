@@ -21,6 +21,7 @@ from assurance_agent.retro.workflow_history import (
     WorkflowHistoryIntegrityError,
 )
 from tests.helpers_aa import write_aa_config
+from tests.helpers_graph_v6 import v6_started_bindings
 
 _PUSHBACK = {"needs_fix", "fail", "blocked", "stop"}
 
@@ -60,6 +61,7 @@ def _write_terminal_change(
             "max_parallel_tasks": 1,
             "checkpoint_ns": f"inv-{change_id}",
             "structural_path": "/",
+            **v6_started_bindings(),
         }
     ]
     seq = 2
@@ -323,6 +325,7 @@ def test_list_terminal_changes_ignores_completed_nested_graph_without_root_termi
             "max_parallel_tasks": 1,
             "checkpoint_ns": "root-full",
             "structural_path": "workflow",
+            **v6_started_bindings(),
         },
         {
             "seq": 2,
@@ -342,6 +345,7 @@ def test_list_terminal_changes_ignores_completed_nested_graph_without_root_termi
             "parent_invocation_id": "root-full",
             "parent_task_id": "task-bootstrap",
             "structural_path": "workflow/bootstrap/bootstrap",
+            **v6_started_bindings(),
         },
         {
             "seq": 3,
@@ -390,6 +394,7 @@ def test_list_terminal_changes_uses_root_full_terminal_not_later_maintenance_run
                 "max_parallel_tasks": 1,
                 "checkpoint_ns": "archive-root",
                 "structural_path": "archive-workflow",
+                **v6_started_bindings(),
             },
             {
                 "seq": 4,
@@ -416,6 +421,7 @@ def test_list_terminal_changes_uses_root_full_terminal_not_later_maintenance_run
                 "max_parallel_tasks": 1,
                 "checkpoint_ns": "retro-root",
                 "structural_path": "retro-workflow",
+                **v6_started_bindings(),
             },
             {
                 "seq": 6,
@@ -735,6 +741,7 @@ def test_malformed_ledger_jsonl_raises_integrity_error(tmp_path: Path) -> None:
                 "max_parallel_tasks": 1,
                 "checkpoint_ns": "inv-RET-BAD",
                 "structural_path": "/",
+                **v6_started_bindings(),
             }
         )
         + "\n{not-json\n",

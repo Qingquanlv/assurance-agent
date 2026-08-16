@@ -145,10 +145,11 @@ def migrate_events_for_fold(events: list[dict[str, object]]) -> list[dict[str, o
 
 def _migrate_invocation_started(event: dict[str, object]) -> None:
     version = event.get("event_schema_version")
-    if not isinstance(version, int) or isinstance(version, bool):
-        event["event_schema_version"] = 1
-        version = 1
-    elif version > 6:
+    if not isinstance(version, int) or isinstance(version, bool) or version < 6:
+        raise ValueError(
+            f"unsupported graph event_schema_version {version!r}; only event_schema_version 6 is readable"
+        )
+    if version > 6:
         raise ValueError(f"unsupported graph event_schema_version {version}")
     event.setdefault("policy_origin", "")
     event.setdefault("gate_semantics_digest", "")
@@ -158,20 +159,19 @@ def _migrate_invocation_started(event: dict[str, object]) -> None:
     event.setdefault("topology_safety_semantics_digest", "")
     event.setdefault("commit_safety_semantics_object_id", "")
     event.setdefault("commit_safety_semantics_digest", "")
-    if version == 6:
-        required = (
-            "gate_semantics_object_id",
-            "gate_semantics_digest",
-            "topology_safety_semantics_object_id",
-            "topology_safety_semantics_digest",
-            "commit_safety_semantics_object_id",
-            "commit_safety_semantics_digest",
+    required = (
+        "gate_semantics_object_id",
+        "gate_semantics_digest",
+        "topology_safety_semantics_object_id",
+        "topology_safety_semantics_digest",
+        "commit_safety_semantics_object_id",
+        "commit_safety_semantics_digest",
+    )
+    missing = [name for name in required if not event.get(name)]
+    if missing:
+        raise ValueError(
+            f"event_schema_version 6 requires complete semantic bindings; missing {', '.join(missing)}"
         )
-        missing = [name for name in required if not event.get(name)]
-        if missing:
-            raise ValueError(
-                f"event_schema_version 6 requires complete semantic bindings; missing {', '.join(missing)}"
-            )
     if "ir_digest" not in event:
         graph_digest = event.get("graph_digest")
         if isinstance(graph_digest, str):

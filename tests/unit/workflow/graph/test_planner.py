@@ -22,6 +22,7 @@ from assurance_agent.workflow.core.graph_events import (
     TaskRecoveryRoutedEvent,
 )
 from assurance_agent.workflow.graph.compiler import compile_workflow
+from tests.helpers_graph_v6 import v6_started_bindings
 from assurance_agent.workflow.graph.contracts import (
     ExecutionContract,
     ExecutionContractCatalog,
@@ -1500,6 +1501,7 @@ def test_exhausted_abandoned_subgraph_shell_gets_one_crash_recovery_replay(
                 "graph_id": "child",
                 "graph_digest": "gd-child",
                 "contract_digests": {},
+                **v6_started_bindings(),
                 "params": {},
                 "params_sha256": "ps",
                 "root_tree_id": "tree-0",

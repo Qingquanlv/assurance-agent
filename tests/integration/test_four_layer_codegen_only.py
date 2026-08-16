@@ -322,6 +322,9 @@ def test_generation_join_waits_for_blocked_codegen(tmp_path: Path) -> None:
     assert "operation:run-tests" not in {
         e.get("target") for e in events_mid if e.get("type") == "task_attempt_started"
     }
+    assert "operation:run-tests-and-collect-pr-metrics" not in {
+        e.get("target") for e in events_mid if e.get("type") == "task_attempt_started"
+    }
     adapter.release("skill:aa-e2e-codegen")
     thread.join(timeout=60.0)
     assert not thread.is_alive()

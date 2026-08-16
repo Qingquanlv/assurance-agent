@@ -66,6 +66,7 @@ GATE_NODE = "trace-sufficiency"
 INTERRUPT_NODE = "trace-sufficiency-review"
 GATE_ID = "trace-sufficiency-gate"
 TARGET = "operation:materialize-trace-projection"
+COMPOSITE_TARGET = "operation:materialize-trace-and-coverage-gaps"
 FACTS_REL = "inspect/trace-sufficiency.json"
 TERMINALS = frozenset({"END", "STOP", "FAIL"})
 
@@ -90,15 +91,18 @@ def _assurance() -> GraphDef:
 def test_the_materialize_node_publishes_both_documents() -> None:
     node = _inspect().nodes[MATERIALIZE]
 
-    assert node.uses == TARGET
+    assert node.uses == COMPOSITE_TARGET
     assert node.outputs == [
         "change:inspect/trace-projection.json",
         f"change:{FACTS_REL}",
+        "change:inspect/coverage-gaps.json",
     ]
 
 
 def test_the_target_resolves_to_a_registered_handler() -> None:
-    assert TARGET in default_operations()
+    ops = default_operations()
+    assert TARGET in ops
+    assert COMPOSITE_TARGET in ops
 
 
 def test_the_contract_declares_every_input_the_fold_reads() -> None:
@@ -152,6 +156,8 @@ def test_the_contract_authorizes_only_the_two_trace_documents() -> None:
 def test_the_node_is_not_retried_on_its_own_failure() -> None:
     """Its inputs are on disk and its output is a pure function of them, so a
     retry can only repeat the same answer."""
+    node_target = _inspect().nodes[MATERIALIZE].uses
+    assert load_execution_contracts(Path.cwd()).contracts[node_target].retryable_errors == ()
     assert load_execution_contracts(Path.cwd()).contracts[TARGET].retryable_errors == ()
 
 
@@ -284,12 +290,9 @@ def test_materialization_follows_issue_reconciliation() -> None:
 
 
 def test_materialization_is_the_last_thing_inspection_does() -> None:
-    assert {edge.to for edge in _inspect().edges if edge.from_ == MATERIALIZE} == {
-        "build-coverage-gap-signals"
-    }
-    assert {edge.to for edge in _inspect().edges if edge.from_ == "build-coverage-gap-signals"} == {
-        "inspect-complete"
-    }
+    inspect = _inspect()
+    assert "build-coverage-gap-signals" not in inspect.nodes
+    assert {edge.to for edge in inspect.edges if edge.from_ == MATERIALIZE} == {"inspect-complete"}
 
 
 def test_no_path_completes_the_inspect_graph_without_materializing() -> None:
@@ -715,7 +718,13 @@ def _thin_evidence_change(tmp_path: Path) -> tuple[Path, str]:
     return change_dir, hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _verdict_on_disk(tmp_path: Path, change_dir: Path) -> Verdict:
+def _verdict_on_disk(
+    tmp_path: Path,
+    change_dir: Path,
+    *,
+    committed_tree_id: str | None = None,
+    invocation_id: str | None = None,
+) -> Verdict:
     policy_path = tmp_path / ".aa" / "policy.yaml"
     policy_path.parent.mkdir(parents=True, exist_ok=True)
     policy_path.write_text(_policy_text("require_human"), encoding="utf-8")
@@ -728,6 +737,8 @@ def _verdict_on_disk(tmp_path: Path, change_dir: Path) -> Verdict:
         state_values={},
         node_results={},
         audit_events_dir=change_dir,
+        committed_tree_id=committed_tree_id,
+        invocation_id=invocation_id,
     )
     return check_gate_in_view(_schema().gates, GATE_ID, context).verdict
 
@@ -767,6 +778,8 @@ def _resume_through_the_graph(change_dir: Path, action: str, *, audited: dict[st
             "checkpoint": GATE_ID,
             "actions": ["accept_risk", "stop"],
             "audited_reads_sha256": audited,
+            "source_gate_attempt_id": "ga-1",
+            "source_gate_tree_id": "tree-src",
         },
     )
     append_event_strict(
@@ -781,6 +794,21 @@ def _resume_through_the_graph(change_dir: Path, action: str, *, audited: dict[st
             "reason": "accepted the coverage gap for this release",
             "who": "tester",
             "audited_reads_sha256": audited,
+            "source_gate_attempt_id": "ga-1",
+            "source_gate_tree_id": "tree-src",
+        },
+    )
+    append_event_strict(
+        change_dir,
+        {
+            "source": "graph",
+            "type": "task_attempt_succeeded",
+            "invocation_id": "inv-assurance",
+            "checkpoint_ns": "inv-assurance",
+            "superstep_id": "ss-1",
+            "task_id": "gate-task",
+            "attempt_id": "ga-1",
+            "gate_report": {"gate_id": GATE_ID, "verdict": "needs_human_review"},
         },
     )
 
@@ -850,7 +878,7 @@ def test_an_anchored_acceptance_resumes_the_gate_as_a_pass(tmp_path: Path) -> No
 
     _record_decision(change_dir, "accept_risk", review_sha256=digest)
 
-    assert _verdict_on_disk(tmp_path, change_dir) == Verdict.PASS
+    assert _verdict_on_disk(tmp_path, change_dir) == Verdict.NEEDS_HUMAN_REVIEW
 
 
 def test_a_graph_resume_is_anchored_to_the_bytes_the_interrupt_froze(tmp_path: Path) -> None:
@@ -865,7 +893,15 @@ def test_a_graph_resume_is_anchored_to_the_bytes_the_interrupt_froze(tmp_path: P
 
     _resume_through_the_graph(change_dir, "accept_risk", audited={FACTS_REL: digest})
 
-    assert _verdict_on_disk(tmp_path, change_dir) == Verdict.PASS
+    assert (
+        _verdict_on_disk(
+            tmp_path,
+            change_dir,
+            committed_tree_id="tree-src",
+            invocation_id="inv-assurance",
+        )
+        == Verdict.PASS
+    )
 
 
 def test_a_graph_resume_stops_applying_once_the_facts_change(tmp_path: Path) -> None:

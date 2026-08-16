@@ -43,6 +43,7 @@ from assurance_agent.workflow.graph.ingest import ingest_from_write_set
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
+    GraphProjection,
     RuntimeContext,
     TaskResult,
 )
@@ -624,13 +625,15 @@ def _attach_gate_report(
     context: RuntimeContext,
     gate_id: str,
 ) -> TaskResult:
-    state_values = _state_values_for_gate(workspace.change_dir, result)
     node_results: dict[str, object] = {}
+    projection: GraphProjection | None = None
     try:
         projection = fold_invocation_events(task.invocation_id, read_events_strict(workspace.change_dir))
         node_results = build_node_results_for_gate(projection, graph_id=task.graph_id)
     except LedgerIntegrityError:
+        projection = None
         node_results = {}
+    state_values = _state_values_for_gate(workspace.change_dir, result, projection=projection)
     own_payload: dict[str, object] = {"status": "succeeded"}
     if result.candidate_outputs:
         own_payload["outputs"] = dict(result.candidate_outputs)
@@ -723,21 +726,29 @@ def _gate_report_dict(report: FrozenGateReport) -> dict[str, object]:
     return gate_report
 
 
-def _state_values_for_gate(change_dir: Path, result: TaskResult) -> dict[str, Any]:
-    """优先读 workspace 内 workflow-state.yaml，再叠本 task 的 state_updates。"""
-    state: dict[str, Any] = {}
-    path = change_dir / "workflow-state.yaml"
-    if path.is_file():
-        try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except (OSError, yaml.YAMLError):
-            raw = {}
-        if isinstance(raw, dict):
-            state = {
-                key: value
-                for key, value in raw.items()
-                if key not in {"_integrity", "schema_version"} and not str(key).startswith("_")
-            }
+def _state_values_for_gate(
+    change_dir: Path,
+    result: TaskResult,
+    *,
+    projection: GraphProjection | None = None,
+) -> dict[str, Any]:
+    """Folded ``projection.state_values`` when present; YAML only with no projection."""
+    if projection is not None:
+        state: dict[str, Any] = dict(projection.state_values)
+    else:
+        state = {}
+        path = change_dir / "workflow-state.yaml"
+        if path.is_file():
+            try:
+                raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError):
+                raw = {}
+            if isinstance(raw, dict):
+                state = {
+                    key: value
+                    for key, value in raw.items()
+                    if key not in {"_integrity", "schema_version"} and not str(key).startswith("_")
+                }
     updates = result.state_updates
     if updates:
         state = _deep_merge(state, dict(updates))

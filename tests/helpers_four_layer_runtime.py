@@ -871,6 +871,9 @@ def assert_no_plan_or_run_tests(events: Sequence[Mapping[str, object]]) -> None:
         assert node_id != "plan", "codegen-only must not start plan"
         assert target not in _PLAN_SKILLS, f"codegen-only must not invoke {target}"
         assert target != "operation:run-tests", "codegen-only run_tests=false must skip run-tests"
+        assert target != "operation:run-tests-and-collect-pr-metrics", (
+            "codegen-only run_tests=false must skip run-tests"
+        )
 
 
 def _safe_tree_prefix(prefix: str) -> bool:

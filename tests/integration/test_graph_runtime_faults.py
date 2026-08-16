@@ -847,6 +847,7 @@ def test_v5_source_decision_cannot_cross_revised_tree_epoch(tmp_path: Path) -> N
 
     from assurance_agent.workflow.core.events import append_event_strict, read_events_strict
     from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
+    from tests.helpers_graph_v6 import v6_started_bindings
     from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
     from tests.integration._graph_fault_worker import (
         _REVISION_FIXTURES,
@@ -897,12 +898,8 @@ def test_v5_source_decision_cannot_cross_revised_tree_epoch(tmp_path: Path) -> N
             "entrypoint": "leaf",
             "graph_id": "g-leaf",
             "graph_digest": "dg",
-            "event_schema_version": 5,
             "contract_digests": {},
-            "policy_digest": "p",
-            "policy_origin": "packaged_default",
-            "gate_semantics_digest": "s",
-            "assurance_profile_digest": "a",
+            **v6_started_bindings(),
             "params": {},
             "params_sha256": "",
             "root_tree_id": source_tree,
@@ -968,7 +965,7 @@ def test_v5_source_decision_cannot_cross_revised_tree_epoch(tmp_path: Path) -> N
         state_values={},
         node_results={},
         audit_events_dir=epoch_change,
-        event_schema_version=5,
+        event_schema_version=6,
         invocation_id=leaf_id,
     )
     matched = replace(base_ctx, committed_tree_id=source_tree)
@@ -1203,7 +1200,7 @@ def test_pinned_request_served_exactly_on_resume(tmp_path: Path) -> None:
 def test_pinned_model_schema_mismatch_refuses_before_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pinned stale ``model_schema_digest`` fails closed on production pinned-load resume."""
+    """Pinned stale ``model_schema_digest`` fails closed on production resume."""
     from assurance_agent.workflow.driver import runtime_factory as factory_mod
     from assurance_agent.workflow.driver.runtime_factory import build_graph_runtime
     from assurance_agent.workflow.graph.agent_api import AgentInvoker
@@ -1233,8 +1230,8 @@ def test_pinned_model_schema_mismatch_refuses_before_recovery(
     with pytest.raises(GraphDefinitionChanged, match="ingest model schema digest mismatch"):
         factory_mod.validate_ingest_model_map(stale_catalog)
 
-    # Packaged pin (not synthetic siblings): load_pinned → compile_historical requires
-    # the assurance replay surface. Stale model digests change only the catalog identity.
+    # Packaged pin (not synthetic siblings): catalog identity differs from live.
+    # Stale model digests change only the catalog identity.
     project = tmp_path / "proj"
     change = trace_wf._seed_b0_completed(project)
     trace_wf._advance_inputs_to_b1(change, seed_completed_analysis=False)
@@ -1269,7 +1266,7 @@ def test_pinned_model_schema_mismatch_refuses_before_recovery(
     )
 
     # Resume through production build_graph_runtime: catalog identity differs →
-    # load_pinned_execution_definition → validate_ingest_model_map(pinned.ingest_catalog).
+    # GraphDefinitionChanged without pin reload.
     monkeypatch.undo()
     bundle = build_graph_runtime(
         project_root=project,
@@ -1278,7 +1275,7 @@ def test_pinned_model_schema_mismatch_refuses_before_recovery(
         clock=FakeClock(),
     )
     assert bundle.compiled.ingest_catalog_digest != projection.ingest_catalog_digest
-    with pytest.raises(GraphDefinitionChanged, match="ingest model schema digest mismatch"):
+    with pytest.raises(GraphDefinitionChanged, match="graph_definition_changed"):
         bundle.runtime.resume(invocation_id)
     assert project_invocation(change, invocation_id).terminal is None
     assert not any(e.get("type") == "superstep_committed" for e in read_events_strict(change))

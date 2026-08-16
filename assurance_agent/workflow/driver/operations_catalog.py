@@ -8,7 +8,7 @@ imports domain callables and binds them to ``operation:*`` targets. Callers
 
 from __future__ import annotations
 
-from assurance_agent.workflow.execution.graph_ops import run_tests
+from assurance_agent.workflow.execution.graph_ops import run_tests, run_tests_and_collect_pr_metrics
 from assurance_agent.workflow.graph.handlers.operation import (
     OperationFn,
     no_op,
@@ -64,7 +64,10 @@ from assurance_agent.workflow.metrics.c_layer import materialize_c_layer_metrics
 from assurance_agent.workflow.metrics.constraint_coverage import (
     compute_constraint_coverage_operation,
 )
-from assurance_agent.workflow.metrics.coverage_gaps import build_coverage_gap_signals_operation
+from assurance_agent.workflow.metrics.coverage_gaps import (
+    build_coverage_gap_signals_operation,
+    materialize_trace_and_coverage_gaps,
+)
 from assurance_agent.workflow.metrics.coverage_repair import (
     allocate_coverage_repair_attempt_operation,
     compute_coverage_repair_safety_operation,
@@ -83,6 +86,7 @@ from assurance_agent.workflow.metrics.nightly import (
     evaluate_retrospective_shortboards_operation,
     load_latest_pr_metrics_operation,
     run_mutation_sample_operation,
+    run_nightly_metrics_pipeline_operation,
 )
 from assurance_agent.workflow.metrics.pr_metrics import (
     collect_pr_metrics_batch_operation,
@@ -123,6 +127,7 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:verify-plan-mechanical": verify_plan_mechanical,
         "operation:derive-plan-layer-applicability": derive_plan_layer_applicability,
         "operation:run-tests": run_tests,
+        "operation:run-tests-and-collect-pr-metrics": run_tests_and_collect_pr_metrics,
         "operation:inspect": inspect_operation,
         "operation:generate-report": generate_report_operation,
         "operation:allocate-healing-attempt": operation_allocate_healing_attempt,
@@ -142,8 +147,8 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:record-analysis-failed": record_analysis_failed,
         "operation:materialize-empty-retro-analysis": materialize_empty_retro_analysis,
         "operation:materialize-trace-projection": materialize_trace_projection,
-        # Dual-source Lane B gap signals (graph wiring deferred; callable + contract).
         "operation:build-coverage-gap-signals": build_coverage_gap_signals_operation,
+        "operation:materialize-trace-and-coverage-gaps": materialize_trace_and_coverage_gaps,
         "operation:materialize-minimum-coverage": materialize_minimum_coverage_operation,
         "operation:collect-diff-coverage": collect_diff_coverage_operation,
         "operation:compute-constraint-coverage": compute_constraint_coverage_operation,
@@ -166,6 +171,7 @@ def default_operations() -> dict[str, OperationFn]:
         "operation:collect-adversarial-yield": collect_adversarial_yield_operation,
         "operation:aggregate-nightly-metrics": aggregate_nightly_metrics_operation,
         "operation:evaluate-retrospective-shortboards": evaluate_retrospective_shortboards_operation,
+        "operation:run-nightly-metrics-pipeline": run_nightly_metrics_pipeline_operation,
         "operation:reconcile-improvements": reconcile_improvements,
         "operation:load-review-subject": load_review_subject,
         "operation:validate-improvement-review-assessment": validate_improvement_review_assessment,

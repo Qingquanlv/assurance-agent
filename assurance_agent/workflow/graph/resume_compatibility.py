@@ -1,8 +1,10 @@
-"""V4/v5 topology compatibility audit and typed live-resume guard (D10 / D14).
+"""Topology compatibility audit helpers and live-resume compatibility gate.
 
-A topology receipt proves v6-audited topology safety only. It never binds
-``runtime_commit_safety/v1``. Remaining commit-safety-bearing work on a
-v1–v5 root stops with ``legacy_commit_safety_semantics_unbound``.
+Same-definition resume skips the legacy topology audit for every schema
+version (v4/v5 match v6: ``allowed=True``, no topology receipt). A topology
+receipt still proves topology safety only and never binds
+``runtime_commit_safety/v1``. ``legacy_commit_safety_semantics_unbound``
+remains the typed supersede eligibility reason.
 """
 
 from __future__ import annotations
@@ -450,197 +452,20 @@ def evaluate_resume_compatibility(
 ) -> tuple[ResumeCompatibilityDecision, TopologyCompatibilityReceiptV1 | None]:
     """Evaluate legacy resume authorization.
 
+    All schema versions skip the legacy topology audit (same as v6).
     Returns ``(decision, new_receipt_to_append_or_none)``. Exact existing receipt
     reuse yields ``new_receipt is None``.
     """
-    if projection.event_schema_version >= 6:
-        return (
-            ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=True,
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=_root_id(projection),
-                remaining_work_class="none",
-            ),
-            None,
-        )
-    if projection.event_schema_version < 4:
-        return (
-            ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=True,
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=_root_id(projection),
-                remaining_work_class="none",
-            ),
-            None,
-        )
-
-    selected = _selected_layers(projection.params)
-    assessment = assess_remaining_work(
-        schema=compiled.schema,
-        compiled=compiled,
-        contracts=contracts,
-        historical_roles=historical_roles,
-        projection=projection,
-        selected_layers=selected,
-    )
-
-    # Terminal / no remaining work: no receipt required.
-    if projection.terminal is not None or assessment.work_class == "none":
-        return (
-            ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=True,
-                audit_triggered=False,
-                requires_receipt=False,
-                remaining_work_class="none",
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=_root_id(projection),
-                receipt_id=existing_receipt.receipt_id if existing_receipt else None,
-            ),
-            None,
-        )
-
-    assurance_triggers = tuple(
-        item
-        for item in assessment.audit_trigger_roles
-        if item.startswith(("reachable:codegen:", "contract_write:", "uncommitted:"))
-    )
-    audit_needed = bool(assurance_triggers) or assessment.work_class == "commit_safety_bearing"
-    if not audit_needed:
-        # Non-assurance roots, or proven absence of reachable assurance-codegen roles.
-        return (
-            ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=True,
-                audit_triggered=False,
-                requires_receipt=False,
-                remaining_work_class=assessment.work_class,
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=_root_id(projection),
-            ),
-            None,
-        )
-
-    if historical_roles is None:
-        return (
-            ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=False,
-                reason=TOPOLOGY_AUDIT_UNSAFE,
-                audit_triggered=True,
-                requires_receipt=True,
-                remaining_work_class=assessment.work_class,
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=_root_id(projection),
-            ),
-            None,
-        )
-
-    if not profile_reconstructable:
-        return (
-            ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=False,
-                reason=TOPOLOGY_PROFILE_UNRECONSTRUCTABLE,
-                audit_triggered=True,
-                requires_receipt=True,
-                remaining_work_class=assessment.work_class,
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=_root_id(projection),
-            ),
-            None,
-        )
-
-    audit_result, per_layer, _ = audit_topology_for_resume(
-        schema=compiled.schema,
-        historical_roles=historical_roles,
-        selected_layers=selected,
-        reachable_layers=assessment.reachable_layers,
-    )
-    if audit_result != "wired":
-        return (
-            ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=False,
-                reason=TOPOLOGY_AUDIT_UNSAFE,
-                audit_triggered=True,
-                requires_receipt=True,
-                remaining_work_class=assessment.work_class,
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=_root_id(projection),
-            ),
-            None,
-        )
-
-    if change_dir is None:
-        object_id = topology_safety_semantics_object_digest()
-        topo_digest = topology_safety_semantics_digest()
-    else:
-        object_id, topo_digest, _ = stage_audit_topology_semantics(change_dir)
-
-    if existing_receipt is not None:
-        verify_receipt_bindings(
-            existing_receipt,
-            projection=projection,
-            historical_roles=historical_roles,
-            topology_object_id=object_id,
-            topology_digest=topo_digest,
-            reachable_set_digest=assessment.reachable_set_digest,
-        )
-        receipt = existing_receipt
-        new_receipt = None
-    else:
-        receipt = build_topology_compatibility_receipt(
-            projection=projection
-            if projection.parent_invocation_id is None
-            else projection.model_copy(
-                update={
-                    "invocation_id": projection.parent_invocation_id,
-                    "parent_invocation_id": None,
-                }
-            ),
-            historical_roles=historical_roles,
-            topology_object_id=object_id,
-            topology_digest=topo_digest,
-            selected_layers=selected,
-            reachable_layers=assessment.reachable_layers,
-            per_layer_results=per_layer,
-            reachable_set_digest=assessment.reachable_set_digest,
-            source_sequence=projection.event_seq,
-        )
-        new_receipt = receipt
-
-    # Topology receipt is necessary but never sufficient for commit-safety work.
-    if assessment.work_class == "commit_safety_bearing":
-        return (
-            ResumeCompatibilityDecision(
-                schema_version="1",
-                allowed=False,
-                reason=LEGACY_COMMIT_SAFETY_SEMANTICS_UNBOUND,
-                audit_triggered=True,
-                requires_receipt=True,
-                receipt_id=receipt.receipt_id,
-                remaining_work_class="commit_safety_bearing",
-                event_schema_version=projection.event_schema_version,
-                root_invocation_id=_root_id(projection),
-            ),
-            new_receipt,
-        )
-
+    del compiled, contracts, historical_roles, existing_receipt, profile_reconstructable, change_dir
     return (
         ResumeCompatibilityDecision(
             schema_version="1",
             allowed=True,
-            audit_triggered=True,
-            requires_receipt=True,
-            receipt_id=receipt.receipt_id,
-            remaining_work_class="report_terminal_only",
             event_schema_version=projection.event_schema_version,
             root_invocation_id=_root_id(projection),
+            remaining_work_class="none",
         ),
-        new_receipt,
+        None,
     )
 
 

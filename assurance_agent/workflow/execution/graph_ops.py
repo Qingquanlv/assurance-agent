@@ -11,6 +11,7 @@ from assurance_agent.workflow.execution.runner import run_change
 from assurance_agent.workflow.graph.handlers.operation import link_host_task_paths
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
+from assurance_agent.workflow.metrics.pr_metrics import collect_pr_metrics_batch_operation
 
 
 @contextmanager
@@ -53,4 +54,23 @@ def run_tests(task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeCo
     )
 
 
-__all__ = ["run_tests"]
+def run_tests_and_collect_pr_metrics(
+    task: ExecutableTask,
+    workspace: TaskWorkspace,
+    context: RuntimeContext,
+) -> TaskResult:
+    executed = run_tests(task, workspace, context)
+    if executed.status != "succeeded":
+        return executed
+    collected = collect_pr_metrics_batch_operation(task, workspace, context)
+    if collected.status != "succeeded":
+        return collected
+    executed_value = executed.value if isinstance(executed.value, dict) else {}
+    return TaskResult(
+        status="succeeded",
+        value={**executed_value, "metrics_batch": collected.value},
+        candidate_outputs=executed.candidate_outputs,
+    )
+
+
+__all__ = ["run_tests", "run_tests_and_collect_pr_metrics"]

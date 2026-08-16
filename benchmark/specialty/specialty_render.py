@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from assurance_agent.eval.specialty_models import (
+from benchmark.specialty.specialty_models import (
     CompleteLayerRow,
     CompleteTraceabilityEvidenceV3,
     IncompleteLayerRow,

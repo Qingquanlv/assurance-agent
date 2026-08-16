@@ -5,8 +5,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from assurance_agent.eval import specialty_replay as specialty_replay_mod
-from assurance_agent.eval.specialty_replay import collect_capability_policy_replay
+from benchmark.specialty import specialty_replay as specialty_replay_mod
+from benchmark.specialty.specialty_replay import collect_capability_policy_replay
 from tests.unit.workflow.graph.test_replay_binding import (
     _CHANGE_ID,
     _ENTRYPOINT,

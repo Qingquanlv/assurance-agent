@@ -108,4 +108,15 @@ assert importlib.util.find_spec("scripts") is None, "scripts package leaked into
 assert importlib.util.find_spec("migrate_skills") is None, "migrate_skills leaked into wheel"
 PY
 
+"$WORK_DIR/venv/bin/python" - <<'PY'
+import importlib.util
+
+for name in (
+    "assurance_agent.eval.specialty_models",
+    "assurance_agent.eval.specialty_render",
+    "assurance_agent.eval.specialty_replay",
+):
+    assert importlib.util.find_spec(name) is None, name
+PY
+
 echo "packaging smoke test: OK"

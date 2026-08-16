@@ -1,60 +1,98 @@
-# Task 4 Report — Declared-Only Sidecars + Attempt Input Snapshots
+# Task 4 Report: Lever 3 — ledger state_values for import-checkpoint and gate finalize
 
-## Status: DONE
+**Status:** DONE  
+**Branch:** `chore/slimming-dead-paths`  
+**Commit:** `187bf3b` — `fix: read gate state from the ledger projection`
 
-Branch tip at start of fix pass: `8541d36`. Edit + test only (no commit).
+## What was implemented
 
-## What changed (this fix pass)
+Import-checkpoint and live gate finalize now use folded `GraphProjection.state_values` when an invocation projection exists. YAML `workflow-state.yaml` is fallback only when there is no projection (import) or fold raises `LedgerIntegrityError` (finalize).
 
-### P0 — Deferred lock conflicts reselectable when due
-- `assurance_agent/workflow/graph/planner.py` — `pending` + `next_retry_at` (scheduling deferral) is added to `retry_tasks` instead of treated as permanently in-flight; plain `pending` without `next_retry_at` stays in-flight. Fan-out children get the same treatment. `_has_inflight` excludes backoff-gated deferrals.
-- `assurance_agent/workflow/graph/runtime.py` — `_earliest_retry_at` includes `pending` with `next_retry_at` so `_drive` sleeps until due before re-planning.
-- `assurance_agent/workflow/graph/scheduler.py` — on lock conflict, durable-ize any not-yet-written `node_activated` from `plan.strict_events` before emitting `task_scheduling_deferred` (prepared/synchronized waves otherwise skip activation when the lock is never held). Still no started+failed lock-conflict shape.
+- Extracted `state_values_for_import(context, projection)` in `checkpoint.py`. If `projection is not None`, returns `dict(projection.state_values)`; otherwise `_state_values_from_change(context)`.
+- `validate_import` calls that helper instead of always loading YAML.
+- `_reevaluate_gate` fallback uses the same helper (optional `projection=`), instead of `_state_values_from_change` directly.
+- `_attach_gate_report` folds first; on success passes the projection into `_state_values_for_gate`, which starts from `projection.state_values` then merges `result.state_updates`. YAML path only on `LedgerIntegrityError`.
+- `_state_values_from_change` kept for no-projection import. `aa decide` / `configure_workflow_params` / skills still use `set_state`. Checkpoint snapshot format unchanged. `durable_effects.py` and `replay_binding.py` untouched.
 
-### P2 — Step 3 coverage + AST zero-ref
-- `tests/unit/workflow/graph/test_task_input_snapshot.py`
-  - Real `GraphRuntime` / `plan_superstep` / `_drive` path: clock past `next_retry_at`, lock released, exactly one `task_attempt_started` with `attempt_number == 1`.
-  - `crash_after_started`: started event keeps a loadable snapshot; abandon + retry uses attempt 2.
-  - Capture-time wrong-tree / wrong-review rejection.
-  - Empty `matched_claims` schema reject.
-  - Closed inventory: dormant Runtime Context code surface only (`task_inputs.py`, `agent_api.py`, `handlers/agent.py`) must contain zero `events.jsonl` references (text + AST string check). Packaged plan-fixer `SKILL.md` files are deferred to Task 15.
-- `assurance_agent/workflow/graph/task_inputs.py` — require non-empty `matched_claims`; capture-time `source_review_sha256` byte check against workspace review file.
+## TDD Evidence
 
-### P1 — Revert premature plan-fixer skill flip
-- Restored `aa-api-plan-fixer/SKILL.md` and `aa-e2e-plan-fixer/SKILL.md` to `8541d36` text (events.jsonl mode detection retained until Task 15 injects Runtime Context).
-- Do not require packaged skills to drop `events.jsonl` while `AgentHandler` still injects `None`.
+### RED
 
-### Left alone (per instructions)
-- `benchmark/vue-fastapi-admin/benchmark/cursor-loop-helpers.sh`
-- `tests/unit/benchmark/test_cursor_loop_helpers.py`
+Command:
 
-## How reselection works (D13)
-
-1. Lock conflict → `task_scheduling_deferred` folds to `TaskProjection(status="pending", next_retry_at=..., attempts_used=0)` (and durable `node_activated` if the prepared-wave path had not written it yet). No attempt / budget / failed event.
-2. `_drive` waits until `_earliest_retry_at` (pending or failed).
-3. `plan_superstep` reselects the same `task_id` into `retry_tasks` when `pending` + `next_retry_at` is set.
-4. `next_attempt_decision` returns `wait` before due, else `start` with `attempt_number = attempts_used + 1` → **1** on first real attempt after release.
-5. Continued conflict after due emits the next deferral ordinal with capped backoff; still no started+failed.
-
-## Dark-ship status
-
-Unchanged from prior Task 4 landing: no packaged contract flipped to `declared_only`; Runtime Context injection remains dormant until Task 15; snapshot binding activates only for `read_isolation: declared_only`. Plan-fixer skills keep ledger-based mode detection until Task 15.
-
-## Verify commands / results
-
-```bash
-uv run pytest -q \
-  tests/unit/workflow/graph/test_task_input_snapshot.py \
-  tests/unit/workflow/graph/test_scheduler.py
-# → 47 passed
-
-uv run pytest -q -k 'plan_fixer or skill_parity or runtime_context' --maxfail=5
-# → 5 passed, 4118 deselected
-
-# Full Task 4 Step 9 suite (prior pass):
-# 233 passed; ruff/pyright clean
+```
+uv run pytest tests/unit/workflow/graph/test_state_values_from_projection.py -v
 ```
 
-## Not committed
+Result: **ERROR** (exit 2) — collection failed because the helper did not exist:
 
-Integrator owns staging/commit. Do not include cursor-loop-helpers dirty files.
+```
+E   ImportError: cannot import name 'state_values_for_import' from 'assurance_agent.workflow.graph.checkpoint'
+```
+
+Failure was the missing function, not a typo.
+
+### GREEN
+
+After extracting `state_values_for_import` and wiring import/finalize:
+
+```
+uv run pytest tests/unit/workflow/graph/test_state_values_from_projection.py -v
+```
+
+Result: **2 passed, 1 warning in 0.53s** (exit 0)
+
+Covering suite (brief + `test_import_checkpoint.py`):
+
+```
+uv run pytest \
+  tests/unit/workflow/graph/test_state_values_from_projection.py \
+  tests/unit/workflow/graph/test_checkpoint.py \
+  tests/unit/workflow/graph/test_derive_graph_state.py \
+  tests/unit/workflow/graph/test_import_checkpoint.py \
+  -v
+```
+
+Result: **65 passed, 1 warning in 1.89s** (exit 0)
+
+Also ran finalize tests during implementation: `test_finalize_and_child_stop.py` + `test_finalize_review_validation.py` with the files above — **110 passed, 1 warning in 2.90s**.
+
+The one warning is pre-existing and unrelated:
+
+```
+assurance_agent/workflow/graph/models.py:70: UserWarning: Field name "schema" in "CompiledWorkflow" shadows an attribute in parent "BaseModel"
+```
+
+Lint on touched Python: `ruff check` clean, `ruff format --check` clean, `pyright` 0 errors.
+
+## Import-checkpoint tests grep
+
+Grep `test_*import*checkpoint*` found:
+
+- `tests/unit/workflow/graph/test_import_checkpoint.py` — `state_values={}` only as an empty gate-eval fixture; does not assume YAML `phases` win when a projection exists. No update.
+- Other hits were eval/CLI import-checkpoint flows whose gates read review JSON, not `state.phases`.
+
+## Files changed
+
+Committed (this task only):
+
+| Path | Action |
+|------|--------|
+| `assurance_agent/workflow/graph/checkpoint.py` | `state_values_for_import`; `validate_import` + `_reevaluate_gate` fallback |
+| `assurance_agent/workflow/graph/finalize.py` | fold-first `_attach_gate_report`; `_state_values_for_gate(projection=)` |
+| `tests/unit/workflow/graph/test_state_values_from_projection.py` | new RED/GREEN tests |
+
+Not committed (out of scope): `.superpowers/sdd/progress.md`, `.superpowers/sdd/task-3-report.md`, this report.
+
+## Self-review
+
+- Spec: projection wins; YAML only with no projection / fold integrity error. Helper signature matches the brief verbatim.
+- Did not migrate `aa decide` / `configure_workflow_params` / skills off `set_state`.
+- Did not change checkpoint snapshot to offset-only.
+- Did not delete `durable_effects.py` or `replay_binding.py`.
+- `_state_values_from_change` remains the YAML fallback.
+- Passing `projection=` into `_reevaluate_gate` is defensive: `validate_import` already supplies `state_values`.
+
+## Concerns
+
+None blocking. Live gates with a successful fold will no longer see YAML `phases` written by `aa decide`; that is the slice. Those CLI paths still write YAML via `set_state` and are left for a later lever.

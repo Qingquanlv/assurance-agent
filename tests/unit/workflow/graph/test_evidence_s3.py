@@ -14,6 +14,7 @@ from assurance_agent.workflow.graph.evidence import (
 from assurance_agent.workflow.graph.frozen_output import FrozenOutput, frozen_outputs_wire
 from assurance_agent.workflow.graph.models import GraphProjection, TaskProjection
 from assurance_agent.workflow.graph.schema_v2 import EvidenceRef, NodeDef
+from tests.helpers_graph_v6 import v6_started_bindings
 
 
 def _frozen(symbol: str = "api_plan_review") -> dict[str, object]:
@@ -103,10 +104,10 @@ def test_fold_marks_fan_out_child_outputs_committed_on_superstep_commit() -> Non
             "entrypoint": "full",
             "graph_id": "main",
             "graph_digest": "gd",
-            "event_schema_version": 2,
             "ir_digest": "gd",
             "ingest_catalog_digest": "cat",
             "contract_digests": {},
+            **v6_started_bindings(),
             "params": {},
             "params_sha256": "ps",
             "root_tree_id": "tree-0",

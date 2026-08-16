@@ -441,7 +441,7 @@ class GraphProjection(BaseModel):
     parent_task_id: str | None = None
     structural_path: str
     graph_digest: str
-    event_schema_version: int = 1
+    event_schema_version: int = 6
     ir_digest: str = ""
     ingest_catalog_digest: str = ""
     contract_digests: dict[str, str]

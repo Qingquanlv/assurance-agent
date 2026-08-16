@@ -1168,11 +1168,14 @@ def _evaluate_gate_def(
         path=context.change_dir,
         source="changes",
     )
-    require_source_epoch = (context.event_schema_version or 0) >= 5
+    require_source_epoch = True
     source_attempt: str | None = None
     source_tree = context.committed_tree_id
     if require_source_epoch:
-        events = read_events_strict(context.audit_events_dir or context.change_dir)
+        try:
+            events = read_events_strict(context.audit_events_dir or context.change_dir)
+        except (LedgerIntegrityError, OSError, UnicodeError):
+            events = []
         source_attempt = _current_gate_attempt_id(
             events,
             gate_id=gate_id,

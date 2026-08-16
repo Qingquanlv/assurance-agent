@@ -6,7 +6,7 @@ import os
 import signal
 import sys
 import time
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -411,31 +411,6 @@ def _selector_matches(task, *, hits: dict[str, int], point: str) -> bool:  # noq
     return hits[total_key] >= occurrence
 
 
-@contextmanager
-def force_v5_binding():
-    """Force fresh root bindings onto event schema version 5 with profile snapshot.
-
-    Restores the original ``bind_root_definitions`` on exit so in-process suites
-    do not leak the monkeypatch across tests. Worker subprocesses may keep the
-    patch for the process lifetime; the context manager still restores cleanly.
-    """
-    from assurance_agent.workflow.graph import definition_pinning, runtime as runtime_mod
-
-    original_pinning = definition_pinning.bind_root_definitions
-    original_runtime = runtime_mod.bind_root_definitions
-
-    def _bind_v5(*, store, root_tree_id, event_schema_version=4):  # type: ignore[no-untyped-def]
-        return original_pinning(store=store, root_tree_id=root_tree_id, event_schema_version=5)
-
-    definition_pinning.bind_root_definitions = _bind_v5  # type: ignore[assignment]
-    runtime_mod.bind_root_definitions = _bind_v5  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        definition_pinning.bind_root_definitions = original_pinning
-        runtime_mod.bind_root_definitions = original_runtime
-
-
 def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
     from assurance_agent.workflow.core import events as events_mod
     from assurance_agent.workflow.core import progression as prog_mod
@@ -496,13 +471,13 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
         sched._begin_attempt = begin  # type: ignore[method-assign]  # noqa: SLF001
 
     if point == "handler_before_success":
-        persist_success_orig = sched._persist_success  # noqa: SLF001
+        persist_success_orig = sched._attempts._persist_success  # noqa: SLF001
 
         def persist_success(**kwargs):  # type: ignore[no-untyped-def]
             _fault_hit("handler_before_success")
             return persist_success_orig(**kwargs)
 
-        sched._persist_success = persist_success  # type: ignore[method-assign]  # noqa: SLF001
+        sched._attempts._persist_success = persist_success  # type: ignore[method-assign]  # noqa: SLF001
 
     if point == "sibling_success_before_commit":
         commit_wave_orig = sched._commit_wave  # noqa: SLF001
@@ -520,17 +495,17 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
         sched._commit_wave = commit_wave  # type: ignore[method-assign]  # noqa: SLF001
 
     if point == "budget_success_transaction":
-        persist_budget_orig = sched._persist_success  # noqa: SLF001
+        persist_budget_orig = sched._attempts._persist_success  # noqa: SLF001
 
         def persist_budget(**kwargs):  # type: ignore[no-untyped-def]
             persist_budget_orig(**kwargs)
             if kwargs["prepared"].task.budget is not None:
                 _fault_hit("budget_success_transaction")
 
-        sched._persist_success = persist_budget  # type: ignore[method-assign]  # noqa: SLF001
+        sched._attempts._persist_success = persist_budget  # type: ignore[method-assign]  # noqa: SLF001
 
     if point == "interrupt_event":
-        persist_result_orig = sched._persist_result  # noqa: SLF001
+        persist_result_orig = sched._attempts._persist_result  # noqa: SLF001
 
         def persist_result(**kwargs):  # type: ignore[no-untyped-def]
             settled = persist_result_orig(**kwargs)
@@ -538,7 +513,7 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
                 _fault_hit("interrupt_event")
             return settled
 
-        sched._persist_result = persist_result  # type: ignore[method-assign]  # noqa: SLF001
+        sched._attempts._persist_result = persist_result  # type: ignore[method-assign]  # noqa: SLF001
 
     if point == "tree_pointer_superstep":
         from assurance_agent.workflow.core import progression as prog_mod
@@ -626,8 +601,8 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
         "candidate_after_validate_before_success",
         "candidate_validation_rejected",
     }:
-        run_precommit = sched._run_precommit_if_needed  # noqa: SLF001
-        freeze_if_needed = sched._freeze_if_needed  # noqa: SLF001
+        run_precommit = sched._attempts._run_precommit_if_needed  # noqa: SLF001
+        freeze_if_needed = sched._attempts._freeze_if_needed  # noqa: SLF001
 
         def freeze_and_maybe_kill(task, result, workspace):  # type: ignore[no-untyped-def]
             write_set_id = freeze_if_needed(task, result, workspace)
@@ -654,11 +629,11 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
                 _fault_hit(point)
             return receipt
 
-        sched._freeze_if_needed = freeze_and_maybe_kill  # type: ignore[method-assign]  # noqa: SLF001
-        sched._run_precommit_if_needed = precommit_and_maybe_kill  # type: ignore[method-assign]  # noqa: SLF001
+        sched._attempts._freeze_if_needed = freeze_and_maybe_kill  # type: ignore[method-assign]  # noqa: SLF001
+        sched._attempts._run_precommit_if_needed = precommit_and_maybe_kill  # type: ignore[method-assign]  # noqa: SLF001
 
     if point in {"target_success_before_commit", "target_superstep_committed"}:
-        persist_success_orig = sched._persist_success  # noqa: SLF001
+        persist_success_orig = sched._attempts._persist_success  # noqa: SLF001
         commit_wave_orig = sched._commit_wave  # noqa: SLF001
 
         def persist_target(**kwargs):  # type: ignore[no-untyped-def]
@@ -700,7 +675,7 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
                     _fault_hit(point)
             return committed
 
-        sched._persist_success = persist_target  # type: ignore[method-assign]  # noqa: SLF001
+        sched._attempts._persist_success = persist_target  # type: ignore[method-assign]  # noqa: SLF001
         sched._commit_wave = commit_target  # type: ignore[method-assign]  # noqa: SLF001
 
     if point in {
@@ -738,7 +713,7 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
         from assurance_agent.workflow.graph import durable_effects as effects_mod
 
         reconcile_orig = getattr(effects_mod, "reconcile_effect", None)
-        persist_success_orig = sched._persist_success  # noqa: SLF001
+        persist_success_orig = sched._attempts._persist_success  # noqa: SLF001
         commit_wave_orig = sched._commit_wave  # noqa: SLF001
 
         def persist_healing(**kwargs):  # type: ignore[no-untyped-def]
@@ -766,7 +741,7 @@ def _install_hooks(runtime, point: str, *, scheduler) -> None:  # noqa: ANN001
                 _fault_hit(point)
             return committed
 
-        sched._persist_success = persist_healing  # type: ignore[method-assign]  # noqa: SLF001
+        sched._attempts._persist_success = persist_healing  # type: ignore[method-assign]  # noqa: SLF001
         sched._commit_wave = commit_healing  # type: ignore[method-assign]  # noqa: SLF001
 
         if reconcile_orig is not None and (
@@ -1016,16 +991,15 @@ def prepare_interrupted_v5_graph(tmp_path: Path):
     write_aa_config(project)
     # bind_root_definitions runs during root start; restore immediately after so
     # later in-process tests do not inherit the v5 force-patch.
-    with force_v5_binding():
-        runtime, compiled, change, scheduler = _build_v5_revision(project)
-        context = RuntimeContext(
-            project_root=project,
-            repo_root=project,
-            change_dir=change,
-            change_id="CH-1",
-            params={"run_mode": "full"},
-        )
-        result = runtime.run(compiled, "root", context)
+    runtime, compiled, change, scheduler = _build_v5_revision(project)
+    context = RuntimeContext(
+        project_root=project,
+        repo_root=project,
+        change_dir=change,
+        change_id="CH-1",
+        params={"run_mode": "full"},
+    )
+    result = runtime.run(compiled, "root", context)
     assert result.exit_code == 30, result.reason
     assert result.status.status == "interrupted"
     interrupt = result.status.pending_interrupts[0]
@@ -1108,50 +1082,48 @@ def main() -> int:
     sync.mkdir(parents=True, exist_ok=True)
     (sync / "READY").write_text(str(os.getpid()), encoding="utf-8")
 
-    binding_cm = force_v5_binding() if schema_key == "v5_revision" else nullcontext()
-    with binding_cm:
-        runtime, compiled, change, scheduler = _build(project, schema_key)
-        if point:
-            _install_hooks(runtime, point, scheduler=scheduler)
+    runtime, compiled, change, scheduler = _build(project, schema_key)
+    if point:
+        _install_hooks(runtime, point, scheduler=scheduler)
 
-        from assurance_agent.workflow.graph.checkpoint import project_invocation
-        from assurance_agent.workflow.graph.models import RuntimeContext
+    from assurance_agent.workflow.graph.checkpoint import project_invocation
+    from assurance_agent.workflow.graph.models import RuntimeContext
 
-        entrypoint = "root" if schema_key == "v5_revision" else "full"
-        context = RuntimeContext(
-            project_root=project,
-            repo_root=project,
-            change_dir=change,
-            change_id="CH-1",
-            params={"run_mode": "full"},
+    entrypoint = "root" if schema_key == "v5_revision" else "full"
+    context = RuntimeContext(
+        project_root=project,
+        repo_root=project,
+        change_dir=change,
+        change_id="CH-1",
+        params={"run_mode": "full"},
+    )
+
+    if mode == "resume":
+        invocation_id = os.environ["AA_FAULT_INVOCATION"]
+        from assurance_agent.workflow.graph.models import ResumeCommand
+
+        projection = project_invocation(change, invocation_id)
+        pending = next(
+            (i for i in projection.interrupts.values() if i.resolved_action is None),
+            None,
         )
+        command = None
+        if pending is not None:
+            from typing import Literal, cast
 
-        if mode == "resume":
-            invocation_id = os.environ["AA_FAULT_INVOCATION"]
-            from assurance_agent.workflow.graph.models import ResumeCommand
-
-            projection = project_invocation(change, invocation_id)
-            pending = next(
-                (i for i in projection.interrupts.values() if i.resolved_action is None),
-                None,
+            raw_action = "fix_and_proceed" if "fix_and_proceed" in pending.actions else pending.actions[0]
+            action = cast(Literal["fix_and_proceed", "accept_risk", "stop"], raw_action)
+            reason = os.environ.get("AA_FAULT_RESUME_REASON", "fault-test resume")
+            who = os.environ.get("AA_FAULT_RESUME_WHO", "fault-worker")
+            command = ResumeCommand(
+                interrupt_id=pending.interrupt_id,
+                action=action,
+                reason=reason,
+                who=who,
             )
-            command = None
-            if pending is not None:
-                from typing import Literal, cast
-
-                raw_action = "fix_and_proceed" if "fix_and_proceed" in pending.actions else pending.actions[0]
-                action = cast(Literal["fix_and_proceed", "accept_risk", "stop"], raw_action)
-                reason = os.environ.get("AA_FAULT_RESUME_REASON", "fault-test resume")
-                who = os.environ.get("AA_FAULT_RESUME_WHO", "fault-worker")
-                command = ResumeCommand(
-                    interrupt_id=pending.interrupt_id,
-                    action=action,
-                    reason=reason,
-                    who=who,
-                )
-            result = runtime.resume(invocation_id, command)
-        else:
-            result = runtime.run(compiled, entrypoint, context)
+        result = runtime.resume(invocation_id, command)
+    else:
+        result = runtime.run(compiled, entrypoint, context)
 
     (sync / "DONE").write_text(
         f"{result.exit_code}:{result.status.status}:{result.invocation_id}",

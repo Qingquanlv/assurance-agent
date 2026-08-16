@@ -25,7 +25,7 @@ from assurance_agent.artifacts.models.trace import (
     load_trace_projection_document,
 )
 from assurance_agent.change_location import resolve_change
-from assurance_agent.eval.specialty_models import (
+from benchmark.specialty.specialty_models import (
     CapabilityPolicyReplayV2,
     CommittedSpecialtyPublicationReceipt,
     CompleteTraceabilityEvidenceV3,
@@ -43,8 +43,8 @@ from assurance_agent.eval.specialty_models import (
     load_specialty_publication_receipt,
     load_specialty_report,
 )
-from assurance_agent.eval.specialty_render import render_specialty_sections
-from assurance_agent.eval.specialty_replay import collect_capability_policy_replay
+from benchmark.specialty.specialty_render import render_specialty_sections
+from benchmark.specialty.specialty_replay import collect_capability_policy_replay
 from assurance_agent.evidence.current_projection import (
     CurrentProjectionInvalidError,
     CurrentProjectionMissingError,

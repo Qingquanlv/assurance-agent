@@ -19,7 +19,7 @@ from assurance_agent.artifacts.models.policy import (
 )
 from assurance_agent.artifacts.models.trace import TraceExecution, TraceProjection, TraceRow
 from assurance_agent.artifacts.policy import policy_digest
-from assurance_agent.eval.specialty_models import (
+from benchmark.specialty.specialty_models import (
     CompleteLayerRow,
     CompleteTraceabilityEvidenceV3,
     CoverageSummary,
@@ -41,7 +41,7 @@ from assurance_agent.eval.specialty_models import (
     load_specialty_report,
     load_specialty_report_document,
 )
-from assurance_agent.eval.specialty_render import render_specialty_sections
+from benchmark.specialty.specialty_render import render_specialty_sections
 from assurance_agent.evidence.layer_summary import join_layer_sufficiency
 from assurance_agent.evidence.sufficiency import evaluate_sufficiency
 from tests.helpers_aa import AWARE_NOW

@@ -1,9 +1,9 @@
 """``operation:build-coverage-gap-signals`` — fold projection → coverage-gaps.json.
 
 Reads ``inspect/trace-projection.json`` (+ optional ``inspect/trace-sufficiency.json``),
-writes ``inspect/coverage-gaps.json`` once. Zero LLM. Graph wiring into the
-assurance path is deferred — callable + execution-contract registration is enough
-for pin tests; attaching after ``materialize-trace-projection`` is a later step.
+writes ``inspect/coverage-gaps.json`` once. Zero LLM. ``inspect-with-issues`` folds
+this into ``operation:materialize-trace-and-coverage-gaps`` so recover.continue_to
+the materialize node still runs both steps.
 
 Also folds in the batch's A2/A3 evidence (``constraint-coverage.json`` /
 ``auth-matrix.json``) as :class:`CoverageGapFeedstock` when present. Both were
@@ -37,6 +37,7 @@ from assurance_agent.artifacts.models.trace import TraceProjectionLike, load_tra
 from assurance_agent.artifacts.models.trace_sufficiency import TraceSufficiencyFacts
 from assurance_agent.evidence.coverage_gaps import build_coverage_gaps
 from assurance_agent.workflow.execution.evidence import atomic_write_bytes
+from assurance_agent.workflow.graph.handlers.trace_projection import materialize_trace_projection
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
@@ -194,6 +195,26 @@ def build_coverage_gap_signals_operation(
     )
 
 
+def materialize_trace_and_coverage_gaps(
+    task: ExecutableTask,
+    workspace: TaskWorkspace,
+    context: RuntimeContext,
+) -> TaskResult:
+    """Fail-fast: materialize the reconciled projection, then fold coverage gaps."""
+    materialized = materialize_trace_projection(task, workspace, context)
+    if materialized.status != "succeeded":
+        return materialized
+    gaps = build_coverage_gap_signals_operation(task, workspace, context)
+    if gaps.status != "succeeded":
+        return gaps
+    materialized_value = materialized.value if isinstance(materialized.value, dict) else {}
+    return TaskResult(
+        status="succeeded",
+        value={**materialized_value, "coverage_gaps": gaps.value},
+        candidate_outputs=materialized.candidate_outputs,
+    )
+
+
 __all__ = [
     "COVERAGE_GAPS_REL",
     "TRACE_PROJECTION_REL",
@@ -202,4 +223,5 @@ __all__ = [
     "build_coverage_gap_signals_operation",
     "load_trace_projection",
     "load_trace_sufficiency",
+    "materialize_trace_and_coverage_gaps",
 ]

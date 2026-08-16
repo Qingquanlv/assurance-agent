@@ -107,14 +107,21 @@ def preview_selected_wave(
     *,
     max_parallel_tasks: int,
     child_projections: Mapping[str, GraphProjection] | None = None,
+    plan: PlanResult | None = None,
 ) -> SelectedInvocationWave | None:
-    """Plan and select the next wave without appending ledger events."""
+    """Select the next wave without appending ledger events.
+
+    When ``plan`` is supplied it is reused; otherwise this function plans once.
+    Callers that already ran ``plan_superstep`` for the same projection should
+    pass that result so a superstep does not plan twice.
+    """
     if _has_uncommitted_succeeded_tasks(projection):
         return None
-    try:
-        plan = plan_superstep(compiled, projection, context, artifacts)
-    except PlanError:
-        return None
+    if plan is None:
+        try:
+            plan = plan_superstep(compiled, projection, context, artifacts)
+        except PlanError:
+            return None
     if plan.terminal is not None or not plan.tasks:
         return None
     selected = select_wave(plan.tasks, max_parallel_tasks=max_parallel_tasks)
