@@ -49,7 +49,6 @@ from assurance_agent.workflow.graph.planner import (
 from assurance_agent.workflow.graph.schema_v2 import EdgeDef, StateDef, parse_workflow_v2
 
 DIAMOND = """
-schema_version: "2"
 name: planner-diamond
 entrypoints:
   full: {graph: main}
@@ -71,7 +70,6 @@ graphs:
 """
 
 EXCLUSIVE_START = """
-schema_version: "2"
 name: planner-exclusive
 params:
   mode: {type: str, default: "a"}
@@ -89,7 +87,6 @@ graphs:
 """
 
 NON_EXCLUSIVE = """
-schema_version: "2"
 name: planner-non-exclusive
 entrypoints:
   full: {graph: main}
@@ -109,7 +106,6 @@ graphs:
 """
 
 JOIN_GRAPH = """
-schema_version: "2"
 name: planner-join
 params:
   go: {type: bool, default: true}
@@ -134,7 +130,6 @@ graphs:
 """
 
 ROUTE_GRAPH = """
-schema_version: "2"
 name: planner-route
 entrypoints:
   full: {graph: main}
@@ -157,7 +152,6 @@ graphs:
 """
 
 BOOLEAN_ROUTE_GRAPH = """
-schema_version: "2"
 name: planner-boolean-route
 entrypoints:
   full: {graph: main}
@@ -181,7 +175,6 @@ graphs:
 """
 
 CYCLE_GRAPH = """
-schema_version: "2"
 name: planner-cycle
 params:
   max_plan_fix_attempts: {type: int, default: 3}
@@ -221,7 +214,6 @@ graphs:
 # （gate→head 回边闭合）。head/mid 各自成功一代后，前向边不得把已 settled 的下游
 # 再次投递（否则 allocate/fixer 空转、白烧预算）。
 FORWARD_EDGE_CYCLE_GRAPH = """
-schema_version: "2"
 name: planner-forward-edge-cycle
 params:
   max_loops: {type: int, default: 3}
@@ -262,7 +254,6 @@ graphs:
 # 循环体内含 builtin:join：head→{a,b}→join→decide→head 回边闭合。join 每一代
 # 都必须随 source 再跑而重新触发，否则第二代 fixer 成功后 graph 卡死不前。
 JOIN_CYCLE_GRAPH = """
-schema_version: "2"
 name: planner-join-cycle
 params:
   max_loops: {type: int, default: 5}
@@ -304,7 +295,6 @@ graphs:
 """
 
 ROUTE_NO_DEFAULT = """
-schema_version: "2"
 name: planner-route-no-default
 entrypoints:
   full: {graph: main}
@@ -323,7 +313,6 @@ graphs:
 """
 
 STATE_GRAPH = """
-schema_version: "2"
 name: planner-state
 entrypoints:
   full: {graph: main}
@@ -343,7 +332,6 @@ graphs:
 """
 
 ARTIFACT_GRAPH = """
-schema_version: "2"
 name: planner-artifact
 entrypoints:
   full: {graph: main}
@@ -362,7 +350,6 @@ graphs:
 """
 
 RETRY_GRAPH = """
-schema_version: "2"
 name: planner-retry
 entrypoints:
   full: {graph: main}
@@ -380,7 +367,6 @@ graphs:
 """
 
 SUBGRAPH_ABANDONED_REPLAY_GRAPH = """
-schema_version: "2"
 name: planner-subgraph-abandoned-replay
 entrypoints:
   full: {graph: main}
@@ -402,7 +388,6 @@ graphs:
 """
 
 RECOVERY_GRAPH = """
-schema_version: "2"
 name: planner-recovery
 entrypoints:
   full: {graph: main}
@@ -431,7 +416,6 @@ graphs:
 """
 
 PRIORITY_GRAPH = """
-schema_version: "2"
 name: planner-priority
 entrypoints:
   full: {graph: main}
@@ -704,7 +688,6 @@ def test_non_exclusive_convergence_rejected_not_duplicated(tmp_path: Path) -> No
 
 def test_skipped_node_does_not_traverse_outgoing_edges(tmp_path: Path) -> None:
     text = """
-schema_version: "2"
 name: planner-skip-chain
 params:
   flag: {type: bool, default: false}
@@ -899,7 +882,6 @@ def test_join_inside_cycle_reactivates_each_generation(tmp_path: Path) -> None:
 
 def test_route_missing_selection_uses_explicit_default(tmp_path: Path) -> None:
     text = """
-schema_version: "2"
 name: planner-route-default
 entrypoints:
   full: {graph: main}
@@ -1008,7 +990,6 @@ def test_join_all_active_empty_is_error_not_implicit_pass(tmp_path: Path) -> Non
 
 
 JOIN_DEAD_BRANCH_GRAPH = """
-schema_version: "2"
 name: planner-join-dead-branch
 params:
   go: {type: bool, default: true}
@@ -1594,7 +1575,6 @@ def test_graph_digest_drift_fails_closed(tmp_path: Path) -> None:
 def test_sha256_param_is_allowed_as_one_content_addressed_path_segment(tmp_path: Path) -> None:
     schema = parse_workflow_v2(
         """
-schema_version: "2"
 name: sha-path-test
 params:
   subject_sha256: {type: str, default: ""}
@@ -1700,7 +1680,6 @@ def test_state_updates_reject_undeclared_keys() -> None:
 
 
 _NODE_VALUE_GRAPH = """
-schema_version: "2"
 name: planner-node-value
 entrypoints:
   full: {graph: main}

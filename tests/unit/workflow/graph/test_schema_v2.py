@@ -22,24 +22,20 @@ def test_object_param_schema_is_supported() -> None:
 
 def test_minimal_v2_schema_loads() -> None:
     schema = parse_workflow_v2(Path("tests/fixtures/workflow-v2-minimal.yaml").read_text(encoding="utf-8"))
-    assert schema.schema_version == "2"
+    assert schema.name == "minimal"
     assert schema.entrypoints["full"].graph == "main"
     assert list(schema.graphs["main"].nodes) == ["first"]
     assert schema.policies.retry["never"].max_attempts == 1
 
 
-@pytest.mark.parametrize("version", ["1", "2.0", 2, ""])
-def test_only_exact_string_version_two_is_accepted(version: object) -> None:
-    text = f"schema_version: {version!r}\nname: bad\nentrypoints: {{}}\ngraphs: {{}}\n"
-    with pytest.raises(SchemaV2Error, match='schema_version must be exactly "2"'):
-        parse_workflow_v2(text)
+def test_schema_version_root_key_is_rejected() -> None:
+    with pytest.raises(SchemaV2Error, match="unknown root keys: schema_version"):
+        parse_workflow_v2('schema_version: "2"\nname: bad\nentrypoints: {}\ngraphs: {}\n')
 
 
-def test_v1_phase_and_loop_keys_are_rejected() -> None:
-    with pytest.raises(SchemaV2Error, match="phases|loops"):
-        parse_workflow_v2(
-            'schema_version: "2"\nname: bad\nphases: []\nloops: {}\nentrypoints: {}\ngraphs: {}\n'
-        )
+def test_unknown_topology_root_keys_are_rejected() -> None:
+    with pytest.raises(SchemaV2Error, match="unknown root keys: loops, phases"):
+        parse_workflow_v2("name: bad\nphases: []\nloops: {}\nentrypoints: {}\ngraphs: {}\n")
 
 
 def test_load_workflow_v2_explicit_path_wins(tmp_path: Path) -> None:
@@ -191,7 +187,6 @@ def test_manual_revision_action_must_be_declared_on_interrupt() -> None:
 def test_compiler_requires_a_route_for_each_declared_domain_interrupt_action() -> None:
     schema = parse_workflow_v2(
         """
-schema_version: "2"
 name: domain-interrupt
 entrypoints:
   full: {graph: main}

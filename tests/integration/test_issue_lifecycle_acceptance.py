@@ -94,7 +94,6 @@ _DEPT_500_SYMPTOM = "http_500_internal_server_error"
 
 
 _ACCEPTANCE_WORKFLOW = """\
-schema_version: "2"
 name: issue-lifecycle-acceptance
 params:
   run_mode: {type: enum, values: [full], default: full}

@@ -78,7 +78,6 @@ contracts:
 """
 
 _LINEAR = """\
-schema_version: "2"
 name: import-linear
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -110,7 +109,6 @@ gates: {}
 """
 
 _GATED = """\
-schema_version: "2"
 name: import-gated
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -150,7 +148,6 @@ gates:
 """
 
 _NESTED = """\
-schema_version: "2"
 name: import-nested
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -187,7 +184,6 @@ gates: {}
 """
 
 _FANOUT = """\
-schema_version: "2"
 name: import-fanout
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -222,7 +218,6 @@ gates: {}
 """
 
 _BUDGET = """\
-schema_version: "2"
 name: import-budget
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -254,7 +249,6 @@ gates: {}
 """
 
 _RETRO = """\
-schema_version: "2"
 name: import-retro
 params:
   run_mode: {type: enum, values: [full, retro], default: full}
@@ -847,7 +841,6 @@ def test_valid_nested_structural_path_import(tmp_path: Path) -> None:
 
 
 _PRECHECK = """\
-schema_version: "2"
 name: import-precheck
 params:
   run_mode: {type: enum, values: [full, codegen-only], default: full}

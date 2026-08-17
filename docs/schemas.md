@@ -25,7 +25,7 @@ JSON Schema 文件是给非 Python 消费者的参考。运行期产物校验由
 
 ## Workflow schema v2 编排词汇
 
-打包 schema 为 `schema_version: "2"`。根级键仅允许 `schema_version` / `name` / `params` / `entrypoints` / `policies` / `graphs` / `gates`；v1 的 `phases:` / `loops:` 在加载期即被拒绝。语义由 `assurance_agent/workflow/graph/`（GraphRuntime）实现，此处只描述用户可见行为；字段约束以 `workflow/graph/schema_v2.py` 的 pydantic 模型为准。
+根级键仅允许 `name` / `params` / `entrypoints` / `policies` / `graphs` / `gates`；未知根键（含 `schema_version` / `phases` / `loops`）在加载期拒绝。语义由 `assurance_agent/workflow/graph/`（GraphRuntime）实现，此处只描述用户可见行为；字段约束以 `workflow/graph/schema_v2.py` 的 pydantic 模型为准。
 
 - **params**——类型化运行参数（`enum` / `list` / `bool` / `int` / `str` + `default`），invocation 级可覆盖，未声明的 param 直接拒绝。
 - **entrypoints**——图的入口：`graph` 指定目标图；`allow` DSL 在启动前裁决 params；`with` 固化 param 覆盖；`restart: once|repeatable` 决定完成后能否再跑。

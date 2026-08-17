@@ -479,7 +479,7 @@ contracts:
 
 def _wf(graph_body: str) -> str:
     return (
-        'schema_version: "2"\nname: t\n'
+        'name: t\n'
         + _HEADER
         + "graphs:\n"
         + textwrap.indent(textwrap.dedent(graph_body), "  ")

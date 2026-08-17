@@ -61,7 +61,6 @@ contracts:
 """
 
 _WRITE_WORKFLOW = """\
-schema_version: "2"
 name: write-min
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -106,7 +105,6 @@ contracts:
 """
 
 _SYNC_WORKFLOW = """\
-schema_version: "2"
 name: synchronized-update
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -1037,7 +1035,6 @@ contracts:
 """
 
 _NESTED_SYNC_WORKFLOW = """\
-schema_version: "2"
 name: nested-sync-runtime
 params:
   run_mode: {type: enum, values: [full], default: full}

@@ -360,7 +360,6 @@ contracts:
     compiled = compile_workflow(
         parse_workflow_v2(
             """
-schema_version: "2"
 name: runtime-recovery
 entrypoints:
   full: {graph: main}

@@ -334,7 +334,6 @@ def _minimal_replay_schema(*, layer: str = "api") -> WorkflowSchemaV2:
         graphs[f"{wired_layer}-branch"] = _branch_graph(layer=wired_layer)
         graphs[f"{wired_layer}-plan-cycle"] = _plan_cycle_graph(layer=wired_layer)
     return WorkflowSchemaV2(
-        schema_version="2",
         name="replay-test",
         params={name: ParamDef(type="str") for name in PARAM_NAMES},
         entrypoints={"execute": EntrypointDef(graph="assurance")},
@@ -869,7 +868,6 @@ def _wired_specialty_schema(*, layer: str = "fuzz") -> WorkflowSchemaV2:
         f"{layer}-codegen-precondition-gate": _full_codegen_gate(layer=layer),
     }
     return WorkflowSchemaV2(
-        schema_version="2",
         name="wired-specialty",
         params={name: ParamDef(type="str") for name in PARAM_NAMES},
         entrypoints={"execute": EntrypointDef(graph="assurance")},

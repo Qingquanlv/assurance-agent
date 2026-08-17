@@ -1249,7 +1249,7 @@ def _compile_nested(body: str):
     from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 
     text = (
-        'schema_version: "2"\nname: nested-sync\n'
+        'name: nested-sync\n'
         "entrypoints:\n  full: {graph: main}\n"
         "policies:\n"
         "  retry:\n    never: {max_attempts: 1, retry_on: []}\n"
