@@ -341,11 +341,26 @@ def _is_case_document(rel: str) -> bool:
     return rel.startswith("cases/") and rel.endswith(("/case.yaml", "/case.yml", "/case.json"))
 
 
+def _write_set_file_digests(write_set: WriteSet) -> dict[str, str]:
+    """Logical path → CAS digest for files in the write-set.
+
+    Declared directory outputs (``change:cases/``) freeze as one closure hash in
+    ``outputs_sha256``. Child files are only on ``entries``. Overlay entries so
+    Class II can read the same documents Class I already expanded from disk.
+    """
+    digests = dict(write_set.outputs_sha256)
+    for entry in write_set.entries:
+        if entry.after_sha256 is None:
+            continue
+        digests[entry.logical_path] = entry.after_sha256
+    return digests
+
+
 def _load_authored_from_write_set(store: TreeStore, write_set: WriteSet) -> dict[str, Any]:
     authored: dict[str, Any] = {}
-    for logical in write_set.outputs_sha256:
+    for logical, digest in _write_set_file_digests(write_set).items():
         root, _, rest = logical.partition(":")
-        if root != "change" or not rest:
+        if root != "change" or not rest or rest.endswith("/"):
             continue
         spec = match_artifact(rest)
         if spec is not None and spec.compat != "must_compat":
@@ -353,7 +368,7 @@ def _load_authored_from_write_set(store: TreeStore, write_set: WriteSet) -> dict
         if spec is None and not _is_case_document(rest):
             continue
         try:
-            text = _load_write_set_text(store, write_set, logical)
+            text = _read_object_text(store, digest, logical)
             if spec is not None:
                 authored[logical] = load_registered_artifact(rest, text)
             else:
@@ -363,14 +378,28 @@ def _load_authored_from_write_set(store: TreeStore, write_set: WriteSet) -> dict
     return authored
 
 
-def _load_write_set_text(store: TreeStore, write_set: WriteSet, logical: str) -> str:
+def _logical_digest(write_set: WriteSet, logical: str) -> str | None:
     digest = write_set.outputs_sha256.get(logical)
-    if digest is None:
-        raise ValueError(f"missing write-set artifact: {logical}")
+    if digest is not None:
+        return digest
+    for entry in write_set.entries:
+        if entry.logical_path == logical and entry.after_sha256 is not None:
+            return entry.after_sha256
+    return None
+
+
+def _read_object_text(store: TreeStore, digest: str, logical: str) -> str:
     try:
         return store.read_object(digest.removeprefix("sha256:")).decode("utf-8")
     except (WorkspaceError, UnicodeDecodeError) as exc:
         raise ValueError(f"unreadable write-set artifact {logical}: {exc}") from exc
+
+
+def _load_write_set_text(store: TreeStore, write_set: WriteSet, logical: str) -> str:
+    digest = _logical_digest(write_set, logical)
+    if digest is None:
+        raise ValueError(f"missing write-set artifact: {logical}")
+    return _read_object_text(store, digest, logical)
 
 
 def _load_matrix_payload(
