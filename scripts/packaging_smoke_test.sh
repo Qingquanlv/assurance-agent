@@ -60,10 +60,14 @@ PY
 # New production modules must import from the wheel (not only the repo tree).
 "$WORK_DIR/venv/bin/python" - <<'PY'
 import assurance_agent.artifacts.policy_obligations as policy_obligations
+import assurance_agent.verification.plan_checks as plan_checks
 import assurance_agent.workflow.graph.manual_revision as manual_revision
+import assurance_agent.workflow.graph.reviewer_plan_checks as reviewer_plan_checks
 
 assert policy_obligations.DEFERRED_POLICY_OBLIGATIONS
 assert hasattr(manual_revision, "ManualRevisionError")
+assert hasattr(plan_checks, "run_layer_plan_checks")
+assert hasattr(reviewer_plan_checks, "complete_reviewer_plan_checks")
 PY
 
 # Import the runtime registry from the installed wheel.  Schema nodes may be
@@ -79,7 +83,7 @@ PY
 "$WORK_DIR/venv/bin/python" - <<'PY'
 from assurance_agent import resources
 skills = resources.iter_children("skills")
-assert len(skills) == 39, f"expected 39 skills, got {len(skills)}"
+assert len(skills) == 36, f"expected 36 skills, got {len(skills)}"
 required = {
     "aa-workflow",
     "writing-skills",
@@ -96,6 +100,8 @@ required = {
     "aa-performance-codegen",
 }
 assert required <= set(skills), sorted(required - set(skills))
+removed = {"aa-api-plan-fixer", "aa-e2e-plan-fixer", "aa-case-fixer"}
+assert not (removed & set(skills)), sorted(removed & set(skills))
 assert "aa-doc-author.md" in resources.iter_children("opencode", "agents")
 assert "aa.mjs" in resources.iter_children("opencode", "plugins")
 assert "workflow_start.ts" in resources.iter_children("opencode", "tools")
