@@ -110,6 +110,9 @@ def test_thirty_eight_skills_present() -> None:
     assert "aa-retro-workflow-analysis" in names
     assert "aa-retro-eval-analysis" in names
     assert "aa-coverage-repair" in names
+    assert "aa-api-plan-fixer" not in names
+    assert "aa-e2e-plan-fixer" not in names
+    assert "aa-case-fixer" not in names
     assert not any(n.startswith("aws-") for n in names)
 
 
