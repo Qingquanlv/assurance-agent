@@ -1,4 +1,4 @@
-"""Gate expression corpus against packaged schema_version \"2\"."""
+"""Gate expression corpus against the packaged workflow schema."""
 
 from pathlib import Path
 from typing import Any
@@ -1063,7 +1063,6 @@ def _load_fuzz_perf_fixture_gates():
 def _fixture_schema_for_layer(layer: str) -> WorkflowSchemaV2:
     gates = _load_fuzz_perf_fixture_gates()
     return WorkflowSchemaV2(
-        schema_version="2",
         name="fuzz-performance-fixture",
         params={name: ParamDef(type="str") for name in ("run_mode", "test_types")},
         entrypoints={"execute": EntrypointDef(graph="assurance")},

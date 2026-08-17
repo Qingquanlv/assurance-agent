@@ -134,7 +134,6 @@ def test_strict_policy_validates_compiled_skill_coverage() -> None:
     compiled = compile_workflow(
         parse_workflow_v2(
             """
-schema_version: "2"
 name: routing
 entrypoints:
   full: {graph: main}

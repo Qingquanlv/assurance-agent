@@ -50,7 +50,6 @@ contracts:
 """
 
 _SCHEMA = """\
-schema_version: "2"
 name: eval-import-replay
 params:
   run_mode: {type: enum, values: [full, codegen-only], default: full}

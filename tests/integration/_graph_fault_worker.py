@@ -48,7 +48,6 @@ contracts:
 """
 
 _LINEAR = """\
-schema_version: "2"
 name: fault-linear
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -79,7 +78,6 @@ gates: {}
 """
 
 _SIBLINGS = """\
-schema_version: "2"
 name: fault-siblings
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -117,7 +115,6 @@ gates: {}
 """
 
 _BUDGET = """\
-schema_version: "2"
 name: fault-budget
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -147,7 +144,6 @@ gates: {}
 """
 
 _INTERRUPT = """\
-schema_version: "2"
 name: fault-interrupt
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -208,7 +204,6 @@ contracts:
 """
 
 _V5_REVISION = """\
-schema_version: "2"
 name: fault-v5-revision
 params:
   run_mode: {type: enum, values: [full], default: full}
@@ -308,7 +303,6 @@ gates:
 """
 
 _SYNC = """\
-schema_version: "2"
 name: fault-sync
 params:
   run_mode: {type: enum, values: [full], default: full}

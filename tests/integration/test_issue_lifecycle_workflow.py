@@ -154,7 +154,6 @@ contracts:
 # ---------------------------------------------------------------------------
 
 _WORKFLOW = """\
-schema_version: "2"
 name: iwi-test
 params:
   run_mode: {type: enum, values: [full], default: full}

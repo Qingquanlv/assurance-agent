@@ -160,8 +160,7 @@ def test_agent_handler_completes_manifest_before_its_own_freeze(tmp_path: Path) 
     )
     compiled = compile_workflow(
         parse_workflow_v2(
-            f"""schema_version: "2"
-name: codegen-test
+            f"""name: codegen-test
 entrypoints:
   full: {{graph: main}}
 graphs:
@@ -245,8 +244,7 @@ def test_agent_handler_rejects_repo_file_replaced_between_completion_and_freeze(
     )
     compiled = compile_workflow(
         parse_workflow_v2(
-            f"""schema_version: "2"
-name: codegen-test
+            f"""name: codegen-test
 entrypoints:
   full: {{graph: main}}
 graphs:

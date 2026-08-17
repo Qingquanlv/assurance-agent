@@ -65,7 +65,7 @@ skills/                        # 同步的 aa-* skill 套件
 
 ### 工作流总览
 
-打包 schema 为 **`schema_version: "2"`**（GraphRuntime）：`entrypoints` + `graphs` 拓扑；同超步内真并行与资源序列化；task retry 与业务 budget 分计；interrupt/resume；严格 `events.jsonl` 为权威；eval mid-graph 仅经 validated import-manifest。
+打包 schema 为 GraphRuntime：`entrypoints` + `graphs` 拓扑；同超步内真并行与资源序列化；task retry 与业务 budget 分计；interrupt/resume；严格 `events.jsonl` 为权威；eval mid-graph 仅经 validated import-manifest。
 
 一个变更（change）从 `explore` 走到 `report`，每阶段落结构化产物到 `qa/changes/<change-id>/`；CLI 用确定性状态机推进：
 

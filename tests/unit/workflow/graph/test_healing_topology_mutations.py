@@ -83,7 +83,6 @@ def _approved_schema(
         nodes.pop("combine", None)
     return WorkflowSchemaV2.model_validate(
         {
-            "schema_version": "2",
             "name": "healing-target",
             "params": {},
             "entrypoints": {"healing": {"graph": "healing"}},

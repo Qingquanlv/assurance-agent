@@ -125,7 +125,6 @@ def test_entrypoint_def_rejects_unknown_restart() -> None:
 
 def test_workflow_schema_parses_repeatable_restart() -> None:
     yaml_text = """
-schema_version: "2"
 name: test-restart-policy
 params: {}
 entrypoints:

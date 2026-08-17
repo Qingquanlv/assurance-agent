@@ -36,7 +36,6 @@ from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 
 _MINIMAL_SCHEMA = textwrap.dedent(
     """\
-    schema_version: "2"
     name: cli-min
     params:
       run_mode: {type: enum, values: [full], default: full}
@@ -68,7 +67,6 @@ _MINIMAL_SCHEMA = textwrap.dedent(
 
 _SUBGRAPH_MINIMAL_SCHEMA = textwrap.dedent(
     """\
-    schema_version: "2"
     name: cli-subgraph-min
     params:
       run_mode: {type: enum, values: [full], default: full}
@@ -187,11 +185,11 @@ def _run_result(exit_code: int, status: str, reason: str) -> RunResult:
     )
 
 
-def test_packaged_default_is_schema_v2() -> None:
+def test_packaged_default_has_no_schema_version_or_v1_topology() -> None:
     schema = load_workflow_v2(Path.cwd())
-    assert schema.schema_version == "2"
+    assert schema.name == "aa-full"
     packaged = resources.read_text("schemas", "workflow-schema.yaml")
-    assert 'schema_version: "2"' in packaged or "schema_version: '2'" in packaged
+    assert "schema_version:" not in packaged.split("params:", 1)[0]
     assert "phases:" not in packaged.split("gates:")[0]
 
 

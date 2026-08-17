@@ -2,11 +2,10 @@
 # AA Workflow Schema v2 (canonical GraphRuntime)
 # =============================================================================
 #
-# Packaged schema_version must be exactly "2". Topology, gates, and routes are
-# the sole orchestration contract for CLI / eval / benchmark.
+# Topology, gates, and routes are the sole orchestration contract for
+# CLI / eval / benchmark.
 # =============================================================================
 
-schema_version: "2"
 name: aa-full
 
 params:
