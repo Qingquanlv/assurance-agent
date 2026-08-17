@@ -69,8 +69,8 @@ _CODEGEN_BY_LAYER: dict[str, str] = {
     "performance": "skill:aa-performance-codegen",
 }
 _PLAN_FIXER_BY_LAYER: dict[str, str] = {
-    "api": "skill:aa-api-plan-fixer",
-    "e2e": "skill:aa-e2e-plan-fixer",
+    "api": "skill:aa-api-plan",
+    "e2e": "skill:aa-e2e-plan",
 }
 _CODEGEN_FIXER_BY_LAYER: dict[str, str] = {
     "api": "skill:aa-api-codegen-fixer",
@@ -91,8 +91,7 @@ ReviewScript = Literal[
     "knowledge_gap",
 ]
 NODE_CHAIN_AFTER = {
-    "review": "mechanical-plan-checks",
-    "mechanical-plan-checks": "review-gate",
+    "review": "review-gate",
     "review-gate": "codegen-precheck",
     "codegen-precheck": "codegen",
 }
@@ -186,7 +185,7 @@ class FourLayerDeterministicAdapter:
                 self._block_events.get(request.target) if request.target in self.block_targets else None
             )
 
-        if request.target in _PLAN_SKILLS and not self.allow_plan_skills:
+        if request.target in _PLAN_SKILLS and not self.allow_plan_skills and request.node_id != "fix":
             return AgentResult(
                 ok=False,
                 error_kind="internal",
@@ -218,7 +217,7 @@ class FourLayerDeterministicAdapter:
                 mutation=mutation,
                 attempt=attempt,
             )
-        if request.target in _PLAN_FIXER_BY_LAYER.values():
+        if request.target in _PLAN_FIXER_BY_LAYER.values() and request.node_id == "fix":
             return self._write_plan_fixer(layer, change_root)
         if request.target in _CODEGEN_FIXER_BY_LAYER.values():
             return self._write_codegen_fixer(layer, change_root, repo_root)
@@ -296,21 +295,42 @@ class FourLayerDeterministicAdapter:
 
     def _write_plan_fixer(self, layer: str, change_root: Path) -> AgentResult:
         profile = get_layer_assurance_profile(layer)
-        plan_rel = profile.plan_artifacts[0]
-        plan_path = change_root / plan_rel
-        plan_path.parent.mkdir(parents=True, exist_ok=True)
-        existing = plan_path.read_text(encoding="utf-8") if plan_path.is_file() else "# plan\n"
-        if "deterministic-plan-fix" not in existing:
-            plan_path.write_text(
-                existing.rstrip() + "\n\n<!-- deterministic-plan-fix -->\n", encoding="utf-8"
+        for plan_rel in profile.plan_artifacts:
+            plan_path = change_root / plan_rel
+            plan_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = plan_path.read_text(encoding="utf-8") if plan_path.is_file() else f"# {plan_rel}\n"
+            if "deterministic-plan-fix" not in existing:
+                existing = existing.rstrip() + "\n\n<!-- deterministic-plan-fix -->\n"
+            plan_path.write_text(existing, encoding="utf-8")
+        summary_rel = {
+            "api": "plans/m3-review-summary.md",
+            "e2e": "plans/m4-review-summary.md",
+        }.get(layer)
+        if summary_rel is not None:
+            summary_path = change_root / summary_rel
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = (
+                summary_path.read_text(encoding="utf-8")
+                if summary_path.is_file()
+                else f"# {layer} review summary\n"
             )
-        summary_name = {
-            "api": "review/api-plan-review-apply-summary.md",
-            "e2e": "review/plan-review-apply-summary.md",
-        }[layer]
-        summary = change_root / summary_name
-        summary.parent.mkdir(parents=True, exist_ok=True)
-        summary.write_text(f"# {layer} plan fixer apply summary\n", encoding="utf-8")
+            if "deterministic-plan-fix" not in existing:
+                existing = existing.rstrip() + "\n\n<!-- deterministic-plan-fix -->\n"
+            summary_path.write_text(existing, encoding="utf-8")
+        case_id, target_file, symbol = _CODEGEN_TEST_BY_LAYER[layer]
+        mapping_path = change_root / "plans" / f"{layer}-codegen-mapping.yaml"
+        mapping_path.parent.mkdir(parents=True, exist_ok=True)
+        mapping_path.write_text(
+            (
+                'schema_version: "1"\n'
+                f"layer: {layer}\n"
+                "entries:\n"
+                f"  - case_id: {case_id}\n"
+                f"    symbol: {symbol}\n"
+                f"    target_file: {target_file}\n"
+            ),
+            encoding="utf-8",
+        )
         return AgentResult(ok=True)
 
     def _write_codegen_fixer(self, layer: str, change_root: Path, repo_root: Path) -> AgentResult:
@@ -328,7 +348,6 @@ class FourLayerDeterministicAdapter:
             "target": layer,
             "outcome": "applied",
             "proposal_ids": [f"{layer}-proposal-1"],
-            "reason": "deterministic fixer",
             "claimed_modified_paths": [test_rel],
         }
         intent_path = change_root / "healing" / f"{layer}-apply-intent.json"
@@ -522,6 +541,12 @@ def seed_four_layer_project(
             target = change_dir / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
+        mapping_rel = f"plans/{layer}-codegen-mapping.yaml"
+        mapping_src = bundle.root / mapping_rel
+        if mapping_src.is_file():
+            dest = change_dir / mapping_rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(mapping_src.read_text(encoding="utf-8"), encoding="utf-8")
         for case_path in sorted((bundle.root / "cases").glob("**/case.yaml")):
             rel = case_path.relative_to(bundle.root)
             dest = change_dir / rel

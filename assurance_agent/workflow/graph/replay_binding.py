@@ -441,8 +441,7 @@ def _recover_wired_layer(
 
     object_store = store or TreeStore(change_dir)
     gate_node_id = topology.gate_node_id
-    mechanical_node_id = topology.mechanical_node_id
-    if gate_node_id is None or mechanical_node_id is None:
+    if gate_node_id is None:
         raise ReplayBindingError(
             "ambiguous_graph_wiring", f"wired topology missing node ids for layer {layer}"
         )
@@ -454,10 +453,9 @@ def _recover_wired_layer(
         gate_id=spec.gate_id,
         cycle_graph_id=topology.cycle_graph_id or layer_binding.graph_id,
     )
-    mechanical_attempt = _select_mechanical_attempt(
+    checks_attempt = _select_checks_producer_attempt(
         binding,
         layer_binding.invocation_id,
-        mechanical_node_id=mechanical_node_id,
         checks_artifact=spec.checks_artifact,
         cycle_graph_id=topology.cycle_graph_id or layer_binding.graph_id,
         gate_attempt=gate_attempt,
@@ -545,10 +543,10 @@ def _recover_wired_layer(
         review=review,
         checks=checks,
         data_knowledge=data_knowledge,
-        mechanical_execution_contract_digest=mechanical_attempt.contract_digest,
+        mechanical_execution_contract_digest=checks_attempt.contract_digest,
         gate_commit_tree_id=gate_attempt.target_tree_id,
         gate_attempt=gate_attempt,
-        mechanical_attempt=mechanical_attempt,
+        mechanical_attempt=checks_attempt,
         baseline=baseline,
         route=recorded_route,
     )
@@ -1064,15 +1062,15 @@ def _select_gate_attempt(
     return eligible[-1]
 
 
-def _select_mechanical_attempt(
+def _select_checks_producer_attempt(
     binding: FrozenDefinitionBinding,
     invocation_id: str,
     *,
-    mechanical_node_id: str,
     checks_artifact: str,
     cycle_graph_id: str,
     gate_attempt: CommittedAttempt,
 ) -> CommittedAttempt:
+    del cycle_graph_id
     attempts = _committed_attempts(binding.sequenced_events, invocation_id)
     gate_reads = gate_attempt.gate_report.get("reads_sha256") if gate_attempt.gate_report else None
     if not isinstance(gate_reads, dict):
@@ -1086,14 +1084,9 @@ def _select_mechanical_attempt(
         raise ReplayBindingError(
             "gate_evidence_unbound", f"gate report missing checks digest for {checks_artifact}"
         )
-    expected_contract = _pinned_contract_digest(binding, cycle_graph_id, mechanical_node_id)
 
     candidates: list[CommittedAttempt] = []
     for item in attempts:
-        if item.node_id != mechanical_node_id:
-            continue
-        if item.contract_digest != expected_contract:
-            continue
         if item.commit_seq > gate_attempt.commit_seq:
             continue
         outputs = item.outputs_sha256 or {}
@@ -1108,7 +1101,7 @@ def _select_mechanical_attempt(
     if not candidates:
         raise ReplayBindingError(
             "mechanical_producer_unbound",
-            f"no committed mechanical producer matching gate reads for {checks_artifact}",
+            f"no committed checks producer matching gate reads for {checks_artifact}",
         )
     return candidates[-1]
 

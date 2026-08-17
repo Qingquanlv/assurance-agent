@@ -25,6 +25,7 @@ from assurance_agent.artifacts.models import (
     CaseYaml,
     CaseYamlAuthoring,
     CodegenGeneratedFilesAuthoring,
+    CodegenMapping,
     ChangeIssueSnapshot,
     CampaignResult,
     CampaignSpec,
@@ -148,6 +149,12 @@ REGISTRY: list[ArtifactSpec] = [
         compat="versioned",
         authoring_model=CodegenGeneratedFilesAuthoring,
         runtime_completes_authoring=True,
+    ),
+    ArtifactSpec(
+        artifact_type="codegen_mapping_v1",
+        pattern="plans/*-codegen-mapping.yaml",
+        model=CodegenMapping,
+        compat="must_compat",
     ),
     ArtifactSpec(
         artifact_type="improvement_review_subject_v1",
@@ -465,13 +472,13 @@ REGISTRY: list[ArtifactSpec] = [
         artifact_type="api_codegen_fix_apply_intent_v1",
         pattern="healing/api-apply-intent.json",
         model=ApiCodegenFixApplyIntentV1,
-        compat="versioned",
+        compat="must_compat",
     ),
     ArtifactSpec(
         artifact_type="e2e_codegen_fix_apply_intent_v1",
         pattern="healing/e2e-apply-intent.json",
         model=E2eCodegenFixApplyIntentV1,
-        compat="versioned",
+        compat="must_compat",
     ),
     ArtifactSpec(
         artifact_type="api_codegen_fix_apply_summary_v1",

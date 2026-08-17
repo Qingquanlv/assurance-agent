@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Final, Literal
 
 from assurance_agent.artifacts.models.assurance import LayerName
+from assurance_agent.artifacts.models.codegen import CodegenMapping
 from assurance_agent.exceptions import AaError
 from assurance_agent.verification.applicability import derive_layer_applicability
 from assurance_agent.verification.checks.base import table_rows
@@ -141,16 +142,65 @@ class GeneratedEntryDecision:
     reason_code: GeneratedEntryReason
 
 
+def _relation_from_structured_mapping(
+    *,
+    layer: str,
+    mapping: Mapping[str, object] | CodegenMapping,
+    selected: tuple[str, ...],
+    policy: LayerBehavioralPolicy,
+) -> LayerMappingRelation:
+    document = mapping if isinstance(mapping, CodegenMapping) else CodegenMapping.model_validate(mapping)
+    if document.layer != layer:
+        raise MappingExtractionError(
+            "wrong_layer_mapping",
+            f"codegen mapping layer {document.layer!r} does not match requested layer {layer!r}",
+        )
+    entries = tuple(
+        MappedTestEntry(case_id=item.case_id, symbol=item.symbol, target_file=item.target_file)
+        for item in document.entries
+    )
+    schema_ids = document.schema_case_ids
+    if layer == "fuzz":
+        mapped_ids = tuple(sorted({entry.case_id for entry in entries}))
+        expected = tuple(sorted(schema_ids)) if schema_ids is not None else mapped_ids
+        if expected != mapped_ids:
+            raise MappingExtractionError(
+                "schema_case_mismatch",
+                "Schema Acquisition case IDs must equal Test Function Mapping case IDs",
+            )
+        return LayerMappingRelation(
+            layer=document.layer,
+            entries=entries,
+            selected_case_ids=selected,
+            schema_case_ids=expected,
+            behavioral_policy=policy,
+        )
+    return LayerMappingRelation(
+        layer=document.layer,
+        entries=entries,
+        selected_case_ids=selected,
+        behavioral_policy=policy,
+    )
+
+
 def extract_layer_mapping(
     *,
     layer: str,
     plan_text: str,
     cases: Sequence[Mapping[str, object]],
+    mapping: Mapping[str, object] | CodegenMapping | None = None,
 ) -> LayerMappingRelation:
     """Derive the closed Case ID → symbol → Target File relation for one layer."""
     profile = get_layer_assurance_profile(layer)
     selected = derive_layer_applicability(cases, profile).case_ids
     policy = behavioral_policy_for_layer(profile.layer)
+    if mapping is not None:
+        return _relation_from_structured_mapping(
+            layer=layer,
+            mapping=mapping,
+            selected=selected,
+            policy=policy,
+        )
     if layer in {"api", "e2e"}:
         entries = _extract_named_mapping(
             plan_text,

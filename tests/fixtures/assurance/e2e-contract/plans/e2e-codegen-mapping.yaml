@@ -1,0 +1,6 @@
+schema_version: "1"
+layer: e2e
+entries:
+  - case_id: TC_E2E_AUTH_REJECT
+    symbol: test_tc_e2e_auth_reject__limited_user_denied
+    target_file: tests/e2e/test_api_management_e2e.py

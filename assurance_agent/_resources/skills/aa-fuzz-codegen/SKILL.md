@@ -13,6 +13,7 @@ Generate fuzz tests under `tests/fuzz/**`, shared builders under `tests/testdata
 
 - `change:plans/fuzz-plan.md`
 - `change:plans/fuzz-codegen-plan.md`
+- `change:plans/fuzz-codegen-mapping.yaml`
 - `change:plans/fuzz-review-summary.md`
 - `change:review/fuzz-plan-review.json`
 - `change:review/fuzz-plan-checks.json`
@@ -53,12 +54,12 @@ that its Python module exists. Generate the authorized support module or use an
 existing resolvable implementation; never defer a missing local module to pytest.
 
 Only `test_entry` manifest entries may claim mapped Case IDs, and their
-`case_ids` must exactly match the plan's Task Mapping for that path. Support and
+`case_ids` must exactly match the codegen mapping (`plans/fuzz-codegen-mapping.yaml`) for that path. Support and
 shared-builder entries always use `case_ids: []`.
 
 Use `generated` only for a newly added file and `updated` only for a file whose
 content this invocation changed. `reused` is legal only for an unchanged,
-selected private-root `test_entry` that is itself a Task Mapping target. Never
+selected private-root `test_entry` that is itself a codegen-mapping target. Never
 list an unchanged adapter, helper, fixture, or shared builder as `reused`; omit
 unchanged support dependencies from the manifest.
 

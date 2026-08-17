@@ -143,14 +143,8 @@ For each **not_eligible** failure, record it in the `not_eligible` array with a 
 ## fix-proposal.json Schema
 
 > **Schema source of truth:** the complete, enforced field contract for fix proposals
-> lives in `src/schema/fix_proposal.ts` (validated by `aa validate`). The example below is
-> illustrative only. After writing the proposal you MUST run:
->
-> ```
-> aa validate --change <change-id> --artifact healing/fix-proposal.json
-> ```
->
-> and resolve every reported error. Do not rely on this document for the full field list.
+> lives in `assurance_agent/artifacts/models/healing.py`. Runtime `finalize` validates
+> authored files against that model. The example below is illustrative only.
 
 Write valid JSON to:
 
@@ -158,7 +152,7 @@ Write valid JSON to:
 qa/changes/<change-id>/healing/fix-proposal.json
 ```
 
-**Minimal top-level structure (illustrative — see `src/schema/fix_proposal.ts` for the full contract):**
+**Minimal top-level structure (illustrative — see `assurance_agent/artifacts/models/healing.py` for the full contract):**
 
 ```json
 {

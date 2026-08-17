@@ -680,6 +680,7 @@ class AttemptEngine:
             change_id=context.change_id,
             layer=layer,
             current_change_repo_path=_current_change_repo_path(context, write_set),
+            project_root=context.project_root,
         )
         return receipt_id
 

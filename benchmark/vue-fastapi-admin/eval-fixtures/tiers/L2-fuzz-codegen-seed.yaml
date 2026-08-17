@@ -47,10 +47,6 @@ imports:
       outputs:
       - change:review/fuzz-plan-review.json
       - change:review/fuzz-plan-review-summary.md
-    - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch/review-cycle/fuzz-plan-cycle
-      graph: fuzz-plan-cycle
-      node: mechanical-plan-checks
-      outputs:
       - change:review/fuzz-plan-checks.json
     - path: execute-workflow/assurance/assurance/fuzz/fuzz-branch/review-cycle/fuzz-plan-cycle
       graph: fuzz-plan-cycle

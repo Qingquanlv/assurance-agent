@@ -180,9 +180,15 @@ def test_contract_fixture_cases_make_fuzz_and_performance_applicable(
 
 
 def test_applicability_operation_contract_stays_cases_only() -> None:
-    """Applicability ownership stays independent of mechanical/skill contract narrowing."""
+    """Applicability still reads only cases; it may write not_applicable checks."""
     contract = load_execution_contracts(Path.cwd()).contracts["operation:derive-plan-layer-applicability"]
+    checks = (
+        "change:review/api-plan-checks.json",
+        "change:review/e2e-plan-checks.json",
+        "change:review/fuzz-plan-checks.json",
+        "change:review/performance-plan-checks.json",
+    )
     assert contract.reads == ("change:cases/**/case.yaml",)
-    assert contract.writes == ()
-    assert contract.authorization_writes == ()
-    assert contract.side_effect_free is True
+    assert contract.writes == checks
+    assert contract.authorization_writes == checks
+    assert contract.side_effect_free is False

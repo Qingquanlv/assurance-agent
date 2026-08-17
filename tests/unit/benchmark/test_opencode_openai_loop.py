@@ -15,19 +15,15 @@ OPENAI_LOOP = BENCHMARK / "run-workflow-loop-opencode-openai.sh"
 ORIGINAL_LOOP = BENCHMARK / "run-workflow-loop.sh"
 
 
-def test_openai_routes_mirror_existing_hybrid_policy() -> None:
+def test_openai_routes_pin_every_skill_to_terra() -> None:
     base = yaml.safe_load(BASE_CONFIG.read_text(encoding="utf-8"))["execution"]["model_routing"]
     openai = yaml.safe_load(OPENAI_ROUTES.read_text(encoding="utf-8"))
 
     assert openai["strict_routes"] is True
     assert set(openai["routes"]) == set(base["routes"])
-    assert openai["default"] == "openai/gpt-5.6-luna"
-    for skill, original_model in base["routes"].items():
-        expected = {
-            "anthropic/deepseek-v4-flash": "openai/gpt-5.6-luna",
-            "anthropic/glm-5.2": "openai/gpt-5.6-terra",
-        }[original_model]
-        assert openai["routes"][skill] == expected, skill
+    assert openai["default"] == "openai/gpt-5.6-terra"
+    for skill in base["routes"]:
+        assert openai["routes"][skill] == "openai/gpt-5.6-terra", skill
     assert openai["escalation"] == {
         "model": "openai/gpt-5.6-terra",
         "on_error_kinds": ["invalid_output", "forbidden_write"],

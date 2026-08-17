@@ -17,6 +17,7 @@ Turn the approved E2E portion of a QA Case Delta into reviewable implementation 
 
 ### optional
 
+- `change:review/plan-review.json`
 - `change:facts/fact-baseline.json`
 - `repo:.aa/config.yaml`
 - `repo:.aa/data-knowledge.yaml`
@@ -32,6 +33,7 @@ Turn the approved E2E portion of a QA Case Delta into reviewable implementation 
 - `change:plans/e2e-plan.md`
 - `change:plans/e2e-test-data-plan.md`
 - `change:plans/e2e-codegen-plan.md`
+- `change:plans/e2e-codegen-mapping.yaml`
 - `change:plans/m4-review-summary.md`
 
 ### conditional
@@ -108,3 +110,10 @@ promotion_checklist:
 After writing the proposal, validate the whole envelope against the runtime
 `DataKnowledgeProposal` contract, including field types and extra-forbid behavior. Do
 not validate only an inner entity or capability leaf.
+
+When `change:review/plan-review.json` exists with `decision: needs_fix`, apply only
+the findings named in `auto_fix_plan` and only the `locator` targets they point at.
+Repair Factory Mapping rows the findings authorize. Do not edit
+`review/e2e-plan-checks.json` or `.aa/data-knowledge.yaml`. Never promote proposal content into L1.
+Keep `plans/e2e-codegen-mapping.yaml` as the closed Case ID → symbol → target file
+contract; the markdown plan is narrative only.

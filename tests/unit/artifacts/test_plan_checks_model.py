@@ -268,25 +268,13 @@ def test_fail_rejects_applicability_reason() -> None:
         )
 
 
-def test_v1_document_remains_readable_without_invented_applicability() -> None:
-    doc = PlanCheckDocument.model_validate(
-        {
-            "schema_version": "1",
-            "status": "pass",
-            "checks": [{"check_id": "l1_path", "status": "pass"}],
-        }
-    )
-    assert doc.layer is None
-    assert doc.applicability is None
-
-
-def test_v1_rejects_not_applicable_check_status() -> None:
+def test_v1_document_is_rejected() -> None:
     with pytest.raises(ValidationError):
         PlanCheckDocument.model_validate(
             {
                 "schema_version": "1",
-                "status": "not_applicable",
-                "checks": [{"check_id": "l1_path", "status": "not_applicable"}],
+                "status": "pass",
+                "checks": [{"check_id": "l1_path", "status": "pass"}],
             }
         )
 

@@ -30,7 +30,7 @@ def test_refresh_creates_skills_then_idempotent(tmp_path: Path) -> None:
         first = runner.invoke(main, ["skill", "refresh"])
         assert first.exit_code == 0, first.output
         assert Path("skills/aa-workflow/SKILL.md").is_file()
-        assert len(list(Path("skills").iterdir())) == 39
+        assert len(list(Path("skills").iterdir())) == len(set(resources.iter_children("skills")))
 
         second = runner.invoke(main, ["skill", "refresh"])
         assert second.exit_code == 0

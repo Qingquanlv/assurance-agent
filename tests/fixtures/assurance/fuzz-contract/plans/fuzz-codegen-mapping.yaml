@@ -1,0 +1,6 @@
+schema_version: "1"
+layer: fuzz
+entries:
+  - case_id: FUZZ-001
+    symbol: test_fuzz_001__account_create_schema
+    target_file: tests/fuzz/test_accounts_fuzz.py

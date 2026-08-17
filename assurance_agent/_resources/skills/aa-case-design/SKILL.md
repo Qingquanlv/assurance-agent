@@ -37,6 +37,9 @@ Do not rely on prior conversation context.
    If optional QA directories are missing, record a warning and continue as a **new QA asset initialization** path. Do **not** stop solely because `qa/cases/`, `tests/`, or `qa/knowledge/` does not exist.
 5. If `workflow-state.yaml` exists and `phases.skill_registry_check.status == fail` → **STOP**.
 6. Use files as the sole source of truth.
+7. **Review re-entry:** If `review/case-review.json` exists with `decision: needs_fix`,
+   apply only findings that carry a `locator`. Do not rewrite cases or proposal
+   sections the findings do not name.
 
 **After completing work:**
 
@@ -888,14 +891,8 @@ workflow:   # informational only — not a gate source
 ## Case YAML Output Contract
 
 > **Schema source of truth:** the complete, enforced field contract for `case.yaml`
-> lives in `src/schema/case_yaml.ts` (validated by `aa validate`). The example below is
-> illustrative only. After writing case files you MUST run:
->
-> ```
-> aa validate --change <change-id> --phase case-design
-> ```
->
-> and resolve every reported error. Do not rely on this document for the full field list.
+> lives in `assurance_agent/artifacts/models/cases.py`. Runtime `finalize` validates
+> authored files against that model. The example below is illustrative only.
 
 The generated case delta MUST be YAML. It contains natural language QA cases.
 
@@ -923,7 +920,7 @@ modified: []
 removed: []
 ```
 
-Every case under `added` or `modified` must satisfy the field contract in `src/schema/case_yaml.ts`. There is no `automation.target` field — top-level `type` is the single source of truth for the test target.
+Every case under `added` or `modified` must satisfy the field contract in `assurance_agent/artifacts/models/cases.py`. There is no `automation.target` field — top-level `type` is the single source of truth for the test target.
 
 `trace` is required on every case. When `risk-advisory/advisory.json` or `explore/advisory.json` contains `minimum_required_coverage`, every required MRC item must be mapped to at least one case via `trace.minimum_required_coverage`; do not rely on title/name inference. Downstream archive / execution may enrich other trace fields.
 
@@ -955,7 +952,7 @@ cases to it; do not duplicate the key under a second `mrc_id`.
 
 One case has exactly one `type`. Fuzz and Performance are **independent cases** (`type: Fuzz` / `type: Performance`) that link the functional case they harden via `related_cases`. They do **not** replace the functional API/E2E coverage of that endpoint.
 
-**Minimal example (illustrative — see `src/schema/case_yaml.ts` for the full contract):**
+**Minimal example (illustrative — see `assurance_agent/artifacts/models/cases.py` for the full contract):**
 
 ```yaml
 modified:
@@ -968,7 +965,7 @@ modified:
     module: user.auth
     requirement_id: REQ-002
     feature_name: user-logout
-    # remaining fields: src/schema/case_yaml.ts
+    # remaining fields: assurance_agent/artifacts/models/cases.py
 ```
 
 **Every case under `removed` MUST include:**
@@ -1131,7 +1128,7 @@ If uncertain, choose the lower priority and explain the assumption in `proposal.
 
 ## Risk-based Regression Rules
 
-Every case under `added` or `modified` MUST include a `regression` block (field contract: `src/schema/case_yaml.ts`).
+Every case under `added` or `modified` MUST include a `regression` block (field contract: `assurance_agent/artifacts/models/cases.py`).
 
 **Tier definitions:**
 
@@ -1209,7 +1206,7 @@ Example:
 
 ## Test Design Technique Rule
 
-Every generated case MUST include a `design_technique` field (enum values: `src/schema/case_yaml.ts`).
+Every generated case MUST include a `design_technique` field (enum values: `assurance_agent/artifacts/models/cases.py`).
 
 **Technique selection guide:**
 
@@ -1235,7 +1232,7 @@ Every generated case MUST include a `design_technique` field (enum values: `src/
 
 ## Risk-based Testing Rule
 
-Every generated case MUST include a `risk` block (field contract: `src/schema/case_yaml.ts`).
+Every generated case MUST include a `risk` block (field contract: `assurance_agent/artifacts/models/cases.py`).
 
 **Risk level mapping:**
 

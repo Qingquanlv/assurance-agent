@@ -1,8 +1,4 @@
-"""D14 candidate validation receipts and closed precommit validator registry.
-
-Both ``generated_files_candidate/v1`` and ``codegen_fix_candidate/v1`` are
-implemented. Packaged contracts still select neither until Task 15.
-"""
+"""Candidate validation receipts and closed precommit validators."""
 
 from __future__ import annotations
 
@@ -24,6 +20,8 @@ from assurance_agent.artifacts.models.healing_codegen import (
     FixerAuthorityV1,
     FixerProposalApprovalReceiptV1,
 )
+from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
+from assurance_agent.artifacts.policy import PolicyError, load_policy
 from assurance_agent.exceptions import AaError
 from assurance_agent.verification.generated_entries import (
     MappingExtractionError,
@@ -35,6 +33,8 @@ from assurance_agent.verification.generated_files import (
     get_generated_files_contract,
     get_generated_files_model,
 )
+from assurance_agent.verification.plan_checks import run_layer_plan_checks
+from assurance_agent.verification.profiles import get_layer_assurance_profile
 from assurance_agent.workflow.graph.diff_safety import evaluate_diff_safety
 from assurance_agent.workflow.graph.evidence_paths import (
     EvidencePathError,
@@ -47,12 +47,13 @@ from assurance_agent.workflow.healing.safety import load_product_code_roots
 
 GENERATED_FILES_CANDIDATE_V1 = "generated_files_candidate/v1"
 CODEGEN_FIX_CANDIDATE_V1 = "codegen_fix_candidate/v1"
+PLAN_MECHANICAL_CANDIDATE_V1 = "plan_mechanical_candidate/v1"
 
 KNOWN_PRECOMMIT_VALIDATORS: frozenset[str] = frozenset(
-    {GENERATED_FILES_CANDIDATE_V1, CODEGEN_FIX_CANDIDATE_V1}
+    {GENERATED_FILES_CANDIDATE_V1, CODEGEN_FIX_CANDIDATE_V1, PLAN_MECHANICAL_CANDIDATE_V1}
 )
 IMPLEMENTED_PRECOMMIT_VALIDATORS: frozenset[str] = frozenset(
-    {GENERATED_FILES_CANDIDATE_V1, CODEGEN_FIX_CANDIDATE_V1}
+    {GENERATED_FILES_CANDIDATE_V1, CODEGEN_FIX_CANDIDATE_V1, PLAN_MECHANICAL_CANDIDATE_V1}
 )
 
 # Closed commit-safety dependency inventory for runtime_commit_safety/v1 (Task 10).
@@ -67,6 +68,11 @@ COMMIT_SAFETY_INVENTORY: tuple[tuple[str, str, str], ...] = (
         "assurance_agent.workflow.graph.precommit.CODEGEN_FIX_CANDIDATE_V1",
         "validator",
         CODEGEN_FIX_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit.PLAN_MECHANICAL_CANDIDATE_V1",
+        "validator",
+        PLAN_MECHANICAL_CANDIDATE_V1,
     ),
     (
         "assurance_agent.workflow.graph.precommit.KNOWN_PRECOMMIT_VALIDATORS",
@@ -127,6 +133,11 @@ COMMIT_SAFETY_INVENTORY: tuple[tuple[str, str, str], ...] = (
         "assurance_agent.workflow.graph.precommit._validate_codegen_fix_candidate",
         "helper",
         CODEGEN_FIX_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit._validate_plan_mechanical_candidate",
+        "helper",
+        PLAN_MECHANICAL_CANDIDATE_V1,
     ),
     (
         "assurance_agent.workflow.graph.diff_safety.evaluate_diff_safety",
@@ -320,6 +331,17 @@ def validate_candidate(
             current_change_repo_path=current_change_repo_path,
             project_root=project_root,
         )
+    elif validator_id == PLAN_MECHANICAL_CANDIDATE_V1:
+        decision = _validate_plan_mechanical_candidate(
+            context=context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+            cases=cases,
+            change_id=change_id,
+            layer=layer,
+            project_root=project_root,
+        )
     elif validator_id == GENERATED_FILES_CANDIDATE_V1:
         decision = _validate_generated_files_candidate(
             context=context,
@@ -370,6 +392,7 @@ def validate_candidate(
         change_id=change_id,
         layer=layer,
         current_change_repo_path=current_change_repo_path,
+        project_root=project_root,
     )
     return receipt_id, receipt
 
@@ -419,7 +442,18 @@ def verify_candidate_receipt(
             current_change_repo_path=current_change_repo_path,
             project_root=project_root,
         )
-    else:
+    elif receipt.validator_id == PLAN_MECHANICAL_CANDIDATE_V1:
+        decision = _validate_plan_mechanical_candidate(
+            context=context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+            cases=cases,
+            change_id=change_id,
+            layer=layer,
+            project_root=project_root,
+        )
+    elif receipt.validator_id == GENERATED_FILES_CANDIDATE_V1:
         decision = _validate_generated_files_candidate(
             context=context,
             store=store,
@@ -431,6 +465,8 @@ def verify_candidate_receipt(
             layer=layer,
             current_change_repo_path=current_change_repo_path,
         )
+    else:
+        raise CandidateValidationError(f"unsupported receipt validator: {receipt.validator_id}")
     decision_bytes = canonical_json_bytes(decision)
     if sha256_bytes(decision_bytes) != receipt.decision_payload_sha256:
         raise CandidateValidationError("decision_payload_sha256 mismatch")
@@ -479,10 +515,14 @@ def infer_assurance_layer(target: str, task_input: Mapping[str, object] | None =
     mapping = {
         "skill:aa-api-codegen": "api",
         "skill:aa-api-codegen-fixer": "api",
+        "skill:aa-api-plan-reviewer": "api",
         "skill:aa-e2e-codegen": "e2e",
         "skill:aa-e2e-codegen-fixer": "e2e",
+        "skill:aa-e2e-plan-reviewer": "e2e",
         "skill:aa-fuzz-codegen": "fuzz",
+        "skill:aa-fuzz-plan-reviewer": "fuzz",
         "skill:aa-performance-codegen": "performance",
+        "skill:aa-performance-plan-reviewer": "performance",
     }
     if target in mapping:
         return mapping[target]
@@ -517,6 +557,40 @@ def load_plan_text_from_snapshot(
                     f"codegen plan blob unreadable for layer {layer}: {logical}"
                 ) from exc
     raise CandidateValidationError(f"missing codegen plan in input snapshot for layer {layer}: {logical}")
+
+
+def codegen_mapping_logical_path(layer: str) -> str:
+    return f"change:plans/{layer}-codegen-mapping.yaml"
+
+
+def load_codegen_mapping_from_snapshot(
+    store: TreeStore,
+    snapshot: TaskInputSnapshotV1,
+    *,
+    layer: str,
+) -> dict[str, object] | None:
+    """Load the structured codegen mapping when the snapshot carries one."""
+    logical = codegen_mapping_logical_path(layer)
+    for entry in snapshot.entries:
+        if entry.kind != "file" or entry.sha256 is None:
+            continue
+        aliases = set(entry.logical_aliases)
+        if logical in aliases or any(
+            alias.startswith("change:plans/") and alias.endswith(f"{layer}-codegen-mapping.yaml")
+            for alias in aliases
+        ):
+            digest = entry.sha256.removeprefix("sha256:")
+            try:
+                raw = store.read_object(digest).decode("utf-8")
+                data = yaml.safe_load(raw)
+            except (WorkspaceError, UnicodeDecodeError, yaml.YAMLError) as exc:
+                raise CandidateValidationError(
+                    f"codegen mapping blob unreadable for layer {layer}: {logical}"
+                ) from exc
+            if not isinstance(data, dict):
+                raise CandidateValidationError(f"codegen mapping must be a mapping: {logical}")
+            return data
+    return None
 
 
 def load_case_documents_from_snapshot(
@@ -611,6 +685,11 @@ _SEMANTICS_RULES: dict[str, list[str]] = {
         "baseline_before_digest_for_reused_authority",
         "high_risk_requires_approval_receipt",
         "code_owned_diff_safety_predicates",
+    ],
+    PLAN_MECHANICAL_CANDIDATE_V1: [
+        "recompute_plan_checks_from_snapshot_and_write_set_review",
+        "compare_canonical_plan_check_document_to_write_set",
+        "reject_when_policy_plan_checks_block_failed_check",
     ],
 }
 
@@ -978,7 +1057,13 @@ def _validate_generated_files_candidate(
         raise CandidateValidationError("manifest layer mismatch")
 
     try:
-        relation = extract_layer_mapping(layer=layer, plan_text=plan_text, cases=cases)
+        mapping = load_codegen_mapping_from_snapshot(store, input_snapshot, layer=layer)
+        relation = extract_layer_mapping(
+            layer=layer,
+            plan_text=plan_text,
+            cases=cases,
+            mapping=mapping,
+        )
     except MappingExtractionError as exc:
         raise CandidateValidationError(str(exc)) from exc
 
@@ -1291,6 +1376,154 @@ def _repository_test_writes(
     return result
 
 
+def _validate_plan_mechanical_candidate(
+    *,
+    context: PrecommitValidationContext,
+    store: TreeStore,
+    write_set: WriteSet,
+    input_snapshot: TaskInputSnapshotV1,
+    cases: Sequence[Mapping[str, object]],
+    change_id: str,
+    layer: str,
+    project_root: Path | None,
+) -> dict[str, object]:
+    del context
+    if project_root is None:
+        raise CandidateValidationError("project_root is required for plan mechanical candidate")
+    try:
+        profile = get_layer_assurance_profile(layer)
+    except ValueError as exc:
+        raise CandidateValidationError(str(exc)) from exc
+
+    plan_texts = _load_plan_texts_from_snapshot(store, input_snapshot, layer=layer)
+    review_logical = f"change:{profile.review_artifact}"
+    review_payload = _load_write_set_json(store, write_set, logical=review_logical)
+    data_knowledge = _load_l1_from_snapshot(store, input_snapshot)
+    try:
+        expected = run_layer_plan_checks(
+            layer=layer,
+            cases=cases,
+            plan_texts=plan_texts,
+            review_payload=review_payload,
+            data_knowledge=data_knowledge,
+            change_id=change_id,
+            require_review=True,
+        )
+    except (OSError, ValueError, yaml.YAMLError, json.JSONDecodeError) as exc:
+        raise CandidateValidationError(f"cannot recompute plan-checks for layer {layer}: {exc}") from exc
+
+    checks_logical = f"change:{profile.checks_artifact}"
+    written_bytes = _load_write_set_bytes(store, write_set, logical=checks_logical)
+    try:
+        written = PlanCheckDocument.model_validate(json.loads(written_bytes.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise CandidateValidationError(
+            f"write-set plan-checks document is not a valid PlanCheckDocument for layer {layer}: {exc}"
+        ) from exc
+    expected_bytes = canonical_json_bytes(expected)
+    written_canonical = canonical_json_bytes(written)
+    if written_canonical != expected_bytes:
+        raise CandidateValidationError(
+            f"write-set plan-checks document does not match snapshot recomputation for layer {layer}"
+        )
+
+    try:
+        policy = load_policy(project_root)
+    except PolicyError as exc:
+        raise CandidateValidationError(f"cannot load policy for plan mechanical candidate: {exc}") from exc
+
+    for check in expected.checks:
+        action = policy.plan_checks.get(check.check_id)
+        if check.status == "fail" and action == "block":
+            findings = "; ".join(
+                f"{finding.locator}: actual={finding.actual!r} expected={finding.expected!r}"
+                for finding in check.findings
+            )
+            detail = f" ({findings})" if findings else ""
+            raise CandidateValidationError(
+                f"plan mechanical candidate rejected for layer {layer}: "
+                f"check {check.check_id} failed with policy.plan_checks[{check.check_id}]=block{detail}"
+            )
+
+    return {
+        "checks_logical": checks_logical,
+        "document_sha256": sha256_bytes(expected_bytes),
+        "layer": layer,
+    }
+
+
+def _load_plan_texts_from_snapshot(
+    store: TreeStore,
+    snapshot: TaskInputSnapshotV1,
+    *,
+    layer: str,
+) -> dict[str, str]:
+    profile = get_layer_assurance_profile(layer)
+    texts: dict[str, str] = {}
+    for rel in profile.plan_artifacts:
+        logical = f"change:{rel}"
+        texts[rel] = _load_snapshot_text(store, snapshot, logical=logical)
+    return texts
+
+
+def _load_snapshot_text(
+    store: TreeStore,
+    snapshot: TaskInputSnapshotV1,
+    *,
+    logical: str,
+) -> str:
+    for entry in snapshot.entries:
+        if entry.kind != "file" or entry.sha256 is None:
+            continue
+        if logical not in set(entry.logical_aliases):
+            continue
+        digest = entry.sha256.removeprefix("sha256:")
+        try:
+            return store.read_object(digest).decode("utf-8")
+        except (WorkspaceError, UnicodeDecodeError) as exc:
+            raise CandidateValidationError(f"unreadable snapshot artifact {logical}: {exc}") from exc
+    raise CandidateValidationError(f"missing snapshot artifact: {logical}")
+
+
+def _load_l1_from_snapshot(
+    store: TreeStore,
+    snapshot: TaskInputSnapshotV1,
+) -> dict[str, object]:
+    digest = _snapshot_digest_for_repo_path(snapshot, ".aa/data-knowledge.yaml")
+    if digest is None:
+        raise CandidateValidationError("missing repo L1 artifact in input snapshot: .aa/data-knowledge.yaml")
+    bare = digest.removeprefix("sha256:")
+    try:
+        raw = store.read_object(bare)
+        data = yaml.safe_load(raw.decode("utf-8"))
+    except Exception as exc:
+        raise CandidateValidationError(f"unreadable snapshot L1 artifact: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CandidateValidationError("snapshot L1 artifact must be a YAML mapping")
+    return data
+
+
+def _load_write_set_bytes(store: TreeStore, write_set: WriteSet, *, logical: str) -> bytes:
+    digest = write_set.outputs_sha256.get(logical)
+    if digest is None:
+        raise CandidateValidationError(f"missing write-set output: {logical}")
+    try:
+        return store.read_object(digest)
+    except WorkspaceError as exc:
+        raise CandidateValidationError(f"write-set blob missing for {logical}") from exc
+
+
+def _load_write_set_json(store: TreeStore, write_set: WriteSet, *, logical: str) -> dict[str, object]:
+    raw = _load_write_set_bytes(store, write_set, logical=logical)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CandidateValidationError(f"write-set artifact is not JSON: {logical}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise CandidateValidationError(f"write-set artifact must be a JSON object: {logical}")
+    return data
+
+
 def _snapshot_digest_for_repo_path(snapshot: TaskInputSnapshotV1, repo_path: str) -> str | None:
     for entry in snapshot.entries:
         if entry.kind != "file" or entry.sha256 is None:
@@ -1311,12 +1544,14 @@ __all__ = [
     "GENERATED_FILES_CANDIDATE_V1",
     "IMPLEMENTED_PRECOMMIT_VALIDATORS",
     "KNOWN_PRECOMMIT_VALIDATORS",
+    "PLAN_MECHANICAL_CANDIDATE_V1",
     "PrecommitValidationContext",
     "bind_receipt_to_success_event",
     "codegen_plan_logical_path",
     "infer_assurance_layer",
     "load_candidate_receipt",
     "load_case_documents_from_snapshot",
+    "load_codegen_mapping_from_snapshot",
     "load_plan_text_from_snapshot",
     "validate_candidate",
     "validate_precommit_validator_id",

@@ -34,7 +34,6 @@ _SPECIALTY_PARENT_PREFLIGHT_LAYERS = frozenset({"fuzz", "performance"})
 WiringStatus = Literal["wired", "legacy_unwired", "partial"]
 
 _APPLICABILITY_OPERATION = "operation:derive-plan-layer-applicability"
-_MECHANICAL_OPERATION = "operation:verify-plan-mechanical"
 _DATA_KNOWLEDGE_PATH = "repo:.aa/data-knowledge.yaml"
 _DATA_KNOWLEDGE_ALIAS = "data_knowledge"
 
@@ -71,7 +70,6 @@ class PinnedLayerTopology:
     cycle_graph_id: str | None
     applicability_node_id: str | None
     reviewer_node_id: str | None
-    mechanical_node_id: str | None
     gate_node_id: str | None
     human_review_node_id: str | None
     knowledge_remediation_node_id: str | None
@@ -187,39 +185,37 @@ def validate_wired_profile_topology(
             f"{locator_prefix}: multiple applicability operations: " + ", ".join(sorted(applicability_nodes))
         )
 
-    mechanical_nodes = _mechanical_nodes(cycle, profile)
-    if len(mechanical_nodes) == 0:
-        errors.append(f"{locator_prefix}: missing reviewed mechanical producer")
-    elif len(mechanical_nodes) > 1:
-        errors.append(
-            f"{locator_prefix}: multiple reviewed mechanical producers: "
-            + ", ".join(sorted(mechanical_nodes))
-        )
+    review_nodes = _review_nodes(cycle, layer)
+    if len(review_nodes) == 0:
+        errors.append(f"{locator_prefix}: missing reviewer node")
+    elif len(review_nodes) > 1:
+        errors.append(f"{locator_prefix}: multiple reviewer nodes: " + ", ".join(sorted(review_nodes)))
 
-    if len(gate_owners) == 1 and len(mechanical_nodes) == 1:
+    if len(gate_owners) == 1 and len(review_nodes) == 1:
         gate_owner = gate_owners[0]
-        mechanical = mechanical_nodes[0]
-        if not _has_edge(cycle, mechanical, gate_owner):
-            errors.append(f"{locator_prefix}: explicit gate must follow mechanical producer")
+        review = review_nodes[0]
+        if not _has_edge(cycle, review, gate_owner):
+            errors.append(f"{locator_prefix}: explicit gate must follow reviewer")
 
-    if len(applicability_nodes) == 1 and len(mechanical_nodes) == 1:
+    if len(applicability_nodes) == 1 and len(review_nodes) == 1:
         applicability = applicability_nodes[0]
-        mechanical = mechanical_nodes[0]
+        review = review_nodes[0]
         route = _route_from(cycle, applicability)
         if route is None:
             errors.append(f"{locator_prefix}: applicability node must declare a route")
         else:
             applicable_target = route.cases.get("true")
             inapplicable_target = route.cases.get("false")
-            review_nodes = _review_nodes(cycle, layer)
-            if not review_nodes:
-                errors.append(f"{locator_prefix}: missing reviewer node")
-            elif applicable_target not in review_nodes:
-                errors.append(f"{locator_prefix}: applicable path must reach review before mechanical")
-            if inapplicable_target != mechanical:
-                errors.append(f"{locator_prefix}: inapplicable path must reach mechanical producer")
-            if applicable_target in review_nodes and not _has_edge(cycle, applicable_target, mechanical):
-                errors.append(f"{locator_prefix}: review must precede mechanical on applicable path")
+            if applicable_target not in review_nodes:
+                errors.append(f"{locator_prefix}: applicable path must reach review")
+            if len(gate_owners) == 1 and inapplicable_target != gate_owners[0]:
+                errors.append(f"{locator_prefix}: inapplicable path must reach review-gate")
+            if (
+                len(gate_owners) == 1
+                and applicable_target in review_nodes
+                and not _has_edge(cycle, applicable_target, gate_owners[0])
+            ):
+                errors.append(f"{locator_prefix}: review must precede the plan gate on applicable path")
 
     if not _has_edge(cycle, "fix", "review"):
         errors.append(f"{locator_prefix}: fix must re-enter at review")
@@ -227,10 +223,8 @@ def validate_wired_profile_topology(
     knowledge_route = _route_from(cycle, "knowledge-remediation")
     if knowledge_route is None:
         errors.append(f"{locator_prefix}: missing knowledge-remediation route")
-    elif knowledge_route.cases.get("fix_and_proceed") != "mechanical-plan-checks":
-        errors.append(
-            f"{locator_prefix}: knowledge remediation fix_and_proceed must re-enter at mechanical producer"
-        )
+    elif knowledge_route.cases.get("fix_and_proceed") != "review":
+        errors.append(f"{locator_prefix}: knowledge remediation fix_and_proceed must re-enter at review")
 
     gate = schema.gates.get(profile.gate_id)
     if gate is None:
@@ -460,7 +454,6 @@ def classify_pinned_layer_topology_v6(
         cycle_graph_id=None if roles is None else roles.cycle_graph_id,
         applicability_node_id=None if roles is None else roles.applicability_node_id,
         reviewer_node_id=None if roles is None else roles.reviewer_node_id,
-        mechanical_node_id=None if roles is None else roles.mechanical_node_id,
         gate_node_id=None if roles is None else roles.plan_gate_node_id,
         human_review_node_id=None,
         knowledge_remediation_node_id=None,
@@ -487,7 +480,6 @@ def _with_semantics(
         cycle_graph_id=topology.cycle_graph_id,
         applicability_node_id=topology.applicability_node_id,
         reviewer_node_id=topology.reviewer_node_id,
-        mechanical_node_id=topology.mechanical_node_id,
         gate_node_id=topology.gate_node_id,
         human_review_node_id=topology.human_review_node_id,
         knowledge_remediation_node_id=topology.knowledge_remediation_node_id,
@@ -657,22 +649,6 @@ def _applicability_nodes(graph: GraphDef, layer: str) -> list[str]:
     return nodes
 
 
-def _mechanical_nodes(graph: GraphDef, profile: LayerAssuranceProfile) -> list[str]:
-    expected_output = f"change:{profile.checks_artifact}"
-    nodes: list[str] = []
-    for node_id, node in graph.nodes.items():
-        if node.uses != _MECHANICAL_OPERATION:
-            continue
-        if node.with_.get("layer") != profile.layer:
-            continue
-        if node.with_.get("require_review") is not True:
-            continue
-        if expected_output not in node.outputs:
-            continue
-        nodes.append(node_id)
-    return nodes
-
-
 def _review_nodes(graph: GraphDef, layer: str) -> list[str]:
     suffix = f"aa-{layer}-plan-reviewer"
     return [
@@ -776,7 +752,6 @@ def _empty_topology(layer: str) -> PinnedLayerTopology:
         cycle_graph_id=None,
         applicability_node_id=None,
         reviewer_node_id=None,
-        mechanical_node_id=None,
         gate_node_id=None,
         human_review_node_id=None,
         knowledge_remediation_node_id=None,
@@ -797,7 +772,6 @@ def _finalize_topology(
     cycle_graph_id: str | None = None,
     applicability_node_id: str | None = None,
     reviewer_node_id: str | None = None,
-    mechanical_node_id: str | None = None,
     gate_node_id: str | None = None,
     human_review_node_id: str | None = None,
     knowledge_remediation_node_id: str | None = None,
@@ -813,7 +787,6 @@ def _finalize_topology(
         cycle_graph_id=cycle_graph_id,
         applicability_node_id=applicability_node_id,
         reviewer_node_id=reviewer_node_id,
-        mechanical_node_id=mechanical_node_id,
         gate_node_id=gate_node_id,
         human_review_node_id=human_review_node_id,
         knowledge_remediation_node_id=knowledge_remediation_node_id,
@@ -879,9 +852,9 @@ def _classify_discovered(
     diagnostics = list(extra_diagnostics)
 
     applicability_ids = _applicability_nodes(cycle, layer) if cycle is not None else []
-    mechanical_ids = _mechanical_nodes_for_spec(cycle, topology_spec) if cycle is not None else []
+    review_ids = _review_nodes(cycle, layer) if cycle is not None else []
     gate_ids = _gate_owner_nodes(cycle, topology_spec.gate_id) if cycle is not None else []
-    marker_count = sum(1 for group in (applicability_ids, mechanical_ids, gate_ids) if group)
+    marker_count = sum(1 for group in (applicability_ids, review_ids, gate_ids) if group)
 
     discovered = {
         "assurance_node_id": assurance_node_id,
@@ -889,7 +862,7 @@ def _classify_discovered(
         "cycle_call_node_id": cycle_call_node_id,
         "cycle_graph_id": cycle_graph_id,
         "applicability_node_id": applicability_ids[0] if len(applicability_ids) == 1 else None,
-        "mechanical_node_id": mechanical_ids[0] if len(mechanical_ids) == 1 else None,
+        "reviewer_node_id": review_ids[0] if len(review_ids) == 1 else None,
         "gate_node_id": gate_ids[0] if len(gate_ids) == 1 else None,
     }
 
@@ -910,11 +883,7 @@ def _classify_discovered(
 
     review_ids = _review_nodes(cycle, layer)
     human_ids = _interrupt_nodes(cycle)
-    knowledge_ids = [
-        node_id
-        for node_id in human_ids
-        if "knowledge" in node_id or _route_targets_mechanical(cycle, node_id, mechanical_ids)
-    ]
+    knowledge_ids = [node_id for node_id in human_ids if "knowledge" in node_id]
     # Prefer explicit knowledge-remediation node id when present.
     knowledge_node_id = (
         "knowledge-remediation"
@@ -956,7 +925,6 @@ def _classify_discovered(
             cycle_call_node_id=cycle_call_node_id,
             applicability_ids=applicability_ids,
             review_ids=review_ids,
-            mechanical_ids=mechanical_ids,
             gate_ids=gate_ids,
             human_review_node_id=human_review_node_id,
             knowledge_node_id=knowledge_node_id,
@@ -969,31 +937,8 @@ def _classify_discovered(
     return _finalize_topology(empty, status=status, diagnostics=tuple(diagnostics), **discovered)
 
 
-def _mechanical_nodes_for_spec(graph: GraphDef, spec: LayerTopologySpec) -> list[str]:
-    expected_output = f"change:{spec.checks_artifact}"
-    nodes: list[str] = []
-    for node_id, node in graph.nodes.items():
-        if node.uses != _MECHANICAL_OPERATION:
-            continue
-        if node.with_.get("layer") != spec.layer:
-            continue
-        if node.with_.get("require_review") is not True:
-            continue
-        if expected_output not in node.outputs:
-            continue
-        nodes.append(node_id)
-    return nodes
-
-
 def _interrupt_nodes(graph: GraphDef) -> list[str]:
     return [node_id for node_id, node in graph.nodes.items() if node.uses == "builtin:interrupt"]
-
-
-def _route_targets_mechanical(graph: GraphDef, node_id: str, mechanical_ids: list[str]) -> bool:
-    route = _route_from(graph, node_id)
-    if route is None:
-        return False
-    return route.cases.get("fix_and_proceed") in mechanical_ids
 
 
 def _complete_wiring_diagnostics(
@@ -1005,7 +950,6 @@ def _complete_wiring_diagnostics(
     cycle_call_node_id: str,
     applicability_ids: list[str],
     review_ids: list[str],
-    mechanical_ids: list[str],
     gate_ids: list[str],
     human_review_node_id: str | None,
     knowledge_node_id: str | None,
@@ -1020,8 +964,6 @@ def _complete_wiring_diagnostics(
         errors.append(f"{locator}: expected exactly one applicability operation")
     if len(review_ids) != 1:
         errors.append(f"{locator}: expected exactly one reviewer")
-    if len(mechanical_ids) != 1:
-        errors.append(f"{locator}: expected exactly one reviewed mechanical producer")
     if len(gate_ids) != 1:
         errors.append(f"{locator}: expected exactly one explicit gate owner")
     elif review_ids:
@@ -1029,24 +971,27 @@ def _complete_wiring_diagnostics(
         if attached:
             errors.append(f"{locator}: reviewer must not attach the plan gate")
 
-    if len(applicability_ids) == 1 and len(mechanical_ids) == 1 and len(review_ids) == 1:
+    if len(applicability_ids) == 1 and len(review_ids) == 1:
         applicability = applicability_ids[0]
-        mechanical = mechanical_ids[0]
         review = review_ids[0]
         route = _route_from(cycle, applicability)
         if route is None:
             errors.append(f"{locator}: applicability node must declare a route")
         else:
             if route.cases.get("true") != review:
-                errors.append(f"{locator}: applicable path must reach review before mechanical")
-            if route.cases.get("false") != mechanical:
-                errors.append(f"{locator}: inapplicable path must reach mechanical producer")
-            if route.cases.get("true") == review and not _has_edge(cycle, review, mechanical):
-                errors.append(f"{locator}: review must precede mechanical on applicable path")
+                errors.append(f"{locator}: applicable path must reach review")
+            if len(gate_ids) == 1 and route.cases.get("false") != gate_ids[0]:
+                errors.append(f"{locator}: inapplicable path must reach review-gate")
+            if (
+                route.cases.get("true") == review
+                and len(gate_ids) == 1
+                and not _has_edge(cycle, review, gate_ids[0])
+            ):
+                errors.append(f"{locator}: review must precede the plan gate on applicable path")
 
-    if len(mechanical_ids) == 1 and len(gate_ids) == 1:
-        if not _has_edge(cycle, mechanical_ids[0], gate_ids[0]):
-            errors.append(f"{locator}: explicit gate must follow mechanical producer")
+    if len(review_ids) == 1 and len(gate_ids) == 1:
+        if not _has_edge(cycle, review_ids[0], gate_ids[0]):
+            errors.append(f"{locator}: explicit gate must follow reviewer")
 
     errors.extend(
         _recovery_shape_errors(
@@ -1054,7 +999,6 @@ def _complete_wiring_diagnostics(
             topology_spec,
             gate_ids=gate_ids,
             review_ids=review_ids,
-            mechanical_ids=mechanical_ids,
             human_review_node_id=human_review_node_id,
         )
     )
@@ -1063,7 +1007,7 @@ def _complete_wiring_diagnostics(
             cycle,
             locator=locator,
             gate_ids=gate_ids,
-            mechanical_ids=mechanical_ids,
+            review_ids=review_ids,
             knowledge_node_id=knowledge_node_id,
         )
     )
@@ -1109,7 +1053,6 @@ def _recovery_shape_errors(
     *,
     gate_ids: list[str],
     review_ids: list[str],
-    mechanical_ids: list[str],
     human_review_node_id: str | None,
 ) -> list[str]:
     locator = f"layer:{topology_spec.layer}"
@@ -1123,10 +1066,10 @@ def _recovery_shape_errors(
     needs_fix_target = gate_route.cases.get("needs_fix")
     review = review_ids[0]
 
-    # Automatic-fixer shape: needs_fix -> fix node, fix -> review.
+    # Automatic author/fixer shape: needs_fix -> skill node, skill -> review.
     if needs_fix_target is not None and needs_fix_target in cycle.nodes:
         fix_node = cycle.nodes[needs_fix_target]
-        if fix_node.uses.startswith("skill:") and "fixer" in fix_node.uses:
+        if fix_node.uses.startswith("skill:"):
             if _has_edge(cycle, needs_fix_target, review):
                 return []
             return [f"{locator}: automatic fixer must re-enter at review"]
@@ -1142,13 +1085,14 @@ def _recovery_shape_errors(
     if interrupt.manual_revision.action != "fix_and_proceed":
         return [f"{locator}: manual_revision.action must be fix_and_proceed"]
     expected_paths = tuple(f"change:{path}" for path in topology_spec.plan_artifacts)
-    if tuple(interrupt.manual_revision.paths) != expected_paths:
+    mapping_path = f"change:plans/{topology_spec.layer}-codegen-mapping.yaml"
+    actual_paths = tuple(interrupt.manual_revision.paths)
+    if actual_paths not in {expected_paths, (*expected_paths, mapping_path)}:
         return [f"{locator}: manual_revision.paths must exactly match plan artifacts"]
 
     human_route = _route_from(cycle, human_review_node_id)
     if human_route is None or human_route.cases.get("fix_and_proceed") != review:
         return [f"{locator}: human-only fix_and_proceed must return to review"]
-    _ = mechanical_ids
     return []
 
 
@@ -1157,7 +1101,7 @@ def _knowledge_remediation_errors(
     *,
     locator: str,
     gate_ids: list[str],
-    mechanical_ids: list[str],
+    review_ids: list[str],
     knowledge_node_id: str | None,
 ) -> list[str]:
     errors: list[str] = []
@@ -1165,8 +1109,8 @@ def _knowledge_remediation_errors(
         return [f"{locator}: cannot validate knowledge remediation without gate"]
     if knowledge_node_id is None:
         return [f"{locator}: missing knowledge-remediation interrupt"]
-    if len(mechanical_ids) != 1:
-        return [f"{locator}: cannot validate knowledge remediation without mechanical producer"]
+    if len(review_ids) != 1:
+        return [f"{locator}: cannot validate knowledge remediation without reviewer"]
 
     gate_route = _route_from(cycle, gate_ids[0])
     if gate_route is None or gate_route.cases.get("knowledge_remediation") != knowledge_node_id:
@@ -1175,10 +1119,8 @@ def _knowledge_remediation_errors(
     knowledge_route = _route_from(cycle, knowledge_node_id)
     if knowledge_route is None:
         errors.append(f"{locator}: missing knowledge-remediation route")
-    elif knowledge_route.cases.get("fix_and_proceed") != mechanical_ids[0]:
-        errors.append(
-            f"{locator}: knowledge remediation fix_and_proceed must re-enter at mechanical producer"
-        )
+    elif knowledge_route.cases.get("fix_and_proceed") != review_ids[0]:
+        errors.append(f"{locator}: knowledge remediation fix_and_proceed must re-enter at review")
     return errors
 
 

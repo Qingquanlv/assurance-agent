@@ -80,25 +80,14 @@ class CheckEvidence(BaseModel):
 class PlanCheckDocument(BaseModel):
     model_config = _FROZEN
 
-    schema_version: Literal["1", "2"] = "2"
-    layer: LayerName | None = None
-    applicability: LayerApplicability | None = None
+    schema_version: Literal["2"] = "2"
+    layer: LayerName
+    applicability: LayerApplicability
     status: CheckStatus
     checks: tuple[CheckEvidence, ...] = ()
 
     @model_validator(mode="after")
     def validate_versioned_document(self) -> "PlanCheckDocument":
-        if self.schema_version == "1":
-            if self.layer is not None or self.applicability is not None:
-                raise ValueError("version 1 documents do not contain applicability data")
-            if self.status == "not_applicable" or any(
-                check.status == "not_applicable" for check in self.checks
-            ):
-                raise ValueError("version 1 documents only support pass and fail")
-            return self
-
-        if self.layer is None or self.applicability is None:
-            raise ValueError("version 2 documents require layer and applicability")
         if self.layer != self.applicability.layer:
             raise ValueError("document layer must match applicability layer")
 

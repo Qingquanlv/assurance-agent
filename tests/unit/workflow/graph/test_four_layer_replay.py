@@ -488,7 +488,7 @@ def test_wired_layer_missing_evidence_is_incomplete(tmp_path: Path) -> None:
     rewritten = []
     for payload in lines:
         task_id = str(payload.get("task_id", ""))
-        if payload.get("type") == "task_attempt_succeeded" and task_id.endswith(":mechanical-plan-checks"):
+        if payload.get("type") == "task_attempt_succeeded" and task_id.endswith(":review"):
             if "api-plan-cycle" in task_id:
                 payload = dict(payload)
                 payload["outputs_sha256"] = {checks_path: "0" * 64}
@@ -594,7 +594,6 @@ def _synthetic_wired_specialty_binding(
         cycle_graph_id=api_topo.cycle_graph_id,
         applicability_node_id=api_topo.applicability_node_id,
         reviewer_node_id=api_topo.reviewer_node_id,
-        mechanical_node_id=api_topo.mechanical_node_id,
         gate_node_id=api_topo.gate_node_id,
         human_review_node_id=api_topo.human_review_node_id,
         knowledge_remediation_node_id=api_topo.knowledge_remediation_node_id,

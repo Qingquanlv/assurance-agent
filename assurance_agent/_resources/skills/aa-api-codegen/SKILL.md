@@ -22,6 +22,7 @@ implement the selected cases.
 - `change:plans/api-plan.md`
 - `change:plans/api-test-data-plan.md`
 - `change:plans/api-codegen-plan.md`
+- `change:plans/api-codegen-mapping.yaml`
 - `change:plans/m3-review-summary.md`
 - `change:review/api-plan-review.json`
 - `change:cases/**/case.yaml`
@@ -62,15 +63,15 @@ Do not run pytest or invent collection evidence.
 ## Generated-files Manifest Rules
 
 - Only `test_entry` entries may claim mapped Case IDs, and their `case_ids` must
-  exactly match the plan's Task Mapping for that path.
+  exactly match the codegen mapping (`plans/api-codegen-mapping.yaml`) for that path.
 - Every `support` and `shared_builder` entry must use `case_ids: []`.
 - Use `generated` only for a newly added file and `updated` only for a file whose
   content this invocation changed.
 - `reused` is legal only for an unchanged, selected private-root `test_entry`
-  that is itself a Task Mapping target. Never list an unchanged adapter, helper,
+  that is itself a codegen-mapping target. Never list an unchanged adapter, helper,
   fixture, or shared builder as `reused`; omit unchanged support dependencies
   from the manifest.
 
 When selected API cases or private-root targets exist, an empty `files` array is
-invalid. Generate or update every selected Task Mapping target and list it as a
+invalid. Generate or update every selected codegen-mapping target and list it as a
 `test_entry` with the exact mapped Case IDs.

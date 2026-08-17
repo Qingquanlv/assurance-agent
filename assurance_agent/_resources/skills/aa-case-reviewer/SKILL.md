@@ -572,7 +572,7 @@ These field values **must always be consistent**. Violating them creates gate by
 | decision | next_action |
 |---|---|
 | `pass` | `continue` |
-| `needs_fix` | `run_case_fixer` |
+| `needs_fix` | `run_case_design` |
 | `needs_human_review` | `human_review` |
 | `reject` | `stop` |
 
@@ -631,14 +631,8 @@ Set `human_review_required = true` when:
 ## Required JSON Format
 
 > **Schema source of truth:** the complete, enforced field contract for review gate JSON
-> lives in `src/schema/review.ts` (validated by `aa validate`). The example below is
-> illustrative only. After writing review files you MUST run:
->
-> ```
-> aa validate --change <change-id> --artifact review/case-review.json
-> ```
->
-> and resolve every reported error. Do not rely on this document for the full field list.
+> lives in `assurance_agent/artifacts/models/review.py`. Runtime `finalize` validates
+> authored files against that model. The example below is illustrative only.
 
 Write valid JSON to:
 
@@ -646,7 +640,7 @@ Write valid JSON to:
 qa/changes/<change-id>/review/case-review.json
 ```
 
-**Minimal top-level structure (illustrative — see `src/schema/review.ts` for the full contract):**
+**Minimal top-level structure (illustrative — see `assurance_agent/artifacts/models/review.py` for the full contract):**
 
 ```json
 {
@@ -660,7 +654,15 @@ qa/changes/<change-id>/review/case-review.json
   "summary": "Short review summary.",
   "reviewed_files": [],
   "blockers": [],
-  "findings": [],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "high",
+      "category": "coverage",
+      "message": "required case is missing a locator-backed assertion",
+      "locator": {"artifact": "change:cases/module/case.yaml", "case_id": "TC_001"}
+    }
+  ],
   "needs_review": [],
   "auto_fix_plan": [],
   "next_action": "continue",

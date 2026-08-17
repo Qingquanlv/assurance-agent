@@ -748,9 +748,13 @@ graphs:
         timeout: agent
 
       fix:
-        uses: skill:aa-case-fixer
+        uses: skill:aa-case-design
         agent: aa-doc-author
-        outputs: [change:review/case-review-apply-summary.md]
+        outputs:
+          - change:.qa.yaml
+          - change:proposal.md
+          - change:cases/
+          - change:trace/minimum-coverage-matrix.yaml
         retry: agent-transient
         timeout: agent
         budget:
@@ -1004,6 +1008,7 @@ graphs:
           - change:plans/api-plan.md
           - change:plans/api-test-data-plan.md
           - change:plans/api-codegen-plan.md
+          - change:plans/api-codegen-mapping.yaml
           - change:plans/m3-review-summary.md
         retry: agent-transient
         timeout: agent
@@ -1048,43 +1053,32 @@ graphs:
         limit: "params.max_plan_fix_attempts"
     nodes:
       applicability:
+        # Checks are written only when not applicable, so this node has no
+        # declared outputs. Freeze still publishes the written concrete
+        # authorization_write into outputs_sha256 for replay binding.
         uses: operation:derive-plan-layer-applicability
         with: {layer: api}
 
       review:
         uses: skill:aa-api-plan-reviewer
         agent: aa-reviewer
-        outputs: [change:review/api-plan-review.json, change:review/api-plan-review-summary.md]
+        outputs: [change:review/api-plan-review.json, change:review/api-plan-review-summary.md, change:review/api-plan-checks.json]
         retry: agent-transient
         timeout: agent
-
-      mechanical-plan-checks:
-        uses: operation:verify-plan-mechanical
-        with: {layer: api, require_review: true}
-        outputs: [change:review/api-plan-checks.json]
-        resources:
-          writes:
-            - change:review/api-plan-checks.json
-          reads:
-            - change:plans/api-plan.md
-            - change:plans/api-test-data-plan.md
-            - change:plans/api-codegen-plan.md
-            - change:review/api-plan-review.json
-            - change:cases/**
-            - repo:.aa/data-knowledge.yaml
-          synchronized:
-            - project:.aa/data-knowledge.yaml
-          exclusive:
-            - project:data-knowledge
 
       review-gate:
         uses: builtin:gate
         with: {gate: api-plan-review-gate}
 
       fix:
-        uses: skill:aa-api-plan-fixer
+        uses: skill:aa-api-plan
         agent: aa-doc-author
-        outputs: [change:review/api-plan-review-apply-summary.md]
+        outputs:
+          - change:plans/api-plan.md
+          - change:plans/api-test-data-plan.md
+          - change:plans/api-codegen-plan.md
+          - change:plans/api-codegen-mapping.yaml
+          - change:plans/m3-review-summary.md
         retry: agent-transient
         timeout: agent
         budget:
@@ -1114,15 +1108,14 @@ graphs:
 
     edges:
       - {from: START, to: applicability}
-      - {from: review, to: mechanical-plan-checks}
-      - {from: mechanical-plan-checks, to: review-gate}
+      - {from: review, to: review-gate}
       - {from: fix, to: review}
       - {from: exhausted, to: STOP}
 
     routes:
       - from: applicability
         select: "node('applicability').value.applicable"
-        cases: {"true": review, "false": mechanical-plan-checks}
+        cases: {"true": review, "false": review-gate}
         default: STOP
       - from: review-gate
         select: "plan_review_route('review-gate')"
@@ -1145,7 +1138,7 @@ graphs:
       - from: knowledge-remediation
         select: "resume.action"
         cases:
-          fix_and_proceed: mechanical-plan-checks
+          fix_and_proceed: review
           accept_risk: END
           stop: STOP
         default: STOP
@@ -1161,6 +1154,7 @@ graphs:
           - change:plans/e2e-plan.md
           - change:plans/e2e-test-data-plan.md
           - change:plans/e2e-codegen-plan.md
+          - change:plans/e2e-codegen-mapping.yaml
           - change:plans/m4-review-summary.md
         retry: agent-transient
         timeout: agent
@@ -1203,43 +1197,32 @@ graphs:
         limit: "params.max_plan_fix_attempts"
     nodes:
       applicability:
+        # Checks are written only when not applicable, so this node has no
+        # declared outputs. Freeze still publishes the written concrete
+        # authorization_write into outputs_sha256 for replay binding.
         uses: operation:derive-plan-layer-applicability
         with: {layer: e2e}
 
       review:
         uses: skill:aa-e2e-plan-reviewer
         agent: aa-reviewer
-        outputs: [change:review/plan-review.json, change:review/plan-review-summary.md]
+        outputs: [change:review/plan-review.json, change:review/plan-review-summary.md, change:review/e2e-plan-checks.json]
         retry: agent-transient
         timeout: agent
-
-      mechanical-plan-checks:
-        uses: operation:verify-plan-mechanical
-        with: {layer: e2e, require_review: true}
-        outputs: [change:review/e2e-plan-checks.json]
-        resources:
-          writes:
-            - change:review/e2e-plan-checks.json
-          reads:
-            - change:plans/e2e-plan.md
-            - change:plans/e2e-test-data-plan.md
-            - change:plans/e2e-codegen-plan.md
-            - change:review/plan-review.json
-            - change:cases/**
-            - repo:.aa/data-knowledge.yaml
-          synchronized:
-            - project:.aa/data-knowledge.yaml
-          exclusive:
-            - project:data-knowledge
 
       review-gate:
         uses: builtin:gate
         with: {gate: e2e-plan-review-gate}
 
       fix:
-        uses: skill:aa-e2e-plan-fixer
+        uses: skill:aa-e2e-plan
         agent: aa-doc-author
-        outputs: [change:review/plan-review-apply-summary.md]
+        outputs:
+          - change:plans/e2e-plan.md
+          - change:plans/e2e-test-data-plan.md
+          - change:plans/e2e-codegen-plan.md
+          - change:plans/e2e-codegen-mapping.yaml
+          - change:plans/m4-review-summary.md
         retry: agent-transient
         timeout: agent
         budget:
@@ -1269,15 +1252,14 @@ graphs:
 
     edges:
       - {from: START, to: applicability}
-      - {from: review, to: mechanical-plan-checks}
-      - {from: mechanical-plan-checks, to: review-gate}
+      - {from: review, to: review-gate}
       - {from: fix, to: review}
       - {from: exhausted, to: STOP}
 
     routes:
       - from: applicability
         select: "node('applicability').value.applicable"
-        cases: {"true": review, "false": mechanical-plan-checks}
+        cases: {"true": review, "false": review-gate}
         default: STOP
       - from: review-gate
         select: "plan_review_route('review-gate')"
@@ -1300,7 +1282,7 @@ graphs:
       - from: knowledge-remediation
         select: "resume.action"
         cases:
-          fix_and_proceed: mechanical-plan-checks
+          fix_and_proceed: review
           accept_risk: END
           stop: STOP
         default: STOP
@@ -1319,6 +1301,7 @@ graphs:
         outputs:
           - change:plans/fuzz-plan.md
           - change:plans/fuzz-codegen-plan.md
+          - change:plans/fuzz-codegen-mapping.yaml
           - change:plans/fuzz-review-summary.md
         retry: agent-transient
         timeout: agent
@@ -1366,33 +1349,18 @@ graphs:
         limit: "params.max_plan_fix_attempts"
     nodes:
       applicability:
+        # Checks are written only when not applicable, so this node has no
+        # declared outputs. Freeze still publishes the written concrete
+        # authorization_write into outputs_sha256 for replay binding.
         uses: operation:derive-plan-layer-applicability
         with: {layer: fuzz}
 
       review:
         uses: skill:aa-fuzz-plan-reviewer
         agent: aa-reviewer
-        outputs: [change:review/fuzz-plan-review.json, change:review/fuzz-plan-review-summary.md]
+        outputs: [change:review/fuzz-plan-review.json, change:review/fuzz-plan-review-summary.md, change:review/fuzz-plan-checks.json]
         retry: agent-transient
         timeout: agent
-
-      mechanical-plan-checks:
-        uses: operation:verify-plan-mechanical
-        with: {layer: fuzz, require_review: true}
-        outputs: [change:review/fuzz-plan-checks.json]
-        resources:
-          writes:
-            - change:review/fuzz-plan-checks.json
-          reads:
-            - change:plans/fuzz-plan.md
-            - change:plans/fuzz-codegen-plan.md
-            - change:review/fuzz-plan-review.json
-            - change:cases/**
-            - repo:.aa/data-knowledge.yaml
-          synchronized:
-            - project:.aa/data-knowledge.yaml
-          exclusive:
-            - project:data-knowledge
 
       review-gate:
         uses: builtin:gate
@@ -1410,6 +1378,7 @@ graphs:
             paths:
               - change:plans/fuzz-plan.md
               - change:plans/fuzz-codegen-plan.md
+              - change:plans/fuzz-codegen-mapping.yaml
         budget:
           consume: fix_attempts
           "on": committed
@@ -1429,14 +1398,13 @@ graphs:
 
     edges:
       - {from: START, to: applicability}
-      - {from: review, to: mechanical-plan-checks}
-      - {from: mechanical-plan-checks, to: review-gate}
+      - {from: review, to: review-gate}
       - {from: exhausted, to: STOP}
 
     routes:
       - from: applicability
         select: "node('applicability').value.applicable"
-        cases: {"true": review, "false": mechanical-plan-checks}
+        cases: {"true": review, "false": review-gate}
         default: STOP
       - from: review-gate
         select: "plan_review_route('review-gate')"
@@ -1459,7 +1427,7 @@ graphs:
       - from: knowledge-remediation
         select: "resume.action"
         cases:
-          fix_and_proceed: mechanical-plan-checks
+          fix_and_proceed: review
           accept_risk: END
           stop: STOP
         default: STOP
@@ -1478,6 +1446,7 @@ graphs:
         outputs:
           - change:plans/performance-plan.md
           - change:plans/performance-codegen-plan.md
+          - change:plans/performance-codegen-mapping.yaml
           - change:plans/performance-review-summary.md
         retry: agent-transient
         timeout: agent
@@ -1525,33 +1494,18 @@ graphs:
         limit: "params.max_plan_fix_attempts"
     nodes:
       applicability:
+        # Checks are written only when not applicable, so this node has no
+        # declared outputs. Freeze still publishes the written concrete
+        # authorization_write into outputs_sha256 for replay binding.
         uses: operation:derive-plan-layer-applicability
         with: {layer: performance}
 
       review:
         uses: skill:aa-performance-plan-reviewer
         agent: aa-reviewer
-        outputs: [change:review/performance-plan-review.json, change:review/performance-plan-review-summary.md]
+        outputs: [change:review/performance-plan-review.json, change:review/performance-plan-review-summary.md, change:review/performance-plan-checks.json]
         retry: agent-transient
         timeout: agent
-
-      mechanical-plan-checks:
-        uses: operation:verify-plan-mechanical
-        with: {layer: performance, require_review: true}
-        outputs: [change:review/performance-plan-checks.json]
-        resources:
-          writes:
-            - change:review/performance-plan-checks.json
-          reads:
-            - change:plans/performance-plan.md
-            - change:plans/performance-codegen-plan.md
-            - change:review/performance-plan-review.json
-            - change:cases/**
-            - repo:.aa/data-knowledge.yaml
-          synchronized:
-            - project:.aa/data-knowledge.yaml
-          exclusive:
-            - project:data-knowledge
 
       review-gate:
         uses: builtin:gate
@@ -1569,6 +1523,7 @@ graphs:
             paths:
               - change:plans/performance-plan.md
               - change:plans/performance-codegen-plan.md
+              - change:plans/performance-codegen-mapping.yaml
         budget:
           consume: fix_attempts
           "on": committed
@@ -1588,14 +1543,13 @@ graphs:
 
     edges:
       - {from: START, to: applicability}
-      - {from: review, to: mechanical-plan-checks}
-      - {from: mechanical-plan-checks, to: review-gate}
+      - {from: review, to: review-gate}
       - {from: exhausted, to: STOP}
 
     routes:
       - from: applicability
         select: "node('applicability').value.applicable"
-        cases: {"true": review, "false": mechanical-plan-checks}
+        cases: {"true": review, "false": review-gate}
         default: STOP
       - from: review-gate
         select: "plan_review_route('review-gate')"
@@ -1618,7 +1572,7 @@ graphs:
       - from: knowledge-remediation
         select: "resume.action"
         cases:
-          fix_and_proceed: mechanical-plan-checks
+          fix_and_proceed: review
           accept_risk: END
           stop: STOP
         default: STOP

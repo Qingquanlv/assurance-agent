@@ -115,7 +115,7 @@ def test_inapplicable_branch_skips_reviewer(tmp_path: Path, layer: str, graph_id
         value={"layer": layer, "applicable": False, "reason_code": "no_automated_cases", "case_ids": []},
     )
     plan = _plan_cycle(compiled, tmp_path, graph_id=graph_id, tasks=[applicability], supersteps=1)
-    assert [task.node_id for task in plan.tasks] == ["mechanical-plan-checks"]
+    assert [task.node_id for task in plan.tasks] == ["review-gate"]
     assert "review" not in {task.node_id for task in plan.tasks}
 
 
@@ -145,22 +145,21 @@ def test_fix_loop_reenters_review_not_mechanical(tmp_path: Path) -> None:
             value={"layer": "api", "applicable": True, "reason_code": "x", "case_ids": ["TC-1"]},
         ),
         _task("review"),
-        _task("mechanical-plan-checks"),
         _task(
             "review-gate",
             gate_report={"verdict": "needs_fix", "gate_id": "api-plan-review-gate"},
         ),
         _task("fix"),
     ]
-    plan = _plan_cycle(compiled, tmp_path, graph_id="api-plan-cycle", tasks=tasks, supersteps=4)
+    plan = _plan_cycle(compiled, tmp_path, graph_id="api-plan-cycle", tasks=tasks, supersteps=3)
     assert [task.node_id for task in plan.tasks] == ["review"]
 
 
-def test_knowledge_remediation_route_targets_mechanical() -> None:
+def test_knowledge_remediation_route_targets_review() -> None:
     compiled, _ = _load_compiled()
     cycle = compiled.schema.graphs["api-plan-cycle"]
     route = next(item for item in cycle.routes if item.from_ == "knowledge-remediation")
-    assert route.cases["fix_and_proceed"] == "mechanical-plan-checks"
+    assert route.cases["fix_and_proceed"] == "review"
 
 
 def test_codegen_precheck_skips_inapplicable_branch_without_codegen(tmp_path: Path) -> None:

@@ -102,6 +102,39 @@ class CodegenGeneratedFiles(BaseModel):
         return self
 
 
+class CodegenMappingEntry(BaseModel):
+    """One closed Case ID → symbol → target file row."""
+
+    model_config = _FROZEN
+
+    case_id: NonEmptyStr
+    symbol: NonEmptyStr
+    target_file: NonEmptyStr
+
+    @field_validator("target_file")
+    @classmethod
+    def _safe_target_file(cls, value: str) -> str:
+        return _safe_project_relative_path(value)
+
+
+class CodegenMapping(BaseModel):
+    """Change-level codegen mapping; source of truth for precommit case_ids."""
+
+    model_config = _FROZEN
+
+    schema_version: Literal["1"]
+    layer: CodegenLayer
+    entries: tuple[CodegenMappingEntry, ...] = Field(min_length=1)
+    schema_case_ids: tuple[NonEmptyStr, ...] | None = None
+
+    @model_validator(mode="after")
+    def _unique_case_ids(self) -> Self:
+        ids = tuple(item.case_id for item in self.entries)
+        if len(ids) != len(set(ids)):
+            raise ValueError("entries case_id values must be unique")
+        return self
+
+
 __all__ = [
     "CodegenGeneratedFile",
     "CodegenGeneratedFileAuthoring",
@@ -110,4 +143,6 @@ __all__ = [
     "CodegenGeneratedFilesAuthoring",
     "CodegenGeneratedFilesSubmission",
     "CodegenLayer",
+    "CodegenMapping",
+    "CodegenMappingEntry",
 ]

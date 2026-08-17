@@ -9,7 +9,7 @@ the TS validator, which accepted any non-empty string).
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from assurance_agent.artifacts.models.common import NonEmptyStr
 
@@ -56,12 +56,47 @@ def _validate_fully_qualified_capabilities(caps: list[str] | None) -> None:
             raise ValueError(f"required_capabilities[{index}] must be a canonical C4 leaf key")
 
 
+FindingSeverity = Literal["low", "medium", "high", "critical", "blocking"]
+
+
+class ReviewFindingLocator(BaseModel):
+    """Stable pointer into the reviewed artifact."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact: NonEmptyStr
+    case_id: str | None = None
+    key: str | None = None
+
+
+class ReviewFinding(BaseModel):
+    """Typed review finding; locator makes author re-entry mechanically checkable."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: NonEmptyStr
+    severity: FindingSeverity
+    category: NonEmptyStr
+    message: NonEmptyStr
+    locator: ReviewFindingLocator
+
+
 def _validate_nonblank_finding_ids(findings: list[Any]) -> None:
     for index, finding in enumerate(findings):
         if not isinstance(finding, dict) or not isinstance(finding.get("id"), str):
             raise ValueError(f"findings[{index}].id must be a non-empty string")
         if not finding["id"].strip():
             raise ValueError(f"findings[{index}].id must be a non-empty string")
+
+
+def _coerce_authoring_findings(findings: list[Any]) -> list[dict[str, Any]]:
+    _validate_nonblank_finding_ids(findings)
+    coerced: list[dict[str, Any]] = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            raise ValueError("findings items must be objects")
+        coerced.append(ReviewFinding.model_validate(finding).model_dump())
+    return coerced
 
 
 class Review(BaseModel):
@@ -149,7 +184,8 @@ class PlanReviewAuthoring(BaseModel):
         extra="allow",
         json_schema_extra={
             "prompt_notes": [
-                "each findings item requires id",
+                "each findings item requires id, severity, category, message, and locator",
+                "locator.artifact is a change- or repo-relative path; locator.case_id / locator.key are optional",
                 "auto_fix_plan items must reference an existing findings id",
                 "required_capabilities must be a non-empty list of fully qualified C4 leaf keys",
                 "use auth.*, accounts.*, entities.*, capabilities.domain_factories.*, "
@@ -170,6 +206,11 @@ class PlanReviewAuthoring(BaseModel):
     codegen_readiness: Literal["ready", "ready_with_warnings", "not_ready"]
     risk_level: Literal["low", "medium", "high", "critical"]
     required_capabilities: list[NonEmptyStr]
+
+    @field_validator("findings")
+    @classmethod
+    def _typed_findings(cls, value: list[Any]) -> list[dict[str, Any]]:
+        return _coerce_authoring_findings(value)
 
     @model_validator(mode="after")
     def _validate_authoring_contract(self) -> "PlanReviewAuthoring":
@@ -270,6 +311,7 @@ class CaseReviewAuthoring(BaseModel):
                 "minimum_coverage is a projection of trace/minimum-coverage-matrix.yaml: count only "
                 "required rows; covered counts status=covered; skipped_by_scope and missing must list "
                 "every required skipped row in matrix order",
+                "each findings item requires id, severity, category, message, and locator",
             ]
         },
     )
@@ -286,3 +328,8 @@ class CaseReviewAuthoring(BaseModel):
     risk_level: Literal["low", "medium", "high", "critical"]
     minimum_coverage: CaseMinimumCoverageReview
     source_verification: CaseSourceVerification
+
+    @field_validator("findings")
+    @classmethod
+    def _typed_findings(cls, value: list[Any]) -> list[dict[str, Any]]:
+        return _coerce_authoring_findings(value)

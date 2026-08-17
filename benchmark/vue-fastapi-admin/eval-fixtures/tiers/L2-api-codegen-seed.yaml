@@ -31,14 +31,10 @@ imports:
       gate: registry-gate
     - path: execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle
       graph: api-plan-cycle
-      node: mechanical-plan-checks
-      outputs:
-      - change:review/api-plan-checks.json
-    - path: execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle
-      graph: api-plan-cycle
       node: review
       outputs:
       - change:review/api-plan-review.json
+      - change:review/api-plan-checks.json
       gate: api-plan-review-gate
     - path: execute-workflow/assurance/assurance/api/api-branch
       graph: api-branch

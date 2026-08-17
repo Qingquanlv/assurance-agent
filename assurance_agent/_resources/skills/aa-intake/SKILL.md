@@ -32,7 +32,7 @@ Operator recovery (expired lease, interrupt, digest drift) lives in
 hand-edited phase fallback and no agent orchestration loop that writes progression.
 
 Deep per-phase contracts: load `aa-explore`, `aa-case-design`,
-`aa-case-reviewer`, `aa-case-fixer` when dispatched; this skill only sequences them.
+`aa-case-reviewer` when dispatched; this skill only sequences them.
 
 ## Startup
 
@@ -43,7 +43,6 @@ Deep per-phase contracts: load `aa-explore`, `aa-case-design`,
    - `aa-explore`
    - `aa-case-design`
    - `aa-case-reviewer`
-   - `aa-case-fixer`
 4. Prefer driver-stamped run context via `aa workflow run` / `workflow_start`. Do not hand-write `run_context`.
 
 ## Orchestration
@@ -83,7 +82,7 @@ Phase 2.2 — Case Review (initial)
 
 Phase 2.3 — Case Fix loop (if gate needs_fix)
   → for each attempt (max = max_case_fix_attempts):
-      aa-case-fixer → aa-case-reviewer → aa gate check
+      aa-case-design → aa-case-reviewer → aa gate check
       pass → exit loop ; reject / human_review_required → see Human Review below ; exhausted → STOP
   → ledger: GraphRuntime commits each re-review — then aa status
 ```

@@ -583,12 +583,9 @@ def test_agent_for_skill_routes_every_workflow_skill() -> None:
     expected = {
         "aa-explore": "aa-explorer",
         "aa-case-design": "aa-doc-author",
-        "aa-case-fixer": "aa-doc-author",
         "aa-fact-baseline": "aa-doc-author",
         "aa-api-plan": "aa-doc-author",
-        "aa-api-plan-fixer": "aa-doc-author",
         "aa-e2e-plan": "aa-doc-author",
-        "aa-e2e-plan-fixer": "aa-doc-author",
         "aa-fuzz-plan": "aa-doc-author",
         "aa-performance-plan": "aa-doc-author",
         "aa-fix-proposal": "aa-doc-author",
@@ -898,7 +895,6 @@ def test_default_operations_registry_has_exact_keys() -> None:
     assert set(default_operations()) == {
         "operation:no-op",
         "operation:skill-registry-check",
-        "operation:verify-plan-mechanical",
         "operation:derive-plan-layer-applicability",
         "operation:run-tests",
         "operation:run-tests-and-collect-pr-metrics",

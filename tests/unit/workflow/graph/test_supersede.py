@@ -51,7 +51,7 @@ from assurance_agent.workflow.graph.status import supersede_audit_id
 from tests.helpers_graph_v6 import v6_semantic_bindings
 
 # Pinned after leaf-aware resume anchors joined the commit-safety semantics.
-_PINNED_COMMIT_SAFETY_DIGEST = "1ba77a6e59880f97a05b2883b085d781bf139fca08cdc1f7ee39d06d9c003f3e"
+_PINNED_COMMIT_SAFETY_DIGEST = "40f8c204dd1cd13151fa3cdb9fe347f30aea914a96fb2d2142d128e0aac6626d"
 
 
 def _projection(

@@ -377,19 +377,23 @@ class ReplayBindingFixture:
                 },
             )
 
-        mech_task = f"{structural_path}:mechanical-plan-checks"
-        mech_attempt = f"{mech_task}-a1"
-        mech_digest = hashlib.sha256(checks_bytes).hexdigest()
-        mech_contract = self.compiled.contract_digests["operation:verify-plan-mechanical"]  # type: ignore[attr-defined]
+        producer_node = "review" if applicable else "applicability"
+        producer_target = (
+            f"skill:aa-{layer}-plan-reviewer" if applicable else "operation:derive-plan-layer-applicability"
+        )
+        producer_task = f"{structural_path}:{producer_node}"
+        producer_attempt = f"{producer_task}-a1"
+        producer_digest = hashlib.sha256(checks_bytes).hexdigest()
+        producer_contract = self.compiled.contract_digests[producer_target]  # type: ignore[attr-defined]
         gate_contract = self.compiled.contract_digests["builtin:gate"]  # type: ignore[attr-defined]
         self.append(
             SuperstepPlannedEvent(
                 type="superstep_planned",
                 invocation_id=invocation_id,
                 checkpoint_ns=checkpoint_ns,
-                superstep_id=f"{invocation_id}-ss-mech",
-                checkpoint_id=f"{invocation_id}-cp-mech",
-                task_ids=[mech_task],
+                superstep_id=f"{invocation_id}-ss-checks",
+                checkpoint_id=f"{invocation_id}-cp-checks",
+                task_ids=[producer_task],
             ).model_dump(mode="json")
         )
         self.append(
@@ -397,13 +401,13 @@ class ReplayBindingFixture:
                 type="task_attempt_started",
                 invocation_id=invocation_id,
                 checkpoint_ns=checkpoint_ns,
-                superstep_id=f"{invocation_id}-ss-mech",
-                task_id=mech_task,
-                attempt_id=mech_attempt,
-                node_id="mechanical-plan-checks",
-                input_sha256="in-mech",
+                superstep_id=f"{invocation_id}-ss-checks",
+                task_id=producer_task,
+                attempt_id=producer_attempt,
+                node_id=producer_node,
+                input_sha256="in-checks",
                 graph_digest=self.compiled.digest,  # type: ignore[attr-defined]
-                contract_digest=mech_contract,
+                contract_digest=producer_contract,
                 attempt_number=1,
                 lease_expires_at="2026-07-31T00:00:00Z",
                 started_at="2026-07-31T00:00:00Z",
@@ -414,11 +418,11 @@ class ReplayBindingFixture:
                 type="task_attempt_succeeded",
                 invocation_id=invocation_id,
                 checkpoint_ns=checkpoint_ns,
-                superstep_id=f"{invocation_id}-ss-mech",
-                task_id=mech_task,
-                attempt_id=mech_attempt,
-                write_set_id="ws-mech",
-                outputs_sha256={normalize_logical_path(f"change:{profile.checks_artifact}"): mech_digest},
+                superstep_id=f"{invocation_id}-ss-checks",
+                task_id=producer_task,
+                attempt_id=producer_attempt,
+                write_set_id="ws-checks",
+                outputs_sha256={normalize_logical_path(f"change:{profile.checks_artifact}"): producer_digest},
             ).model_dump(mode="json")
         )
         self.append(
@@ -426,12 +430,12 @@ class ReplayBindingFixture:
                 type="superstep_committed",
                 invocation_id=invocation_id,
                 checkpoint_ns=checkpoint_ns,
-                superstep_id=f"{invocation_id}-ss-mech",
-                checkpoint_id=f"{invocation_id}-cp-mech-commit",
-                write_set_ids=["ws-mech"],
+                superstep_id=f"{invocation_id}-ss-checks",
+                checkpoint_id=f"{invocation_id}-cp-checks-commit",
+                write_set_ids=["ws-checks"],
                 target_tree_id=gate_tree,
                 state_values={},
-                committed_task_ids=[mech_task],
+                committed_task_ids=[producer_task],
             ).model_dump(mode="json")
         )
 
@@ -1071,7 +1075,7 @@ def test_recover_layer_inputs_api_applicable(tmp_path: Path) -> None:
     assert recovered.data_knowledge is not None
     assert (
         recovered.mechanical_execution_contract_digest
-        == fixture.compiled.contract_digests["operation:verify-plan-mechanical"]  # type: ignore[attr-defined]
+        == fixture.compiled.contract_digests["skill:aa-api-plan-reviewer"]  # type: ignore[attr-defined]
     )
     assert isinstance(recovered.baseline, FrozenGateReport)
 
@@ -1238,9 +1242,7 @@ def test_recover_layer_inputs_mechanical_producer_unbound(tmp_path: Path) -> Non
     lines = [json.loads(line) for line in fixture.events_path.read_text(encoding="utf-8").splitlines()]
     rewritten = []
     for payload in lines:
-        if payload.get("type") == "task_attempt_succeeded" and payload.get("task_id", "").endswith(
-            ":mechanical-plan-checks"
-        ):
+        if payload.get("type") == "task_attempt_succeeded" and payload.get("task_id", "").endswith(":review"):
             payload = dict(payload)
             payload["outputs_sha256"] = {"change:review/api-plan-checks.json": "0" * 64}
         rewritten.append(json.dumps(payload, sort_keys=True))

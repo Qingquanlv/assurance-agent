@@ -21,6 +21,8 @@ from assurance_agent.artifacts.models.codegen import (
     CodegenGeneratedFilesAuthoring,
     CodegenGeneratedFilesSubmission,
     CodegenLayer,
+    CodegenMapping,
+    CodegenMappingEntry,
 )
 from assurance_agent.artifacts.models.data_knowledge import (
     AccountLeaf,
@@ -283,6 +285,8 @@ from assurance_agent.artifacts.models.review import (
     PlanReviewAuthoring,
     Review,
     ReviewDecision,
+    ReviewFinding,
+    ReviewFindingLocator,
 )
 from assurance_agent.artifacts.models.state import (
     HealingPhaseState,
@@ -487,6 +491,8 @@ __all__ = [
     "CodegenGeneratedFilesAuthoring",
     "CodegenGeneratedFilesSubmission",
     "CodegenLayer",
+    "CodegenMapping",
+    "CodegenMappingEntry",
     "ARTIFACT_REL_BY_CADENCE",
     "C_LAYER_METRICS_REL",
     "C_LAYER_VECTOR_KEYS",
@@ -737,6 +743,8 @@ __all__ = [
     "WorkflowEvidenceSlice",
     "Review",
     "ReviewDecision",
+    "ReviewFinding",
+    "ReviewFindingLocator",
     "CaseReviewAuthoring",
     "CaseSourceClaim",
     "CaseSourceVerification",

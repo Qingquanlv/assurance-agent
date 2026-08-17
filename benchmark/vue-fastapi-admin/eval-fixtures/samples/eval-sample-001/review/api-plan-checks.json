@@ -1,5 +1,14 @@
 {
-  "schema_version": "1",
+  "schema_version": "2",
+  "layer": "api",
+  "applicability": {
+    "layer": "api",
+    "applicable": true,
+    "reason_code": "automated_cases_present",
+    "case_ids": [
+      "TC_APIS_API_001"
+    ]
+  },
   "status": "pass",
   "checks": [
     {
@@ -10,7 +19,8 @@
         "plans/api-codegen-plan.md",
         "plans/api-plan.md",
         "plans/api-test-data-plan.md"
-      ]
+      ],
+      "applicability_reason": null
     },
     {
       "check_id": "shared_factory",
@@ -20,7 +30,8 @@
         "plans/api-codegen-plan.md",
         "plans/api-plan.md",
         "plans/api-test-data-plan.md"
-      ]
+      ],
+      "applicability_reason": null
     },
     {
       "check_id": "assert_ideal",
@@ -30,7 +41,18 @@
         "plans/api-codegen-plan.md",
         "plans/api-plan.md",
         "plans/api-test-data-plan.md"
-      ]
+      ],
+      "applicability_reason": null
+    },
+    {
+      "check_id": "capability_keys",
+      "status": "pass",
+      "findings": [],
+      "refs": [
+        ".aa/data-knowledge.yaml",
+        "review/api-plan-review.json"
+      ],
+      "applicability_reason": null
     }
   ]
 }

@@ -44,7 +44,6 @@ ChainRole = Literal[
     "applicability",
     "preflight",
     "reviewer",
-    "mechanical",
     "plan_gate",
     "precheck",
     "codegen",
@@ -402,7 +401,6 @@ def _evaluate_chain(binding: CurrentLayerBinding) -> tuple[bool, str]:
         required: tuple[ChainRole, ...] = (
             "applicability",
             "reviewer",
-            "mechanical",
             "plan_gate",
             "precheck",
             "codegen",
@@ -630,7 +628,6 @@ def _bind_one_layer(
     role_node = {
         "applicability": getattr(layer_roles, "applicability_node_id", ""),
         "reviewer": getattr(layer_roles, "reviewer_node_id", ""),
-        "mechanical": getattr(layer_roles, "mechanical_node_id", ""),
         "plan_gate": getattr(layer_roles, "plan_gate_node_id", ""),
         "precheck": getattr(layer_roles, "precondition_node_id", ""),
         "codegen": getattr(layer_roles, "codegen_node_id", ""),

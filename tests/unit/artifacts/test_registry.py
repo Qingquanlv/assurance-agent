@@ -29,6 +29,7 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "apply_summary",
         "case_yaml",
         "change_issue_snapshot",
+        "codegen_mapping_v1",
         "api_generated_files_v1",
         "e2e_generated_files_v1",
         "fuzz_generated_files_v1",

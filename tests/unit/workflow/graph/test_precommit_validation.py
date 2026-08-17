@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes
@@ -42,9 +43,12 @@ from assurance_agent.workflow.graph.models import (
     TaskProjection,
     TaskResult,
 )
+from assurance_agent.verification.plan_checks import run_layer_plan_checks
+from assurance_agent.verification.profiles import get_layer_assurance_profile
 from assurance_agent.workflow.graph.precommit import (
     CODEGEN_FIX_CANDIDATE_V1,
     GENERATED_FILES_CANDIDATE_V1,
+    PLAN_MECHANICAL_CANDIDATE_V1,
     CandidateValidationError,
     CandidateValidationReceiptV1,
     PrecommitValidationContext,
@@ -83,6 +87,10 @@ _CLAIMS_DIGEST = "sha256:" + "e" * 64
         ("skill:aa-e2e-codegen-fixer", "e2e"),
         ("skill:aa-fuzz-codegen", "fuzz"),
         ("skill:aa-performance-codegen", "performance"),
+        ("skill:aa-api-plan-reviewer", "api"),
+        ("skill:aa-e2e-plan-reviewer", "e2e"),
+        ("skill:aa-fuzz-plan-reviewer", "fuzz"),
+        ("skill:aa-performance-plan-reviewer", "performance"),
     ],
 )
 def test_infer_assurance_layer_supports_codegen_and_healing_targets(target: str, expected: str) -> None:
@@ -159,6 +167,7 @@ def test_validator_registry_load_rules() -> None:
     validate_precommit_validator_id(None)
     validate_precommit_validator_id(GENERATED_FILES_CANDIDATE_V1)
     validate_precommit_validator_id(CODEGEN_FIX_CANDIDATE_V1)
+    validate_precommit_validator_id(PLAN_MECHANICAL_CANDIDATE_V1)
     with pytest.raises(CandidateValidationError, match="unknown"):
         validate_precommit_validator_id("not_a_validator/v1")
 
@@ -1752,3 +1761,258 @@ def test_codegen_fix_high_risk_rejects_forged_approval_digests(tmp_path: Path) -
         layer="api",
         policy_digest="sha256:" + "d" * 64,
     )
+
+
+_REVIEWER_DK = {
+    "version": 1,
+    "capabilities": {
+        "domain_factories": {
+            "dept": {
+                "make_dept": {
+                    "kind": "async_factory",
+                    "symbol": "tests.testdata.domain.dept.make_dept",
+                }
+            }
+        }
+    },
+}
+
+_REVIEWER_PLAN_BODY = "Data knowledge: `.aa/data-knowledge.yaml`\n"
+_FAILING_L1_PLAN_BODY = "See `docs/data-knowledge.yaml`\n"
+
+_REVIEWER_CASES_YAML = """\
+schema_version: '1.0'
+added:
+  - case_id: TC_DEPT_001
+    title: case
+    status: active
+    priority: P1
+    severity: major
+    type: API
+    module: dept
+    automation: {required: true}
+modified: []
+removed: []
+"""
+
+_REVIEWER_REVIEW = {
+    "schema_version": "1.0",
+    "review_type": "api-plan",
+    "change_id": "CH-1",
+    "decision": "pass",
+    "codegen_readiness": "ready",
+    "auto_fix_allowed": False,
+    "human_review_required": False,
+    "risk_level": "low",
+    "findings": [],
+    "auto_fix_plan": [],
+    "next_action": "continue",
+    "required_capabilities": ["capabilities.domain_factories.dept.make_dept"],
+}
+
+
+def _block_policy_text() -> str:
+    from assurance_agent import resources
+
+    return resources.read_text("schemas", "policy-default.yaml").replace("l1_path: warn", "l1_path: block")
+
+
+def _freeze_plan_mechanical_candidate(
+    tmp_path: Path,
+    *,
+    plan_body: str = _REVIEWER_PLAN_BODY,
+    tamper_checks: bool = False,
+    block_l1_path: bool = False,
+    mutate_live_plans_after_snapshot: bool = False,
+) -> tuple[Path, TreeStore, PrecommitValidationContext, str]:
+    project = tmp_path / "proj"
+    change = project / "qa" / "changes" / "CH-1"
+    profile = get_layer_assurance_profile("api")
+    (change / "plans").mkdir(parents=True)
+    (change / "cases" / "system" / "dept").mkdir(parents=True)
+    (change / "review").mkdir(parents=True)
+    (project / ".aa").mkdir()
+    (project / ".aa" / "data-knowledge.yaml").write_text(yaml.safe_dump(_REVIEWER_DK), encoding="utf-8")
+    if block_l1_path:
+        (project / ".aa" / "policy.yaml").write_text(_block_policy_text(), encoding="utf-8")
+    for rel in profile.plan_artifacts:
+        (change / rel).write_text(plan_body, encoding="utf-8")
+    (change / "cases" / "system" / "dept" / "case.yaml").write_text(_REVIEWER_CASES_YAML, encoding="utf-8")
+
+    store = TreeStore(change)
+    tree_id = store.capture(project)
+    backend = WorkspaceBackend(change)
+    review_logical = f"change:{profile.review_artifact}"
+    checks_logical = f"change:{profile.checks_artifact}"
+    claims = ResourceClaims(
+        reads=(
+            *(ResourcePath.parse(f"change:{rel}") for rel in profile.plan_artifacts),
+            ResourcePath.parse("change:cases/**"),
+            ResourcePath.parse(review_logical),
+            ResourcePath.parse("repo:.aa/data-knowledge.yaml"),
+        ),
+        writes=(ResourcePath.parse(review_logical), ResourcePath.parse(checks_logical)),
+        authorization_writes=(ResourcePath.parse(review_logical), ResourcePath.parse(checks_logical)),
+    )
+    workspace = backend.create(
+        task_id="review-task",
+        base_tree_id=tree_id,
+        store=store,
+        sidecar_root=backend.sidecar_root_for("review-task"),
+        claims=claims,
+        declared_reads_only=False,
+    )
+    review_path = workspace.change_dir / profile.review_artifact
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(json.dumps(_REVIEWER_REVIEW), encoding="utf-8")
+    plan_texts = {rel: plan_body for rel in profile.plan_artifacts}
+    cases = [yaml.safe_load(_REVIEWER_CASES_YAML)]
+    document = run_layer_plan_checks(
+        layer="api",
+        cases=cases,
+        plan_texts=plan_texts,
+        review_payload=_REVIEWER_REVIEW,
+        data_knowledge=_REVIEWER_DK,
+        change_id="CH-1",
+        require_review=True,
+    )
+    if tamper_checks:
+        first = document.checks[0]
+        document = document.model_copy(
+            update={"checks": (first.model_copy(update={"refs": ("tampered",)}), *document.checks[1:])}
+        )
+    (workspace.change_dir / profile.checks_artifact).write_bytes(canonical_json_bytes(document))
+    write_set = store.freeze_write_set(workspace, claims=claims, outputs=(review_logical, checks_logical))
+
+    entries: list[TaskInputSnapshotEntryV1] = []
+    for rel in profile.plan_artifacts:
+        digest = _store_bytes(store, plan_body.encode("utf-8"))
+        entries.append(
+            TaskInputSnapshotEntryV1(
+                physical_relpath=f"qa/changes/CH-1/{rel}",
+                repo_relpath=f"qa/changes/CH-1/{rel}",
+                logical_aliases=[f"change:{rel}"],
+                matched_claims=[f"change:{rel}"],
+                origins=["contract_read"],
+                kind="file",
+                mode=0o644,
+                sha256=f"sha256:{digest}",
+                symlink_target=None,
+            )
+        )
+    case_digest = _store_bytes(store, _REVIEWER_CASES_YAML.encode("utf-8"))
+    entries.append(
+        TaskInputSnapshotEntryV1(
+            physical_relpath="qa/changes/CH-1/cases/system/dept/case.yaml",
+            repo_relpath="qa/changes/CH-1/cases/system/dept/case.yaml",
+            logical_aliases=["change:cases/system/dept/case.yaml"],
+            matched_claims=["change:cases/**"],
+            origins=["contract_read"],
+            kind="file",
+            mode=0o644,
+            sha256=f"sha256:{case_digest}",
+            symlink_target=None,
+        )
+    )
+    l1_bytes = yaml.safe_dump(_REVIEWER_DK).encode("utf-8")
+    l1_digest = _store_bytes(store, l1_bytes)
+    entries.append(
+        TaskInputSnapshotEntryV1(
+            physical_relpath=".aa/data-knowledge.yaml",
+            repo_relpath=".aa/data-knowledge.yaml",
+            logical_aliases=["project:.aa/data-knowledge.yaml", "repo:.aa/data-knowledge.yaml"],
+            matched_claims=["repo:.aa/data-knowledge.yaml"],
+            origins=["contract_read"],
+            kind="file",
+            mode=0o644,
+            sha256=f"sha256:{l1_digest}",
+            symlink_target=None,
+        )
+    )
+    entries = sorted(entries, key=lambda item: item.physical_relpath)
+    snapshot = TaskInputSnapshotV1(
+        schema_version="1",
+        invocation_id=_INV,
+        task_id="review-task",
+        attempt_id="review-task-a1",
+        base_tree_id=tree_id,
+        materialized_tree_id=tree_id,
+        input_sha256=_entries_input_sha256(entries),
+        runtime_context_sha256=None,
+        contract_digest=_CONTRACT_DIGEST,
+        claims_digest=_CLAIMS_DIGEST,
+        entries=list(entries),
+    )
+    raw = canonical_json_bytes(snapshot)
+    snapshot_id = hashlib.sha256(raw).hexdigest()
+    store_task_input_snapshot(store, snapshot_id, raw)
+    if mutate_live_plans_after_snapshot:
+        for rel in profile.plan_artifacts:
+            (change / rel).write_text("# mutated live disk\n", encoding="utf-8")
+            (workspace.change_dir / rel).write_text("# mutated live disk\n", encoding="utf-8")
+    context = PrecommitValidationContext.model_validate(
+        _context_payload(
+            root_invocation_id=_INV,
+            invocation_id=_INV,
+            task_id="review-task",
+            attempt_id="review-task-a1",
+            target="skill:aa-api-plan-reviewer",
+            base_tree_id=tree_id,
+            current_tree_id=tree_id,
+            input_snapshot_id=snapshot_id,
+            output_digests=dict(sorted(write_set.outputs_sha256.items())),
+            write_set_id=write_set.write_set_id,
+        )
+    )
+    return project, store, context, write_set.write_set_id
+
+
+def _validate_plan_mechanical(
+    project: Path, store: TreeStore, context: PrecommitValidationContext, write_set_id: str
+) -> tuple[str, CandidateValidationReceiptV1]:
+    write_set = store.load_write_set(write_set_id)
+    snapshot = load_task_input_snapshot(store, context.input_snapshot_id)
+    cases = load_case_documents_from_snapshot(store, snapshot)
+    return validate_candidate(
+        PLAN_MECHANICAL_CANDIDATE_V1,
+        context,
+        store=store,
+        write_set=write_set,
+        input_snapshot=snapshot,
+        plan_text="",
+        cases=cases,
+        change_id="CH-1",
+        layer="api",
+        current_change_repo_path="qa/changes/CH-1",
+        project_root=project,
+    )
+
+
+def test_plan_mechanical_candidate_accepts_matching_document(tmp_path: Path) -> None:
+    project, store, context, write_set_id = _freeze_plan_mechanical_candidate(tmp_path)
+    receipt_id, receipt = _validate_plan_mechanical(project, store, context, write_set_id)
+    assert receipt.validator_id == PLAN_MECHANICAL_CANDIDATE_V1
+    assert load_candidate_receipt(store, receipt_id) == receipt
+
+
+def test_plan_mechanical_candidate_rejects_block_policy_fail(tmp_path: Path) -> None:
+    project, store, context, write_set_id = _freeze_plan_mechanical_candidate(
+        tmp_path, plan_body=_FAILING_L1_PLAN_BODY, block_l1_path=True
+    )
+    with pytest.raises(CandidateValidationError, match=r"policy\.plan_checks\[l1_path\]=block"):
+        _validate_plan_mechanical(project, store, context, write_set_id)
+
+
+def test_plan_mechanical_candidate_rejects_tampered_write_set(tmp_path: Path) -> None:
+    project, store, context, write_set_id = _freeze_plan_mechanical_candidate(tmp_path, tamper_checks=True)
+    with pytest.raises(CandidateValidationError, match="does not match snapshot recomputation"):
+        _validate_plan_mechanical(project, store, context, write_set_id)
+
+
+def test_plan_mechanical_candidate_reads_plans_from_snapshot_not_live_disk(tmp_path: Path) -> None:
+    project, store, context, write_set_id = _freeze_plan_mechanical_candidate(
+        tmp_path, mutate_live_plans_after_snapshot=True
+    )
+    receipt_id, receipt = _validate_plan_mechanical(project, store, context, write_set_id)
+    assert receipt.validator_id == PLAN_MECHANICAL_CANDIDATE_V1
+    assert receipt_id

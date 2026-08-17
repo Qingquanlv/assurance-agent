@@ -78,7 +78,6 @@ _FORBIDDEN_SELECTED_NODES: frozenset[str] = frozenset(
     {
         "applicability",
         "review",
-        "mechanical-plan-checks",
         "review-gate",
         "review-cycle",
         "codegen-precheck",

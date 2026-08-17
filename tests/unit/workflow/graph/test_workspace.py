@@ -279,6 +279,44 @@ def test_freeze_write_set_roundtrip_and_canonical_untouched(tmp_path: Path) -> N
     assert entry.blob_sha256 == entry.after_sha256
 
 
+def test_freeze_publishes_undeclared_concrete_authorization_writes(tmp_path: Path) -> None:
+    """Conditional producers still bind in replay via outputs_sha256.
+
+    ``operation:derive-plan-layer-applicability`` writes plan-checks only when
+    the layer is not applicable and therefore omits node ``outputs``. Freeze
+    must still publish that concrete authorization_write.
+    """
+    project = _make_project(tmp_path)
+    store = _store(project)
+    workspace = _backend(project).create(
+        task_id="applicability", base_tree_id=store.capture(project), store=store
+    )
+    checks = workspace.change_dir / "review" / "api-plan-checks.json"
+    checks.parent.mkdir(parents=True)
+    payload = b'{"schema_version":"2"}\n'
+    checks.write_bytes(payload)
+    claims = load_execution_contracts(Path.cwd()).claims_for(
+        NodeDef(uses="operation:derive-plan-layer-applicability")
+    )
+    write_set = store.freeze_write_set(workspace, claims=claims, outputs=())
+    logical = "change:review/api-plan-checks.json"
+    assert write_set.outputs_sha256[logical] == hashlib.sha256(payload).hexdigest()
+
+
+def test_freeze_skips_unwritten_applicability_checks(tmp_path: Path) -> None:
+    project = _make_project(tmp_path)
+    store = _store(project)
+    workspace = _backend(project).create(
+        task_id="applicability", base_tree_id=store.capture(project), store=store
+    )
+    claims = load_execution_contracts(Path.cwd()).claims_for(
+        NodeDef(uses="operation:derive-plan-layer-applicability")
+    )
+    write_set = store.freeze_write_set(workspace, claims=claims, outputs=())
+    assert write_set.entries == ()
+    assert write_set.outputs_sha256 == {}
+
+
 def test_freeze_empty_diff_produces_empty_entries(tmp_path: Path) -> None:
     project = _make_project(tmp_path)
     store = _store(project)
@@ -301,34 +339,33 @@ def test_api_plan_reviewer_freeze_allows_only_its_declared_outputs(tmp_path: Pat
     project = _make_project(tmp_path)
     store = _store(project)
     backend = _backend(project)
-    canonical_checks = project / "qa" / "changes" / "CH-1" / "review" / "api-plan-checks.json"
-    canonical_checks.parent.mkdir(parents=True)
-    canonical_checks.write_text('{"status":"fail"}\n', encoding="utf-8")
+    (project / "qa" / "changes" / "CH-1" / "plans").mkdir(parents=True)
+    (project / "qa" / "changes" / "CH-1" / "plans" / "api-plan.md").write_text("# plan\n", encoding="utf-8")
     base_tree = store.capture(project)
     outputs = (
         "change:review/api-plan-review.json",
         "change:review/api-plan-review-summary.md",
+        "change:review/api-plan-checks.json",
     )
     claims = load_execution_contracts(project).claims_for(
         NodeDef(uses="skill:aa-api-plan-reviewer", outputs=list(outputs))
     )
 
     malicious = backend.create(task_id="reviewer-malicious", base_tree_id=base_tree, store=store)
-    checks = malicious.change_dir / "review" / "api-plan-checks.json"
-    checks.write_text('{"status":"pass"}\n', encoding="utf-8")
+    (malicious.change_dir / "plans" / "api-plan.md").write_text("# rewritten plan\n", encoding="utf-8")
 
     with pytest.raises(
         WorkspaceError,
-        match=r"forbidden write outside authorization_writes: change:review/api-plan-checks\.json",
+        match=r"forbidden write outside authorization_writes: change:plans/api-plan\.md",
     ):
         store.freeze_write_set(malicious, claims=claims)
 
     legitimate = backend.create(task_id="reviewer-legitimate", base_tree_id=base_tree, store=store)
-    review_json = legitimate.change_dir / "review" / "api-plan-review.json"
-    review_json.parent.mkdir(parents=True, exist_ok=True)
-    review_json.write_text('{"decision":"pass"}\n', encoding="utf-8")
-    summary = legitimate.change_dir / "review" / "api-plan-review-summary.md"
-    summary.write_text("# API plan review\n", encoding="utf-8")
+    review_dir = legitimate.change_dir / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    (review_dir / "api-plan-review.json").write_text('{"decision":"pass"}\n', encoding="utf-8")
+    (review_dir / "api-plan-review-summary.md").write_text("# API plan review\n", encoding="utf-8")
+    (review_dir / "api-plan-checks.json").write_text('{"schema_version":"2"}\n', encoding="utf-8")
 
     write_set = store.freeze_write_set(legitimate, claims=claims, outputs=outputs)
 

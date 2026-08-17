@@ -1,0 +1,6 @@
+schema_version: "1"
+layer: api
+entries:
+  - case_id: API-ACC-001
+    symbol: test_api_acc_001__create_account_success
+    target_file: tests/api/test_accounts_api.py

@@ -209,11 +209,8 @@ def test_hybrid_model_routes_reasoning_to_glm_and_bulk_work_to_deepseek() -> Non
     assert routing["strict_routes"] is True
     for skill in (
         "aa-case-design",
-        "aa-case-fixer",
         "aa-api-plan",
-        "aa-api-plan-fixer",
         "aa-e2e-plan",
-        "aa-e2e-plan-fixer",
         "aa-fuzz-plan",
         "aa-performance-plan",
         "aa-coverage-repair",

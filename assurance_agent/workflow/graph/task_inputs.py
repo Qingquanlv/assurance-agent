@@ -199,10 +199,10 @@ def prepare_plan_fixer_runtime_context(
 
 _PLAN_FIXER_TARGETS: Final[Mapping[str, Literal["api", "e2e"]]] = MappingProxyType(
     {
-        "skill:aa-api-plan-fixer": "api",
-        "skill:aa-e2e-plan-fixer": "e2e",
-        "aa-api-plan-fixer": "api",
-        "aa-e2e-plan-fixer": "e2e",
+        "skill:aa-api-plan": "api",
+        "skill:aa-e2e-plan": "e2e",
+        "aa-api-plan": "api",
+        "aa-e2e-plan": "e2e",
     }
 )
 _RUNTIME_CONTEXT_SIDECAR = "runtime-context.json"
@@ -230,7 +230,7 @@ def build_automatic_plan_fixer_runtime_context(
     review_rel = "review/api-plan-review.json" if layer == "api" else "review/plan-review.json"
     review_path = workspace.change_dir / review_rel
     if not review_path.is_file():
-        raise TaskInputError(f"plan-fixer runtime context missing source review: {review_rel}")
+        return None
     digest = sha256_bytes(review_path.read_bytes())
     return PlanFixerRuntimeContextV1.model_validate(
         {

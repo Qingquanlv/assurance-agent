@@ -14,6 +14,7 @@ Generate E2E tests under `tests/e2e/**`, shared builders under `tests/testdata/*
 - `change:plans/e2e-plan.md`
 - `change:plans/e2e-test-data-plan.md`
 - `change:plans/e2e-codegen-plan.md`
+- `change:plans/e2e-codegen-mapping.yaml`
 - `change:plans/m4-review-summary.md`
 - `change:review/plan-review.json`
 - `change:cases/**/case.yaml`
@@ -49,11 +50,11 @@ Write only authorized test/testdata paths plus the summary and manifest. Do not 
 ## Generated-files Manifest Rules
 
 - Only `test_entry` entries may claim mapped Case IDs, and their `case_ids` must
-  exactly match the plan's Task Mapping for that path.
+  exactly match the codegen mapping (`plans/e2e-codegen-mapping.yaml`) for that path.
 - Every `support` and `shared_builder` entry must use `case_ids: []`.
 - Use `generated` only for a newly added file and `updated` only for a file whose
   content this invocation changed.
 - `reused` is legal only for an unchanged, selected private-root `test_entry`
-  that is itself a Task Mapping target. Never list an unchanged adapter, helper,
+  that is itself a codegen-mapping target. Never list an unchanged adapter, helper,
   fixture, or shared builder as `reused`; omit unchanged support dependencies
   from the manifest.

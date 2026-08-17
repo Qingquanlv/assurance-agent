@@ -48,7 +48,6 @@ PARAM_NAMES = frozenset(
 )
 
 APPLICABILITY_OP = "operation:derive-plan-layer-applicability"
-MECHANICAL_OP = "operation:verify-plan-mechanical"
 
 
 def _node_def(uses: str, *, with_params: dict[str, object] | None = None, **fields: object) -> NodeDef:
@@ -155,7 +154,7 @@ def _codegen_gate(*, layer: str) -> GateDef:
 def _plan_cycle_graph(*, layer: str, mutate: dict | None = None) -> GraphDef:
     profile = get_layer_assurance_profile(layer)
     reviewer_skill = f"skill:aa-{layer}-plan-reviewer"
-    fixer_skill = f"skill:aa-{layer}-plan-fixer"
+    fixer_skill = f"skill:aa-{layer}-plan"
     graph = GraphDef(
         max_supersteps=20,
         nodes={
@@ -169,12 +168,8 @@ def _plan_cycle_graph(*, layer: str, mutate: dict | None = None) -> GraphDef:
                 outputs=[
                     f"change:{profile.review_artifact}",
                     f"change:{profile.review_artifact.replace('.json', '-summary.md')}",
+                    f"change:{profile.checks_artifact}",
                 ],
-            ),
-            "mechanical-plan-checks": _node_def(
-                MECHANICAL_OP,
-                with_params={"layer": layer, "require_review": True},
-                outputs=[f"change:{profile.checks_artifact}"],
             ),
             "review-gate": _node_def(
                 "builtin:gate",
@@ -183,7 +178,7 @@ def _plan_cycle_graph(*, layer: str, mutate: dict | None = None) -> GraphDef:
             "fix": NodeDef(
                 uses=fixer_skill,
                 agent="aa-doc-author",
-                outputs=[f"change:{profile.review_artifact.replace('.json', '-apply-summary.md')}"],
+                outputs=[f"change:{rel}" for rel in profile.plan_artifacts],
             ),
             "human-review": NodeDef(
                 uses="builtin:interrupt",
@@ -210,8 +205,7 @@ def _plan_cycle_graph(*, layer: str, mutate: dict | None = None) -> GraphDef:
         },
         edges=[
             EdgeDef(**{"from": "START", "to": "applicability"}),
-            EdgeDef(**{"from": "review", "to": "mechanical-plan-checks"}),
-            EdgeDef(**{"from": "mechanical-plan-checks", "to": "review-gate"}),
+            EdgeDef(**{"from": "review", "to": "review-gate"}),
             EdgeDef(**{"from": "fix", "to": "review"}),
             EdgeDef(**{"from": "exhausted", "to": "STOP"}),
         ],
@@ -220,7 +214,7 @@ def _plan_cycle_graph(*, layer: str, mutate: dict | None = None) -> GraphDef:
                 **{
                     "from": "applicability",
                     "select": "node('applicability').value.applicable",
-                    "cases": {"true": "review", "false": "mechanical-plan-checks"},
+                    "cases": {"true": "review", "false": "review-gate"},
                     "default": "STOP",
                 }
             ),
@@ -253,7 +247,7 @@ def _plan_cycle_graph(*, layer: str, mutate: dict | None = None) -> GraphDef:
                     "from": "knowledge-remediation",
                     "select": "resume.action",
                     "cases": {
-                        "fix_and_proceed": "mechanical-plan-checks",
+                        "fix_and_proceed": "review",
                         "accept_risk": "END",
                         "stop": "STOP",
                     },
@@ -451,9 +445,9 @@ def _with_plan_cycle(schema: WorkflowSchemaV2, *, layer: str, graph: GraphDef) -
         ),
         (
             lambda graph: graph.model_copy(
-                update={"nodes": {k: v for k, v in graph.nodes.items() if k != "mechanical-plan-checks"}}
+                update={"nodes": {k: v for k, v in graph.nodes.items() if k != "review"}}
             ),
-            "missing reviewed mechanical producer",
+            "missing reviewer node",
         ),
         (
             lambda graph: graph.model_copy(
@@ -479,15 +473,15 @@ def test_wired_profile_topology_rejects_swapped_applicability_paths() -> None:
     routes = [
         route
         if route.from_ != "applicability"
-        else route.model_copy(update={"cases": {"true": "mechanical-plan-checks", "false": "review"}})
+        else route.model_copy(update={"cases": {"true": "review-gate", "false": "review"}})
         for route in cycle.routes
     ]
     schema = _with_plan_cycle(schema, layer="api", graph=cycle.model_copy(update={"routes": routes}))
     errors = validate_wired_profile_topology(schema, profile)
-    assert any("applicable path must reach review before mechanical" in err for err in errors)
+    assert any("applicable path must reach review" in err for err in errors)
 
 
-def test_wired_profile_topology_rejects_inapplicable_path_bypassing_mechanical() -> None:
+def test_wired_profile_topology_rejects_inapplicable_path_bypassing_review_gate() -> None:
     schema = _minimal_replay_schema(layer="api")
     profile = get_layer_assurance_profile("api")
     cycle = schema.graphs["api-plan-cycle"]
@@ -499,34 +493,31 @@ def test_wired_profile_topology_rejects_inapplicable_path_bypassing_mechanical()
     ]
     schema = _with_plan_cycle(schema, layer="api", graph=cycle.model_copy(update={"routes": routes}))
     errors = validate_wired_profile_topology(schema, profile)
-    assert any("inapplicable path must reach mechanical producer" in err for err in errors)
+    assert any("inapplicable path must reach review-gate" in err for err in errors)
 
 
-def test_wired_profile_topology_rejects_review_after_mechanical_on_applicable_path() -> None:
+def test_wired_profile_topology_rejects_missing_review_to_gate_edge() -> None:
     schema = _minimal_replay_schema(layer="api")
     profile = get_layer_assurance_profile("api")
     cycle = schema.graphs["api-plan-cycle"]
-    edges = [
-        edge for edge in cycle.edges if not (edge.from_ == "review" and edge.to == "mechanical-plan-checks")
-    ]
+    edges = [edge for edge in cycle.edges if not (edge.from_ == "review" and edge.to == "review-gate")]
     schema = _with_plan_cycle(schema, layer="api", graph=cycle.model_copy(update={"edges": edges}))
     errors = validate_wired_profile_topology(schema, profile)
-    assert any("review must precede mechanical on applicable path" in err for err in errors)
+    assert any("review must precede the plan gate on applicable path" in err for err in errors)
 
 
-def test_wired_profile_topology_rejects_gate_before_mechanical() -> None:
+def test_wired_profile_topology_rejects_missing_explicit_gate_after_reviewer() -> None:
     schema = _minimal_replay_schema(layer="api")
     profile = get_layer_assurance_profile("api")
     cycle = schema.graphs["api-plan-cycle"]
     edges = [
         EdgeDef(**{"from": "START", "to": "applicability"}),
-        EdgeDef(**{"from": "review", "to": "review-gate"}),
         EdgeDef(**{"from": "fix", "to": "review"}),
         EdgeDef(**{"from": "exhausted", "to": "STOP"}),
     ]
     schema = _with_plan_cycle(schema, layer="api", graph=cycle.model_copy(update={"edges": edges}))
     errors = validate_wired_profile_topology(schema, profile)
-    assert any("explicit gate must follow mechanical producer" in err for err in errors)
+    assert any("explicit gate must follow reviewer" in err for err in errors)
 
 
 def test_wired_profile_topology_rejects_wrong_knowledge_remediation_freshness() -> None:
@@ -537,15 +528,13 @@ def test_wired_profile_topology_rejects_wrong_knowledge_remediation_freshness() 
         route
         if route.from_ != "knowledge-remediation"
         else route.model_copy(
-            update={"cases": {"fix_and_proceed": "review", "accept_risk": "END", "stop": "STOP"}}
+            update={"cases": {"fix_and_proceed": "END", "accept_risk": "END", "stop": "STOP"}}
         )
         for route in cycle.routes
     ]
     schema = _with_plan_cycle(schema, layer="api", graph=cycle.model_copy(update={"routes": routes}))
     errors = validate_wired_profile_topology(schema, profile)
-    assert any(
-        "knowledge remediation fix_and_proceed must re-enter at mechanical producer" in err for err in errors
-    )
+    assert any("knowledge remediation fix_and_proceed must re-enter at review" in err for err in errors)
 
 
 def test_wired_profile_topology_rejects_fix_skipping_review() -> None:
@@ -555,7 +544,7 @@ def test_wired_profile_topology_rejects_fix_skipping_review() -> None:
     edges = [
         edge
         if not (edge.from_ == "fix" and edge.to == "review")
-        else EdgeDef(**{"from": "fix", "to": "mechanical-plan-checks"})
+        else EdgeDef(**{"from": "fix", "to": "review-gate"})
         for edge in cycle.edges
     ]
     schema = _with_plan_cycle(schema, layer="api", graph=cycle.model_copy(update={"edges": edges}))
@@ -690,12 +679,8 @@ def _human_only_plan_cycle(*, layer: str) -> GraphDef:
                 outputs=[
                     f"change:{profile.review_artifact}",
                     f"change:{profile.review_artifact.replace('.json', '-summary.md')}",
+                    f"change:{profile.checks_artifact}",
                 ],
-            ),
-            "mechanical-plan-checks": _node_def(
-                MECHANICAL_OP,
-                with_params={"layer": layer, "require_review": True},
-                outputs=[f"change:{profile.checks_artifact}"],
             ),
             "review-gate": _node_def("builtin:gate", with_params={"gate": profile.gate_id}),
             "human-review": NodeDef(
@@ -723,15 +708,14 @@ def _human_only_plan_cycle(*, layer: str) -> GraphDef:
         },
         edges=[
             EdgeDef(**{"from": "START", "to": "applicability"}),
-            EdgeDef(**{"from": "review", "to": "mechanical-plan-checks"}),
-            EdgeDef(**{"from": "mechanical-plan-checks", "to": "review-gate"}),
+            EdgeDef(**{"from": "review", "to": "review-gate"}),
         ],
         routes=[
             RouteDef(
                 **{
                     "from": "applicability",
                     "select": "node('applicability').value.applicable",
-                    "cases": {"true": "review", "false": "mechanical-plan-checks"},
+                    "cases": {"true": "review", "false": "review-gate"},
                     "default": "STOP",
                 }
             ),
@@ -768,7 +752,7 @@ def _human_only_plan_cycle(*, layer: str) -> GraphDef:
                     "from": "knowledge-remediation",
                     "select": "resume.action",
                     "cases": {
-                        "fix_and_proceed": "mechanical-plan-checks",
+                        "fix_and_proceed": "review",
                         "accept_risk": "END",
                         "stop": "STOP",
                     },
@@ -899,7 +883,7 @@ def _partial_specialty_schema(*, layer: str = "fuzz") -> WorkflowSchemaV2:
     schema = _wired_specialty_schema(layer=layer)
     cycle_graph_id = f"{layer}-pinned-plan-cycle"
     cycle = schema.graphs[cycle_graph_id]
-    nodes = {k: v for k, v in cycle.nodes.items() if k != "mechanical-plan-checks"}
+    nodes = {k: v for k, v in cycle.nodes.items() if k != "review"}
     graphs = dict(schema.graphs)
     graphs[cycle_graph_id] = cycle.model_copy(update={"nodes": nodes})
     return schema.model_copy(update={"graphs": graphs})
@@ -912,11 +896,7 @@ def test_classify_pinned_layer_topology_three_way_for_fuzz(
     # True legacy: strip all three activation markers from the packaged surface.
     graphs = dict(packaged_schema.graphs)
     cycle = graphs["fuzz-plan-cycle"]
-    nodes = {
-        k: v
-        for k, v in cycle.nodes.items()
-        if k not in {"applicability", "mechanical-plan-checks", "review-gate"}
-    }
+    nodes = {k: v for k, v in cycle.nodes.items() if k not in {"applicability", "review", "review-gate"}}
     graphs["fuzz-plan-cycle"] = cycle.model_copy(update={"nodes": nodes})
     legacy_schema = packaged_schema.model_copy(update={"graphs": graphs})
     legacy = classify_pinned_layer_topology(legacy_schema, fuzz_spec)
@@ -1070,7 +1050,7 @@ def test_knowledge_remediation_half_mutations_are_partial(layer: str, mutator: s
         routes = [
             route
             if route.from_ != "knowledge-remediation"
-            else route.model_copy(update={"cases": {**route.cases, "fix_and_proceed": "review"}})
+            else route.model_copy(update={"cases": {**route.cases, "fix_and_proceed": "END"}})
             for route in routes
         ]
     graphs = dict(schema.graphs)

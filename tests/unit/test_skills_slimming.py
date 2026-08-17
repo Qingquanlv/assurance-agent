@@ -266,8 +266,8 @@ def test_e2e_reviewer_canonical_prose_passes_both_policy_mutation_guards() -> No
     _assert_no_shared_factory_policy(text)
 
 
-def test_e2e_fixer_repairs_factory_mapping_only_on_authorized_findings() -> None:
-    text = resources.read_text("skills", "aa-e2e-plan-fixer", "SKILL.md")
+def test_e2e_plan_reentry_repairs_factory_mapping_only_on_authorized_findings() -> None:
+    text = resources.read_text("skills", "aa-e2e-plan", "SKILL.md")
 
     assert "Factory Mapping" in text
     assert "auto_fix_plan" in text

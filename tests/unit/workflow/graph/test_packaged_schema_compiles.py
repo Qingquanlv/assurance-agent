@@ -81,21 +81,17 @@ def test_wired_plan_cycle_topology_matches_profile(layer: str) -> None:
     assert "applicability" in cycle.nodes
     assert cycle.nodes["applicability"].uses == "operation:derive-plan-layer-applicability"
     assert cycle.nodes["applicability"].with_.get("layer") == layer
-    mechanical = cycle.nodes["mechanical-plan-checks"]
-    assert mechanical.uses == "operation:verify-plan-mechanical"
-    assert mechanical.with_ == {"layer": layer, "require_review": True}
-    assert f"change:{profile.checks_artifact}" in mechanical.outputs
-    assert mechanical.resources is not None
-    assert f"change:{profile.checks_artifact}" in mechanical.resources.writes
+    assert "mechanical-plan-checks" not in cycle.nodes
+    reviewer = cycle.nodes["review"]
+    assert f"change:{profile.checks_artifact}" in reviewer.outputs
     assert cycle.nodes["review-gate"].uses == "builtin:gate"
     assert cycle.nodes["review-gate"].with_ == {"gate": profile.gate_id}
     assert cycle.nodes["review"].gate is None
     edges = {(edge.from_, edge.to) for edge in cycle.edges}
     assert ("START", "applicability") in edges
-    assert ("review", "mechanical-plan-checks") in edges
-    assert ("mechanical-plan-checks", "review-gate") in edges
+    assert ("review", "review-gate") in edges
     applicability_route = next(route for route in cycle.routes if route.from_ == "applicability")
-    assert applicability_route.cases == {"true": "review", "false": "mechanical-plan-checks"}
+    assert applicability_route.cases == {"true": "review", "false": "review-gate"}
     gate_route = next(route for route in cycle.routes if route.from_ == "review-gate")
     assert gate_route.select == "plan_review_route('review-gate')"
     assert gate_route.cases["pass"] == "END"
@@ -106,7 +102,7 @@ def test_knowledge_remediation_refreshes_plan_check_evidence() -> None:
     for layer in _WIRED_LAYERS:
         cycle = load_workflow_v2(Path.cwd()).graphs[f"{layer}-plan-cycle"]
         remediation_route = next(route for route in cycle.routes if route.from_ == "knowledge-remediation")
-        assert remediation_route.cases["fix_and_proceed"] == "mechanical-plan-checks"
+        assert remediation_route.cases["fix_and_proceed"] == "review"
 
 
 def test_codegen_precheck_routes_skip_to_end() -> None:

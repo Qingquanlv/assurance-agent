@@ -552,7 +552,7 @@ def test_lock_conflict_emits_scheduling_deferred_without_attempt(tmp_path: Path)
 def test_runtime_context_prompt_binding_rejects_mismatch() -> None:
     context = PlanFixerRuntimeContextV1.model_validate(_runtime_context())
     prompt = build_node_prompt(
-        "aa-api-plan-fixer",
+        "aa-api-plan",
         "fix",
         "CH-1",
         allowed_writes=("change:plans/api-plan.md",),
@@ -560,7 +560,7 @@ def test_runtime_context_prompt_binding_rejects_mismatch() -> None:
     )
     assert "## Runtime Context" in prompt
     request = AgentRequest(
-        target="skill:aa-api-plan-fixer",
+        target="skill:aa-api-plan",
         node_id="fix",
         change_id="CH-1",
         workspace_root=Path("/tmp/ws"),
@@ -690,12 +690,12 @@ def test_capture_rejects_wrong_tree_or_review_bytes(tmp_path: Path) -> None:
     )
     task = _executable_task(
         task_id="plan-api",
-        target="skill:aa-api-plan-fixer",
+        target="skill:aa-api-plan",
         claims=claims,
         contract_digest="c" * 64,
     )
     contract = ExecutionContract(
-        target="skill:aa-api-plan-fixer",
+        target="skill:aa-api-plan",
         handler="agent",
         reads=("change:plans/api-plan.md", "change:review/api-plan-review.json"),
         writes=("change:plans/api-plan.md",),

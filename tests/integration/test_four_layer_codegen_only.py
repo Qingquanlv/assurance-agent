@@ -49,7 +49,6 @@ def _assert_applicable_cell(fixture, layer: str, invocation_id: str) -> None:
     if layer in {"fuzz", "performance"}:
         assert count_attempts(events, node_id="applicability-preflight") == 1
     assert count_attempts(events, node_id="review") >= 1
-    assert count_attempts(events, node_id="mechanical-plan-checks") >= 1
     assert count_attempts(events, node_id="review-gate") >= 1
     assert count_attempts(events, node_id="codegen-precheck") >= 1
     assert count_attempts(events, node_id="codegen") >= 1
@@ -91,8 +90,8 @@ def _assert_inapplicable_cell(fixture, layer: str, invocation_id: str) -> None:
     assert count_attempts(events, node_id="applicability") >= 1
     if layer in {"fuzz", "performance"}:
         assert count_attempts(events, node_id="applicability-preflight") == 1
-    assert count_attempts(events, node_id="mechanical-plan-checks") == 1
     assert count_attempts(events, node_id="review") == 0
+    assert count_attempts(events, node_id="review-gate") >= 1
     assert count_attempts(events, node_id="codegen") == 0
     targets = {inv.target for inv in fixture.adapter.invocations}
     assert _REVIEWER[layer] not in targets
