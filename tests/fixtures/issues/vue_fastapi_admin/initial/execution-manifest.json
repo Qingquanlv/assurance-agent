@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "change_id": "CH-VFA-ACCEPT",
+  "batch_id": "20260725-120000",
+  "selected_targets": {
+    "api": true,
+    "e2e": false,
+    "fuzz": true,
+    "performance": false,
+    "coverage": false
+  },
+  "result_files": {
+    "api": "runs/20260725-120000/api-result.json",
+    "fuzz": "runs/20260725-120000/fuzz-result.json"
+  }
+}

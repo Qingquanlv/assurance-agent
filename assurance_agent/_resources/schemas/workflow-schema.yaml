@@ -196,6 +196,7 @@ graphs:
     nodes:
       registry:
         uses: operation:skill-registry-check
+        validate: none
         outputs: [change:registry/skill-registry-check.json]
         gate: registry-gate
         retry: never
@@ -213,12 +214,16 @@ graphs:
     nodes:
       bootstrap:
         uses: graph:bootstrap
+        validate: none
       intake:
         uses: graph:intake
+        validate: none
       assurance:
         uses: graph:assurance
+        validate: none
       archive:
         uses: graph:archive-workflow
+        validate: none
         when: "params.auto_archive == true"
     edges:
       - {from: START, to: bootstrap}
@@ -231,8 +236,8 @@ graphs:
   intake-workflow:
     max_supersteps: 50
     nodes:
-      bootstrap: {uses: graph:bootstrap}
-      intake: {uses: graph:intake}
+      bootstrap: {uses: graph:bootstrap, validate: none}
+      intake: {uses: graph:intake, validate: none}
     edges:
       - {from: START, to: bootstrap}
       - {from: bootstrap, to: intake}
@@ -241,8 +246,8 @@ graphs:
   execute-workflow:
     max_supersteps: 150
     nodes:
-      bootstrap: {uses: graph:bootstrap}
-      assurance: {uses: graph:assurance}
+      bootstrap: {uses: graph:bootstrap, validate: none}
+      assurance: {uses: graph:assurance, validate: none}
     edges:
       - {from: START, to: bootstrap}
       - {from: bootstrap, to: assurance}
@@ -256,10 +261,12 @@ graphs:
       # the evidence was already copied (and the retry loop would force it).
       precheck:
         uses: builtin:gate
+        validate: none
         with: {gate: archive-gate}
 
       archive:
         uses: skill:aa-archive
+        validate: archive_integrity/v1
         agent: aa-archiver
         outputs: ["project:qa/archive/${context.change_id}/"]
         retry: agent-transient
@@ -279,6 +286,7 @@ graphs:
     nodes:
       drain-reconcile-outbox:
         uses: operation:drain-improvement-outbox
+        validate: none
         resources:
           reads:
             - project:qa/improvements/**
@@ -292,6 +300,7 @@ graphs:
         timeout: local-operation
       collect-retro-evidence:
         uses: operation:retro-collect-v3
+        validate: none
         outputs:
           - project:qa/retro/${params.retro_id}/window.json
           - project:qa/retro/${params.retro_id}/evidence/issue-slice.json
@@ -317,6 +326,7 @@ graphs:
           continue_to: reconcile-improvements
       recover-collect-failure:
         uses: operation:record-retro-pipeline-failure
+        validate: none
         with: {stage: collect}
         resources:
           writes:
@@ -325,6 +335,7 @@ graphs:
         timeout: local-operation
       analyze-issue:
         uses: skill:aa-retro-issue-analysis
+        validate: none
         agent: aa-doc-author
         outputs:
           - project:qa/retro/${params.retro_id}/signals/issue.json
@@ -342,6 +353,7 @@ graphs:
         timeout: agent
       materialize-empty-issue-analysis:
         uses: operation:materialize-empty-retro-analysis
+        validate: none
         with: {domain: issue}
         outputs:
           - project:qa/retro/${params.retro_id}/signals/issue.json
@@ -352,6 +364,7 @@ graphs:
             - project:qa/retro/${params.retro_id}/signals/issue.json
       evidence-gap-fallback:
         uses: operation:retro-evidence-gap-fallback
+        validate: none
         outputs:
           - project:qa/retro/${params.retro_id}/signals/issue.json
           - project:qa/retro/${params.retro_id}/signals/workflow.json
@@ -374,6 +387,7 @@ graphs:
         timeout: local-operation
       record-issue-analysis-failed:
         uses: operation:record-analysis-failed
+        validate: none
         with: {domain: issue}
         outputs:
           - project:qa/retro/${params.retro_id}/signals/issue.json
@@ -382,9 +396,10 @@ graphs:
             - project:qa/retro/${params.retro_id}/evidence/issue-slice.json
           writes:
             - project:qa/retro/${params.retro_id}/signals/issue.json
-      issue-settled: {uses: operation:no-op}
+      issue-settled: {uses: operation:no-op, validate: none}
       analyze-workflow:
         uses: skill:aa-retro-workflow-analysis
+        validate: none
         agent: aa-doc-author
         outputs:
           - project:qa/retro/${params.retro_id}/signals/workflow.json
@@ -402,6 +417,7 @@ graphs:
         timeout: agent
       materialize-empty-workflow-analysis:
         uses: operation:materialize-empty-retro-analysis
+        validate: none
         with: {domain: workflow}
         outputs:
           - project:qa/retro/${params.retro_id}/signals/workflow.json
@@ -412,6 +428,7 @@ graphs:
             - project:qa/retro/${params.retro_id}/signals/workflow.json
       record-workflow-analysis-failed:
         uses: operation:record-analysis-failed
+        validate: none
         with: {domain: workflow}
         outputs:
           - project:qa/retro/${params.retro_id}/signals/workflow.json
@@ -420,9 +437,10 @@ graphs:
             - project:qa/retro/${params.retro_id}/evidence/workflow-slice.json
           writes:
             - project:qa/retro/${params.retro_id}/signals/workflow.json
-      workflow-settled: {uses: operation:no-op}
+      workflow-settled: {uses: operation:no-op, validate: none}
       analyze-eval:
         uses: skill:aa-retro-eval-analysis
+        validate: none
         agent: aa-doc-author
         outputs:
           - project:qa/retro/${params.retro_id}/signals/eval.json
@@ -440,6 +458,7 @@ graphs:
         timeout: agent
       materialize-empty-eval-analysis:
         uses: operation:materialize-empty-retro-analysis
+        validate: none
         with: {domain: eval}
         outputs:
           - project:qa/retro/${params.retro_id}/signals/eval.json
@@ -450,6 +469,7 @@ graphs:
             - project:qa/retro/${params.retro_id}/signals/eval.json
       record-eval-analysis-failed:
         uses: operation:record-analysis-failed
+        validate: none
         with: {domain: eval}
         outputs:
           - project:qa/retro/${params.retro_id}/signals/eval.json
@@ -458,14 +478,16 @@ graphs:
             - project:qa/retro/${params.retro_id}/evidence/eval-slice.json
           writes:
             - project:qa/retro/${params.retro_id}/signals/eval.json
-      eval-settled: {uses: operation:no-op}
+      eval-settled: {uses: operation:no-op, validate: none}
       analysis-join:
         uses: builtin:join
+        validate: none
         join:
           sources: [issue-settled, workflow-settled, eval-settled]
           mode: all_active
       assemble-retro-context:
         uses: operation:assemble-retro-context-v3
+        validate: none
         outputs:
           - project:qa/retro/${params.retro_id}/context.json
           - project:qa/retro/${params.retro_id}/context-agent.json
@@ -487,6 +509,7 @@ graphs:
           continue_to: reconcile-improvements
       recover-assemble-failure:
         uses: operation:record-retro-pipeline-failure
+        validate: none
         with: {stage: assemble}
         resources:
           writes:
@@ -495,6 +518,7 @@ graphs:
         timeout: local-operation
       propose-improvements:
         uses: skill:aa-retro
+        validate: none
         agent: aa-doc-author
         outputs:
           - project:qa/retro/${params.retro_id}/proposal-candidates.json
@@ -514,6 +538,7 @@ graphs:
           continue_to: reconcile-improvements
       recover-propose-failure:
         uses: operation:record-retro-pipeline-failure
+        validate: none
         with: {stage: propose}
         resources:
           writes:
@@ -522,6 +547,7 @@ graphs:
         timeout: local-operation
       reconcile-improvements:
         uses: operation:reconcile-improvements
+        validate: none
         resources:
           reads:
             - project:qa/retro/${params.retro_id}/context.json
@@ -539,6 +565,7 @@ graphs:
           continue_to: finalize-retro-status
       recover-reconcile-failure:
         uses: operation:record-retro-pipeline-failure
+        validate: none
         with: {stage: reconcile}
         resources:
           writes:
@@ -548,6 +575,7 @@ graphs:
         timeout: local-operation
       finalize-retro-status:
         uses: operation:finalize-retro-status
+        validate: none
         resources:
           reads:
             - project:qa/retro/${params.retro_id}/**
@@ -588,12 +616,14 @@ graphs:
     nodes:
       load-review-subject:
         uses: operation:load-review-subject
+        validate: none
         recover:
           errors: [invalid_input, invalid_output, conflict, internal]
           via: record-review-error
           continue_to: END
       review-improvement:
         uses: skill:aa-improvement-reviewer
+        validate: none
         agent: aa-reviewer
         resources:
           reads:
@@ -610,6 +640,7 @@ graphs:
           continue_to: END
       validate-improvement-review-assessment:
         uses: operation:validate-improvement-review-assessment
+        validate: none
         outputs:
           - project:qa/improvements/reviews/${params.review_id}/gate-input.json
         recover:
@@ -618,10 +649,12 @@ graphs:
           continue_to: END
       improvement-auto-review-gate:
         uses: builtin:gate
+        validate: none
         with:
           expression: "node('validate-improvement-review-assessment').value.auto_approve == true"
       apply-auto-approval:
         uses: operation:apply-improvement-auto-review
+        validate: none
         with: {verdict: auto_approve}
         recover:
           errors: [invalid_input, invalid_output, conflict, internal]
@@ -629,6 +662,7 @@ graphs:
           continue_to: END
       record-auto-review:
         uses: operation:apply-improvement-auto-review
+        validate: none
         with: {verdict: record}
         recover:
           errors: [invalid_input, invalid_output, conflict, internal]
@@ -636,6 +670,7 @@ graphs:
           continue_to: END
       record-review-error:
         uses: operation:record-improvement-auto-review-error
+        validate: none
     edges:
       - {from: START, to: load-review-subject}
       - {from: load-review-subject, to: review-improvement}
@@ -654,14 +689,17 @@ graphs:
     nodes:
       run-retro:
         uses: graph:retro-workflow
+        validate: none
       select-current-retro-auto-review-items:
         uses: operation:select-current-retro-auto-review-items
+        validate: none
         recover:
           errors: [invalid_input, invalid_output, conflict, contract, internal]
           via: record-auto-review-orchestration-error
           continue_to: END
       auto-review-items:
         uses: graph:improvement-auto-review-cycle
+        validate: none
         fan_out:
           items: "node('select-current-retro-auto-review-items').value.items"
           item_as: review_item
@@ -681,12 +719,14 @@ graphs:
           continue_to: END
       summarize-auto-review-batch:
         uses: operation:summarize-auto-review-batch
+        validate: none
         recover:
           errors: [invalid_input, invalid_output, conflict, internal]
           via: record-auto-review-orchestration-error
           continue_to: END
       record-auto-review-orchestration-error:
         uses: operation:record-auto-review-orchestration-error
+        validate: none
     edges:
       - {from: START, to: run-retro}
       - {from: run-retro, to: select-current-retro-auto-review-items}
@@ -699,6 +739,7 @@ graphs:
     nodes:
       explore:
         uses: skill:aa-explore
+        validate: none
         agent: aa-explorer
         when: "params.run_mode in ['full', 'case-only']"
         outputs: [change:explore/advisory.json]
@@ -707,19 +748,21 @@ graphs:
 
       case-design:
         uses: skill:aa-case-design
+        validate: none
         agent: aa-doc-author
         when: "params.run_mode in ['full', 'case-only']"
         outputs:
           - change:.qa.yaml
           - change:proposal.md
           - change:cases/
-          - change:trace/minimum-coverage-matrix.yaml
+          - change:trace/minimum-coverage-matrix.json
         gate: case-design-gate
         retry: agent-transient
         timeout: agent
 
       case-review-cycle:
         uses: graph:case-review-cycle
+        validate: none
 
     edges:
       - {from: START, to: explore, when: "params.run_mode in ['full', 'case-only']"}
@@ -741,6 +784,7 @@ graphs:
     nodes:
       review:
         uses: skill:aa-case-reviewer
+        validate: none
         agent: aa-reviewer
         outputs: [change:review/case-review.json]
         gate: case-review-gate
@@ -749,12 +793,13 @@ graphs:
 
       fix:
         uses: skill:aa-case-design
+        validate: none
         agent: aa-doc-author
         outputs:
           - change:.qa.yaml
           - change:proposal.md
           - change:cases/
-          - change:trace/minimum-coverage-matrix.yaml
+          - change:trace/minimum-coverage-matrix.json
         retry: agent-transient
         timeout: agent
         budget:
@@ -764,6 +809,7 @@ graphs:
 
       human-review:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "case review requires human review"
           checkpoint: case-review-gate
@@ -772,6 +818,7 @@ graphs:
 
       exhausted:
         uses: operation:stop
+        validate: none
         with: {reason: "case fix attempts exhausted"}
 
     edges:
@@ -802,6 +849,7 @@ graphs:
     nodes:
       fact-baseline:
         uses: skill:aa-fact-baseline
+        validate: none
         agent: aa-doc-author
         when: >
           params.run_mode in
@@ -812,60 +860,70 @@ graphs:
 
       api:
         uses: graph:api-branch
+        validate: none
         when: >
           'api' in params.test_types and params.run_mode in
           ['full','api-only','plan-only','review-plan','codegen-only']
 
       e2e:
         uses: graph:e2e-branch
+        validate: none
         when: >
           'e2e' in params.test_types and params.run_mode in
           ['full','e2e-only','plan-only','review-plan','codegen-only']
 
       fuzz:
         uses: graph:fuzz-branch
+        validate: none
         when: >
           'fuzz' in params.test_types and params.run_mode in
           ['full','plan-only','review-plan','codegen-only']
 
       performance:
         uses: graph:performance-branch
+        validate: none
         when: >
           'performance' in params.test_types and params.run_mode in
           ['full','plan-only','review-plan','codegen-only']
 
       generation-join:
         uses: builtin:join
+        validate: none
         join:
           sources: [api, e2e, fuzz, performance]
           mode: all_active
 
       execution:
         uses: operation:run-tests-and-collect-pr-metrics
+        validate: none
         when: >
           params.run_tests == true and
           params.run_mode in ['full','api-only','e2e-only','codegen-only']
-        outputs: [change:execution/execution-manifest.yaml]
+        outputs: [change:execution/execution-manifest.json]
         retry: cli-transient
         timeout: cli
 
       inspect-with-issues:
         uses: graph:inspect-with-issues
+        validate: none
 
       healing:
         uses: graph:healing
+        validate: none
 
       # Coverage shortfall repair loop. Between healing (test failures) and
       # materialize (authoritative metrics write). Own budget / safety / status;
       # never writes inspect/metrics.json.
       coverage-repair:
         uses: graph:coverage-repair
+        validate: none
 
       # Single authoritative write of inspect/metrics.json from the latest
       # complete batch. Runs once after coverage-repair returns — aggregates the
       # post-repair batch and remains the sole writer of that path.
       materialize-pr-metrics:
         uses: operation:materialize-pr-metrics
+        validate: none
         outputs:
           - change:inspect/metrics.json
         retry: never
@@ -881,10 +939,12 @@ graphs:
       # before report.
       metrics-sufficiency:
         uses: builtin:gate
+        validate: none
         with: {gate: metrics-sufficiency-gate}
 
       metrics-sufficiency-review:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "verification metrics sufficiency requires human review"
           checkpoint: metrics-sufficiency-gate
@@ -905,10 +965,12 @@ graphs:
       # returning here (see the healing routes below).
       trace-sufficiency:
         uses: builtin:gate
+        validate: none
         with: {gate: trace-sufficiency-gate}
 
       trace-sufficiency-review:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "case evidence sufficiency requires human review"
           checkpoint: trace-sufficiency-gate
@@ -919,6 +981,7 @@ graphs:
 
       report:
         uses: operation:generate-report
+        validate: none
         outputs:
           - change:report/quality-report.json
           - change:report/quality-report.md
@@ -1002,28 +1065,32 @@ graphs:
     nodes:
       plan:
         uses: skill:aa-api-plan
+        validate: none
         agent: aa-doc-author
         when: "params.run_mode in ['full','api-only','plan-only','review-plan']"
         outputs:
           - change:plans/api-plan.md
           - change:plans/api-test-data-plan.md
           - change:plans/api-codegen-plan.md
-          - change:plans/api-codegen-mapping.yaml
+          - change:plans/api-codegen-mapping.json
           - change:plans/m3-review-summary.md
         retry: agent-transient
         timeout: agent
 
       review-cycle:
         uses: graph:api-plan-cycle
+        validate: none
 
       # Hard precondition, evaluated before codegen: an attached gate on `codegen`
       # can only report after the suite was already generated.
       codegen-precheck:
         uses: builtin:gate
+        validate: none
         with: {gate: api-codegen-precondition-gate}
 
       codegen:
         uses: skill:aa-api-codegen
+        validate: generated_files_candidate/v1
         agent: aa-test-author
         when: "params.run_mode in ['full','api-only','codegen-only']"
         outputs:
@@ -1057,10 +1124,12 @@ graphs:
         # declared outputs. Freeze still publishes the written concrete
         # authorization_write into outputs_sha256 for replay binding.
         uses: operation:derive-plan-layer-applicability
+        validate: none
         with: {layer: api}
 
       review:
         uses: skill:aa-api-plan-reviewer
+        validate: plan_mechanical_candidate/v1
         agent: aa-reviewer
         outputs: [change:review/api-plan-review.json, change:review/api-plan-review-summary.md, change:review/api-plan-checks.json]
         retry: agent-transient
@@ -1068,16 +1137,18 @@ graphs:
 
       review-gate:
         uses: builtin:gate
+        validate: none
         with: {gate: api-plan-review-gate}
 
       fix:
         uses: skill:aa-api-plan
+        validate: none
         agent: aa-doc-author
         outputs:
           - change:plans/api-plan.md
           - change:plans/api-test-data-plan.md
           - change:plans/api-codegen-plan.md
-          - change:plans/api-codegen-mapping.yaml
+          - change:plans/api-codegen-mapping.json
           - change:plans/m3-review-summary.md
         retry: agent-transient
         timeout: agent
@@ -1088,6 +1159,7 @@ graphs:
 
       human-review:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "api plan review requires human review"
           checkpoint: api-plan-review-gate
@@ -1096,6 +1168,7 @@ graphs:
 
       knowledge-remediation:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "api plan review requires L1 capability remediation (aa knowledge promote)"
           checkpoint: api-plan-review-gate
@@ -1104,6 +1177,7 @@ graphs:
 
       exhausted:
         uses: operation:stop
+        validate: none
         with: {reason: "api plan fix attempts exhausted"}
 
     edges:
@@ -1148,26 +1222,30 @@ graphs:
     nodes:
       plan:
         uses: skill:aa-e2e-plan
+        validate: none
         agent: aa-doc-author
         when: "params.run_mode in ['full','e2e-only','plan-only','review-plan']"
         outputs:
           - change:plans/e2e-plan.md
           - change:plans/e2e-test-data-plan.md
           - change:plans/e2e-codegen-plan.md
-          - change:plans/e2e-codegen-mapping.yaml
+          - change:plans/e2e-codegen-mapping.json
           - change:plans/m4-review-summary.md
         retry: agent-transient
         timeout: agent
 
       review-cycle:
         uses: graph:e2e-plan-cycle
+        validate: none
 
       codegen-precheck:
         uses: builtin:gate
+        validate: none
         with: {gate: e2e-codegen-precondition-gate}
 
       codegen:
         uses: skill:aa-e2e-codegen
+        validate: generated_files_candidate/v1
         agent: aa-test-author
         when: "params.run_mode in ['full','e2e-only','codegen-only']"
         outputs:
@@ -1201,10 +1279,12 @@ graphs:
         # declared outputs. Freeze still publishes the written concrete
         # authorization_write into outputs_sha256 for replay binding.
         uses: operation:derive-plan-layer-applicability
+        validate: none
         with: {layer: e2e}
 
       review:
         uses: skill:aa-e2e-plan-reviewer
+        validate: plan_mechanical_candidate/v1
         agent: aa-reviewer
         outputs: [change:review/plan-review.json, change:review/plan-review-summary.md, change:review/e2e-plan-checks.json]
         retry: agent-transient
@@ -1212,16 +1292,18 @@ graphs:
 
       review-gate:
         uses: builtin:gate
+        validate: none
         with: {gate: e2e-plan-review-gate}
 
       fix:
         uses: skill:aa-e2e-plan
+        validate: none
         agent: aa-doc-author
         outputs:
           - change:plans/e2e-plan.md
           - change:plans/e2e-test-data-plan.md
           - change:plans/e2e-codegen-plan.md
-          - change:plans/e2e-codegen-mapping.yaml
+          - change:plans/e2e-codegen-mapping.json
           - change:plans/m4-review-summary.md
         retry: agent-transient
         timeout: agent
@@ -1232,6 +1314,7 @@ graphs:
 
       human-review:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "e2e plan review requires human review"
           checkpoint: e2e-plan-review-gate
@@ -1240,6 +1323,7 @@ graphs:
 
       knowledge-remediation:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "e2e plan review requires L1 capability remediation (aa knowledge promote)"
           checkpoint: e2e-plan-review-gate
@@ -1248,6 +1332,7 @@ graphs:
 
       exhausted:
         uses: operation:stop
+        validate: none
         with: {reason: "e2e plan fix attempts exhausted"}
 
     edges:
@@ -1292,29 +1377,34 @@ graphs:
     nodes:
       applicability-preflight:
         uses: operation:derive-plan-layer-applicability
+        validate: none
         with: {layer: fuzz}
 
       plan:
         uses: skill:aa-fuzz-plan
+        validate: none
         agent: aa-doc-author
         when: "params.run_mode in ['full','plan-only','review-plan']"
         outputs:
           - change:plans/fuzz-plan.md
           - change:plans/fuzz-codegen-plan.md
-          - change:plans/fuzz-codegen-mapping.yaml
+          - change:plans/fuzz-codegen-mapping.json
           - change:plans/fuzz-review-summary.md
         retry: agent-transient
         timeout: agent
 
       review-cycle:
         uses: graph:fuzz-plan-cycle
+        validate: none
 
       codegen-precheck:
         uses: builtin:gate
+        validate: none
         with: {gate: fuzz-codegen-precondition-gate}
 
       codegen:
         uses: skill:aa-fuzz-codegen
+        validate: generated_files_candidate/v1
         agent: aa-test-author
         when: "params.run_mode in ['full','codegen-only']"
         outputs:
@@ -1353,10 +1443,12 @@ graphs:
         # declared outputs. Freeze still publishes the written concrete
         # authorization_write into outputs_sha256 for replay binding.
         uses: operation:derive-plan-layer-applicability
+        validate: none
         with: {layer: fuzz}
 
       review:
         uses: skill:aa-fuzz-plan-reviewer
+        validate: plan_mechanical_candidate/v1
         agent: aa-reviewer
         outputs: [change:review/fuzz-plan-review.json, change:review/fuzz-plan-review-summary.md, change:review/fuzz-plan-checks.json]
         retry: agent-transient
@@ -1364,10 +1456,12 @@ graphs:
 
       review-gate:
         uses: builtin:gate
+        validate: none
         with: {gate: fuzz-plan-review-gate}
 
       human-review:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "fuzz plan review requires human review"
           checkpoint: fuzz-plan-review-gate
@@ -1378,7 +1472,7 @@ graphs:
             paths:
               - change:plans/fuzz-plan.md
               - change:plans/fuzz-codegen-plan.md
-              - change:plans/fuzz-codegen-mapping.yaml
+              - change:plans/fuzz-codegen-mapping.json
         budget:
           consume: fix_attempts
           "on": committed
@@ -1386,10 +1480,12 @@ graphs:
 
       exhausted:
         uses: operation:stop
+        validate: none
         with: {reason: "fuzz plan fix attempts exhausted"}
 
       knowledge-remediation:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "fuzz plan review requires L1 capability remediation (aa knowledge promote)"
           checkpoint: fuzz-plan-review-gate
@@ -1437,29 +1533,34 @@ graphs:
     nodes:
       applicability-preflight:
         uses: operation:derive-plan-layer-applicability
+        validate: none
         with: {layer: performance}
 
       plan:
         uses: skill:aa-performance-plan
+        validate: none
         agent: aa-doc-author
         when: "params.run_mode in ['full','plan-only','review-plan']"
         outputs:
           - change:plans/performance-plan.md
           - change:plans/performance-codegen-plan.md
-          - change:plans/performance-codegen-mapping.yaml
+          - change:plans/performance-codegen-mapping.json
           - change:plans/performance-review-summary.md
         retry: agent-transient
         timeout: agent
 
       review-cycle:
         uses: graph:performance-plan-cycle
+        validate: none
 
       codegen-precheck:
         uses: builtin:gate
+        validate: none
         with: {gate: performance-codegen-precondition-gate}
 
       codegen:
         uses: skill:aa-performance-codegen
+        validate: generated_files_candidate/v1
         agent: aa-test-author
         when: "params.run_mode in ['full','codegen-only']"
         outputs:
@@ -1498,10 +1599,12 @@ graphs:
         # declared outputs. Freeze still publishes the written concrete
         # authorization_write into outputs_sha256 for replay binding.
         uses: operation:derive-plan-layer-applicability
+        validate: none
         with: {layer: performance}
 
       review:
         uses: skill:aa-performance-plan-reviewer
+        validate: plan_mechanical_candidate/v1
         agent: aa-reviewer
         outputs: [change:review/performance-plan-review.json, change:review/performance-plan-review-summary.md, change:review/performance-plan-checks.json]
         retry: agent-transient
@@ -1509,10 +1612,12 @@ graphs:
 
       review-gate:
         uses: builtin:gate
+        validate: none
         with: {gate: performance-plan-review-gate}
 
       human-review:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "performance plan review requires human review"
           checkpoint: performance-plan-review-gate
@@ -1523,7 +1628,7 @@ graphs:
             paths:
               - change:plans/performance-plan.md
               - change:plans/performance-codegen-plan.md
-              - change:plans/performance-codegen-mapping.yaml
+              - change:plans/performance-codegen-mapping.json
         budget:
           consume: fix_attempts
           "on": committed
@@ -1531,10 +1636,12 @@ graphs:
 
       exhausted:
         uses: operation:stop
+        validate: none
         with: {reason: "performance plan fix attempts exhausted"}
 
       knowledge-remediation:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "performance plan review requires L1 capability remediation (aa knowledge promote)"
           checkpoint: performance-plan-review-gate
@@ -1587,6 +1694,7 @@ graphs:
     nodes:
       inspect:
         uses: operation:inspect
+        validate: none
         outputs:
           - change:inspect/failure-analysis.json
           - change:inspect/quality-gate-result.json
@@ -1595,11 +1703,13 @@ graphs:
 
       collect-observations:
         uses: operation:collect-observations
+        validate: none
         retry: never
         timeout: local-operation
 
       analyze-issues:
         uses: skill:aa-issue-analyzer
+        validate: none
         agent: aa-reporter
         outputs:
           - change:inspect/issue-candidates.json
@@ -1613,11 +1723,13 @@ graphs:
 
       record-empty-analysis:
         uses: operation:record-empty-issue-analysis
+        validate: none
         retry: never
         timeout: local-operation
 
       reconcile-issues:
         uses: operation:reconcile-issues
+        validate: none
         retry: project-sync
         timeout: cli
         recover:
@@ -1633,11 +1745,13 @@ graphs:
 
       record-analysis-failure:
         uses: operation:record-issue-analysis-failure
+        validate: none
         retry: never
         timeout: local-operation
 
       record-project-sync-pending:
         uses: operation:record-project-sync-pending
+        validate: none
         retry: never
         timeout: local-operation
 
@@ -1653,6 +1767,7 @@ graphs:
       # happens once, in `assurance`, after healing returns.
       materialize-trace-projection:
         uses: operation:materialize-trace-and-coverage-gaps
+        validate: none
         outputs:
           - change:inspect/trace-projection.json
           - change:inspect/trace-sufficiency.json
@@ -1662,6 +1777,7 @@ graphs:
 
       inspect-complete:
         uses: operation:no-op
+        validate: none
 
     edges:
       - {from: START, to: inspect}
@@ -1685,10 +1801,12 @@ graphs:
     nodes:
       entry:
         uses: builtin:gate
+        validate: none
         with: {gate: healing-entry-gate}
 
       proposal:
         uses: skill:aa-fix-proposal
+        validate: none
         agent: aa-doc-author
         outputs: [change:healing/fix-proposal.json]
         retry: agent-transient
@@ -1696,6 +1814,7 @@ graphs:
 
       proposal-eligible:
         uses: builtin:gate
+        validate: none
         with:
           expression: >
             file_exists('healing/fix-proposal.json') and
@@ -1704,6 +1823,7 @@ graphs:
 
       allocate:
         uses: operation:allocate-healing-attempt
+        validate: none
         outputs:
           - change:healing/entry-baseline.json
           - change:healing/fixer-authority.json
@@ -1716,15 +1836,18 @@ graphs:
 
       fixer-authority-ready:
         uses: operation:fixer-authority-ready
+        validate: none
         retry: never
         timeout: local-operation
 
       fixer-proposal-approval:
         uses: builtin:gate
+        validate: none
         with: {gate: fixer-proposal-approval-gate}
 
       fixer-approval-interrupt:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: healing.fixer_approval
           checkpoint: healing.fixer_approval
@@ -1733,17 +1856,20 @@ graphs:
 
       record-fixer-approval:
         uses: operation:record-fixer-approval
+        validate: none
         outputs: [change:healing/fixer-proposal-approval.json]
         retry: never
         timeout: local-operation
 
       fixer-dispatch:
         uses: operation:fixer-dispatch
+        validate: none
         retry: never
         timeout: local-operation
 
       fix-api:
         uses: skill:aa-api-codegen-fixer
+        validate: codegen_fix_candidate/v1
         agent: aa-test-author
         when: "any(fix_proposal.proposals, target == 'api' and eligible == true)"
         outputs: [change:healing/api-apply-intent.json]
@@ -1752,6 +1878,7 @@ graphs:
 
       fix-e2e:
         uses: skill:aa-e2e-codegen-fixer
+        validate: codegen_fix_candidate/v1
         agent: aa-test-author
         when: "any(fix_proposal.proposals, target == 'e2e' and eligible == true)"
         outputs: [change:healing/e2e-apply-intent.json]
@@ -1760,6 +1887,7 @@ graphs:
 
       record-api:
         uses: operation:record-codegen-fix-apply
+        validate: none
         with: {target: api}
         when: "any(fix_proposal.proposals, target == 'api' and eligible == true)"
         outputs:
@@ -1770,6 +1898,7 @@ graphs:
 
       record-e2e:
         uses: operation:record-codegen-fix-apply
+        validate: none
         with: {target: e2e}
         when: "any(fix_proposal.proposals, target == 'e2e' and eligible == true)"
         outputs:
@@ -1780,22 +1909,26 @@ graphs:
 
       fixer-join:
         uses: builtin:join
+        validate: none
         join:
           sources: [record-api, record-e2e]
           mode: all_active
 
       combine-fixer-safety:
         uses: operation:combine-fixer-safety
+        validate: none
         outputs: [change:healing/fixer-safety-check.json]
         retry: never
         timeout: local-operation
 
       safety:
         uses: builtin:gate
+        validate: none
         with: {gate: fixer-safety-gate}
 
       safety-interrupt:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "fixer safety requires human review"
           checkpoint: healing.safety
@@ -1822,39 +1955,47 @@ graphs:
 
       rerun:
         uses: operation:run-tests-and-collect-pr-metrics
-        outputs: [change:execution/execution-manifest.yaml]
+        validate: none
+        outputs: [change:execution/execution-manifest.json]
         retry: cli-transient
         timeout: cli
 
       inspect-with-issues:
         uses: graph:inspect-with-issues
+        validate: none
 
       decide:
         uses: builtin:gate
+        validate: none
         with: {gate: healing-loop-gate}
 
       complete-not-needed:
         uses: operation:record-healing-status
+        validate: none
         with: {status: not_needed}
         retry: never
 
       complete-resolved:
         uses: operation:record-healing-status
+        validate: none
         with: {status: resolved}
         retry: never
 
       complete-exhausted:
         uses: operation:record-healing-status
+        validate: none
         with: {status: exhausted}
         retry: never
 
       complete-skipped:
         uses: operation:record-healing-status
+        validate: none
         with: {status: skipped}
         retry: never
 
       complete-failed:
         uses: operation:record-healing-status
+        validate: none
         with: {status: failed}
         retry: never
 
@@ -1980,15 +2121,18 @@ graphs:
     nodes:
       probe-entry:
         uses: operation:probe-coverage-repair-need
+        validate: none
         retry: never
         timeout: local-operation
 
       entry:
         uses: builtin:gate
+        validate: none
         with: {gate: coverage-repair-entry-gate}
 
       allocate:
         uses: operation:allocate-coverage-repair-attempt
+        validate: none
         retry: never
         timeout: local-operation
         budget:
@@ -1998,6 +2142,7 @@ graphs:
 
       repair:
         uses: skill:aa-coverage-repair
+        validate: none
         agent: aa-test-author
         outputs:
           - change:coverage-repair/apply-summary.json
@@ -2006,15 +2151,18 @@ graphs:
 
       compute-safety:
         uses: operation:compute-coverage-repair-safety
+        validate: none
         retry: never
         timeout: local-operation
 
       safety:
         uses: builtin:gate
+        validate: none
         with: {gate: coverage-repair-safety-gate}
 
       safety-interrupt:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "coverage-repair safety requires human review"
           checkpoint: coverage-repair-safety-gate
@@ -2028,39 +2176,47 @@ graphs:
 
       rerun:
         uses: operation:run-tests-and-collect-pr-metrics
-        outputs: [change:execution/execution-manifest.yaml]
+        validate: none
+        outputs: [change:execution/execution-manifest.json]
         retry: cli-transient
         timeout: cli
 
       inspect-with-issues:
         uses: graph:inspect-with-issues
+        validate: none
 
       probe-loop:
         uses: operation:probe-coverage-repair-need
+        validate: none
         retry: never
         timeout: local-operation
 
       decide:
         uses: builtin:gate
+        validate: none
         with: {gate: coverage-repair-loop-gate}
 
       complete-not-eligible:
         uses: operation:record-coverage-repair-status
+        validate: none
         with: {status: not_eligible}
         retry: never
 
       complete-repaired:
         uses: operation:record-coverage-repair-status
+        validate: none
         with: {status: repaired}
         retry: never
 
       complete-exhausted:
         uses: operation:record-coverage-repair-status
+        validate: none
         with: {status: exhausted}
         retry: never
 
       complete-failed:
         uses: operation:record-coverage-repair-status
+        validate: none
         with: {status: failed}
         retry: never
 
@@ -2118,10 +2274,12 @@ graphs:
     nodes:
       load-improvement-delivery:
         uses: operation:load-improvement-delivery
+        validate: none
         retry: never
         timeout: local-operation
       evaluate-memory:
         uses: operation:evaluate-memory-improvement
+        validate: none
         retry: never
         timeout: cli
     edges:
@@ -2140,14 +2298,17 @@ graphs:
     nodes:
       load-improvement-delivery:
         uses: operation:load-improvement-delivery
+        validate: none
         retry: never
         timeout: local-operation
       export-change:
         uses: operation:export-change-improvement
+        validate: none
         retry: project-sync
         timeout: cli
       export-knowledge:
         uses: operation:export-knowledge-improvement
+        validate: none
         retry: project-sync
         timeout: cli
     edges:
@@ -2168,18 +2329,22 @@ graphs:
     nodes:
       load-improvement-delivery:
         uses: operation:load-improvement-delivery
+        validate: none
         retry: never
         timeout: local-operation
       apply-memory:
         uses: operation:apply-memory-improvement
+        validate: none
         retry: project-sync
         timeout: cli
       record-change-applied:
         uses: operation:record-change-improvement-applied
+        validate: none
         retry: project-sync
         timeout: cli
       record-knowledge-applied:
         uses: operation:record-knowledge-improvement-applied
+        validate: none
         retry: project-sync
         timeout: cli
     edges:
@@ -2202,10 +2367,12 @@ graphs:
     nodes:
       load-improvement-delivery:
         uses: operation:load-improvement-delivery
+        validate: none
         retry: never
         timeout: local-operation
       rollback-memory:
         uses: operation:rollback-memory-improvement
+        validate: none
         retry: project-sync
         timeout: cli
     edges:
@@ -2228,11 +2395,13 @@ graphs:
     nodes:
       load-improvement:
         uses: operation:load-improvement-review-context
+        validate: none
         retry: never
         timeout: local-operation
 
       human-interrupt:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "Review improvement and take action"
           checkpoint: improvement-review
@@ -2246,6 +2415,7 @@ graphs:
 
       apply-review:
         uses: operation:apply-improvement-review
+        validate: none
         retry: project-sync
         timeout: cli
 
@@ -2275,11 +2445,13 @@ graphs:
     nodes:
       load-problem:
         uses: operation:load-problem-review-context
+        validate: none
         retry: never
         timeout: local-operation
 
       triage-advisor:
         uses: skill:aa-issue-triage-advisor
+        validate: none
         agent: aa-reporter
         outputs:
           - change:issue-review/**
@@ -2288,6 +2460,7 @@ graphs:
 
       human-interrupt:
         uses: builtin:interrupt
+        validate: none
         interrupt:
           reason: "Review problem and take action"
           checkpoint: review
@@ -2305,6 +2478,7 @@ graphs:
 
       apply-review:
         uses: operation:apply-problem-review
+        validate: problem_apply_candidate/v1
         retry: project-sync
         timeout: cli
 
@@ -2338,6 +2512,7 @@ graphs:
     nodes:
       analyze-issues:
         uses: skill:aa-issue-analyzer
+        validate: none
         agent: aa-reporter
         outputs:
           - change:inspect/issue-candidates.json
@@ -2351,11 +2526,13 @@ graphs:
 
       record-analysis-failure:
         uses: operation:record-issue-analysis-failure
+        validate: none
         retry: never
         timeout: local-operation
 
       reconcile-issues:
         uses: operation:reconcile-issues
+        validate: none
         retry: project-sync
         timeout: cli
         recover:
@@ -2365,11 +2542,13 @@ graphs:
 
       record-project-sync-pending:
         uses: operation:record-project-sync-pending
+        validate: none
         retry: never
         timeout: local-operation
 
       materialize-trace-projection:
         uses: operation:materialize-trace-projection
+        validate: none
         outputs:
           - change:inspect/trace-projection.json
 
@@ -2388,6 +2567,7 @@ graphs:
     nodes:
       reconcile-issues:
         uses: operation:reconcile-issues
+        validate: none
         retry: project-sync
         timeout: cli
         recover:
@@ -2397,11 +2577,13 @@ graphs:
 
       record-project-sync-pending:
         uses: operation:record-project-sync-pending
+        validate: none
         retry: never
         timeout: local-operation
 
       materialize-trace-projection:
         uses: operation:materialize-trace-projection
+        validate: none
         outputs:
           - change:inspect/trace-projection.json
 
@@ -2419,6 +2601,7 @@ graphs:
     nodes:
       run-nightly-metrics-pipeline:
         uses: operation:run-nightly-metrics-pipeline
+        validate: none
         retry: never
         timeout: local-operation
         outputs:
@@ -2842,14 +3025,14 @@ gates:
     skip_when: "brief.eligible == false"
 
   # Loop control. Only reachable downstream of `allocate`, so `status.json` is
-  # guaranteed present; `execution-manifest.yaml` has existed since `execution`.
+  # guaranteed present; `execution-manifest.json` has existed since `execution`.
   # Budget exhaustion is NOT adjudicated here — `allocate`'s `exhausted_to`
   # owns it, exactly as in healing.
   coverage-repair-loop-gate:
     reads:
       - { path: coverage-repair/brief.json, as: brief }
       - { path: coverage-repair/status.json, as: repair }
-      - { path: execution/execution-manifest.yaml, as: execution }
+      - { path: execution/execution-manifest.json, as: execution }
     missing_file_is: stop
     invalid_json: stop
     missing_field_is: stop
@@ -2887,7 +3070,7 @@ gates:
 
   healing-entry-gate:
     reads:
-      - { path: execution/execution-manifest.yaml, as: execution }
+      - { path: execution/execution-manifest.json, as: execution }
       - { path: inspect/failure-analysis.json, as: failure_analysis }
       - { path: registry/skill-registry-check.json, as: registry }
     missing_file_is: stop
@@ -2908,7 +3091,7 @@ gates:
 
   healing-loop-gate:
     reads:
-      - { path: execution/execution-manifest.yaml, as: execution }
+      - { path: execution/execution-manifest.json, as: execution }
       - { path: inspect/failure-analysis.json, as: failure_analysis }
       - { path: healing/status.json, as: healing }
     missing_file_is: stop
@@ -2993,7 +3176,7 @@ gates:
 
   archive-gate:
     reads:
-      - { path: execution/execution-manifest.yaml, as: execution }
+      - { path: execution/execution-manifest.json, as: execution }
       - { path: inspect/failure-analysis.json, as: failure_analysis }
       - { path: inspect/trace-sufficiency.json, as: trace }
       - { path: healing/status.json, as: healing }

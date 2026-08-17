@@ -13,7 +13,7 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.yaml`.
+1. Read `qa/changes/<change-id>/workflow-state.json`.
 2. Verify inspect is complete: `phases.inspect.status == done`. If not, stop and instruct the user to run `aa report inspect --change <change-id>` first.
 3. Verify the CLI wrote `qa/changes/<change-id>/inspect/quality-gate-result.json`. If missing, stop — do not fabricate a report.
 4. Verify **Assurance Agent CLI identity** (see **AA CLI Identity Check**) before invoking `aa report generate`.
@@ -26,7 +26,7 @@ Do not rely on prior conversation context.
    - `qa/changes/<change-id>/report/quality-report.md`
    - `qa/changes/<change-id>/report/executive-summary.md`
 2. When advisory MRC exists, **read** `qa/changes/<change-id>/report/minimum-coverage-result.json` if present for prose explanation only. That JSON is owned by the deterministic `operation:materialize-minimum-coverage` — **do not write, rewrite, or invent it**.
-3. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
+3. Report the `workflow-state.json` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.json` — report the values in your final message and the orchestrator applies them):
    - `phases.report.status = done`
    - `phases.report.quality_score = <int from quality-report.json>`
 4. Reference `report/executive-summary.md` in the workflow's final summary.
@@ -149,7 +149,7 @@ qa/changes/<change-id>/report/
 
 ### Minimum Required Coverage (MRC) — prose only
 
-When `explore/advisory.json` / `risk-advisory/advisory.json` declares `minimum_required_coverage`, the workflow's deterministic `materialize-minimum-coverage` operation joins the case matrix (`trace/minimum-coverage-matrix.yaml`) with the published `inspect/trace-projection.json` and writes `report/minimum-coverage-result.json` (`covered` / `covered_but_failing` / `not_executed` / `executed_case_ids`, …). This skill may **summarize** that artifact in markdown wording; it must **never** author or overwrite the JSON.
+When `explore/advisory.json` / `risk-advisory/advisory.json` declares `minimum_required_coverage`, the workflow's deterministic `materialize-minimum-coverage` operation joins the case matrix (`trace/minimum-coverage-matrix.json`) with the published `inspect/trace-projection.json` and writes `report/minimum-coverage-result.json` (`covered` / `covered_but_failing` / `not_executed` / `executed_case_ids`, …). This skill may **summarize** that artifact in markdown wording; it must **never** author or overwrite the JSON.
 
 ## Risk Level & Recommendation Boundary
 

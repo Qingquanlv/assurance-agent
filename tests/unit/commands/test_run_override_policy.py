@@ -59,8 +59,8 @@ def _stub_pytest(outcome: str):
 def _write_manifest(change_dir: Path, tree) -> None:  # noqa: ANN001
     change_dir.mkdir(parents=True, exist_ok=True)
     (change_dir / "execution").mkdir(parents=True, exist_ok=True)
-    (change_dir / "execution" / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(
+    (change_dir / "execution" / "execution-manifest.json").write_text(
+        json.dumps(
             {
                 "batch_id": "20260101-000000",
                 "tests_tree_sha256": tree.aggregate,
@@ -117,8 +117,17 @@ def guarded_project(tmp_path: Path, monkeypatch):
     (tmp_path / "tests" / "api" / "test_x.py").write_text("def test_x(): assert 1\n", encoding="utf-8")
     change = tmp_path / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True)
-    (change / "workflow-state.yaml").write_text(
-        "selected_targets: {api: true, e2e: false, fuzz: false, performance: false}\n",
+    (change / "workflow-state.json").write_text(
+        json.dumps(
+            {
+                "selected_targets": {
+                    "api": True,
+                    "e2e": False,
+                    "fuzz": False,
+                    "performance": False,
+                }
+            }
+        ),
         encoding="utf-8",
     )
     baseline = hash_test_tree(tmp_path)
@@ -185,7 +194,7 @@ def test_missing_policy_file_defaults_to_allow_with_evidence(guarded_project, mo
     assert override_files
     token = json.loads((change / "execution" / "test-changes-override-token.json").read_text())
     assert token["consumed"] is True
-    manifest = yaml.safe_load((change / "execution" / "execution-manifest.yaml").read_text())
+    manifest = yaml.safe_load((change / "execution" / "execution-manifest.json").read_text())
     assert token["consumed_by_batch_id"] == manifest["batch_id"]
 
 

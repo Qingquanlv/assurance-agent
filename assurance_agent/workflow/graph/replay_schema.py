@@ -1085,9 +1085,10 @@ def _recovery_shape_errors(
     if interrupt.manual_revision.action != "fix_and_proceed":
         return [f"{locator}: manual_revision.action must be fix_and_proceed"]
     expected_paths = tuple(f"change:{path}" for path in topology_spec.plan_artifacts)
-    mapping_path = f"change:plans/{topology_spec.layer}-codegen-mapping.yaml"
+    mapping_json = f"change:plans/{topology_spec.layer}-codegen-mapping.json"
+    mapping_yaml = f"change:plans/{topology_spec.layer}-codegen-mapping.yaml"
     actual_paths = tuple(interrupt.manual_revision.paths)
-    if actual_paths not in {expected_paths, (*expected_paths, mapping_path)}:
+    if actual_paths not in {expected_paths, (*expected_paths, mapping_json), (*expected_paths, mapping_yaml)}:
         return [f"{locator}: manual_revision.paths must exactly match plan artifacts"]
 
     human_route = _route_from(cycle, human_review_node_id)

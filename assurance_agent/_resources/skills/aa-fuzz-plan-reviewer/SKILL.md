@@ -13,7 +13,7 @@ Review fuzz plans and emit a PlanReview document. This layer is human-only: `aut
 
 - `change:plans/fuzz-plan.md`
 - `change:plans/fuzz-codegen-plan.md`
-- `change:plans/fuzz-codegen-mapping.yaml`
+- `change:plans/fuzz-codegen-mapping.json`
 - `change:plans/fuzz-review-summary.md`
 - `change:review/fuzz-plan-checks.json`
 - `change:cases/**/case.yaml`

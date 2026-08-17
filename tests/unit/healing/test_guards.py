@@ -2,8 +2,8 @@ from pathlib import Path
 
 from tests.helpers_aa import write_aa_config
 
+import json
 import pytest
-import yaml
 
 from assurance_agent.workflow.execution.tree_hash import hash_test_tree
 from assurance_agent.workflow.healing.safety import (
@@ -20,8 +20,8 @@ def _write(p: Path, text: str) -> None:
 
 def _manifest(change_dir: Path, tests_sha: str, files: dict[str, str], product_sha: str) -> None:
     _write(
-        change_dir / "execution" / "execution-manifest.yaml",
-        yaml.safe_dump(
+        change_dir / "execution" / "execution-manifest.json",
+        json.dumps(
             {
                 "batch_id": "20260101-000000",
                 "tests_tree_sha256": tests_sha,

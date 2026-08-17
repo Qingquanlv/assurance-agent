@@ -245,7 +245,7 @@ def _write_terminal_change(
         }
     )
     (root / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
-    (root / "workflow-state.yaml").write_text(
+    (root / "workflow-state.json").write_text(
         yaml.safe_dump({"change_id": change_id, "phases": phases or {}}),
         encoding="utf-8",
     )

@@ -61,7 +61,7 @@ def valid_projection_v1() -> dict[str, Any]:
         "authoritative_batch_id": "20260729-120000",
         "sources": [
             {
-                "path": "execution/execution-manifest.yaml#fold-view",
+                "path": "execution/execution-manifest.json#fold-view",
                 "exists": True,
                 "sha256": "abc",
             }
@@ -130,7 +130,7 @@ def test_projection_round_trip() -> None:
         change_id="CH-1",
         phase="execution",
         authoritative_batch_id="20260729-120000",
-        sources=(TraceSource(path="execution/execution-manifest.yaml#fold-view", exists=True, sha256="abc"),),
+        sources=(TraceSource(path="execution/execution-manifest.json#fold-view", exists=True, sha256="abc"),),
         rows=(
             _row(
                 covering_tests=(
@@ -319,7 +319,7 @@ def _projection(**overrides: Any) -> TraceProjection:
         change_id="RET-api-management",
         phase="execution",
         authoritative_batch_id="20260804-100000",
-        sources=(TraceSource(path="execution/execution-manifest.yaml", exists=True, sha256="a" * 64),),
+        sources=(TraceSource(path="execution/execution-manifest.json", exists=True, sha256="a" * 64),),
         rows=(_row(),),
         unmapped_tests=(),
         gaps=(),

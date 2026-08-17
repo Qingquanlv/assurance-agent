@@ -246,14 +246,14 @@ def test_prompt_rejects_test_promotion_delivery() -> None:
 def test_promotion_registry_patterns_are_change_relative() -> None:
     """Phase 1 vertical slice keeps promotion artifacts change-local under discovery/.
 
-    Choice: ``discovery/candidates/<id>/candidate.yaml``,
-    ``promotion-manifest.yaml``, and ``promotion-receipt.json`` (not
+    Choice: ``discovery/candidates/<id>/candidate.json``,
+    ``promotion-manifest.json``, and ``promotion-receipt.json`` (not
     ``qa/improvements/**``) so candidates, manifests, and receipts share one
     directory with the design §5.1 layout and archive as a unit.
     """
     expected = {
-        "discovery/candidates/RC-001/candidate.yaml": "discovery_regression_candidate",
-        "discovery/candidates/RC-001/promotion-manifest.yaml": "discovery_promotion_manifest",
+        "discovery/candidates/RC-001/candidate.json": "discovery_regression_candidate",
+        "discovery/candidates/RC-001/promotion-manifest.json": "discovery_promotion_manifest",
         "discovery/candidates/RC-001/promotion-receipt.json": "discovery_promotion_receipt",
     }
     for path, artifact_type in expected.items():

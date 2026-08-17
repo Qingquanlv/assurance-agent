@@ -280,7 +280,7 @@ def test_retrospective_sufficiency_on_open_counterexamples_does_not_touch_qualit
     atomic_write_bytes(path, canonical_json_bytes(yield_evidence))
 
     qg_rel = "inspect/quality-gate-result.json"
-    manifest_rel = "execution/execution-manifest.yaml"
+    manifest_rel = "execution/execution-manifest.json"
     qg_path = workspace.change_dir / qg_rel
     manifest_path = workspace.change_dir / manifest_rel
     qg_path.parent.mkdir(parents=True, exist_ok=True)

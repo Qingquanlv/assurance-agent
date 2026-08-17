@@ -202,6 +202,9 @@ class RecoverDef(_FrozenModel):
         return self
 
 
+VALIDATE_NONE = "none"
+
+
 class NodeDef(_FrozenModel):
     uses: str
     agent: str | None = None
@@ -209,6 +212,10 @@ class NodeDef(_FrozenModel):
     outputs: list[str] = Field(default_factory=list)
     evidence: dict[str, EvidenceRef] = Field(default_factory=dict)
     gate: str | None = None
+    # Class II reconciler id, or the literal "none". Missing (None) is only
+    # legal on historical/replay graphs; packaged current graphs must declare it.
+    # Aliased like ``with_``: ``validate`` collides with ``BaseModel.validate``.
+    validate_: str | None = Field(default=None, alias="validate")
     retry: str | None = None
     timeout: str | None = None
     with_: dict[str, object] = Field(default_factory=dict, alias="with")

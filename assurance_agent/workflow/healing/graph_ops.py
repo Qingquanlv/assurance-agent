@@ -7,6 +7,7 @@ import json
 
 import yaml
 
+from assurance_agent.artifacts.paths import EXECUTION_MANIFEST_REL, existing_with_alias
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure, task_with
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
@@ -67,9 +68,9 @@ def operation_allocate_healing_attempt(
     compatibility hook in ``_persist_success``; this function only produces
     workspace artifacts, optional fixer-authority output, and allocation value.
     """
-    manifest_path = workspace.change_dir / "execution" / "execution-manifest.yaml"
+    manifest_path = existing_with_alias(workspace.change_dir / "execution" / "execution-manifest.json")
     batch_id: str | None = None
-    if manifest_path.is_file():
+    if manifest_path is not None:
         try:
             doc = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         except yaml.YAMLError:
@@ -79,7 +80,7 @@ def operation_allocate_healing_attempt(
     if not batch_id:
         return task_failure(
             "invalid_input",
-            "operation:allocate-healing-attempt requires execution/execution-manifest.yaml batch_id",
+            f"operation:allocate-healing-attempt requires {EXECUTION_MANIFEST_REL} batch_id",
         )
     proposal_path = workspace.change_dir / "healing" / "fix-proposal.json"
     if not proposal_path.is_file():

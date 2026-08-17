@@ -1,7 +1,7 @@
 ---
 name: aa-archiver
 mode: all
-description: Execute the bounded AA archive phase. Never run aa gate/status or write workflow-state.yaml.
+description: Execute the bounded AA archive phase. Never run aa gate/status or write workflow-state.json.
 tools:
   task: false
   task_create: false
@@ -31,6 +31,7 @@ permission:
     "**": deny
     "**qa/cases/**": allow
     "**qa/archive/**": allow
+    "**qa/changes/**/workflow-state.json": deny
     "**qa/changes/**/workflow-state.yaml": deny
   bash:
     "*": deny
@@ -48,7 +49,7 @@ Your task is given in the `task` call that launched you. Load `aa-archive`, merg
 Rules:
 - Do not invoke MCP, Playwright, browser, session, background, or delegation tools.
 - Do NOT run `aa gate check`, `aa status`, or any other `aa` command.
-- Do NOT write or modify `workflow-state.yaml`. The orchestrator (primary agent) owns it.
+- Do NOT write or modify `workflow-state.json`. The orchestrator (primary agent) owns it.
 - Do NOT read or follow `aa-workflow/SKILL.md`. You are a phase worker, not the orchestrator.
 - Copy, never move: bash is limited to `mkdir -p` and `cp -R`/`cp -r`. Never delete or overwrite source artifacts under `qa/changes/`.
 - Write only to `qa/cases/**` (semantic case merge) and `qa/archive/**` (archived copies) per your permission floor above.

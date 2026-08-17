@@ -83,8 +83,8 @@ layers =
 ignore_imports =
     assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.eval.host_runner
     # Pending seams: graph kernel still reaches a few domain/evidence helpers.
-    assurance_agent.workflow.graph.finalize -> assurance_agent.workflow.healing.safety
-    assurance_agent.workflow.graph.finalize -> assurance_agent.workflow.issues.identity
+    assurance_agent.workflow.graph.invariants -> assurance_agent.workflow.healing.safety
+    assurance_agent.workflow.graph.invariants -> assurance_agent.workflow.issues.identity
     assurance_agent.workflow.graph.handlers.trace_projection -> assurance_agent.workflow.execution.evidence
     assurance_agent.workflow.graph.import_validation -> assurance_agent.workflow.execution.tree_hash
     assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.issues.analyzer_output

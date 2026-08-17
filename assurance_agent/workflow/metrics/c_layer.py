@@ -16,6 +16,7 @@ import yaml
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes
+from assurance_agent.artifacts.paths import DISCOVERY_CANDIDATE_NAME, existing_with_alias
 from assurance_agent.artifacts.models.c_layer import C_LAYER_METRICS_REL, CLayerMetricsDocument
 from assurance_agent.artifacts.models.coverage_gaps import COVERAGE_GAPS_REL, CoverageGapsDocument
 from assurance_agent.artifacts.models.discovery import Counterexample
@@ -117,10 +118,10 @@ def _load_promotion_feedstock(
     receipts: list[PromotionReceipt] = []
     candidates: list[RegressionCandidate] = []
     for candidate_dir in sorted(p for p in candidates_root.iterdir() if p.is_dir()):
-        cand_path = candidate_dir / "candidate.yaml"
-        if not cand_path.is_file():
+        cand_path = existing_with_alias(candidate_dir / DISCOVERY_CANDIDATE_NAME)
+        if cand_path is None:
             rel = candidate_dir.relative_to(change_dir).as_posix()
-            raise CLayerInputIntegrityError(f"{rel} is missing candidate.yaml")
+            raise CLayerInputIntegrityError(f"{rel} is missing {DISCOVERY_CANDIDATE_NAME}")
         try:
             raw = yaml.safe_load(cand_path.read_text(encoding="utf-8"))
             candidate = RegressionCandidate.model_validate(raw)

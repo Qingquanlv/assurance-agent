@@ -50,7 +50,7 @@ def make_failure_analysis(**overrides: object) -> dict:
     doc: dict = {
         "schema_version": "1.0",
         "change_id": "CH-1",
-        "source_manifest": "execution/execution-manifest.yaml",
+        "source_manifest": "execution/execution-manifest.json",
         "inspection_status": "completed",
         "batch_id": "b1",
         "source_batch_id": "b1",

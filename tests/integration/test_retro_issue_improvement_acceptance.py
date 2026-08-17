@@ -335,8 +335,8 @@ def _setup_failed_execution(change_dir: Path, *, change_id: str, batch_id: str) 
     execution_dir = change_dir / "execution"
     runs_dir = execution_dir / "runs" / batch_id
     runs_dir.mkdir(parents=True, exist_ok=True)
-    (execution_dir / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(
+    (execution_dir / "execution-manifest.json").write_text(
+        json.dumps(
             {
                 "schema_version": "1.0",
                 "change_id": change_id,

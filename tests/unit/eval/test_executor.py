@@ -58,9 +58,16 @@ def test_execute_attempt_copies_sut_tests_into_raw_output(tmp_path: Path) -> Non
     write_aa_config(sut)
     change_dir = sut / "qa" / "changes" / "eval-sample-001"
     change_dir.mkdir(parents=True)
-    (change_dir / "workflow-state.yaml").write_text(
-        "phases:\n  skill_registry_check: {status: pass}\n"
-        "run_context: {interaction_mode: autonomous, orchestrator_skill: aa-workflow}\n",
+    (change_dir / "workflow-state.json").write_text(
+        json.dumps(
+            {
+                "phases": {"skill_registry_check": {"status": "pass"}},
+                "run_context": {
+                    "interaction_mode": "autonomous",
+                    "orchestrator_skill": "aa-workflow",
+                },
+            }
+        ),
         encoding="utf-8",
     )
     tests = sut / "tests" / "api"

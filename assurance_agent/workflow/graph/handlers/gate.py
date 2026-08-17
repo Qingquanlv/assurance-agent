@@ -17,7 +17,11 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
+import yaml
+
 from assurance_agent.artifacts.policy import load_policy
+from assurance_agent.artifacts.paths import existing_with_alias
+from assurance_agent.artifacts.registry import load_registered_artifact, match_artifact
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.graph.checkpoint import fold_invocation_events
 from assurance_agent.workflow.graph.models import (
@@ -134,7 +138,7 @@ def _load_artifact_symbols(
     *,
     params: Mapping[str, object],
 ) -> dict[str, object]:
-    """按 compiled graph 的 artifact symbol 表从 task workspace 读 JSON；坏读按 MISSING 省略。"""
+    """Load compiled artifact symbols via ArtifactSpec.wire; bad reads stay MISSING."""
     graph = compiled.graphs.get(task.graph_id)
     if graph is None:
         return {}
@@ -153,9 +157,16 @@ def _load_artifact_symbols(
         base = roots.get(root)
         if base is None:
             continue
+        spec = match_artifact(rest)
+        if spec is None:
+            continue
         try:
-            variables[symbol] = json.loads((base / rest).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            path = existing_with_alias(base / rest)
+            if path is None:
+                continue
+            on_disk = rest if path.name == Path(rest).name else str(Path(rest).with_name(path.name))
+            variables[symbol] = load_registered_artifact(on_disk, path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, yaml.YAMLError, ValueError):
             continue
     return variables
 

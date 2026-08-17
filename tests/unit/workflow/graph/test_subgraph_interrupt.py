@@ -147,7 +147,7 @@ def _make_project(tmp_path: Path) -> Path:
     project = tmp_path / "proj"
     change = project / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True)
-    matrix = change / "trace" / "minimum-coverage-matrix.yaml"
+    matrix = change / "trace" / "minimum-coverage-matrix.json"
     matrix.parent.mkdir(parents=True)
     matrix.write_text("[]\n", encoding="utf-8")
     (project / "tests" / "api").mkdir(parents=True)

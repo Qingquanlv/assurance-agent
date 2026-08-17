@@ -62,5 +62,6 @@ def test_replay_receipt_registry_pattern() -> None:
     assert spec.artifact_type == "discovery_replay_attempt_receipt"
     assert spec.compat == "must_compat"
     assert spec.model is ReplayAttemptReceipt
+    assert match_artifact("discovery/counterexamples/CE-001.json") is not None
     assert match_artifact("discovery/counterexamples/CE-001.yaml") is not None
     assert match_artifact("discovery/counterexamples/CE-001/replay/attempt-0.yaml") is None

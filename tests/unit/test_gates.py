@@ -371,7 +371,7 @@ phases:
   - id: healing-rerun
     skill: null
     requires: []
-    produces: [execution/execution-manifest.yaml]
+    produces: [execution/execution-manifest.json]
     gate: fixer-safety-gate
 gates:
   fixer-safety-gate:

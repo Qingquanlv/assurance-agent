@@ -9,6 +9,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from assurance_agent.artifacts.paths import EXECUTION_MANIFEST_NAME
 from assurance_agent.artifacts.models import (
     CoverageGapEntry,
     FailureAnalysis,
@@ -92,7 +93,7 @@ def inspect_change(
             performance=evidence.performance,
         )
 
-    manifest_path = str(execution_dir / "execution-manifest.yaml")
+    manifest_path = str(execution_dir / EXECUTION_MANIFEST_NAME)
 
     if evidence.integrity_issues:
         integrity = _integrity_failures(evidence)

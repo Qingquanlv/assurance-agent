@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 from assurance_agent.artifacts.models.metrics import PR_METRICS_REL
 from assurance_agent.artifacts.models.pr_metric_evidence import BaselineDriftEvidence
@@ -87,10 +86,10 @@ def _write_perf(
     change = project_root / "qa" / "changes" / CHANGE_ID
     batch = change / "execution" / "runs" / batch_id
     batch.mkdir(parents=True, exist_ok=True)
-    manifest = change / "execution" / "execution-manifest.yaml"
+    manifest = change / "execution" / "execution-manifest.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
-        yaml.safe_dump(
+        json.dumps(
             {
                 "schema_version": "1.0",
                 "change_id": CHANGE_ID,
@@ -306,10 +305,10 @@ def test_mixed_cold_warm_scenarios_are_whole_metric_not_evaluated(tmp_path: Path
     change = change_dir
     batch = change / "execution" / "runs" / SOURCE_BATCH
     batch.mkdir(parents=True, exist_ok=True)
-    manifest = change / "execution" / "execution-manifest.yaml"
+    manifest = change / "execution" / "execution-manifest.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
-        yaml.safe_dump(
+        json.dumps(
             {
                 "schema_version": "1.0",
                 "change_id": CHANGE_ID,

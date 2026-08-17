@@ -114,8 +114,8 @@ def test_operation_writes_minimum_coverage_result(tmp_path: Path) -> None:
     change_dir = project_root / "qa" / "changes" / CHANGE_ID
     change_dir.mkdir(parents=True, exist_ok=True)
     (change_dir / "trace").mkdir(parents=True)
-    (change_dir / "trace" / "minimum-coverage-matrix.yaml").write_text(
-        yaml.safe_dump(
+    (change_dir / "trace" / "minimum-coverage-matrix.json").write_text(
+        json.dumps(
             [
                 {
                     "mrc_id": "MRC-API-001",
@@ -136,8 +136,7 @@ def test_operation_writes_minimum_coverage_result(tmp_path: Path) -> None:
                     "category": "negative",
                     "layer": "api",
                 },
-            ],
-            sort_keys=False,
+            ]
         ),
         encoding="utf-8",
     )
@@ -182,8 +181,8 @@ def test_operation_fail_open_when_projection_missing(tmp_path: Path) -> None:
     change_dir = project_root / "qa" / "changes" / CHANGE_ID
     change_dir.mkdir(parents=True, exist_ok=True)
     (change_dir / "trace").mkdir(parents=True)
-    (change_dir / "trace" / "minimum-coverage-matrix.yaml").write_text(
-        yaml.safe_dump(
+    (change_dir / "trace" / "minimum-coverage-matrix.json").write_text(
+        json.dumps(
             [
                 {
                     "mrc_id": "MRC-API-001",
@@ -215,8 +214,8 @@ def test_operation_fail_closed_when_category_unresolved(tmp_path: Path) -> None:
     change_dir = project_root / "qa" / "changes" / CHANGE_ID
     change_dir.mkdir(parents=True, exist_ok=True)
     (change_dir / "trace").mkdir(parents=True)
-    (change_dir / "trace" / "minimum-coverage-matrix.yaml").write_text(
-        yaml.safe_dump(
+    (change_dir / "trace" / "minimum-coverage-matrix.json").write_text(
+        json.dumps(
             [
                 {
                     "mrc_id": "missing_required_fields",

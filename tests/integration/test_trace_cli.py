@@ -70,9 +70,9 @@ def _write_manifest(change_dir: Path, change_id: str) -> None:
         "test_files_sha256": {},
         "final_status": "PASS",
     }
-    path = change_dir / "execution" / "execution-manifest.yaml"
+    path = change_dir / "execution" / "execution-manifest.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    path.write_text(json.dumps(document), encoding="utf-8")
 
 
 def _write_unmapped_only_result(change_dir: Path, change_id: str) -> None:
@@ -276,7 +276,7 @@ def test_only_gaps_json_outputs_gap_list_directly() -> None:
         assert result.exit_code == 0, result.output
         doc = json.loads(result.stdout)
         assert isinstance(doc, list)
-        # no execution/execution-manifest.yaml was written -> manifest_missing gap.
+        # no execution/execution-manifest.json was written -> manifest_missing gap.
         assert any(gap["code"] == "manifest_missing" for gap in doc)
 
 

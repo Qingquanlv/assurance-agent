@@ -22,7 +22,7 @@ implement the selected cases.
 - `change:plans/api-plan.md`
 - `change:plans/api-test-data-plan.md`
 - `change:plans/api-codegen-plan.md`
-- `change:plans/api-codegen-mapping.yaml`
+- `change:plans/api-codegen-mapping.json`
 - `change:plans/m3-review-summary.md`
 - `change:review/api-plan-review.json`
 - `change:cases/**/case.yaml`
@@ -63,7 +63,7 @@ Do not run pytest or invent collection evidence.
 ## Generated-files Manifest Rules
 
 - Only `test_entry` entries may claim mapped Case IDs, and their `case_ids` must
-  exactly match the codegen mapping (`plans/api-codegen-mapping.yaml`) for that path.
+  exactly match the codegen mapping (`plans/api-codegen-mapping.json`) for that path.
 - Every `support` and `shared_builder` entry must use `case_ids: []`.
 - Use `generated` only for a newly added file and `updated` only for a file whose
   content this invocation changed.

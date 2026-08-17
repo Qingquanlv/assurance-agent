@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import yaml
-
 
 def make_attempt(root: Path, *, stdout: str = "", stderr: str = "", execution: dict | None = None) -> Path:
     attempt = root / "attempt-0"
@@ -31,8 +29,8 @@ def write_review(attempt: Path, decision: str) -> None:
 
 
 def write_state(attempt: Path, case_status: str = "done") -> None:
-    (attempt / "raw-output" / "workflow-state.yaml").write_text(
-        yaml.safe_dump({"phases": {"case_design": {"status": case_status}}}),
+    (attempt / "raw-output" / "workflow-state.json").write_text(
+        json.dumps({"phases": {"case_design": {"status": case_status}}}),
         encoding="utf-8",
     )
 
@@ -49,8 +47,8 @@ def write_layer_result(attempt: Path, layer: str, passed: int, total: int, statu
 def write_manifest(attempt: Path, final_status: str, selected: list[str]) -> None:
     ex = attempt / "raw-output" / "execution"
     ex.mkdir(parents=True, exist_ok=True)
-    (ex / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(
+    (ex / "execution-manifest.json").write_text(
+        json.dumps(
             {
                 "schema_version": "1.0",
                 "change_id": "eval-sample-001",

@@ -13,7 +13,7 @@ Review performance plans and emit a PlanReview document. This layer is human-onl
 
 - `change:plans/performance-plan.md`
 - `change:plans/performance-codegen-plan.md`
-- `change:plans/performance-codegen-mapping.yaml`
+- `change:plans/performance-codegen-mapping.json`
 - `change:plans/performance-review-summary.md`
 - `change:review/performance-plan-checks.json`
 - `change:cases/**/case.yaml`

@@ -5,7 +5,7 @@ description: >
   Front-desk intake host for AA two-stage workflow. Clarifies requirements,
   runs aa-intake dialogue, calls workflow_start after user confirmation, and
   handles human decisions and workflow continuation. Must not edit test code
-  or freely rewrite workflow-state.yaml.
+  or freely rewrite workflow-state.json.
 tools:
   task: false
   task_create: false
@@ -38,6 +38,7 @@ permission:
     "**qa/changes/**/proposal.md": allow
     "**qa/changes/**/.qa.yaml": allow
     "**qa/changes/**/facts/**": allow
+    "**qa/changes/**/workflow-state.json": deny
     "**qa/changes/**/workflow-state.yaml": deny
     "**tests/**": deny
   bash:
@@ -66,6 +67,6 @@ You are the **front-desk intake host** for the AA QA workflow (Manus-style chat 
 
 - Do not invoke MCP, Playwright, browser, session, background, or delegation tools.
 - Do NOT edit `tests/**` or product code.
-- Do NOT hand-edit `workflow-state.yaml` (driver / state CLI own it).
+- Do NOT hand-edit `workflow-state.json` (driver / state CLI own it).
 - Do NOT run `aa run`, codegen, or healing yourself — that is the driver's job after `workflow_start`.
 - Do NOT invent a pass on review JSON; use `aa decide` only after the user decides.

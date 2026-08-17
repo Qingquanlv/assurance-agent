@@ -92,8 +92,8 @@ def test_confirmed_ce_to_observation_stable_id() -> None:
     assert obs_a.observation_id == obs_b.observation_id
     assert obs_a.kind == "anomaly"
     assert obs_a.target == "api"
-    assert obs_a.evidence_refs == ["discovery/counterexamples/CE-auth-tenant-001.yaml"]
-    assert obs_a.source.artifact == "discovery/counterexamples/CE-auth-tenant-001.yaml"
+    assert obs_a.evidence_refs == ["discovery/counterexamples/CE-auth-tenant-001.json"]
+    assert obs_a.source.artifact == "discovery/counterexamples/CE-auth-tenant-001.json"
     assert obs_a.signature
     assert obs_a.observed_at == "2026-08-05T00:00:00Z"
 

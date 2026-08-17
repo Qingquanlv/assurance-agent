@@ -11,6 +11,7 @@ from typing import Any, Literal
 import yaml
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
+from assurance_agent.artifacts.paths import existing_with_alias
 from assurance_agent.artifacts.models.generated_files import GeneratedFilesV1
 from assurance_agent.artifacts.models.healing_codegen import (
     ApiCodegenFixApplyIntentV1,
@@ -1200,8 +1201,8 @@ def _safety_flags_from_params(
 
 
 def load_manifest_batch_id(change_dir: Path) -> str | None:
-    manifest_path = change_dir / "execution" / "execution-manifest.yaml"
-    if not manifest_path.is_file():
+    manifest_path = existing_with_alias(change_dir / "execution" / "execution-manifest.json")
+    if manifest_path is None:
         return None
     try:
         doc = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))

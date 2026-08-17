@@ -16,6 +16,12 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
+from assurance_agent.artifacts.paths import (
+    DISCOVERY_CAMPAIGN_RESULT_REL,
+    DISCOVERY_CANDIDATE_NAME,
+    discovery_receipt_files,
+    existing_with_alias,
+)
 from assurance_agent.artifacts.models.coverage_gaps import (
     CoverageGap,
     CoverageGapLocator,
@@ -412,8 +418,8 @@ def _read_discovery_record(
         change_dir = resolve_change(project_root, change_id, prefer="archive").path
     except ChangeNotFoundError:
         return None, _discovery_gap_reason(change_id, "missing")
-    campaign_path = change_dir / "discovery" / "campaign-result.yaml"
-    if not campaign_path.is_file():
+    campaign_path = existing_with_alias(change_dir / DISCOVERY_CAMPAIGN_RESULT_REL)
+    if campaign_path is None:
         return None, _discovery_gap_reason(change_id, "missing")
     try:
         campaign_model, campaign_bytes = _read_yaml_model(campaign_path, CampaignResult)
@@ -426,7 +432,7 @@ def _read_discovery_record(
         ce_digests: list[str] = []
         ce_root = change_dir / "discovery" / "counterexamples"
         if ce_root.is_dir():
-            for path in sorted((*ce_root.glob("*.yaml"), *ce_root.glob("*.yml"))):
+            for path in discovery_receipt_files(ce_root):
                 ce_model, raw = _read_yaml_model(path, Counterexample)
                 assert isinstance(ce_model, Counterexample)
                 if ce_model.campaign_id != campaign.campaign_id:
@@ -444,8 +450,8 @@ def _read_discovery_record(
         candidate_root = change_dir / "discovery" / "candidates"
         if candidate_root.is_dir():
             for candidate_dir in sorted(path for path in candidate_root.iterdir() if path.is_dir()):
-                candidate_path = candidate_dir / "candidate.yaml"
-                if candidate_path.is_file():
+                candidate_path = existing_with_alias(candidate_dir / DISCOVERY_CANDIDATE_NAME)
+                if candidate_path is not None:
                     candidate_model, _ = _read_yaml_model(candidate_path, RegressionCandidate)
                     assert isinstance(candidate_model, RegressionCandidate)
                     candidates.append(candidate_model)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 from typing import get_args
 
@@ -459,8 +461,17 @@ def test_allowed_files_only_include_targets_selected_for_the_rerun(tmp_path: Pat
         "| TC_E2E_001 | `tests/e2e/test_management.py` |\n",
         encoding="utf-8",
     )
-    (change_dir / "workflow-state.yaml").write_text(
-        "selected_targets: {api: true, e2e: false, fuzz: false, performance: false}\n",
+    (change_dir / "workflow-state.json").write_text(
+        json.dumps(
+            {
+                "selected_targets": {
+                    "api": True,
+                    "e2e": False,
+                    "fuzz": False,
+                    "performance": False,
+                }
+            }
+        ),
         encoding="utf-8",
     )
     _write_gaps(

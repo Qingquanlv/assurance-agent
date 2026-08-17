@@ -15,6 +15,8 @@ from pydantic import BaseModel, ConfigDict
 
 from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.artifacts.policy import load_policy
+from assurance_agent.artifacts.paths import existing_with_alias
+from assurance_agent.artifacts.registry import parse_wire, resolve_artifact
 from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
 from assurance_agent.knowledge.capabilities import capabilities_present as check_capabilities_present
@@ -129,18 +131,38 @@ def resolve_change_path(loc: ChangeLocation, rel: str) -> Path:
 _resolve_path = resolve_change_path
 
 
+def _parse_gate_document(rel: str, text: str) -> object:
+    """Registered artifacts follow ArtifactSpec.wire; unregistered gate reads stay suffix-based."""
+    found = resolve_artifact(rel)
+    if found is not None:
+        _spec, wire = found
+        return parse_wire(wire, text)
+    if rel.endswith((".yaml", ".yml")):
+        return yaml.safe_load(text)
+    return json.loads(text)
+
+
 def _load_doc(loc: ChangeLocation, rel: str) -> tuple[bool, bool, object]:
     """returns (present, parse_error, value)."""
-    path = _resolve_path(loc, rel)
-    if not path.exists():
+    path = existing_with_alias(_resolve_path(loc, rel))
+    if path is None:
         return False, False, None
     try:
         text = path.read_text(encoding="utf-8")
-        if rel.endswith((".yaml", ".yml")):
-            return True, False, yaml.safe_load(text)
-        return True, False, json.loads(text)
+        return True, False, _parse_gate_document(_gate_rel_for_path(rel, path), text)
     except (json.JSONDecodeError, yaml.YAMLError, ValueError):
         return True, True, None
+
+
+def _gate_rel_for_path(declared_rel: str, path: Path) -> str:
+    """Prefer the on-disk filename so historical YAML aliases parse as YAML."""
+    declared = Path(declared_rel.replace("\\", "/"))
+    if path.name == declared.name:
+        return declared_rel
+    parent = declared.parent
+    if parent.as_posix() in {".", ""}:
+        return path.name
+    return f"{parent.as_posix()}/{path.name}"
 
 
 def _scope_state(state: WorkflowState) -> dict:
@@ -289,7 +311,7 @@ def _adjudicate_base(
         return gate.missing_field_is, "missing_field"
 
     # Step 5 — missing_file_is
-    any_missing = any(not _resolve_path(loc, r.path).exists() for r in gate.reads)
+    any_missing = any(existing_with_alias(_resolve_path(loc, r.path)) is None for r in gate.reads)
     if any_missing and gate.missing_file_is:
         return gate.missing_file_is, "missing_file"
 
@@ -949,6 +971,15 @@ def resolve_view_path(
     return context.change_dir / normalized
 
 
+def _existing_view_path(
+    context: GateEvaluationContext,
+    rel: str,
+    *,
+    params: Mapping[str, object] | None = None,
+) -> Path | None:
+    return existing_with_alias(resolve_view_path(context, rel, params=params))
+
+
 def check_gate_in_view(
     gates: Mapping[str, GateDef],
     gate_id: str,
@@ -974,14 +1005,12 @@ def _load_view_doc(context: GateEvaluationContext, rel: str) -> tuple[bool, bool
     """``_load_doc`` 的 view 版本：returns (present, parse_error, value)。"""
     if rel in context.artifact_overrides:
         return True, False, context.artifact_overrides[rel]
-    path = resolve_view_path(context, rel)
-    if not path.exists():
+    path = _existing_view_path(context, rel)
+    if path is None:
         return False, False, None
     try:
         text = path.read_text(encoding="utf-8")
-        if rel.endswith((".yaml", ".yml")):
-            return True, False, yaml.safe_load(text)
-        return True, False, json.loads(text)
+        return True, False, _parse_gate_document(_gate_rel_for_path(rel, path), text)
     except (json.JSONDecodeError, yaml.YAMLError, ValueError):
         return True, True, None
 
@@ -1062,7 +1091,7 @@ def _view_scope(
     }
 
     def file_exists(rel: str) -> bool:
-        return resolve_view_path(context, rel).exists()
+        return _existing_view_path(context, rel) is not None
 
     def gate_verdict(gid: str) -> str:
         return _view_gate_verdict(context, gid, gates=gates, stack=stack, memo=memo)
@@ -1112,7 +1141,8 @@ def _audited_reads_sha256(gate: GateDef, context: GateEvaluationContext) -> dict
     for entry in gate.reads:
         if not is_audited_gate_read(entry.path):
             continue
-        digest = sha256_file(resolve_view_path(context, entry.path))
+        found = _existing_view_path(context, entry.path)
+        digest = sha256_file(found) if found is not None else None
         if digest is not None:
             hashes[entry.path] = digest
     return hashes
@@ -1369,7 +1399,7 @@ def _evaluate_gate_def_base(
         )
 
     # Step 5 — missing_file_is
-    any_missing = any(not resolve_view_path(context, entry.path).exists() for entry in gate.reads)
+    any_missing = any(_existing_view_path(context, entry.path) is None for entry in gate.reads)
     if any_missing and gate.missing_file_is:
         return (
             gate.missing_file_is,

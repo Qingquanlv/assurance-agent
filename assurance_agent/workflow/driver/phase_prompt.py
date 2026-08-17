@@ -13,6 +13,7 @@ contract 授权写范围，不再宣称每个 phase 只能写 change 目录。v1
 from collections.abc import Sequence
 from pathlib import Path
 
+from assurance_agent.artifacts.paths import WORKFLOW_STATE_REL
 from assurance_agent.workflow.graph.agent_api import build_node_prompt
 from assurance_agent.workflow.skill_memory import load_skill_memory
 
@@ -66,5 +67,5 @@ def build_phase_prompt(
         f"{fix_proposal_binding}"
         f"{item_binding}"
         f"{memory_clause} "
-        f"Do NOT run aa gate/status. Do NOT modify workflow-state.yaml."
+        f"Do NOT run aa gate/status. Do NOT modify {WORKFLOW_STATE_REL}."
     )

@@ -1,5 +1,6 @@
 """aa state configure — pre-run convenience; apply/heal removed with v1."""
 
+import json
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -8,19 +9,20 @@ from assurance_agent.cli import main
 from assurance_agent.workflow.core.events import append_event_best_effort
 from tests.helpers_aa import write_aa_config
 
-STATE = """schema_version: "1"
-params: {}
-phases:
-  healing:
-    status: in_progress
-"""
+STATE = json.dumps(
+    {
+        "schema_version": "1",
+        "params": {},
+        "phases": {"healing": {"status": "in_progress"}},
+    }
+)
 
 
 def make_change(change_id: str = "CH-1") -> Path:
     write_aa_config(Path.cwd())
     change_dir = Path("qa/changes") / change_id
     (change_dir / "review").mkdir(parents=True)
-    (change_dir / "workflow-state.yaml").write_text(STATE, encoding="utf-8")
+    (change_dir / "workflow-state.json").write_text(STATE, encoding="utf-8")
     return change_dir
 
 
@@ -54,7 +56,7 @@ def test_state_configure_merges_params_and_stamps_run_context() -> None:
             ],
         )
         assert result.exit_code == 0, result.output
-        state = yaml.safe_load((change_dir / "workflow-state.yaml").read_text())
+        state = yaml.safe_load((change_dir / "workflow-state.json").read_text())
         assert state["params"] == {"run_mode": "api-only", "max_healing_attempts": 2}
         assert state["run_context"]["orchestrator_skill"] == "aa-execute"
         assert state["run_context"]["interaction_mode"] == "autonomous"
@@ -109,7 +111,7 @@ def test_state_configure_intake_stamps_interactive_context() -> None:
             ],
         )
         assert result.exit_code == 0, result.output
-        state = yaml.safe_load((change_dir / "workflow-state.yaml").read_text())
+        state = yaml.safe_load((change_dir / "workflow-state.json").read_text())
         assert state["run_context"]["interaction_mode"] == "interactive"
         assert state["run_context"]["active_scope"] == "intake"
 
@@ -135,7 +137,7 @@ def test_state_configure_unknown_param_key_exits_1_without_write() -> None:
         )
         assert result.exit_code == 1
         assert 'unknown param "bogus"' in result.output
-        state = yaml.safe_load((change_dir / "workflow-state.yaml").read_text())
+        state = yaml.safe_load((change_dir / "workflow-state.json").read_text())
         assert state["params"] == {}
         assert "run_context" not in state
 

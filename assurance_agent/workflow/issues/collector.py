@@ -37,6 +37,7 @@ from typing import Callable
 import yaml
 
 from assurance_agent.artifacts.models.execution import ExecutionManifest
+from assurance_agent.artifacts.paths import EXECUTION_MANIFEST_REL, existing_with_alias
 from assurance_agent.artifacts.models.issues import (
     IssueEvidenceManifest,
     IssueEvidenceManifestEntry,
@@ -681,20 +682,20 @@ def collect_observations(
     # ------------------------------------------------------------------
     # 1. Load the authoritative execution manifest (hard failure if missing)
     # ------------------------------------------------------------------
-    manifest_path = execution_dir / "execution-manifest.yaml"
-    if not manifest_path.is_file():
+    manifest_path = existing_with_alias(execution_dir / "execution-manifest.json")
+    if manifest_path is None:
         raise EvidenceError(
-            "execution/execution-manifest.yaml not found; cannot collect observations. Run `aa run` first."
+            f"{EXECUTION_MANIFEST_REL} not found; cannot collect observations. Run `aa run` first."
         )
     try:
         raw_manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         manifest = ExecutionManifest.model_validate(raw_manifest)
     except Exception as exc:
-        raise EvidenceError(f"execution/execution-manifest.yaml invalid: {exc}") from exc
+        raise EvidenceError(f"{EXECUTION_MANIFEST_REL} invalid: {exc}") from exc
 
     batch_id = manifest.batch_id
     # Anchor evidence path (always in manifest, relative to change_dir)
-    manifest_rel = "execution/execution-manifest.yaml"
+    manifest_rel = EXECUTION_MANIFEST_REL
 
     observations: list[Observation] = []
     incomplete_signals: list[str] = []

@@ -76,8 +76,8 @@ def change_dir(tmp_path: Path) -> Path:
     (tmp_path / "tests" / "e2e").mkdir(parents=True)
     change = tmp_path / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True)
-    (change / "workflow-state.yaml").write_text(
-        "selected_targets:\n  api: true\n  e2e: true\n  fuzz: false\n  performance: false\n",
+    (change / "workflow-state.json").write_text(
+        json.dumps({"selected_targets": {"api": True, "e2e": True, "fuzz": False, "performance": False}}),
         encoding="utf-8",
     )
     return change
@@ -91,7 +91,7 @@ def test_run_change_all_pass_final_status_pass(tmp_path: Path, change_dir: Path,
     assert manifest.final_status == "PASS"
     assert manifest.selected_targets.api is True
     assert (change_dir / "execution" / "runs" / "20260715-000000" / "api-result.json").is_file()
-    assert (change_dir / "execution" / "execution-manifest.yaml").is_file()
+    assert (change_dir / "execution" / "execution-manifest.json").is_file()
 
 
 def test_run_change_api_fail_final_status_fail(tmp_path: Path, change_dir: Path, monkeypatch) -> None:
@@ -147,8 +147,8 @@ def test_run_change_scopes_fuzz_to_codegen_target_files(
     dept.write_text("", encoding="utf-8")
     user.write_text("", encoding="utf-8")
     adapter.write_text("", encoding="utf-8")
-    (change_dir / "workflow-state.yaml").write_text(
-        "selected_targets:\n  api: false\n  e2e: false\n  fuzz: true\n  performance: false\n",
+    (change_dir / "workflow-state.json").write_text(
+        json.dumps({"selected_targets": {"api": False, "e2e": False, "fuzz": True, "performance": False}}),
         encoding="utf-8",
     )
     plans = change_dir / "plans"
@@ -182,8 +182,8 @@ def test_run_change_fails_instead_of_full_fuzz_fallback_for_scoped_empty_plan(
     fuzz_dir = tmp_path / "tests" / "fuzz"
     fuzz_dir.mkdir(parents=True)
     (fuzz_dir / "test_history_fuzz.py").write_text("", encoding="utf-8")
-    (change_dir / "workflow-state.yaml").write_text(
-        "selected_targets:\n  api: false\n  e2e: false\n  fuzz: true\n  performance: false\n",
+    (change_dir / "workflow-state.json").write_text(
+        json.dumps({"selected_targets": {"api": False, "e2e": False, "fuzz": True, "performance": False}}),
         encoding="utf-8",
     )
     plans = change_dir / "plans"
@@ -217,8 +217,8 @@ def test_run_change_scopes_performance_to_codegen_target_files(
     user = perf_dir / "locustfile_user.py"
     dept.write_text("", encoding="utf-8")
     user.write_text("", encoding="utf-8")
-    (change_dir / "workflow-state.yaml").write_text(
-        "selected_targets:\n  api: false\n  e2e: false\n  fuzz: false\n  performance: true\n",
+    (change_dir / "workflow-state.json").write_text(
+        json.dumps({"selected_targets": {"api": False, "e2e": False, "fuzz": False, "performance": True}}),
         encoding="utf-8",
     )
     plans = change_dir / "plans"
@@ -271,8 +271,8 @@ def test_run_change_fails_when_mapped_performance_locustfile_is_missing(
     tmp_path: Path, change_dir: Path, monkeypatch
 ) -> None:
     (tmp_path / "tests" / "perf").mkdir(parents=True)
-    (change_dir / "workflow-state.yaml").write_text(
-        "selected_targets:\n  api: false\n  e2e: false\n  fuzz: false\n  performance: true\n",
+    (change_dir / "workflow-state.json").write_text(
+        json.dumps({"selected_targets": {"api": False, "e2e": False, "fuzz": False, "performance": True}}),
         encoding="utf-8",
     )
     plans = change_dir / "plans"
@@ -323,8 +323,8 @@ def test_run_change_missing_test_dirs_all_skipped(tmp_path: Path, monkeypatch) -
 
     change = tmp_path / "qa" / "changes" / "CH-2"
     change.mkdir(parents=True)
-    (change / "workflow-state.yaml").write_text(
-        "selected_targets:\n  api: true\n  e2e: false\n  fuzz: false\n  performance: false\n",
+    (change / "workflow-state.json").write_text(
+        json.dumps({"selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False}}),
         encoding="utf-8",
     )
     manifest = run_change(tmp_path, change, make_config())

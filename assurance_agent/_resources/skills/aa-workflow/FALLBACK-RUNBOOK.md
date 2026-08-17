@@ -55,4 +55,4 @@ OpenCode `workflow_start` accepts `entrypoint: full | intake | execute | case` (
 ## Eval / fixtures
 
 Mid-graph eval enters only through a hash-complete `.graph-runtime/import-manifest.yaml`
-produced by fixture seeding. Bare `workflow-state.yaml` phase markers are never authority.
+produced by fixture seeding. Bare `workflow-state.json` phase markers are never authority.

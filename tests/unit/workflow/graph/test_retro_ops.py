@@ -147,7 +147,7 @@ def _write_terminal_archived_change(
         },
     ]
     (root / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
-    (root / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
+    (root / "workflow-state.json").write_text(json.dumps({"phases": {}}), encoding="utf-8")
     return root
 
 

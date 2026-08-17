@@ -47,7 +47,7 @@ def test_build_phase_prompt_binds_skill_and_change() -> None:
     assert "change_id='CH-1'" in prompt
     assert "qa/changes/CH-1/" in prompt
     assert "phase explore" in prompt
-    assert "Do NOT modify workflow-state.yaml" in prompt
+    assert "Do NOT modify workflow-state.json" in prompt
 
 
 def test_build_phase_prompt_fix_proposal_binding_only_for_that_phase() -> None:

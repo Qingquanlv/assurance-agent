@@ -7,7 +7,7 @@ from assurance_agent.verification.contract_render import render_output_contract
 from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2
 
 
-MATRIX_OUTPUT = "change:trace/minimum-coverage-matrix.yaml"
+MATRIX_OUTPUT = "change:trace/minimum-coverage-matrix.json"
 
 
 def test_case_design_declares_the_mrc_matrix_as_an_output() -> None:
@@ -22,7 +22,7 @@ def test_case_design_prompt_declares_unique_mrc_row_identity() -> None:
 
     clause = render_output_contract(outputs)
 
-    assert "trace/minimum-coverage-matrix.yaml must be a MinimumCoverageMatrix" in clause
+    assert "trace/minimum-coverage-matrix.json must be a MinimumCoverageMatrix" in clause
     assert "mrc_id and key must each be unique across the entire matrix" in clause
 
 

@@ -30,7 +30,7 @@ from assurance_agent.workflow.core.state import read_state, state_file, state_gu
 
 LOCK_FILENAME = ".progression.lock"
 _RUNTIME_REL_PREFIX = ".graph-runtime/"
-_RESERVED_RELS = frozenset({"events.jsonl", "workflow-state.yaml", LOCK_FILENAME})
+_RESERVED_RELS = frozenset({"events.jsonl", "workflow-state.json", "workflow-state.yaml", LOCK_FILENAME})
 # Shared with lease registry; nested subgraphs + 50ms test heartbeats can contend.
 _DEFAULT_LOCK_TIMEOUT_S = 5.0
 _LOCK_POLL_S = 0.01

@@ -12,6 +12,7 @@ from typing import Literal, Mapping
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from assurance_agent.artifacts.paths import EXECUTION_MANIFEST_REL, existing_with_alias
 from assurance_agent.artifacts.canonical import canonical_json_bytes as canonical_artifact_json_bytes
 from assurance_agent.artifacts.batch_id import parse_batch_id
 from assurance_agent.artifacts.models import SelectedTargets
@@ -40,8 +41,8 @@ from assurance_agent.evidence.tree_scan import TreeScanResult, scan_test_tree
 
 _TREE_DIGEST_SOURCE = "tests/#tree-digest"
 
-_FOLD_VIEW_SOURCE = "execution/execution-manifest.yaml#fold-view"
-_MANIFEST_PATH = "execution/execution-manifest.yaml"
+_FOLD_VIEW_SOURCE = f"{EXECUTION_MANIFEST_REL}#fold-view"
+_MANIFEST_PATH = EXECUTION_MANIFEST_REL
 _PYTEST_TARGETS = ("api", "e2e", "fuzz")
 _ALL_TARGETS = ("api", "e2e", "fuzz", "performance")
 _STATUS_RANK = {"skipped": 0, "passed": 1, "failed": 2}
@@ -289,7 +290,7 @@ def _resolve_current_batch(
     gaps: list[TraceGapV2],
     sources: TraceSourceRecorder,
 ) -> _CurrentBatchView:
-    manifest_path = change_dir / _MANIFEST_PATH
+    manifest_path = existing_with_alias(change_dir / _MANIFEST_PATH)
     if current is not None:
         return _CurrentBatchView(
             batch_id=current.batch_id,
@@ -299,8 +300,8 @@ def _resolve_current_batch(
             manifest_exists=True,
         )
 
-    if not manifest_path.is_file():
-        return _missing_current_view(gaps, f"{manifest_path.name} not found")
+    if manifest_path is None:
+        return _missing_current_view(gaps, f"{Path(_MANIFEST_PATH).name} not found")
 
     raw = _read_yaml_mapping(manifest_path)
     if raw is None:
@@ -456,13 +457,13 @@ def _load_batch_from_disk(
     sources: TraceSourceRecorder,
 ) -> _BatchExecution | None:
     batch_id = batch_dir.name
-    manifest_path = batch_dir / "execution-manifest.yaml"
+    manifest_path = existing_with_alias(batch_dir / "execution-manifest.json")
     executed_at = None
-    if manifest_path.is_file():
+    if manifest_path is not None:
         if batch_id != current.batch_id:
             sources.add(
                 _file_source(
-                    f"execution/runs/{batch_id}/execution-manifest.yaml",
+                    f"execution/runs/{batch_id}/{manifest_path.name}",
                     manifest_path,
                 )
             )

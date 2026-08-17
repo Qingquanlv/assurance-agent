@@ -27,6 +27,7 @@ loads each selected target result, and flags selected-but-missing results as
 integrity issues.
 """
 
+import json
 import os
 import threading
 from datetime import datetime
@@ -41,6 +42,7 @@ from assurance_agent.artifacts.models import (
     QualityGateResultLike,
     SelectedTargets,
 )
+from assurance_agent.artifacts.paths import EXECUTION_MANIFEST_NAME, existing_with_alias
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.execution.results import (
     CoverageResult,
@@ -137,7 +139,7 @@ def _write_json(path: Path, model: BaseModel) -> None:
 
 
 def _write_manifest(path: Path, manifest: ExecutionManifest) -> None:
-    _atomic_write_text(path, yaml.safe_dump(manifest.model_dump(mode="json"), sort_keys=False))
+    _write_json(path, manifest)
 
 
 def publish_target_results(
@@ -224,9 +226,9 @@ def publish_execution_manifest(
         product_tree_sha256=product_tree_sha256,
         final_status=quality_gate.final_status,
     )
-    _write_manifest(batch_dir / "execution-manifest.yaml", manifest)
+    _write_manifest(batch_dir / "execution-manifest.json", manifest)
 
-    _write_manifest(execution_dir / "execution-manifest.yaml", manifest)
+    _write_manifest(execution_dir / "execution-manifest.json", manifest)
     _refresh_latest_copies(execution_dir, batch_dir, result_files)
     return manifest
 
@@ -342,17 +344,20 @@ def load_execution_evidence(
 ) -> ExecutionEvidence:
     if batch_id is not None and not is_valid_batch_id(batch_id):
         raise EvidenceError(f"unsafe execution batch id: {batch_id!r}")
-    manifest_path = (
-        execution_dir / "execution-manifest.yaml"
+    declared = (
+        execution_dir / EXECUTION_MANIFEST_NAME
         if batch_id is None
-        else execution_dir / "runs" / batch_id / "execution-manifest.yaml"
+        else execution_dir / "runs" / batch_id / EXECUTION_MANIFEST_NAME
     )
-    if not manifest_path.is_file():
-        raise EvidenceError(f"execution-manifest.yaml not found under {execution_dir}. Run `aa run` first.")
+    manifest_path = existing_with_alias(declared)
+    if manifest_path is None:
+        raise EvidenceError(f"{EXECUTION_MANIFEST_NAME} not found under {execution_dir}. Run `aa run` first.")
     try:
-        manifest = ExecutionManifest.model_validate(yaml.safe_load(manifest_path.read_text(encoding="utf-8")))
+        text = manifest_path.read_text(encoding="utf-8")
+        payload = json.loads(text) if manifest_path.suffix == ".json" else yaml.safe_load(text)
+        manifest = ExecutionManifest.model_validate(payload)
     except (OSError, ValueError, yaml.YAMLError) as err:
-        raise EvidenceError(f"execution-manifest.yaml invalid: {err}") from err
+        raise EvidenceError(f"{manifest_path.name} invalid: {err}") from err
 
     if not is_valid_batch_id(manifest.batch_id):
         raise EvidenceError(f"unsafe manifest batch id: {manifest.batch_id!r}")

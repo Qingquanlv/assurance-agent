@@ -80,6 +80,7 @@ _EXCLUDED_DIRS = frozenset(
 _EXCLUDED_FILES = frozenset(
     {
         "events.jsonl",
+        "workflow-state.json",
         "workflow-state.yaml",
         "running-tasks.json",
         ".progression.lock",

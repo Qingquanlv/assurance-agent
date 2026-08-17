@@ -175,9 +175,16 @@ def _seed_fixture_project(tmp_path: Path) -> tuple[Path, Path]:
     sample = fixtures / "samples" / "eval-sample-001"
     sample.mkdir(parents=True)
     (sample / "proposal.md").write_text("# proposal\n", encoding="utf-8")
-    (sample / "workflow-state.yaml").write_text(
-        "phases:\n  skill_registry_check: {status: pass}\n"
-        "run_context: {interaction_mode: autonomous, orchestrator_skill: aa-workflow}\n",
+    (sample / "workflow-state.json").write_text(
+        json.dumps(
+            {
+                "phases": {"skill_registry_check": {"status": "pass"}},
+                "run_context": {
+                    "interaction_mode": "autonomous",
+                    "orchestrator_skill": "aa-workflow",
+                },
+            }
+        ),
         encoding="utf-8",
     )
     review = sample / "review"
@@ -202,7 +209,7 @@ def _seed_fixture_project(tmp_path: Path) -> tuple[Path, Path]:
                 "name": "L2-codegen-seed",
                 "paths": [
                     "proposal.md",
-                    "workflow-state.yaml",
+                    "workflow-state.json",
                     "review/api-plan-review.json",
                 ],
                 "imports": {

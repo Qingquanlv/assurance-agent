@@ -73,6 +73,7 @@ def test_registry_covers_every_expected_artifact_type() -> None:
         "issue_candidate_document",
         "issue_evidence_manifest",
         "issue_reconcile_status",
+        "issue_triage_advice",
         "metrics_document",
         "metrics_nightly_document",
         "minimum_coverage_matrix",
@@ -308,7 +309,7 @@ def test_minimum_coverage_artifacts_are_registered() -> None:
     assert result.model is MinimumCoverageResult
     assert result.compat == "must_compat"
 
-    matrix = match_artifact("trace/minimum-coverage-matrix.yaml")
+    matrix = match_artifact("trace/minimum-coverage-matrix.json")
     assert matrix is not None
     assert matrix.artifact_type == "minimum_coverage_matrix"
     assert matrix.model is MinimumCoverageMatrix

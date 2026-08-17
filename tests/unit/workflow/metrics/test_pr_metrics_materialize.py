@@ -325,8 +325,8 @@ def test_collect_pr_metrics_batch_writes_only_under_batch_runs(tmp_path: Path) -
     project_root, change_dir = _seed_project(tmp_path)
     batch = change_dir / "execution" / "runs" / BATCH_NEW
     (batch / "raw").mkdir(parents=True)
-    (change_dir / "execution" / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(
+    (change_dir / "execution" / "execution-manifest.json").write_text(
+        json.dumps(
             {
                 "schema_version": "1.0",
                 "change_id": CHANGE_ID,
@@ -491,8 +491,8 @@ def test_materialize_operation_writes_once(tmp_path: Path) -> None:
     project_root, change_dir = _seed_project(tmp_path)
     _write_complete_batch(change_dir, BATCH_NEW)
     (change_dir / "execution").mkdir(exist_ok=True)
-    (change_dir / "execution" / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(
+    (change_dir / "execution" / "execution-manifest.json").write_text(
+        json.dumps(
             {
                 "schema_version": "1.0",
                 "change_id": CHANGE_ID,

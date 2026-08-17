@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-import yaml
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models.metrics import (
@@ -181,10 +180,10 @@ def _write_perf_batch(
         json.dumps({"app/svc.py": [1, 2]}),
         encoding="utf-8",
     )
-    manifest = change / "execution" / "execution-manifest.yaml"
+    manifest = change / "execution" / "execution-manifest.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
-        yaml.safe_dump(
+        json.dumps(
             {
                 "schema_version": "1.0",
                 "change_id": CHANGE_ID,

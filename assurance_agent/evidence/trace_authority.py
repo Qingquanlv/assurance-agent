@@ -18,6 +18,7 @@ from typing import Literal
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models.inspect import FailureAnalysis
+from assurance_agent.artifacts.paths import EXECUTION_MANIFEST_REL
 from assurance_agent.artifacts.models.issue_events import (
     ChangeIssueEvent,
     IssueAnalysisFailedEvent,
@@ -119,7 +120,7 @@ RECONCILE_SOURCE: AuthoritySource = "inspect/issue-reconcile-status.json"
 PROJECT_LEDGER_SOURCE: AuthoritySource = "qa/issues/events.jsonl"
 PROJECT_PROBLEMS_SOURCE: AuthoritySource = "qa/issues/problems.json"
 
-_EXECUTION_ANCHOR = "execution/execution-manifest.yaml"
+_EXECUTION_ANCHOR = EXECUTION_MANIFEST_REL
 
 _ISSUE_SOURCES: tuple[AuthoritySource, ...] = (
     MANIFEST_SOURCE,

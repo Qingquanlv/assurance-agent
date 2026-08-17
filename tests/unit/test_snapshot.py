@@ -4,7 +4,7 @@ from assurance_agent.workflow.core.snapshot import capture_files, restore_files
 
 
 def test_restore_reinstates_existing_and_removes_new_file(tmp_path: Path):
-    state = tmp_path / "workflow-state.yaml"
+    state = tmp_path / "workflow-state.json"
     events = tmp_path / "events.jsonl"
     state.write_bytes(b"before-state")
     snapshots = capture_files([state, events])

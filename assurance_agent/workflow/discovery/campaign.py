@@ -154,8 +154,8 @@ def run_deterministic_api_campaign(
     discovery_dir = change_dir / "discovery"
     discovery_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_yaml(discovery_dir / "campaign-spec.yaml", campaign_spec.model_dump(mode="json"))
-    _write_yaml(discovery_dir / "oracle-set.yaml", oracle_set.model_dump(mode="json"))
+    _write_json(discovery_dir / "campaign-spec.json", campaign_spec.model_dump(mode="json"))
+    _write_json(discovery_dir / "oracle-set.json", oracle_set.model_dump(mode="json"))
     _write_yaml(
         discovery_dir / "strategy-snapshot.yaml",
         {
@@ -262,8 +262,8 @@ def run_deterministic_api_campaign(
                     if ce is None:
                         continue
                     all_ce_ids.append(ce.counterexample_id)
-                    _write_yaml(
-                        discovery_dir / "counterexamples" / f"{ce.counterexample_id}.yaml",
+                    _write_json(
+                        discovery_dir / "counterexamples" / f"{ce.counterexample_id}.json",
                         ce.model_dump(mode="json"),
                     )
                     if ce.finding_status == "confirmed":
@@ -302,7 +302,7 @@ def run_deterministic_api_campaign(
         confirmed_count=len(confirmed_ids),
         stop_reason=stop_reason,
     )
-    _write_yaml(discovery_dir / "campaign-result.yaml", result.model_dump(mode="json"))
+    _write_json(discovery_dir / "campaign-result.json", result.model_dump(mode="json"))
     result_digest = sha256_bytes(
         json.dumps(result.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
     )

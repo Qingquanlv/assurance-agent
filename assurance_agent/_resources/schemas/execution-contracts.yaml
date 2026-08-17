@@ -86,7 +86,7 @@ contracts:
     - project:.aa/cache/diff-base/**
     - repo:tests/**
     - repo:.aa/data-knowledge.yaml
-    - change:trace/minimum-coverage-matrix.yaml
+    - change:trace/minimum-coverage-matrix.json
     - change:inspect/trace-projection.json
     - change:explore/advisory.json
     - change:risk-advisory/advisory.json
@@ -144,7 +144,7 @@ contracts:
   operation:allocate-healing-attempt:
     handler: operation
     reads:
-    - change:execution/execution-manifest.yaml
+    - change:execution/execution-manifest.json
     - change:healing/fix-proposal.json
     - change:codegen/**
     - change:execution/**
@@ -185,14 +185,14 @@ contracts:
     - change:.qa.yaml
     - change:proposal.md
     - change:cases/**
-    - change:trace/minimum-coverage-matrix.yaml
+    - change:trace/minimum-coverage-matrix.json
     - change:plans/data-knowledge.proposal.api.yaml
     - change:plans/data-knowledge.proposal.e2e.yaml
     authorization_writes:
     - change:.qa.yaml
     - change:proposal.md
     - change:cases/**
-    - change:trace/minimum-coverage-matrix.yaml
+    - change:trace/minimum-coverage-matrix.json
     - change:plans/data-knowledge.proposal.api.yaml
     - change:plans/data-knowledge.proposal.e2e.yaml
     retryable_errors:
@@ -207,7 +207,7 @@ contracts:
     - change:.qa.yaml
     - change:proposal.md
     - change:cases/**
-    - change:trace/minimum-coverage-matrix.yaml
+    - change:trace/minimum-coverage-matrix.json
     writes:
     - change:review/case-review.json
     authorization_writes:
@@ -252,14 +252,14 @@ contracts:
     - change:plans/api-plan.md
     - change:plans/api-test-data-plan.md
     - change:plans/api-codegen-plan.md
-    - change:plans/api-codegen-mapping.yaml
+    - change:plans/api-codegen-mapping.json
     - change:plans/m3-review-summary.md
     - change:plans/data-knowledge.proposal.api.yaml
     authorization_writes:
     - change:plans/api-plan.md
     - change:plans/api-test-data-plan.md
     - change:plans/api-codegen-plan.md
-    - change:plans/api-codegen-mapping.yaml
+    - change:plans/api-codegen-mapping.json
     - change:plans/m3-review-summary.md
     - change:plans/data-knowledge.proposal.api.yaml
     retryable_errors:
@@ -275,7 +275,7 @@ contracts:
     - change:plans/api-plan.md
     - change:plans/api-test-data-plan.md
     - change:plans/api-codegen-plan.md
-    - change:plans/api-codegen-mapping.yaml
+    - change:plans/api-codegen-mapping.json
     - change:plans/m3-review-summary.md
     - change:plans/data-knowledge.proposal.api.yaml
     - change:review/api-plan-checks.json
@@ -303,7 +303,7 @@ contracts:
     - change:plans/api-plan.md
     - change:plans/api-test-data-plan.md
     - change:plans/api-codegen-plan.md
-    - change:plans/api-codegen-mapping.yaml
+    - change:plans/api-codegen-mapping.json
     - change:plans/m3-review-summary.md
     - change:review/api-plan-review.json
     - change:cases/**/case.yaml
@@ -350,14 +350,14 @@ contracts:
     - change:plans/e2e-plan.md
     - change:plans/e2e-test-data-plan.md
     - change:plans/e2e-codegen-plan.md
-    - change:plans/e2e-codegen-mapping.yaml
+    - change:plans/e2e-codegen-mapping.json
     - change:plans/m4-review-summary.md
     - change:plans/data-knowledge.proposal.e2e.yaml
     authorization_writes:
     - change:plans/e2e-plan.md
     - change:plans/e2e-test-data-plan.md
     - change:plans/e2e-codegen-plan.md
-    - change:plans/e2e-codegen-mapping.yaml
+    - change:plans/e2e-codegen-mapping.json
     - change:plans/m4-review-summary.md
     - change:plans/data-knowledge.proposal.e2e.yaml
     retryable_errors:
@@ -373,7 +373,7 @@ contracts:
     - change:plans/e2e-plan.md
     - change:plans/e2e-test-data-plan.md
     - change:plans/e2e-codegen-plan.md
-    - change:plans/e2e-codegen-mapping.yaml
+    - change:plans/e2e-codegen-mapping.json
     - change:plans/m4-review-summary.md
     - change:plans/data-knowledge.proposal.e2e.yaml
     - change:review/e2e-plan-checks.json
@@ -401,7 +401,7 @@ contracts:
     - change:plans/e2e-plan.md
     - change:plans/e2e-test-data-plan.md
     - change:plans/e2e-codegen-plan.md
-    - change:plans/e2e-codegen-mapping.yaml
+    - change:plans/e2e-codegen-mapping.json
     - change:plans/m4-review-summary.md
     - change:review/plan-review.json
     - change:cases/**/case.yaml
@@ -442,12 +442,12 @@ contracts:
     writes:
     - change:plans/fuzz-plan.md
     - change:plans/fuzz-codegen-plan.md
-    - change:plans/fuzz-codegen-mapping.yaml
+    - change:plans/fuzz-codegen-mapping.json
     - change:plans/fuzz-review-summary.md
     authorization_writes:
     - change:plans/fuzz-plan.md
     - change:plans/fuzz-codegen-plan.md
-    - change:plans/fuzz-codegen-mapping.yaml
+    - change:plans/fuzz-codegen-mapping.json
     - change:plans/fuzz-review-summary.md
     retryable_errors:
     - timeout
@@ -461,7 +461,7 @@ contracts:
     reads:
     - change:plans/fuzz-plan.md
     - change:plans/fuzz-codegen-plan.md
-    - change:plans/fuzz-codegen-mapping.yaml
+    - change:plans/fuzz-codegen-mapping.json
     - change:plans/fuzz-review-summary.md
     - change:review/fuzz-plan-checks.json
     - change:cases/**/case.yaml
@@ -487,7 +487,7 @@ contracts:
     reads:
     - change:plans/fuzz-plan.md
     - change:plans/fuzz-codegen-plan.md
-    - change:plans/fuzz-codegen-mapping.yaml
+    - change:plans/fuzz-codegen-mapping.json
     - change:plans/fuzz-review-summary.md
     - change:review/fuzz-plan-review.json
     - change:review/fuzz-plan-checks.json
@@ -529,12 +529,12 @@ contracts:
     writes:
     - change:plans/performance-plan.md
     - change:plans/performance-codegen-plan.md
-    - change:plans/performance-codegen-mapping.yaml
+    - change:plans/performance-codegen-mapping.json
     - change:plans/performance-review-summary.md
     authorization_writes:
     - change:plans/performance-plan.md
     - change:plans/performance-codegen-plan.md
-    - change:plans/performance-codegen-mapping.yaml
+    - change:plans/performance-codegen-mapping.json
     - change:plans/performance-review-summary.md
     retryable_errors:
     - timeout
@@ -548,7 +548,7 @@ contracts:
     reads:
     - change:plans/performance-plan.md
     - change:plans/performance-codegen-plan.md
-    - change:plans/performance-codegen-mapping.yaml
+    - change:plans/performance-codegen-mapping.json
     - change:plans/performance-review-summary.md
     - change:review/performance-plan-checks.json
     - change:cases/**/case.yaml
@@ -574,7 +574,7 @@ contracts:
     reads:
     - change:plans/performance-plan.md
     - change:plans/performance-codegen-plan.md
-    - change:plans/performance-codegen-mapping.yaml
+    - change:plans/performance-codegen-mapping.json
     - change:plans/performance-review-summary.md
     - change:review/performance-plan-review.json
     - change:review/performance-plan-checks.json
@@ -734,6 +734,7 @@ contracts:
     - rate_limit
     - invalid_output
     reconnect: true
+    precommit_validator: archive_integrity/v1
   skill:aa-issue-analyzer:
     handler: agent
     reads:
@@ -950,6 +951,7 @@ contracts:
     retryable_errors:
     - conflict
     - transport
+    precommit_validator: problem_apply_candidate/v1
   operation:retro-collect-v3:
     handler: operation
     reads:
@@ -1558,7 +1560,7 @@ contracts:
   operation:materialize-minimum-coverage:
     handler: operation
     reads:
-    - change:trace/minimum-coverage-matrix.yaml
+    - change:trace/minimum-coverage-matrix.json
     - change:inspect/trace-projection.json
     - change:explore/advisory.json
     - change:risk-advisory/advisory.json
@@ -1604,7 +1606,7 @@ contracts:
   operation:compute-journey-coverage:
     handler: operation
     reads:
-    - change:trace/minimum-coverage-matrix.yaml
+    - change:trace/minimum-coverage-matrix.json
     - change:inspect/trace-projection.json
     - change:explore/advisory.json
     - change:risk-advisory/advisory.json
@@ -1652,7 +1654,7 @@ contracts:
     reads:
     - repo:tests/**
     - repo:.aa/data-knowledge.yaml
-    - change:trace/minimum-coverage-matrix.yaml
+    - change:trace/minimum-coverage-matrix.json
     - change:inspect/trace-projection.json
     - change:explore/advisory.json
     - change:risk-advisory/advisory.json

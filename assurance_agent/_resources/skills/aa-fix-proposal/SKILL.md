@@ -9,13 +9,13 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.yaml`.
+1. Read `qa/changes/<change-id>/workflow-state.json`.
 2. Verify `phases.inspect.status == done` and `phases.inspect.inspect_mode == primary` and `phases.inspect.classification_performed == true`.
 3. Read `qa/changes/<change-id>/inspect/failure-analysis.json` — stop if missing.
 4. Read `qa/changes/<change-id>/inspect/failure-summary.md`.
-5. Read `qa/changes/<change-id>/execution/execution-manifest.yaml`.
+5. Read `qa/changes/<change-id>/execution/execution-manifest.json`.
 6. Verify `failure-analysis.json.source_batch_id` exactly equals the latest
-   `execution-manifest.yaml.batch_id`; stop on missing or mismatched values.
+   `execution-manifest.json.batch_id`; stop on missing or mismatched values.
 7. Compute SHA256 of the exact `inspect/failure-analysis.json` bytes that will
    be used to generate the proposal.
 8. Do **not** read from memory or chat — use files as sole source of truth.
@@ -159,7 +159,7 @@ qa/changes/<change-id>/healing/fix-proposal.json
   "schema_version": "1.0",
   "change_id": "<change-id>",
   "source_analysis": "qa/changes/<change-id>/inspect/failure-analysis.json",
-  "source_batch_id": "<exact batch_id from failure-analysis.json and latest execution-manifest.yaml>",
+  "source_batch_id": "<exact batch_id from failure-analysis.json and latest execution-manifest.json>",
   "source_analysis_sha256": "<SHA256 of the exact current inspect/failure-analysis.json bytes>",
   "created_at": "YYYY-MM-DDTHH:mm:ssZ",
   "summary": { "eligible_count": 0, "not_eligible_count": 0, "targets": { "api": 0, "e2e": 0 } },
@@ -250,7 +250,7 @@ aa report inspect --change <change-id>
 
 ## Evidence-derived State
 
-Do not update `workflow-state.yaml` for proposal creation. The CLI derives:
+Do not update `workflow-state.json` for proposal creation. The CLI derives:
 
 - `proposal_created` when a valid proposal's `source_batch_id` matches the fresh
   analysis and active execution manifest.
@@ -264,7 +264,7 @@ requires a stop or human intervention.
 
 ## Steps
 
-1. Read `workflow-state.yaml` — verify inspect was primary mode with classification.
+1. Read `workflow-state.json` — verify inspect was primary mode with classification.
 2. Read `inspect/failure-analysis.json` — stop if missing, if
    `classification_performed == false`, or if its `source_batch_id` does not
    exactly match the latest execution manifest `batch_id`.

@@ -1,7 +1,7 @@
 ---
 name: aa-reporter
 mode: all
-description: Execute a bounded AA report or Issue-analysis phase. Never run aa gate/status or write workflow-state.yaml.
+description: Execute a bounded AA report or Issue-analysis phase. Never run aa gate/status or write workflow-state.json.
 tools:
   task: false
   task_create: false
@@ -36,6 +36,7 @@ permission:
     "**qa/changes/**/inspect/issue-candidates.json": allow
     "**qa/changes/**/inspect/issue-analysis-status.json": allow
     "**qa/changes/**/issue-review/**": allow
+    "**qa/changes/**/workflow-state.json": deny
     "**qa/changes/**/workflow-state.yaml": deny
   bash:
     "*": deny
@@ -53,7 +54,7 @@ Your task is given in the `task` call that launched you. Load the named phase sk
 Rules:
 - Do not invoke MCP, Playwright, browser, session, background, or delegation tools.
 - Do NOT run `aa gate check`, `aa status`, or any other `aa` command except `aa --version`, `aa report generate *`, and the `aa artifact write` fallback below.
-- Do NOT write or modify `workflow-state.yaml`. The orchestrator (primary agent) owns it.
+- Do NOT write or modify `workflow-state.json`. The orchestrator (primary agent) owns it.
 - Do NOT read or follow `aa-workflow/SKILL.md`. You are a phase worker, not the orchestrator.
 - Write only to the report directory, the two declared Issue-analysis files, or the declared `issue-review/**` output.
 - Prefer `artifact_write(path, content)` for complete new or replacement files; it accepts content directly and needs no Bash, Python, Base64, heredoc, or shell substitution. Read each file back and never return before every expected output exists.

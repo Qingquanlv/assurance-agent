@@ -36,6 +36,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from assurance_agent.artifacts.models.assurance import LayerName
+from assurance_agent.artifacts.registry import match_artifact
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.graph.contracts import (
     ContractError,
@@ -63,7 +64,12 @@ from assurance_agent.workflow.graph.replay_schema import (
     validate_current_assurance_activation,
     validate_historical_replay_surface,
 )
+from assurance_agent.workflow.graph.precommit import (
+    KNOWN_PRECOMMIT_VALIDATORS,
+    PLAN_MECHANICAL_CANDIDATE_V1,
+)
 from assurance_agent.workflow.graph.schema_v2 import (
+    VALIDATE_NONE,
     GraphDef,
     NodeDef,
     ParamDef,
@@ -322,8 +328,10 @@ def _compile_with_catalog(
     errors.extend(_validate_subgraph_recursion(schema))
     errors.extend(_validate_bounded_sccs(schema))
     errors.extend(_validate_exports(schema))
+    errors.extend(_validate_node_validate_declarations(schema))
     if contracts is not None:
         errors.extend(_validate_contract_usage(schema, contracts))
+        errors.extend(_validate_node_validate_mirrors_contracts(schema, contracts))
     errors.extend(activation_errors)
     if errors:
         diagnostics = tuple(
@@ -740,7 +748,7 @@ def _validate_graph_refs(schema: WorkflowSchemaV2) -> list[str]:
 
 
 def _collect_artifact_symbols(graph_id: str, graph: GraphDef) -> tuple[dict[str, str], list[str]]:
-    """每个 JSON output 从文件名 stem 派生表达式 symbol（change:explore/advisory.json → advisory）。
+    """每个已注册产物从文件名 stem 派生表达式 symbol（change:explore/advisory.json → advisory）。
 
     同一 graph 内 stem 冲突即拒绝——symbol 是表达式访问该 artifact 的唯一入口。
     """
@@ -748,7 +756,9 @@ def _collect_artifact_symbols(graph_id: str, graph: GraphDef) -> tuple[dict[str,
     errors: list[str] = []
     for nid, node in graph.nodes.items():
         for output in node.outputs:
-            if not output.endswith(".json"):
+            _root, sep, rest = output.partition(":")
+            rel = rest if sep else output
+            if match_artifact(rel) is None:
                 continue
             symbol = derive_alias(output)
             if not symbol:
@@ -1116,6 +1126,61 @@ def _validate_subgraph_recursion(schema: WorkflowSchemaV2) -> list[str]:
 # execution contract 校验与资源 footprint
 
 _HANDLER_BY_PREFIX = {"skill": "agent", "operation": "operation", "builtin": "builtin"}
+
+
+def _validate_node_validate_declarations(schema: WorkflowSchemaV2) -> list[str]:
+    """Reject unknown/inconsistent node.validate values.
+
+    A missing ``validate`` is legal here: historical and replay graphs predate the
+    field. Only ``assurance_conformance`` requires packaged graphs to declare it,
+    so consistency compares declared values and ignores the absent ones.
+    """
+    errors: list[str] = []
+    by_uses: dict[str, set[str]] = {}
+    for graph_id, graph in schema.graphs.items():
+        for nid, node in graph.nodes.items():
+            loc = f"graph '{graph_id}' node '{nid}'"
+            value = node.validate_
+            if value is None:
+                continue
+            by_uses.setdefault(node.uses, set()).add(value)
+            if value == VALIDATE_NONE:
+                continue
+            if value not in KNOWN_PRECOMMIT_VALIDATORS:
+                errors.append(f"{loc} unknown validate '{value}'")
+                continue
+            if value == PLAN_MECHANICAL_CANDIDATE_V1 and not any(
+                output.endswith("plan-checks.json") for output in node.outputs
+            ):
+                errors.append(f"{loc} validate '{value}' requires a *-plan-checks.json output")
+    for uses, values in sorted(by_uses.items()):
+        if len(values) > 1:
+            rendered = ", ".join(sorted(values))
+            errors.append(f"uses '{uses}' declares inconsistent validate values: {rendered}")
+    return errors
+
+
+def _validate_node_validate_mirrors_contracts(
+    schema: WorkflowSchemaV2,
+    catalog: ExecutionContractCatalog,
+) -> list[str]:
+    """When a node declares validate, it must match the contract mirror field."""
+    errors: list[str] = []
+    for graph_id, graph in schema.graphs.items():
+        for nid, node in graph.nodes.items():
+            if node.validate_ is None:
+                continue
+            contract = catalog.contracts.get(node.uses)
+            if contract is None:
+                continue
+            expected = VALIDATE_NONE if contract.precommit_validator is None else contract.precommit_validator
+            if node.validate_ != expected:
+                errors.append(
+                    f"graph '{graph_id}' node '{nid}' validate '{node.validate_}' "
+                    f"does not mirror contract '{node.uses}' precommit_validator "
+                    f"{contract.precommit_validator!r}"
+                )
+    return errors
 
 
 def _validate_contract_usage(schema: WorkflowSchemaV2, catalog: ExecutionContractCatalog) -> list[str]:

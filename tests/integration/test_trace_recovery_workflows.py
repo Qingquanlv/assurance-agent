@@ -362,7 +362,7 @@ def _advance_inputs_to_b1(change: Path, *, seed_completed_analysis: bool) -> Non
 def _assurance_stub_ops() -> dict[str, OperationFn]:
     def stub_run_tests(task: ExecutableTask, workspace: Any, context: RuntimeContext) -> TaskResult:
         del task, context
-        path = workspace.change_dir / "execution" / "execution-manifest.yaml"
+        path = workspace.change_dir / "execution" / "execution-manifest.json"
         assert path.is_file(), "B1 execution anchor must be pre-seeded"
         man = yaml.safe_load(path.read_text(encoding="utf-8"))
         return TaskResult(

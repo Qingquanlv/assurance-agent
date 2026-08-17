@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from assurance_agent.artifacts.paths import existing_with_alias
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.execution.tree_hash import sha256_file
 from assurance_agent.workflow.graph.models import (
@@ -554,8 +555,8 @@ def state_values_for_import(context: RuntimeContext, projection: GraphProjection
 
 def _state_values_from_change(context: RuntimeContext) -> dict[str, object]:
     """Load workflow-state.yaml into gate ``state.*`` (legacy phase/run_context stamps)."""
-    path = context.change_dir / "workflow-state.yaml"
-    if not path.is_file():
+    path = existing_with_alias(context.change_dir / "workflow-state.json")
+    if path is None:
         return {}
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}

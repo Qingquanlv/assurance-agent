@@ -31,6 +31,7 @@ permission:
     "**": deny
     "**qa/changes/**/explore/**": allow
     "**qa/changes/**/explore/context.json": deny
+    "**qa/changes/**/workflow-state.json": deny
     "**qa/changes/**/workflow-state.yaml": deny
   bash:
     "*": deny
@@ -48,6 +49,6 @@ Rules:
 - Artifact existence is a hard completion condition: after writing, immediately `read` `explore/advisory.json`. If that read fails, keep writing; do not run `aa risk validate-advisory` and do not return. If the runtime does not offer `write`, base64-encode the complete UTF-8 JSON and run the single structured command `aa risk write-advisory --change <change-id> --project-dir . --payload-base64 <base64>`.
 - Write only the declared `qa/changes/<change-id>/explore/**` outputs.
 - `explore/context.json` is CLI-owned: generate it only through `aa risk context`; never use edit/write tools on it. Put source observations in `advisory.json.source_code_evidence`.
-- Do NOT write or modify `workflow-state.yaml`. The orchestrator / driver owns it.
+- Do NOT write or modify `workflow-state.json`. The orchestrator / driver owns it.
 - Do NOT read or follow `aa-workflow/SKILL.md`. You are a phase worker, not the orchestrator.
 - When done, state which files you wrote and confirm the phase's expected outputs exist.

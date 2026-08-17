@@ -14,7 +14,7 @@ After `aa-intake` completes and the user confirms:
 
 Do not re-run intake phases. The driver enforces execute-entrypoint preflight (case-review pass,
 cases present, test infra, etc.). GraphRuntime owns progression; do not hand-edit
-`workflow-state.yaml` or invent phase completion.
+`workflow-state.json` or invent phase completion.
 
 ## When the preferred entry is unavailable
 

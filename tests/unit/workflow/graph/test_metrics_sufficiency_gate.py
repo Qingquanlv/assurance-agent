@@ -171,7 +171,7 @@ def test_collect_and_materialize_resolve_to_registered_handlers() -> None:
 def test_materialize_contract_authorizes_inspect_metrics_only() -> None:
     contract = load_execution_contracts(Path.cwd()).contracts[MATERIALIZE_TARGET]
     assert "change:inspect/metrics.json" in contract.authorization_writes
-    assert "change:execution/execution-manifest.yaml" not in contract.writes
+    assert "change:execution/execution-manifest.json" not in contract.writes
     assert "change:inspect/quality-gate-result.json" not in contract.writes
 
 
@@ -474,4 +474,4 @@ def test_metrics_gate_writes_nothing_to_execution_manifest_contract() -> None:
     catalog = load_execution_contracts(Path.cwd())
     for target, contract in catalog.contracts.items():
         if "metrics" in target:
-            assert "change:execution/execution-manifest.yaml" not in contract.writes
+            assert "change:execution/execution-manifest.json" not in contract.writes

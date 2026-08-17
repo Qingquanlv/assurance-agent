@@ -55,9 +55,16 @@ def test_synth_workflow_run_writes_under_sut_out(tmp_path: Path) -> None:
     sample = fixtures / "samples" / "eval-sample-001"
     sample.mkdir(parents=True)
     (sample / "proposal.md").write_text("# p\n", encoding="utf-8")
-    (sample / "workflow-state.yaml").write_text(
-        "phases:\n  skill_registry_check: {status: pass}\n"
-        "run_context: {interaction_mode: autonomous, orchestrator_skill: aa-workflow}\n",
+    (sample / "workflow-state.json").write_text(
+        json.dumps(
+            {
+                "phases": {"skill_registry_check": {"status": "pass"}},
+                "run_context": {
+                    "interaction_mode": "autonomous",
+                    "orchestrator_skill": "aa-workflow",
+                },
+            }
+        ),
         encoding="utf-8",
     )
     (sample / "tests").mkdir()
@@ -70,7 +77,7 @@ def test_synth_workflow_run_writes_under_sut_out(tmp_path: Path) -> None:
                 "name": "L3-run-seed",
                 "paths": [
                     "proposal.md",
-                    "workflow-state.yaml",
+                    "workflow-state.json",
                     "tests/config.py",
                     "tests/conftest.py",
                     "tests/schema_validation.py",

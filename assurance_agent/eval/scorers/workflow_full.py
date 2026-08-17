@@ -8,7 +8,7 @@ from assurance_agent.eval.types import DatasetSample, SampleScore
 
 def score(sample: DatasetSample, attempt_dir: Path) -> SampleScore:
     raw = shared.raw_output_dir(attempt_dir)
-    manifest = shared.read_yaml(raw / "execution" / "execution-manifest.yaml")
+    manifest = shared.read_yaml(raw / "execution" / "execution-manifest.json")
     completed = 1.0 if manifest else 0.0
     return SampleScore(
         sample_id=sample.id,

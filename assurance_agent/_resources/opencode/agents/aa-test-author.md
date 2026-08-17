@@ -1,7 +1,7 @@
 ---
 name: aa-test-author
 mode: all
-description: Execute a bounded AA test-authoring phase. Never run aa gate/status or write workflow-state.yaml.
+description: Execute a bounded AA test-authoring phase. Never run aa gate/status or write workflow-state.json.
 tools:
   task: false
   task_create: false
@@ -37,6 +37,7 @@ permission:
     "**qa/changes/**/codegen/**": allow
     "**qa/changes/**/healing/**": allow
     "**qa/changes/**/coverage-repair/**": allow
+    "**qa/changes/**/workflow-state.json": deny
     "**qa/changes/**/workflow-state.yaml": deny
   bash:
     "*": deny
@@ -52,7 +53,7 @@ Your task is given in the `task` call that launched you. Load the named phase sk
 Rules:
 - Do not invoke MCP, Playwright, browser, session, background, or delegation tools; use the declared source files and bounded test commands only.
 - Do NOT run `aa gate check`, `aa status`, or any other `aa` command except the `aa artifact write` fallback below.
-- Do NOT write or modify `workflow-state.yaml`. The orchestrator (primary agent) owns it.
+- Do NOT write or modify `workflow-state.json`. The orchestrator (primary agent) owns it.
 - Do NOT read or follow `aa-workflow/SKILL.md`. You are a phase worker, not the orchestrator.
 - Write only to the paths allowed by your permission floor above.
 - Prefer `artifact_write(path, content)` for complete new or replacement files; it accepts content directly and needs no Bash, Python, Base64, heredoc, or shell substitution. Read each file back and never return before every expected output exists.

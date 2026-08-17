@@ -77,7 +77,7 @@ def test_composite_merges_values_when_both_succeed(tmp_path: Path, monkeypatch: 
         return TaskResult(
             status="succeeded",
             value={"batch_id": "b-1", "final_status": "PASS"},
-            candidate_outputs={"change:execution/execution-manifest.yaml": "ok"},
+            candidate_outputs={"change:execution/execution-manifest.json": "ok"},
         )
 
     def fake_collect(task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext) -> TaskResult:
@@ -95,4 +95,4 @@ def test_composite_merges_values_when_both_succeed(tmp_path: Path, monkeypatch: 
         "final_status": "PASS",
         "metrics_batch": {"collectors": []},
     }
-    assert result.candidate_outputs == {"change:execution/execution-manifest.yaml": "ok"}
+    assert result.candidate_outputs == {"change:execution/execution-manifest.json": "ok"}

@@ -40,13 +40,13 @@ from assurance_agent.artifacts.models.minimum_coverage import (
     mrc_closed_key_findings,
 )
 from assurance_agent.artifacts.models.trace import TraceProjection, TraceProjectionLike, TraceRow
+from assurance_agent.artifacts.paths import MINIMUM_COVERAGE_MATRIX_REL, existing_with_alias
 from assurance_agent.knowledge.extract_constraints import constraint_known_keys
 from assurance_agent.workflow.execution.evidence import atomic_write_bytes
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 
-MINIMUM_COVERAGE_MATRIX_REL = "trace/minimum-coverage-matrix.yaml"
 MINIMUM_COVERAGE_RESULT_REL = "report/minimum-coverage-result.json"
 TRACE_PROJECTION_REL = "inspect/trace-projection.json"
 DATA_KNOWLEDGE_REL = ".aa/data-knowledge.yaml"
@@ -316,8 +316,8 @@ def shadow_compare_minimum_coverage(
 
 
 def _load_matrix(change_dir: Path) -> MinimumCoverageMatrix | None:
-    path = change_dir / MINIMUM_COVERAGE_MATRIX_REL
-    if not path.is_file():
+    path = existing_with_alias(change_dir / MINIMUM_COVERAGE_MATRIX_REL)
+    if path is None:
         return None
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if raw is None:

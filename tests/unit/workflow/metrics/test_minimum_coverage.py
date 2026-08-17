@@ -308,7 +308,7 @@ def test_shadow_compare_matches_archived_skill_result_on_same_inputs() -> None:
     """
     legacy = json.loads((ARCHIVE / "report/minimum-coverage-result.json").read_text(encoding="utf-8"))
     matrix = MinimumCoverageMatrix.model_validate(
-        yaml.safe_load((ARCHIVE / "trace/minimum-coverage-matrix.yaml").read_text(encoding="utf-8"))
+        yaml.safe_load((ARCHIVE / "trace/minimum-coverage-matrix.json").read_text(encoding="utf-8"))
     )
     advisory = json.loads((ARCHIVE / "explore/advisory.json").read_text(encoding="utf-8"))
     category_by_key, layer_by_key, mrc_id_by_key = maps_from_advisory_mrc(

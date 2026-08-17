@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-import yaml
 from pydantic import ValidationError
 
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
@@ -868,9 +868,9 @@ def derive_graph_state(
 
 
 def render_workflow_state_yaml(projection: GraphProjection) -> bytes:
-    """把兼容视图渲染成 ``workflow-state.yaml`` 字节（供 projection staging 落盘）。"""
+    """Render the compatibility view as ``workflow-state.json`` bytes for staging."""
     view = project_workflow_state(projection)
-    text = yaml.safe_dump(view.model_dump(mode="json"), sort_keys=False, allow_unicode=True)
+    text = json.dumps(view.model_dump(mode="json"), indent=2, ensure_ascii=False) + "\n"
     return text.encode("utf-8")
 
 

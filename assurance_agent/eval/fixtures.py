@@ -24,6 +24,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from assurance_agent.artifacts.models.assurance import LAYER_NAMES, LayerName
+from assurance_agent.artifacts.paths import existing_with_alias
 from assurance_agent.eval.types import (
     FixtureImportDef,
     FixtureImportTask,
@@ -450,7 +451,7 @@ def _copy_rel(src_root: Path, dest_root: Path, rel: str) -> None:
 
 def _apply_workflow_state_resets(change_dir: Path, resets: dict[str, Any]) -> None:
     if not resets:
-        if (change_dir / "workflow-state.yaml").exists():
+        if existing_with_alias(change_dir / "workflow-state.json") is not None:
             state = read_state_lenient(change_dir)
             write_state(change_dir, state)
         return
@@ -496,8 +497,8 @@ def _hash_logical(change_dir: Path, project_root: Path, logical: str) -> str:
 
 
 def _state_values(change_dir: Path) -> dict[str, Any]:
-    path = change_dir / "workflow-state.yaml"
-    if not path.is_file():
+    path = existing_with_alias(change_dir / "workflow-state.json")
+    if path is None:
         return {}
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):

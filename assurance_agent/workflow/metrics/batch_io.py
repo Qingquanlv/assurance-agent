@@ -8,9 +8,9 @@ import yaml
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models.execution import ExecutionManifest
+from assurance_agent.artifacts.paths import EXECUTION_MANIFEST_REL, existing_with_alias
 from assurance_agent.workflow.execution.evidence import atomic_write_bytes
 
-EXECUTION_MANIFEST_REL = "execution/execution-manifest.yaml"
 BATCH_RAW_REL = "raw"
 FORBIDDEN_COVERAGE_BASENAMES = frozenset({".coverage"})
 
@@ -26,10 +26,11 @@ def batch_raw_dir(change_dir: Path, batch_id: str) -> Path:
 def resolve_batch_id(change_dir: Path, *, explicit: str | None = None) -> str:
     if explicit:
         return explicit
-    path = change_dir / EXECUTION_MANIFEST_REL
-    if not path.is_file():
+    path = existing_with_alias(change_dir / EXECUTION_MANIFEST_REL)
+    if path is None:
         raise FileNotFoundError(EXECUTION_MANIFEST_REL)
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    raw = yaml.safe_load(text)
     manifest = ExecutionManifest.model_validate(raw)
     return manifest.batch_id
 

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from assurance_agent.artifacts.paths import existing_with_alias
 from assurance_agent.change_location import (
     ChangeNotFoundError,
     archive_root,
@@ -463,8 +464,8 @@ def _extract_from_change(
             evidence_ids.append(eid)
 
     skill_loaded_false: list[SkillLoadedFalseRecord] = []
-    state_path = change_dir / "workflow-state.yaml"
-    if state_path.is_file():
+    state_path = existing_with_alias(change_dir / "workflow-state.json")
+    if state_path is not None:
         try:
             state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError):

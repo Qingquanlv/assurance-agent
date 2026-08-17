@@ -102,9 +102,9 @@ def test_publish_writes_batch_dir_and_latest_pointers(tmp_path: Path) -> None:
     assert (batch_dir / "api-result.json").is_file()
     assert (batch_dir / "coverage-result.json").is_file()
     assert (batch_dir / "quality-gate-result.json").is_file()
-    assert (batch_dir / "execution-manifest.yaml").is_file()
+    assert (batch_dir / "execution-manifest.json").is_file()
     assert (execution_dir / "api-result.json").is_file()
-    assert (execution_dir / "execution-manifest.yaml").is_file()
+    assert (execution_dir / "execution-manifest.json").is_file()
     assert manifest.final_status == "PASS"
     assert manifest.result_files["api"] == "runs/20260715-000000/api-result.json"
 
@@ -150,20 +150,20 @@ def test_selected_target_with_missing_result_is_integrity_issue(tmp_path: Path) 
 
 def test_load_rejects_result_path_escape(tmp_path: Path) -> None:
     execution_dir, _ = publish(tmp_path, make_api(), make_cov())
-    manifest = execution_dir / "execution-manifest.yaml"
+    manifest = execution_dir / "execution-manifest.json"
     doc = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     doc["result_files"]["api"] = "../../outside.json"
-    manifest.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    manifest.write_text(json.dumps(doc), encoding="utf-8")
     with pytest.raises(EvidenceError, match="escapes execution directory"):
         load_execution_evidence(execution_dir)
 
 
 def test_explicit_batch_rejects_manifest_identity_mismatch(tmp_path: Path) -> None:
     execution_dir, _ = publish(tmp_path, make_api(), make_cov())
-    manifest = execution_dir / "runs/20260715-000000/execution-manifest.yaml"
+    manifest = execution_dir / "runs/20260715-000000/execution-manifest.json"
     doc = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     doc["batch_id"] = "20260715-999999"
-    manifest.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    manifest.write_text(json.dumps(doc), encoding="utf-8")
     with pytest.raises(EvidenceError, match="batch id mismatch"):
         load_execution_evidence(execution_dir, batch_id="20260715-000000")
 
@@ -357,7 +357,7 @@ def test_no_latest_copy_moves_before_the_manifest_is_published(
     _, log = _publish_with_write_log(tmp_path, monkeypatch, api=make_api(), cov=make_cov())
 
     paths = [rel for rel, _ in log]
-    manifest_at = paths.index("execution-manifest.yaml")
+    manifest_at = paths.index("execution-manifest.json")
     for rel, snapshot in log[: manifest_at + 1]:
         assert snapshot == dict.fromkeys(_POINTERS, _STALE), f"a latest copy moved while writing {rel}"
 
@@ -374,7 +374,7 @@ def test_the_latest_copies_are_byte_copies_of_the_batch_files_afterwards(
         assert (execution_dir / name).read_bytes() == (batch_dir / name).read_bytes()
 
     paths = [rel for rel, _ in log]
-    assert paths.index("execution-manifest.yaml") < min(paths.index(name) for name in _POINTERS)
+    assert paths.index("execution-manifest.json") < min(paths.index(name) for name in _POINTERS)
 
 
 def test_an_unselected_targets_latest_copy_is_removed_after_the_manifest(
@@ -386,7 +386,7 @@ def test_an_unselected_targets_latest_copy_is_removed_after_the_manifest(
     execution_dir, log = _publish_with_write_log(tmp_path, monkeypatch, api=make_api(), cov=None)
 
     paths = [rel for rel, _ in log]
-    manifest_at = paths.index("execution-manifest.yaml")
+    manifest_at = paths.index("execution-manifest.json")
     assert all(snapshot["coverage-result.json"] == _STALE for _, snapshot in log[: manifest_at + 1])
     assert not (execution_dir / "coverage-result.json").exists()
     assert not (execution_dir / "runs/20260715-000000/coverage-result.json").exists()

@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 import yaml
 
+from assurance_agent.artifacts.paths import existing_with_alias
 from assurance_agent.risk.advisory import validate_advisory
 from assurance_agent.risk.context import (
     RiskContext,
@@ -163,8 +164,8 @@ def risk_validate_advisory(change_id: str, project_dir: str | None) -> None:
 
 
 def _read_run_context(project_root: Path, change_id: str) -> dict:
-    state_file = project_root / "qa" / "changes" / change_id / "workflow-state.yaml"
-    if not state_file.is_file():
+    state_file = existing_with_alias(project_root / "qa" / "changes" / change_id / "workflow-state.json")
+    if state_file is None:
         return {}
     parsed = yaml.safe_load(state_file.read_text(encoding="utf-8"))
     if not isinstance(parsed, dict):

@@ -189,7 +189,7 @@ def test_skill_field_references_subset_of_models() -> None:
 def test_agents_preserve_permission_floor() -> None:
     """No runtime agent grants an allow-rule for aa gate/status or workflow-state writes (spec 9).
 
-    Agents legitimately MENTION `aa gate check` / workflow-state.yaml in prose (the
+    Agents legitimately MENTION `aa gate check` / workflow-state.json in prose (the
     prohibition text), so we assert on permission *allow-rules* only, not substrings.
     """
     allow_gate = re.compile(r'"[^"]*aa (gate|status)[^"]*"\s*:\s*allow')

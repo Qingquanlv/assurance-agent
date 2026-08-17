@@ -5,8 +5,6 @@ from pathlib import Path
 
 from tests.helpers_aa import write_aa_config
 
-import yaml
-
 
 def make_archived_change(
     project_root: Path,
@@ -72,8 +70,8 @@ def make_archived_change(
     for seq, event in enumerate(events, start=1):
         event.setdefault("seq", seq)
     (root / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
-    (root / "workflow-state.yaml").write_text(
-        yaml.safe_dump({"change_id": change_id, "phases": phases or {}}), encoding="utf-8"
+    (root / "workflow-state.json").write_text(
+        json.dumps({"change_id": change_id, "phases": phases or {}}), encoding="utf-8"
     )
     inspect = root / "inspect"
     inspect.mkdir()
@@ -111,7 +109,7 @@ def make_archived_change(
             {
                 "schema_version": "1.0",
                 "change_id": change_id,
-                "source_manifest": "execution/execution-manifest.yaml",
+                "source_manifest": "execution/execution-manifest.json",
                 "inspection_status": "completed",
                 "batch_id": "b1",
                 "source_batch_id": "b1",

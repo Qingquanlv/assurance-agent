@@ -179,7 +179,7 @@ def test_read_only_guarantee_against_drifted_caches(tmp_path: Path) -> None:
     """缓存漂移时查询也绝不写文件（对照：CheckpointStore.project 会写）。"""
     change = tmp_path / "CH-1"
     seed_completed(change)
-    (change / "workflow-state.yaml").write_text("broken: [", encoding="utf-8")
+    (change / "workflow-state.json").write_text("broken: [", encoding="utf-8")
     snap_dir = change / ".graph-runtime" / "checkpoints"
     snap_dir.mkdir(parents=True, exist_ok=True)
     (snap_dir / "stale.json").write_text("{", encoding="utf-8")

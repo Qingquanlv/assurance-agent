@@ -505,11 +505,11 @@ const isAllowedArtifactPath = (agent, root, candidate) => {
   const relative = path.relative(root, candidate).split(path.sep);
   const inChange = relative[0] === 'qa' && relative[1] === 'changes' && relative.length >= 4;
   const inRetro = relative[0] === 'qa' && relative[1] === 'retro' && relative.length >= 4;
-  if (relative.at(-1) === 'workflow-state.yaml') return false;
+  if (relative.at(-1) === 'workflow-state.json' || relative.at(-1) === 'workflow-state.yaml') return false;
 
   if (agent === 'aa-doc-author') {
     if (inChange && ['cases', 'plans', 'facts', 'review', 'healing'].includes(relative[3])) return true;
-    if (inChange && relative.length === 5 && relative[3] === 'trace' && relative[4] === 'minimum-coverage-matrix.yaml') return true;
+    if (inChange && relative.length === 5 && relative[3] === 'trace' && relative[4] === 'minimum-coverage-matrix.json') return true;
     if (inChange && relative.length === 4 && ['proposal.md', '.qa.yaml'].includes(relative[3])) return true;
     if (inRetro && relative.length === 5 && relative[3] === 'signals' && ['issue.json', 'workflow.json', 'eval.json'].includes(relative[4])) return true;
     return inRetro && relative.length === 4 && ['proposal-candidates.json', 'retro-summary.md'].includes(relative[3]);

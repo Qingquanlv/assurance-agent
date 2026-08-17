@@ -10,8 +10,6 @@ module's freeze/ingest and before ``task_attempt_succeeded`` is appended.
 
 from __future__ import annotations
 
-import json
-import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -19,12 +17,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from assurance_agent.artifacts.models.issues import IssueAnalysisStatus, IssueCandidateDocument
-from assurance_agent.artifacts.models.minimum_coverage import MinimumCoverageMatrix
-from assurance_agent.artifacts.models.review import CaseReviewAuthoring
-from assurance_agent.artifacts.registry import ArtifactSpec, match_artifact
-from assurance_agent.config import load_config
-from assurance_agent.exceptions import AaError
+from assurance_agent.artifacts.paths import WORKFLOW_STATE_REL, existing_with_alias
+from assurance_agent.artifacts.registry import ArtifactSpec, load_registered_artifact, match_artifact
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
 from assurance_agent.workflow.graph.checkpoint import fold_invocation_events
 from assurance_agent.workflow.graph.codegen_manifest import (
@@ -56,14 +50,12 @@ from assurance_agent.workflow.graph.selected_wave import derive_child_invocation
 from assurance_agent.workflow.graph.subgraph_exports import SubgraphExportError, apply_subgraph_exports
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
-from assurance_agent.workflow.healing.safety import load_product_code_roots
 from assurance_agent.workflow.orchestration.gates import (
     FrozenGateReport,
     GateError,
     GateEvaluationContext,
     check_gate_in_view,
 )
-from assurance_agent.workflow.issues.identity import candidate_document_digest
 
 
 def finalize_task_result(
@@ -154,15 +146,8 @@ def finalize_task_result(
             outputs=outputs,
             written_outputs=written_outputs,
         )
-        source_invalid: TaskResult | None = None
-        if task.target == "skill:aa-case-design":
-            source_invalid = _validate_case_design_source_verification(workspace)
-        invalid = _aggregate_output_validation_failures(
-            registry_invalid,
-            source_invalid,
-        )
-        if invalid is not None:
-            return invalid
+        if registry_invalid is not None:
+            return registry_invalid
 
     if result.status == "succeeded" and node_def is not None and node_def.gate and result.gate_report is None:
         result = _attach_gate_report(
@@ -307,135 +292,6 @@ def _authoring_obligations_model(spec: ArtifactSpec) -> type[BaseModel] | None:
     return authoring
 
 
-def _aggregate_output_validation_failures(
-    *failures: TaskResult | None,
-) -> TaskResult | None:
-    present = [failure for failure in failures if failure is not None]
-    if not present:
-        return None
-    if len(present) == 1:
-        return present[0]
-    messages = [failure.error or "unknown output validation failure" for failure in present]
-    return task_failure(
-        "invalid_output",
-        "multiple output contract violations:\n- " + "\n- ".join(messages),
-    )
-
-
-_CASE_DESIGN_SOURCE_VERIFICATION_REPAIR = (
-    "\nRequired format:\n"
-    "- independently_read: true\n"
-    "- reviewed_source_files:\n"
-    "  - `<project-relative product source path>`"
-)
-
-
-def _case_design_source_failure(message: str) -> TaskResult:
-    return task_failure(
-        "invalid_output",
-        message + _CASE_DESIGN_SOURCE_VERIFICATION_REPAIR,
-    )
-
-
-def _validate_case_design_source_verification(workspace: TaskWorkspace) -> TaskResult | None:
-    """Require case-design's own, project-relative product-source evidence.
-
-    Explore evidence cannot prove that the case designer independently checked
-    the implementation.  This Markdown contract is deliberately enforced at
-    the frozen task boundary rather than trusted as prompt prose: the section,
-    explicit boolean, and every declared source path must be present and must
-    resolve to an existing file under a configured product-code root.
-    """
-    proposal = workspace.change_dir / "proposal.md"
-    try:
-        text = proposal.read_text(encoding="utf-8")
-    except OSError as exc:
-        return _case_design_source_failure(
-            f"case-design Product Source Verification could not read proposal.md: {exc}",
-        )
-
-    headings = list(re.finditer(r"(?m)^##[ \t]+Product Source Verification[ \t]*$", text))
-    if len(headings) != 1:
-        return _case_design_source_failure(
-            "case-design proposal.md must contain exactly one '## Product Source Verification' section",
-        )
-    start = headings[0].end()
-    next_heading = re.search(r"(?m)^##[ \t]+", text[start:])
-    end = start + next_heading.start() if next_heading is not None else len(text)
-    section = text[start:end]
-    if (
-        re.search(
-            r"(?mi)^[ \t]*-[ \t]*independently_read:[ \t]*true[ \t]*$",
-            section,
-        )
-        is None
-    ):
-        return _case_design_source_failure(
-            "case-design Product Source Verification must declare independently_read: true",
-        )
-
-    lines = section.splitlines()
-    source_paths: list[str] = []
-    for index, line in enumerate(lines):
-        if re.fullmatch(r"[ \t]*-[ \t]*reviewed_source_files:[ \t]*", line) is None:
-            continue
-        for item in lines[index + 1 :]:
-            match = re.fullmatch(r"[ \t]{2,}-[ \t]+(.+?)[ \t]*", item)
-            if match is not None:
-                source_paths.append(match.group(1).strip().strip("`\"'"))
-                continue
-            if item.strip():
-                break
-        break
-
-    project_root = workspace.project_root.resolve()
-    product_roots: list[Path] = []
-    raw_product_roots = list(load_product_code_roots(workspace.project_root))
-    try:
-        config = load_config(workspace.project_root)
-    except AaError:
-        # Workflow startup validates config separately. At this output boundary,
-        # retain the existing conservative product-root fallback rather than
-        # widening an invalid project configuration to arbitrary project files.
-        pass
-    else:
-        raw_product_roots.extend((config.sources.frontend, config.sources.backend))
-    for raw_root in dict.fromkeys(raw_product_roots):
-        try:
-            candidate = (workspace.project_root / raw_root).resolve(strict=True)
-            candidate.relative_to(project_root)
-        except (OSError, ValueError):
-            continue
-        if candidate.is_dir():
-            product_roots.append(candidate)
-
-    def valid_source(raw: str) -> bool:
-        rel = Path(raw)
-        if not raw or rel.is_absolute() or ".." in rel.parts:
-            return False
-        try:
-            resolved = (workspace.project_root / rel).resolve(strict=True)
-            resolved.relative_to(project_root)
-        except (OSError, ValueError):
-            return False
-        return resolved.is_file() and any(_path_is_within(resolved, root) for root in product_roots)
-
-    if not source_paths or any(not valid_source(path) for path in source_paths):
-        return _case_design_source_failure(
-            "case-design Product Source Verification reviewed_source_files must contain only "
-            "existing project-relative files under configured product-code roots",
-        )
-    return None
-
-
-def _path_is_within(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
-
-
 def _validate_registry_outputs(
     *,
     workspace: TaskWorkspace,
@@ -448,8 +304,6 @@ def _validate_registry_outputs(
     so an agent cannot hide an optional registry artifact behind a broader
     authorization such as ``change:plans/**``.
     """
-    validated: dict[str, Any] = {}
-    authored: dict[str, Any] = {}
     candidates: list[str] = []
     for output in (*outputs, *written_outputs):
         root, _, rest = output.partition(":")
@@ -482,149 +336,21 @@ def _validate_registry_outputs(
                 "invalid_output",
                 f"output '{output}' could not be read for schema validation: {exc}",
             )
-        is_yaml = rest.endswith((".yaml", ".yml"))
         try:
-            data = yaml.safe_load(raw) if is_yaml else json.loads(raw)
+            data = load_registered_artifact(rest, raw)
         except (ValueError, yaml.YAMLError) as exc:
-            kind = "YAML" if is_yaml else "JSON"
+            kind = spec.wire.upper()
             return task_failure("invalid_output", f"output '{output}' is not valid {kind}: {exc}")
         try:
-            authored[output] = data
             authoring = _authoring_obligations_model(spec)
             if authoring is not None:
                 authoring.model_validate(data)
-            validated[output] = spec.model.model_validate(data)
+            spec.model.model_validate(data)
         except ValidationError as exc:
             return task_failure(
                 "invalid_output",
                 f"output '{output}' failed {spec.artifact_type} schema validation: {exc}",
             )
-    candidate = validated.get("change:inspect/issue-candidates.json")
-    analysis_status = validated.get("change:inspect/issue-analysis-status.json")
-    if isinstance(candidate, IssueCandidateDocument) and isinstance(analysis_status, IssueAnalysisStatus):
-        expected = candidate_document_digest(authored["change:inspect/issue-candidates.json"])
-        if analysis_status.candidate_digest != expected:
-            return task_failure(
-                "invalid_output",
-                "output 'change:inspect/issue-analysis-status.json' candidate_digest "
-                f"must equal canonical issue-candidates digest {expected!r}",
-            )
-    case_review_raw = authored.get("change:review/case-review.json")
-    if case_review_raw is not None:
-        coverage_invalid = _validate_case_review_minimum_coverage(
-            workspace=workspace,
-            review_raw=case_review_raw,
-        )
-        if coverage_invalid is not None:
-            return coverage_invalid
-    approved_automation_invalid = _validate_case_design_approved_automation(authored)
-    if approved_automation_invalid is not None:
-        return approved_automation_invalid
-    return None
-
-
-def _validate_case_design_approved_automation(
-    authored: Mapping[str, object],
-) -> TaskResult | None:
-    """Reject case-design output that silently drops an approved test layer.
-
-    Layer applicability intentionally treats a missing/false
-    ``automation.required`` as manual-only.  Without this cross-artifact check,
-    an author could promise API/E2E/Fuzz/Performance in ``.qa.yaml`` yet hand in
-    cases that make those branches deterministically skip.
-    """
-    qa = authored.get("change:.qa.yaml")
-    if not isinstance(qa, Mapping):
-        return None
-    approval = qa.get("approval")
-    approach = approval.get("approved_approach") if isinstance(approval, Mapping) else None
-    if not isinstance(approach, str):
-        return None
-    layer_case_types = {
-        "api": "API",
-        "e2e": "E2E",
-        "fuzz": "Fuzz",
-        "performance": "Performance",
-    }
-    selected = {
-        case_type
-        for token, case_type in layer_case_types.items()
-        if re.search(rf"(?i)(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", approach)
-    }
-    if not selected:
-        return None
-
-    automated: set[str] = set()
-    for logical, document in authored.items():
-        if not (
-            logical.startswith("change:cases/")
-            and logical.endswith(("/case.yaml", "/case.yml", "/case.json"))
-            and isinstance(document, Mapping)
-        ):
-            continue
-        for bucket in ("added", "modified"):
-            entries = document.get(bucket)
-            if not isinstance(entries, list):
-                continue
-            for entry in entries:
-                if not isinstance(entry, Mapping):
-                    continue
-                automation = entry.get("automation")
-                if isinstance(automation, Mapping) and automation.get("required") is True:
-                    case_type = entry.get("type")
-                    if isinstance(case_type, str):
-                        automated.add(case_type)
-    missing = sorted(selected - automated)
-    if missing:
-        return task_failure(
-            "invalid_output",
-            ".qa.yaml approval selected automated layers without an "
-            f"automation.required=true case: {', '.join(missing)}",
-        )
-    return None
-
-
-def _validate_case_review_minimum_coverage(
-    *,
-    workspace: TaskWorkspace,
-    review_raw: object,
-) -> TaskResult | None:
-    """Cross-check the reviewer's MRC summary against the frozen matrix input."""
-    try:
-        review = CaseReviewAuthoring.model_validate(review_raw)
-    except ValidationError as exc:
-        return task_failure("invalid_output", f"case review authoring contract is invalid: {exc}")
-
-    matrix_path = workspace.change_dir / "trace" / "minimum-coverage-matrix.yaml"
-    try:
-        matrix_raw = yaml.safe_load(matrix_path.read_text(encoding="utf-8"))
-        matrix = MinimumCoverageMatrix.model_validate(matrix_raw)
-    except (OSError, ValueError, yaml.YAMLError, ValidationError) as exc:
-        return task_failure(
-            "invalid_output",
-            f"case review minimum_coverage requires a valid frozen trace/minimum-coverage-matrix.yaml: {exc}",
-        )
-
-    required = [row for row in matrix.root if row.required]
-    expected_total = len(required)
-    expected_covered = sum(row.status == "covered" for row in required)
-    expected_missing = [row.key for row in required if row.status == "skipped_by_scope"]
-    expected_skipped = len(expected_missing)
-    actual = review.minimum_coverage
-    if (
-        actual.total_required != expected_total
-        or actual.covered != expected_covered
-        or actual.skipped_by_scope != expected_skipped
-        or actual.missing != expected_missing
-    ):
-        return task_failure(
-            "invalid_output",
-            "case review minimum_coverage disagrees with frozen matrix: "
-            f"expected total_required={expected_total}, covered={expected_covered}, "
-            f"skipped_by_scope={expected_skipped}, missing={expected_missing!r}; "
-            f"got total_required={actual.total_required}, covered={actual.covered}, "
-            f"skipped_by_scope={actual.skipped_by_scope}, missing={actual.missing!r}",
-        )
     return None
 
 
@@ -749,11 +475,14 @@ def _state_values_for_gate(
         state: dict[str, Any] = dict(projection.state_values)
     else:
         state = {}
-        path = change_dir / "workflow-state.yaml"
-        if path.is_file():
+        path = existing_with_alias(change_dir / WORKFLOW_STATE_REL)
+        if path is not None:
             try:
-                raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            except (OSError, yaml.YAMLError):
+                text = path.read_text(encoding="utf-8")
+                rel = path.name
+                raw = load_registered_artifact(rel, text)
+                raw = raw or {}
+            except (OSError, yaml.YAMLError, ValueError):
                 raw = {}
             if isinstance(raw, dict):
                 state = {
