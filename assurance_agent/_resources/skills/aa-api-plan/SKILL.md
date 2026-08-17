@@ -21,6 +21,7 @@ Planning establishes case coverage, endpoint and assertion intent, data setup an
 
 ### optional
 
+- `change:review/api-plan-review.json`
 - `change:facts/fact-baseline.json`
 - `repo:.aa/config.yaml`
 - `repo:.aa/data-knowledge.yaml`
@@ -36,6 +37,7 @@ Planning establishes case coverage, endpoint and assertion intent, data setup an
 - `change:plans/api-plan.md`
 - `change:plans/api-test-data-plan.md`
 - `change:plans/api-codegen-plan.md`
+- `change:plans/api-codegen-mapping.yaml`
 - `change:plans/m3-review-summary.md`
 
 ### conditional
@@ -107,6 +109,11 @@ Do not use `removed` cases as plan scope.
 Do not continue past planning into codegen.
 
 ## Domain Notes
+
+When `change:review/api-plan-review.json` exists with `decision: needs_fix`, apply
+only the findings' `locator` targets. Do not rewrite unmentioned plan sections or
+mapping rows. Keep `plans/api-codegen-mapping.yaml` as the closed Case ID → symbol →
+target file contract; the markdown plan is narrative only.
 
 Shared business-valid factories belong in `tests/testdata/domain/`. They own domain defaults and invariant-preserving create/cleanup behavior, return plain snapshots, and contain no pytest, HTTP client, Playwright, Hypothesis, Locust, subprocess, or event-loop bridge code.
 

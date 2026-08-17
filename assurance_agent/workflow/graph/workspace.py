@@ -579,6 +579,31 @@ class WriteSet(BaseModel):
     base_tree_roots: dict[str, str] | None = None
 
 
+def _resource_is_concrete(path: ResourcePath) -> bool:
+    return all("*" not in segment for segment in path.segments)
+
+
+def _promote_written_concrete_outputs(
+    outputs_sha256: dict[str, str],
+    entries: Sequence[WriteEntry],
+    claims: ResourceClaims,
+) -> dict[str, str]:
+    """Publish written concrete authorization targets that were not declared outputs."""
+    concrete_auth = tuple(claim for claim in claims.authorization_writes if _resource_is_concrete(claim))
+    if not concrete_auth:
+        return outputs_sha256
+    promoted = dict(outputs_sha256)
+    for entry in entries:
+        if entry.after_sha256 is None or entry.logical_path in promoted:
+            continue
+        logical = ResourcePath.parse(entry.logical_path)
+        if not _resource_is_concrete(logical):
+            continue
+        if any(path_covers(claim, logical) for claim in concrete_auth):
+            promoted[entry.logical_path] = entry.after_sha256
+    return promoted
+
+
 # ---------------------------------------------------------------------------
 # TreeStore：内容寻址对象库 + tree capture/materialize + write-set freeze/merge
 
@@ -899,6 +924,9 @@ class TreeStore:
 
         每个实际变化路径必须被 ``authorization_writes`` 覆盖（fail closed）；
         变化的 symlink 一律拒绝；声明的 output 必须是存在的具体文件。
+        未声明但实际写入的具体 ``authorization_writes`` 文件也会进入
+        ``outputs_sha256``，这样条件产物（例如 applicability 只在
+        not-applicable 时写下的 plan-checks）仍能被 replay 绑定。
         """
         base = self._load_tree(workspace.base_tree_id)
         materialized = (
@@ -984,7 +1012,11 @@ class TreeStore:
                     executable=after.executable,
                 )
             )
-        outputs_sha256 = self._freeze_outputs(base.roots, current, outputs, workspace=workspace)
+        outputs_sha256 = _promote_written_concrete_outputs(
+            self._freeze_outputs(base.roots, current, outputs, workspace=workspace),
+            entries,
+            claims,
+        )
         base_tree_roots = {name: _assert_safe_prefix(prefix) for name, prefix in sorted(base.roots.items())}
         payload: dict[str, object] = {
             "base_tree_id": workspace.base_tree_id,

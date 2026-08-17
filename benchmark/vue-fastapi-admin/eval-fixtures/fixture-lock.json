@@ -3,7 +3,7 @@
   "fixtures": {
     "eval-sample-001": {
       "sample_dir": "samples/eval-sample-001",
-      "aggregate_sha256": "db3ba1da61b6645fc42b47a3a7b6a237ad7306f3c8b334def32619b1c1049edb",
+      "aggregate_sha256": "35d69f0bc1522621ac793af36b7b8397661c126f3bc212ed67c03dc7a83306cd",
       "files": {
         ".aa/config.yaml": "469fa82e83ce9ad7f37abf527192408f676cb89c50d9955bfe189945e198ab4e",
         ".aa/data-knowledge.yaml": "dc58b6de8af8a55efeda1856ad306ed5a65c94f5801ca44e032bccee55aa08f2",
@@ -59,7 +59,7 @@
         "plans/performance-review-summary.md": "815091599f11dc10724239511987a974937f1049689be97f08cb64a2c4096a79",
         "proposal.md": "80938825ba4c0a48dacdf0e37cdc3d513d8ec13db96deaf3640249397eb95b1a",
         "registry/skill-registry-check.json": "8bc761ad1982df44012c2578801ba048c739e28aeaf8d3bc854081cc72e2c011",
-        "review/api-plan-checks.json": "4ad3577744c5bab619e5df20efd9413763f3bcae426b86af8b4aa570ed88affc",
+        "review/api-plan-checks.json": "95fe61113be95aa8a1bb14a83a90e42bd6b58a2e824d5b7eada5838b4c06ad23",
         "review/api-plan-review-summary.md": "a0cfde73395db6b93677175e6191bd2dfaa3246dd436e4d4c6ae0f5b2b8b61c6",
         "review/api-plan-review.json": "4a509be38c2e5ff1786639b2c2666461c2af1b27a2ed62f3fb9838040b17cb0d",
         "review/case-review-apply-summary.md": "2eb2c6259688c03f326335f2304afabd8c2f4e26c99d7dbc9ea578372a4ccb4e",

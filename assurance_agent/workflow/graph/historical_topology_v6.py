@@ -39,7 +39,6 @@ V6_SEMANTICS_ID = "historical_topology_safety/v1"
 WIRING_STATUSES: frozenset[str] = frozenset({"wired", "legacy_unwired", "partial"})
 WiringStatus = Literal["wired", "legacy_unwired", "partial"]
 
-_MECHANICAL_OPERATION = "operation:verify-plan-mechanical"
 _FORBIDDEN_SELECTION_BUILTINS = frozenset({"node", "gate", "file_exists"})
 _REPLAYABLE_PLAN_BUILTINS = frozenset(
     {"plan_assurance_state", "capabilities_present", "check_failed", "defined", "len"}
@@ -97,7 +96,7 @@ def classify_historical_layer_topology_v6(
         )
 
     # Selection-only structural lineage (empty activation roles) is legacy_unwired.
-    if not roles.applicability_node_id or not roles.mechanical_node_id or not roles.plan_gate_node_id:
+    if not roles.applicability_node_id or not roles.reviewer_node_id or not roles.plan_gate_node_id:
         if _has_any_activation_marker(schema, topology_spec):
             return V6LayerClassification(
                 layer=layer,
@@ -135,20 +134,13 @@ def classify_historical_layer_topology_v6(
 
 
 def _has_any_activation_marker(schema: WorkflowSchemaV2, topology_spec: LayerTopologySpecView) -> bool:
-    """Return True when mechanical or plan-gate activation markers remain.
+    """Return True when an explicit plan-review gate remains.
 
     Branch-level preflight applicability alone is not an assurance-chain
     activation marker for the legacy_unwired boundary.
     """
     for graph in schema.graphs.values():
         for node in graph.nodes.values():
-            if (
-                node.uses == _MECHANICAL_OPERATION
-                and node.with_.get("layer") == topology_spec.layer
-                and node.with_.get("require_review") is True
-                and f"change:{topology_spec.checks_artifact}" in node.outputs
-            ):
-                return True
             if node.uses == "builtin:gate" and node.with_.get("gate") == topology_spec.gate_id:
                 return True
     return False
@@ -302,15 +294,15 @@ def _chain_diagnostics(
         errors.append(f"layer:{roles.layer}: applicability node must declare a route")
     else:
         if route.cases.get("true") != roles.reviewer_node_id:
-            errors.append(f"layer:{roles.layer}: applicable path must reach review before mechanical")
-        if route.cases.get("false") != roles.mechanical_node_id:
-            errors.append(f"layer:{roles.layer}: inapplicable path must reach mechanical producer")
+            errors.append(f"layer:{roles.layer}: applicable path must reach review")
+        if route.cases.get("false") != roles.plan_gate_node_id:
+            errors.append(f"layer:{roles.layer}: inapplicable path must reach the plan gate")
         if route.cases.get("true") == roles.reviewer_node_id and not _has_edge(
-            cycle, roles.reviewer_node_id, roles.mechanical_node_id
+            cycle, roles.reviewer_node_id, roles.plan_gate_node_id
         ):
-            errors.append(f"layer:{roles.layer}: review must precede mechanical on applicable path")
-    if not _has_edge(cycle, roles.mechanical_node_id, roles.plan_gate_node_id):
-        errors.append(f"layer:{roles.layer}: explicit gate must follow mechanical producer")
+            errors.append(f"layer:{roles.layer}: review must precede the plan gate on applicable path")
+    if not _has_edge(cycle, roles.reviewer_node_id, roles.plan_gate_node_id):
+        errors.append(f"layer:{roles.layer}: explicit gate must follow reviewer")
     return errors
 
 
@@ -361,7 +353,8 @@ def _remediation_diagnostics(
     fixer_ids = [
         node_id
         for node_id, node in cycle.nodes.items()
-        if node.uses.startswith("skill:") and "fixer" in node.uses
+        if node.uses.startswith("skill:")
+        and ("fixer" in node.uses or node.uses == f"skill:aa-{roles.layer}-plan")
     ]
     interrupts = [node_id for node_id, node in cycle.nodes.items() if node.uses == "builtin:interrupt"]
     for node_id in interrupts:
@@ -371,7 +364,7 @@ def _remediation_diagnostics(
             errors.append(f"{locator}: unaudited_remediation_return missing fix_and_proceed route")
             continue
         target = route.cases["fix_and_proceed"]
-        if target == roles.mechanical_node_id:
+        if target == roles.reviewer_node_id:
             continue
         if roles.layer in _SPECIALTY_LAYERS and target == roles.reviewer_node_id:
             continue
@@ -381,7 +374,7 @@ def _remediation_diagnostics(
             continue
         errors.append(
             f"{locator}: unaudited_remediation_return target={target!r} "
-            f"(expected mechanical/reviewer/fixer regeneration)"
+            f"(expected reviewer/fixer regeneration)"
         )
     return errors
 

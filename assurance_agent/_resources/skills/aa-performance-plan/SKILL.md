@@ -28,6 +28,7 @@ Turn the approved Performance portion of a QA Case Delta into reviewable impleme
 
 - `change:plans/performance-plan.md`
 - `change:plans/performance-codegen-plan.md`
+- `change:plans/performance-codegen-mapping.yaml`
 - `change:plans/performance-review-summary.md`
 
 ## State Authority

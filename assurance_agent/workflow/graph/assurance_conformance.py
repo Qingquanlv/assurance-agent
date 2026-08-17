@@ -15,7 +15,6 @@ from assurance_agent.workflow.graph.schema_v2 import GraphDef, WorkflowSchemaV2
 from assurance_agent.workflow.graph.topology_analysis import (
     Assignment,
     build_cfg,
-    can_reach,
     dominates,
     expression_has_top_level_predicates,
     expression_matches_required,
@@ -94,7 +93,6 @@ class _LayerRoles:
     cycle: GraphDef
     applicability_node_id: str
     reviewer_node_id: str
-    mechanical_node_id: str
     gate_node_id: str
     human_review_node_id: str
     knowledge_remediation_node_id: str
@@ -267,14 +265,6 @@ def _discover_layer_roles(
 
     applicability = _nodes_with_uses(cycle, "operation:derive-plan-layer-applicability", layer=layer)
     reviewers = [nid for nid, node in cycle.nodes.items() if node.uses == f"skill:aa-{layer}-plan-reviewer"]
-    mechanical = [
-        nid
-        for nid, node in cycle.nodes.items()
-        if node.uses == "operation:verify-plan-mechanical"
-        and node.with_.get("layer") == layer
-        and node.with_.get("require_review") is True
-        and f"change:{profile.checks_artifact}" in node.outputs
-    ]
     gates = [
         nid
         for nid, node in cycle.nodes.items()
@@ -291,8 +281,11 @@ def _discover_layer_roles(
         for nid, node in cycle.nodes.items()
         if nid == "knowledge-remediation" or (node.uses == "builtin:interrupt" and "knowledge" in nid)
     ]
+    author_reentry = f"skill:aa-{layer}-plan"
     fixers = [
-        nid for nid, node in cycle.nodes.items() if node.uses.startswith("skill:") and "fixer" in node.uses
+        nid
+        for nid, node in cycle.nodes.items()
+        if node.uses.startswith("skill:") and ("fixer" in node.uses or node.uses == author_reentry)
     ]
     codegen_gate_id = f"{layer}-codegen-precondition-gate"
     prechecks = [
@@ -332,7 +325,6 @@ def _discover_layer_roles(
 
     applicability_id = require_one("applicability", "applicability", applicability, f"graph:{cycle_graph_id}")
     reviewer_id = require_one("reviewer", "reviewer", reviewers, f"graph:{cycle_graph_id}")
-    mechanical_id = require_one("mechanical", "mechanical", mechanical, f"graph:{cycle_graph_id}")
     gate_id = require_one("plan gate owner", "plan-gate", gates, f"graph:{cycle_graph_id}")
     human_id = require_one("human-review interrupt", "human-review", human, f"graph:{cycle_graph_id}")
     knowledge_id = require_one(
@@ -352,7 +344,6 @@ def _discover_layer_roles(
     if (
         applicability_id is None
         or reviewer_id is None
-        or mechanical_id is None
         or gate_id is None
         or human_id is None
         or knowledge_id is None
@@ -373,7 +364,6 @@ def _discover_layer_roles(
         cycle=cycle,
         applicability_node_id=applicability_id,
         reviewer_node_id=reviewer_id,
-        mechanical_node_id=mechanical_id,
         gate_node_id=gate_id,
         human_review_node_id=human_id,
         knowledge_remediation_node_id=knowledge_id,
@@ -520,24 +510,26 @@ def _edge_allows_modes(when: str, modes: tuple[str, ...]) -> bool:
 def _chain_edge_issues(roles: _LayerRoles) -> list[AssuranceConformanceIssue]:
     issues: list[AssuranceConformanceIssue] = []
     cycle = roles.cycle
-    if not _has_edge(cycle, roles.reviewer_node_id, roles.mechanical_node_id):
+    checks_output = f"change:{roles.profile.checks_artifact}"
+    reviewer = cycle.nodes[roles.reviewer_node_id]
+    if checks_output not in reviewer.outputs:
         issues.append(
             _issue(
                 "missing_required_edge",
                 layer=roles.layer,
-                owner="mechanical",
-                locator=f"graph:{roles.cycle_graph_id}",
-                detail="review must precede mechanical on the applicable path",
+                owner="reviewer",
+                locator=f"graph:{roles.cycle_graph_id}.nodes.{roles.reviewer_node_id}.outputs",
+                detail=f"reviewer outputs must include {checks_output}",
             )
         )
-    if not _has_edge(cycle, roles.mechanical_node_id, roles.gate_node_id):
+    if not _has_edge(cycle, roles.reviewer_node_id, roles.gate_node_id):
         issues.append(
             _issue(
                 "missing_required_edge",
                 layer=roles.layer,
                 owner="plan-gate",
                 locator=f"graph:{roles.cycle_graph_id}",
-                detail="explicit plan gate must follow mechanical producer",
+                detail="explicit plan gate must follow reviewer",
             )
         )
     if roles.fixer_node_id is not None and not _has_edge(cycle, roles.fixer_node_id, roles.reviewer_node_id):
@@ -645,14 +637,14 @@ def _route_issues(roles: _LayerRoles) -> list[AssuranceConformanceIssue]:
                     detail="applicable path must reach review",
                 )
             )
-        if applicability_route.cases.get("false") != roles.mechanical_node_id:
+        if applicability_route.cases.get("false") != roles.gate_node_id:
             issues.append(
                 _issue(
                     "route_case_mismatch",
                     layer=roles.layer,
                     owner="applicability",
                     locator=f"graph:{roles.cycle_graph_id}.routes.{roles.applicability_node_id}",
-                    detail="inapplicable path must reach mechanical",
+                    detail="inapplicable path must reach review-gate",
                 )
             )
 
@@ -1159,6 +1151,7 @@ def _interrupt_issues(roles: _LayerRoles) -> list[AssuranceConformanceIssue]:
                 expected_paths = {
                     f"change:plans/{roles.layer}-plan.md",
                     f"change:plans/{roles.layer}-codegen-plan.md",
+                    f"change:plans/{roles.layer}-codegen-mapping.yaml",
                 }
                 if set(revision.paths) != expected_paths or revision.action != "fix_and_proceed":
                     issues.append(
@@ -1187,14 +1180,14 @@ def _interrupt_issues(roles: _LayerRoles) -> list[AssuranceConformanceIssue]:
 def _remediation_issues(roles: _LayerRoles) -> list[AssuranceConformanceIssue]:
     issues: list[AssuranceConformanceIssue] = []
     knowledge_route = _route_from(roles.cycle, roles.knowledge_remediation_node_id)
-    if knowledge_route is None or knowledge_route.cases.get("fix_and_proceed") != roles.mechanical_node_id:
+    if knowledge_route is None or knowledge_route.cases.get("fix_and_proceed") != roles.reviewer_node_id:
         issues.append(
             _issue(
                 "remediation_return_mismatch",
                 layer=roles.layer,
                 owner="knowledge-remediation",
                 locator=f"graph:{roles.cycle_graph_id}.routes.{roles.knowledge_remediation_node_id}",
-                detail="knowledge remediation must return to mechanical",
+                detail="knowledge remediation must return to review",
             )
         )
     if roles.fixer_node_id is not None:
@@ -1228,7 +1221,6 @@ def _remediation_issues(roles: _LayerRoles) -> list[AssuranceConformanceIssue]:
 def _bypass_issues(roles: _LayerRoles) -> list[AssuranceConformanceIssue]:
     issues: list[AssuranceConformanceIssue] = []
     branch_cfg = build_cfg(roles.branch)
-    cycle_cfg = build_cfg(roles.cycle)
 
     # No path into codegen that avoids the precondition owner.
     if paths_exist_avoiding(
@@ -1274,30 +1266,17 @@ def _bypass_issues(roles: _LayerRoles) -> list[AssuranceConformanceIssue]:
                 )
             )
 
-    # Within the cycle, codegen is not present; ensure gate remains on path from review.
-    if roles.gate_node_id and can_reach(cycle_cfg, roles.reviewer_node_id, roles.mechanical_node_id):
-        if paths_exist_avoiding(
-            cycle_cfg,
-            roles.reviewer_node_id,
-            roles.gate_node_id if roles.gate_node_id in cycle_cfg.nodes else "END",
-            avoid={roles.mechanical_node_id},
-        ):
-            # Only flag when gate is still reachable while skipping mechanical — bypass of mechanical.
-            if can_reach(cycle_cfg, roles.reviewer_node_id, roles.gate_node_id) and paths_exist_avoiding(
-                cycle_cfg,
-                roles.reviewer_node_id,
-                roles.gate_node_id,
-                avoid={roles.mechanical_node_id},
-            ):
-                issues.append(
-                    _issue(
-                        "forbidden_bypass_edge",
-                        layer=roles.layer,
-                        owner="plan-gate",
-                        locator=f"graph:{roles.cycle_graph_id}",
-                        detail="plan gate is reachable while bypassing mechanical producer",
-                    )
-                )
+    incoming_to_gate = {edge.from_ for edge in roles.cycle.edges if edge.to == roles.gate_node_id}
+    if incoming_to_gate - {roles.reviewer_node_id}:
+        issues.append(
+            _issue(
+                "forbidden_bypass_edge",
+                layer=roles.layer,
+                owner="plan-gate",
+                locator=f"graph:{roles.cycle_graph_id}",
+                detail="plan gate is reachable while bypassing reviewer on the applicable path",
+            )
+        )
     return issues
 
 

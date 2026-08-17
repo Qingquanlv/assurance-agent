@@ -22,7 +22,6 @@ from assurance_agent.workflow.orchestration.dsl import (
 from assurance_agent.workflow.orchestration.schema import derive_alias
 
 _APPLICABILITY_OPERATION = "operation:derive-plan-layer-applicability"
-_MECHANICAL_OPERATION = "operation:verify-plan-mechanical"
 _DATA_KNOWLEDGE_PATH = "repo:.aa/data-knowledge.yaml"
 _DATA_KNOWLEDGE_ALIAS = "data_knowledge"
 
@@ -55,7 +54,6 @@ class DiscoveredHistoricalLayerRoles:
     cycle_graph_id: str
     applicability_node_id: str
     reviewer_node_id: str
-    mechanical_node_id: str
     plan_gate_node_id: str
     precondition_node_id: str
     codegen_node_id: str
@@ -208,7 +206,6 @@ def _discover_layer(
                 cycle_graph_id=cycle_graph_id,
                 applicability_node_id="",
                 reviewer_node_id="",
-                mechanical_node_id="",
                 plan_gate_node_id="",
                 precondition_node_id=precondition_ids[0] if len(precondition_ids) == 1 else "",
                 codegen_node_id=codegen_ids[0] if len(codegen_ids) == 1 else "",
@@ -240,14 +237,6 @@ def _discover_layer(
         name="applicability",
         issues=local_issues,
     )
-    mechanical = _unique_node(
-        _mechanical_nodes(cycle, profile),
-        layer=layer,
-        owner="mechanical",
-        locator=f"graph:{cycle_graph_id}",
-        name="mechanical",
-        issues=local_issues,
-    )
     plan_gate = _unique_node(
         _gate_owner_nodes(cycle, profile.gate_id),
         layer=layer,
@@ -269,7 +258,7 @@ def _discover_layer(
     if dup_issues:
         issues.extend(dup_issues)
         return None, issues
-    if applicability is None or mechanical is None or plan_gate is None or reviewer is None:
+    if applicability is None or plan_gate is None or reviewer is None:
         issues.extend(local_issues)
         return None, issues
 
@@ -361,7 +350,6 @@ def _discover_layer(
             cycle_graph_id=cycle_graph_id,
             applicability_node_id=applicability,
             reviewer_node_id=reviewer,
-            mechanical_node_id=mechanical,
             plan_gate_node_id=plan_gate,
             precondition_node_id=precondition,
             codegen_node_id=codegen,
@@ -500,7 +488,7 @@ def _discover_root_call(
 
 
 def _graphs_with_activation(schema: WorkflowSchemaV2, profile: LayerAssuranceProfile) -> set[str]:
-    """Identify cycle graphs by activation producers (mechanical / plan gate).
+    """Identify cycle graphs by the explicit plan-review gate owner.
 
     Branch-level preflight applicability and reviewer-only graphs are not enough:
     zero-marker legacy graphs must omit the layer so classification can report
@@ -508,9 +496,7 @@ def _graphs_with_activation(schema: WorkflowSchemaV2, profile: LayerAssurancePro
     """
     hits: set[str] = set()
     for graph_id, graph in schema.graphs.items():
-        has_mechanical = bool(_mechanical_nodes(graph, profile))
-        has_gate = bool(_gate_owner_nodes(graph, profile.gate_id))
-        if has_mechanical or has_gate:
+        if _gate_owner_nodes(graph, profile.gate_id):
             hits.add(graph_id)
     return hits
 
@@ -532,22 +518,6 @@ def _applicability_nodes(graph: GraphDef, layer: str) -> list[str]:
         for node_id, node in graph.nodes.items()
         if node.uses == _APPLICABILITY_OPERATION and node.with_.get("layer") == layer
     ]
-
-
-def _mechanical_nodes(graph: GraphDef, profile: LayerAssuranceProfile) -> list[str]:
-    expected_output = f"change:{profile.checks_artifact}"
-    nodes: list[str] = []
-    for node_id, node in graph.nodes.items():
-        if node.uses != _MECHANICAL_OPERATION:
-            continue
-        if node.with_.get("layer") != profile.layer:
-            continue
-        if node.with_.get("require_review") is not True:
-            continue
-        if expected_output not in node.outputs:
-            continue
-        nodes.append(node_id)
-    return nodes
 
 
 def _gate_owner_nodes(graph: GraphDef, gate_id: str) -> list[str]:
@@ -704,7 +674,6 @@ def _manifest_digest(roles: DiscoveredHistoricalAssuranceRoles) -> str:
                 "cycle_graph_id": item.cycle_graph_id,
                 "applicability_node_id": item.applicability_node_id,
                 "reviewer_node_id": item.reviewer_node_id,
-                "mechanical_node_id": item.mechanical_node_id,
                 "plan_gate_node_id": item.plan_gate_node_id,
                 "precondition_node_id": item.precondition_node_id,
                 "codegen_node_id": item.codegen_node_id,

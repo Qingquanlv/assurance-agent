@@ -48,7 +48,7 @@ def _topology_spec(layer: str) -> LayerTopologySpec:
 def _strip_activation_markers(schema: WorkflowSchemaV2, layer: str) -> WorkflowSchemaV2:
     cycle_id = f"{layer}-plan-cycle"
     cycle = schema.graphs[cycle_id]
-    drop = {"applicability", "mechanical-plan-checks", "review-gate"}
+    drop = {"applicability", "review", "review-gate"}
     nodes = {k: v for k, v in cycle.nodes.items() if k not in drop}
     return schema.model_copy(
         update={"graphs": {**schema.graphs, cycle_id: cycle.model_copy(update={"nodes": nodes})}}
@@ -270,10 +270,10 @@ def test_v6_safety_mutations() -> None:
         for item in unknown_topo.diagnostics
     )
 
-    # Duplicate mechanical role → discovery fails closed / incomplete → partial.
+    # Duplicate reviewer role → discovery fails closed / incomplete → partial.
     cycle = schema.graphs["api-plan-cycle"]
-    mechanical = cycle.nodes["mechanical-plan-checks"]
-    dup_nodes = {**cycle.nodes, "mechanical-plan-checks-dup": mechanical}
+    reviewer = cycle.nodes["review"]
+    dup_nodes = {**cycle.nodes, "review-dup": reviewer}
     dup = schema.model_copy(
         update={"graphs": {**schema.graphs, "api-plan-cycle": cycle.model_copy(update={"nodes": dup_nodes})}}
     )
@@ -362,7 +362,7 @@ def test_v6_unaudited_remediation_return_is_partial() -> None:
     routes = [
         route
         if route.from_ != "knowledge-remediation"
-        else route.model_copy(update={"cases": {**route.cases, "fix_and_proceed": "review"}})
+        else route.model_copy(update={"cases": {**route.cases, "fix_and_proceed": "END"}})
         for route in cycle.routes
     ]
     mutated = schema.model_copy(

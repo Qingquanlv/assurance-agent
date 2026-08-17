@@ -425,3 +425,44 @@ def test_fuzz_performance_registry_and_profile_use_strong_plan_review_model() ->
     assert performance_spec.authoring_model is PlanReviewAuthoring
     assert get_layer_assurance_profile("fuzz").review_model is PlanReview
     assert get_layer_assurance_profile("performance").review_model is PlanReview
+
+
+def test_plan_review_authoring_finding_requires_locator() -> None:
+    payload = valid_plan_review_authoring(
+        decision="needs_fix",
+        auto_fix_allowed=True,
+        findings=[
+            {"id": "APIR-001", "severity": "high", "category": "contract", "message": "missing mapping"}
+        ],
+    )
+    with pytest.raises(ValidationError, match="locator"):
+        PlanReviewAuthoring.model_validate(payload)
+
+
+def test_plan_review_authoring_finding_with_locator_passes() -> None:
+    payload = valid_plan_review_authoring(
+        decision="needs_fix",
+        auto_fix_allowed=True,
+        findings=[
+            {
+                "id": "APIR-001",
+                "severity": "high",
+                "category": "contract",
+                "message": "missing mapping row",
+                "locator": {
+                    "artifact": "change:plans/api-codegen-mapping.yaml",
+                    "case_id": "API_001",
+                },
+            }
+        ],
+        auto_fix_plan=[{"finding_id": "APIR-001", "action": "add_mapping_row"}],
+    )
+    model = PlanReviewAuthoring.model_validate(payload)
+    assert model.findings[0]["locator"]["case_id"] == "API_001"
+
+
+def test_apply_intent_is_must_compat() -> None:
+    api = match_artifact("healing/api-apply-intent.json")
+    e2e = match_artifact("healing/e2e-apply-intent.json")
+    assert api is not None and api.compat == "must_compat"
+    assert e2e is not None and e2e.compat == "must_compat"

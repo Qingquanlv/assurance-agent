@@ -100,7 +100,7 @@ def _load_field_allowlist() -> set[str]:
 def test_thirty_eight_skills_present() -> None:
     names = _skill_names()
     # Retro v3 analyzers, Improvement reviewer, and coverage-repair.
-    assert len(names) == 39
+    assert len(names) == 36
     assert "writing-skills" in names
     assert "aa-workflow" in names
     assert "aa-dashboard" in names

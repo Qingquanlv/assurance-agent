@@ -70,11 +70,8 @@ execution:
 
       # Design, design repair, and coverage repair need stronger contract fidelity.
       aa-case-design: anthropic/glm-5.2
-      aa-case-fixer: anthropic/glm-5.2
       aa-api-plan: anthropic/glm-5.2
-      aa-api-plan-fixer: anthropic/glm-5.2
       aa-e2e-plan: anthropic/glm-5.2
-      aa-e2e-plan-fixer: anthropic/glm-5.2
       aa-fuzz-plan: anthropic/glm-5.2
       aa-performance-plan: anthropic/glm-5.2
       aa-coverage-repair: anthropic/glm-5.2

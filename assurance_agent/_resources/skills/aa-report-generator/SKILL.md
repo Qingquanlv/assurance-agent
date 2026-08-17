@@ -135,14 +135,8 @@ quality_score = round(sum of active dimension points)
 ## Output Files (read after CLI completes)
 
 > **Schema source of truth:** the complete, enforced field contract for quality reports
-> lives in `src/schema/quality_report.ts` (validated by `aa validate`). After report
-> generation completes you MUST run:
->
-> ```
-> aa validate --change <change-id> --phase report
-> ```
->
-> and resolve every reported error. Do not rely on this document for the full field list.
+> lives in `assurance_agent/artifacts/models/report.py`. Runtime `finalize` validates
+> authored files against that model.
 
 ```
 qa/changes/<change-id>/report/

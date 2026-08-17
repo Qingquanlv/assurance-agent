@@ -16,7 +16,6 @@ from assurance_agent.workflow.graph.handlers.operation import (
 )
 from assurance_agent.workflow.graph.handlers.plan_checks import (
     derive_plan_layer_applicability,
-    verify_plan_mechanical,
 )
 from assurance_agent.workflow.graph.handlers.trace_projection import materialize_trace_projection
 from assurance_agent.workflow.healing.graph_ops import (
@@ -124,7 +123,6 @@ def default_operations() -> dict[str, OperationFn]:
     return {
         "operation:no-op": no_op,
         "operation:skill-registry-check": skill_registry_check,
-        "operation:verify-plan-mechanical": verify_plan_mechanical,
         "operation:derive-plan-layer-applicability": derive_plan_layer_applicability,
         "operation:run-tests": run_tests,
         "operation:run-tests-and-collect-pr-metrics": run_tests_and_collect_pr_metrics,

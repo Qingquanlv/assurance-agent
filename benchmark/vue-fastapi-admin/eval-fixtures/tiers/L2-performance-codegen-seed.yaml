@@ -47,10 +47,6 @@ imports:
       outputs:
       - change:review/performance-plan-review.json
       - change:review/performance-plan-review-summary.md
-    - path: execute-workflow/assurance/assurance/performance/performance-branch/review-cycle/performance-plan-cycle
-      graph: performance-plan-cycle
-      node: mechanical-plan-checks
-      outputs:
       - change:review/performance-plan-checks.json
     - path: execute-workflow/assurance/assurance/performance/performance-branch/review-cycle/performance-plan-cycle
       graph: performance-plan-cycle

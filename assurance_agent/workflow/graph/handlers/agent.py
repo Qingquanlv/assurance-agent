@@ -38,6 +38,10 @@ from assurance_agent.workflow.graph.contracts import (
 )
 from assurance_agent.workflow.graph.model_routing import ModelRouteContext, ModelRouter
 from assurance_agent.workflow.graph.plan_output_validation import validate_fuzz_plan_outputs
+from assurance_agent.workflow.graph.reviewer_plan_checks import (
+    PlanChecksCompletionError,
+    complete_reviewer_plan_checks,
+)
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
     ExecutableTask,
@@ -273,6 +277,11 @@ class AgentHandler:
                 context=context,
                 claims=claims,
             )
+            complete_reviewer_plan_checks(
+                task=task,
+                workspace=workspace,
+                context=context,
+            )
             complete_issue_analyzer_outputs(workspace.change_dir, outputs)
             complete_signal_outputs(workspace.project_root, outputs)
             complete_candidate_outputs(workspace.project_root, outputs)
@@ -308,6 +317,7 @@ class AgentHandler:
             CandidateOutputError,
             ImprovementReviewerOutputError,
             CodegenManifestError,
+            PlanChecksCompletionError,
             TypeError,
             ValueError,
         ) as exc:

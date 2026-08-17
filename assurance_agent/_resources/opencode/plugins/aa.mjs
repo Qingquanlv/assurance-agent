@@ -67,7 +67,6 @@ const INTAKE_HOST_SKILLS = new Set([
   'aa-explore',
   'aa-case-design',
   'aa-case-reviewer',
-  'aa-case-fixer',
 ]);
 
 // OMO supplies its own grep/glob implementations. Those tools spawn rg

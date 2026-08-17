@@ -1,0 +1,6 @@
+schema_version: "1"
+layer: performance
+entries:
+  - case_id: PERF-001
+    symbol: get_accounts
+    target_file: tests/perf/locustfile_accounts.py

@@ -25,7 +25,7 @@ from tests.helpers_four_layer_runtime import (
     run_codegen_only,
 )
 
-_RESTART_SEAMS = ("review", "mechanical-plan-checks", "review-gate", "codegen-precheck")
+_RESTART_SEAMS = ("review", "review-gate", "codegen-precheck")
 
 
 def _layer_suffix(layer: LayerName) -> str:
@@ -121,16 +121,8 @@ def test_api_e2e_auto_fixer_creates_new_epoch(tmp_path: Path, layer: LayerName) 
     events = events_for_root(root_events(fixture.change_dir), result.invocation_id)
     assert count_attempts(events, node_id="fix") >= 1
     assert count_attempts(events, node_id="review") >= 2
-    assert count_attempts(events, node_id="mechanical-plan-checks") >= 2
     assert count_attempts(events, node_id="review-gate") >= 2
     assert count_attempts(events, node_id="codegen") == 1
-    # First-epoch mechanical evidence must not be the only bound attempt.
-    mechanical_started = [
-        e
-        for e in events
-        if e.get("type") == "task_attempt_started" and e.get("node_id") == "mechanical-plan-checks"
-    ]
-    assert len(mechanical_started) >= 2
 
 
 @pytest.mark.parametrize("layer", ("api", "e2e"))
@@ -138,7 +130,7 @@ def test_api_e2e_auto_fixer_creates_new_epoch(tmp_path: Path, layer: LayerName) 
     "seam",
     (
         "fix",
-        "mechanical-plan-checks",
+        "review",
     ),
 )
 def test_api_e2e_fixer_restart_seams(tmp_path: Path, layer: LayerName, seam: str) -> None:

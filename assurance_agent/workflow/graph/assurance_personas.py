@@ -1,6 +1,6 @@
 """Exact assurance skill → OpenCode persona registry (D11).
 
-Task 15 activates this closed sixteen-target table in ``AgentHandler``. Unknown
+Task 15 activates this closed fourteen-target table in ``AgentHandler``. Unknown
 and non-assurance targets keep the keyword fallback in ``agent_for_skill``.
 """
 
@@ -11,7 +11,7 @@ from typing import Final, Mapping
 
 AssurancePersona = str
 
-# Four planners + API/E2E plan fixers → aa-doc-author
+# Four planners → aa-doc-author
 # Four reviewers → aa-reviewer
 # Four codegen + API/E2E codegen fixers → aa-test-author
 ASSURANCE_PERSONA_BY_TARGET: Final[Mapping[str, AssurancePersona]] = MappingProxyType(
@@ -20,8 +20,6 @@ ASSURANCE_PERSONA_BY_TARGET: Final[Mapping[str, AssurancePersona]] = MappingProx
         "aa-e2e-plan": "aa-doc-author",
         "aa-fuzz-plan": "aa-doc-author",
         "aa-performance-plan": "aa-doc-author",
-        "aa-api-plan-fixer": "aa-doc-author",
-        "aa-e2e-plan-fixer": "aa-doc-author",
         "aa-api-plan-reviewer": "aa-reviewer",
         "aa-e2e-plan-reviewer": "aa-reviewer",
         "aa-fuzz-plan-reviewer": "aa-reviewer",

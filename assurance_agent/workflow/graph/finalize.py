@@ -19,10 +19,10 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from assurance_agent.artifacts.registry import ArtifactSpec, match_artifact
 from assurance_agent.artifacts.models.issues import IssueAnalysisStatus, IssueCandidateDocument
 from assurance_agent.artifacts.models.minimum_coverage import MinimumCoverageMatrix
 from assurance_agent.artifacts.models.review import CaseReviewAuthoring
+from assurance_agent.artifacts.registry import ArtifactSpec, match_artifact
 from assurance_agent.config import load_config
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
@@ -38,7 +38,6 @@ from assurance_agent.workflow.graph.frozen_output import (
     candidate_value_map,
     frozen_outputs_wire,
 )
-from assurance_agent.workflow.graph.subgraph_exports import SubgraphExportError, apply_subgraph_exports
 from assurance_agent.workflow.graph.ingest import ingest_from_write_set
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
@@ -48,8 +47,13 @@ from assurance_agent.workflow.graph.models import (
     TaskResult,
 )
 from assurance_agent.workflow.graph.node_history import build_node_results_for_gate
+from assurance_agent.workflow.graph.reviewer_plan_checks import (
+    PlanChecksCompletionError,
+    complete_reviewer_plan_checks,
+)
 from assurance_agent.workflow.graph.schema_v2 import NodeDef
 from assurance_agent.workflow.graph.selected_wave import derive_child_invocation_id
+from assurance_agent.workflow.graph.subgraph_exports import SubgraphExportError, apply_subgraph_exports
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
 from assurance_agent.workflow.healing.safety import load_product_code_roots
@@ -90,6 +94,14 @@ def finalize_task_result(
                     context=context,
                 )
             except CodegenManifestError as exc:
+                return task_failure("invalid_output", str(exc))
+            try:
+                complete_reviewer_plan_checks(
+                    task=task,
+                    workspace=workspace,
+                    context=context,
+                )
+            except PlanChecksCompletionError as exc:
                 return task_failure("invalid_output", str(exc))
         result = _ensure_outputs_frozen(
             store=store,

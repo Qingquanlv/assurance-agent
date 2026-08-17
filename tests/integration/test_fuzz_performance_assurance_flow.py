@@ -125,7 +125,7 @@ def test_inapplicable_branch_skips_reviewer(tmp_path: Path, layer: str, graph_id
     plan = _plan_cycle(
         compiled, tmp_path, graph_id=graph_id, layer=layer, tasks=[applicability], supersteps=1
     )
-    assert [task.node_id for task in plan.tasks] == ["mechanical-plan-checks"]
+    assert [task.node_id for task in plan.tasks] == ["review-gate"]
     assert "review" not in {task.node_id for task in plan.tasks}
 
 
@@ -141,13 +141,12 @@ def test_needs_fix_routes_to_human_review(tmp_path: Path, layer: str, graph_id: 
             value={"layer": layer, "applicable": True, "reason_code": "has_cases", "case_ids": ["C1"]},
         ),
         _task("review"),
-        _task("mechanical-plan-checks"),
         _task(
             "review-gate",
             gate_report={"verdict": "needs_fix", "gate_id": f"{layer}-plan-review-gate"},
         ),
     ]
-    plan = _plan_cycle(compiled, tmp_path, graph_id=graph_id, layer=layer, tasks=tasks, supersteps=4)
+    plan = _plan_cycle(compiled, tmp_path, graph_id=graph_id, layer=layer, tasks=tasks, supersteps=3)
     assert [task.node_id for task in plan.tasks] == ["human-review"]
 
 

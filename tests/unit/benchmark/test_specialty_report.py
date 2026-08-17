@@ -624,7 +624,7 @@ def _corrupt_api_mechanical_outputs(change_dir: Path) -> None:
     checks_path = normalize_logical_path(f"change:{profile.checks_artifact}")
     for event in events:
         task_id = str(event.get("task_id", ""))
-        if event.get("type") == "task_attempt_succeeded" and task_id.endswith(":mechanical-plan-checks"):
+        if event.get("type") == "task_attempt_succeeded" and task_id.endswith(":review"):
             if "api-plan-cycle" not in task_id:
                 continue
             event["outputs_sha256"] = {checks_path: "0" * 64}

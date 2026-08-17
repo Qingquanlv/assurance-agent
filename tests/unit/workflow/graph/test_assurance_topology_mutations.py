@@ -449,7 +449,6 @@ def test_precondition_pass_routed_wrong_target_rejected() -> None:
     ("graph_id", "node_id", "new_id", "expected"),
     [
         ("api-plan-cycle", "review", "review-2", "missing_unique_node"),
-        ("api-plan-cycle", "mechanical-plan-checks", "mechanical-2", "missing_unique_node"),
         ("api-plan-cycle", "review-gate", "review-gate-2", "missing_unique_node"),
         ("api-branch", "codegen-precheck", "codegen-precheck-2", "missing_unique_node"),
         ("api-branch", "codegen", "codegen-2", "missing_unique_node"),
@@ -484,7 +483,7 @@ def test_knowledge_remediation_returns_elsewhere_rejected() -> None:
         "api-plan-cycle",
         "knowledge-remediation",
         "fix_and_proceed",
-        "review",
+        "END",
     )
     assert "remediation_return_mismatch" in _codes(mutated)
 

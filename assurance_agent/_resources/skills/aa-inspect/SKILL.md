@@ -222,17 +222,10 @@ MCP is optional and must not replace the CLI execution chain.
 ## failure-analysis.json Schema
 
 > **Schema source of truth:** the complete, enforced field contracts for inspect outputs
-> live in `src/schema/failure_analysis.ts` and `src/schema/quality_gate_result.ts`
-> (validated by `aa validate`). The examples below are illustrative only. After primary
-> inspect completes you MUST run:
->
-> ```
-> aa validate --change <change-id> --phase inspect
-> ```
->
-> and resolve every reported error. Do not rely on this document for the full field list.
+> live in `assurance_agent/artifacts/models/inspect.py`. Runtime `finalize` validates
+> authored files against those models. The examples below are illustrative only.
 
-Primary inspect output written by the CLI (skill verifies; does not fabricate). Minimal top-level structure — see `src/schema/failure_analysis.ts` for the full contract.
+Primary inspect output written by the CLI (skill verifies; does not fabricate). Minimal top-level structure — see `assurance_agent/artifacts/models/inspect.py` for the full contract.
 
 `inspect_mode` enum (JSON and `workflow-state.yaml`): `primary | partial`
 
@@ -256,7 +249,7 @@ Primary inspect output written by the CLI (skill verifies; does not fabricate). 
 
 ## quality-gate-result.json Schema (M1)
 
-The unified, deterministic gate conclusion. CLI-written; the skill verifies and **must not** fabricate or alter `final_status`. Field contract: `src/schema/quality_gate_result.ts`.
+The unified, deterministic gate conclusion. CLI-written; the skill verifies and **must not** fabricate or alter `final_status`. Field contract: `assurance_agent/artifacts/models/inspect.py`.
 
 **Minimal illustrative shape:**
 
@@ -511,7 +504,7 @@ The repair pipeline is: `aa-fix-proposal` → `aa-api-codegen-fixer` / `aa-e2e-c
 
 ## Extended failure-analysis Failure Fields
 
-Each failure in `failure-analysis.json.failures[]` written by the CLI (primary mode) should include the fields defined in `src/schema/failure_analysis.ts` — and the skill must verify these fields are present when reading for downstream healing.
+Each failure in `failure-analysis.json.failures[]` written by the CLI (primary mode) should include the fields defined in `assurance_agent/artifacts/models/inspect.py` — and the skill must verify these fields are present when reading for downstream healing.
 
 If the CLI writes these fields, the skill must preserve them. If the CLI does not write them, the skill must **not** fabricate them — leave missing fields absent rather than guessing.
 

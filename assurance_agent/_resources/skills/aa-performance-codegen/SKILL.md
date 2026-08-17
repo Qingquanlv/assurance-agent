@@ -13,6 +13,7 @@ Generate performance tests under `tests/perf/**`, shared builders under `tests/t
 
 - `change:plans/performance-plan.md`
 - `change:plans/performance-codegen-plan.md`
+- `change:plans/performance-codegen-mapping.yaml`
 - `change:plans/performance-review-summary.md`
 - `change:review/performance-plan-review.json`
 - `change:review/performance-plan-checks.json`

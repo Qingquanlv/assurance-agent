@@ -5,11 +5,8 @@ routes:
   aa-fact-baseline: openai/gpt-5.6-terra
 
   aa-case-design: openai/gpt-5.6-terra
-  aa-case-fixer: openai/gpt-5.6-terra
   aa-api-plan: openai/gpt-5.6-terra
-  aa-api-plan-fixer: openai/gpt-5.6-terra
   aa-e2e-plan: openai/gpt-5.6-terra
-  aa-e2e-plan-fixer: openai/gpt-5.6-terra
   aa-fuzz-plan: openai/gpt-5.6-terra
   aa-performance-plan: openai/gpt-5.6-terra
   aa-coverage-repair: openai/gpt-5.6-terra

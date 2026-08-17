@@ -28,6 +28,7 @@ Turn the approved Fuzz portion of a QA Case Delta into reviewable implementation
 
 - `change:plans/fuzz-plan.md`
 - `change:plans/fuzz-codegen-plan.md`
+- `change:plans/fuzz-codegen-mapping.yaml`
 - `change:plans/fuzz-review-summary.md`
 
 ## State Authority
@@ -57,9 +58,9 @@ Acquisition into prose or a code block:
 
 Do not rename the heading to `Test Function Spec`, `Files`, or prose that merely
 describes the mapping. Every row must have a non-empty Schema Acquisition cell.
-The codegen precommit validator reads only `fuzz-codegen-plan.md` and fails closed
-when this exact relation is absent. The workflow validates both plans
-with that same parser and requires their relations to be identical.
+The codegen precommit validator prefers `fuzz-codegen-mapping.yaml` and falls
+back to this table in `fuzz-codegen-plan.md`. Write both; they must name the
+same Case ID → function → file relation. A missing or mismatched mapping fails closed.
 
 Every mapped function name is `test_<case_id_lowercase>__<behavior>` and must
 contain the complete Case ID. For example, `TC_USER_FUZZ_001` maps to a name

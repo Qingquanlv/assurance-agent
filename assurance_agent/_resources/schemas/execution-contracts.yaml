@@ -31,11 +31,10 @@ contracts:
     authorization_writes:
     - change:registry/**
     retryable_errors: []
-  operation:verify-plan-mechanical:
+  operation:derive-plan-layer-applicability:
     handler: operation
     reads:
-    - project:.aa/data-knowledge.yaml
-    read_isolation: declared_only
+    - change:cases/**/case.yaml
     writes:
     - change:review/api-plan-checks.json
     - change:review/e2e-plan-checks.json
@@ -46,16 +45,6 @@ contracts:
     - change:review/e2e-plan-checks.json
     - change:review/fuzz-plan-checks.json
     - change:review/performance-plan-checks.json
-    synchronized:
-    - project:.aa/data-knowledge.yaml
-    exclusive:
-    - project:data-knowledge
-    retryable_errors: []
-  operation:derive-plan-layer-applicability:
-    handler: operation
-    reads:
-    - change:cases/**/case.yaml
-    side_effect_free: true
     retryable_errors: []
   operation:run-tests:
     handler: operation
@@ -189,6 +178,7 @@ contracts:
     handler: agent
     reads:
     - change:explore/advisory.json
+    - change:review/case-review.json
     - project:qa/**
     - repo:**
     writes:
@@ -228,31 +218,6 @@ contracts:
     - rate_limit
     - invalid_output
     reconnect: true
-  skill:aa-case-fixer:
-    handler: agent
-    reads:
-    - change:review/case-review.json
-    - change:.qa.yaml
-    - change:cases/**
-    - change:trace/minimum-coverage-matrix.yaml
-    writes:
-    - change:review/case-review-apply-summary.md
-    - change:cases/**
-    - change:.qa.yaml
-    - change:proposal.md
-    - change:trace/minimum-coverage-matrix.yaml
-    authorization_writes:
-    - change:review/**
-    - change:cases/**
-    - change:.qa.yaml
-    - change:proposal.md
-    - change:trace/minimum-coverage-matrix.yaml
-    retryable_errors:
-    - timeout
-    - transport
-    - rate_limit
-    - invalid_output
-    reconnect: true
   skill:aa-fact-baseline:
     handler: agent
     reads:
@@ -276,6 +241,7 @@ contracts:
     - change:.qa.yaml
     - change:proposal.md
     - change:facts/fact-baseline.json
+    - change:review/api-plan-review.json
     - repo:.aa/config.yaml
     - repo:.aa/data-knowledge.yaml
     - repo:tests/testdata/domain/**
@@ -286,12 +252,14 @@ contracts:
     - change:plans/api-plan.md
     - change:plans/api-test-data-plan.md
     - change:plans/api-codegen-plan.md
+    - change:plans/api-codegen-mapping.yaml
     - change:plans/m3-review-summary.md
     - change:plans/data-knowledge.proposal.api.yaml
     authorization_writes:
     - change:plans/api-plan.md
     - change:plans/api-test-data-plan.md
     - change:plans/api-codegen-plan.md
+    - change:plans/api-codegen-mapping.yaml
     - change:plans/m3-review-summary.md
     - change:plans/data-knowledge.proposal.api.yaml
     retryable_errors:
@@ -307,6 +275,7 @@ contracts:
     - change:plans/api-plan.md
     - change:plans/api-test-data-plan.md
     - change:plans/api-codegen-plan.md
+    - change:plans/api-codegen-mapping.yaml
     - change:plans/m3-review-summary.md
     - change:plans/data-knowledge.proposal.api.yaml
     - change:review/api-plan-checks.json
@@ -315,9 +284,11 @@ contracts:
     writes:
     - change:review/api-plan-review.json
     - change:review/api-plan-review-summary.md
+    - change:review/api-plan-checks.json
     authorization_writes:
     - change:review/api-plan-review.json
     - change:review/api-plan-review-summary.md
+    - change:review/api-plan-checks.json
     retryable_errors:
     - timeout
     - transport
@@ -325,45 +296,14 @@ contracts:
     - invalid_output
     reconnect: true
     read_isolation: declared_only
-  skill:aa-api-plan-fixer:
-    handler: agent
-    reads:
-    - change:review/api-plan-review.json
-    - change:plans/api-plan.md
-    - change:plans/api-test-data-plan.md
-    - change:plans/api-codegen-plan.md
-    - change:plans/m3-review-summary.md
-    - change:plans/data-knowledge.proposal.api.yaml
-    - change:proposal.md
-    - change:cases/**/case.yaml
-    - repo:.aa/data-knowledge.yaml
-    writes:
-    - change:review/api-plan-review-apply-summary.md
-    - change:plans/api-plan.md
-    - change:plans/api-test-data-plan.md
-    - change:plans/api-codegen-plan.md
-    - change:plans/m3-review-summary.md
-    - change:plans/data-knowledge.proposal.api.yaml
-    authorization_writes:
-    - change:review/api-plan-review-apply-summary.md
-    - change:plans/api-plan.md
-    - change:plans/api-test-data-plan.md
-    - change:plans/api-codegen-plan.md
-    - change:plans/m3-review-summary.md
-    - change:plans/data-knowledge.proposal.api.yaml
-    retryable_errors:
-    - timeout
-    - transport
-    - rate_limit
-    - invalid_output
-    reconnect: true
-    read_isolation: declared_only
+    precommit_validator: plan_mechanical_candidate/v1
   skill:aa-api-codegen:
     handler: agent
     reads:
     - change:plans/api-plan.md
     - change:plans/api-test-data-plan.md
     - change:plans/api-codegen-plan.md
+    - change:plans/api-codegen-mapping.yaml
     - change:plans/m3-review-summary.md
     - change:review/api-plan-review.json
     - change:cases/**/case.yaml
@@ -399,6 +339,7 @@ contracts:
     - change:.qa.yaml
     - change:proposal.md
     - change:facts/fact-baseline.json
+    - change:review/plan-review.json
     - repo:.aa/config.yaml
     - repo:.aa/data-knowledge.yaml
     - repo:tests/testdata/domain/**
@@ -409,12 +350,14 @@ contracts:
     - change:plans/e2e-plan.md
     - change:plans/e2e-test-data-plan.md
     - change:plans/e2e-codegen-plan.md
+    - change:plans/e2e-codegen-mapping.yaml
     - change:plans/m4-review-summary.md
     - change:plans/data-knowledge.proposal.e2e.yaml
     authorization_writes:
     - change:plans/e2e-plan.md
     - change:plans/e2e-test-data-plan.md
     - change:plans/e2e-codegen-plan.md
+    - change:plans/e2e-codegen-mapping.yaml
     - change:plans/m4-review-summary.md
     - change:plans/data-knowledge.proposal.e2e.yaml
     retryable_errors:
@@ -430,6 +373,7 @@ contracts:
     - change:plans/e2e-plan.md
     - change:plans/e2e-test-data-plan.md
     - change:plans/e2e-codegen-plan.md
+    - change:plans/e2e-codegen-mapping.yaml
     - change:plans/m4-review-summary.md
     - change:plans/data-knowledge.proposal.e2e.yaml
     - change:review/e2e-plan-checks.json
@@ -438,9 +382,11 @@ contracts:
     writes:
     - change:review/plan-review.json
     - change:review/plan-review-summary.md
+    - change:review/e2e-plan-checks.json
     authorization_writes:
     - change:review/plan-review.json
     - change:review/plan-review-summary.md
+    - change:review/e2e-plan-checks.json
     retryable_errors:
     - timeout
     - transport
@@ -448,45 +394,14 @@ contracts:
     - invalid_output
     reconnect: true
     read_isolation: declared_only
-  skill:aa-e2e-plan-fixer:
-    handler: agent
-    reads:
-    - change:review/plan-review.json
-    - change:plans/e2e-plan.md
-    - change:plans/e2e-test-data-plan.md
-    - change:plans/e2e-codegen-plan.md
-    - change:plans/m4-review-summary.md
-    - change:plans/data-knowledge.proposal.e2e.yaml
-    - change:proposal.md
-    - change:cases/**/case.yaml
-    - repo:.aa/data-knowledge.yaml
-    writes:
-    - change:review/plan-review-apply-summary.md
-    - change:plans/e2e-plan.md
-    - change:plans/e2e-test-data-plan.md
-    - change:plans/e2e-codegen-plan.md
-    - change:plans/m4-review-summary.md
-    - change:plans/data-knowledge.proposal.e2e.yaml
-    authorization_writes:
-    - change:review/plan-review-apply-summary.md
-    - change:plans/e2e-plan.md
-    - change:plans/e2e-test-data-plan.md
-    - change:plans/e2e-codegen-plan.md
-    - change:plans/m4-review-summary.md
-    - change:plans/data-knowledge.proposal.e2e.yaml
-    retryable_errors:
-    - timeout
-    - transport
-    - rate_limit
-    - invalid_output
-    reconnect: true
-    read_isolation: declared_only
+    precommit_validator: plan_mechanical_candidate/v1
   skill:aa-e2e-codegen:
     handler: agent
     reads:
     - change:plans/e2e-plan.md
     - change:plans/e2e-test-data-plan.md
     - change:plans/e2e-codegen-plan.md
+    - change:plans/e2e-codegen-mapping.yaml
     - change:plans/m4-review-summary.md
     - change:review/plan-review.json
     - change:cases/**/case.yaml
@@ -527,10 +442,12 @@ contracts:
     writes:
     - change:plans/fuzz-plan.md
     - change:plans/fuzz-codegen-plan.md
+    - change:plans/fuzz-codegen-mapping.yaml
     - change:plans/fuzz-review-summary.md
     authorization_writes:
     - change:plans/fuzz-plan.md
     - change:plans/fuzz-codegen-plan.md
+    - change:plans/fuzz-codegen-mapping.yaml
     - change:plans/fuzz-review-summary.md
     retryable_errors:
     - timeout
@@ -544,6 +461,7 @@ contracts:
     reads:
     - change:plans/fuzz-plan.md
     - change:plans/fuzz-codegen-plan.md
+    - change:plans/fuzz-codegen-mapping.yaml
     - change:plans/fuzz-review-summary.md
     - change:review/fuzz-plan-checks.json
     - change:cases/**/case.yaml
@@ -551,9 +469,11 @@ contracts:
     writes:
     - change:review/fuzz-plan-review.json
     - change:review/fuzz-plan-review-summary.md
+    - change:review/fuzz-plan-checks.json
     authorization_writes:
     - change:review/fuzz-plan-review.json
     - change:review/fuzz-plan-review-summary.md
+    - change:review/fuzz-plan-checks.json
     retryable_errors:
     - timeout
     - transport
@@ -561,11 +481,13 @@ contracts:
     - invalid_output
     reconnect: true
     read_isolation: declared_only
+    precommit_validator: plan_mechanical_candidate/v1
   skill:aa-fuzz-codegen:
     handler: agent
     reads:
     - change:plans/fuzz-plan.md
     - change:plans/fuzz-codegen-plan.md
+    - change:plans/fuzz-codegen-mapping.yaml
     - change:plans/fuzz-review-summary.md
     - change:review/fuzz-plan-review.json
     - change:review/fuzz-plan-checks.json
@@ -607,10 +529,12 @@ contracts:
     writes:
     - change:plans/performance-plan.md
     - change:plans/performance-codegen-plan.md
+    - change:plans/performance-codegen-mapping.yaml
     - change:plans/performance-review-summary.md
     authorization_writes:
     - change:plans/performance-plan.md
     - change:plans/performance-codegen-plan.md
+    - change:plans/performance-codegen-mapping.yaml
     - change:plans/performance-review-summary.md
     retryable_errors:
     - timeout
@@ -624,6 +548,7 @@ contracts:
     reads:
     - change:plans/performance-plan.md
     - change:plans/performance-codegen-plan.md
+    - change:plans/performance-codegen-mapping.yaml
     - change:plans/performance-review-summary.md
     - change:review/performance-plan-checks.json
     - change:cases/**/case.yaml
@@ -631,9 +556,11 @@ contracts:
     writes:
     - change:review/performance-plan-review.json
     - change:review/performance-plan-review-summary.md
+    - change:review/performance-plan-checks.json
     authorization_writes:
     - change:review/performance-plan-review.json
     - change:review/performance-plan-review-summary.md
+    - change:review/performance-plan-checks.json
     retryable_errors:
     - timeout
     - transport
@@ -641,11 +568,13 @@ contracts:
     - invalid_output
     reconnect: true
     read_isolation: declared_only
+    precommit_validator: plan_mechanical_candidate/v1
   skill:aa-performance-codegen:
     handler: agent
     reads:
     - change:plans/performance-plan.md
     - change:plans/performance-codegen-plan.md
+    - change:plans/performance-codegen-mapping.yaml
     - change:plans/performance-review-summary.md
     - change:review/performance-plan-review.json
     - change:review/performance-plan-checks.json

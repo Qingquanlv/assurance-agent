@@ -1,4 +1,4 @@
-"""operation:verify-plan-mechanical 落盘 evidence 文档并返回事实状态（spec C2）。"""
+"""run_layer_plan_checks 与 applicability 写 not_applicable 文档（spec C2 / B 组）。"""
 
 import json
 from pathlib import Path
@@ -6,14 +6,18 @@ from pathlib import Path
 import pytest
 import yaml
 
+from assurance_agent.artifacts.canonical import canonical_json_bytes
 from assurance_agent.artifacts.models.assurance import PLAN_CHECK_IDS
+from assurance_agent.verification.applicability import derive_layer_applicability
+from assurance_agent.verification.plan_checks import run_layer_plan_checks
 from assurance_agent.verification.profiles import get_layer_assurance_profile
 from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.handlers.plan_checks import (
     derive_plan_layer_applicability,
-    verify_plan_mechanical,
+    load_sorted_cases,
 )
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
+from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace
 
 DK = {
@@ -115,15 +119,69 @@ def _write_plan_review(workspace: TaskWorkspace, layer: str, **overrides: object
 def _task(layer: str = "api", *, require_review: bool = False) -> ExecutableTask:
     return ExecutableTask.model_construct(
         task_id="t1",
-        node_id="mechanical-plan-checks",
-        graph_id="api-branch",
-        target="operation:verify-plan-mechanical",
+        node_id="review",
+        graph_id="api-plan-cycle",
+        target=f"skill:aa-{layer}-plan-reviewer",
         input={"with": {"layer": layer, "require_review": require_review}},
     )
 
 
 def _context() -> RuntimeContext:
     return RuntimeContext.model_construct(change_id="CH-1", params={})
+
+
+def verify_plan_mechanical(
+    task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeContext
+) -> TaskResult:
+    """Adapter that preserves the old mechanical-op tests against run_layer_plan_checks."""
+    layer = str(task.input.get("with", {}).get("layer", "")) if isinstance(task.input, dict) else ""
+    raw_require_review = (
+        task.input.get("with", {}).get("require_review", False) if isinstance(task.input, dict) else False
+    )
+    if not isinstance(raw_require_review, bool):
+        return task_failure("invalid_input", "require_review must be a boolean")
+    try:
+        profile = get_layer_assurance_profile(layer)
+    except ValueError as err:
+        return task_failure("invalid_input", str(err))
+    try:
+        cases = load_sorted_cases(workspace.change_dir)
+        applicability = derive_layer_applicability(cases, profile)
+        if not applicability.applicable:
+            document = run_layer_plan_checks(layer=layer, cases=cases)
+        else:
+            plan_texts = {
+                rel: (workspace.change_dir / rel).read_text(encoding="utf-8")
+                for rel in profile.plan_artifacts
+            }
+            review_path = workspace.change_dir / profile.review_artifact
+            review_payload = None
+            if review_path.is_file():
+                raw = json.loads(review_path.read_text(encoding="utf-8"))
+                if not isinstance(raw, dict):
+                    raise ValueError(f"{profile.review_artifact} is not a JSON object")
+                review_payload = raw
+            l1_path = workspace.project_root / ".aa" / "data-knowledge.yaml"
+            data_knowledge = None
+            if l1_path.is_file():
+                loaded = yaml.safe_load(l1_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data_knowledge = loaded
+            document = run_layer_plan_checks(
+                layer=layer,
+                cases=cases,
+                plan_texts=plan_texts,
+                review_payload=review_payload,
+                data_knowledge=data_knowledge,
+                change_id=context.change_id,
+                require_review=raw_require_review,
+            )
+        path = workspace.change_dir / profile.checks_artifact
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(canonical_json_bytes(document))
+    except (OSError, ValueError, yaml.YAMLError, json.JSONDecodeError) as err:
+        return task_failure("invalid_output", str(err))
+    return TaskResult(status="succeeded", value={"status": document.status})
 
 
 def test_write_profile_plans_helper_creates_exact_paths(workspace: TaskWorkspace) -> None:
@@ -289,9 +347,9 @@ def test_string_require_review_is_invalid_input(workspace: TaskWorkspace) -> Non
     _write_profile_plans(workspace, "api")
     task = ExecutableTask.model_construct(
         task_id="t1",
-        node_id="mechanical-plan-checks",
-        graph_id="api-branch",
-        target="operation:verify-plan-mechanical",
+        node_id="review",
+        graph_id="api-plan-cycle",
+        target="skill:aa-api-plan-reviewer",
         input={"with": {"layer": "api", "require_review": "true"}},
     )
     result = verify_plan_mechanical(task, workspace, _context())
@@ -626,3 +684,34 @@ def test_unknown_layer_is_invalid_input_for_applicability(workspace: TaskWorkspa
     result = derive_plan_layer_applicability(_applicability_task("mobile"), workspace, _context())
     assert result.status == "failed"
     assert result.error_kind == "invalid_input"
+
+
+def test_inapplicable_preflight_writes_not_applicable_checks(tmp_path: Path) -> None:
+    project_root = tmp_path / "proj"
+    change_dir = project_root / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    ws = TaskWorkspace(
+        task_id="t1",
+        root=project_root,
+        project_root=project_root,
+        repo_root=project_root,
+        change_dir=change_dir,
+        base_tree_id="tree",
+    )
+    result = derive_plan_layer_applicability(_applicability_task("e2e"), ws, _context())
+    assert result.status == "succeeded"
+    profile = get_layer_assurance_profile("e2e")
+    path = change_dir / profile.checks_artifact
+    assert path.is_file()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["status"] == "not_applicable"
+    assert payload["applicability"]["applicable"] is False
+
+
+def test_applicable_preflight_does_not_write_checks(workspace: TaskWorkspace) -> None:
+    result = derive_plan_layer_applicability(_applicability_task("api"), workspace, _context())
+    assert result.status == "succeeded"
+    assert isinstance(result.value, dict)
+    assert result.value["applicable"] is True
+    profile = get_layer_assurance_profile("api")
+    assert not (workspace.change_dir / profile.checks_artifact).exists()

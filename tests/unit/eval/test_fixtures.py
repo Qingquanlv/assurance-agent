@@ -208,23 +208,9 @@ def test_load_tier_merges_imports_by_entrypoint(tmp_path: Path) -> None:
     assert nodes == {"registry", "fact-baseline"}
 
 
-def test_benchmark_api_review_imports_include_mechanical_predecessor() -> None:
+def test_benchmark_api_review_imports_include_plan_checks_evidence() -> None:
     repo_root = Path(__file__).resolve().parents[3]
     fixtures = repo_root / "benchmark" / "vue-fastapi-admin" / "eval-fixtures"
-    expected_path = "execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle"
-
-    for tier_name in ("L1-plan-seed", "L2-api-codegen-seed", "L3-run-seed", "L3-run-done"):
-        completed = load_tier(fixtures, tier_name).imports["execute"].completed
-        review_index = next(
-            index
-            for index, task in enumerate(completed)
-            if task.path == expected_path and task.node == "review"
-        )
-        checks = completed[review_index - 1]
-        assert checks.path == expected_path, tier_name
-        assert checks.node == "mechanical-plan-checks", tier_name
-        assert checks.outputs == ["change:review/api-plan-checks.json"], tier_name
-
     evidence_path = fixtures / "samples" / "eval-sample-001" / "review" / "api-plan-checks.json"
     evidence = PlanCheckDocument.model_validate_json(evidence_path.read_text(encoding="utf-8"))
     assert evidence.status == "pass"
@@ -330,11 +316,6 @@ def _benchmark_fixtures() -> Path:
         ),
         (
             "review",
-            "api-plan-cycle",
-            "execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle",
-        ),
-        (
-            "mechanical-plan-checks",
             "api-plan-cycle",
             "execute-workflow/assurance/assurance/api/api-branch/review-cycle/api-plan-cycle",
         ),

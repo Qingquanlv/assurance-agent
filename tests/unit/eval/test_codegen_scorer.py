@@ -99,7 +99,7 @@ def _attempt(
     if include_preflight:
         roles.append("preflight")
     if applicable:
-        roles.extend(["reviewer", "mechanical", "plan_gate", "precheck", "codegen"])
+        roles.extend(["reviewer", "plan_gate", "precheck", "codegen"])
     attempts: list[cc.AttemptBinding] = []
     if layer == "performance":
         summary_key = "codegen/performance-codegen-summary.md"
@@ -487,7 +487,7 @@ def test_inapplicable_requires_na_and_absence() -> None:
 
 
 def test_epoch_mismatch_across_cycles_fails() -> None:
-    binding = _attempt(layer="api", foreign_generation_for="mechanical")
+    binding = _attempt(layer="api", foreign_generation_for="reviewer")
     evidence = cc.evaluate_layer_binding(binding)
     assert not evidence.chain_ok
     assert evidence.reason_code == "epoch_generation_mismatch"
