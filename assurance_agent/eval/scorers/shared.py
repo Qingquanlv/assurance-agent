@@ -9,6 +9,7 @@ import yaml
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models import ExecutionManifest, WorkflowState
+from assurance_agent.artifacts.paths import existing_with_alias
 from assurance_agent.eval import write_scan
 
 _SECRET_PATTERNS = [
@@ -47,8 +48,11 @@ def _read_json(path: Path) -> dict | None:
 
 
 def read_yaml(path: Path) -> dict | None:
+    found = existing_with_alias(path)
+    if found is None:
+        return None
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = yaml.safe_load(found.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
         return None
     return data if isinstance(data, dict) else None
@@ -226,7 +230,7 @@ def score_case_review_gate_pass_rate(raw_dir: Path) -> float:
 
 
 def score_layer_scan_valid_rate(raw_dir: Path) -> float:
-    state = _read_workflow_state(raw_dir / "workflow-state.yaml")
+    state = _read_workflow_state(raw_dir / "workflow-state.json")
     if state is None:
         return 0.0
     cases = raw_dir / "cases"
@@ -270,7 +274,7 @@ def _layer_executable(result: dict | None) -> bool:
 
 
 def score_test_executable_rate_e3(raw_dir: Path) -> float:
-    manifest = _read_execution_manifest(raw_dir / "execution" / "execution-manifest.yaml")
+    manifest = _read_execution_manifest(raw_dir / "execution" / "execution-manifest.json")
     if manifest is None:
         return 0.0
     in_scope = executable = 0
@@ -284,7 +288,7 @@ def score_test_executable_rate_e3(raw_dir: Path) -> float:
 
 
 def score_execution_pass_rate(raw_dir: Path) -> float:
-    manifest = _read_execution_manifest(raw_dir / "execution" / "execution-manifest.yaml")
+    manifest = _read_execution_manifest(raw_dir / "execution" / "execution-manifest.json")
     if manifest is None:
         return 0.0
     return 1.0 if manifest.final_status in {"PASS", "PASS_WITH_WARNINGS"} else 0.0

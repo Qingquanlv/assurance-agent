@@ -163,7 +163,7 @@ def test_set_workflow_state_projection_writes_reserved_file(tmp_path: Path) -> N
     change.mkdir()
     with transaction(change) as txn:
         txn.set_workflow_state_projection(b"invocation_id: inv-1\n")
-    assert (change / "workflow-state.yaml").read_bytes() == b"invocation_id: inv-1\n"
+    assert (change / "workflow-state.json").read_bytes() == b"invocation_id: inv-1\n"
 
 
 def test_set_workflow_state_projection_accepts_str(tmp_path: Path) -> None:
@@ -171,7 +171,7 @@ def test_set_workflow_state_projection_accepts_str(tmp_path: Path) -> None:
     change.mkdir()
     with transaction(change) as txn:
         txn.set_workflow_state_projection("terminal: completed\n")
-    assert (change / "workflow-state.yaml").read_bytes() == b"terminal: completed\n"
+    assert (change / "workflow-state.json").read_bytes() == b"terminal: completed\n"
 
 
 def test_set_workflow_state_projection_rejects_second_call(tmp_path: Path) -> None:
@@ -203,14 +203,14 @@ def test_workflow_state_projection_block_exception_writes_nothing(tmp_path: Path
         with transaction(change) as txn:
             txn.set_workflow_state_projection(b"x")
             raise RuntimeError("boom")
-    assert not (change / "workflow-state.yaml").exists()
+    assert not (change / "workflow-state.json").exists()
 
 
 def test_workflow_state_projection_rolls_back_on_commit_failure(tmp_path: Path, monkeypatch) -> None:
     change = tmp_path / "CH-1"
     change.mkdir()
     write_state(change, WorkflowState())
-    original = (change / "workflow-state.yaml").read_bytes()
+    original = (change / "workflow-state.json").read_bytes()
 
     def fail_append(*_a, **_k) -> None:
         raise OSError("append failed")
@@ -220,24 +220,24 @@ def test_workflow_state_projection_rolls_back_on_commit_failure(tmp_path: Path, 
         with transaction(change) as txn:
             txn.set_workflow_state_projection(b"projected: true\n")
             txn.append_strict(_event())
-    # 投影字节随事务回滚，磁盘保留原 workflow-state.yaml。
-    assert (change / "workflow-state.yaml").read_bytes() == original
+    # 投影字节随事务回滚，磁盘保留原 workflow-state.json。
+    assert (change / "workflow-state.json").read_bytes() == original
 
 
 def test_empty_transaction_is_noop(tmp_path: Path) -> None:
     change = tmp_path / "CH-1"
     change.mkdir()
     write_state(change, WorkflowState())
-    before = (change / "workflow-state.yaml").read_bytes()
+    before = (change / "workflow-state.json").read_bytes()
     with transaction(change):
         pass
-    assert (change / "workflow-state.yaml").read_bytes() == before
+    assert (change / "workflow-state.json").read_bytes() == before
     assert read_events(change) == []
 
 
 @pytest.mark.parametrize(
     "rel",
-    ["events.jsonl", "workflow-state.yaml", ".progression.lock", "../outside.txt", "/abs.txt"],
+    ["events.jsonl", "workflow-state.json", ".progression.lock", "../outside.txt", "/abs.txt"],
 )
 def test_write_file_rejects_reserved_and_escape(tmp_path: Path, rel: str) -> None:
     change = tmp_path / "CH-1"
@@ -336,14 +336,14 @@ def test_write_runtime_file_writes_under_graph_runtime(tmp_path: Path) -> None:
     "rel",
     [
         "events.jsonl",
-        "workflow-state.yaml",
+        "workflow-state.json",
         ".progression.lock",
         "../outside.txt",
         "/abs.txt",
         "healing/note.txt",
         ".graph-runtime",
         ".graph-runtime/../events.jsonl",
-        ".graph-runtime/sub/../../workflow-state.yaml",
+        ".graph-runtime/sub/../../workflow-state.json",
     ],
 )
 def test_write_runtime_file_rejects_reserved_escape_and_foreign_paths(tmp_path: Path, rel: str) -> None:
@@ -460,14 +460,14 @@ def test_write_runtime_file_once_rejects_different_bytes_on_race_at_apply(
     "rel",
     [
         "events.jsonl",
-        "workflow-state.yaml",
+        "workflow-state.json",
         ".progression.lock",
         "../outside.txt",
         "/abs.txt",
         "healing/note.txt",
         ".graph-runtime",
         ".graph-runtime/../events.jsonl",
-        ".graph-runtime/sub/../../workflow-state.yaml",
+        ".graph-runtime/sub/../../workflow-state.json",
     ],
 )
 def test_write_runtime_file_once_rejects_unsafe_paths(tmp_path: Path, rel: str) -> None:

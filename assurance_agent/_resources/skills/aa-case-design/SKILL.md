@@ -13,7 +13,7 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.yaml` if it exists, including top-level `run_context`.
+1. Read `qa/changes/<change-id>/workflow-state.json` if it exists, including top-level `run_context`.
    - `run_context.interaction_mode == autonomous` (default when absent under `aa-workflow`) → do not run planned clarification dialogue or require user approval; generate from Explore `test_strategy` + resolved `open_questions`, then hand off to `aa-case-reviewer`.
    - `run_context.interaction_mode == interactive` → keep the existing clarification dialogue and explicit user approval before writing files.
 2. **Explore gate (Phase 1.1):** If `phases.explore` exists (written by `aa-explore`), apply gate logic from this repo's `aa-explore/SKILL.md` (Context Contract + Phase 1 gate):
@@ -35,7 +35,7 @@ Do not rely on prior conversation context.
    - existing `qa/knowledge/**`
    - existing `qa/changes/**`
    If optional QA directories are missing, record a warning and continue as a **new QA asset initialization** path. Do **not** stop solely because `qa/cases/`, `tests/`, or `qa/knowledge/` does not exist.
-5. If `workflow-state.yaml` exists and `phases.skill_registry_check.status == fail` → **STOP**.
+5. If `workflow-state.json` exists and `phases.skill_registry_check.status == fail` → **STOP**.
 6. Use files as the sole source of truth.
 7. **Review re-entry:** If `review/case-review.json` exists with `decision: needs_fix`,
    apply only findings that carry a `locator`. Do not rewrite cases or proposal
@@ -47,12 +47,12 @@ Do not rely on prior conversation context.
    - `qa/changes/<change-id>/.qa.yaml`
    - `qa/changes/<change-id>/proposal.md`
    - `qa/changes/<change-id>/cases/<module>/case.yaml`
-2. Handle `qa/changes/<change-id>/workflow-state.yaml` by execution context:
-   - **Dispatched phase subagent (aa-workflow subagent-dispatch mode):** never create or write `workflow-state.yaml` — the orchestrator owns it and created it in Phase 1.1. Report the state delta in your final message instead:
+2. Handle `qa/changes/<change-id>/workflow-state.json` by execution context:
+   - **Dispatched phase subagent (aa-workflow subagent-dispatch mode):** never create or write `workflow-state.json` — the orchestrator owns it and created it in Phase 1.1. Report the state delta in your final message instead:
      - `phases.case_design.status = done`
      - `phases.case_design.outputs` = all output files
    - **Standalone / inline invocation (primary agent):** create or update the file directly:
-     - If the file does **not** exist, create it with the full base schema (see `aa-workflow` `workflow-state.yaml` schema), including:
+     - If the file does **not** exist, create it with the full base schema (see `aa-workflow` `workflow-state.json` schema), including:
        - `execution_mode: inline`
        - `subagent_skill_inheritance: disabled`
        - `phases.skill_registry_check.status: skipped`
@@ -63,7 +63,7 @@ Do not rely on prior conversation context.
      - Do **not** create a partial file containing only `phases.case_design`. Always write the full schema.
      - Set `phases.case_design.status = done`
      - List all output files under `phases.case_design.outputs`
-3. Record any warnings or known issues explicitly (in `workflow-state.yaml` when inline/standalone; in the reported state delta when dispatched).
+3. Record any warnings or known issues explicitly (in `workflow-state.json` when inline/standalone; in the reported state delta when dispatched).
 
 ---
 
@@ -415,7 +415,7 @@ Minimum Required Coverage keys are a **closed set**. Do **not** freely invent MR
 
 **When a needed `data_integrity` / `negative` / auth / journey key is missing from the closed set:**
 
-1. Do **not** write the invented key into `trace/minimum-coverage-matrix.yaml` or `trace.minimum_required_coverage` as if it were already known.
+1. Do **not** write the invented key into `trace/minimum-coverage-matrix.json` or `trace.minimum_required_coverage` as if it were already known.
 2. Emit a knowledge proposal under `qa/changes/<change-id>/plans/data-knowledge.proposal.<layer>.yaml` with the missing key listed in `discovered_candidates` (and describe it under `proposal.md` Data Needs).
 3. Leave the MRC matrix row unmapped / out of scope until a human promotes the proposal into L1 — never bypass the proposal path to score “full coverage”.
 
@@ -818,7 +818,7 @@ qa/
 │       │   ├── api-result.json
 │       │   ├── e2e-result.json
 │       │   ├── summary.md
-│       │   └── execution-manifest.yaml
+│       │   └── execution-manifest.json
 │       ├── review/
 │       │   ├── case-review.json
 │       │   ├── case-review-summary.md
@@ -860,7 +860,7 @@ qa/
 
 ## .qa.yaml Template
 
-`.qa.yaml` stores **stable change metadata** (change id, targets, feature name). `workflow-state.yaml` stores **mutable runtime phase state** and is the gate source for orchestration.
+`.qa.yaml` stores **stable change metadata** (change id, targets, feature name). `workflow-state.json` stores **mutable runtime phase state** and is the gate source for orchestration.
 
 The optional `workflow` section below is **informational only** — do **not** use `.qa.yaml.workflow` as a gate source.
 
@@ -926,7 +926,7 @@ Every case under `added` or `modified` must satisfy the field contract in `assur
 
 MRC keys must obey **MRC closed-key discipline** above: never invent closed-category keys; unknown keys require a knowledge proposal (`discovered_candidates`), not a silent matrix entry.
 
-Also write `qa/changes/<change-id>/trace/minimum-coverage-matrix.yaml`:
+Also write `qa/changes/<change-id>/trace/minimum-coverage-matrix.json`:
 
 ```yaml
 - mrc_id: MRC-API-006
@@ -1359,12 +1359,12 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 49. `proposal.md` exists at `qa/changes/<change-id>/proposal.md`.
 50. `.qa.yaml` exists at `qa/changes/<change-id>/.qa.yaml`.
 51. MRC closed keys: every `data_integrity` / `negative` / journey key in
-    `trace/minimum-coverage-matrix.yaml` cites `.aa/data-knowledge.yaml` or the
+    `trace/minimum-coverage-matrix.json` cites `.aa/data-knowledge.yaml` or the
     declared journey set; any unknown key has a matching
     `plans/data-knowledge.proposal.*.yaml` `discovered_candidates` entry (never
     invent MRC keys into the matrix alone).
 52. MRC row identity: reject any duplicate mrc_id or key across the entire
-    `trace/minimum-coverage-matrix.yaml` document.
+    `trace/minimum-coverage-matrix.json` document.
 
 ---
 

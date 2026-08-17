@@ -46,6 +46,7 @@ from assurance_agent.workflow.metrics.batch_io import (
     resolve_batch_id,
     write_batch_evidence,
 )
+from assurance_agent.artifacts.paths import existing_with_alias
 from assurance_agent.workflow.metrics.minimum_coverage import (
     MINIMUM_COVERAGE_MATRIX_REL,
     TRACE_PROJECTION_REL,
@@ -334,9 +335,9 @@ def compute_journey_coverage_operation(
         return _ok(context.change_id, batch_id, evidence)
     quarantine = tuple(sorted(set(quarantine_from_task) | set(active_quarantine)))
 
-    matrix_path = change_dir / MINIMUM_COVERAGE_MATRIX_REL
+    matrix_path = existing_with_alias(change_dir / MINIMUM_COVERAGE_MATRIX_REL)
     projection_path = _resolve_projection_path(change_dir, batch_id)
-    if not matrix_path.is_file() or projection_path is None:
+    if matrix_path is None or projection_path is None:
         evidence = JourneyCoverageEvidence(
             schema_version="1",
             change_id=context.change_id,

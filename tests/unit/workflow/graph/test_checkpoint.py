@@ -1,7 +1,7 @@
 """Ledger 投影与 checkpoint snapshot：strict graph events 是唯一权威。
 
 覆盖：任务生命周期 fold、superstep commit 推进、预算去重、interrupt/resume、
-terminal 事件、snapshot 损坏重建、workflow-state.yaml 投影重建与损坏无关性。
+terminal 事件、snapshot 损坏重建、workflow-state.json 投影重建与损坏无关性。
 """
 
 from __future__ import annotations
@@ -622,7 +622,7 @@ def test_workflow_state_yaml_rebuilds_semantically_identical(tmp_path: Path) -> 
     original = render_workflow_state_yaml(projection)
     with transaction(change) as txn:
         txn.set_workflow_state_projection(original)
-    state_file = change / "workflow-state.yaml"
+    state_file = change / "workflow-state.json"
     assert yaml.safe_load(state_file.read_text(encoding="utf-8")) == yaml.safe_load(original.decode("utf-8"))
 
     # 删除投影文件后从 strict ledger 重建：字节在语义上完全一致。
@@ -678,8 +678,8 @@ def test_corrupt_workflow_state_yaml_does_not_affect_projection(tmp_path: Path) 
     with transaction(change) as txn:
         txn.set_workflow_state_projection(render_workflow_state_yaml(before))
 
-    # 损坏 workflow-state.yaml：任务完成、预算、interrupt、retry 计数与投影都不变。
-    (change / "workflow-state.yaml").write_bytes(b"\x00\x01{not yaml")
+    # 损坏 workflow-state.json：任务完成、预算、interrupt、retry 计数与投影都不变。
+    (change / "workflow-state.json").write_bytes(b"\x00\x01{not yaml")
     after = project_invocation(change, "inv-1")
     assert after == before
     assert after.tasks["task-a"].status == "succeeded"

@@ -450,7 +450,7 @@ def test_plan_review_authoring_finding_with_locator_passes() -> None:
                 "category": "contract",
                 "message": "missing mapping row",
                 "locator": {
-                    "artifact": "change:plans/api-codegen-mapping.yaml",
+                    "artifact": "change:plans/api-codegen-mapping.json",
                     "case_id": "API_001",
                 },
             }

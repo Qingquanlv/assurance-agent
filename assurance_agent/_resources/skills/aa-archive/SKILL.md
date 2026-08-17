@@ -9,14 +9,14 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.yaml`.
+1. Read `qa/changes/<change-id>/workflow-state.json`.
 2. Verify all required gates have passed (see **Pre-condition** and **Archive Gate** below).
 3. Read input files from disk:
    - `review/case-review.json` (required)
    - `review/api-plan-review.json` (if API plan exists)
    - `review/plan-review.json` (if E2E plan exists)
    - `execution/api-result.json`, `execution/e2e-result.json`, `execution/summary.md` (if present)
-   - `execution/execution-manifest.yaml` (if present)
+   - `execution/execution-manifest.json` (if present)
    - `inspect/failure-analysis.json`, `inspect/failure-summary.md` (if present)
    - `report/quality-report.json` (if present — read `issues.issue_risk` for archive status)
    - `qa/issues/problems.json` (if present — current Project Problem projection)
@@ -29,7 +29,7 @@ Do not rely on prior conversation context.
 1. Write archived artifacts to `qa/archive/<change-id>/`.
 2. Merge case delta into `qa/cases/<module>/case.yaml`.
 3. Archive status is committed by the **archive graph node** (GraphRuntime). Never hand-edit
-   `workflow-state.yaml` and never write ledger/checkpoint files.
+   `workflow-state.json` and never write ledger/checkpoint files.
    Report the intended archive outcome in your final message; the graph node records it.
 
 ---
@@ -115,7 +115,7 @@ If `qa/changes/<change-id>/plans/e2e-plan.md` exists:
 
 ### Step 1d: Check Execution and Healing Gates
 
-Read `workflow-state.yaml`:
+Read `workflow-state.json`:
 
 - If `phases.execution.status == FAIL` → **STOP** (unless user explicitly overrides — default workflow forbids archive on FAIL)
 - If `phases.execution.status == SKIPPED` and tests were expected → **STOP** or record `not_run` explicitly in summary
@@ -185,11 +185,11 @@ Check whether execution summaries exist:
 - `qa/changes/<change-id>/execution/summary.md` (latest run; also at `execution/runs/<batch-id>/summary.md`)
 - `qa/changes/<change-id>/execution/api-result.json`
 - `qa/changes/<change-id>/execution/e2e-result.json`
-- `qa/changes/<change-id>/execution/execution-manifest.yaml`
+- `qa/changes/<change-id>/execution/execution-manifest.json`
 
 Use unified execution status values: `PASS | PASS_WITH_WARNINGS | FAIL | SKIPPED | not_run`
 
-Read `final_status` from result JSON when present; otherwise derive from `workflow-state.yaml` `phases.execution.status`.
+Read `final_status` from result JSON when present; otherwise derive from `workflow-state.json` `phases.execution.status`.
 
 **Execution failure (`FAIL`) blocks archive by default.** Record status in `archive-summary.md` only when archive is explicitly allowed by workflow policy.
 
@@ -197,7 +197,7 @@ Read `final_status` from result JSON when present; otherwise derive from `workfl
 
 > **Order matters:** produce archive artifacts first; the **archive graph node**
 > commits archive status to the ledger. Never hand-edit
-> `workflow-state.yaml` to mark archive done before copying evidence.
+> `workflow-state.json` to mark archive done before copying evidence.
 
 Copy (do not move) the following to `qa/archive/<change-id>/`:
 
@@ -212,7 +212,7 @@ Copy (do not move) the following to `qa/archive/<change-id>/`:
 | `qa/changes/<change-id>/trace/` | `qa/archive/<change-id>/trace/` |
 | `qa/changes/<change-id>/proposal.md` | `qa/archive/<change-id>/proposal.md` |
 | `qa/changes/<change-id>/.qa.yaml` | `qa/archive/<change-id>/.qa.yaml` |
-| `qa/changes/<change-id>/workflow-state.yaml` | `qa/archive/<change-id>/workflow-state.yaml` |
+| `qa/changes/<change-id>/workflow-state.json` | `qa/archive/<change-id>/workflow-state.json` |
 
 Additional retro evidence requirements:
 

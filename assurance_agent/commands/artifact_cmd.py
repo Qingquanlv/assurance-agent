@@ -47,8 +47,8 @@ def artifact_write(
         target = Path(artifact_path)
         target = target.resolve() if target.is_absolute() else (project_root / target).resolve()
         assert_inside_project(project_root, target)
-        if target.name == "workflow-state.yaml":
-            raise RiskSafetyError("workflow-state.yaml is orchestrator-owned")
+        if target.name in {"workflow-state.json", "workflow-state.yaml"}:
+            raise RiskSafetyError("workflow-state.json is orchestrator-owned")
         if payload_base64 is not None:
             try:
                 content = base64.b64decode(payload_base64, validate=True).decode("utf-8")

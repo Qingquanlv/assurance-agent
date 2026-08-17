@@ -28,7 +28,7 @@ CHANGE_ID = "CH-TRACE-001"
 BATCH_OLD = "20260701-101010"
 BATCH_NEW = "20260702-111111"
 EXECUTED_AT = datetime(2026, 7, 2, 19, 30, 0, tzinfo=timezone(timedelta(hours=8)))
-MANIFEST_FOLD_VIEW_SOURCE = "execution/execution-manifest.yaml#fold-view"
+MANIFEST_FOLD_VIEW_SOURCE = "execution/execution-manifest.json#fold-view"
 TESTS_TREE_SCAN_SOURCE = "tests/#tree-digest"
 
 
@@ -210,9 +210,9 @@ def _manifest_document(
 def _write_manifest(change_dir: Path, batch_id: str, **kwargs: object) -> Path:
     execution_dir = change_dir / "execution"
     execution_dir.mkdir(parents=True, exist_ok=True)
-    path = execution_dir / "execution-manifest.yaml"
+    path = execution_dir / "execution-manifest.json"
     path.write_text(
-        yaml.safe_dump(_manifest_document(batch_id, **kwargs), sort_keys=False),  # type: ignore[arg-type]
+        json.dumps(_manifest_document(batch_id, **kwargs), sort_keys=False),  # type: ignore[arg-type]
         encoding="utf-8",
     )
     return path
@@ -221,9 +221,9 @@ def _write_manifest(change_dir: Path, batch_id: str, **kwargs: object) -> Path:
 def _write_batch_manifest(change_dir: Path, batch_id: str, **kwargs: object) -> Path:
     batch_dir = change_dir / "execution" / "runs" / batch_id
     batch_dir.mkdir(parents=True, exist_ok=True)
-    path = batch_dir / "execution-manifest.yaml"
+    path = batch_dir / "execution-manifest.json"
     path.write_text(
-        yaml.safe_dump(_manifest_document(batch_id, **kwargs), sort_keys=False),  # type: ignore[arg-type]
+        json.dumps(_manifest_document(batch_id, **kwargs), sort_keys=False),  # type: ignore[arg-type]
         encoding="utf-8",
     )
     return path
@@ -1232,7 +1232,7 @@ def test_sources_cover_every_input_actually_read(tmp_path: Path) -> None:
         "cases/system/api/case.yaml",
         MANIFEST_FOLD_VIEW_SOURCE,
         f"execution/runs/{BATCH_OLD}/api-result.json",
-        f"execution/runs/{BATCH_OLD}/execution-manifest.yaml",
+        f"execution/runs/{BATCH_OLD}/execution-manifest.json",
         f"execution/runs/{BATCH_NEW}/api-result.json",
         TESTS_TREE_SCAN_SOURCE,
     ]
@@ -1250,7 +1250,7 @@ def test_current_batch_manifest_is_not_read_as_a_separate_source(tmp_path: Path)
     projection = fold_trace(tmp_path, CHANGE_ID)
 
     paths = [source.path for source in projection.sources]
-    assert f"execution/runs/{BATCH_NEW}/execution-manifest.yaml" not in paths
+    assert f"execution/runs/{BATCH_NEW}/execution-manifest.json" not in paths
 
 
 def test_repeated_folds_are_byte_identical(tmp_path: Path) -> None:

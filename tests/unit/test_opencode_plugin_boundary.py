@@ -869,7 +869,7 @@ def test_native_artifact_write_rejects_agent_forbidden_path(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     "target",
     [
-        "qa/changes/CH-1/workflow-state.yaml",
+        "qa/changes/CH-1/workflow-state.json",
         "qa/changes/CH-1/report/quality-report.md",
         "src/product.py",
         "../outside.md",

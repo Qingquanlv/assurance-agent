@@ -1057,7 +1057,7 @@ def test_run_tests_invokes_run_change_against_workspace_paths(
         calls["change_dir"] = change_dir
         execution = change_dir / "execution"
         execution.mkdir(parents=True, exist_ok=True)
-        (execution / "execution-manifest.yaml").write_text("batch_id: b-1\n", encoding="utf-8")
+        (execution / "execution-manifest.json").write_text(json.dumps({"batch_id": "b-1"}), encoding="utf-8")
         return _Manifest()
 
     monkeypatch.setattr("assurance_agent.workflow.execution.graph_ops.run_change", fake_run_change)
@@ -1086,7 +1086,7 @@ def test_inspect_operation_writes_artifacts(tmp_path: Path, monkeypatch: pytest.
     project = _make_project(tmp_path)
     execution = project / "qa" / "changes" / "CH-1" / "execution"
     execution.mkdir(parents=True, exist_ok=True)
-    (execution / "execution-manifest.yaml").write_text("batch_id: b-1\n", encoding="utf-8")
+    (execution / "execution-manifest.json").write_text(json.dumps({"batch_id": "b-1"}), encoding="utf-8")
 
     class _InspectResult:
         class _Analysis:
@@ -1111,7 +1111,9 @@ def _write_execution_and_proposal(project: Path) -> None:
     change = project / "qa" / "changes" / "CH-1"
     execution = change / "execution"
     execution.mkdir(parents=True, exist_ok=True)
-    (execution / "execution-manifest.yaml").write_text("batch_id: 20260719-120000\n", encoding="utf-8")
+    (execution / "execution-manifest.json").write_text(
+        json.dumps({"batch_id": "20260719-120000"}), encoding="utf-8"
+    )
     healing = change / "healing"
     healing.mkdir(parents=True, exist_ok=True)
     (healing / "fix-proposal.json").write_text(json.dumps({"proposals": []}), encoding="utf-8")

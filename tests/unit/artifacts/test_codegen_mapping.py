@@ -39,14 +39,16 @@ def _mapping(*, layer: str = "api", extra: list[dict[str, str]] | None = None) -
 
 
 def test_codegen_mapping_is_registered_must_compat() -> None:
-    spec = match_artifact("plans/api-codegen-mapping.yaml")
+    spec = match_artifact("plans/api-codegen-mapping.json")
     assert spec is not None
     assert spec.artifact_type == "codegen_mapping_v1"
     assert spec.compat == "must_compat"
     assert spec.model is CodegenMapping
-    assert match_artifact("plans/e2e-codegen-mapping.yaml") is not None
-    assert match_artifact("plans/fuzz-codegen-mapping.yaml") is not None
-    assert match_artifact("plans/performance-codegen-mapping.yaml") is not None
+    assert spec.wire == "json"
+    assert match_artifact("plans/e2e-codegen-mapping.json") is not None
+    assert match_artifact("plans/fuzz-codegen-mapping.json") is not None
+    assert match_artifact("plans/performance-codegen-mapping.json") is not None
+    assert match_artifact("plans/api-codegen-mapping.json") is spec
 
 
 def test_codegen_mapping_rejects_empty_entries() -> None:

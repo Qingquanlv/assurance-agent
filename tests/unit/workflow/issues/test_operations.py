@@ -23,7 +23,6 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
@@ -126,7 +125,7 @@ def _setup_execution(
         "selected_targets": targets_map,
         "result_files": {result_file_key: f"runs/{batch_id}/{target}-result.json"},
     }
-    (execution_dir / "execution-manifest.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    (execution_dir / "execution-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     result_data = {
         "schema_version": "1.0",
@@ -331,7 +330,7 @@ def test_hard_failure_on_missing_execution_manifest(tmp_path: Path) -> None:
 
     assert result.status == "failed"
     assert result.error_kind == "invalid_input"
-    assert "execution-manifest.yaml" in (result.error or "")
+    assert "execution-manifest.json" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +343,7 @@ def test_hard_failure_on_corrupt_execution_manifest(tmp_path: Path) -> None:
     change_dir = tmp_path / change_id
     execution_dir = change_dir / "execution"
     execution_dir.mkdir(parents=True)
-    (execution_dir / "execution-manifest.yaml").write_text("this: is: invalid: yaml: [[[", encoding="utf-8")
+    (execution_dir / "execution-manifest.json").write_text("this: is: invalid: yaml: [[[", encoding="utf-8")
 
     task = _make_task()
     workspace = _FakeTaskWorkspace(change_dir)

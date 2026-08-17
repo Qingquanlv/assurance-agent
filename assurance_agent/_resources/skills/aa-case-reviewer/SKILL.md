@@ -9,7 +9,7 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.yaml`.
+1. Read `qa/changes/<change-id>/workflow-state.json`.
 2. Verify `phases.case_design.status == done`.
 3. Read input files from disk: `.qa.yaml`, `proposal.md`, `cases/<module>/case.yaml`.
 4. Independently read the relevant **product source code** for every product fact used in the verdict. At minimum inspect the implementation entry point plus the controller/service/schema/model or frontend component needed to verify the proposed scenarios. Do not treat proposal, case, Explore advisory, requirements, docs, or tests as product-fact evidence.
@@ -21,7 +21,7 @@ Do not rely on prior conversation context.
 1. Write output files:
    - `qa/changes/<change-id>/review/case-review.json`
    - `qa/changes/<change-id>/review/case-review-summary.md`
-2. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
+2. Report the `workflow-state.json` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.json` — report the values in your final message and the orchestrator applies them):
    - `phases.case_review.status` = `pass | needs_fix | needs_human_review | reject`
    - `phases.case_review.gate_file` = `review/case-review.json`
 
@@ -178,7 +178,7 @@ When `risk-advisory/advisory.json` or `explore/advisory.json` contains `minimum_
 ```text
 FOR EACH required MRC item:
   It MUST appear in at least one case trace.minimum_required_coverage
-  It MUST appear in trace/minimum-coverage-matrix.yaml covered_by_cases
+  It MUST appear in trace/minimum-coverage-matrix.json covered_by_cases
   The covering case type/layer MUST match the MRC layer (api/e2e/both)
   Closed-category keys (data_integrity / negative / auth / e2e_if_enabled journey)
   MUST cite the DataKnowledge / journey closed set — not freely invented names
@@ -209,7 +209,7 @@ These four fields are an exact projection of the frozen matrix, not an estimate:
 - `skipped_by_scope` is the number of required rows with that status;
 - `missing` lists every required `skipped_by_scope` row's `key`, in matrix order.
 
-The runtime recomputes this projection from `trace/minimum-coverage-matrix.yaml`
+The runtime recomputes this projection from `trace/minimum-coverage-matrix.json`
 and rejects the review when any count or key differs.
 
 ---

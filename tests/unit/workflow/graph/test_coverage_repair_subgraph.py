@@ -340,8 +340,8 @@ def test_loop_gate_states(
             "deferred_to_intake": [],
         },
     )
-    _write_yaml(
-        change_dir / "execution" / "execution-manifest.yaml",
+    _write_json(
+        change_dir / "execution" / "execution-manifest.json",
         {"final_status": final_status, "batch_id": "b1"},
     )
     (project_root / ".aa").mkdir(parents=True, exist_ok=True)
@@ -482,8 +482,8 @@ def _write_apply_summary(
 
 
 def _write_manifest(change_dir: Path, batch_id: str, *, final_status: str = "PASS") -> None:
-    _write_yaml(
-        change_dir / "execution" / "execution-manifest.yaml",
+    _write_json(
+        change_dir / "execution" / "execution-manifest.json",
         {
             "schema_version": "1.0",
             "change_id": CHANGE_ID,

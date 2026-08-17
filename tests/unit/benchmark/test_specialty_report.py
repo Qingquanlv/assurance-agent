@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, cast, get_args
 
 import pytest
-import yaml
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.models import CoverageThreshold, SelectedTargets
@@ -449,9 +448,9 @@ def _install_authority_valid_complete_item(
         "selected_targets": selected.model_dump(),
         "result_files": {},
     }
-    manifest_path = change_dir / "execution" / "execution-manifest.yaml"
+    manifest_path = change_dir / "execution" / "execution-manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     execution = fold_trace(project, CHANGE_ID, phase="execution")
     reconciled = fold_trace(project, CHANGE_ID, phase="reconciled")

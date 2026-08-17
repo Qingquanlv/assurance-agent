@@ -90,9 +90,9 @@ def _write_manifest(change_dir: Path) -> None:
         "selected_targets": SelectedTargets(api=True, e2e=False, fuzz=False, performance=False).model_dump(),
         "result_files": {},
     }
-    manifest_path = change_dir / "execution" / "execution-manifest.yaml"
+    manifest_path = change_dir / "execution" / "execution-manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _failure_evidence() -> dict[str, str]:
@@ -131,7 +131,7 @@ def _write_failure_analysis(change_dir: Path, failures: list[dict[str, object]])
     payload = {
         "schema_version": "1.0",
         "change_id": CHANGE_ID,
-        "source_manifest": "execution/execution-manifest.yaml",
+        "source_manifest": "execution/execution-manifest.json",
         "inspection_status": "completed",
         "batch_id": BATCH_ID,
         "source_batch_id": BATCH_ID,

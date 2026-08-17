@@ -162,7 +162,7 @@ def _four_layer_rows() -> tuple[TraceRow, ...]:
 def test_summarize_four_layers_conserves_rows_and_gaps() -> None:
     gaps = (
         TraceGap(code="result_missing", source="execution/api-result.json", target="api"),
-        TraceGap(code="manifest_missing", source="execution/execution-manifest.yaml"),
+        TraceGap(code="manifest_missing", source="execution/execution-manifest.json"),
         TraceGap(code="mapped_test_missing_from_tree", source="tests/e2e/test_x.py", target="e2e"),
     )
     projection = _projection(_four_layer_rows(), gaps=gaps)
@@ -378,7 +378,7 @@ def test_optimistic_and_pessimistic_integrity_misstatement() -> None:
     rows = (_row("API-1", "API"),)
     with_gap = _projection(
         rows,
-        gaps=(TraceGap(code="manifest_missing", source="execution/execution-manifest.yaml"),),
+        gaps=(TraceGap(code="manifest_missing", source="execution/execution-manifest.json"),),
         integrity="complete",  # optimistic
     )
     with pytest.raises(TraceLayerSummaryError, match="integrity"):
@@ -403,7 +403,7 @@ def test_derive_trace_integrity_rules() -> None:
     assert (
         derive_trace_integrity(
             rows,
-            (TraceGap(code="manifest_missing", source="execution/execution-manifest.yaml"),),
+            (TraceGap(code="manifest_missing", source="execution/execution-manifest.json"),),
         )
         == "incomplete"
     )

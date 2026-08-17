@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -62,11 +63,23 @@ def test_missing_changed_lines_json_is_typed_collection_gap(tmp_path: Path) -> N
         encoding="utf-8",
     )
     # deliberately omit raw/changed-lines.json
-    (change_dir / "execution" / "execution-manifest.yaml").write_text(
-        f"schema_version: '1.0'\nchange_id: {change_id}\nbatch_id: {batch_id}\n"
-        "executed_at: '2026-08-05T10:00:00+00:00'\n"
-        "selected_targets: {api: true, e2e: false, fuzz: false, performance: false}\n"
-        "result_files: {}\nfinal_status: PASS\n",
+    (change_dir / "execution" / "execution-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": change_id,
+                "batch_id": batch_id,
+                "executed_at": "2026-08-05T10:00:00+00:00",
+                "selected_targets": {
+                    "api": True,
+                    "e2e": False,
+                    "fuzz": False,
+                    "performance": False,
+                },
+                "result_files": {},
+                "final_status": "PASS",
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -95,8 +108,6 @@ def test_missing_changed_lines_json_is_typed_collection_gap(tmp_path: Path) -> N
         ),
     )
     assert result.status == "succeeded"
-    import json
-
     payload = json.loads(
         (change_dir / "execution" / "runs" / batch_id / "coverage-diff.json").read_text(encoding="utf-8")
     )

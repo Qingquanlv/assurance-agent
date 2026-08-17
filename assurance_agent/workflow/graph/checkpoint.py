@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from assurance_agent.artifacts.paths import WORKFLOW_STATE_REL
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.graph.import_validation import (
@@ -85,7 +86,7 @@ class CheckpointStore:
 
     def _repair_workflow_state(self, projection: GraphProjection) -> None:
         """缺失或损坏的 ``workflow-state.yaml`` 只能从 ledger 投影重建，绝不反向推断。"""
-        path = self._change_dir / "workflow-state.yaml"
+        path = self._change_dir / WORKFLOW_STATE_REL
         expected = render_workflow_state_yaml(projection)
         try:
             current = path.read_bytes()

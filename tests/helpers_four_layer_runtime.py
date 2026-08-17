@@ -19,6 +19,7 @@ from typing import Literal
 import yaml
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
+from assurance_agent.artifacts.paths import existing_with_alias
 from assurance_agent.artifacts.models.assurance import LayerName
 from assurance_agent.artifacts.models.generated_files import GeneratedFilesV1
 from assurance_agent.verification.generated_files import (
@@ -318,16 +319,21 @@ class FourLayerDeterministicAdapter:
                 existing = existing.rstrip() + "\n\n<!-- deterministic-plan-fix -->\n"
             summary_path.write_text(existing, encoding="utf-8")
         case_id, target_file, symbol = _CODEGEN_TEST_BY_LAYER[layer]
-        mapping_path = change_root / "plans" / f"{layer}-codegen-mapping.yaml"
+        mapping_path = change_root / "plans" / f"{layer}-codegen-mapping.json"
         mapping_path.parent.mkdir(parents=True, exist_ok=True)
         mapping_path.write_text(
-            (
-                'schema_version: "1"\n'
-                f"layer: {layer}\n"
-                "entries:\n"
-                f"  - case_id: {case_id}\n"
-                f"    symbol: {symbol}\n"
-                f"    target_file: {target_file}\n"
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "layer": layer,
+                    "entries": [
+                        {
+                            "case_id": case_id,
+                            "symbol": symbol,
+                            "target_file": target_file,
+                        }
+                    ],
+                }
             ),
             encoding="utf-8",
         )
@@ -541,12 +547,15 @@ def seed_four_layer_project(
             target = change_dir / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text, encoding="utf-8")
-        mapping_rel = f"plans/{layer}-codegen-mapping.yaml"
-        mapping_src = bundle.root / mapping_rel
-        if mapping_src.is_file():
+        mapping_rel = f"plans/{layer}-codegen-mapping.json"
+        mapping_src = existing_with_alias(bundle.root / mapping_rel)
+        if mapping_src is not None:
             dest = change_dir / mapping_rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(mapping_src.read_text(encoding="utf-8"), encoding="utf-8")
+            text = mapping_src.read_text(encoding="utf-8")
+            if mapping_src.suffix in {".yaml", ".yml"}:
+                text = json.dumps(yaml.safe_load(text))
+            dest.write_text(text, encoding="utf-8")
         for case_path in sorted((bundle.root / "cases").glob("**/case.yaml")):
             rel = case_path.relative_to(bundle.root)
             dest = change_dir / rel
@@ -594,9 +603,16 @@ def seed_four_layer_project(
         encoding="utf-8",
     )
     (change_dir / "proposal.md").write_text("# proposal\n", encoding="utf-8")
-    (change_dir / "workflow-state.yaml").write_text(
-        "phases:\n  skill_registry_check: {status: pass}\n"
-        "run_context: {interaction_mode: autonomous, orchestrator_skill: aa-workflow}\n",
+    (change_dir / "workflow-state.json").write_text(
+        json.dumps(
+            {
+                "phases": {"skill_registry_check": {"status": "pass"}},
+                "run_context": {
+                    "interaction_mode": "autonomous",
+                    "orchestrator_skill": "aa-workflow",
+                },
+            }
+        ),
         encoding="utf-8",
     )
     facts = change_dir / "facts" / "fact-baseline.json"

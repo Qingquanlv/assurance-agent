@@ -150,7 +150,7 @@ def test_the_contract_authorizes_only_the_two_trace_documents() -> None:
         f"change:{FACTS_REL}",
     }
     assert "change:inspect/quality-gate-result.json" not in contract.writes
-    assert "change:execution/execution-manifest.yaml" not in contract.writes
+    assert "change:execution/execution-manifest.json" not in contract.writes
 
 
 def test_the_node_is_not_retried_on_its_own_failure() -> None:
@@ -1045,7 +1045,7 @@ def test_no_trace_node_rewrites_the_execution_verdict() -> None:
     """
     contracts = load_execution_contracts(Path.cwd()).contracts
     verdict_paths = {
-        "change:execution/execution-manifest.yaml",
+        "change:execution/execution-manifest.json",
         "change:inspect/quality-gate-result.json",
     }
     targets = {

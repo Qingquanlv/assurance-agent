@@ -18,7 +18,7 @@ _SKILLS = (
 )
 
 _FORBIDDEN = (
-    "workflow-state.yaml",
+    "workflow-state.json",
     "phases.",
     "layer_applicable",
     "state delta",

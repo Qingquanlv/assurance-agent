@@ -247,7 +247,7 @@ def test_api_only_record_and_combine_via_operation_handlers(tmp_path: Path) -> N
     (project / "tests" / "api" / "test_login.py").write_text("def test_login():\n    assert True\n")
     change = project / "qa" / "changes" / "CH-1"
     (change / "execution").mkdir(parents=True, exist_ok=True)
-    (change / "execution" / "execution-manifest.yaml").write_text(
+    (change / "execution" / "execution-manifest.json").write_text(
         "batch_id: batch-1\n",
         encoding="utf-8",
     )

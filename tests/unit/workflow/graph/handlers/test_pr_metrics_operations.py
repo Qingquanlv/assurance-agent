@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import yaml
 
 from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext
@@ -69,8 +68,8 @@ def _seed_batch(change_dir: Path) -> Path:
     raw = batch / "raw"
     raw.mkdir(parents=True, exist_ok=True)
     (change_dir / "execution").mkdir(parents=True, exist_ok=True)
-    (change_dir / "execution" / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(
+    (change_dir / "execution" / "execution-manifest.json").write_text(
+        json.dumps(
             {
                 "schema_version": "1.0",
                 "change_id": CHANGE_ID,
@@ -192,8 +191,8 @@ async def test_admin_creates_dept():
 
 def _seed_journey_inputs(project_root: Path, change_dir: Path, batch: Path) -> dict:
     (change_dir / "trace").mkdir(parents=True, exist_ok=True)
-    (change_dir / "trace" / "minimum-coverage-matrix.yaml").write_text(
-        yaml.safe_dump(
+    (change_dir / "trace" / "minimum-coverage-matrix.json").write_text(
+        json.dumps(
             [
                 {
                     "mrc_id": "MRC-E2E-001",

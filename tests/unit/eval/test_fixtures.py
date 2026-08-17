@@ -42,14 +42,14 @@ def _write_synth_fixtures(root: Path) -> Path:
             }
         ),
     )
-    # Also keep a copy named workflow-state.yaml already via write_state
+    # Also keep a copy named workflow-state.json already via write_state
     tiers = fixtures / "tiers"
     tiers.mkdir()
     (tiers / "L0-case-seed.yaml").write_text(
         yaml.safe_dump(
             {
                 "name": "L0-case-seed",
-                "paths": ["proposal.md", "cases/case.yaml", "workflow-state.yaml"],
+                "paths": ["proposal.md", "cases/case.yaml", "workflow-state.json"],
                 "resets": {
                     "workflow_state": {
                         "phases.case-design.status": "done",
@@ -167,7 +167,7 @@ def test_load_tier_merges_imports_by_entrypoint(tmp_path: Path) -> None:
                                 "path": "execute-workflow/bootstrap/bootstrap",
                                 "graph": "bootstrap",
                                 "node": "registry",
-                                "outputs": ["change:workflow-state.yaml"],
+                                "outputs": ["change:workflow-state.json"],
                                 "gate": "registry-gate",
                             }
                         ],
@@ -429,7 +429,7 @@ def test_repo_paths_reject_unsafe_and_digest_mismatch(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "name": "bad-repo",
-                "paths": ["proposal.md", "workflow-state.yaml"],
+                "paths": ["proposal.md", "workflow-state.json"],
                 "repo_paths": ["../escape.yaml"],
             }
         ),

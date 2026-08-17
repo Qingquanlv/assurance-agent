@@ -9,7 +9,7 @@ description: "Run two-stage AA intake mode: interactive explore + case design + 
 
 > **Preferred entry:** `aa workflow run --change <id> --entrypoint case` (or `intake`) /
 > OpenCode `workflow_start` with the matching entrypoint. GraphRuntime is the only
-> progression writer — do not hand-edit `workflow-state.yaml` or invent phase completion.
+> progression writer — do not hand-edit `workflow-state.json` or invent phase completion.
 >
 > **Preferred handoff:** after intake completes and the user confirms, call
 > `workflow_start` (`entrypoint: execute`) or

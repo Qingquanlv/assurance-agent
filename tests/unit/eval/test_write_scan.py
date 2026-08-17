@@ -112,7 +112,7 @@ def _make_sut(tmp_path: Path) -> Path:
     write_aa_config(sut)
     change_dir = sut / "qa" / "changes" / "eval-sample-001"
     change_dir.mkdir(parents=True)
-    (change_dir / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
+    (change_dir / "workflow-state.json").write_text(json.dumps({"phases": {}}), encoding="utf-8")
     _git_init(sut)
     return sut
 

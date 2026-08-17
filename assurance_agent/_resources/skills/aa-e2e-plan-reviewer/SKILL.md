@@ -14,7 +14,7 @@ Review the E2E plan package and emit a runtime PlanReview document. Mechanical P
 - `change:plans/e2e-plan.md`
 - `change:plans/e2e-test-data-plan.md`
 - `change:plans/e2e-codegen-plan.md`
-- `change:plans/e2e-codegen-mapping.yaml`
+- `change:plans/e2e-codegen-mapping.json`
 - `change:plans/m4-review-summary.md`
 - `change:review/e2e-plan-checks.json`
 - `change:cases/**/case.yaml`
@@ -48,4 +48,4 @@ Write only the review outputs listed above. Keep semantic factory mapping review
 The schema contract is supplied by the runtime. Emit `codegen_readiness`, `auto_fix_allowed`, `human_review_required`, and `risk_level`. The reject routing example is `` `reject` | `not_ready` | `false` | `true` | `stop` ``. Gate policy keys such as `policy.human_review_risk_levels` are consumed by the graph coordinator / ledger.
 
 Each finding must include `id`, `severity`, `category`, `message`, and `locator`.
-Point mapping defects at `change:plans/e2e-codegen-mapping.yaml`.
+Point mapping defects at `change:plans/e2e-codegen-mapping.json`.

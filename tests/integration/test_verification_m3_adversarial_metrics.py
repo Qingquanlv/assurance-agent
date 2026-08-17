@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 
 from assurance_agent.artifacts.models.cases import CaseEntry, CaseRisk
 from assurance_agent.artifacts.models.discovery import (
@@ -32,7 +31,9 @@ from assurance_agent.artifacts.models.discovery import (
 )
 from assurance_agent.artifacts.models.quarantine import QuarantineProjection
 from assurance_agent.artifacts.models.policy import Policy
+from assurance_agent.artifacts.paths import DISCOVERY_ORACLE_SET_REL, discovery_receipt_files
 from assurance_agent.artifacts.policy import load_policy_bytes, policy_digest
+from assurance_agent.artifacts.registry import load_registered_artifact
 from assurance_agent.evidence.metrics import aggregate_nightly_metrics
 from assurance_agent.evidence.metrics_sufficiency import evaluate_metrics_sufficiency
 from assurance_agent.evidence.replay_telemetry import compute_seed_replay_rate
@@ -128,7 +129,7 @@ def _campaign_spec() -> CampaignSpec:
         strategy_ids=("api.status.denied-500",),
         cadence_profile="pr",
         budget=BudgetBounds(max_rounds=1),
-        oracle_set_ref="discovery/oracle-set.yaml",
+        oracle_set_ref=DISCOVERY_ORACLE_SET_REL,
     )
 
 
@@ -349,7 +350,7 @@ def test_scenario_a_campaign_to_clean_closed_path(tmp_path: Path) -> None:
     assert outcome.result.confirmed_count == 1
     assert outcome.counterexample_ids
     ce_id = outcome.counterexample_ids[0]
-    ce_path = change_dir / "discovery" / "counterexamples" / f"{ce_id}.yaml"
+    ce_path = change_dir / "discovery" / "counterexamples" / f"{ce_id}.json"
     assert ce_path.is_file()
 
     # Replay attempt receipts (C3) from campaign confirm path
@@ -535,10 +536,12 @@ def test_scenario_c_heuristic_cannot_become_problem_or_confirmed_yield(tmp_path:
     assert not (project_root / "qa" / "issues" / "problems.json").is_file()
 
     ce_dir = change_dir / "discovery" / "counterexamples"
-    if ce_dir.is_dir():
-        for path in ce_dir.glob("*.yaml"):
-            payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-            assert payload["finding_status"] != "confirmed"
+    for path in discovery_receipt_files(ce_dir):
+        payload = load_registered_artifact(
+            f"discovery/counterexamples/{path.name}", path.read_text(encoding="utf-8")
+        )
+        assert isinstance(payload, dict)
+        assert payload["finding_status"] != "confirmed"
 
     # A heuristic observation does not manufacture a confirmed CE; the campaign
     # receipt still records the executed sample so zero yield is honest.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from assurance_agent.workflow.graph.checkpoint import state_values_for_import
@@ -37,8 +38,8 @@ def test_import_checkpoint_uses_projection_state_values_not_yaml(tmp_path: Path)
     """When a GraphProjection exists, gate state.* is projection.state_values."""
     change = tmp_path / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True)
-    (change / "workflow-state.yaml").write_text(
-        "phases:\n  stale: true\n",
+    (change / "workflow-state.json").write_text(
+        json.dumps({"phases": {"stale": True}}),
         encoding="utf-8",
     )
     context = _context(change)
@@ -57,8 +58,8 @@ def test_finalize_gate_prefers_folded_state_values(tmp_path: Path) -> None:
     """_state_values_for_gate must not treat projection YAML keys as phases."""
     change = tmp_path / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True)
-    (change / "workflow-state.yaml").write_text(
-        "invocation_id: inv-yaml\nphases:\n  stale: true\n",
+    (change / "workflow-state.json").write_text(
+        json.dumps({"invocation_id": "inv-yaml", "phases": {"stale": True}}),
         encoding="utf-8",
     )
     result = TaskResult(status="succeeded", state_updates={"from_task": 2})

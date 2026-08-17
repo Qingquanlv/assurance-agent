@@ -8,7 +8,7 @@ from collections.abc import Mapping
 import yaml
 from pydantic import BaseModel
 
-from assurance_agent.artifacts.registry import match_artifact
+from assurance_agent.artifacts.registry import load_registered_artifact, match_artifact
 from assurance_agent.workflow.graph.frozen_output import FrozenOutput, enforce_size_limits
 from assurance_agent.workflow.graph.ingest_catalog import (
     IngestArtifactCatalog,
@@ -66,10 +66,7 @@ def ingest_from_write_set(
             if sha is None:
                 continue
             blob = store.read_object(sha)
-            if rest.endswith((".yaml", ".yml")):
-                data = yaml.safe_load(blob.decode("utf-8"))
-            else:
-                data = json.loads(blob.decode("utf-8"))
+            data = load_registered_artifact(rest, blob.decode("utf-8"))
             spec.model.model_validate(data)
             value = json.loads(json.dumps(data, default=str))
             frozen[symbol] = FrozenOutput(

@@ -66,7 +66,7 @@ Source: `qa/changes/{change_id}/report/quality-report.json` (issues section) and
 - `qa/archive/{change_id}/inspect/`
 - `qa/archive/{change_id}/issues/` (if present)
 - `qa/archive/{change_id}/report/` (if present)
-- `qa/archive/{change_id}/workflow-state.yaml`
+- `qa/archive/{change_id}/workflow-state.json`
 - `qa/archive/{change_id}/events.jsonl`
 - `qa/archive/{change_id}/healing/`
 

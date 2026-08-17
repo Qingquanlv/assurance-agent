@@ -152,7 +152,7 @@ def test_run_suite_end_to_end_pass_and_persists_calibration(tmp_path: Path, monk
     _git_init(sut)
     change_dir = sut / "qa" / "changes" / "eval-sample-001"
     change_dir.mkdir(parents=True)
-    (change_dir / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
+    (change_dir / "workflow-state.json").write_text(json.dumps({"phases": {}}), encoding="utf-8")
 
     class GreenAdapter:
         def __init__(self, workspace: Path) -> None:
@@ -241,7 +241,7 @@ def test_run_suite_overlays_extra_memory_into_attempt_sandbox(tmp_path: Path) ->
     _git_init(sut)
     seed_change = sut / "qa/changes/eval-sample-001"
     seed_change.mkdir(parents=True)
-    (seed_change / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
+    (seed_change / "workflow-state.json").write_text(json.dumps({"phases": {}}), encoding="utf-8")
 
     overlay = tmp_path / "overlay"
     (overlay / ".aa" / "memory").mkdir(parents=True)
@@ -351,7 +351,7 @@ def test_run_suite_repeat_uses_isolated_workspaces_and_unique_score_keys(tmp_pat
     _git_init(sut)
     seed_change = sut / "qa/changes/eval-sample-001"
     seed_change.mkdir(parents=True)
-    (seed_change / "workflow-state.yaml").write_text("phases: {}\n", encoding="utf-8")
+    (seed_change / "workflow-state.json").write_text(json.dumps({"phases": {}}), encoding="utf-8")
 
     class IsolatedAdapter:
         def __init__(self, workspace: Path, attempt: int) -> None:

@@ -1,6 +1,6 @@
 ---
 name: aa-run
-description: "AA M5: Execute quality targets for a change via `aa run --change <change-id>`. Runs API (pytest + coverage), E2E (pytest-playwright), Fuzz (schemathesis via pytest), and Performance (Locust) per selected_targets. CLI writes normalised results to execution/runs/<batch-id>/ (api/e2e/fuzz/performance/coverage-result.json, summary.md, quality-gate-result.json, execution-manifest.yaml) plus latest pointers under execution/. Never fabricates test results or coverage numbers."
+description: "AA M5: Execute quality targets for a change via `aa run --change <change-id>`. Runs API (pytest + coverage), E2E (pytest-playwright), Fuzz (schemathesis via pytest), and Performance (Locust) per selected_targets. CLI writes normalised results to execution/runs/<batch-id>/ (api/e2e/fuzz/performance/coverage-result.json, summary.md, quality-gate-result.json, execution-manifest.json) plus latest pointers under execution/. Never fabricates test results or coverage numbers."
 ---
 
 ## Per-Skill Memory
@@ -13,7 +13,7 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.yaml`.
+1. Read `qa/changes/<change-id>/workflow-state.json`.
 2. Verify codegen phases are done (`phases.api_codegen.status == done` and/or `phases.e2e_codegen.status == done` per `test_types`).
 3. Resolve `selected_targets` (see **Selected Targets Resolution**).
 4. Read `.aa/config.yaml` for change-id and test configuration.
@@ -57,10 +57,10 @@ Do not rely on prior conversation context.
    **Fallback mode:** direct pytest fallback does **not** produce normalised `api-result.json` / `e2e-result.json` / `fuzz-result.json` / `performance-result.json`. Do not fabricate them. See **Fallback Mode Boundary**.
 
 3. Verify or write execution manifest:
-   - **Primary mode:** CLI writes canonical `execution-manifest.yaml` (map-shaped `result_files` + `selected_targets`) to both `runs/<batch-id>/` and latest pointer. Skill **verifies** it — do not overwrite CLI paths.
+   - **Primary mode:** CLI writes canonical `execution-manifest.json` (map-shaped `result_files` + `selected_targets`) to both `runs/<batch-id>/` and latest pointer. Skill **verifies** it — do not overwrite CLI paths.
    - **Skill extended format (optional augment):** After verifying CLI batch files exist, skill may rewrite the latest pointer with `primary_runner`, `layer_results`, `warnings`, `final_status` — but `primary_runner.result_files` **must** list every batch file path under `execution/runs/<batch-id>/` for each selected target.
    - **Fallback mode:** skill writes manifest with `fallback_runner.used: true`.
-4. Update `workflow-state.yaml`:
+4. Update `workflow-state.json`:
    - Set `phases.execution.status` = `PASS | PASS_WITH_WARNINGS | FAIL | SKIPPED`
    - Set `phases.execution.batch_id` = resolved `batch_id` from CLI output (not guessed)
    - If `final_status == PASS_WITH_WARNINGS`, downstream workflow final status must be `completed_with_warnings`, not `completed`
@@ -75,18 +75,18 @@ Execute generated API, E2E, Fuzz, and Performance tests for a specific change (p
 
 ## Skill vs CLI Boundary
 
-This skill **does not synthesize normalised result files itself**. It invokes the Assurance Agent CLI (or permitted fallback), then verifies the CLI-owned outputs including `execution-manifest.yaml`.
+This skill **does not synthesize normalised result files itself**. It invokes the Assurance Agent CLI (or permitted fallback), then verifies the CLI-owned outputs including `execution-manifest.json`.
 
 **Primary mode (CLI):**
 
 - The CLI (`aa run`) is the trusted execution layer for normalised `api-result.json` / `e2e-result.json` / `fuzz-result.json` / `performance-result.json` / `coverage-result.json` / `summary.md` / `quality-gate-result.json`.
-- The CLI writes `execution-manifest.yaml` (canonical map format) in primary mode. The skill reads and verifies it, may augment the latest pointer with extended metadata, and reports.
+- The CLI writes `execution-manifest.json` (canonical map format) in primary mode. The skill reads and verifies it, may augment the latest pointer with extended metadata, and reports.
 
 **Fallback mode (direct pytest):**
 
 - Direct pytest fallback does **not** write normalised `api-result.json` / `e2e-result.json`.
 - When fallback is used:
-  - Write `execution-manifest.yaml`
+  - Write `execution-manifest.json`
   - Write fallback raw logs under `execution/runs/<batch-id>/raw/`
   - Do **not** fabricate normalised result files
   - `final_status = PASS_WITH_WARNINGS` if fallback passed; `FAIL` if fallback failed
@@ -94,13 +94,13 @@ This skill **does not synthesize normalised result files itself**. It invokes th
 
 **If primary CLI fails to write expected result files:**
 
-- Record failure in `execution-manifest.yaml`
+- Record failure in `execution-manifest.json`
 - Set `final_status = FAIL` (or apply fallback per **Runner Mode**)
 - **Never fabricate** `api-result.json` or `e2e-result.json`
 
 ## Rerun Integrity
 
-`aa run` records a SHA256 snapshot of the full `tests/` tree in every `execution-manifest.yaml`:
+`aa run` records a SHA256 snapshot of the full `tests/` tree in every `execution-manifest.json`:
 
 - `tests_tree_sha256` — aggregate hash of all test files.
 - `test_files_sha256` — per-file hashes for diagnostics.
@@ -121,7 +121,7 @@ If test files changed since the previous batch:
 
 ## Product Tree Integrity
 
-`aa run` records `product_tree_sha256` in every `execution-manifest.yaml` and writes per-file hashes to `execution/runs/<batch-id>/product-files-sha256.json`.
+`aa run` records `product_tree_sha256` in every `execution-manifest.json` and writes per-file hashes to `execution/runs/<batch-id>/product-files-sha256.json`.
 
 - Product roots come from `.aa/config.yaml` `execution.product_code_roots` (default: `app`, `web/src`, `src`; missing roots are skipped).
 - During healing, product code changes are a hard error: `PRODUCT-CHANGED-DURING-HEALING`.
@@ -162,11 +162,11 @@ If `aa` is not on `PATH` at all → `fallback_runner.reason = aa_cli_missing` (s
 
 ## Selected Targets Resolution
 
-`selected_targets` in `execution-manifest.yaml` must reflect what this run actually executes.
+`selected_targets` in `execution-manifest.json` must reflect what this run actually executes.
 
 Resolution order:
 
-1. `workflow-state.yaml` — codegen phases done per `test_types` (`api_codegen`, `e2e_codegen`)
+1. `workflow-state.json` — codegen phases done per `test_types` (`api_codegen`, `e2e_codegen`)
 2. `.aa/config.yaml` — `test_types` / selected targets
 3. Presence of plan + codegen output files (`api-codegen-plan.md`, `e2e-codegen-plan.md`, generated tests)
 4. CLI result metadata (when primary mode succeeds)
@@ -175,7 +175,7 @@ Rules:
 
 - If `phases.api_codegen.status != done` → `selected_targets.api = false`
 - If `phases.e2e_codegen.status != done` → `selected_targets.e2e = false`
-- If sources disagree, record a warning in `execution-manifest.yaml` and prefer `workflow-state.yaml` + CLI metadata
+- If sources disagree, record a warning in `execution-manifest.json` and prefer `workflow-state.json` + CLI metadata
 - Do not require E2E result files when `selected_targets.e2e == false`
 - Do not require API result files when `selected_targets.api == false`
 
@@ -216,14 +216,14 @@ If the correct CLI is not available, do **not** silently fall back. Apply **Runn
 - Fallback does **not** write normalised `api-result.json` / `e2e-result.json` — see **Fallback Mode Boundary** above.
 - If fallback is used and passes, `final_status` must be `PASS_WITH_WARNINGS`, never `PASS`.
 - If fallback is not allowed and primary cannot run (`aa_cli_missing`, `aa_cli_invalid`), `final_status` must be `FAIL`.
-- Record the chosen mode in `execution-manifest.yaml` (`primary_runner` / `fallback_runner`).
+- Record the chosen mode in `execution-manifest.json` (`primary_runner` / `fallback_runner`).
 
 ## Fallback Mode Boundary
 
 When `fallback_runner.used == true`:
 
 - Write raw logs to `execution/runs/<batch-id>/raw/` (e.g. `api.log`, `e2e.log`, JUnit XML if pytest produced them)
-- Write `execution-manifest.yaml` with `fallback_runner` details
+- Write `execution-manifest.json` with `fallback_runner` details
 - Do **not** fabricate normalised `api-result.json` or `e2e-result.json`
 - Optionally write skill-owned `execution/run-summary-note.md` explaining fallback mode — do **not** rewrite CLI-owned `summary.md`
 - `final_status = PASS_WITH_WARNINGS` if fallback passed; `FAIL` if fallback failed
@@ -257,7 +257,7 @@ QA_SKIP_SUT_READINESS=1 pytest ...
 
 Do not use bypass in CI or formal QA workflow runs.
 
-**Manifest note (optional):** If pytest fails at session startup, record in `execution-manifest.yaml`:
+**Manifest note (optional):** If pytest fails at session startup, record in `execution-manifest.json`:
 
 ```yaml
 sut_connectivity:
@@ -334,7 +334,7 @@ qa/changes/<change-id>/execution/
 ├── performance-result.json      ← latest (if selected_targets.performance)
 ├── quality-gate-result.json     ← latest (always; CLI-computed gate)
 ├── summary.md                   ← latest (CLI-owned; skill verifies, does not rewrite)
-├── execution-manifest.yaml      ← latest pointer (CLI-written in primary mode)
+├── execution-manifest.json      ← latest pointer (CLI-written in primary mode)
 ├── run-summary-note.md          ← optional skill-owned fallback note
 └── runs/
     └── <batch-id>/               ← resolved from CLI output, not guessed
@@ -346,7 +346,7 @@ qa/changes/<change-id>/execution/
         ├── quality-gate-result.json ← always (primary mode)
         ├── trace-projection.json  ← batch-scoped traceability fact projection (CLI-written)
         ├── summary.md            ← primary mode only
-        ├── execution-manifest.yaml
+        ├── execution-manifest.json
         └── raw/
             ├── api.log           ← fallback or CLI raw output
             ├── e2e.log
@@ -385,8 +385,8 @@ Always write an execution manifest that records which runner produced the result
 Paths:
 
 ```text
-qa/changes/<change-id>/execution/runs/<batch-id>/execution-manifest.yaml
-qa/changes/<change-id>/execution/execution-manifest.yaml   ← latest pointer
+qa/changes/<change-id>/execution/runs/<batch-id>/execution-manifest.json
+qa/changes/<change-id>/execution/execution-manifest.json   ← latest pointer
 ```
 
 Structure:
@@ -478,9 +478,9 @@ Manifest rule:
 5. Resolve `batch_id` (see **Batch ID Resolution**).
 6. Read result files per **selected_targets** — do not fail on absent unselected target files.
 7. If primary mode: read `execution/summary.md` (CLI-owned). If fallback: do not expect normalised result files.
-8. Write `execution-manifest.yaml` (per-run + latest pointer) with `selected_targets`, primary/fallback runner, and `final_status`.
+8. Write `execution-manifest.json` (per-run + latest pointer) with `selected_targets`, primary/fallback runner, and `final_status`.
 9. Present a brief summary to the user (final status, counts, fallback mode if used).
-10. Update `workflow-state.yaml`: set `phases.execution.status`, `phases.execution.batch_id` (resolved, not guessed).
+10. Update `workflow-state.json`: set `phases.execution.status`, `phases.execution.batch_id` (resolved, not guessed).
 11. Do **not** generate `failure-analysis.json` — that is the job of `aa-inspect`.
 
 ## Workarounds and Issue Lifecycle Boundary
@@ -514,7 +514,7 @@ SKIPPED
 - Resolve `batch_id` from CLI output — never guess from wall clock alone.
 - Require result files only for **selected_targets**; absent unselected target files is not a failure.
 - If primary CLI fails to write expected result files (for selected targets), set `final_status = FAIL` or apply fallback per **Runner Mode**.
-- Always write `execution-manifest.yaml` recording `selected_targets`, primary/fallback runner, and `final_status`.
+- Always write `execution-manifest.json` recording `selected_targets`, primary/fallback runner, and `final_status`.
 - Fallback direct pytest runs **only selected targets**.
 - Always attempt identity check + primary CLI first; direct pytest fallback only when `allow_direct_pytest_fallback: true` or user accepts risk.
 - If primary cannot run (`aa_cli_missing`, `aa_cli_invalid`) and fallback is not allowed, `final_status` must be `FAIL`.

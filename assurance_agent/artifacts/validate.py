@@ -20,7 +20,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from assurance_agent import resources
-from assurance_agent.artifacts.registry import ArtifactSpec, match_artifact
+from assurance_agent.artifacts.registry import ArtifactSpec, load_registered_artifact, match_artifact
 from assurance_agent.change_location import ChangeNotFoundError
 from assurance_agent.exceptions import AaError
 
@@ -176,7 +176,7 @@ def _strip_output_locator(path: str) -> str:
 def _validate_file(spec: ArtifactSpec, abs_path: Path, rel: str) -> ArtifactResult:
     text = abs_path.read_text(encoding="utf-8")
     try:
-        raw = json.loads(text) if abs_path.suffix == ".json" else yaml.safe_load(text)
+        raw = load_registered_artifact(rel, text)
     except (json.JSONDecodeError, yaml.YAMLError) as err:
         return ArtifactResult(
             path=rel, artifact_type=spec.artifact_type, ok=False, errors=[f"parse error: {err}"]

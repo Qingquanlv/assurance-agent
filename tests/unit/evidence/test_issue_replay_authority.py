@@ -89,7 +89,7 @@ SNAPSHOT_SOURCE = "issues/snapshot.json"
 RECONCILE_SOURCE = "inspect/issue-reconcile-status.json"
 PROJECT_LEDGER_SOURCE = "qa/issues/events.jsonl"
 PROJECT_PROBLEMS_SOURCE = "qa/issues/problems.json"
-EXECUTION_ANCHOR = "execution/execution-manifest.yaml"
+EXECUTION_ANCHOR = "execution/execution-manifest.json"
 EXTRA_ENTRY = "execution/runs/extra.bin"
 
 EXPECTED_SOURCE: dict[str, str] = {

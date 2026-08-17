@@ -36,7 +36,7 @@ def test_case_design_declares_only_the_expected_write_boundaries(tmp_path: Path)
         ("change", ".qa.yaml"),
         ("change", "proposal.md"),
         ("change", "cases/**"),
-        ("change", "trace/minimum-coverage-matrix.yaml"),
+        ("change", "trace/minimum-coverage-matrix.json"),
         ("change", "plans/data-knowledge.proposal.api.yaml"),
         ("change", "plans/data-knowledge.proposal.e2e.yaml"),
     }

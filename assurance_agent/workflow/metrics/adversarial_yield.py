@@ -1,7 +1,7 @@
 """``operation:collect-adversarial-yield`` — nightly B3 discovery yield (§5-B3).
 
-Reads Change-local discovery receipts only (``discovery/counterexamples/*.yaml``
-and optional ``discovery/campaign-result.yaml``). Never invents yield zeros for
+Reads Change-local discovery receipts only (``discovery/counterexamples/*.{json,yaml}``
+and optional ``discovery/campaign-result.json``). Never invents yield zeros for
 mere absence: empty discovery → ``not_evaluated`` + ``pending_nightly``. Writes
 batch evidence at ``execution/runs/nightly/adversarial-yield.json``.
 """
@@ -17,6 +17,12 @@ import yaml
 from pydantic import ValidationError
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes
+from assurance_agent.artifacts.paths import (
+    DISCOVERY_CAMPAIGN_RESULT_REL,
+    DISCOVERY_ORACLE_SET_REL,
+    discovery_receipt_files,
+    existing_with_alias,
+)
 from assurance_agent.artifacts.models.discovery import CampaignResult, Counterexample
 from assurance_agent.artifacts.models.issues import ChangeIssueSnapshot
 from assurance_agent.artifacts.models.metrics import MetricCollectionGap, MetricShortboard
@@ -34,8 +40,8 @@ ADVERSARIAL_YIELD_BATCH_ID = "nightly"
 ADVERSARIAL_YIELD_EVIDENCE_REL = f"execution/runs/{ADVERSARIAL_YIELD_BATCH_ID}/adversarial-yield.json"
 
 _CE_DIR_REL = "discovery/counterexamples"
-_CAMPAIGN_RESULT_REL = "discovery/campaign-result.yaml"
-_ORACLE_SET_REL = "discovery/oracle-set.yaml"
+_CAMPAIGN_RESULT_REL = DISCOVERY_CAMPAIGN_RESULT_REL
+_ORACLE_SET_REL = DISCOVERY_ORACLE_SET_REL
 _ISSUE_SNAPSHOT_REL = "issues/snapshot.json"
 
 
@@ -88,19 +94,7 @@ def _failed(
 
 
 def _ce_paths(change_dir: Path) -> list[Path]:
-    ce_dir = change_dir / _CE_DIR_REL
-    if not ce_dir.is_dir():
-        return []
-    paths = sorted(ce_dir.glob("*.yaml")) + sorted(ce_dir.glob("*.yml"))
-    seen: set[Path] = set()
-    unique: list[Path] = []
-    for path in paths:
-        resolved = path.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        unique.append(path)
-    return unique
+    return discovery_receipt_files(change_dir / _CE_DIR_REL)
 
 
 def _load_raw_mapping(path: Path) -> dict[str, Any] | MetricCollectionGap:
@@ -168,7 +162,7 @@ def _closed_counterexample_ids(
             if not artifact.startswith(prefix):
                 continue
             filename = artifact.removeprefix(prefix)
-            if "/" in filename or not filename.endswith((".yaml", ".yml")):
+            if "/" in filename or not filename.endswith((".json", ".yaml", ".yml")):
                 continue
             closed.add(filename.rsplit(".", 1)[0])
     return frozenset(closed)
@@ -186,10 +180,10 @@ def collect_adversarial_yield(
         "campaign_result_rel": _CAMPAIGN_RESULT_REL,
     }
     ce_paths = _ce_paths(change_dir)
-    campaign_path = change_dir / _CAMPAIGN_RESULT_REL
+    campaign_path = existing_with_alias(change_dir / _CAMPAIGN_RESULT_REL)
     campaign: CampaignResult | None = None
 
-    if campaign_path.is_file():
+    if campaign_path is not None:
         try:
             raw_campaign = yaml.safe_load(campaign_path.read_text(encoding="utf-8"))
             campaign = CampaignResult.model_validate(raw_campaign)
@@ -228,8 +222,8 @@ def collect_adversarial_yield(
                 source=source,
             )
 
-    oracle_path = change_dir / _ORACLE_SET_REL
-    if oracle_path.is_file():
+    oracle_path = existing_with_alias(change_dir / _ORACLE_SET_REL)
+    if oracle_path is not None:
         try:
             source["oracle_set_sha256"] = _sha256_file(oracle_path)
         except OSError:

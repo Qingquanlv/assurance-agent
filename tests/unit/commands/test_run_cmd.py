@@ -60,8 +60,17 @@ def project(tmp_path: Path, monkeypatch):
     (tmp_path / "tests" / "e2e").mkdir(parents=True)
     change = tmp_path / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True)
-    (change / "workflow-state.yaml").write_text(
-        "selected_targets: {api: true, e2e: true, fuzz: false, performance: false}\n",
+    (change / "workflow-state.json").write_text(
+        json.dumps(
+            {
+                "selected_targets": {
+                    "api": True,
+                    "e2e": True,
+                    "fuzz": False,
+                    "performance": False,
+                }
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(runner_mod, "generate_batch_id", lambda: "20260715-000000")
@@ -76,7 +85,7 @@ def test_run_pass_exit_zero(project, monkeypatch) -> None:
     assert result.exit_code == 0
     assert "PASS" in result.output
     _, change = project
-    assert (change / "execution" / "execution-manifest.yaml").is_file()
+    assert (change / "execution" / "execution-manifest.json").is_file()
 
 
 def test_run_fail_exit_one(project, monkeypatch) -> None:

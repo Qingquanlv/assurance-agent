@@ -9,7 +9,7 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.yaml`.
+1. Read `qa/changes/<change-id>/workflow-state.json`.
 2. Verify `phases.case_review.status == pass` (case review gate must be cleared).
 3. Read input files from disk:
    - `.aa/config.yaml` (optional; needed for `db_probe` setting and project conventions)
@@ -21,7 +21,7 @@ Do not rely on prior conversation context.
 **After completing work:**
 
 1. Write `qa/changes/<change-id>/facts/fact-baseline.json`.
-2. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
+2. Report the `workflow-state.json` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.json` — report the values in your final message and the orchestrator applies them):
    - `phases.fact_baseline.status = done | unavailable | failed`
    - `phases.fact_baseline.source = seed_file | db_probe | both | unavailable`
    - `phases.fact_baseline.file = facts/fact-baseline.json`
@@ -88,7 +88,7 @@ This is not a hard stop. Planners must carry the warning and reviewers must mark
 ## Hard Rules
 
 - Never create or modify product data, seed files, fixtures, or cases.
-- Never write `workflow-state.yaml` when running as a dispatched subagent.
+- Never write `workflow-state.json` when running as a dispatched subagent.
 - Never invent credentials, role ids, route prefixes, token headers, or DB facts.
 - Keep complete route inventories out of this artifact: never emit `facts.endpoints` or
   `facts.*_endpoints`. A single authentication endpoint such as `login_endpoint` is

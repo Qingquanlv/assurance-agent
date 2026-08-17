@@ -9,12 +9,9 @@ the archiver ever running.
 
 from __future__ import annotations
 
-
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
-import yaml
 
 from assurance_agent import resources
 from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
@@ -42,8 +39,13 @@ class FakeArchiver:
         archive_dir = request.workspace_root / "qa" / "archive" / CHANGE_ID
         archive_dir.mkdir(parents=True, exist_ok=True)
         (archive_dir / "archive-summary.md").write_text("# archived\n", encoding="utf-8")
-        # Copy issues/** when present in the source change directory.
-        issues_src = request.workspace_root / "qa" / "changes" / CHANGE_ID / "issues"
+        source_change = request.workspace_root / "qa" / "changes" / CHANGE_ID
+        review_src = source_change / "review" / "case-review.json"
+        if review_src.is_file():
+            review_dest = archive_dir / "review"
+            review_dest.mkdir(parents=True, exist_ok=True)
+            review_dest.joinpath("case-review.json").write_bytes(review_src.read_bytes())
+        issues_src = source_change / "issues"
         if issues_src.is_dir():
             import shutil
 
@@ -75,8 +77,8 @@ def _seed_change(tmp_path: Path, *, final_status: str, healing_status: str) -> P
     (change / "healing").mkdir()
     (change / "review").mkdir()
     write_aa_config(project)
-    (change / "execution" / "execution-manifest.yaml").write_text(
-        yaml.safe_dump({"batch_id": "b1", "final_status": final_status}), encoding="utf-8"
+    (change / "execution" / "execution-manifest.json").write_text(
+        json.dumps({"batch_id": "b1", "final_status": final_status}), encoding="utf-8"
     )
     (change / "inspect" / "failure-analysis.json").write_text(
         json.dumps({"source_batch_id": "b1", "failures": []}), encoding="utf-8"

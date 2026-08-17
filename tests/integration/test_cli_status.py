@@ -126,7 +126,7 @@ def test_real_ledger_smoke_read_only_and_schema_independent(project) -> None:
     """真实 ledger：不 mock 查询路径；损坏 schema + 漂移缓存下仍正常且零写入。"""
     change = Path("qa/changes/CH-1")
     seed_completed(change)
-    (change / "workflow-state.yaml").write_text("broken: [", encoding="utf-8")
+    (change / "workflow-state.json").write_text("broken: [", encoding="utf-8")
     # schema 漂移/损坏：旧 build_graph_runtime 路径必挂，新只读路径不读 schema。
     Path(".aa/workflow-schema.yaml").write_text("phases: {}\n", encoding="utf-8")  # v1 键，加载即拒
     before = tree_snapshot(change)

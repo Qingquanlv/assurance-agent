@@ -48,12 +48,15 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskResult,
 )
+from assurance_agent.workflow.graph.invariants import outputs_hit_invariants
 from assurance_agent.workflow.graph.precommit import (
+    CROSS_ARTIFACT_INVARIANTS_V1,
     CandidateValidationError,
     PrecommitValidationContext,
     infer_assurance_layer,
     load_case_documents_from_snapshot,
     load_plan_text_from_snapshot,
+    resolve_precommit_validator,
     validate_candidate,
 )
 from assurance_agent.workflow.graph.resume_wire import build_graph_interrupted_event
@@ -220,15 +223,7 @@ class AttemptEngine:
         workspace: TaskWorkspace | None = None
         input_snapshot_id: str | None = None
         runtime_context_sha256: str | None = None
-        precommit_validator = (
-            None
-            if self._contracts is None
-            else (
-                None
-                if self._contracts.contracts.get(task.target) is None
-                else self._contracts.contracts[task.target].precommit_validator
-            )
-        )
+        precommit_validator = self._resolve_started_validator(task)
         started_appended = False
         try:
             workspace = self._workspaces.create(
@@ -242,14 +237,12 @@ class AttemptEngine:
                 skill_name=(task.target.partition(":")[2] if task.target.startswith("skill:") else None),
                 initialize_git=self._requires_convenience_git(task),
             )
-            if self._uses_declared_read_isolation(task):
+            if self._uses_declared_read_isolation(task) or precommit_validator is not None:
                 contract = None if self._contracts is None else self._contracts.contracts.get(task.target)
                 if contract is None:
                     from assurance_agent.workflow.graph.scheduler import SchedulerError
 
-                    raise SchedulerError(
-                        f"declared_only task {task.task_id} missing execution contract for {task.target}"
-                    )
+                    raise SchedulerError(f"task {task.task_id} missing execution contract for {task.target}")
                 from assurance_agent.workflow.graph.task_inputs import (
                     build_automatic_plan_fixer_runtime_context,
                     write_runtime_context_sidecar,
@@ -610,6 +603,44 @@ class AttemptEngine:
         )
         return write_set.write_set_id
 
+    def _node_validate(self, task: ExecutableTask) -> str | None:
+        runner = self._runner
+        compiled = getattr(runner, "_compiled", None) if runner is not None else None
+        if compiled is None:
+            return None
+        graph = compiled.graphs.get(task.graph_id)
+        if graph is None:
+            return None
+        node = graph.nodes.get(task.node_id)
+        if node is None:
+            return None
+        return node.definition.validate_
+
+    def _resolve_started_validator(self, task: ExecutableTask) -> str | None:
+        contract = None if self._contracts is None else self._contracts.contracts.get(task.target)
+        contract_validator = None if contract is None else contract.precommit_validator
+        named = resolve_precommit_validator(
+            node_validate=self._node_validate(task),
+            contract_validator=contract_validator,
+        )
+        if named is not None:
+            return named
+        if self._contracts is None:
+            return None
+        if (task.target or "").startswith("graph:"):
+            return None
+        outputs = list(_task_outputs(task))
+        runner = self._runner
+        compiled = getattr(runner, "_compiled", None) if runner is not None else None
+        if compiled is not None:
+            graph = compiled.graphs.get(task.graph_id)
+            node = None if graph is None else graph.nodes.get(task.node_id)
+            if node is not None:
+                outputs.extend(node.definition.outputs)
+        if outputs_hit_invariants(outputs):
+            return CROSS_ARTIFACT_INVARIANTS_V1
+        return None
+
     def _run_precommit_if_needed(
         self,
         *,
@@ -618,11 +649,9 @@ class AttemptEngine:
         context: RuntimeContext,
         write_set_id: str | None,
     ) -> str | None:
-        """Run contract-selected validator after freeze; return receipt CAS id."""
-        if self._contracts is None:
-            return None
-        contract = self._contracts.contracts.get(prepared.task.target)
-        if contract is None or contract.precommit_validator is None:
+        """Run node-selected validator after freeze; return receipt CAS id."""
+        validator_id = self._resolve_started_validator(prepared.task)
+        if validator_id is None:
             return None
         if write_set_id is None:
             raise CandidateValidationError("precommit validator requires a frozen write set")
@@ -632,9 +661,26 @@ class AttemptEngine:
         outputs = dict(sorted(write_set.outputs_sha256.items()))
         snapshot = load_task_input_snapshot(self._objects, prepared.input_snapshot_id)
         task_input = prepared.task.input if isinstance(prepared.task.input, Mapping) else None
-        layer = infer_assurance_layer(prepared.task.target, task_input)
-        plan_text = load_plan_text_from_snapshot(self._objects, snapshot, layer=layer)
-        cases = load_case_documents_from_snapshot(self._objects, snapshot)
+        from assurance_agent.workflow.graph.precommit import (
+            CODEGEN_FIX_CANDIDATE_V1,
+            GENERATED_FILES_CANDIDATE_V1,
+            PLAN_MECHANICAL_CANDIDATE_V1,
+        )
+
+        if validator_id in {
+            GENERATED_FILES_CANDIDATE_V1,
+            PLAN_MECHANICAL_CANDIDATE_V1,
+            CODEGEN_FIX_CANDIDATE_V1,
+        }:
+            layer = infer_assurance_layer(prepared.task.target, task_input)
+        else:
+            layer = "api"
+        if validator_id in {GENERATED_FILES_CANDIDATE_V1, PLAN_MECHANICAL_CANDIDATE_V1}:
+            plan_text = load_plan_text_from_snapshot(self._objects, snapshot, layer=layer)
+            cases = load_case_documents_from_snapshot(self._objects, snapshot)
+        else:
+            plan_text = ""
+            cases = []
         root_invocation_id = projection.parent_invocation_id or projection.invocation_id
         policy_digest = projection.policy_digest or ("0" * 64)
         policy_object_id = policy_digest if len(policy_digest) == 64 else ("0" * 64)
@@ -670,7 +716,7 @@ class AttemptEngine:
             definition_semantics=definition_semantics,
         )
         receipt_id, _receipt = validate_candidate(
-            contract.precommit_validator,
+            validator_id,
             context_model,
             store=self._objects,
             write_set=write_set,
@@ -681,6 +727,7 @@ class AttemptEngine:
             layer=layer,
             current_change_repo_path=_current_change_repo_path(context, write_set),
             project_root=context.project_root,
+            host_change_dir=context.change_dir,
         )
         return receipt_id
 

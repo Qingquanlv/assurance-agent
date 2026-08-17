@@ -40,6 +40,7 @@ AssuranceConformanceCode = Literal[
     "manual_revision_allowlist_mismatch",
     "remediation_return_mismatch",
     "generation_join_mismatch",
+    "missing_validate",
 ]
 
 _DATA_KNOWLEDGE_PATH = "repo:.aa/data-knowledge.yaml"
@@ -112,6 +113,7 @@ def find_current_assurance_conformance_issues(
     Unknown params/builtins and parse failures are structured mismatches.
     """
     issues: list[AssuranceConformanceIssue] = []
+    issues.extend(_missing_validate_issues(schema))
     issues.extend(_generation_join_issues(schema))
     for profile in iter_layer_assurance_profiles():
         layer_issues, roles = _discover_layer_roles(schema, profile)
@@ -152,6 +154,23 @@ def _sorted_issues(
             ),
         )
     )
+
+
+def _missing_validate_issues(schema: WorkflowSchemaV2) -> list[AssuranceConformanceIssue]:
+    issues: list[AssuranceConformanceIssue] = []
+    for graph_id, graph in schema.graphs.items():
+        for nid, node in graph.nodes.items():
+            if node.validate_ is None:
+                issues.append(
+                    _issue(
+                        "missing_validate",
+                        layer=None,
+                        owner=nid,
+                        locator=f"graphs.{graph_id}.nodes.{nid}.validate",
+                        detail="packaged node must declare validate (use none if no reconciler)",
+                    )
+                )
+    return issues
 
 
 def _issue(
@@ -1151,7 +1170,7 @@ def _interrupt_issues(roles: _LayerRoles) -> list[AssuranceConformanceIssue]:
                 expected_paths = {
                     f"change:plans/{roles.layer}-plan.md",
                     f"change:plans/{roles.layer}-codegen-plan.md",
-                    f"change:plans/{roles.layer}-codegen-mapping.yaml",
+                    f"change:plans/{roles.layer}-codegen-mapping.json",
                 }
                 if set(revision.paths) != expected_paths or revision.action != "fix_and_proceed":
                     issues.append(

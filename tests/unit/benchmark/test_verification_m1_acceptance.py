@@ -134,7 +134,7 @@ def test_a3_auth_matrix_empty_matrix_is_collection_gap() -> None:
 def test_a4_journey_coverage_honors_archive_mrc_keys() -> None:
     """A4: journey join against archive MRC matrix + empty projection."""
     matrix = MinimumCoverageMatrix.model_validate(
-        yaml.safe_load((ARCHIVE / "trace/minimum-coverage-matrix.yaml").read_text(encoding="utf-8"))
+        yaml.safe_load((ARCHIVE / "trace/minimum-coverage-matrix.json").read_text(encoding="utf-8"))
     )
     advisory = json.loads((ARCHIVE / "explore/advisory.json").read_text(encoding="utf-8"))
     category_by_key, layer_by_key, mrc_id_by_key = maps_from_advisory_mrc(
@@ -224,7 +224,7 @@ def test_mrc_shadow_matches_archived_skill_result() -> None:
     """MRC shadow: deterministic join ≡ archived skill JSON on same inputs."""
     legacy = json.loads((ARCHIVE / "report/minimum-coverage-result.json").read_text(encoding="utf-8"))
     matrix = MinimumCoverageMatrix.model_validate(
-        yaml.safe_load((ARCHIVE / "trace/minimum-coverage-matrix.yaml").read_text(encoding="utf-8"))
+        yaml.safe_load((ARCHIVE / "trace/minimum-coverage-matrix.json").read_text(encoding="utf-8"))
     )
     advisory = json.loads((ARCHIVE / "explore/advisory.json").read_text(encoding="utf-8"))
     category_by_key, layer_by_key, mrc_id_by_key = maps_from_advisory_mrc(

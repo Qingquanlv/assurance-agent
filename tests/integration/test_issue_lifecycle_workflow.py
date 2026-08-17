@@ -314,7 +314,7 @@ def _fake_inspect(task: ExecutableTask, workspace: Any, context: RuntimeContext)
             {
                 "schema_version": "1.0",
                 "change_id": context.change_id,
-                "source_manifest": "execution/execution-manifest.yaml",
+                "source_manifest": "execution/execution-manifest.json",
                 "inspection_status": "completed",
                 "batch_id": "batch-1",
                 "source_batch_id": "batch-1",

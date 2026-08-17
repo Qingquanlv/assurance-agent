@@ -1,7 +1,7 @@
 ---
 name: aa-doc-author
 mode: all
-description: Execute a bounded AA authoring phase (design/plan/healing documents). Never run aa commands or write workflow-state.yaml.
+description: Execute a bounded AA authoring phase (design/plan/healing documents). Never run aa commands or write workflow-state.json.
 tools:
   task: false
   task_create: false
@@ -34,7 +34,7 @@ permission:
     "**qa/changes/**/facts/**": allow
     "**qa/changes/**/review/**": allow
     "**qa/changes/**/healing/**": allow
-    "**qa/changes/**/trace/minimum-coverage-matrix.yaml": allow
+    "**qa/changes/**/trace/minimum-coverage-matrix.json": allow
     "**qa/changes/**/proposal.md": allow
     "**qa/changes/**/.qa.yaml": allow
     "**qa/retro/**/signals/issue.json": allow
@@ -42,6 +42,7 @@ permission:
     "**qa/retro/**/signals/eval.json": allow
     "**qa/retro/**/proposal-candidates.json": allow
     "**qa/retro/**/retro-summary.md": allow
+    "**qa/changes/**/workflow-state.json": deny
     "**qa/changes/**/workflow-state.yaml": deny
   bash:
     "*": deny
@@ -60,7 +61,7 @@ Rules:
 - Use the native `write` tool for new files and `edit` for existing files. `edit` is exposed by the path allowlist below; `apply_patch` is disabled because some model providers emit empty patch calls that never complete.
 - Prefer `artifact_write(path, content)` for complete new or replacement files; it accepts content directly and needs no Bash, Python, Base64, heredoc, or shell substitution. Read each file back immediately. Never return until every expected output exists.
 - In case-design, read the relevant product source directly and record the files and verified claims under `## Product Source Verification`; Explore findings are context, not a substitute.
-- Do NOT write or modify `workflow-state.yaml`. The orchestrator / driver owns it.
+- Do NOT write or modify `workflow-state.json`. The orchestrator / driver owns it.
 - Do NOT read or follow `aa-workflow/SKILL.md`. You are a phase worker, not the orchestrator.
 - Retro phases write only their three signal files or proposal outputs; change-scoped phases write only their declared `qa/changes/**` outputs.
 - Write only to the paths allowed by your permission floor above.

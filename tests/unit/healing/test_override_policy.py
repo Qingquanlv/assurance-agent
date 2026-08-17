@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 import pytest
-import yaml
 
 from assurance_agent.workflow.core.events import append_event_strict
 from assurance_agent.workflow.healing.override_policy import (
@@ -22,9 +21,9 @@ def _write_policy(project_root: Path, healing: dict) -> None:
 
 
 def _write_manifest(change_dir: Path, final_status: str) -> None:
-    manifest = change_dir / "execution" / "execution-manifest.yaml"
+    manifest = change_dir / "execution" / "execution-manifest.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(yaml.safe_dump({"batch_id": "b1", "final_status": final_status}), encoding="utf-8")
+    manifest.write_text(json.dumps({"batch_id": "b1", "final_status": final_status}), encoding="utf-8")
 
 
 def _allow_event(change_dir: Path) -> None:

@@ -33,7 +33,7 @@ from tests.helpers_aa import write_aa_config
 CHANGE_ID = "CH-TRACE-004"
 BATCH_ID = "20260702-111111"
 EXECUTED_AT = datetime(2026, 7, 2, 19, 30, 0, tzinfo=timezone(timedelta(hours=8)))
-MANIFEST_FOLD_VIEW_SOURCE = "execution/execution-manifest.yaml#fold-view"
+MANIFEST_FOLD_VIEW_SOURCE = "execution/execution-manifest.json#fold-view"
 TESTS_TREE_SCAN_SOURCE = "tests/#tree-digest"
 
 MAPPED_TEST_FILE = "tests/api/test_x.py"
@@ -135,9 +135,9 @@ def _write_manifest(
         "test_files_sha256": test_files,
         "final_status": "PASS",
     }
-    path = change_dir / "execution" / "execution-manifest.yaml"
+    path = change_dir / "execution" / "execution-manifest.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    path.write_text(json.dumps(document), encoding="utf-8")
 
 
 def _fold_input(test_files: dict[str, str], *, batch_id: str = BATCH_ID) -> ExecutionFoldInput:

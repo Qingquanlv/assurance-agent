@@ -100,9 +100,9 @@ def _write_manifest(
     }
     if executed_at is not None:
         document["executed_at"] = executed_at
-    path = change_dir / "execution" / "execution-manifest.yaml"
+    path = change_dir / "execution" / "execution-manifest.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    path.write_text(json.dumps(document), encoding="utf-8")
 
 
 def _write_api_result(change_dir: Path, *, status: str = "passed", batch_id: str = BATCH_ID) -> None:
@@ -130,7 +130,7 @@ def _write_failure_analysis(change_dir: Path) -> None:
     document = {
         "schema_version": "1.0",
         "change_id": CHANGE_ID,
-        "source_manifest": "execution/execution-manifest.yaml",
+        "source_manifest": "execution/execution-manifest.json",
         "inspection_status": "completed",
         "batch_id": BATCH_ID,
         "source_batch_id": BATCH_ID,

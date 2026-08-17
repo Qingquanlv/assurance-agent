@@ -25,8 +25,8 @@ export default {
     const root = await realpath(suppliedRoot);
     const target = path.resolve(root, args.path);
     if (!isContained(root, target)) throw new Error(`artifact path escapes project root: ${args.path}`);
-    if (path.basename(target) === 'workflow-state.yaml') {
-      throw new Error('workflow-state.yaml is orchestrator-owned');
+    if (path.basename(target) === 'workflow-state.json' || path.basename(target) === 'workflow-state.yaml') {
+      throw new Error('workflow-state.json is orchestrator-owned');
     }
     await mkdir(path.dirname(target), { recursive: true });
     const parent = await realpath(path.dirname(target));

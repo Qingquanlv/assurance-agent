@@ -11,6 +11,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel
 
+from assurance_agent.artifacts.paths import existing_with_alias
 from assurance_agent.change_location import resolve_change
 from assurance_agent.config import load_config
 from assurance_agent.exceptions import AaError
@@ -99,8 +100,8 @@ def load_product_code_roots(project_root: Path) -> list[str]:
 
 
 def _load_manifest_hashes(change_dir: Path) -> tuple[str | None, dict[str, str], str | None]:
-    manifest_path = change_dir / "execution" / "execution-manifest.yaml"
-    if not manifest_path.is_file():
+    manifest_path = existing_with_alias(change_dir / "execution" / "execution-manifest.json")
+    if manifest_path is None:
         return None, {}, None
     try:
         raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}

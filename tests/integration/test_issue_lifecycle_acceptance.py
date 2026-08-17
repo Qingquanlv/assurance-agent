@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 
 from assurance_agent.artifacts.models.issues import (
     ChangeIssueSnapshot,
@@ -399,16 +398,14 @@ def _sha256_dir(path: Path) -> str:
 
 def _copy_batch_fixture(change_dir: Path, batch_name: str, *, change_id: str) -> str:
     src = FIXTURE_ROOT / batch_name
-    manifest = yaml.safe_load((src / "execution-manifest.yaml").read_text(encoding="utf-8"))
+    manifest = json.loads((src / "execution-manifest.json").read_text(encoding="utf-8"))
     batch_id = str(manifest["batch_id"])
     execution_dir = change_dir / "execution"
     execution_dir.mkdir(parents=True, exist_ok=True)
 
     manifest_out = dict(manifest)
     manifest_out["change_id"] = change_id
-    (execution_dir / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(manifest_out, sort_keys=False), encoding="utf-8"
-    )
+    (execution_dir / "execution-manifest.json").write_text(json.dumps(manifest_out), encoding="utf-8")
 
     runs_dir = execution_dir / "runs" / batch_id
     runs_dir.mkdir(parents=True, exist_ok=True)
@@ -593,7 +590,7 @@ def _custom_operations(state: AcceptanceState) -> dict[str, OperationFn]:
                 {
                     "schema_version": "1.0",
                     "change_id": context.change_id,
-                    "source_manifest": "execution/execution-manifest.yaml",
+                    "source_manifest": "execution/execution-manifest.json",
                     "inspection_status": "completed",
                     "batch_id": batch_id,
                     "source_batch_id": batch_id,

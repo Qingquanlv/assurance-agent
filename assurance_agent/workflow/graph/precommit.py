@@ -21,7 +21,14 @@ from assurance_agent.artifacts.models.healing_codegen import (
     FixerProposalApprovalReceiptV1,
 )
 from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
-from assurance_agent.artifacts.policy import PolicyError, load_policy
+from assurance_agent.artifacts.paths import codegen_mapping_rel
+from assurance_agent.artifacts.registry import (
+    Wire,
+    load_registered_artifact,
+    match_artifact,
+    parse_wire,
+    resolve_artifact,
+)
 from assurance_agent.exceptions import AaError
 from assurance_agent.verification.generated_entries import (
     MappingExtractionError,
@@ -48,13 +55,21 @@ from assurance_agent.workflow.healing.safety import load_product_code_roots
 GENERATED_FILES_CANDIDATE_V1 = "generated_files_candidate/v1"
 CODEGEN_FIX_CANDIDATE_V1 = "codegen_fix_candidate/v1"
 PLAN_MECHANICAL_CANDIDATE_V1 = "plan_mechanical_candidate/v1"
+ARCHIVE_INTEGRITY_V1 = "archive_integrity/v1"
+PROBLEM_APPLY_CANDIDATE_V1 = "problem_apply_candidate/v1"
+CROSS_ARTIFACT_INVARIANTS_V1 = "cross_artifact_invariants/v1"
 
 KNOWN_PRECOMMIT_VALIDATORS: frozenset[str] = frozenset(
-    {GENERATED_FILES_CANDIDATE_V1, CODEGEN_FIX_CANDIDATE_V1, PLAN_MECHANICAL_CANDIDATE_V1}
+    {
+        GENERATED_FILES_CANDIDATE_V1,
+        CODEGEN_FIX_CANDIDATE_V1,
+        PLAN_MECHANICAL_CANDIDATE_V1,
+        ARCHIVE_INTEGRITY_V1,
+        PROBLEM_APPLY_CANDIDATE_V1,
+        CROSS_ARTIFACT_INVARIANTS_V1,
+    }
 )
-IMPLEMENTED_PRECOMMIT_VALIDATORS: frozenset[str] = frozenset(
-    {GENERATED_FILES_CANDIDATE_V1, CODEGEN_FIX_CANDIDATE_V1, PLAN_MECHANICAL_CANDIDATE_V1}
-)
+IMPLEMENTED_PRECOMMIT_VALIDATORS: frozenset[str] = frozenset(KNOWN_PRECOMMIT_VALIDATORS)
 
 # Closed commit-safety dependency inventory for runtime_commit_safety/v1 (Task 10).
 # Keep beside the validator registry; do not accept caller-supplied lists.
@@ -73,6 +88,21 @@ COMMIT_SAFETY_INVENTORY: tuple[tuple[str, str, str], ...] = (
         "assurance_agent.workflow.graph.precommit.PLAN_MECHANICAL_CANDIDATE_V1",
         "validator",
         PLAN_MECHANICAL_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit.ARCHIVE_INTEGRITY_V1",
+        "validator",
+        ARCHIVE_INTEGRITY_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit.PROBLEM_APPLY_CANDIDATE_V1",
+        "validator",
+        PROBLEM_APPLY_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit.CROSS_ARTIFACT_INVARIANTS_V1",
+        "validator",
+        CROSS_ARTIFACT_INVARIANTS_V1,
     ),
     (
         "assurance_agent.workflow.graph.precommit.KNOWN_PRECOMMIT_VALIDATORS",
@@ -138,6 +168,21 @@ COMMIT_SAFETY_INVENTORY: tuple[tuple[str, str, str], ...] = (
         "assurance_agent.workflow.graph.precommit._validate_plan_mechanical_candidate",
         "helper",
         PLAN_MECHANICAL_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit._validate_archive_integrity",
+        "helper",
+        ARCHIVE_INTEGRITY_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit._validate_problem_apply_candidate",
+        "helper",
+        PROBLEM_APPLY_CANDIDATE_V1,
+    ),
+    (
+        "assurance_agent.workflow.graph.precommit._validate_cross_artifact_invariants",
+        "helper",
+        CROSS_ARTIFACT_INVARIANTS_V1,
     ),
     (
         "assurance_agent.workflow.graph.diff_safety.evaluate_diff_safety",
@@ -297,6 +342,21 @@ def validate_precommit_validator_id(validator_id: str | None) -> None:
         raise CandidateValidationError(f"precommit validator not implemented: {validator_id}")
 
 
+def resolve_precommit_validator(
+    *,
+    node_validate: str | None,
+    contract_validator: str | None,
+) -> str | None:
+    """Node `validate` is authoritative; contract is the historical/mirror fallback."""
+    from assurance_agent.workflow.graph.schema_v2 import VALIDATE_NONE
+
+    if node_validate == VALIDATE_NONE:
+        return None
+    if node_validate is not None:
+        return node_validate
+    return contract_validator
+
+
 def validate_candidate(
     validator_id: str,
     context: PrecommitValidationContext,
@@ -310,6 +370,7 @@ def validate_candidate(
     layer: str,
     current_change_repo_path: str,
     project_root: Path | None = None,
+    host_change_dir: Path | None = None,
 ) -> tuple[str, CandidateValidationReceiptV1]:
     """Dispatch one registered validator; return CAS receipt id and receipt."""
     if validator_id not in KNOWN_PRECOMMIT_VALIDATORS:
@@ -354,6 +415,27 @@ def validate_candidate(
             layer=layer,
             current_change_repo_path=current_change_repo_path,
         )
+    elif validator_id == ARCHIVE_INTEGRITY_V1:
+        decision = _validate_archive_integrity(
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+            change_id=change_id,
+        )
+    elif validator_id == PROBLEM_APPLY_CANDIDATE_V1:
+        decision = _validate_problem_apply_candidate(
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+        )
+    elif validator_id == CROSS_ARTIFACT_INVARIANTS_V1:
+        decision = _validate_cross_artifact_invariants(
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+            project_root=project_root,
+            host_change_dir=host_change_dir,
+        )
     else:
         raise CandidateValidationError(f"unknown precommit validator: {validator_id}")
     decision_bytes = canonical_json_bytes(decision)
@@ -393,6 +475,7 @@ def validate_candidate(
         layer=layer,
         current_change_repo_path=current_change_repo_path,
         project_root=project_root,
+        host_change_dir=host_change_dir,
     )
     return receipt_id, receipt
 
@@ -410,6 +493,7 @@ def verify_candidate_receipt(
     layer: str,
     current_change_repo_path: str,
     project_root: Path | None = None,
+    host_change_dir: Path | None = None,
 ) -> None:
     """Recompute every binding or raise CandidateValidationError."""
     if receipt.validator_id not in IMPLEMENTED_PRECOMMIT_VALIDATORS:
@@ -464,6 +548,27 @@ def verify_candidate_receipt(
             change_id=change_id,
             layer=layer,
             current_change_repo_path=current_change_repo_path,
+        )
+    elif receipt.validator_id == ARCHIVE_INTEGRITY_V1:
+        decision = _validate_archive_integrity(
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+            change_id=change_id,
+        )
+    elif receipt.validator_id == PROBLEM_APPLY_CANDIDATE_V1:
+        decision = _validate_problem_apply_candidate(
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+        )
+    elif receipt.validator_id == CROSS_ARTIFACT_INVARIANTS_V1:
+        decision = _validate_cross_artifact_invariants(
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+            project_root=project_root,
+            host_change_dir=host_change_dir,
         )
     else:
         raise CandidateValidationError(f"unsupported receipt validator: {receipt.validator_id}")
@@ -560,7 +665,13 @@ def load_plan_text_from_snapshot(
 
 
 def codegen_mapping_logical_path(layer: str) -> str:
-    return f"change:plans/{layer}-codegen-mapping.yaml"
+    return f"change:{codegen_mapping_rel(layer)}"
+
+
+def _is_codegen_mapping_alias(alias: str, *, layer: str) -> bool:
+    return alias.startswith("change:plans/") and (
+        alias.endswith(f"{layer}-codegen-mapping.json") or alias.endswith(f"{layer}-codegen-mapping.yaml")
+    )
 
 
 def load_codegen_mapping_from_snapshot(
@@ -575,21 +686,26 @@ def load_codegen_mapping_from_snapshot(
         if entry.kind != "file" or entry.sha256 is None:
             continue
         aliases = set(entry.logical_aliases)
-        if logical in aliases or any(
-            alias.startswith("change:plans/") and alias.endswith(f"{layer}-codegen-mapping.yaml")
-            for alias in aliases
-        ):
-            digest = entry.sha256.removeprefix("sha256:")
-            try:
-                raw = store.read_object(digest).decode("utf-8")
-                data = yaml.safe_load(raw)
-            except (WorkspaceError, UnicodeDecodeError, yaml.YAMLError) as exc:
-                raise CandidateValidationError(
-                    f"codegen mapping blob unreadable for layer {layer}: {logical}"
-                ) from exc
-            if not isinstance(data, dict):
-                raise CandidateValidationError(f"codegen mapping must be a mapping: {logical}")
-            return data
+        matched = next(
+            (alias for alias in aliases if alias == logical or _is_codegen_mapping_alias(alias, layer=layer)),
+            None,
+        )
+        if matched is None:
+            continue
+        digest = entry.sha256.removeprefix("sha256:")
+        rel = matched.removeprefix("change:")
+        if resolve_artifact(rel) is None:
+            raise CandidateValidationError(f"codegen mapping is not a registered artifact: {matched}")
+        try:
+            raw = store.read_object(digest).decode("utf-8")
+            data = load_registered_artifact(rel, raw)
+        except (WorkspaceError, UnicodeDecodeError, json.JSONDecodeError, yaml.YAMLError) as exc:
+            raise CandidateValidationError(
+                f"codegen mapping blob unreadable for layer {layer}: {matched}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise CandidateValidationError(f"codegen mapping must be a mapping: {matched}")
+        return data
     return None
 
 
@@ -597,17 +713,13 @@ def load_case_documents_from_snapshot(
     store: TreeStore,
     snapshot: TaskInputSnapshotV1,
 ) -> list[dict[str, object]]:
-    """Load case YAML/JSON documents from the frozen input snapshot only."""
+    """Load case documents from the frozen input snapshot only."""
     documents: list[dict[str, object]] = []
     seen_aliases: set[str] = set()
     for entry in snapshot.entries:
         if entry.kind != "file" or entry.sha256 is None:
             continue
-        case_aliases = sorted(
-            alias
-            for alias in entry.logical_aliases
-            if alias.startswith("change:cases/") and alias.endswith((".yaml", ".yml", ".json"))
-        )
+        case_aliases = sorted(alias for alias in entry.logical_aliases if alias.startswith("change:cases/"))
         if not case_aliases:
             continue
         for alias in case_aliases:
@@ -615,16 +727,23 @@ def load_case_documents_from_snapshot(
                 continue
             seen_aliases.add(alias)
         digest = entry.sha256.removeprefix("sha256:")
+        rel = case_aliases[0].removeprefix("change:")
+        spec = match_artifact(rel)
+        if spec is not None:
+            wire: Wire = spec.wire
+        elif rel.endswith(".json"):
+            wire = "json"
+        elif rel.endswith((".yaml", ".yml")):
+            wire = "yaml"
+        else:
+            continue
         try:
             raw = store.read_object(digest)
         except WorkspaceError as exc:
             raise CandidateValidationError(f"case document blob missing from CAS: {case_aliases[0]}") from exc
         try:
             text = raw.decode("utf-8")
-            if case_aliases[0].endswith(".json"):
-                data = json.loads(text)
-            else:
-                data = yaml.safe_load(text)
+            data = parse_wire(wire, text)
         except (UnicodeDecodeError, json.JSONDecodeError, yaml.YAMLError) as exc:
             raise CandidateValidationError(
                 f"malformed case document in input snapshot: {case_aliases[0]}"
@@ -689,7 +808,21 @@ _SEMANTICS_RULES: dict[str, list[str]] = {
     PLAN_MECHANICAL_CANDIDATE_V1: [
         "recompute_plan_checks_from_snapshot_and_write_set_review",
         "compare_canonical_plan_check_document_to_write_set",
-        "reject_when_policy_plan_checks_block_failed_check",
+    ],
+    ARCHIVE_INTEGRITY_V1: [
+        "require_archived_files_in_write_set",
+        "compare_archived_bytes_to_snapshot_source_change",
+        "reject_when_no_snapshot_source_compared",
+    ],
+    PROBLEM_APPLY_CANDIDATE_V1: [
+        "require_apply_receipt_in_write_set",
+        "reconcile_receipt_problem_id_to_snapshot_context",
+    ],
+    CROSS_ARTIFACT_INVARIANTS_V1: [
+        "issue_candidate_digest",
+        "case_review_mrc",
+        "qa_yaml_case_automation",
+        "case_design_source_verification",
     ],
 }
 
@@ -1388,8 +1521,7 @@ def _validate_plan_mechanical_candidate(
     project_root: Path | None,
 ) -> dict[str, object]:
     del context
-    if project_root is None:
-        raise CandidateValidationError("project_root is required for plan mechanical candidate")
+    del project_root
     try:
         profile = get_layer_assurance_profile(layer)
     except ValueError as exc:
@@ -1427,29 +1559,143 @@ def _validate_plan_mechanical_candidate(
             f"write-set plan-checks document does not match snapshot recomputation for layer {layer}"
         )
 
-    try:
-        policy = load_policy(project_root)
-    except PolicyError as exc:
-        raise CandidateValidationError(f"cannot load policy for plan mechanical candidate: {exc}") from exc
-
-    for check in expected.checks:
-        action = policy.plan_checks.get(check.check_id)
-        if check.status == "fail" and action == "block":
-            findings = "; ".join(
-                f"{finding.locator}: actual={finding.actual!r} expected={finding.expected!r}"
-                for finding in check.findings
-            )
-            detail = f" ({findings})" if findings else ""
-            raise CandidateValidationError(
-                f"plan mechanical candidate rejected for layer {layer}: "
-                f"check {check.check_id} failed with policy.plan_checks[{check.check_id}]=block{detail}"
-            )
-
     return {
         "checks_logical": checks_logical,
         "document_sha256": sha256_bytes(expected_bytes),
         "layer": layer,
     }
+
+
+_ARCHIVE_GENERATED_NAMES = frozenset({"archive-summary.md"})
+
+
+def _validate_archive_integrity(
+    *,
+    store: TreeStore,
+    write_set: WriteSet,
+    input_snapshot: TaskInputSnapshotV1,
+    change_id: str,
+) -> dict[str, object]:
+    prefix = f"project:qa/archive/{change_id}/"
+    archived = {
+        path: digest
+        for path, digest in write_set.outputs_sha256.items()
+        if path.startswith(prefix) and not path.endswith("/")
+    }
+    if not archived:
+        archived = {
+            entry.logical_path: entry.after_sha256
+            for entry in write_set.entries
+            if entry.after_sha256 is not None
+            and entry.logical_path.startswith(prefix)
+            and not entry.logical_path.endswith("/")
+        }
+    if not archived:
+        raise CandidateValidationError(f"archive integrity: write-set missing files under {prefix}")
+    compared = 0
+    for logical, digest in sorted(archived.items()):
+        rel = logical.removeprefix(prefix)
+        source_bytes: bytes | None = None
+        for source_logical in (f"project:qa/changes/{change_id}/{rel}", f"change:{rel}"):
+            try:
+                source_bytes = _load_snapshot_bytes(store, input_snapshot, logical=source_logical)
+                break
+            except CandidateValidationError:
+                continue
+        if source_bytes is None:
+            if Path(rel).name in _ARCHIVE_GENERATED_NAMES and "/" not in rel:
+                continue
+            raise CandidateValidationError(f"archive integrity: missing snapshot source for {rel}")
+        expected = hashlib.sha256(source_bytes).hexdigest()
+        actual = digest.removeprefix("sha256:")
+        if actual != expected:
+            raise CandidateValidationError(
+                f"archive integrity: {rel} digest {actual} does not match snapshot source {expected}"
+            )
+        try:
+            archived_bytes = store.read_object(actual)
+        except WorkspaceError as exc:
+            raise CandidateValidationError(
+                f"archive integrity: write-set blob missing for {logical}"
+            ) from exc
+        if hashlib.sha256(archived_bytes).hexdigest() != actual:
+            raise CandidateValidationError(f"archive integrity: write-set blob mismatch for {logical}")
+        compared += 1
+    if compared == 0:
+        raise CandidateValidationError("archive integrity: no snapshot sources compared for archived files")
+    return {"archived_files": len(archived), "compared_to_source": compared, "change_id": change_id}
+
+
+def _validate_problem_apply_candidate(
+    *,
+    store: TreeStore,
+    write_set: WriteSet,
+    input_snapshot: TaskInputSnapshotV1,
+) -> dict[str, object]:
+    receipts = sorted(
+        path
+        for path in write_set.outputs_sha256
+        if path.startswith("change:issue-review/") and path.endswith("/apply-receipt.json")
+    )
+    if not receipts:
+        raise CandidateValidationError(
+            "problem apply: write-set missing change:issue-review/**/apply-receipt.json"
+        )
+    logical = receipts[0]
+    payload = _load_write_set_json(store, write_set, logical=logical)
+    if not isinstance(payload, dict):
+        raise CandidateValidationError(f"problem apply: {logical} must be a mapping")
+    problem_id = payload.get("problem_id")
+    review_id = payload.get("review_id")
+    action = payload.get("action")
+    if not isinstance(problem_id, str) or not problem_id.strip():
+        raise CandidateValidationError(f"problem apply: {logical} missing problem_id")
+    if not isinstance(review_id, str) or not review_id.strip():
+        raise CandidateValidationError(f"problem apply: {logical} missing review_id")
+    if not isinstance(action, str) or not action.strip():
+        raise CandidateValidationError(f"problem apply: {logical} missing action")
+    context_logical = f"change:issue-review/{review_id}/context.json"
+    try:
+        context_text = _load_snapshot_text(store, input_snapshot, logical=context_logical)
+        saved = json.loads(context_text)
+    except (CandidateValidationError, json.JSONDecodeError) as exc:
+        raise CandidateValidationError(
+            f"problem apply: snapshot context {context_logical} unreadable: {exc}"
+        ) from exc
+    if not isinstance(saved, dict) or saved.get("problem_id") != problem_id:
+        raise CandidateValidationError(
+            f"problem apply: receipt problem_id {problem_id!r} does not match snapshot context"
+        )
+    return {
+        "receipt_logical": logical,
+        "problem_id": problem_id,
+        "review_id": review_id,
+        "action": action,
+        "expected_problem_version": saved.get("expected_problem_version"),
+    }
+
+
+def _validate_cross_artifact_invariants(
+    *,
+    store: TreeStore,
+    write_set: WriteSet,
+    input_snapshot: TaskInputSnapshotV1,
+    project_root: Path | None,
+    host_change_dir: Path | None = None,
+) -> dict[str, object]:
+    from assurance_agent.workflow.graph.invariants import run_cross_artifact_invariants
+
+    try:
+        ran = run_cross_artifact_invariants(
+            store=store,
+            write_set=write_set,
+            input_snapshot=input_snapshot,
+            project_root=project_root,
+            host_change_dir=host_change_dir,
+        )
+    except ValueError as exc:
+        raise CandidateValidationError(str(exc)) from exc
+    return {"invariant_ids": ran}
 
 
 def _load_plan_texts_from_snapshot(
@@ -1466,12 +1712,12 @@ def _load_plan_texts_from_snapshot(
     return texts
 
 
-def _load_snapshot_text(
+def _load_snapshot_bytes(
     store: TreeStore,
     snapshot: TaskInputSnapshotV1,
     *,
     logical: str,
-) -> str:
+) -> bytes:
     for entry in snapshot.entries:
         if entry.kind != "file" or entry.sha256 is None:
             continue
@@ -1479,10 +1725,22 @@ def _load_snapshot_text(
             continue
         digest = entry.sha256.removeprefix("sha256:")
         try:
-            return store.read_object(digest).decode("utf-8")
-        except (WorkspaceError, UnicodeDecodeError) as exc:
+            return store.read_object(digest)
+        except WorkspaceError as exc:
             raise CandidateValidationError(f"unreadable snapshot artifact {logical}: {exc}") from exc
     raise CandidateValidationError(f"missing snapshot artifact: {logical}")
+
+
+def _load_snapshot_text(
+    store: TreeStore,
+    snapshot: TaskInputSnapshotV1,
+    *,
+    logical: str,
+) -> str:
+    try:
+        return _load_snapshot_bytes(store, snapshot, logical=logical).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CandidateValidationError(f"unreadable snapshot artifact {logical}: {exc}") from exc
 
 
 def _load_l1_from_snapshot(
@@ -1545,6 +1803,9 @@ __all__ = [
     "IMPLEMENTED_PRECOMMIT_VALIDATORS",
     "KNOWN_PRECOMMIT_VALIDATORS",
     "PLAN_MECHANICAL_CANDIDATE_V1",
+    "ARCHIVE_INTEGRITY_V1",
+    "PROBLEM_APPLY_CANDIDATE_V1",
+    "CROSS_ARTIFACT_INVARIANTS_V1",
     "PrecommitValidationContext",
     "bind_receipt_to_success_event",
     "codegen_plan_logical_path",
@@ -1553,6 +1814,7 @@ __all__ = [
     "load_case_documents_from_snapshot",
     "load_codegen_mapping_from_snapshot",
     "load_plan_text_from_snapshot",
+    "resolve_precommit_validator",
     "validate_candidate",
     "validate_precommit_validator_id",
     "validator_semantics_digest",

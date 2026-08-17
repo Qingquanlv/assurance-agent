@@ -223,9 +223,9 @@ def test_1_hard_oracle_violation_writes_counterexample(tmp_path: Path) -> None:
     )
     assert outcome.result.confirmed_count >= 1
     assert outcome.counterexample_ids
-    ce_path = change_dir / "discovery" / "counterexamples" / f"{outcome.counterexample_ids[0]}.yaml"
+    ce_path = change_dir / "discovery" / "counterexamples" / f"{outcome.counterexample_ids[0]}.json"
     assert ce_path.is_file()
-    payload = yaml.safe_load(ce_path.read_text(encoding="utf-8"))
+    payload = json.loads(ce_path.read_text(encoding="utf-8"))
     assert payload["finding_status"] == "confirmed"
     assert payload["oracle_kind"] == "hard_oracle"
     assert payload["replay"]["reproduced"] == payload["replay"]["attempts"]
@@ -263,8 +263,8 @@ def test_3_deterministic_replay_full_reproduce_confirmed(tmp_path: Path) -> None
     )
     assert outcome.result.confirmed_count == 1
     ce_id = outcome.counterexample_ids[0]
-    payload = yaml.safe_load(
-        (change_dir / "discovery" / "counterexamples" / f"{ce_id}.yaml").read_text(encoding="utf-8")
+    payload = json.loads(
+        (change_dir / "discovery" / "counterexamples" / f"{ce_id}.json").read_text(encoding="utf-8")
     )
     assert payload["replay"]["attempts"] == 3
     assert payload["replay"]["reproduced"] == 3
@@ -374,8 +374,8 @@ def test_6_temp_destroyed_discovery_assets_persist(tmp_path: Path) -> None:
         / "api"
         / "test_discovery_stub.py"
     ).is_file()
-    assert (change_dir / "discovery" / "campaign-result.yaml").is_file()
-    assert list((change_dir / "discovery" / "counterexamples").glob("*.yaml"))
+    assert (change_dir / "discovery" / "campaign-result.json").is_file()
+    assert list((change_dir / "discovery" / "counterexamples").glob("*.json"))
 
 
 def test_7_heuristic_cannot_become_problem(tmp_path: Path) -> None:

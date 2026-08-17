@@ -22,6 +22,7 @@ from pathlib import Path
 import yaml
 
 from assurance_agent.artifacts.models.discovery import Counterexample
+from assurance_agent.artifacts.paths import discovery_receipt_files
 from assurance_agent.artifacts.models.issues import (
     AffectedSurface,
     FingerprintInputs,
@@ -96,9 +97,9 @@ def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def counterexample_rel_path(ce: Counterexample) -> str:
+def counterexample_rel_path(ce: Counterexample, *, filename: str | None = None) -> str:
     """Change-relative path for a counterexample artifact."""
-    return f"{_CE_REL_DIR}/{ce.counterexample_id}.yaml"
+    return f"{_CE_REL_DIR}/{filename or f'{ce.counterexample_id}.json'}"
 
 
 def counterexample_signature(ce: Counterexample) -> str:
@@ -118,9 +119,10 @@ def counterexample_to_observation(
     change_id: str,
     batch_id: str,
     observed_at: str,
+    artifact_rel: str | None = None,
 ) -> Observation:
     """Map one Counterexample to an ``anomaly`` Observation targeting ``api``."""
-    rel = counterexample_rel_path(ce)
+    rel = artifact_rel or counterexample_rel_path(ce)
     signature = counterexample_signature(ce)
     obs_input = ObservationIdentityInput(
         change_id=change_id,
@@ -215,18 +217,17 @@ def confirmed_ces_to_candidate_document(
     Authority is expressed at Occurrence time as ``llm_provisional`` by the
     reconciler; this document supplies the deterministic proposed classification.
     """
-    obs_by_rel = {obs.source.artifact: obs for obs in observations}
+    obs_by_id = {Path(obs.source.artifact).stem: obs for obs in observations}
     candidates: list[IssueCandidate] = []
     for ce in ces:
         if ce.finding_status != "confirmed":
             continue
-        rel = counterexample_rel_path(ce)
-        obs = obs_by_rel.get(rel)
+        obs = obs_by_id.get(ce.counterexample_id)
         if obs is None:
             raise CeBridgeError(
                 "incomplete_evidence",
                 f"missing Observation for confirmed counterexample {ce.counterexample_id}",
-                path=rel,
+                path=counterexample_rel_path(ce),
             )
         candidates.append(_candidate_from_ce(ce, obs))
 
@@ -295,27 +296,18 @@ def _build_evidence_manifest(
     )
 
 
-def _load_counterexamples(change_dir: Path) -> tuple[list[Counterexample], int]:
-    """Load and validate all ``discovery/counterexamples/*.yaml`` files.
+def _load_counterexamples(change_dir: Path) -> tuple[list[tuple[Counterexample, str]], int]:
+    """Load and validate all ``discovery/counterexamples/*.{json,yaml}`` files.
 
-    Returns (all_valid_ces, skipped_non_confirmed_count). Invalid files raise.
+    Returns (all_valid_ces_with_relpath, skipped_non_confirmed_count). Invalid files raise.
     """
     ce_dir = change_dir / _CE_REL_DIR
     if not ce_dir.is_dir():
         return [], 0
 
-    paths = sorted(ce_dir.glob("*.yaml")) + sorted(ce_dir.glob("*.yml"))
-    # Deduplicate while preserving order (*.yaml and *.yml may overlap on some FS).
-    seen: set[Path] = set()
-    unique_paths: list[Path] = []
-    for path in paths:
-        resolved = path.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        unique_paths.append(path)
+    unique_paths = discovery_receipt_files(ce_dir)
 
-    ces: list[Counterexample] = []
+    ces: list[tuple[Counterexample, str]] = []
     skipped = 0
     for path in unique_paths:
         rel = f"{_CE_REL_DIR}/{path.name}"
@@ -328,11 +320,12 @@ def _load_counterexamples(change_dir: Path) -> tuple[list[Counterexample], int]:
                 path=rel,
             ) from exc
         try:
-            data = yaml.safe_load(raw)
-        except yaml.YAMLError as exc:
+            data = json.loads(raw) if path.suffix == ".json" else yaml.safe_load(raw)
+        except (json.JSONDecodeError, yaml.YAMLError) as exc:
+            kind = "JSON" if path.suffix == ".json" else "YAML"
             raise CeBridgeError(
                 "invalid_counterexample",
-                f"counterexample YAML parse failed: {rel}: {exc}",
+                f"counterexample {kind} parse failed: {rel}: {exc}",
                 path=rel,
             ) from exc
         if not isinstance(data, dict):
@@ -350,9 +343,12 @@ def _load_counterexamples(change_dir: Path) -> tuple[list[Counterexample], int]:
                 path=rel,
             ) from exc
         # Filename should match counterexample_id for stable evidence refs.
-        expected_name = f"{ce.counterexample_id}.yaml"
-        expected_name_yml = f"{ce.counterexample_id}.yml"
-        if path.name not in {expected_name, expected_name_yml}:
+        allowed = {
+            f"{ce.counterexample_id}.json",
+            f"{ce.counterexample_id}.yaml",
+            f"{ce.counterexample_id}.yml",
+        }
+        if path.name not in allowed:
             raise CeBridgeError(
                 "incomplete_evidence",
                 f"counterexample filename {path.name!r} does not match "
@@ -362,7 +358,7 @@ def _load_counterexamples(change_dir: Path) -> tuple[list[Counterexample], int]:
         if ce.finding_status != "confirmed":
             skipped += 1
             continue
-        ces.append(ce)
+        ces.append((ce, rel))
     return ces, skipped
 
 
@@ -420,7 +416,7 @@ def ingest_confirmed_counterexamples(
     and appends Occurrence/Problem ledger events.
     """
     ts = observed_at or _utc_now()
-    confirmed, skipped = _load_counterexamples(change_dir)
+    loaded, skipped = _load_counterexamples(change_dir)
 
     observations = [
         counterexample_to_observation(
@@ -428,10 +424,12 @@ def ingest_confirmed_counterexamples(
             change_id=change_id,
             batch_id=batch_id,
             observed_at=ts,
+            artifact_rel=rel,
         )
-        for ce in confirmed
+        for ce, rel in loaded
     ]
-    evidence_paths = [counterexample_rel_path(ce) for ce in confirmed]
+    evidence_paths = [rel for _, rel in loaded]
+    confirmed = [ce for ce, _rel in loaded]
     manifest = _build_evidence_manifest(
         change_id=change_id,
         batch_id=batch_id,

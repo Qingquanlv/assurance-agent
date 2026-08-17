@@ -25,7 +25,7 @@ def test_gapped_metrics_do_not_flip_healing_loop_or_archive_verdicts(tmp_path: P
     """With PASS execution + settled healing, both gates pass even if metrics are dirty."""
     change_dir = tmp_path / "qa" / "changes" / "CH-1"
     for rel, payload in {
-        "execution/execution-manifest.yaml": {
+        "execution/execution-manifest.json": {
             "schema_version": "1.0",
             "change_id": "CH-1",
             "batch_id": "b1",
@@ -34,7 +34,7 @@ def test_gapped_metrics_do_not_flip_healing_loop_or_archive_verdicts(tmp_path: P
         "inspect/failure-analysis.json": {
             "schema_version": "1.0",
             "change_id": "CH-1",
-            "source_manifest": "execution/execution-manifest.yaml",
+            "source_manifest": "execution/execution-manifest.json",
             "inspection_status": "completed",
             "batch_id": "b1",
             "source_batch_id": "b1",
@@ -145,6 +145,6 @@ def test_gapped_metrics_do_not_flip_healing_loop_or_archive_verdicts(tmp_path: P
 
     # Execution manifest bytes unchanged by the metrics gate (gate writes nothing).
     manifest = yaml.safe_load(
-        (change_dir / "execution" / "execution-manifest.yaml").read_text(encoding="utf-8")
+        (change_dir / "execution" / "execution-manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["final_status"] == "PASS"

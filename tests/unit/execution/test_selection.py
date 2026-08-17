@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from assurance_agent.workflow.execution.selection import resolve_selected_targets
@@ -9,8 +10,8 @@ def test_defaults_to_all_when_no_state_or_plans(tmp_path: Path) -> None:
 
 
 def test_reads_selected_targets_from_workflow_state(tmp_path: Path) -> None:
-    (tmp_path / "workflow-state.yaml").write_text(
-        "selected_targets:\n  api: true\n  e2e: false\n  fuzz: false\n  performance: false\n",
+    (tmp_path / "workflow-state.json").write_text(
+        json.dumps({"selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False}}),
         encoding="utf-8",
     )
     targets = resolve_selected_targets(tmp_path)
@@ -20,8 +21,17 @@ def test_reads_selected_targets_from_workflow_state(tmp_path: Path) -> None:
 
 
 def test_falls_back_to_layers_key(tmp_path: Path) -> None:
-    (tmp_path / "workflow-state.yaml").write_text(
-        "layers:\n  api: false\n  e2e: true\n  fuzz: false\n  performance: false\n",
+    (tmp_path / "workflow-state.json").write_text(
+        json.dumps(
+            {
+                "layers": {
+                    "api": False,
+                    "e2e": True,
+                    "fuzz": False,
+                    "performance": False,
+                }
+            }
+        ),
         encoding="utf-8",
     )
     targets = resolve_selected_targets(tmp_path)

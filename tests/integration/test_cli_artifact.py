@@ -86,7 +86,7 @@ def test_artifact_write_rejects_workflow_state() -> None:
                 "artifact",
                 "write",
                 "--path",
-                "qa/changes/CH-1/workflow-state.yaml",
+                "qa/changes/CH-1/workflow-state.json",
                 "--payload-base64",
                 encoded,
             ],
@@ -94,7 +94,7 @@ def test_artifact_write_rejects_workflow_state() -> None:
 
         assert result.exit_code == 1
         assert "orchestrator-owned" in result.output
-        assert not Path("qa/changes/CH-1/workflow-state.yaml").exists()
+        assert not Path("qa/changes/CH-1/workflow-state.json").exists()
 
 
 def test_artifact_write_rejects_path_outside_project() -> None:

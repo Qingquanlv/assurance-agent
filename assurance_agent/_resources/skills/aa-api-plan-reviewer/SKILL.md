@@ -14,7 +14,7 @@ Review the API plan package and emit a runtime PlanReview document. Mechanical P
 - `change:plans/api-plan.md`
 - `change:plans/api-test-data-plan.md`
 - `change:plans/api-codegen-plan.md`
-- `change:plans/api-codegen-mapping.yaml`
+- `change:plans/api-codegen-mapping.json`
 - `change:plans/m3-review-summary.md`
 - `change:review/api-plan-checks.json`
 - `change:cases/**/case.yaml`
@@ -50,4 +50,4 @@ The schema contract is supplied by the runtime. Emit `codegen_readiness`, `auto_
 
 Each finding must include `id`, `severity`, `category`, `message`, and `locator`
 (`artifact` plus optional `case_id` / `key`). Point locators at
-`change:plans/api-codegen-mapping.yaml` when the defect is a mapping row.
+`change:plans/api-codegen-mapping.json` when the defect is a mapping row.

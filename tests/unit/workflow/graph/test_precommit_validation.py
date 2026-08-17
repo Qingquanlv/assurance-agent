@@ -1995,12 +1995,13 @@ def test_plan_mechanical_candidate_accepts_matching_document(tmp_path: Path) -> 
     assert load_candidate_receipt(store, receipt_id) == receipt
 
 
-def test_plan_mechanical_candidate_rejects_block_policy_fail(tmp_path: Path) -> None:
+def test_plan_mechanical_candidate_does_not_enforce_policy_block(tmp_path: Path) -> None:
     project, store, context, write_set_id = _freeze_plan_mechanical_candidate(
         tmp_path, plan_body=_FAILING_L1_PLAN_BODY, block_l1_path=True
     )
-    with pytest.raises(CandidateValidationError, match=r"policy\.plan_checks\[l1_path\]=block"):
-        _validate_plan_mechanical(project, store, context, write_set_id)
+    receipt_id, receipt = _validate_plan_mechanical(project, store, context, write_set_id)
+    assert receipt.validator_id == PLAN_MECHANICAL_CANDIDATE_V1
+    assert receipt_id
 
 
 def test_plan_mechanical_candidate_rejects_tampered_write_set(tmp_path: Path) -> None:

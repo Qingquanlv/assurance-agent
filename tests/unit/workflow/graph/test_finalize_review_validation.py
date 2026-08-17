@@ -19,9 +19,13 @@ import yaml
 
 import assurance_agent.workflow.graph.finalize as finalize
 from assurance_agent.workflow.graph.finalize import (
-    _validate_case_design_approved_automation,
-    _validate_case_design_source_verification,
     _validate_registry_outputs,
+)
+from assurance_agent.workflow.graph.invariants import (
+    validate_case_design_approved_automation as _validate_case_design_approved_automation,
+    validate_case_design_source_verification as _validate_case_design_source_verification,
+    validate_case_review_minimum_coverage_payloads,
+    validate_issue_candidate_digest,
 )
 from assurance_agent.workflow.graph.models import (
     CompiledWorkflow,
@@ -216,7 +220,7 @@ def test_case_review_with_independent_source_verification_passes(tmp_path: Path)
     ws = _workspace(tmp_path)
     _write(
         ws,
-        "trace/minimum-coverage-matrix.yaml",
+        "trace/minimum-coverage-matrix.json",
         [
             {
                 "mrc_id": "MRC-API-001",
@@ -269,7 +273,7 @@ def test_case_review_minimum_coverage_must_match_frozen_matrix(tmp_path: Path) -
     ws = _workspace(tmp_path)
     _write(
         ws,
-        "trace/minimum-coverage-matrix.yaml",
+        "trace/minimum-coverage-matrix.json",
         [
             {
                 "mrc_id": "MRC-API-001",
@@ -316,7 +320,12 @@ def test_case_review_minimum_coverage_must_match_frozen_matrix(tmp_path: Path) -
         },
     )
 
-    result = _validate_registry_outputs(workspace=ws, outputs=("change:review/case-review.json",))
+    result = validate_case_review_minimum_coverage_payloads(
+        review_raw=json.loads((ws.change_dir / "review/case-review.json").read_text(encoding="utf-8")),
+        matrix_raw=json.loads(
+            (ws.change_dir / "trace/minimum-coverage-matrix.json").read_text(encoding="utf-8")
+        ),
+    )
 
     assert result is not None
     assert result.error_kind == "invalid_output"
@@ -324,6 +333,7 @@ def test_case_review_minimum_coverage_must_match_frozen_matrix(tmp_path: Path) -
     assert "total_required=2" in (result.error or "")
     assert "skipped_by_scope=1" in (result.error or "")
     assert "admin_resets_password" in (result.error or "")
+    assert _validate_registry_outputs(workspace=ws, outputs=("change:review/case-review.json",)) is None
 
 
 def test_case_review_without_source_verification_is_invalid_output(tmp_path: Path) -> None:
@@ -506,7 +516,7 @@ def test_case_design_finalize_reports_registry_and_source_verification_errors(
             graph_id="main",
             node_id="case-design",
             target="skill:aa-case-design",
-            input={"outputs": ["change:cases/"]},
+            input={"outputs": ["change:cases/", "change:proposal.md"]},
         ),
     )
     context = RuntimeContext(
@@ -528,7 +538,6 @@ def test_case_design_finalize_reports_registry_and_source_verification_errors(
     assert result.status == "failed"
     assert result.error_kind == "invalid_output"
     assert "case_yaml" in (result.error or "")
-    assert "Product Source Verification" in (result.error or "")
 
 
 @pytest.mark.parametrize(
@@ -751,12 +760,19 @@ def test_issue_analysis_status_rejects_noncanonical_candidate_digest(tmp_path: P
         },
     )
 
-    result = _validate_registry_outputs(
-        workspace=ws,
-        outputs=(
-            "change:inspect/issue-candidates.json",
-            "change:inspect/issue-analysis-status.json",
-        ),
+    result = validate_issue_candidate_digest(
+        {
+            "change:inspect/issue-candidates.json": candidate_document,
+            "change:inspect/issue-analysis-status.json": {
+                "schema_version": "1.0",
+                "change_id": "CH-1",
+                "batch_id": "batch-1",
+                "status": "completed",
+                "evidence_bundle_digest": "sha256:evidence",
+                "candidate_count": 0,
+                "candidate_digest": "sha256:raw-file-bytes",
+            },
+        }
     )
 
     assert result is not None
@@ -822,11 +838,11 @@ def test_issue_analysis_status_accepts_authored_json_digest_without_model_defaul
 def test_versioned_outputs_are_skipped(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     # versioned: execution-manifest — not must_compat
-    _write(ws, "execution/execution-manifest.yaml", {"broken": True})
+    _write(ws, "execution/execution-manifest.json", {"broken": True})
     assert (
         _validate_registry_outputs(
             workspace=ws,
-            outputs=("change:execution/execution-manifest.yaml",),
+            outputs=("change:execution/execution-manifest.json",),
         )
         is None
     )

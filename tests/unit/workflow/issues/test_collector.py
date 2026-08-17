@@ -36,18 +36,12 @@ from assurance_agent.evidence.digests import (
 from assurance_agent.workflow.execution.evidence import EvidenceError
 from assurance_agent.workflow.issues.collector import collect_observations
 
-# Pinned from pre-extraction collector on fixed UTF-8 fixture bytes (not via new helpers).
-_CLEAN_MANIFEST_YAML = (
-    "batch_id: '20260725-100000'\n"
-    "change_id: CH-GOLDEN\n"
-    "result_files:\n"
-    "  api: runs/20260725-100000/api-result.json\n"
-    "schema_version: '1.0'\n"
-    "selected_targets:\n"
-    "  api: true\n"
-    "  e2e: false\n"
-    "  fuzz: false\n"
-    "  performance: false\n"
+# Pinned from collector on fixed UTF-8 fixture bytes (not via new helpers).
+_CLEAN_MANIFEST_JSON = (
+    '{"batch_id":"20260725-100000","change_id":"CH-GOLDEN",'
+    '"result_files":{"api":"runs/20260725-100000/api-result.json"},'
+    '"schema_version":"1.0","selected_targets":{"api":true,"e2e":false,'
+    '"fuzz":false,"performance":false}}'
 )
 _CLEAN_API_RESULT_JSON = (
     '{"schema_version":"1.0","change_id":"CH-GOLDEN","batch_id":"20260725-100000",'
@@ -55,8 +49,8 @@ _CLEAN_API_RESULT_JSON = (
     '"source":{"framework":"pytest","raw_log":""},"total":0,"passed":0,"failed":0,'
     '"skipped":0,"cases":[],"unmapped_tests":[]}'
 )
-_CLEAN_BUNDLE_DIGEST_GOLDEN = "sha256:9da76743d2f43bbd1e7c4f06fe9efad23cc884ad2ff77b56b47a869dd3c59957"
-_CLEAN_ANCHOR_DIGEST_GOLDEN = "sha256:41ff3f27309c753c0ff67537a3b528d1ea788ec9319d9deae4c581ec683c461f"
+_CLEAN_BUNDLE_DIGEST_GOLDEN = "sha256:9267d6e23c4b7f542d13a6ff21a658a8be9cb28bf25853354d030cd6bba5bfc9"
+_CLEAN_ANCHOR_DIGEST_GOLDEN = "sha256:febc1b7bbdc6d7550c2e8edfdb904ce7f77c577e97b3a9293ed7232eb95c222d"
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +59,7 @@ _CLEAN_ANCHOR_DIGEST_GOLDEN = "sha256:41ff3f27309c753c0ff67537a3b528d1ea788ec931
 
 
 def _write_manifest(change_dir: Path, *, batch_id: str, targets: dict | None = None) -> None:
-    """Write a minimal execution-manifest.yaml."""
+    """Write a minimal execution-manifest.json."""
     if targets is None:
         targets = {"api": True, "e2e": False, "fuzz": False, "performance": False}
     execution_dir = change_dir / "execution"
@@ -94,7 +88,7 @@ def _write_manifest(change_dir: Path, *, batch_id: str, targets: dict | None = N
         result_files["performance"] = f"runs/{batch_id}/performance-result.json"
     manifest["result_files"] = result_files
 
-    (execution_dir / "execution-manifest.yaml").write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    (execution_dir / "execution-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def _write_api_result(
@@ -183,7 +177,7 @@ def _make_case(
 def test_missing_execution_manifest_raises(tmp_path: Path) -> None:
     change_dir = tmp_path / "CH-001"
     change_dir.mkdir()
-    with pytest.raises(EvidenceError, match="execution-manifest.yaml not found"):
+    with pytest.raises(EvidenceError, match="execution-manifest.json not found"):
         collect_observations(change_dir, "CH-001")
 
 
@@ -191,7 +185,7 @@ def test_corrupt_execution_manifest_raises(tmp_path: Path) -> None:
     change_dir = tmp_path / "CH-001"
     execution_dir = change_dir / "execution"
     execution_dir.mkdir(parents=True)
-    (execution_dir / "execution-manifest.yaml").write_text("not: valid: yaml: [[[", encoding="utf-8")
+    (execution_dir / "execution-manifest.json").write_text("not: valid: yaml: [[[", encoding="utf-8")
     with pytest.raises(EvidenceError):
         collect_observations(change_dir, "CH-001")
 
@@ -215,10 +209,10 @@ def test_selected_target_missing_manifest_result_path_is_a_hard_evidence_failure
     change_dir = tmp_path / change_id
     batch_id = "20260725-095959"
     _write_manifest(change_dir, batch_id=batch_id)
-    manifest_path = change_dir / "execution" / "execution-manifest.yaml"
+    manifest_path = change_dir / "execution" / "execution-manifest.json"
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     manifest["result_files"].pop("api")
-    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(EvidenceError, match="result path missing"):
         collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
@@ -292,10 +286,10 @@ def test_declared_coverage_missing_corrupt_or_malformed_is_a_hard_evidence_failu
     batch_id = "20260725-095959"
     _write_manifest(change_dir, batch_id=batch_id)
     _write_api_result(change_dir, batch_id)
-    manifest_path = change_dir / "execution" / "execution-manifest.yaml"
+    manifest_path = change_dir / "execution" / "execution-manifest.json"
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     manifest["result_files"]["coverage"] = f"runs/{batch_id}/coverage-result.json"
-    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     coverage_path = change_dir / "execution" / "runs" / batch_id / "coverage-result.json"
     if payload is not None:
         coverage_path.write_text(payload, encoding="utf-8")
@@ -331,7 +325,7 @@ def test_clean_batch_returns_empty_observations(tmp_path: Path) -> None:
     # Manifest always has at least the execution manifest entry
     assert len(result.manifest.entries) >= 1
     entry_paths = {e.path for e in result.manifest.entries}
-    assert "execution/execution-manifest.yaml" in entry_paths
+    assert "execution/execution-manifest.json" in entry_paths
 
 
 # ---------------------------------------------------------------------------
@@ -674,8 +668,8 @@ def test_coverage_gap_observation_produced(tmp_path: Path) -> None:
             "coverage": f"runs/{batch_id}/coverage-result.json",
         },
     }
-    (change_dir / "execution" / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(manifest_data), encoding="utf-8"
+    (change_dir / "execution" / "execution-manifest.json").write_text(
+        json.dumps(manifest_data), encoding="utf-8"
     )
     _write_api_result(change_dir, batch_id)
 
@@ -711,7 +705,7 @@ def test_performance_signal_observation_produced(tmp_path: Path) -> None:
     execution_dir.mkdir(parents=True, exist_ok=True)
     batch_dir = execution_dir / "runs" / batch_id
     batch_dir.mkdir(parents=True, exist_ok=True)
-    (execution_dir / "execution-manifest.yaml").write_text(yaml.safe_dump(manifest_data), encoding="utf-8")
+    (execution_dir / "execution-manifest.json").write_text(json.dumps(manifest_data), encoding="utf-8")
     perf_data = {
         "schema_version": "1.0",
         "change_id": change_id,
@@ -1123,8 +1117,8 @@ def test_fuzz_failed_case_produces_test_failure(tmp_path: Path) -> None:
         "selected_targets": {"api": False, "e2e": False, "fuzz": True, "performance": False},
         "result_files": {"fuzz": f"runs/{batch_id}/fuzz-result.json"},
     }
-    (change_dir / "execution" / "execution-manifest.yaml").write_text(
-        yaml.safe_dump(manifest_data), encoding="utf-8"
+    (change_dir / "execution" / "execution-manifest.json").write_text(
+        json.dumps(manifest_data), encoding="utf-8"
     )
     fuzz_result = {
         "schema_version": "1.0",
@@ -1163,7 +1157,7 @@ def test_clean_batch_manifest_digest_bytes_remain_pinned(tmp_path: Path) -> None
     execution_dir = change_dir / "execution"
     batch_dir = execution_dir / "runs" / batch_id
     batch_dir.mkdir(parents=True)
-    (execution_dir / "execution-manifest.yaml").write_text(_CLEAN_MANIFEST_YAML, encoding="utf-8")
+    (execution_dir / "execution-manifest.json").write_text(_CLEAN_MANIFEST_JSON, encoding="utf-8")
     (batch_dir / "api-result.json").write_text(_CLEAN_API_RESULT_JSON, encoding="utf-8")
 
     result = collect_observations(change_dir, change_id, clock=lambda: "2026-07-25T10:00:00Z")
@@ -1171,10 +1165,10 @@ def test_clean_batch_manifest_digest_bytes_remain_pinned(tmp_path: Path) -> None
     assert result.evidence_bundle_digest == _CLEAN_BUNDLE_DIGEST_GOLDEN
     assert result.manifest.digest == _CLEAN_BUNDLE_DIGEST_GOLDEN
     assert len(result.manifest.entries) == 1
-    assert result.manifest.entries[0].path == "execution/execution-manifest.yaml"
+    assert result.manifest.entries[0].path == "execution/execution-manifest.json"
     assert result.manifest.entries[0].digest == _CLEAN_ANCHOR_DIGEST_GOLDEN
     assert result.manifest.digest == evidence_bundle_digest_v1(result.manifest.entries)
-    anchor_bytes = _CLEAN_MANIFEST_YAML.encode("utf-8")
+    anchor_bytes = _CLEAN_MANIFEST_JSON.encode("utf-8")
     assert result.manifest.entries[0].digest == evidence_entry_digest_v1(anchor_bytes)
 
 
@@ -1299,7 +1293,7 @@ def test_build_evidence_manifest_rejects_duplicate_normalized_paths(
         _build_evidence_manifest(
             change_id=change_id,
             batch_id=batch_id,
-            anchor_path="execution/execution-manifest.yaml",
+            anchor_path="execution/execution-manifest.json",
             observations=[observation],
             change_dir=change_dir,
         )

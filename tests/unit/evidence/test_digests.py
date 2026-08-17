@@ -144,7 +144,7 @@ def test_projection_digest_stable_under_gap_order_irrelevant_to_payload() -> Non
     base = _minimal_projection()
     with_gap = base.model_copy(
         update={
-            "gaps": (TraceGap(code="manifest_missing", source="execution/execution-manifest.yaml"),),
+            "gaps": (TraceGap(code="manifest_missing", source="execution/execution-manifest.json"),),
             "integrity": "incomplete",
         }
     )

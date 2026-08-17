@@ -13,15 +13,15 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.yaml`.
+1. Read `qa/changes/<change-id>/workflow-state.json`.
 2. Verify `phases.execution.status` is set (execution must have run).
-3. Read `execution/execution-manifest.yaml`. If it is missing, stop and ask the user to re-run `aa-run`. Do not infer runner status from result files alone.
+3. Read `execution/execution-manifest.json`. If it is missing, stop and ask the user to re-run `aa-run`. Do not infer runner status from result files alone.
 4. Check fallback / normalised result availability:
    - If `fallback_runner.used == true` and `fallback_runner.normalised_results_available == false`:
      - Primary CLI inspect **cannot** run.
      - Use fallback partial inspect **only if** allowed (see **Inspector Mode**).
      - Otherwise **STOP** and ask to re-run execution with valid Assurance Agent CLI.
-5. Read result files based on `execution-manifest.yaml` `batch_id` and `selected_targets` — **primary mode only**:
+5. Read result files based on `execution-manifest.json` `batch_id` and `selected_targets` — **primary mode only**:
    - Resolve `execution/runs/<batch-id>/` from the manifest.
    - If `selected_targets.api == true`, require `execution/runs/<batch-id>/api-result.json`.
    - If `selected_targets.e2e == true`, require `execution/runs/<batch-id>/e2e-result.json`.
@@ -42,7 +42,7 @@ Do not rely on prior conversation context.
 2. Write optional pointers into `execution/` (for downstream consumers):
    - `qa/changes/<change-id>/execution/failure-analysis.json` (copy/pointer)
    - `qa/changes/<change-id>/execution/failure-summary.md` (copy/pointer)
-3. Report the `workflow-state.yaml` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.yaml` — report the values in your final message and the orchestrator applies them):
+3. Report the `workflow-state.json` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.json` — report the values in your final message and the orchestrator applies them):
    - `phases.inspect.status = done`
    - `phases.inspect.inspect_mode = primary`
    - `phases.inspect.classification_performed = true`
@@ -55,7 +55,7 @@ Do not rely on prior conversation context.
    - `qa/changes/<change-id>/inspect/failure-summary.md` (raw summary only)
    - `qa/changes/<change-id>/inspect/inspection-partial.json` (see **Fallback Partial Output**)
 2. Do **not** write `inspect/failure-analysis.json`.
-3. Report the `workflow-state.yaml` state delta (same rule as primary mode — orchestrator applies it when dispatched):
+3. Report the `workflow-state.json` state delta (same rule as primary mode — orchestrator applies it when dispatched):
    - `phases.inspect.status = partial`
    - `phases.inspect.inspect_mode = partial`
    - `phases.inspect.classification_performed = false`
@@ -128,7 +128,7 @@ In either case:
 **Primary mode:**
 
 1. Run **AA CLI Identity Check**.
-2. Verify `execution-manifest.yaml` does **not** require fallback-only inspect (see Context Contract step 4).
+2. Verify `execution-manifest.json` does **not** require fallback-only inspect (see Context Contract step 4).
 3. If checks pass, attempt `aa report inspect --change <change-id>`.
 
 **Fallback mode (partial inspect):**
@@ -209,7 +209,7 @@ MCP is optional and must not replace the CLI execution chain.
 
 `aa report inspect` reads execution artifacts and classifies each failure:
 
-1. Reads `execution/execution-manifest.yaml` to determine `batch_id`, `selected_targets`, and result file paths (normalises CLI map format and skill extended `primary_runner.result_files[]`).
+1. Reads `execution/execution-manifest.json` to determine `batch_id`, `selected_targets`, and result file paths (normalises CLI map format and skill extended `primary_runner.result_files[]`).
 2. Reads `execution/runs/<batch-id>/*-result.json` according to manifest `selected_targets` — **never** uses latest pointers as primary source.
 3. Reads coverage from `execution/runs/<batch-id>/coverage-result.json` when `selected_targets.api == true`; skips coverage when api was unselected.
 4. Prefers `execution/runs/<batch-id>/quality-gate-result.json` written by `aa run`; recomputes only if absent.
@@ -227,7 +227,7 @@ MCP is optional and must not replace the CLI execution chain.
 
 Primary inspect output written by the CLI (skill verifies; does not fabricate). Minimal top-level structure — see `assurance_agent/artifacts/models/inspect.py` for the full contract.
 
-`inspect_mode` enum (JSON and `workflow-state.yaml`): `primary | partial`
+`inspect_mode` enum (JSON and `workflow-state.json`): `primary | partial`
 
 ```json
 {
@@ -394,14 +394,14 @@ and before `report`, and routes the change to `pass` / `needs_human_review` / `s
 PR metrics are a separate judgement: `operation:materialize-pr-metrics` writes
 `inspect/metrics.json` once after healing, and `metrics-sufficiency-gate` routes on it
 via `evaluate_metrics_sufficiency` — that verdict never rewrites
-`quality-gate-result.json` or `execution-manifest.yaml`. That placement matters for this
+`quality-gate-result.json` or `execution-manifest.json`. That placement matters for this
 skill: inspection runs again after every healing rerun, so the trace documents are
 rewritten per batch and only the last one is adjudicated. Rules for this skill:
 
 - **Never write, copy, or edit either file.** They are written by the workflow node, not by
   `aa report inspect`; a skill-authored copy would be indistinguishable from a folded one.
 - **The trace verdict is not the execution verdict.** `quality-gate-result.json.final_status`
-  and `execution/execution-manifest.yaml` state what the *tests* found. The trace gate is a
+  and `execution/execution-manifest.json` state what the *tests* found. The trace gate is a
   second, independent judgement about whether the evidence behind them is good enough to
   believe, and it must never cause either document to be rewritten.
 - **Do not pre-empt the gate.** Do not derive a pass/stop conclusion from
@@ -427,7 +427,7 @@ If the CLI completes but required primary output is missing (`inspect/failure-an
 ## Steps
 
 1. Confirm execution has run (`phases.execution.status` set).
-2. Read `execution/execution-manifest.yaml` — stop if missing.
+2. Read `execution/execution-manifest.json` — stop if missing.
 3. Check fallback / normalised result rules (Context Contract step 4).
 4. Run **AA CLI Identity Check**.
 5. If primary inspect allowed: call `aa report inspect --change <change-id>`; wait for completion.
@@ -436,7 +436,7 @@ If the CLI completes but required primary output is missing (`inspect/failure-an
 8. Read `inspect/failure-analysis.json` (primary) or `inspect/inspection-partial.json` (partial).
 9. Read `inspect/failure-summary.md`.
 10. Present summary to user (category breakdown in primary mode; raw summary in partial mode).
-11. Report the state delta per mode (see Context Contract **After completing work** — orchestrator applies it to `workflow-state.yaml` when dispatched).
+11. Report the state delta per mode (see Context Contract **After completing work** — orchestrator applies it to `workflow-state.json` when dispatched).
 12. Do **not** generate fix proposals in this skill — eligible failures are consumed by downstream healing skills.
 
 ## Status Update Rules
@@ -466,7 +466,7 @@ If `final_status == PASS_WITH_WARNINGS`, downstream workflow status must be `com
 - Run **AA CLI Identity Check** before `aa report inspect` — do not invoke Amazon AA CLI.
 - If CLI completes but `inspect/failure-analysis.json` is missing, write `inspection-error.*` and set `phases.inspect.status = failed` — do not guess.
 - Do **not** invoke MCP as a substitute for the CLI.
-- Always read `execution/execution-manifest.yaml` before inspecting.
+- Always read `execution/execution-manifest.json` before inspecting.
 - If `fallback_runner.used == true` and `normalised_results_available == false`, primary inspect cannot run — use partial fallback or STOP.
 - Only require normalised result files for selected targets in **primary** mode.
 - Do **not** read or write legacy known-product issue Markdown/JSON files.
@@ -630,7 +630,7 @@ qa/changes/<change-id>/inspect/diagnostic-probes.json
 
 **Probes must NOT:**
 
-- Update `execution/execution-manifest.yaml`
+- Update `execution/execution-manifest.json`
 - Update `phases.execution.status`
 - Be reported as reruns
 - Count toward `max_healing_attempts`
@@ -670,7 +670,7 @@ qa/changes/<change-id>/cases/**
 qa/changes/<change-id>/plans/**
 qa/changes/<change-id>/review/**
 qa/changes/<change-id>/healing/**
-qa/changes/<change-id>/execution/execution-manifest.yaml   (must not update)
+qa/changes/<change-id>/execution/execution-manifest.json   (must not update)
 ```
 
 If the orchestrator (`aa-workflow`) detects that `aa-inspect` modified any forbidden path during Phase 9 or Phase 13, it must:

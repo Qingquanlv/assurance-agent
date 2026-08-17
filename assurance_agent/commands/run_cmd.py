@@ -202,7 +202,7 @@ def _print_manifest(manifest, change_dir: Path) -> None:  # noqa: ANN001
             click.echo(f"  {key:<12}: {execution_dir / rel}")
         elif sel is False:
             click.echo(f"  {key:<12}: unselected")
-    click.echo(f"  manifest     : {execution_dir / 'execution-manifest.yaml'}")
+    click.echo(f"  manifest     : {execution_dir / 'execution-manifest.json'}")
 
     warnings = _gate_warnings(execution_dir)
     if warnings:

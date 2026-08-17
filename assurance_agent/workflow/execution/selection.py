@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from assurance_agent.artifacts.models import SelectedTargets
+from assurance_agent.artifacts.paths import existing_with_alias
 
 _KEYS = ("api", "e2e", "fuzz", "performance")
 
@@ -33,8 +34,8 @@ def resolve_selected_targets(change_dir: Path) -> SelectedTargets:
 
 
 def _from_workflow_state(change_dir: Path) -> SelectedTargets | None:
-    state_path = change_dir / "workflow-state.yaml"
-    if not state_path.is_file():
+    state_path = existing_with_alias(change_dir / "workflow-state.json")
+    if state_path is None:
         return None
     try:
         doc = yaml.safe_load(state_path.read_text(encoding="utf-8"))

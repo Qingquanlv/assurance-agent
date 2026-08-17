@@ -783,8 +783,8 @@ def test_decide_rejects_graph_gate_actions() -> None:
 def test_vue_fastapi_admin_acceptance_fixture_is_present() -> None:
     root = Path("tests/fixtures/issues/vue_fastapi_admin")
     assert (root / "scenario.json").is_file()
-    assert (root / "initial" / "execution-manifest.yaml").is_file()
-    assert (root / "healing" / "execution-manifest.yaml").is_file()
+    assert (root / "initial" / "execution-manifest.json").is_file()
+    assert (root / "healing" / "execution-manifest.json").is_file()
 
 
 def test_cli_resume_repairs_v5_manual_revision_prefix(

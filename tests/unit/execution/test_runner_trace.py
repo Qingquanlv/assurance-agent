@@ -64,8 +64,8 @@ def trace_project(tmp_path: Path) -> tuple[Path, Path]:
     )
     change_dir = tmp_path / "qa" / "changes" / CHANGE_ID
     change_dir.mkdir(parents=True)
-    (change_dir / "workflow-state.yaml").write_text(
-        "selected_targets:\n  api: true\n  e2e: false\n  fuzz: false\n  performance: false\n",
+    (change_dir / "workflow-state.json").write_text(
+        json.dumps({"selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False}}),
         encoding="utf-8",
     )
     _write_api_case(change_dir)
@@ -256,7 +256,7 @@ def test_manifest_contains_executed_at(
 
     project_root, change_dir = trace_project
     _run_with_stubs(monkeypatch, project_root, change_dir)
-    manifest_path = change_dir / "execution" / "runs" / BATCH_ID / "execution-manifest.yaml"
+    manifest_path = change_dir / "execution" / "runs" / BATCH_ID / "execution-manifest.json"
     manifest = ExecutionManifest.model_validate(yaml.safe_load(manifest_path.read_text(encoding="utf-8")))
     assert manifest.executed_at == EXECUTED_AT
 

@@ -294,7 +294,7 @@ def test_acceptance_corrupted_projections_rebuild_from_ledger(tmp_path: Path) ->
     before = project_invocation(change, invocation_id)
 
     (change / "driver.json").write_text("{nope", encoding="utf-8")
-    (change / "workflow-state.yaml").write_text("broken: [", encoding="utf-8")
+    (change / "workflow-state.json").write_text("broken: [", encoding="utf-8")
     snap_dir = change / ".graph-runtime" / "checkpoints"
     if snap_dir.exists():
         for snap in snap_dir.glob("*.json"):
@@ -303,8 +303,8 @@ def test_acceptance_corrupted_projections_rebuild_from_ledger(tmp_path: Path) ->
     after = CheckpointStore(change).project(invocation_id)
     assert after.terminal == before.terminal
     assert after.current_tree_id == before.current_tree_id
-    assert "invocation_id:" in (change / "workflow-state.yaml").read_text(encoding="utf-8")
-    assert "terminal: completed" in (change / "workflow-state.yaml").read_text(encoding="utf-8")
+    assert '"invocation_id"' in (change / "workflow-state.json").read_text(encoding="utf-8")
+    assert '"terminal": "completed"' in (change / "workflow-state.json").read_text(encoding="utf-8")
 
 
 def test_acceptance_schema_digest_drift_refuses_resume(tmp_path: Path) -> None:

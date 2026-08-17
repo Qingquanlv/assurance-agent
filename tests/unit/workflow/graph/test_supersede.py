@@ -50,8 +50,9 @@ from assurance_agent.workflow.graph.supersede import (
 from assurance_agent.workflow.graph.status import supersede_audit_id
 from tests.helpers_graph_v6 import v6_semantic_bindings
 
-# Pinned after leaf-aware resume anchors joined the commit-safety semantics.
-_PINNED_COMMIT_SAFETY_DIGEST = "40f8c204dd1cd13151fa3cdb9fe347f30aea914a96fb2d2142d128e0aac6626d"
+# Pinned after archive/problem-apply/cross-artifact reconcilers joined the
+# commit-safety semantics.
+_PINNED_COMMIT_SAFETY_DIGEST = "dd7f986b66574c023738596e8b62a254d0f279e534201abcdc80c0d540575f39"
 
 
 def _projection(

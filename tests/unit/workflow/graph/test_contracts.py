@@ -1040,13 +1040,13 @@ _FUZZ_PLAN_READS = (
 _FUZZ_PLAN_WRITES = (
     "change:plans/fuzz-plan.md",
     "change:plans/fuzz-codegen-plan.md",
-    "change:plans/fuzz-codegen-mapping.yaml",
+    "change:plans/fuzz-codegen-mapping.json",
     "change:plans/fuzz-review-summary.md",
 )
 _FUZZ_REVIEWER_READS = (
     "change:plans/fuzz-plan.md",
     "change:plans/fuzz-codegen-plan.md",
-    "change:plans/fuzz-codegen-mapping.yaml",
+    "change:plans/fuzz-codegen-mapping.json",
     "change:plans/fuzz-review-summary.md",
     "change:review/fuzz-plan-checks.json",
     "change:cases/**/case.yaml",
@@ -1060,7 +1060,7 @@ _FUZZ_REVIEWER_WRITES = (
 _FUZZ_CODEGEN_READS = (
     "change:plans/fuzz-plan.md",
     "change:plans/fuzz-codegen-plan.md",
-    "change:plans/fuzz-codegen-mapping.yaml",
+    "change:plans/fuzz-codegen-mapping.json",
     "change:plans/fuzz-review-summary.md",
     "change:review/fuzz-plan-review.json",
     "change:review/fuzz-plan-checks.json",
@@ -1089,13 +1089,13 @@ _PERF_PLAN_READS = (
 _PERF_PLAN_WRITES = (
     "change:plans/performance-plan.md",
     "change:plans/performance-codegen-plan.md",
-    "change:plans/performance-codegen-mapping.yaml",
+    "change:plans/performance-codegen-mapping.json",
     "change:plans/performance-review-summary.md",
 )
 _PERF_REVIEWER_READS = (
     "change:plans/performance-plan.md",
     "change:plans/performance-codegen-plan.md",
-    "change:plans/performance-codegen-mapping.yaml",
+    "change:plans/performance-codegen-mapping.json",
     "change:plans/performance-review-summary.md",
     "change:review/performance-plan-checks.json",
     "change:cases/**/case.yaml",
@@ -1109,7 +1109,7 @@ _PERF_REVIEWER_WRITES = (
 _PERF_CODEGEN_READS = (
     "change:plans/performance-plan.md",
     "change:plans/performance-codegen-plan.md",
-    "change:plans/performance-codegen-mapping.yaml",
+    "change:plans/performance-codegen-mapping.json",
     "change:plans/performance-review-summary.md",
     "change:review/performance-plan-review.json",
     "change:review/performance-plan-checks.json",
@@ -1219,6 +1219,8 @@ def test_packaged_contracts_select_exact_precommit_validators() -> None:
         "skill:aa-e2e-plan-reviewer": "plan_mechanical_candidate/v1",
         "skill:aa-fuzz-plan-reviewer": "plan_mechanical_candidate/v1",
         "skill:aa-performance-plan-reviewer": "plan_mechanical_candidate/v1",
+        "skill:aa-archive": "archive_integrity/v1",
+        "operation:apply-problem-review": "problem_apply_candidate/v1",
     }
 
 

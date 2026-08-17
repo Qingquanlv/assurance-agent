@@ -95,9 +95,9 @@ def _write_manifest(
     }
     if test_files_sha256 is not None:
         payload["test_files_sha256"] = test_files_sha256
-    manifest_path = change_dir / "execution/execution-manifest.yaml"
+    manifest_path = change_dir / "execution/execution-manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _write_api_result(change_dir: Path) -> None:
@@ -149,7 +149,7 @@ def _write_failure_analysis(change_dir: Path) -> None:
     payload = {
         "schema_version": "1.0",
         "change_id": CHANGE_ID,
-        "source_manifest": "execution/execution-manifest.yaml",
+        "source_manifest": "execution/execution-manifest.json",
         "inspection_status": "completed",
         "batch_id": BATCH_ID,
         "source_batch_id": BATCH_ID,
@@ -227,10 +227,10 @@ def _write_policy(project_root: Path, *, on_insufficient: str = "require_human")
 def _strip_test_from_tree(project_root: Path, change_dir: Path) -> None:
     """Remove mapped test from tree and sync manifest digests (avoids blocking mismatch)."""
     (project_root / "tests/api/test_dept.py").unlink(missing_ok=True)
-    payload = yaml.safe_load((change_dir / "execution/execution-manifest.yaml").read_text(encoding="utf-8"))
+    payload = yaml.safe_load((change_dir / "execution/execution-manifest.json").read_text(encoding="utf-8"))
     payload["test_files_sha256"] = {}
-    (change_dir / "execution/execution-manifest.yaml").write_text(
-        yaml.safe_dump(payload, sort_keys=False),
+    (change_dir / "execution/execution-manifest.json").write_text(
+        json.dumps(payload),
         encoding="utf-8",
     )
     # Refresh completed authority digests against the rewritten execution anchor.
@@ -250,11 +250,11 @@ def _seed_completed_authority(change_dir: Path) -> None:
     from assurance_agent.evidence.issue_replay import dump_projection, project_change_issues
     from tests.unit.evidence import test_issue_replay_authority as auth
 
-    anchor = change_dir / "execution/execution-manifest.yaml"
+    anchor = change_dir / "execution/execution-manifest.json"
     anchor_bytes = anchor.read_bytes()
     entries = [
         IssueEvidenceManifestEntry(
-            path="execution/execution-manifest.yaml",
+            path="execution/execution-manifest.json",
             digest=evidence_entry_digest_v1(anchor_bytes),
         )
     ]
@@ -534,7 +534,7 @@ def test_blocking_gap_codes_fail(gap_code: str) -> None:
 def test_blocking_gap_manifest_missing_cli(project) -> None:
     runner, root = project
     change_dir = _seed_reconciled_happy_path(root, on_insufficient="warn")
-    (change_dir / "execution/execution-manifest.yaml").unlink()
+    (change_dir / "execution/execution-manifest.json").unlink()
     result = runner.invoke(main, ["verify", "--change", CHANGE_ID, "--json"])
     assert result.exit_code == 40, result.output
     doc = json.loads(result.stdout)
@@ -593,11 +593,11 @@ def test_blocking_gap_manifest_missing_cli(project) -> None:
             lambda root, change_dir: (
                 lambda payload: (
                     payload.update({"test_files_sha256": {"tests/api/test_dept.py": "deadbeef" * 8}}),
-                    (change_dir / "execution/execution-manifest.yaml").write_text(
-                        yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+                    (change_dir / "execution/execution-manifest.json").write_text(
+                        json.dumps(payload), encoding="utf-8"
                     ),
                 )
-            )(yaml.safe_load((change_dir / "execution/execution-manifest.yaml").read_text(encoding="utf-8"))),
+            )(yaml.safe_load((change_dir / "execution/execution-manifest.json").read_text(encoding="utf-8"))),
         ),
     ],
 )
@@ -729,7 +729,7 @@ def test_evaluate_verify_verdict_unit_cases() -> None:
         phase="reconciled",
         authoritative_batch_id=BATCH_ID,
         rows=(_row(latest_execution=_execution()),),
-        gaps=(TraceGap(code="manifest_missing", source="execution/execution-manifest.yaml"),),
+        gaps=(TraceGap(code="manifest_missing", source="execution/execution-manifest.json"),),
         integrity="incomplete",
     )
     blocked_gap = verify_cmd.evaluate_verify_verdict(

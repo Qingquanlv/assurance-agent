@@ -362,16 +362,67 @@ gates:
         )
 
 
-def test_rejects_duplicate_artifact_symbols() -> None:
-    with pytest.raises(CompileError, match="duplicate artifact symbol"):
+def test_missing_validate_is_legal_on_unpacked_graphs() -> None:
+    compiled = compile_text(
+        _wf(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                a: {uses: operation:a}
+              edges:
+                - {from: START, to: a}
+                - {from: a, to: END}
+            """
+        )
+    )
+    assert compiled.graphs["main"].nodes["a"].definition.validate_ is None
+
+
+def test_validate_none_is_distinct_from_missing() -> None:
+    compiled = compile_text(
+        _wf(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                a: {uses: operation:a, validate: none}
+              edges:
+                - {from: START, to: a}
+                - {from: a, to: END}
+            """
+        )
+    )
+    assert compiled.graphs["main"].nodes["a"].definition.validate_ == "none"
+
+
+def test_rejects_unknown_node_validate() -> None:
+    with pytest.raises(CompileError, match="unknown validate"):
         compile_text(
             _wf(
                 """
                 main:
                   max_supersteps: 5
                   nodes:
-                    a: {uses: operation:a, outputs: [change:x/result.json]}
-                    b: {uses: operation:b, outputs: [change:y/result.json]}
+                    a: {uses: operation:a, validate: mystery/v1}
+                  edges:
+                    - {from: START, to: a}
+                    - {from: a, to: END}
+                """
+            )
+        )
+
+
+def test_rejects_inconsistent_validate_for_same_uses() -> None:
+    with pytest.raises(CompileError, match="inconsistent validate"):
+        compile_text(
+            _wf(
+                """
+                main:
+                  max_supersteps: 5
+                  nodes:
+                    a: {uses: operation:x, validate: none}
+                    b: {uses: operation:x, validate: generated_files_candidate/v1}
                   edges:
                     - {from: START, to: a}
                     - {from: START, to: b}
@@ -382,7 +433,68 @@ def test_rejects_duplicate_artifact_symbols() -> None:
         )
 
 
-def test_artifact_symbols_derive_from_json_output_stems() -> None:
+def test_missing_validate_does_not_conflict_with_a_declared_sibling() -> None:
+    compiled = compile_text(
+        _wf(
+            """
+            main:
+              max_supersteps: 5
+              nodes:
+                a: {uses: operation:x}
+                b: {uses: operation:x, validate: none}
+              edges:
+                - {from: START, to: a}
+                - {from: START, to: b}
+                - {from: a, to: END}
+                - {from: b, to: END}
+            """
+        )
+    )
+    assert compiled.graphs["main"].nodes["a"].definition.validate_ is None
+    assert compiled.graphs["main"].nodes["b"].definition.validate_ == "none"
+
+
+def test_plan_mechanical_validate_requires_plan_checks_output() -> None:
+    with pytest.raises(CompileError, match="plan-checks"):
+        compile_text(
+            _wf(
+                """
+                main:
+                  max_supersteps: 5
+                  nodes:
+                    review:
+                      uses: skill:aa-api-plan-reviewer
+                      validate: plan_mechanical_candidate/v1
+                      outputs: [change:review/api-plan-review.json]
+                  edges:
+                    - {from: START, to: review}
+                    - {from: review, to: END}
+                """
+            )
+        )
+
+
+def test_rejects_duplicate_artifact_symbols() -> None:
+    with pytest.raises(CompileError, match="duplicate artifact symbol"):
+        compile_text(
+            _wf(
+                """
+                main:
+                  max_supersteps: 5
+                  nodes:
+                    a: {uses: operation:a, outputs: [change:coverage-repair/status.json]}
+                    b: {uses: operation:b, outputs: [change:qa/improvements/reviews/foo/status.json]}
+                  edges:
+                    - {from: START, to: a}
+                    - {from: START, to: b}
+                    - {from: a, to: END}
+                    - {from: b, to: END}
+                """
+            )
+        )
+
+
+def test_artifact_symbols_derive_from_registered_output_stems() -> None:
     compiled = compile_text(
         _wf(
             """
@@ -391,7 +503,11 @@ def test_artifact_symbols_derive_from_json_output_stems() -> None:
               nodes:
                 explore:
                   uses: operation:explore
-                  outputs: [change:explore/advisory.json, change:explore/notes.md]
+                  outputs:
+                    - change:explore/advisory.json
+                    - change:explore/notes.md
+                    - change:x/result.json
+                    - change:execution/execution-manifest.json
                 report: {uses: operation:report}
               edges:
                 - {from: START, to: explore}
@@ -400,7 +516,10 @@ def test_artifact_symbols_derive_from_json_output_stems() -> None:
             """
         )
     )
-    assert compiled.graphs["main"].artifact_symbols == {"advisory": "change:explore/advisory.json"}
+    assert compiled.graphs["main"].artifact_symbols == {
+        "advisory": "change:explore/advisory.json",
+        "execution_manifest": "change:execution/execution-manifest.json",
+    }
 
 
 def test_resolve_params_validates_overrides_and_cross_constraints() -> None:

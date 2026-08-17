@@ -18,7 +18,7 @@ def test_healing_safety_and_apply_summaries_are_audited() -> None:
 
 def test_non_audited_paths_are_excluded() -> None:
     assert not is_audited_gate_read("inspect/failure-analysis.json")
-    assert not is_audited_gate_read("execution/execution-manifest.yaml")
+    assert not is_audited_gate_read("execution/execution-manifest.json")
     assert not is_audited_gate_read("review/nested/dir.json")
     assert not is_audited_gate_read("healing/other.json")
     assert not is_audited_gate_read("repo:src/x.py")

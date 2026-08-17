@@ -247,13 +247,13 @@ def test_oracle_set_and_campaign_documents_validate() -> None:
 
 def test_discovery_registry_patterns() -> None:
     expected = {
-        "discovery/campaign-spec.yaml": "discovery_campaign_spec",
-        "discovery/oracle-set.yaml": "discovery_oracle_set",
+        "discovery/campaign-spec.json": "discovery_campaign_spec",
+        "discovery/oracle-set.json": "discovery_oracle_set",
         "discovery/rounds/R0001/decision.json": "discovery_round_decision",
         "discovery/rounds/R0001/generated-manifest.json": "discovery_generated_manifest",
-        "discovery/counterexamples/CE-001.yaml": "discovery_counterexample",
+        "discovery/counterexamples/CE-001.json": "discovery_counterexample",
         "discovery/counterexamples/CE-001/replay/attempt-0.json": "discovery_replay_attempt_receipt",
-        "discovery/campaign-result.yaml": "discovery_campaign_result",
+        "discovery/campaign-result.json": "discovery_campaign_result",
     }
     for path, artifact_type in expected.items():
         spec = match_artifact(path)

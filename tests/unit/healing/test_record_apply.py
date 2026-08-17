@@ -4,7 +4,6 @@ from pathlib import Path
 from tests.helpers_aa import write_aa_config
 
 import pytest
-import yaml
 
 from assurance_agent.workflow.core.events import EventWriteError, append_event_strict, read_events
 from assurance_agent.workflow.execution.tree_hash import hash_test_tree
@@ -48,8 +47,8 @@ def _seed_healing_episode(change_dir: Path, *, source_batch: str = "20260101-000
 
 def _manifest(change_dir: Path, files: dict[str, str], aggregate: str) -> None:
     _write(
-        change_dir / "execution" / "execution-manifest.yaml",
-        yaml.safe_dump(
+        change_dir / "execution" / "execution-manifest.json",
+        json.dumps(
             {
                 "batch_id": "20260101-000000",
                 "tests_tree_sha256": aggregate,

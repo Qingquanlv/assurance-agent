@@ -16,9 +16,10 @@ from typing import Any
 import yaml
 
 from assurance_agent.artifacts.models import RunContext, WorkflowState
+from assurance_agent.artifacts.paths import WORKFLOW_STATE_REL, existing_with_alias
 from assurance_agent.exceptions import AaError
 
-WORKFLOW_STATE_RELPATH = "workflow-state.yaml"
+WORKFLOW_STATE_RELPATH = WORKFLOW_STATE_REL
 _INTEGRITY_KEY = "_integrity"
 
 
@@ -37,10 +38,11 @@ def _canonical_hash(doc: dict[str, object]) -> str:
 
 
 def _load_doc(change_dir: Path) -> dict[str, object] | None:
-    file = state_file(change_dir)
-    if not file.exists():
+    file = existing_with_alias(state_file(change_dir))
+    if file is None:
         return None
-    doc = yaml.safe_load(file.read_text(encoding="utf-8"))
+    text = file.read_text(encoding="utf-8")
+    doc = json.loads(text) if file.suffix == ".json" else yaml.safe_load(text)
     if doc is None:
         return None
     if not isinstance(doc, dict):
@@ -67,7 +69,7 @@ def write_state(change_dir: Path, state: WorkflowState) -> None:
     doc[_INTEGRITY_KEY] = {"state_sha256": _canonical_hash(doc)}
     file = state_file(change_dir)
     tmp = file.with_suffix(file.suffix + f".tmp.{os.getpid()}")
-    tmp.write_text(yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     os.replace(tmp, file)  # 原子替换：磁盘 state 永不半写
 
 

@@ -8,11 +8,16 @@ behavior micromatch gave the TS globs. `free`-grade artifacts (markdown
 reports, events extensions) are deliberately absent: they are not validated.
 """
 
+import json
 import re
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel
+import yaml
+from pydantic import BaseModel, model_validator
+
+from assurance_agent.artifacts.paths import HISTORICAL_YAML_PATTERNS, historical_json_pattern
+from assurance_agent.exceptions import AaError
 
 from assurance_agent.artifacts.models import (
     Advisory,
@@ -52,6 +57,7 @@ from assurance_agent.artifacts.models import (
     IssueEvidenceManifest,
     IssueEvidenceSlice,
     IssueReconcileStatusDocument,
+    IssueTriageAdvice,
     ImprovementCandidateDocumentDraftV3,
     ImprovementCandidateDocumentV3,
     ImprovementAutoReviewAssessment,
@@ -102,6 +108,43 @@ from assurance_agent.artifacts.models.coverage_repair import (
 from assurance_agent.artifacts.models.plan_checks import PlanCheckDocument
 
 Compat = Literal["must_compat", "versioned", "free"]
+Wire = Literal["json", "yaml", "markdown"]
+Owner = Literal["machine", "human"]
+
+# Human-edited corpus / project config. Everything else is machine-owned,
+# including today's YAML machine artifacts (closed legacy set; see tests).
+_HUMAN_OWNED_PATTERNS = frozenset(
+    {
+        "cases/**/case.yaml",
+        ".qa.yaml",
+        "plans/data-knowledge.proposal.*.yaml",
+        "qa/improvements/declarations/*.proposal.yaml",
+    }
+)
+
+
+class UnregisteredArtifactError(AaError):
+    """A path has no ArtifactSpec; callers must not guess a wire format."""
+
+
+def wire_from_pattern(pattern: str) -> Wire:
+    """Derive wire from the declared pattern suffix. Patterns carry one suffix."""
+    if pattern.endswith(".json"):
+        return "json"
+    if pattern.endswith((".yaml", ".yml")):
+        return "yaml"
+    if pattern.endswith(".md"):
+        return "markdown"
+    raise ValueError(f"artifact pattern {pattern!r} has no json/yaml/markdown suffix")
+
+
+def parse_wire(wire: Wire, text: str) -> object:
+    """Parse ``text`` according to a declared wire. Never sniff the filename."""
+    if wire == "json":
+        return json.loads(text)
+    if wire == "yaml":
+        return yaml.safe_load(text)
+    return text
 
 
 class ArtifactSpec(BaseModel):
@@ -115,6 +158,35 @@ class ArtifactSpec(BaseModel):
     # True when runtime completion deliberately adds fields that the authored
     # artifact contract forbids agents from supplying.
     runtime_completes_authoring: bool = False
+    wire: Wire = "json"
+    owner: Owner = "machine"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_wire_and_owner(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        pattern = data.get("pattern")
+        if not isinstance(pattern, str):
+            return data
+        inferred = wire_from_pattern(pattern)
+        declared = data.get("wire", inferred)
+        if declared != inferred:
+            raise ValueError(f"pattern {pattern!r} suffix does not match wire {declared!r}")
+        data["wire"] = inferred
+        data.setdefault(
+            "owner",
+            "human" if pattern in _HUMAN_OWNED_PATTERNS else "machine",
+        )
+        return data
+
+    @model_validator(mode="after")
+    def _owner_wire_invariants(self) -> Self:
+        if self.wire == "markdown" and self.compat != "free":
+            raise ValueError(f"markdown artifact {self.pattern!r} must use compat='free'")
+        if self.owner == "machine" and self.wire != "json":
+            raise ValueError(f"machine artifact {self.pattern!r} must use wire='json'")
+        return self
 
 
 REGISTRY: list[ArtifactSpec] = [
@@ -152,7 +224,7 @@ REGISTRY: list[ArtifactSpec] = [
     ),
     ArtifactSpec(
         artifact_type="codegen_mapping_v1",
-        pattern="plans/*-codegen-mapping.yaml",
+        pattern="plans/*-codegen-mapping.json",
         model=CodegenMapping,
         compat="must_compat",
     ),
@@ -282,7 +354,7 @@ REGISTRY: list[ArtifactSpec] = [
     ArtifactSpec(artifact_type="qa_yaml", pattern=".qa.yaml", model=QaYaml, compat="must_compat"),
     ArtifactSpec(
         artifact_type="execution_manifest",
-        pattern="execution/execution-manifest.yaml",
+        pattern="execution/execution-manifest.json",
         model=ExecutionManifest,
         compat="versioned",
     ),
@@ -431,6 +503,12 @@ REGISTRY: list[ArtifactSpec] = [
         compat="versioned",
     ),
     ArtifactSpec(
+        artifact_type="issue_triage_advice",
+        pattern="issue-review/*/advice.json",
+        model=IssueTriageAdvice,
+        compat="must_compat",
+    ),
+    ArtifactSpec(
         artifact_type="quality_report",
         pattern="report/quality-report.json",
         model=QualityReport,
@@ -446,7 +524,7 @@ REGISTRY: list[ArtifactSpec] = [
     ),
     ArtifactSpec(
         artifact_type="minimum_coverage_matrix",
-        pattern="trace/minimum-coverage-matrix.yaml",
+        pattern="trace/minimum-coverage-matrix.json",
         model=MinimumCoverageMatrix,
         compat="must_compat",
     ),
@@ -573,7 +651,7 @@ REGISTRY: list[ArtifactSpec] = [
         artifact_type="advisory", pattern="explore/advisory.json", model=Advisory, compat="must_compat"
     ),
     ArtifactSpec(
-        artifact_type="workflow_state", pattern="workflow-state.yaml", model=WorkflowState, compat="versioned"
+        artifact_type="workflow_state", pattern="workflow-state.json", model=WorkflowState, compat="versioned"
     ),
     ArtifactSpec(
         artifact_type="data_knowledge_proposal",
@@ -587,13 +665,13 @@ REGISTRY: list[ArtifactSpec] = [
     # Phase 1 adversarial discovery (change-local discovery/**).
     ArtifactSpec(
         artifact_type="discovery_campaign_spec",
-        pattern="discovery/campaign-spec.yaml",
+        pattern="discovery/campaign-spec.json",
         model=CampaignSpec,
         compat="must_compat",
     ),
     ArtifactSpec(
         artifact_type="discovery_oracle_set",
-        pattern="discovery/oracle-set.yaml",
+        pattern="discovery/oracle-set.json",
         model=OracleSetSnapshot,
         compat="must_compat",
     ),
@@ -611,7 +689,7 @@ REGISTRY: list[ArtifactSpec] = [
     ),
     ArtifactSpec(
         artifact_type="discovery_counterexample",
-        pattern="discovery/counterexamples/*.yaml",
+        pattern="discovery/counterexamples/*.json",
         model=Counterexample,
         compat="must_compat",
     ),
@@ -623,7 +701,7 @@ REGISTRY: list[ArtifactSpec] = [
     ),
     ArtifactSpec(
         artifact_type="discovery_campaign_result",
-        pattern="discovery/campaign-result.yaml",
+        pattern="discovery/campaign-result.json",
         model=CampaignResult,
         compat="must_compat",
     ),
@@ -632,13 +710,13 @@ REGISTRY: list[ArtifactSpec] = [
     # do not use qa/improvements/** or inspect/ for Phase 1 vertical slice.
     ArtifactSpec(
         artifact_type="discovery_regression_candidate",
-        pattern="discovery/candidates/*/candidate.yaml",
+        pattern="discovery/candidates/*/candidate.json",
         model=RegressionCandidate,
         compat="must_compat",
     ),
     ArtifactSpec(
         artifact_type="discovery_promotion_manifest",
-        pattern="discovery/candidates/*/promotion-manifest.yaml",
+        pattern="discovery/candidates/*/promotion-manifest.json",
         model=TestPromotionManifest,
         compat="must_compat",
     ),
@@ -671,13 +749,59 @@ def _pattern_regex(pattern: str) -> re.Pattern[str]:
     return re.compile("^" + "".join(parts) + "$")
 
 
-def match_artifact(relpath: str) -> ArtifactSpec | None:
-    """Return the first registry spec whose glob matches its root-relative path."""
+def _match_canonical(relpath: str) -> ArtifactSpec | None:
     norm = relpath.replace("\\", "/")
     for spec in REGISTRY:
         if _pattern_regex(spec.pattern).match(norm):
             return spec
     return None
+
+
+def _match_historical(relpath: str) -> ArtifactSpec | None:
+    """Map a pre-conversion YAML path onto the current JSON spec."""
+    norm = relpath.replace("\\", "/")
+    for yaml_pattern in HISTORICAL_YAML_PATTERNS:
+        if not _pattern_regex(yaml_pattern).match(norm):
+            continue
+        json_pattern = historical_json_pattern(yaml_pattern)
+        for spec in REGISTRY:
+            if spec.pattern == json_pattern:
+                return spec
+    return None
+
+
+def resolve_artifact(relpath: str) -> tuple[ArtifactSpec, Wire] | None:
+    """Return the spec and the wire that should parse these bytes.
+
+    Canonical JSON paths use ``spec.wire``. Historical YAML aliases parse as YAML
+    even though the living spec is JSON.
+    """
+    spec = _match_canonical(relpath)
+    if spec is not None:
+        return spec, spec.wire
+    spec = _match_historical(relpath)
+    if spec is not None:
+        return spec, "yaml"
+    return None
+
+
+def match_artifact(relpath: str) -> ArtifactSpec | None:
+    """Return the first registry spec whose glob matches its root-relative path.
+
+    Historical YAML names of converted machine artifacts resolve to the current
+    JSON spec so replay graphs and on-disk aliases stay visible to the compiler.
+    """
+    found = resolve_artifact(relpath)
+    return None if found is None else found[0]
+
+
+def load_registered_artifact(relpath: str, text: str) -> object:
+    """Parse ``text`` using the spec for ``relpath``. Unregistered paths fail closed."""
+    found = resolve_artifact(relpath)
+    if found is None:
+        raise UnregisteredArtifactError(relpath)
+    spec, wire = found
+    return parse_wire(wire, text)
 
 
 def artifacts_under(directory: str) -> tuple[ArtifactSpec, ...]:

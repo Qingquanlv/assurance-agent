@@ -353,8 +353,8 @@ graphs:
     nodes:
       gen:
         uses: operation:gen-op
-        outputs: [change:out/report.json]
-      use: {uses: operation:use-op, when: "report.score >= 4"}
+        outputs: [change:report/quality-report.json]
+      use: {uses: operation:use-op, when: "quality_report.score >= 4"}
     edges:
       - {from: START, to: gen}
       - {from: gen, to: use}
@@ -953,7 +953,7 @@ def test_sibling_pending_state_is_invisible_until_commit(tmp_path: Path) -> None
 def test_artifact_scope_reads_only_current_tree_and_freezes_hashes(tmp_path: Path) -> None:
     compiled = _compile(ARTIFACT_GRAPH)
     gen = _initial_tasks(compiled, tmp_path)["gen"]
-    artifacts = _FakeArtifacts({("tree-1", "change:out/report.json"): {"score": 5}})
+    artifacts = _FakeArtifacts({("tree-1", "change:report/quality-report.json"): {"score": 5}})
     projection = _projection(
         compiled,
         current_tree_id="tree-1",
@@ -961,13 +961,13 @@ def test_artifact_scope_reads_only_current_tree_and_freezes_hashes(tmp_path: Pat
     )
     plan = _plan(compiled, projection, tmp_path, artifacts)
     assert [task.node_id for task in plan.tasks] == ["use"]
-    assert ("tree-1", "change:out/report.json") in artifacts.calls
+    assert ("tree-1", "change:report/quality-report.json") in artifacts.calls
     activated = [e for e in plan.strict_events if isinstance(e, NodeActivatedEvent)]
     expected_sha = hashlib.sha256(b'{"score":5}').hexdigest()
-    assert activated[0].source_reads_sha256 == {"change:out/report.json": expected_sha}
+    assert activated[0].source_reads_sha256 == {"change:report/quality-report.json": expected_sha}
 
     # 低分 skip；artifact 缺失按 MISSING fail closed，同样 skip。
-    low = _FakeArtifacts({("tree-1", "change:out/report.json"): {"score": 1}})
+    low = _FakeArtifacts({("tree-1", "change:report/quality-report.json"): {"score": 1}})
     low_plan = _plan(compiled, projection, tmp_path, low)
     assert all(task.node_id != "use" for task in low_plan.tasks)
     missing_plan = _plan(compiled, projection, tmp_path, _FakeArtifacts())

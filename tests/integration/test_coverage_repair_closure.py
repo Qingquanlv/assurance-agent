@@ -112,8 +112,8 @@ def _write_yaml(path: Path, payload: dict[str, object]) -> None:
 
 
 def _write_manifest(change_dir: Path, batch_id: str, *, final_status: str = "PASS") -> None:
-    _write_yaml(
-        change_dir / "execution" / "execution-manifest.yaml",
+    _write_json(
+        change_dir / "execution" / "execution-manifest.json",
         {
             "schema_version": "1.0",
             "change_id": CHANGE_ID,
@@ -431,7 +431,7 @@ def _seed_archive_companions(change_dir: Path, batch_id: str) -> None:
         {
             "schema_version": "1.0",
             "change_id": CHANGE_ID,
-            "source_manifest": "execution/execution-manifest.yaml",
+            "source_manifest": "execution/execution-manifest.json",
             "inspection_status": "completed",
             "batch_id": batch_id,
             "source_batch_id": batch_id,

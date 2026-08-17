@@ -17,6 +17,7 @@ from pathlib import Path
 import yaml
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
+from assurance_agent.artifacts.paths import DISCOVERY_CANDIDATE_NAME, existing_with_alias
 from assurance_agent.artifacts.models.promotion import (
     PromotionReceipt,
     RegressionCandidate,
@@ -80,9 +81,11 @@ def _backup_blob_path(change_dir: Path, candidate_id: str, digest: str) -> Path:
 
 
 def _load_candidate(change_dir: Path, candidate_id: str) -> RegressionCandidate:
-    path = _candidate_dir(change_dir, candidate_id) / "candidate.yaml"
-    if not path.is_file():
-        raise PromotionDeliveryError(f"candidate missing at {path}")
+    path = existing_with_alias(_candidate_dir(change_dir, candidate_id) / DISCOVERY_CANDIDATE_NAME)
+    if path is None:
+        raise PromotionDeliveryError(
+            f"candidate missing at {_candidate_dir(change_dir, candidate_id) / DISCOVERY_CANDIDATE_NAME}"
+        )
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise PromotionDeliveryError(f"candidate YAML invalid at {path}")

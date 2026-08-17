@@ -449,3 +449,20 @@ class ProblemReviewQueue(BaseModel):
 
     schema_version: Literal["1.0"]
     entries: list[ProblemReviewQueueEntry]
+
+
+class IssueTriageAdvice(BaseModel):
+    """Machine-checked advice.json from issue triage. Prose fields are uninterpreted."""
+
+    model_config = _FROZEN
+
+    schema_version: Literal["1.0"]
+    problem_id: NonEmptyStr
+    expected_problem_version: int = Field(ge=0)
+    review_id: NonEmptyStr
+    change_id: NonEmptyStr | None = None
+    evidence_digests: dict[str, NonEmptyStr]
+    recommended_action: NonEmptyStr
+    reason: str = ""
+    summary: str = ""
+    reasoning: str = ""
