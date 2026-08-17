@@ -6,8 +6,9 @@ from assurance_agent import resources
 def test_read_packaged_workflow_schema() -> None:
     text = resources.read_text("schemas", "workflow-schema.yaml")
     doc = yaml.safe_load(text)
-    assert doc["schema_version"] == "2"
+    assert "schema_version" not in doc
     assert "graphs" in doc
+    assert "entrypoints" in doc
     assert "phases" not in doc
 
 

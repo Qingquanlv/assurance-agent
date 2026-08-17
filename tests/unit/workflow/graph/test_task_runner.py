@@ -157,7 +157,7 @@ def _task(
 
 def _compiled(body: str, *, footer: str = "gates: {}\n") -> CompiledWorkflow:
     text = (
-        'name: t\n'
+        "name: t\n"
         "entrypoints:\n  full: {graph: main}\n"
         "graphs:\n" + textwrap.indent(textwrap.dedent(body), "  ") + footer
     )
