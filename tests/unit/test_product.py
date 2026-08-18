@@ -1,17 +1,31 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from assurance_agent import resources
 from assurance_agent.product import (
+    AssuranceProduct,
     ProductError,
+    install_product,
     load_product,
+    reset_product,
+    select_product,
     validate_product_id,
 )
+from assurance_agent.workflow.driver.capability_catalog import (
+    current_operations,
+    ensure_default_catalog,
+)
 from assurance_agent.workflow.graph.capability_state import (
+    CapabilityCatalog,
+    current_capability_view,
     current_product_id,
     install_current_product_id,
     reset_current_product_id,
 )
+from assurance_agent.workflow.graph.handlers.operation import stop_operation
 
 
 def test_validate_product_id_accepts_assurance() -> None:
@@ -67,3 +81,56 @@ def test_duplicate_product_entry_points_fail(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(product_mod, "_entry_points_by_name", fake_by_name)
     with pytest.raises(ProductError, match="product"):
         load_product("sample")
+
+
+def test_select_assurance_installs_default_catalog() -> None:
+    reset_product()
+    select_product("assurance")
+    assert current_capability_view() is not None
+    assert "operation:stop" in current_operations()
+    assert "full" in resources.read_text("schemas", "workflow-schema.yaml")
+
+
+def test_ensure_default_does_not_clobber_installed_depleted_catalog() -> None:
+    class Tiny:
+        id = "assurance"
+
+        def resource_root(self):
+            return AssuranceProduct().resource_root()
+
+        def register(self):
+            builder = CapabilityCatalog()
+            builder.register_operation("operation:stop")
+            view = builder.freeze()
+            return view, {"operation:stop": stop_operation}, ()
+
+    reset_product()
+    install_product(Tiny())
+    ensure_default_catalog()
+    assert current_operations().keys() == {"operation:stop"}
+
+
+def test_kernel_policy_readable_with_custom_product_root(tmp_path: Path) -> None:
+    from assurance_agent.resources import set_product_resource_root
+
+    (tmp_path / "schemas").mkdir()
+    (tmp_path / "schemas" / "workflow-schema.yaml").write_text("entrypoints:\n  full: {}\n")
+    set_product_resource_root(tmp_path)
+    try:
+        assert "full" in resources.read_text("schemas", "workflow-schema.yaml")
+        assert "policy" in resources.read_text("schemas", "policy-default.yaml")
+    finally:
+        set_product_resource_root(None)
+
+
+def test_product_schema_missing_does_not_read_assurance_graph(tmp_path: Path) -> None:
+    from assurance_agent.resources import set_product_resource_root
+
+    (tmp_path / "schemas").mkdir()
+    set_product_resource_root(tmp_path)
+    try:
+        with pytest.raises(FileNotFoundError):
+            resources.read_text("schemas", "workflow-schema.yaml")
+        assert "policy" in resources.read_text("schemas", "policy-default.yaml")
+    finally:
+        set_product_resource_root(None)

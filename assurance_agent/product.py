@@ -7,10 +7,21 @@ from importlib.abc import Traversable
 from importlib.metadata import EntryPoint, distributions
 from importlib.resources import files
 
+from typing import Any
+
 from assurance_agent.artifacts.registry import ArtifactSpec
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.driver.capability_catalog import build_default_catalog
-from assurance_agent.workflow.graph.capability_state import CapabilityView
+from assurance_agent.resources import set_product_resource_root
+from assurance_agent.workflow.driver.capability_catalog import (
+    build_default_catalog,
+    install_catalog,
+    reset_catalog,
+)
+from assurance_agent.workflow.graph.capability_state import (
+    CapabilityView,
+    install_current_product_id,
+    reset_current_product_id,
+)
 from assurance_agent.workflow.graph.handlers.operation import OperationFn
 
 PRODUCT_ENTRY_GROUP = "assurance_agent.products"
@@ -65,3 +76,21 @@ def load_product(product_id: str) -> AssuranceProduct:
     if getattr(product, "id", None) != product_id:
         raise ProductError(f"product id mismatch: entry {product_id!r} != {getattr(product, 'id', None)!r}")
     return product
+
+
+def install_product(product: object) -> None:
+    selected: Any = product
+    install_current_product_id(selected.id)
+    set_product_resource_root(selected.resource_root())
+    view, operations, artifacts = selected.register()
+    install_catalog(view, operations=operations, artifacts=artifacts)
+
+
+def select_product(product_id: str) -> None:
+    install_product(load_product(product_id))
+
+
+def reset_product() -> None:
+    set_product_resource_root(None)
+    reset_current_product_id()
+    reset_catalog()

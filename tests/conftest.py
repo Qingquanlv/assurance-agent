@@ -2,14 +2,11 @@ from collections.abc import Iterator
 
 import pytest
 
-from assurance_agent.workflow.driver.capability_catalog import reset_catalog
-from assurance_agent.workflow.graph.capability_state import reset_current_product_id
+from assurance_agent.product import reset_product
 
 
 @pytest.fixture(autouse=True)
-def _reset_capability_catalog() -> Iterator[None]:
-    reset_catalog()
-    reset_current_product_id()
+def _reset_product_and_catalog() -> Iterator[None]:
+    reset_product()
     yield
-    reset_catalog()
-    reset_current_product_id()
+    reset_product()

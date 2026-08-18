@@ -67,8 +67,13 @@ def ensure_default_catalog() -> CapabilityView:
     existing = current_capability_view()
     if existing is not None:
         return existing
-    view, operations, artifacts = build_default_catalog()
-    install_catalog(view, operations=operations, artifacts=artifacts)
+    from assurance_agent.product import select_product
+    from assurance_agent.workflow.graph.capability_state import current_product_id
+
+    select_product(current_product_id())
+    view = current_capability_view()
+    if view is None:
+        raise CapabilityCatalogError("product register did not install a catalog")
     return view
 
 
