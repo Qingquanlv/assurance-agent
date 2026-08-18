@@ -95,3 +95,23 @@ def test_workflow_compile_explicit_contracts_missing_exits_error() -> None:
         result = runner.invoke(main, ["workflow", "compile", "--contracts", ".aa/missing-contracts.yaml"])
         assert result.exit_code == EXIT_ERROR
         assert "not found" in result.output
+
+
+def test_workflow_compile_unknown_product_exits_error() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(main, ["--product", "not-installed", "workflow", "compile"])
+        assert result.exit_code != 0
+        assert "product" in result.output
+        assert "not-installed" in result.output
+        assert "No such option" not in result.output
+        assert "graph_definition_changed" not in result.output
+
+
+def test_workflow_compile_default_product_still_packaged_full() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(main, ["workflow", "compile", "--json"])
+        assert result.exit_code == 0, result.output
+        assert '"origin": "packaged"' in result.output
+        assert '"full"' in result.output
