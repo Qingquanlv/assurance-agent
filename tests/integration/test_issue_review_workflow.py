@@ -134,19 +134,17 @@ class TestIssueEntrypointRegistration:
 
 class TestCLIEntrypointChoices:
     def test_entrypoint_choices_include_issue_entrypoints(self) -> None:
-        from assurance_agent.commands.workflow_cmd import _ENTRYPOINT_CHOICE
-
-        choices = set(_ENTRYPOINT_CHOICE.choices)
-        assert "issue-review" in choices
-        assert "issue-analyze" in choices
-        assert "issue-reconcile" in choices
+        schema = load_workflow_v2(Path.cwd(), Path("assurance_agent/_resources/schemas/workflow-schema.yaml"))
+        names = set(schema.entrypoints)
+        assert "issue-review" in names
+        assert "issue-analyze" in names
+        assert "issue-reconcile" in names
 
     def test_legacy_entrypoints_still_present(self) -> None:
-        from assurance_agent.commands.workflow_cmd import _ENTRYPOINT_CHOICE
-
-        choices = set(_ENTRYPOINT_CHOICE.choices)
+        schema = load_workflow_v2(Path.cwd(), Path("assurance_agent/_resources/schemas/workflow-schema.yaml"))
+        names = set(schema.entrypoints)
         for name in ("full", "execute", "archive", "retro"):
-            assert name in choices
+            assert name in names
 
 
 # ---------------------------------------------------------------------------

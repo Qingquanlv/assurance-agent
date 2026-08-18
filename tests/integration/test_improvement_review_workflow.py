@@ -212,9 +212,8 @@ class TestImprovementReviewEntrypoint:
         assert compiled.entrypoints["improvement-review"].restart == "repeatable"
 
     def test_cli_entrypoint_choice_includes_improvement_review(self) -> None:
-        from assurance_agent.commands.workflow_cmd import _ENTRYPOINT_CHOICE
-
-        assert "improvement-review" in set(_ENTRYPOINT_CHOICE.choices)
+        schema = load_workflow_v2(Path.cwd(), Path("assurance_agent/_resources/schemas/workflow-schema.yaml"))
+        assert "improvement-review" in schema.entrypoints
 
 
 class TestOperationRegistration:

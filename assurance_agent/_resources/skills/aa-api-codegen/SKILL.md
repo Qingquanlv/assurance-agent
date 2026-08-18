@@ -60,6 +60,23 @@ Do not modify product source.
 
 Do not run pytest or invent collection evidence.
 
+## Fixture Closure
+
+Before writing the manifest:
+
+1. List every mapped test function parameter that is not supplied by
+   `pytest.mark.parametrize` or Hypothesis `@given(...)`.
+2. Resolve each parameter to a fixture defined or imported by the test module,
+   an ancestor `conftest.py`, or an installed pytest plugin.
+3. For every unresolved project fixture, generate or update an authorized
+   `tests/api/**/conftest.py` or support module and list that changed file in the
+   manifest with `role: support` and `case_ids: []`.
+4. Finish only when the unresolved fixture set is empty.
+
+Names such as `client` and `admin_token` are not implicit fixtures. Their provider
+must exist in the candidate tree. The Graph precommit validator is authoritative
+and will reject an unresolved fixture before committing the candidate.
+
 ## Generated-files Manifest Rules
 
 - Only `test_entry` entries may claim mapped Case IDs, and their `case_ids` must

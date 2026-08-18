@@ -14,8 +14,11 @@ shape, or a mapping without an executable target is an explicitly scoped empty
 result and must fail closed rather than widening to the shared test tree.
 """
 
+import json
 import re
 from pathlib import Path
+
+from assurance_agent.artifacts.models import CodegenMapping
 
 _HEADING_RE = re.compile(r"^(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _TEST_PATH_RE = re.compile(
@@ -32,6 +35,10 @@ def resolve_test_paths(change_dir: Path, target: str) -> list[str] | None:
     contract. An empty list means a current plan cannot declare an executable
     test target safely.
     """
+    mapping_path = change_dir / "plans" / f"{target}-codegen-mapping.json"
+    if mapping_path.is_file():
+        return _resolve_structured_mapping(mapping_path, target)
+
     plan_path = change_dir / "plans" / f"{target}-codegen-plan.md"
     if not plan_path.is_file():
         return None
@@ -63,6 +70,41 @@ def resolve_test_paths(change_dir: Path, target: str) -> list[str] | None:
             and Path(path).name.startswith("test_")
             and Path(path).suffix == ".py"
         }
+    return sorted(paths)
+
+
+def _resolve_structured_mapping(mapping_path: Path, target: str) -> list[str]:
+    """Resolve the graph-validated JSON relation; malformed current data fails closed."""
+    try:
+        document = CodegenMapping.model_validate(json.loads(mapping_path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    if document.layer != target:
+        return []
+
+    root = {
+        "api": Path("tests/api"),
+        "e2e": Path("tests/e2e"),
+        "fuzz": Path("tests/fuzz"),
+        "performance": Path("tests/perf"),
+    }.get(target)
+    if root is None:
+        return []
+
+    paths: set[str] = set()
+    for entry in document.entries:
+        path = Path(entry.target_file)
+        if not path.is_relative_to(root) or path.suffix != ".py":
+            return []
+        if target == "performance":
+            if path.parent != root or not path.name.startswith("locustfile"):
+                return []
+        elif target == "fuzz":
+            if path.parent != root or not path.name.startswith("test_"):
+                return []
+        elif not path.name.startswith("test_"):
+            return []
+        paths.add(entry.target_file)
     return sorted(paths)
 
 

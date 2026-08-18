@@ -53,7 +53,7 @@ def complete_reviewer_plan_checks(
             if not isinstance(raw, dict):
                 raise ValueError(f"{profile.review_artifact} is not a JSON object")
             review_payload = raw
-        l1_path = workspace.project_root / ".aa" / "data-knowledge.yaml"
+        l1_path = context.resolved_host_root / ".aa" / "data-knowledge.yaml"
         data_knowledge: dict[str, object] | None = None
         if l1_path.is_file():
             loaded = yaml.safe_load(l1_path.read_text(encoding="utf-8"))

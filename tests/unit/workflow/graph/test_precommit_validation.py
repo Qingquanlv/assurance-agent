@@ -367,11 +367,24 @@ def _freeze_valid_api_candidate(
     unresolved_dynamic_module: bool = False,
     positional_hypothesis_given: bool = False,
     conflicting_import_bindings: bool = False,
+    unresolved_pytest_fixture: bool = False,
+    resolved_pytest_fixture: bool = False,
 ) -> tuple[Path, TreeStore, str, str, PrecommitValidationContext, str]:
     project = _make_project(tmp_path)
     change = project / "qa" / "changes" / "CH-1"
     (change / "plans" / "api-codegen-plan.md").write_text(_api_plan_text(), encoding="utf-8")
     (change / "cases" / "api.yaml").write_text(_api_cases_yaml(), encoding="utf-8")
+    if resolved_pytest_fixture:
+        (project / "tests" / "api" / "conftest.py").write_text(
+            "import pytest\n\n"
+            "@pytest.fixture\n"
+            "def client():\n"
+            "    return object()\n\n"
+            "@pytest.fixture\n"
+            "def admin_token():\n"
+            "    return 'token'\n",
+            encoding="utf-8",
+        )
     store = TreeStore(change)
     tree_id = store.capture(project)
     _seed_invocation(change, tree_id)
@@ -422,6 +435,8 @@ def _freeze_valid_api_candidate(
             b"@given(st.integers())\n"
             b"def test_api_001(value):\n    assert value is not None\n"
         )
+    elif unresolved_pytest_fixture or resolved_pytest_fixture:
+        test_body = b"def test_api_001(client, admin_token):\n    assert client and admin_token\n"
     else:
         test_body = b"def test_api_001():\n    assert True\n"
     test_path = workspace.project_root / "tests" / "api" / "test_new.py"
@@ -671,6 +686,54 @@ def test_generated_files_candidate_rejects_conflicting_import_bindings(tmp_path:
             layer="api",
             current_change_repo_path="qa/changes/CH-1",
         )
+
+
+def test_generated_files_candidate_rejects_unresolved_pytest_fixtures(tmp_path: Path) -> None:
+    _project, store, _sid, write_set_id, context, _tree = _freeze_valid_api_candidate(
+        tmp_path, unresolved_pytest_fixture=True
+    )
+    write_set = store.load_write_set(write_set_id)
+    snapshot = load_task_input_snapshot(store, context.input_snapshot_id)
+
+    with pytest.raises(
+        CandidateValidationError,
+        match=r"unresolved pytest fixtures: .*test_api_001.*admin_token.*client",
+    ):
+        validate_candidate(
+            GENERATED_FILES_CANDIDATE_V1,
+            context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=snapshot,
+            plan_text=_api_plan_text(),
+            cases=_api_cases(),
+            change_id="CH-1",
+            layer="api",
+            current_change_repo_path="qa/changes/CH-1",
+        )
+
+
+def test_generated_files_candidate_accepts_fixtures_from_ancestor_conftest(tmp_path: Path) -> None:
+    _project, store, _sid, write_set_id, context, _tree = _freeze_valid_api_candidate(
+        tmp_path, resolved_pytest_fixture=True
+    )
+    write_set = store.load_write_set(write_set_id)
+    snapshot = load_task_input_snapshot(store, context.input_snapshot_id)
+
+    _receipt_id, receipt = validate_candidate(
+        GENERATED_FILES_CANDIDATE_V1,
+        context,
+        store=store,
+        write_set=write_set,
+        input_snapshot=snapshot,
+        plan_text=_api_plan_text(),
+        cases=_api_cases(),
+        change_id="CH-1",
+        layer="api",
+        current_change_repo_path="qa/changes/CH-1",
+    )
+
+    assert receipt.validator_id == GENERATED_FILES_CANDIDATE_V1
 
 
 def test_generated_files_candidate_rejects_summary_only(tmp_path: Path) -> None:
@@ -1821,6 +1884,7 @@ def _freeze_plan_mechanical_candidate(
     tmp_path: Path,
     *,
     plan_body: str = _REVIEWER_PLAN_BODY,
+    review_payload: dict[str, object] | None = None,
     tamper_checks: bool = False,
     block_l1_path: bool = False,
     mutate_live_plans_after_snapshot: bool = False,
@@ -1864,14 +1928,15 @@ def _freeze_plan_mechanical_candidate(
     )
     review_path = workspace.change_dir / profile.review_artifact
     review_path.parent.mkdir(parents=True, exist_ok=True)
-    review_path.write_text(json.dumps(_REVIEWER_REVIEW), encoding="utf-8")
+    effective_review = review_payload or _REVIEWER_REVIEW
+    review_path.write_text(json.dumps(effective_review), encoding="utf-8")
     plan_texts = {rel: plan_body for rel in profile.plan_artifacts}
     cases = [yaml.safe_load(_REVIEWER_CASES_YAML)]
     document = run_layer_plan_checks(
         layer="api",
         cases=cases,
         plan_texts=plan_texts,
-        review_payload=_REVIEWER_REVIEW,
+        review_payload=effective_review,
         data_knowledge=_REVIEWER_DK,
         change_id="CH-1",
         require_review=True,
@@ -2002,6 +2067,25 @@ def test_plan_mechanical_candidate_does_not_enforce_policy_block(tmp_path: Path)
     receipt_id, receipt = _validate_plan_mechanical(project, store, context, write_set_id)
     assert receipt.validator_id == PLAN_MECHANICAL_CANDIDATE_V1
     assert receipt_id
+
+
+def test_plan_mechanical_candidate_rejects_ready_review_with_missing_capabilities(
+    tmp_path: Path,
+) -> None:
+    review = {
+        **_REVIEWER_REVIEW,
+        "required_capabilities": ["entities.dept.constraints.name_unique"],
+    }
+    project, store, context, write_set_id = _freeze_plan_mechanical_candidate(
+        tmp_path,
+        review_payload=review,
+    )
+
+    with pytest.raises(
+        CandidateValidationError,
+        match=r"ready plan review references missing L1 capabilities: entities\.dept\.constraints\.name_unique",
+    ):
+        _validate_plan_mechanical(project, store, context, write_set_id)
 
 
 def test_plan_mechanical_candidate_rejects_tampered_write_set(tmp_path: Path) -> None:

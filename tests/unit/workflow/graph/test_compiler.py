@@ -17,6 +17,15 @@ from assurance_agent.workflow.graph.compiler import (
 )
 from assurance_agent.workflow.graph.contracts import ExecutionContract, ExecutionContractCatalog
 from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
+from assurance_agent.workflow.graph.capability_state import (
+    CapabilityCatalog,
+    install_capability_view,
+    reset_capability_view,
+)
+from assurance_agent.workflow.graph.precommit import (
+    KNOWN_PRECOMMIT_VALIDATORS,
+    PLAN_MECHANICAL_CANDIDATE_V1,
+)
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 
 _DEFAULT_HEADER = """\
@@ -405,6 +414,33 @@ def test_rejects_unknown_node_validate() -> None:
                 """
             )
         )
+
+
+def test_rejects_validate_when_validator_not_in_installed_catalog() -> None:
+    depleted = CapabilityCatalog()
+    depleted.register_validator("generated_files_candidate/v1")
+    install_capability_view(depleted.freeze())
+    try:
+        with pytest.raises(CompileError, match="unknown validate"):
+            compile_text(
+                _wf(
+                    """
+                    main:
+                      max_supersteps: 5
+                      nodes:
+                        a:
+                          uses: operation:a
+                          validate: plan_mechanical_candidate/v1
+                          outputs: [change:review/api-plan-checks.json]
+                      edges:
+                        - {from: START, to: a}
+                        - {from: a, to: END}
+                    """
+                )
+            )
+    finally:
+        reset_capability_view()
+    assert PLAN_MECHANICAL_CANDIDATE_V1 in KNOWN_PRECOMMIT_VALIDATORS
 
 
 def test_rejects_inconsistent_validate_for_same_uses() -> None:

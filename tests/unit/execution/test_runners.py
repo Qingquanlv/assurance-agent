@@ -404,3 +404,54 @@ def test_run_performance_target_fails_closed_when_any_mapped_locustfile_is_missi
     assert result.available is True
     assert result.status == "FAIL"
     assert "locustfile_missing.py" in (tmp_path / "batch/raw/performance.log").read_text()
+
+
+def test_run_performance_target_preserves_locust_output_when_no_traffic(tmp_path: Path, monkeypatch) -> None:
+    perf_dir = tmp_path / "tests" / "perf"
+    perf_dir.mkdir(parents=True)
+    locustfile = perf_dir / "locustfile_dept.py"
+    locustfile.write_text("", encoding="utf-8")
+    change_dir = tmp_path / "qa" / "changes" / "CH-1"
+    change_dir.mkdir(parents=True)
+    monkeypatch.setattr(
+        runners,
+        "load_perf_scenarios",
+        lambda _change_dir: [
+            {
+                "capability": "dept-list",
+                "endpoint": "/api/v1/dept/list",
+                "thresholds": {"p95_ms": 500, "error_rate_max": 0.01},
+            }
+        ],
+    )
+
+    def fake_run(args, **kwargs):
+        prefix = Path(args[args.index("--csv") + 1])
+        prefix.with_name(prefix.name + "_stats.csv").write_text(
+            "Type,Name,Request Count,Failure Count,Median Response Time,95%\nGET,dept-list,0,0,0,0\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(
+            args,
+            1,
+            stdout="locust diagnostic stdout",
+            stderr="connection diagnostic stderr",
+        )
+
+    monkeypatch.setattr(runners.subprocess, "run", fake_run)
+
+    result = run_performance_target(
+        project_root=tmp_path,
+        change_dir=change_dir,
+        batch_dir=tmp_path / "batch",
+        change_id="CH-1",
+        batch_id="b1",
+        perf_config=PerfConfig(enabled=True),
+        test_paths=["tests/perf/locustfile_dept.py"],
+    )
+
+    log = (tmp_path / "batch/raw/performance.log").read_text(encoding="utf-8")
+    assert result.status == "SKIPPED"
+    assert "locust diagnostic stdout" in log
+    assert "connection diagnostic stderr" in log
+    assert "recorded no successful traffic" in log

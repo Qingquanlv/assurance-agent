@@ -59,7 +59,10 @@ from assurance_agent.workflow.graph.manual_revision import (
     transition_from_committed_revision,
 )
 from assurance_agent.workflow.execution.tree_hash import sha256_file
-from assurance_agent.workflow.graph.invocation_bootstrap import append_invocation_bootstrap
+from assurance_agent.workflow.graph.invocation_bootstrap import (
+    append_invocation_bootstrap,
+    runtime_context_from_meta,
+)
 from assurance_agent.workflow.graph.artifact_commit import (
     committed_tree_targets as _committed_tree_targets_fn,
     last_committed_tree_edge as _last_committed_tree_edge_fn,
@@ -177,6 +180,15 @@ def _build_invocation_started(
     catalog_digest = _ingest_catalog_digest(compiled)
     if not catalog_digest:
         raise GraphRuntimeError("ingest catalog digest is empty; cannot start graph invocation")
+    from assurance_agent.workflow.graph.capability_state import (
+        current_capability_view,
+        default_capability_catalog_digest,
+    )
+
+    view = current_capability_view()
+    capability_digest = view.digest if view is not None else default_capability_catalog_digest()
+    if not capability_digest:
+        raise GraphRuntimeError("capability catalog digest is empty; cannot start graph invocation")
     return GraphInvocationStartedEvent(
         type="graph_invocation_started",
         invocation_id=invocation_id,
@@ -196,6 +208,7 @@ def _build_invocation_started(
         topology_safety_semantics_digest=binding.topology_safety_semantics_digest,
         commit_safety_semantics_object_id=binding.commit_safety_semantics_object_id,
         commit_safety_semantics_digest=binding.commit_safety_semantics_digest,
+        capability_catalog_digest=capability_digest,
         params=params,
         params_sha256=canonical_digest(params),
         root_tree_id=root_tree_id,
@@ -215,6 +228,10 @@ class GraphRuntimeError(AaError):
 
 class GraphDefinitionChanged(GraphRuntimeError):
     """pinned graph/contract digest 与当前定义漂移；拒绝普通 resume。"""
+
+
+class CapabilityCatalogDrift(GraphRuntimeError):
+    """Pinned capability catalog digest does not match the installed catalog."""
 
 
 class ResumeCompatibilityBarrier(GraphRuntimeError):
@@ -802,6 +819,8 @@ class GraphRuntime:
             bound = parent_task.input.get("with")
             if isinstance(bound, Mapping):
                 child_params.update({str(key): value for key, value in bound.items()})
+        # Keep host_project_root from the parent: child project_root is the
+        # task workspace, but product-source verification must live-read the SUT.
         child_context = context.model_copy(
             update={
                 "project_root": workspace.project_root,
@@ -1393,25 +1412,16 @@ class GraphRuntime:
     def _context_for(self, projection: GraphProjection) -> RuntimeContext:
         change_dir = self._checkpoints._change_dir  # noqa: SLF001
         meta_path = change_dir / ".graph-runtime" / "invocations" / f"{projection.invocation_id}.json"
-        project_root = change_dir.parent.parent.parent
-        repo_root = project_root
-        change_id = change_dir.name
-        parent_session_id: str | None = None
+        meta: dict[str, object] | None
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            project_root = Path(meta["project_root"])
-            repo_root = Path(meta.get("repo_root", project_root))
-            change_id = str(meta.get("change_id", change_id))
-            parent_session_id = meta.get("parent_session_id")
-        except (OSError, KeyError, TypeError, json.JSONDecodeError):
-            pass
-        return RuntimeContext(
-            project_root=project_root,
-            repo_root=repo_root,
+            loaded = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta = loaded if isinstance(loaded, dict) else None
+        except (OSError, json.JSONDecodeError):
+            meta = None
+        return runtime_context_from_meta(
             change_dir=change_dir,
-            change_id=change_id,
             params=dict(projection.params),
-            parent_session_id=parent_session_id,
+            meta=meta,
         )
 
     def _child_projections(self, invocation_id: str) -> dict[str, GraphProjection]:
@@ -1652,9 +1662,16 @@ class GraphRuntime:
     def _resolve_bundle(self, projection: GraphProjection) -> Any:
         request = self._request_from_projection(projection)
         assert_live_semantic_compatibility(request)
+        from assurance_agent.workflow.graph.capability_state import (
+            assert_capability_catalog_compatible,
+        )
+
+        assert_capability_catalog_compatible(projection.capability_catalog_digest)
         try:
             bundle = self._definition_resolver(request)
         except GraphDefinitionChanged:
+            raise
+        except CapabilityCatalogDrift:
             raise
         except Exception as exc:
             raise GraphDefinitionChanged(

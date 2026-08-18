@@ -90,3 +90,57 @@ def test_default_policy_scope_includes_evidence_sufficiency(tmp_path: Path) -> N
         "execution_recent",
     ]
     assert policy["evidence_sufficiency"]["on_insufficient"] == "require_human"
+
+
+def test_gate_view_loads_policy_from_host_project_root(tmp_path: Path) -> None:
+    import yaml
+
+    from assurance_agent.workflow.orchestration.gates import GateEvaluationContext, check_gate_in_view
+    from assurance_agent.workflow.orchestration.schema import normalize_gates
+
+    host = tmp_path / "host"
+    workspace = tmp_path / "workspace"
+    change = tmp_path / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    (change / "marker.json").write_text("{}", encoding="utf-8")
+
+    def _write_policy(root: Path, l1_path: str) -> None:
+        (root / ".aa").mkdir(parents=True)
+        (root / ".aa" / "policy.yaml").write_text(
+            "version: 1\n"
+            "human_review_risk_levels: [high, critical]\n"
+            "force_continue_allowed: true\n"
+            f"plan_checks:\n  l1_path: {l1_path}\n"
+            "  shared_factory: warn\n"
+            "  assert_ideal: warn\n"
+            "  capability_keys: warn\n"
+            "coverage_floor: {risk_high: 0.9, risk_medium: 0.7}\n"
+            "fuzz: {required_when_endpoint_has_auth: true}\n"
+            "healing: {auth_module: require_human}\n",
+            encoding="utf-8",
+        )
+
+    _write_policy(host, "block")
+    _write_policy(workspace, "warn")
+    gates = normalize_gates(
+        yaml.safe_load(
+            """
+            policy-host-gate:
+              reads: [marker.json]
+              stop_when: "policy.plan_checks.l1_path != 'block'"
+              pass_when: "true"
+            """
+        )
+    )
+    ctx = GateEvaluationContext(
+        project_root=workspace,
+        repo_root=workspace,
+        change_dir=change,
+        change_id="CH-1",
+        params={},
+        state_values={},
+        node_results={},
+        host_project_root=host,
+    )
+    report = check_gate_in_view(gates, "policy-host-gate", ctx)
+    assert report.verdict.value == "pass"

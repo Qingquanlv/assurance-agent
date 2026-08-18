@@ -18,13 +18,16 @@ from pydantic import BaseModel
 
 from assurance_agent.change_location import resolve_change
 from assurance_agent.config import load_config
-from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.driver.capability_catalog import (
+    current_operations,
+    ensure_default_catalog,
+)
+from assurance_agent.workflow.graph.capability_state import CapabilityCatalogError
 from assurance_agent.workflow.graph.agent_api import AgentInvoker
 from assurance_agent.workflow.graph.checkpoint import CheckpointStore
 from assurance_agent.workflow.graph.compiler import (
     PinnedDefinitionRequest,
-    compile_packaged_workflow,
-    compile_workflow,
+    compile_loaded_workflow,
 )
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog, load_execution_contracts
 from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
@@ -91,6 +94,7 @@ def runtime_context_for(
         change_id=change_id,
         params=params,
         parent_session_id=parent_session_id,
+        host_project_root=project_root,
     )
 
 
@@ -195,6 +199,7 @@ def assemble_graph_runtime(
     if build_node_runner is None and adapter is None:
         raise ValueError("assemble_graph_runtime requires adapter or build_node_runner")
 
+    ensure_default_catalog()
     runtime_clock = clock or SystemClock()
     store = object_store if object_store is not None else TreeStore(change_dir)
     checkpoints = CheckpointStore(change_dir)
@@ -204,7 +209,17 @@ def assemble_graph_runtime(
     resolved_models = (
         dict(model_map) if model_map is not None else validate_ingest_model_map(resolved_catalog)
     )
-    ops = dict(operations) if operations is not None else default_operations()
+    ops = dict(operations) if operations is not None else current_operations()
+    missing = sorted(
+        {
+            node.uses
+            for graph in compiled.schema.graphs.values()
+            for node in graph.nodes.values()
+            if node.uses.startswith("operation:") and node.uses not in ops
+        }
+    )
+    if missing:
+        raise CapabilityCatalogError("unregistered operations: " + ", ".join(missing))
     holder: dict[str, GraphRuntime] = {}
 
     def run_child(
@@ -326,17 +341,15 @@ def build_graph_runtime(
     change_id: str,
     adapter: AgentInvoker,
     explicit_schema: Path | None = None,
+    explicit_contracts: Path | None = None,
     clock: Clock | None = None,
     adapter_name: str | None = None,
     cli_model_override: str | None = None,
 ) -> RuntimeBundle:
     loc = resolve_change(project_root, change_id)
     loaded = load_workflow_v2_with_origin(project_root, explicit_schema)
-    contracts = load_execution_contracts(project_root)
-    if loaded.origin == "packaged":
-        compiled = compile_packaged_workflow(loaded.schema, contracts)
-    else:
-        compiled = compile_workflow(loaded.schema, contracts)
+    contracts = load_execution_contracts(project_root, explicit_contracts)
+    compiled = compile_loaded_workflow(loaded, contracts)
 
     model_router: ModelRouter | None = None
     if adapter_name == "opencode":

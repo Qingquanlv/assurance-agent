@@ -31,7 +31,7 @@ _HOST_CHANGE_COORDINATOR_FILES = ("events.jsonl",)
 
 def _link_host_runtime_dirs(workspace: TaskWorkspace, context: RuntimeContext) -> None:
     """Symlink omitted host runtime/config dirs into the task-private project root."""
-    host_root = context.project_root.resolve()
+    host_root = context.resolved_host_root.resolve()
     task_root = workspace.project_root.resolve()
     if host_root == task_root:
         return

@@ -920,6 +920,14 @@ class GateEvaluationContext:
     committed_tree_id: str | None = None
     event_schema_version: int | None = None
     invocation_id: str | None = None
+    host_project_root: Path | None = None
+
+    @property
+    def resolved_host_root(self) -> Path:
+        """Read-only SUT root for policy / ``.aa/`` live-reads."""
+        if self.host_project_root is not None:
+            return self.host_project_root
+        return self.project_root
 
 
 class FrozenGateReport(BaseModel):
@@ -965,7 +973,10 @@ def resolve_view_path(
         rel.replace("<change-id>", context.change_id), params=params or context.params
     )
     if normalized.startswith("repo:"):
-        return context.repo_root / normalized[len("repo:") :]
+        rest = normalized[len("repo:") :]
+        if rest == ".aa" or rest.startswith(".aa/"):
+            return context.resolved_host_root / rest
+        return context.repo_root / rest
     if normalized.startswith("qa/"):
         return context.project_root / normalized
     return context.change_dir / normalized
@@ -1087,7 +1098,7 @@ def _view_scope(
         **alias_docs,
         "params": dict(context.params),
         "state": dict(context.state_values),
-        "policy": load_policy(context.project_root).model_dump(mode="json"),
+        "policy": load_policy(context.resolved_host_root).model_dump(mode="json"),
     }
 
     def file_exists(rel: str) -> bool:
@@ -1320,7 +1331,7 @@ def _evaluate_metrics_sufficiency_gate(
 
     decision = evaluate_metrics_sufficiency(
         document,
-        load_policy(context.project_root).evidence_sufficiency,
+        load_policy(context.resolved_host_root).evidence_sufficiency,
     )
     mapped = _METRICS_VERDICT_MAP.get(decision.verdict, gate.default)
     details: dict[str, Any] = {

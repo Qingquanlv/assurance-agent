@@ -97,6 +97,19 @@ class RuntimeContext(BaseModel):
     change_id: str
     params: dict[str, object] = Field(default_factory=dict)
     parent_session_id: str | None = None
+    host_project_root: Path | None = None
+
+    @property
+    def resolved_host_root(self) -> Path:
+        """Read-only real SUT root.
+
+        Nested subgraphs remap ``project_root`` to the task workspace. Product
+        source, ``.aa/config.yaml``, policy, and L1 live-reads must use this
+        instead of the agent-writable sandbox.
+        """
+        if self.host_project_root is not None:
+            return self.host_project_root
+        return self.project_root
 
     @property
     def task_attempt_id(self) -> str | None:
@@ -454,6 +467,7 @@ class GraphProjection(BaseModel):
     topology_safety_semantics_digest: str = ""
     commit_safety_semantics_object_id: str = ""
     commit_safety_semantics_digest: str = ""
+    capability_catalog_digest: str = ""
     params: dict[str, object]
     root_tree_id: str
     current_tree_id: str

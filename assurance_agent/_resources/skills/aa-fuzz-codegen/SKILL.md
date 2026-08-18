@@ -67,6 +67,15 @@ When Hypothesis tests also accept pytest fixtures, bind generated values by name
 (`@given(field=...)`), never positionally. Positional strategies bind from the
 right and can make pytest treat the intended generated parameter as a fixture.
 
+Before writing the manifest, subtract those named `@given(...)` parameters from
+the function signature and resolve every remaining parameter to a fixture
+defined or imported by the test module, an ancestor `conftest.py`, or an
+installed pytest plugin. Generate any missing project fixture within the
+authorized `tests/fuzz/**` tree, list the changed fixture file as `support` with `case_ids: []`,
+and finish only when the unresolved fixture set is empty. `client` and
+`admin_token` are not implicit. The Graph precommit validator rejects unresolved
+fixture parameters before commit.
+
 Implement every mapped test with the exact canonical symbol
 `test_<case_id_lowercase>__<behavior>` so the test-tree scanner can recover the
 complete Case ID. Before finishing, verify each selected Case ID appears in its

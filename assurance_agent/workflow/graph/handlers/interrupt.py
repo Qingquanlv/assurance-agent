@@ -82,6 +82,7 @@ class InterruptHandler:
             params={},
             state_values={},
             node_results={},
+            host_project_root=context.resolved_host_root,
         )
         reads_sha256: dict[str, str] = {}
         sources: dict[str, Path] = {}

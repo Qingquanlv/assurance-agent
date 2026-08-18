@@ -6,7 +6,7 @@ import ast
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 import yaml
@@ -30,6 +30,7 @@ from assurance_agent.artifacts.registry import (
     resolve_artifact,
 )
 from assurance_agent.exceptions import AaError
+from assurance_agent.knowledge.capabilities import compute_missing_capabilities
 from assurance_agent.verification.generated_entries import (
     MappingExtractionError,
     extract_layer_mapping,
@@ -336,7 +337,9 @@ def validate_precommit_validator_id(validator_id: str | None) -> None:
     """Reject unknown validator IDs at contract load."""
     if validator_id is None:
         return
-    if validator_id not in KNOWN_PRECOMMIT_VALIDATORS:
+    from assurance_agent.workflow.graph.capability_state import current_validator_ids
+
+    if validator_id not in current_validator_ids():
         raise CandidateValidationError(f"unknown precommit validator: {validator_id}")
     if validator_id not in IMPLEMENTED_PRECOMMIT_VALIDATORS:
         raise CandidateValidationError(f"precommit validator not implemented: {validator_id}")
@@ -373,7 +376,9 @@ def validate_candidate(
     host_change_dir: Path | None = None,
 ) -> tuple[str, CandidateValidationReceiptV1]:
     """Dispatch one registered validator; return CAS receipt id and receipt."""
-    if validator_id not in KNOWN_PRECOMMIT_VALIDATORS:
+    from assurance_agent.workflow.graph.capability_state import current_validator_ids
+
+    if validator_id not in current_validator_ids():
         raise CandidateValidationError(f"unknown precommit validator: {validator_id}")
     if validator_id not in IMPLEMENTED_PRECOMMIT_VALIDATORS:
         raise CandidateValidationError(f"precommit validator not implemented: {validator_id}")
@@ -794,6 +799,7 @@ _SEMANTICS_RULES: dict[str, list[str]] = {
         "reject_positional_hypothesis_given",
         "reject_conflicting_top_level_import_bindings",
         "reject_unresolved_generated_python_local_imports",
+        "reject_unresolved_pytest_fixture_parameters",
         "resolve_evidence_path_for_every_write",
     ],
     CODEGEN_FIX_CANDIDATE_V1: [
@@ -1291,6 +1297,14 @@ def _validate_generated_files_candidate(
         write_by_repo=write_by_repo,
         input_snapshot=input_snapshot,
     )
+    if layer in {"api", "e2e", "fuzz"}:
+        _validate_generated_pytest_fixture_closure(
+            store=store,
+            base_tree_id=write_set.base_tree_id,
+            write_by_repo=write_by_repo,
+            input_snapshot=input_snapshot,
+            mapped_entries=relation.entries,
+        )
 
     return {
         "change_id": change_id,
@@ -1394,6 +1408,262 @@ def _validate_generated_python_local_imports(
 
     if unresolved:
         raise CandidateValidationError("unresolved local imports: " + ", ".join(sorted(set(unresolved))))
+
+
+_PYTEST_RUNTIME_FIXTURES = frozenset(
+    {
+        "anyio_backend",
+        "anyio_backend_name",
+        "anyio_backend_options",
+        "base_url",
+        "browser",
+        "browser_name",
+        "browser_type",
+        "cache",
+        "capfd",
+        "capfdbinary",
+        "capsys",
+        "capsysbinary",
+        "context",
+        "doctest_namespace",
+        "event_loop",
+        "monkeypatch",
+        "new_context",
+        "page",
+        "pytestconfig",
+        "record_property",
+        "record_testsuite_property",
+        "record_xml_attribute",
+        "recwarn",
+        "request",
+        "tmp_path",
+        "tmp_path_factory",
+    }
+)
+
+
+def _validate_generated_pytest_fixture_closure(
+    *,
+    store: TreeStore,
+    base_tree_id: str,
+    write_by_repo: Mapping[str, Mapping[str, object]],
+    input_snapshot: TaskInputSnapshotV1,
+    mapped_entries: Sequence[object],
+) -> None:
+    """Reject mapped pytest functions whose fixture parameters have no provider.
+
+    The check is intentionally static and candidate-tree based: it sees committed
+    conftests, frozen inputs, and candidate writes without executing SUT fixtures.
+    Framework fixtures are a closed allowlist; project fixtures must be defined or
+    imported by the test module or an ancestor ``conftest.py``.
+    """
+    sources = _candidate_python_sources(
+        store=store,
+        base_tree_id=base_tree_id,
+        write_by_repo=write_by_repo,
+        input_snapshot=input_snapshot,
+    )
+    unresolved: list[str] = []
+    for entry in mapped_entries:
+        repo_path = getattr(entry, "target_file", None)
+        symbol = getattr(entry, "symbol", None)
+        if not isinstance(repo_path, str) or not isinstance(symbol, str):
+            continue
+        source = sources.get(repo_path)
+        if source is None or not repo_path.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(source, filename=repo_path)
+        except SyntaxError as exc:
+            raise CandidateValidationError(f"generated Python is not parseable: {repo_path}: {exc}") from exc
+        function_name = symbol.rsplit(".", 1)[-1]
+        function = next(
+            (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name
+            ),
+            None,
+        )
+        if function is None:
+            continue
+        required = _pytest_fixture_parameters(function)
+        available = set(_PYTEST_RUNTIME_FIXTURES)
+        available.update(_module_fixture_bindings(tree))
+        for conftest_path in _ancestor_conftest_paths(repo_path):
+            conftest_source = sources.get(conftest_path)
+            if conftest_source is None:
+                continue
+            try:
+                available.update(_module_fixture_bindings(ast.parse(conftest_source, filename=conftest_path)))
+            except SyntaxError as exc:
+                raise CandidateValidationError(
+                    f"generated Python is not parseable: {conftest_path}: {exc}"
+                ) from exc
+        missing = sorted(required - available)
+        if missing:
+            unresolved.append(f"{repo_path}::{symbol} -> {', '.join(missing)}")
+    if unresolved:
+        raise CandidateValidationError("unresolved pytest fixtures: " + "; ".join(sorted(set(unresolved))))
+
+
+def _candidate_python_sources(
+    *,
+    store: TreeStore,
+    base_tree_id: str,
+    write_by_repo: Mapping[str, Mapping[str, object]],
+    input_snapshot: TaskInputSnapshotV1,
+) -> dict[str, str]:
+    try:
+        tree = store._load_tree(base_tree_id)
+    except WorkspaceError as exc:
+        raise CandidateValidationError(f"candidate base tree is unreadable: {base_tree_id}") from exc
+    digests: dict[str, str] = {
+        path: entry.sha256
+        for path, entry in tree.entries.items()
+        if entry.kind == "file" and path.startswith("tests/") and path.endswith(".py")
+    }
+    for entry in input_snapshot.entries:
+        if (
+            entry.kind == "file"
+            and entry.sha256 is not None
+            and entry.repo_relpath is not None
+            and entry.repo_relpath.startswith("tests/")
+            and entry.repo_relpath.endswith(".py")
+        ):
+            digests[entry.repo_relpath] = entry.sha256.removeprefix("sha256:")
+    for repo_path, binding in write_by_repo.items():
+        digest = binding.get("after_sha256")
+        if repo_path.startswith("tests/") and repo_path.endswith(".py") and isinstance(digest, str):
+            digests[repo_path] = digest
+
+    sources: dict[str, str] = {}
+    for path, digest in digests.items():
+        try:
+            sources[path] = store.read_object(digest).decode("utf-8")
+        except (WorkspaceError, UnicodeDecodeError) as exc:
+            raise CandidateValidationError(f"Python source is unreadable: {path}") from exc
+    return sources
+
+
+def _ancestor_conftest_paths(repo_path: str) -> tuple[str, ...]:
+    path = PurePosixPath(repo_path)
+    parents: list[str] = []
+    current = path.parent
+    while current.parts and current.parts[0] == "tests":
+        parents.append((current / "conftest.py").as_posix())
+        if current == PurePosixPath("tests"):
+            break
+        current = current.parent
+    return tuple(reversed(parents))
+
+
+def _module_fixture_bindings(tree: ast.Module) -> set[str]:
+    pytest_aliases = {"pytest"}
+    fixture_aliases = {"fixture"}
+    imported: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "pytest":
+                    pytest_aliases.add(alias.asname or "pytest")
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                binding = alias.asname or alias.name
+                imported.add(binding)
+                if node.module == "pytest" and alias.name == "fixture":
+                    fixture_aliases.add(binding)
+
+    fixtures = set(imported)
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if any(
+            _is_fixture_decorator(decorator, pytest_aliases, fixture_aliases)
+            for decorator in node.decorator_list
+        ):
+            fixtures.add(node.name)
+    return fixtures
+
+
+def _is_fixture_decorator(
+    decorator: ast.expr,
+    pytest_aliases: set[str],
+    fixture_aliases: set[str],
+) -> bool:
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    if isinstance(target, ast.Name):
+        return target.id in fixture_aliases
+    return (
+        isinstance(target, ast.Attribute)
+        and target.attr == "fixture"
+        and isinstance(target.value, ast.Name)
+        and target.value.id in pytest_aliases
+    )
+
+
+def _pytest_fixture_parameters(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    parameters = {
+        arg.arg
+        for arg in (
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+        )
+    }
+    parameters.difference_update({"self", "cls"})
+    parameters.difference_update(_direct_parametrize_names(function.decorator_list))
+    parameters.difference_update(_hypothesis_given_names(function.decorator_list))
+    return parameters
+
+
+def _direct_parametrize_names(decorators: Sequence[ast.expr]) -> set[str]:
+    names: set[str] = set()
+    for decorator in decorators:
+        if not isinstance(decorator, ast.Call) or not _decorator_name(decorator.func).endswith("parametrize"):
+            continue
+        indirect = next((item.value for item in decorator.keywords if item.arg == "indirect"), None)
+        if isinstance(indirect, ast.Constant) and indirect.value is True:
+            continue
+        if not decorator.args:
+            continue
+        direct = _literal_parameter_names(decorator.args[0])
+        if isinstance(indirect, (ast.List, ast.Tuple)):
+            indirect_names = _literal_parameter_names(indirect)
+            direct.difference_update(indirect_names)
+        names.update(direct)
+    return names
+
+
+def _hypothesis_given_names(decorators: Sequence[ast.expr]) -> set[str]:
+    return {
+        keyword.arg
+        for decorator in decorators
+        if isinstance(decorator, ast.Call) and _decorator_name(decorator.func).endswith("given")
+        for keyword in decorator.keywords
+        if keyword.arg is not None
+    }
+
+
+def _decorator_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _decorator_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
+def _literal_parameter_names(node: ast.expr) -> set[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return {name.strip() for name in node.value.split(",") if name.strip()}
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return {
+            item.value
+            for item in node.elts
+            if isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value
+        }
+    return set()
 
 
 def _assigned_local_module_names(node: ast.stmt) -> list[str]:
@@ -1543,6 +1813,16 @@ def _validate_plan_mechanical_candidate(
         )
     except (OSError, ValueError, yaml.YAMLError, json.JSONDecodeError) as exc:
         raise CandidateValidationError(f"cannot recompute plan-checks for layer {layer}: {exc}") from exc
+
+    missing_capabilities = compute_missing_capabilities(review_payload, data_knowledge)
+    if (
+        review_payload.get("decision") in {"pass", "approved"}
+        and review_payload.get("codegen_readiness") in {"ready", "ready_with_warnings"}
+        and missing_capabilities
+    ):
+        raise CandidateValidationError(
+            "ready plan review references missing L1 capabilities: " + ", ".join(missing_capabilities)
+        )
 
     checks_logical = f"change:{profile.checks_artifact}"
     written_bytes = _load_write_set_bytes(store, write_set, logical=checks_logical)

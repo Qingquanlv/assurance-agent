@@ -260,6 +260,7 @@ Hard rules:
 - **Fuzz does not replace functional assertions**: every Fuzz case MUST set `related_cases` pointing at the corresponding functional (API) case.
 - **Performance MUST carry execution identity and thresholds**: a Performance case must set non-empty `automation.performance.scenario.capability` and `automation.performance.scenario.endpoint`, plus `automation.performance.scenario.thresholds`; omission is invalid (reviewer blocker).
 - **Fuzz / Performance are additive cases** — they do not cancel the API/E2E functional coverage of the same endpoint.
+- **Selected-layer automation closure** — before writing the final files, read the automated layers named by `.qa.yaml` `approval.approved_approach`. For every selected `API`, `E2E`, `Fuzz`, or `Performance` layer, the case delta MUST contain at least one `added` or `modified` case with the same exact `type` and `automation.required: true`. A selected layer whose cases are all optional (`automation.required: false`) is invalid. Never repair this mismatch by silently removing a pre-approved layer from `.qa.yaml` or marking it declined in `proposal.md`; author a valid required case for that layer, or preserve an explicitly approved scope change from the user/workflow.
 
 **Good question example:**
 
@@ -1356,6 +1357,7 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 **Coverage:**
 
 48. At least one happy path case (P0 or P1) exists in `added` or `modified`.
+48a. **Selected-layer automation closure:** parse `.qa.yaml` `approval.approved_approach`, list every selected automated layer, and verify each has at least one `added` or `modified` case with the same exact `type` and `automation.required: true`. Perform this cross-file check after all case edits; per-case schema checks alone are insufficient.
 49. `proposal.md` exists at `qa/changes/<change-id>/proposal.md`.
 50. `.qa.yaml` exists at `qa/changes/<change-id>/.qa.yaml`.
 51. MRC closed keys: every `data_integrity` / `negative` / journey key in

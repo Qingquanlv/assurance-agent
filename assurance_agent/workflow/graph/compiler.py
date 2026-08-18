@@ -64,13 +64,14 @@ from assurance_agent.workflow.graph.replay_schema import (
     validate_current_assurance_activation,
     validate_historical_replay_surface,
 )
+from assurance_agent.workflow.graph.capability_state import current_validator_ids
 from assurance_agent.workflow.graph.precommit import (
-    KNOWN_PRECOMMIT_VALIDATORS,
     PLAN_MECHANICAL_CANDIDATE_V1,
 )
 from assurance_agent.workflow.graph.schema_v2 import (
     VALIDATE_NONE,
     GraphDef,
+    LoadedWorkflowV2,
     NodeDef,
     ParamDef,
     StateDef,
@@ -286,6 +287,16 @@ def compile_packaged_workflow(
         details = "\n  - ".join(f"{issue.code}@{issue.locator}: {issue.detail}" for issue in healing_issues)
         raise CompileError(f"packaged healing conformance failed:\n  - {details}")
     return compile_workflow(schema, contracts)
+
+
+def compile_loaded_workflow(
+    loaded: LoadedWorkflowV2,
+    contracts: ExecutionContractCatalog,
+) -> CompiledWorkflow:
+    """Compile using packaged activation gates only for packaged origin."""
+    if loaded.origin == "packaged":
+        return compile_packaged_workflow(loaded.schema, contracts)
+    return compile_workflow(loaded.schema, contracts)
 
 
 def compile_historical_workflow(
@@ -1146,7 +1157,7 @@ def _validate_node_validate_declarations(schema: WorkflowSchemaV2) -> list[str]:
             by_uses.setdefault(node.uses, set()).add(value)
             if value == VALIDATE_NONE:
                 continue
-            if value not in KNOWN_PRECOMMIT_VALIDATORS:
+            if value not in current_validator_ids():
                 errors.append(f"{loc} unknown validate '{value}'")
                 continue
             if value == PLAN_MECHANICAL_CANDIDATE_V1 and not any(

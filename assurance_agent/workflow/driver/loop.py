@@ -76,6 +76,7 @@ def run_workflow_loop(
     adapter: AgentInvoker,
     params: dict[str, object] | None = None,
     explicit_schema: Path | None = None,
+    explicit_contracts: Path | None = None,
     parent_session_id: str | None = None,
     skip_lock: bool = False,
     adopt_lock_token: str | None = None,
@@ -180,9 +181,17 @@ def run_workflow_loop(
             change_id=change_id,
             adapter=adapter,
             explicit_schema=explicit_schema,
+            explicit_contracts=explicit_contracts,
             adapter_name=adapter_name,
             cli_model_override=cli_model_override,
         )
+        if entrypoint not in bundle.compiled.entrypoints:
+            available = ", ".join(sorted(bundle.compiled.entrypoints))
+            return finish(
+                EXIT_ERROR,
+                f"unknown entrypoint {entrypoint!r}; available: {available}",
+                "failed",
+            )
         context = runtime_context_for(project_root, change_id, params, parent_session_id)
         latest = bundle.runtime.latest_root_invocation(entrypoint)
 

@@ -282,6 +282,15 @@ def test_case_design_requires_performance_execution_identity() -> None:
     assert "automation.performance.scenario.endpoint" in skill
 
 
+def test_case_design_requires_selected_layer_automation_closure() -> None:
+    skill = resources.read_text("skills", "aa-case-design", "SKILL.md")
+
+    assert "Selected-layer automation closure" in skill
+    assert "at least one `added` or `modified` case" in skill
+    assert "same exact `type`" in skill
+    assert "`automation.required: true`" in skill
+
+
 def test_codegen_skills_explain_strict_manifest_role_and_reuse_rules() -> None:
     for layer in ("api", "e2e", "fuzz", "performance"):
         skill = resources.read_text("skills", f"aa-{layer}-codegen", "SKILL.md")

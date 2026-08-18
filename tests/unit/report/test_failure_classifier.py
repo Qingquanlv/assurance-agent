@@ -26,6 +26,7 @@ from assurance_agent.workflow.report.failure_classifier import classify_failure
         ("stateful state machine transition failed", "fuzz", "fuzz_stateful_failure", False, True),
         ("Server error: 503 during generated sequence", "fuzz", "environment_failure", False, False),
         ("500 internal server error on generated input", "fuzz", "business_logic_failure", False, False),
+        ("fixture 'client' not found", "fuzz", "test_code_error", True, False),
     ],
 )
 def test_classification_golden(

@@ -2224,3 +2224,30 @@ def test_current_change_repo_path_prefers_write_set_roots_for_child_context(tmp_
     # Without pinned roots, fall back without raising on host/workspace skew.
     bare = write_set.model_copy(update={"base_tree_roots": None})
     assert _current_change_repo_path(context, bare) == "qa/changes/CH-1"
+
+
+def test_precommit_project_root_prefers_host_over_task_workspace(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.attempt_engine import _precommit_project_root
+
+    host_project = tmp_path / "sut"
+    host_change = host_project / "qa" / "changes" / "CH-1"
+    task_workspace = host_change / ".graph-runtime" / "tasks" / "child"
+    host_change.mkdir(parents=True)
+    task_workspace.mkdir(parents=True)
+
+    context = RuntimeContext(
+        project_root=task_workspace,
+        repo_root=task_workspace,
+        change_dir=host_change,
+        change_id="CH-1",
+        host_project_root=host_project,
+    )
+    assert _precommit_project_root(context) == host_project
+
+    root = RuntimeContext(
+        project_root=host_project,
+        repo_root=host_project,
+        change_dir=host_change,
+        change_id="CH-1",
+    )
+    assert _precommit_project_root(root) == host_project

@@ -726,7 +726,7 @@ class AttemptEngine:
             change_id=context.change_id,
             layer=layer,
             current_change_repo_path=_current_change_repo_path(context, write_set),
-            project_root=context.project_root,
+            project_root=_precommit_project_root(context),
             host_change_dir=context.change_dir,
         )
         return receipt_id
@@ -925,6 +925,11 @@ def _allow_graph_wrapper_child_resume(task: ExecutableTask, context: RuntimeCont
     )
 
 
+def _precommit_project_root(context: RuntimeContext) -> Path:
+    """Product-source live-read root: host SUT, never a nested task workspace."""
+    return context.resolved_host_root
+
+
 def _current_change_repo_path(context: RuntimeContext, write_set: WriteSet) -> str:
     """Resolve the repo-relative current change path for precommit evidence.
 
@@ -940,9 +945,12 @@ def _current_change_repo_path(context: RuntimeContext, write_set: WriteSet) -> s
     if isinstance(pinned, str) and pinned not in {"", "."}:
         return pinned
     try:
-        return context.change_dir.resolve().relative_to(context.project_root.resolve()).as_posix()
+        return context.change_dir.resolve().relative_to(context.resolved_host_root.resolve()).as_posix()
     except ValueError:
-        return f"qa/changes/{context.change_id}"
+        try:
+            return context.change_dir.resolve().relative_to(context.project_root.resolve()).as_posix()
+        except ValueError:
+            return f"qa/changes/{context.change_id}"
 
 
 def _task_outputs(task: ExecutableTask) -> tuple[str, ...]:

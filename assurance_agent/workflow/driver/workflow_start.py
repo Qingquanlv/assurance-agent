@@ -85,6 +85,8 @@ def start_workflow_detached(
     parent_session: str | None = None,
     server: str | None = None,
     directory: str | None = None,
+    explicit_schema: Path | None = None,
+    explicit_contracts: Path | None = None,
     spawn: SpawnFn | None = None,
     aa_command: list[str] | None = None,
 ) -> StartResult:
@@ -148,6 +150,10 @@ def start_workflow_detached(
         argv += ["--parent-session", parent_session]
     if params:
         argv += ["--params", json.dumps(params)]
+    if explicit_schema is not None:
+        argv += ["--schema", str(explicit_schema)]
+    if explicit_contracts is not None:
+        argv += ["--contracts", str(explicit_contracts)]
     argv += ["--adopt-lock", driver.start_token]
 
     change_dir.mkdir(parents=True, exist_ok=True)

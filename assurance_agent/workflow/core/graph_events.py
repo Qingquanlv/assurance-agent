@@ -42,6 +42,7 @@ class GraphInvocationStartedEvent(_GraphEvent):
     topology_safety_semantics_digest: str = ""
     commit_safety_semantics_object_id: str = ""
     commit_safety_semantics_digest: str = ""
+    capability_catalog_digest: str = ""
     params: dict[str, object]
     params_sha256: str
     root_tree_id: str

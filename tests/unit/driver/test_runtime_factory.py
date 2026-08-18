@@ -11,6 +11,7 @@ import yaml
 from assurance_agent.workflow.driver.runtime_factory import (
     assemble_graph_runtime,
     build_graph_runtime,
+    runtime_context_for,
 )
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 from assurance_agent.workflow.graph.compiler import compile_workflow
@@ -30,6 +31,14 @@ def _prepare(tmp_path: Path) -> Path:
     write_aa_config(tmp_path)
     (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True)
     return tmp_path
+
+
+def test_runtime_context_for_pins_host_project_root(tmp_path: Path) -> None:
+    project = _prepare(tmp_path)
+    context = runtime_context_for(project, "CH-1", {"run_mode": "full"})
+    assert context.project_root == project
+    assert context.host_project_root == project
+    assert context.change_id == "CH-1"
 
 
 def _write_routing_config(project: Path, *, routes: dict[str, str]) -> None:

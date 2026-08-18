@@ -576,7 +576,7 @@ def _verify_fixer_candidate_receipt(
             current_change_repo_path=str(
                 verify_bundle.get("current_change_repo_path") or f"qa/changes/{context.change_id}"
             ),
-            project_root=context.project_root,
+            project_root=context.resolved_host_root,
         )
     except (CandidateValidationError, WorkspaceError, KeyError, TypeError, ValueError) as exc:
         return task_failure("invalid_input", f"candidate receipt verify failed: {exc}")

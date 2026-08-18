@@ -36,6 +36,7 @@ from assurance_agent.workflow.graph.contracts import (
     parse_execution_contracts,
 )
 from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.graph.capability_state import DEFAULT_OPERATION_NAMES
 from assurance_agent.workflow.execution.graph_ops import run_tests
 from assurance_agent.workflow.graph.handlers import operation as operation_mod
 from assurance_agent.workflow.graph.handlers.agent import AgentHandler, agent_for_skill
@@ -892,91 +893,7 @@ def test_issue_analyzer_digest_is_runtime_owned_and_frozen_with_outputs(tmp_path
 
 
 def test_default_operations_registry_has_exact_keys() -> None:
-    assert set(default_operations()) == {
-        "operation:no-op",
-        "operation:skill-registry-check",
-        "operation:derive-plan-layer-applicability",
-        "operation:run-tests",
-        "operation:run-tests-and-collect-pr-metrics",
-        "operation:allocate-healing-attempt",
-        "operation:fixer-authority-ready",
-        "operation:record-fixer-approval",
-        "operation:fixer-dispatch",
-        "operation:record-codegen-fix-apply",
-        "operation:combine-fixer-safety",
-        "operation:record-healing-status",
-        "operation:probe-coverage-repair-need",
-        "operation:compute-coverage-repair-safety",
-        "operation:allocate-coverage-repair-attempt",
-        "operation:record-coverage-repair-status",
-        "operation:inspect",
-        "operation:generate-report",
-        "operation:stop",
-        "operation:retro-collect-v3",
-        "operation:assemble-retro-context-v3",
-        "operation:drain-improvement-outbox",
-        "operation:finalize-retro-status",
-        "operation:record-retro-pipeline-failure",
-        "operation:retro-evidence-gap-fallback",
-        "operation:record-analysis-failed",
-        "operation:materialize-empty-retro-analysis",
-        "operation:reconcile-improvements",
-        "operation:load-review-subject",
-        "operation:validate-improvement-review-assessment",
-        "operation:apply-improvement-auto-review",
-        "operation:record-improvement-auto-review-error",
-        "operation:record-auto-review-orchestration-error",
-        "operation:select-current-retro-auto-review-items",
-        "operation:summarize-auto-review-batch",
-        "operation:retro-accept",  # half-cutover alias
-        "operation:collect-observations",
-        "operation:record-empty-issue-analysis",
-        "operation:record-issue-analysis-failure",
-        "operation:record-project-sync-pending",
-        # Issue lifecycle (Task 9-11)
-        "operation:reconcile-issues",
-        # Reconciled trace projection + the independent trace-sufficiency gate
-        "operation:materialize-trace-projection",
-        # Issue review (Task 12)
-        "operation:load-problem-review-context",
-        "operation:apply-problem-review",
-        # Improvement review (retro/improvement separation Task 10)
-        "operation:load-improvement-review-context",
-        "operation:apply-improvement-review",
-        # Improvement delivery (retro/improvement separation Task 11)
-        "operation:load-improvement-delivery",
-        "operation:evaluate-memory-improvement",
-        "operation:apply-memory-improvement",
-        "operation:rollback-memory-improvement",
-        "operation:export-change-improvement",
-        "operation:record-change-improvement-applied",
-        "operation:export-knowledge-improvement",
-        "operation:record-knowledge-improvement-applied",
-        # Verification metrics M1 (Tasks 5–7): MRC join + PR cadence collectors
-        "operation:materialize-minimum-coverage",
-        "operation:collect-diff-coverage",
-        "operation:compute-constraint-coverage",
-        "operation:compute-auth-matrix",
-        "operation:compute-journey-coverage",
-        "operation:compute-threshold-slack",
-        "operation:collect-pr-metrics-batch",
-        "operation:materialize-pr-metrics",
-        # Nightly metrics carrier (metrics M2 Task 1)
-        "operation:load-latest-pr-metrics",
-        "operation:run-mutation-sample",
-        "operation:compute-assertion-strength",
-        "operation:compute-baseline-drift",
-        "operation:aggregate-nightly-metrics",
-        "operation:evaluate-retrospective-shortboards",
-        "operation:run-nightly-metrics-pipeline",
-        # Adversarial discovery yield + flaky quarantine (metrics M3 Tasks 2/4)
-        "operation:collect-adversarial-yield",
-        "operation:materialize-quarantine-projection",
-        # Dual-source Lane B gap signals and the report-only C-layer aggregate (M4)
-        "operation:build-coverage-gap-signals",
-        "operation:materialize-trace-and-coverage-gaps",
-        "operation:materialize-c-layer-metrics",
-    }
+    assert set(default_operations()) == DEFAULT_OPERATION_NAMES
 
 
 def test_operation_handler_unknown_operation_is_contract_failure(tmp_path: Path) -> None:
@@ -1070,6 +987,44 @@ def test_run_tests_invokes_run_change_against_workspace_paths(
     assert (workspace.project_root / ".venv").is_symlink()
     assert (workspace.project_root / ".venv").resolve() == (project / ".venv").resolve()
     assert (workspace.project_root / "node_modules").is_symlink()
+
+
+def test_run_tests_nested_loads_host_config_and_venv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    host = _make_project(tmp_path)
+    (host / ".venv").mkdir()
+    workspace = _workspace(host)
+    nested = RuntimeContext(
+        project_root=workspace.project_root,
+        repo_root=workspace.repo_root,
+        change_dir=host / "qa" / "changes" / "CH-1",
+        change_id="CH-1",
+        host_project_root=host,
+    )
+    seen: dict[str, Path] = {}
+
+    class _Manifest:
+        batch_id = "b-1"
+        final_status = "PASS"
+
+    def fake_load_config(root: Path) -> object:
+        seen["config_root"] = root
+        return object()
+
+    def fake_run_change(project_root: Path, change_dir: Path, config: object, **kwargs: object) -> _Manifest:
+        del config, kwargs
+        seen["run_root"] = project_root
+        seen["change_dir"] = change_dir
+        return _Manifest()
+
+    monkeypatch.setattr("assurance_agent.workflow.execution.graph_ops.load_config", fake_load_config)
+    monkeypatch.setattr("assurance_agent.workflow.execution.graph_ops.run_change", fake_run_change)
+    result = run_tests(_task("operation:run-tests"), workspace, nested)
+
+    assert result.status == "succeeded"
+    assert seen["config_root"] == host
+    assert seen["run_root"] == workspace.project_root
+    assert (workspace.project_root / ".venv").is_symlink()
+    assert (workspace.project_root / ".venv").resolve() == (host / ".venv").resolve()
 
 
 def test_workspace_capture_includes_python_version(tmp_path: Path) -> None:
@@ -1211,6 +1166,36 @@ def test_link_host_task_paths_symlinks_events_jsonl(tmp_path: Path) -> None:
     assert task_opencode.is_symlink()
     assert task_opencode.resolve() == (project / ".opencode").resolve()
     assert (task_opencode / "agents" / "aa-explorer.md").is_file()
+
+
+def test_link_host_task_paths_uses_host_project_root_when_context_is_nested(
+    tmp_path: Path,
+) -> None:
+    """Nested subgraph remaps ``project_root`` to the task workspace.
+
+    Runtime dirs still live on the real SUT; linking must not treat the sandbox
+    as the host and skip the symlink.
+    """
+    host = _make_project(tmp_path)
+    (host / ".venv").mkdir()
+    host_agents = host / ".opencode" / "agents"
+    host_agents.mkdir(parents=True)
+    (host_agents / "aa-explorer.md").write_text("---\nname: aa-explorer\n---\n", encoding="utf-8")
+    workspace = _workspace(host)
+    nested = RuntimeContext(
+        project_root=workspace.project_root,
+        repo_root=workspace.repo_root,
+        change_dir=host / "qa" / "changes" / "CH-1",
+        change_id="CH-1",
+        host_project_root=host,
+    )
+    link_host_task_paths(workspace, nested)
+    task_venv = workspace.project_root / ".venv"
+    assert task_venv.is_symlink()
+    assert task_venv.resolve() == (host / ".venv").resolve()
+    task_opencode = workspace.project_root / ".opencode"
+    assert task_opencode.is_symlink()
+    assert task_opencode.resolve() == (host / ".opencode").resolve()
 
 
 def test_subgraph_does_not_project_host_runtime_paths_into_child(tmp_path: Path) -> None:

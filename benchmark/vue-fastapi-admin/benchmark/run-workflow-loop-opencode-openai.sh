@@ -119,7 +119,7 @@ if [ -n "$OPENCODE_MODEL" ]; then
   printf 'ERROR: OPENCODE_MODEL must be empty for the Terra-only OpenAI benchmark\n' >&2
   exit 1
 fi
-OPENCODE_MAX_WORKFLOW_ATTEMPTS="${OPENCODE_MAX_WORKFLOW_ATTEMPTS:-3}"
+OPENCODE_MAX_WORKFLOW_ATTEMPTS="${OPENCODE_MAX_WORKFLOW_ATTEMPTS:-20}"
 OPENCODE_OUTPUT_FORMAT="${OPENCODE_OUTPUT_FORMAT:-json}"
 
 # QA test-runtime endpoints (inherited by the driver → operation:run-tests → pytest).
@@ -763,12 +763,7 @@ PY
 
 execution_final_status() {
   local change_id="$1"
-  local manifest="qa/changes/${change_id}/execution/execution-manifest.yaml"
-  if [ -f "$manifest" ]; then
-    sed -n 's/^final_status:[[:space:]]*//p' "$manifest" | sed -n '1p'
-  else
-    echo "UNKNOWN"
-  fi
+  benchmark_execution_final_status "$change_id"
 }
 
 archive_prompt() {

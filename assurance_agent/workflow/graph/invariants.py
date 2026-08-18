@@ -184,7 +184,11 @@ _CASE_DESIGN_SOURCE_VERIFICATION_REPAIR = (
 )
 
 
-def validate_case_design_source_verification(workspace: TaskWorkspace) -> TaskResult | None:
+def validate_case_design_source_verification(
+    workspace: TaskWorkspace,
+    *,
+    project_root: Path | None = None,
+) -> TaskResult | None:
     proposal = workspace.change_dir / "proposal.md"
     try:
         text = proposal.read_text(encoding="utf-8")
@@ -192,7 +196,10 @@ def validate_case_design_source_verification(workspace: TaskWorkspace) -> TaskRe
         return _case_design_source_failure(
             f"case-design Product Source Verification could not read proposal.md: {exc}",
         )
-    return validate_case_design_source_verification_text(text, project_root=workspace.project_root)
+    return validate_case_design_source_verification_text(
+        text,
+        project_root=project_root if project_root is not None else workspace.project_root,
+    )
 
 
 def validate_case_design_source_verification_text(

@@ -69,6 +69,7 @@ class GateHandler:
             committed_tree_id=committed_tree_id or workspace.base_tree_id,
             event_schema_version=event_schema_version,
             invocation_id=task.invocation_id,
+            host_project_root=context.resolved_host_root,
         )
         gate_id = params.get("gate")
         if isinstance(gate_id, str):
@@ -114,7 +115,7 @@ class GateHandler:
                 "params": dict(eval_context.params),
                 "state": dict(eval_context.state_values),
                 "evidence": dict(task.resolved_evidence),
-                "policy": load_policy(workspace.project_root).model_dump(mode="json"),
+                "policy": load_policy(eval_context.resolved_host_root).model_dump(mode="json"),
             },
             file_exists=lambda rel: resolve_view_path(eval_context, rel).exists(),
             node_result=node_result,

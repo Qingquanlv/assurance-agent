@@ -388,6 +388,7 @@ def _attach_gate_report(
         artifact_overrides=overrides,
         audit_events_dir=context.change_dir,
         checkpoint_ns=task.checkpoint_ns,
+        host_project_root=context.resolved_host_root,
     )
     try:
         candidate_report = check_gate_in_view(compiled.schema.gates, gate_id, eval_context)
@@ -404,6 +405,7 @@ def _attach_gate_report(
                 node_results=node_results,
                 audit_events_dir=context.change_dir,
                 checkpoint_ns=task.checkpoint_ns,
+                host_project_root=context.resolved_host_root,
             ),
         )
     except GateError as exc:

@@ -51,3 +51,12 @@ The schema contract is supplied by the runtime. Emit `codegen_readiness`, `auto_
 Each finding must include `id`, `severity`, `category`, `message`, and `locator`
 (`artifact` plus optional `case_id` / `key`). Point locators at
 `change:plans/api-codegen-mapping.json` when the defect is a mapping row.
+
+Required capability closure:
+
+- Copy every `required_capabilities` key verbatim from a typed leaf that exists
+  in `repo:.aa/data-knowledge.yaml`; a valid-looking prefix is not evidence.
+- Never invent a constraint or adapter suffix. If a needed leaf is absent, use
+  `needs_human_review` with `not_ready` instead of `pass` with a virtual key.
+- Emit `pass` with `ready` / `ready_with_warnings` only when every required key
+  resolves exactly in L1.

@@ -15,6 +15,7 @@ class InitAnswers(BaseModel):
     enable_mcp: bool = False
     frontend_path: str | None = None
     backend_path: str | None = None
+    with_schema: bool = False
 
 
 def build_config_yaml(answers: InitAnswers) -> str:
@@ -232,4 +233,32 @@ capabilities:
     fuzz: {}
     performance: {}
   cleanup: {}
+"""
+
+
+def build_minimal_workflow_schema_yaml() -> str:
+    return """# Minimal project workflow schema written by `aa init --with-schema`.
+# Delete this file (or omit --with-schema) to keep the packaged default graph.
+# Compile without running: `aa workflow compile`.
+name: project-custom
+entrypoints:
+  my-pipeline: {graph: main, restart: repeatable}
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 10}
+  scheduler: {max_parallel_tasks: 1}
+graphs:
+  main:
+    max_supersteps: 4
+    nodes:
+      noop:
+        uses: operation:no-op
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: noop}
+      - {from: noop, to: END}
+gates: {}
 """

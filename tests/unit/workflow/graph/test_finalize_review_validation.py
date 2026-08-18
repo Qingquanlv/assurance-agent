@@ -556,6 +556,43 @@ def test_case_design_proposal_with_existing_product_source_passes(tmp_path: Path
     assert _validate_case_design_source_verification(ws) is None
 
 
+def test_case_design_source_verification_reads_host_not_workspace_forgeries(
+    tmp_path: Path,
+) -> None:
+    host = tmp_path / "sut"
+    host_change = host / "qa" / "changes" / "CH-1"
+    host_change.mkdir(parents=True)
+    (host / "app").mkdir()
+    (host / "app" / "api.py").write_text("def handler():\n    return 1\n", encoding="utf-8")
+    task_ws = tmp_path / "task-ws"
+    (task_ws / "app").mkdir(parents=True)
+    (task_ws / "app" / "fake.py").write_text("def forged():\n    return 0\n", encoding="utf-8")
+    ws = TaskWorkspace(
+        task_id="t1",
+        root=task_ws,
+        project_root=task_ws,
+        repo_root=task_ws,
+        change_dir=host_change,
+        base_tree_id="",
+    )
+    proposal = """# Proposal: CH-1
+
+## Product Source Verification
+
+- independently_read: true
+- reviewed_source_files:
+  - `{path}`
+"""
+    (ws.change_dir / "proposal.md").write_text(proposal.format(path="app/api.py"), encoding="utf-8")
+    assert _validate_case_design_source_verification(ws, project_root=host) is None
+
+    (ws.change_dir / "proposal.md").write_text(proposal.format(path="app/fake.py"), encoding="utf-8")
+    forged = _validate_case_design_source_verification(ws, project_root=host)
+    assert forged is not None
+    assert forged.error_kind == "invalid_output"
+    assert "reviewed_source_files" in (forged.error or "")
+
+
 @pytest.mark.parametrize(
     ("answers", "source_path"),
     (

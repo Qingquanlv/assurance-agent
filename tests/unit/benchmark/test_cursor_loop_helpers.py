@@ -191,6 +191,17 @@ def test_batch_manifest_initializes_canonical_members_and_resumes_identically(tm
     }
 
 
+def test_execution_final_status_reads_canonical_json_manifest(tmp_path: Path) -> None:
+    execution = tmp_path / "qa" / "changes" / "CH-1" / "execution"
+    execution.mkdir(parents=True)
+    (execution / "execution-manifest.json").write_text(json.dumps({"final_status": "FAIL"}), encoding="utf-8")
+
+    result = _run_helper(tmp_path, "benchmark_execution_final_status CH-1")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "FAIL\n"
+
+
 def test_batch_manifest_resume_rejects_member_drift(tmp_path: Path) -> None:
     assert _run_helper(tmp_path, _manifest_command(tmp_path, "batch-1", ("CH-A",))).returncode == 0
 

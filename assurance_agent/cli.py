@@ -28,6 +28,9 @@ from assurance_agent.commands.verify_cmd import verify_command
 @click.version_option(__version__, prog_name="aa")
 def main() -> None:
     """aa - Assurance Agent deterministic QA workflow CLI."""
+    from assurance_agent.workflow.driver.capability_catalog import ensure_default_catalog
+
+    ensure_default_catalog()
 
 
 main.add_command(knowledge_group)

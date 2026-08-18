@@ -615,6 +615,7 @@ def _reevaluate_gate(
         node_results=dict(node_results) if node_results is not None else {},
         audit_events_dir=context.change_dir,
         checkpoint_ns=checkpoint_ns,
+        host_project_root=context.resolved_host_root,
     )
     report = check_gate_in_view(compiled.schema.gates, gate_id, eval_context)
     if report.verdict.value != task.gate.verdict:

@@ -729,6 +729,25 @@ REGISTRY: list[ArtifactSpec] = [
 ]
 
 
+_installed_artifact_specs: tuple[ArtifactSpec, ...] | None = None
+
+
+def install_artifact_table(specs: tuple[ArtifactSpec, ...]) -> None:
+    global _installed_artifact_specs
+    _installed_artifact_specs = specs
+
+
+def reset_artifact_table() -> None:
+    global _installed_artifact_specs
+    _installed_artifact_specs = None
+
+
+def current_artifact_specs() -> tuple[ArtifactSpec, ...]:
+    if _installed_artifact_specs is None:
+        return tuple(REGISTRY)
+    return _installed_artifact_specs
+
+
 @lru_cache(maxsize=None)
 def _pattern_regex(pattern: str) -> re.Pattern[str]:
     parts: list[str] = []
@@ -751,7 +770,7 @@ def _pattern_regex(pattern: str) -> re.Pattern[str]:
 
 def _match_canonical(relpath: str) -> ArtifactSpec | None:
     norm = relpath.replace("\\", "/")
-    for spec in REGISTRY:
+    for spec in current_artifact_specs():
         if _pattern_regex(spec.pattern).match(norm):
             return spec
     return None
@@ -764,7 +783,7 @@ def _match_historical(relpath: str) -> ArtifactSpec | None:
         if not _pattern_regex(yaml_pattern).match(norm):
             continue
         json_pattern = historical_json_pattern(yaml_pattern)
-        for spec in REGISTRY:
+        for spec in current_artifact_specs():
             if spec.pattern == json_pattern:
                 return spec
     return None
@@ -814,4 +833,4 @@ def artifacts_under(directory: str) -> tuple[ArtifactSpec, ...]:
     norm = directory.replace("\\", "/")
     if not norm or not norm.endswith("/"):
         return ()
-    return tuple(spec for spec in REGISTRY if spec.pattern.startswith(norm))
+    return tuple(spec for spec in current_artifact_specs() if spec.pattern.startswith(norm))

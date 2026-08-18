@@ -11,6 +11,7 @@ from assurance_agent.workflow.core.templates import (
     build_config_yaml,
     build_data_knowledge_yaml,
     build_execution_policy,
+    build_minimal_workflow_schema_yaml,
     build_module_map_yaml,
 )
 
@@ -54,6 +55,14 @@ def generate_project(root: Path, answers: InitAnswers) -> GenerateResult:
     _write(root, ".aa/module-map.yaml", build_module_map_yaml(), result, overwrite=True)
     # Human-maintained knowledge base - never overwrite a filled-in file.
     _write(root, ".aa/data-knowledge.yaml", build_data_knowledge_yaml(), result, overwrite=False)
+    if answers.with_schema:
+        _write(
+            root,
+            ".aa/workflow-schema.yaml",
+            build_minimal_workflow_schema_yaml(),
+            result,
+            overwrite=False,
+        )
     for rel in GITKEEP_DIRS:
         _write(root, f"{rel}/.gitkeep", "", result, overwrite=False)
     return result

@@ -22,6 +22,28 @@ benchmark_eval_setting() {
   fi
 }
 
+benchmark_execution_final_status() {
+  local change_id="$1"
+  local execution_dir="qa/changes/${change_id}/execution"
+  python3 - "$execution_dir/execution-manifest.json" "$execution_dir/quality-gate-result.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+for raw_path in sys.argv[1:]:
+    path = Path(raw_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        continue
+    status = payload.get("final_status") if isinstance(payload, dict) else None
+    if isinstance(status, str) and status:
+        print(status)
+        raise SystemExit(0)
+print("UNKNOWN")
+PY
+}
+
 resume_benchmark_interrupt() {
   local aa_bin="$1" change_id="$2" interrupt_id="$3" action="$4"
   local reason="$5" adapter="$6" agent_cmd="$7"

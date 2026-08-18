@@ -138,12 +138,28 @@ def repair_ordinary_materialization(
     if overlays is None:
         resumed_gate_tree = latest_resolved_interrupt_tree(projection)
         if resumed_gate_tree is not None and edge.target_tree_id == resumed_gate_tree:
-            store.apply_tree(
-                context.project_root,
-                resumed_gate_tree,
-                base_tree_id=resumed_gate_tree,
-                restore_change_drift=True,
-            )
+            if projection.parent_task_id is not None:
+                # A nested graph commits into its private parent-task workspace.
+                # That workspace can still be at the invocation root when an
+                # explicit gate interrupts after earlier repository writes.
+                # Replaying with base=target falsely classifies that legitimate
+                # root state as canonical drift; apply the committed child delta
+                # while accepting only ledger-pinned intermediate targets.
+                targets = committed_tree_targets(events, projection.invocation_id)
+                store.apply_tree_delta(
+                    context.project_root,
+                    resumed_gate_tree,
+                    source_base_tree_id=projection.root_tree_id,
+                    destination_base_tree_id=projection.root_tree_id,
+                    acceptable_live_tree_ids=targets[:-1],
+                )
+            else:
+                store.apply_tree(
+                    context.project_root,
+                    resumed_gate_tree,
+                    base_tree_id=resumed_gate_tree,
+                    restore_change_drift=True,
+                )
             return
         target = edge.target_tree_id
         assert target is not None

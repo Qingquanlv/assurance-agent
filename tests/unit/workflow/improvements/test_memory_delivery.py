@@ -266,3 +266,36 @@ def test_evaluate_operation_builds_host_runner_without_params(
     assert isinstance(result.value, dict)
     assert result.value["outcome"] == "passed"
     assert calls, "host build_eval_runner must supply the callable used for suites"
+
+
+def test_evaluate_operation_uses_host_root_when_project_root_is_task_workspace(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_approved(project)
+    task_ws = tmp_path / "task-ws"
+    task_ws.mkdir()
+    calls: list = []
+
+    def fake_build(engine_root: Path, sut_root: Path):
+        assert engine_root == project
+        assert sut_root == project
+        return _passing_runner(calls)
+
+    monkeypatch.setattr(
+        "assurance_agent.workflow.improvements.memory_delivery.build_eval_runner",
+        fake_build,
+    )
+    change_dir = project / "qa" / "changes" / "CH-eval"
+    change_dir.mkdir(parents=True)
+    workspace = SimpleNamespace(project_root=project, change_dir=change_dir)
+    context = RuntimeContext(
+        project_root=task_ws,
+        repo_root=task_ws,
+        change_dir=change_dir,
+        change_id="CH-eval",
+        params={"improvement_id": IMP_ID},
+        host_project_root=project,
+    )
+    result = evaluate_memory_improvement_operation(_make_task(), workspace, context)  # type: ignore[arg-type]
+    assert result.status == "succeeded"
+    assert calls, "nested subgraph eval must still run against the host SUT"

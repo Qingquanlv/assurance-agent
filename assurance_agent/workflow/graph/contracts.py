@@ -363,15 +363,16 @@ def parse_execution_contracts(
 
 
 def load_execution_contracts(project_root: Path, explicit: Path | None = None) -> ExecutionContractCatalog:
-    """与 schema loader 同序：显式路径 → 项目本地 .aa/ → 打包资源。"""
+    """与 schema loader 同序：显式路径 → ``.aa/`` → ``schemas/`` → 打包资源。"""
     if explicit is not None:
         path = explicit if explicit.is_absolute() else project_root / explicit
         if not path.exists():
             raise ContractError(f"explicit execution contracts not found: {path}")
         return parse_execution_contracts(path.read_text(encoding="utf-8"))
-    candidate = project_root / ".aa" / "execution-contracts.yaml"
-    if candidate.exists():
-        return parse_execution_contracts(candidate.read_text(encoding="utf-8"))
+    for rel in (Path(".aa") / "execution-contracts.yaml", Path("schemas") / "execution-contracts.yaml"):
+        candidate = project_root / rel
+        if candidate.exists():
+            return parse_execution_contracts(candidate.read_text(encoding="utf-8"))
     return parse_execution_contracts(resources.read_text("schemas", "execution-contracts.yaml"))
 
 

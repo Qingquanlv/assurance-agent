@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from assurance_agent.workflow.execution.scope import resolve_test_paths
 
@@ -30,6 +31,28 @@ def _write_plan(change_dir: Path, target: str, text: str) -> None:
     plans = change_dir / "plans"
     plans.mkdir(parents=True, exist_ok=True)
     (plans / f"{target}-codegen-plan.md").write_text(text, encoding="utf-8")
+
+
+def _write_mapping(change_dir: Path, target: str, target_file: str) -> None:
+    plans = change_dir / "plans"
+    plans.mkdir(parents=True, exist_ok=True)
+    (plans / f"{target}-codegen-mapping.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "layer": target,
+                "entries": [
+                    {
+                        "case_id": "TC_001",
+                        "symbol": "test_tc_001__behavior",
+                        "target_file": target_file,
+                    }
+                ],
+                "schema_case_ids": ["TC_001"],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_extracts_unique_paths_from_mapping_table(tmp_path: Path) -> None:
@@ -70,6 +93,34 @@ def test_returns_empty_when_plan_missing(tmp_path: Path) -> None:
 def test_plan_without_mapping_section_fails_closed(tmp_path: Path) -> None:
     _write_plan(tmp_path, "e2e", "# E2E Codegen Plan\n\nNo mapping table here.\n")
     assert resolve_test_paths(tmp_path, "e2e") == []
+
+
+def test_structured_mapping_is_source_of_truth_when_markdown_heading_drifts(tmp_path: Path) -> None:
+    _write_plan(
+        tmp_path,
+        "e2e",
+        "# E2E Codegen Plan\n\n## Closed Mapping Contract\n\n"
+        "| Case ID | Test Function | Target File |\n"
+        "|---|---|---|\n"
+        "| TC_001 | test_tc_001__behavior | tests/e2e/test_wrong.py |\n",
+    )
+    _write_mapping(tmp_path, "e2e", "tests/e2e/test_dept_management.py")
+
+    assert resolve_test_paths(tmp_path, "e2e") == ["tests/e2e/test_dept_management.py"]
+
+
+def test_structured_api_mapping_accepts_nested_test_module(tmp_path: Path) -> None:
+    _write_mapping(tmp_path, "api", "tests/api/system/test_dept.py")
+
+    assert resolve_test_paths(tmp_path, "api") == ["tests/api/system/test_dept.py"]
+
+
+def test_malformed_structured_mapping_fails_closed_instead_of_using_markdown(tmp_path: Path) -> None:
+    _write_plan(tmp_path, "api", _PLAN)
+    plans = tmp_path / "plans"
+    (plans / "api-codegen-mapping.json").write_text("{broken", encoding="utf-8")
+
+    assert resolve_test_paths(tmp_path, "api") == []
 
 
 def test_multiple_target_files_sorted_and_deduped(tmp_path: Path) -> None:

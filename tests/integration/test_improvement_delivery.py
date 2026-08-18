@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from assurance_agent import resources
-from assurance_agent.commands.workflow_cmd import _ENTRYPOINT_CHOICE
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import (
     ResourceClaims,
@@ -45,7 +44,7 @@ def test_delivery_entrypoints_and_operations_are_registered() -> None:
 
     for name in ENTRYPOINTS:
         assert name in compiled.entrypoints
-        assert name in _ENTRYPOINT_CHOICE.choices
+        assert name in schema.entrypoints
 
     ops = default_operations()
     for target in DELIVERY_OPS:
