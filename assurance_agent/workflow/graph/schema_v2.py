@@ -1,9 +1,7 @@
-"""严格 ``schema_version: "2"`` graph schema 模型 + YAML 加载器。
+"""Graph schema 模型 + YAML 加载器。
 
-v2 与 v1 不兼容：``graphs:`` 是唯一拓扑声明，``phases:``/``loops:`` 在加载期
-即被拒绝；``schema_version`` 必须恰好是字符串 ``"2"``（先于 pydantic 校验，
-防止 YAML 整数强转削弱版本边界）。所有 schema 模型冻结且禁止额外字段。
-gate 定义复用 v1 的共享模型与 normalization。
+``graphs:`` 是唯一拓扑声明。根级未知键在加载期拒绝。所有 schema 模型冻结且
+禁止额外字段。gate 定义复用 ``orchestration.schema`` 的共享模型与 normalization。
 """
 
 from __future__ import annotations
@@ -24,14 +22,11 @@ from assurance_agent.workflow.orchestration.schema import (
     normalize_gates,
 )
 
-_ALLOWED_ROOT_KEYS = frozenset(
-    {"schema_version", "name", "params", "entrypoints", "policies", "graphs", "gates"}
-)
-_V1_ROOT_KEYS = frozenset({"phases", "loops"})
+_ALLOWED_ROOT_KEYS = frozenset({"name", "params", "entrypoints", "policies", "graphs", "gates"})
 
 
 class SchemaV2Error(AaError):
-    """v2 schema 结构非法，或版本/拓扑边界（schema_version、v1 键）不被满足。"""
+    """Graph schema 结构非法，或根级未知键不被满足。"""
 
 
 class _FrozenModel(BaseModel):
@@ -256,7 +251,6 @@ class GraphDef(_FrozenModel):
 
 
 class WorkflowSchemaV2(_FrozenModel):
-    schema_version: Literal["2"]
     name: str
     params: dict[str, ParamDef] = Field(default_factory=dict)
     entrypoints: dict[str, EntrypointDef]
@@ -272,17 +266,6 @@ def parse_workflow_v2(yaml_text: str) -> WorkflowSchemaV2:
         raise SchemaV2Error(f"invalid workflow schema v2: {exc}") from exc
     if not isinstance(doc, dict):
         raise SchemaV2Error("schema root is not a mapping")
-
-    v1_keys = sorted(str(k) for k in doc if k in _V1_ROOT_KEYS)
-    if v1_keys:
-        raise SchemaV2Error(
-            "v1 topology keys " + ", ".join(v1_keys) + " do not exist in schema v2; declare graphs instead"
-        )
-
-    # 版本边界先于 pydantic：YAML 会把 2 解析成 int，不能靠 Literal["2"] 兜底。
-    version = doc.get("schema_version")
-    if not isinstance(version, str) or version != "2":
-        raise SchemaV2Error('schema_version must be exactly "2"')
 
     unknown = sorted(str(k) for k in doc if k not in _ALLOWED_ROOT_KEYS)
     if unknown:

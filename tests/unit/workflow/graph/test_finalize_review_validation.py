@@ -18,10 +18,12 @@ import pytest
 import yaml
 
 import assurance_agent.workflow.graph.finalize as finalize
+from assurance_agent.workflow.graph.contracts import ResourceClaims, ResourcePath
 from assurance_agent.workflow.graph.finalize import (
     _validate_registry_outputs,
 )
 from assurance_agent.workflow.graph.invariants import (
+    run_cross_artifact_invariants,
     validate_case_design_approved_automation as _validate_case_design_approved_automation,
     validate_case_design_source_verification as _validate_case_design_source_verification,
     validate_case_review_minimum_coverage_payloads,
@@ -33,7 +35,13 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskResult,
 )
-from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore
+from assurance_agent.workflow.graph.task_inputs import TaskInputSnapshotV1, _entries_input_sha256
+from assurance_agent.workflow.graph.workspace import (
+    TaskWorkspace,
+    TreeStore,
+    WorkspaceBackend,
+    WriteSet,
+)
 from assurance_agent.workflow.issues.identity import candidate_document_digest
 from assurance_agent.workflow.core.templates import InitAnswers, build_config_yaml
 
@@ -99,6 +107,120 @@ def test_case_design_accepts_automated_case_for_each_approved_layer() -> None:
         )
         is None
     )
+
+
+def _case_design_dir_claims() -> ResourceClaims:
+    parsed = tuple(ResourcePath.parse(p) for p in ("change:.qa.yaml", "change:cases/**"))
+    return ResourceClaims(writes=parsed, authorization_writes=parsed)
+
+
+def _empty_input_snapshot(base_tree_id: str) -> TaskInputSnapshotV1:
+    return TaskInputSnapshotV1(
+        schema_version="1",
+        invocation_id="inv-1",
+        task_id="case-design",
+        attempt_id="case-design-a1",
+        base_tree_id=base_tree_id,
+        materialized_tree_id=base_tree_id,
+        input_sha256=_entries_input_sha256([]),
+        runtime_context_sha256=None,
+        contract_digest="sha256:" + "c" * 64,
+        claims_digest="sha256:" + "e" * 64,
+        entries=[],
+    )
+
+
+def _freeze_case_design_directory_output(
+    tmp_path: Path,
+    *,
+    case_types: tuple[str, ...],
+) -> tuple[TreeStore, WriteSet]:
+    project = tmp_path / "proj"
+    change = project / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    store = TreeStore(change)
+    workspace = WorkspaceBackend(change).create(
+        task_id="case-design",
+        base_tree_id=store.capture(project),
+        store=store,
+    )
+    qa = {
+        "schema_version": "1.0",
+        "schema": "case-driven",
+        "created_at": "2026-08-17T13:53:49.000Z",
+        "change": {
+            "change_id": "CH-1",
+            "requirement_id": "RET-dept",
+            "feature_name": "dept-management",
+            "status": "draft",
+        },
+        "approval": {
+            "mode": "autonomous",
+            "approved_by": "aa-workflow",
+            "approved_approach": "API + E2E + Fuzz + Performance",
+            "approved_at": "2026-08-17T13:53:49.000Z",
+        },
+    }
+    (workspace.change_dir / ".qa.yaml").write_text(yaml.safe_dump(qa, sort_keys=False), encoding="utf-8")
+    case_dir = workspace.change_dir / "cases" / "system" / "dept"
+    case_dir.mkdir(parents=True)
+    case_dir.joinpath("case.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0",
+                "added": [
+                    {
+                        "case_id": f"TC_DEPT_{case_type}_001",
+                        "type": case_type,
+                        "automation": {"required": True},
+                    }
+                    for case_type in case_types
+                ],
+                "modified": [],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    write_set = store.freeze_write_set(
+        workspace,
+        claims=_case_design_dir_claims(),
+        outputs=("change:.qa.yaml", "change:cases/"),
+    )
+    return store, write_set
+
+
+def test_cross_artifact_reads_cases_under_declared_directory_output(tmp_path: Path) -> None:
+    store, write_set = _freeze_case_design_directory_output(
+        tmp_path, case_types=("API", "E2E", "Fuzz", "Performance")
+    )
+
+    assert "change:cases/" in write_set.outputs_sha256
+    assert "change:cases/system/dept/case.yaml" not in write_set.outputs_sha256
+    assert any(entry.logical_path.endswith("cases/system/dept/case.yaml") for entry in write_set.entries)
+
+    ran = run_cross_artifact_invariants(
+        store=store,
+        write_set=write_set,
+        input_snapshot=_empty_input_snapshot(write_set.base_tree_id),
+        project_root=tmp_path / "proj",
+    )
+
+    assert "qa_yaml_case_automation" in ran
+
+
+def test_cross_artifact_still_rejects_directory_output_missing_automated_layer(
+    tmp_path: Path,
+) -> None:
+    store, write_set = _freeze_case_design_directory_output(tmp_path, case_types=("API",))
+
+    with pytest.raises(ValueError, match="E2E, Fuzz, Performance"):
+        run_cross_artifact_invariants(
+            store=store,
+            write_set=write_set,
+            input_snapshot=_empty_input_snapshot(write_set.base_tree_id),
+            project_root=tmp_path / "proj",
+        )
 
 
 def test_project_candidate_document_is_validated_at_agent_boundary(tmp_path: Path) -> None:

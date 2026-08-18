@@ -36,13 +36,7 @@ def compile_text(text: str):
 
 
 def _wf(graph_body: str, *, header: str = _DEFAULT_HEADER, footer: str = "gates: {}\n") -> str:
-    return (
-        'schema_version: "2"\nname: t\n'
-        + header
-        + "graphs:\n"
-        + textwrap.indent(textwrap.dedent(graph_body), "  ")
-        + footer
-    )
+    return "name: t\n" + header + "graphs:\n" + textwrap.indent(textwrap.dedent(graph_body), "  ") + footer
 
 
 def _mutate_fixture(mutation) -> str:

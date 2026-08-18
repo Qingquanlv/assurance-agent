@@ -44,7 +44,6 @@ def _write_routing_config(project: Path, *, routes: dict[str, str]) -> None:
 
 _STRICT_SCHEMA = textwrap.dedent(
     """\
-    schema_version: "2"
     name: strict-test
     entrypoints:
       full: {graph: main}
@@ -134,7 +133,6 @@ _MINIMAL_CONTRACTS = textwrap.dedent(
 
 _MINIMAL_WORKFLOW = textwrap.dedent(
     """\
-    schema_version: "2"
     name: assemble-min
     entrypoints:
       full: {graph: main}

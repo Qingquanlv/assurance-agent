@@ -49,7 +49,6 @@ from assurance_agent.workflow.graph.planner import (
 from assurance_agent.workflow.graph.schema_v2 import parse_workflow_v2
 
 FANOUT_GRAPH = """
-schema_version: "2"
 name: planner-fanout
 entrypoints:
   full: {graph: main}
@@ -87,7 +86,6 @@ graphs:
 """
 
 FANOUT_PARAMS_GRAPH = """
-schema_version: "2"
 name: planner-fanout-params
 params:
   modules: {type: list, default: []}
@@ -113,7 +111,6 @@ graphs:
 """
 
 FANOUT_REDUCE_TYPE_MISMATCH = """
-schema_version: "2"
 name: planner-fanout-reduce-mismatch
 entrypoints:
   full: {graph: main}
@@ -139,7 +136,6 @@ params:
 """
 
 BUDGET_GRAPH = """
-schema_version: "2"
 name: planner-budget
 entrypoints:
   full: {graph: main}
@@ -172,7 +168,6 @@ graphs:
 """
 
 BUDGET_PARAM_GRAPH = """
-schema_version: "2"
 name: planner-budget-param
 params:
   max_fix: {type: int, default: 1}

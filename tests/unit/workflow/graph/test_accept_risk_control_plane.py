@@ -41,7 +41,6 @@ def _compiled():
         parse_workflow_v2(
             textwrap.dedent(
                 """
-                schema_version: "2"
                 name: accept-risk-control-plane
                 entrypoints:
                   full: {graph: main}

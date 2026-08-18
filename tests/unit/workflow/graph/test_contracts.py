@@ -478,12 +478,7 @@ contracts:
 
 
 def _wf(graph_body: str) -> str:
-    return (
-        'schema_version: "2"\nname: t\n'
-        + _HEADER
-        + "graphs:\n"
-        + textwrap.indent(textwrap.dedent(graph_body), "  ")
-    )
+    return "name: t\n" + _HEADER + "graphs:\n" + textwrap.indent(textwrap.dedent(graph_body), "  ")
 
 
 def _compile(graph_body: str, catalog: ExecutionContractCatalog | None = None):

@@ -163,7 +163,6 @@ def test_strict_current_conformance_is_compile_gate_after_activation() -> None:
 def test_core_compile_still_accepts_minimal_non_assurance_graph() -> None:
     schema = parse_workflow_v2(
         """
-schema_version: "2"
 name: minimal
 params:
   run_mode: {type: str, default: full}

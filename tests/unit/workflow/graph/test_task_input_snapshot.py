@@ -892,7 +892,6 @@ contracts:
     retryable_errors: [conflict]
 """
     workflow_text = """\
-schema_version: "2"
 name: deferred-reselect
 params:
   run_mode: {type: enum, values: [full], default: full}

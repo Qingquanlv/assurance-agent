@@ -740,7 +740,7 @@ gates:
     pass_when: "plan_review.decision == 'pass'"
 """
     text = (
-        'schema_version: "2"\nname: t\n'
+        "name: t\n"
         "params:\n  run_mode: {type: enum, values: [full], default: full}\n"
         "entrypoints:\n  full: {graph: main, allow: \"params.run_mode == 'full'\"}\n"
         "policies:\n"

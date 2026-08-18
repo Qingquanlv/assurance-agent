@@ -154,7 +154,6 @@ def _make_project(tmp_path: Path) -> Path:
 
 def _compile(graphs: str) -> tuple[CompiledWorkflow, ExecutionContractCatalog]:
     text = f"""\
-schema_version: "2"
 name: policy-snapshot
 params:
   run_mode: {{type: enum, values: [full], default: full}}

@@ -18,7 +18,6 @@ def test_compiler_attaches_exports_to_graph_node() -> None:
     schema = parse_workflow_v2(
         textwrap.dedent(
             """
-            schema_version: "2"
             name: export-test
             entrypoints:
               full:

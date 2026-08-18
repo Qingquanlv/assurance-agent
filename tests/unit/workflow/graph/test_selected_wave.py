@@ -108,7 +108,7 @@ class _FakeArtifacts:
 
 def _compile(body: str) -> CompiledWorkflow:
     text = (
-        'schema_version: "2"\nname: selected-wave\n'
+        "name: selected-wave\n"
         "entrypoints:\n  full: {graph: main}\n"
         "policies:\n"
         "  retry:\n    never: {max_attempts: 1, retry_on: []}\n"
