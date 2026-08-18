@@ -10,10 +10,38 @@ from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 from assurance_agent.workflow.graph.capability_state import CapabilityCatalogError
 from assurance_agent.workflow.graph.compiler import compile_loaded_workflow, compile_packaged_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts, parse_execution_contracts
-from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2_with_origin
+from assurance_agent.workflow.graph.schema_v2 import (
+    LoadedWorkflowV2,
+    load_workflow_v2_with_origin,
+    parse_workflow_v2,
+)
 from tests.helpers_aa import write_aa_config
 
 _SAMPLE_CONTRACTS = Path("examples/minimal-product/aa_sample/_resources/schemas/execution-contracts.yaml")
+
+_NOOP_OVERLAY = """\
+name: project-custom
+entrypoints:
+  my-pipeline: {graph: main, restart: repeatable}
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 10}
+  scheduler: {max_parallel_tasks: 1}
+graphs:
+  main:
+    max_supersteps: 4
+    nodes:
+      noop:
+        uses: operation:no-op
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: noop}
+      - {from: noop, to: END}
+gates: {}
+"""
 
 
 class _NeverInvoker:
@@ -66,5 +94,22 @@ def test_sample_catalog_rejects_assurance_run_tests(tmp_path: Path) -> None:
             change_dir=tmp_path / "qa" / "changes" / "CH-1",
             compiled=assurance_compiled,
             contracts=contracts,
+            adapter=_NeverInvoker(),
+        )
+
+
+def test_sample_catalog_rejects_overlay_no_op_at_assemble(tmp_path: Path) -> None:
+    reset_product()
+    select_product("sample")
+    loaded = LoadedWorkflowV2(schema=parse_workflow_v2(_NOOP_OVERLAY), origin="project")
+    compiled = compile_loaded_workflow(loaded, contracts=None)
+    write_aa_config(tmp_path)
+    (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True)
+    with pytest.raises(CapabilityCatalogError, match="unregistered operations"):
+        assemble_graph_runtime(
+            project_root=tmp_path,
+            change_dir=tmp_path / "qa" / "changes" / "CH-1",
+            compiled=compiled,
+            contracts=parse_execution_contracts(_SAMPLE_CONTRACTS.read_text(encoding="utf-8")),
             adapter=_NeverInvoker(),
         )

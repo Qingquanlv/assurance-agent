@@ -34,6 +34,30 @@ graphs:
 gates: {}
 """
 
+_SAMPLE_OVERLAY = """\
+name: project-custom
+entrypoints:
+  my-pipeline: {graph: main, restart: repeatable}
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 10}
+  scheduler: {max_parallel_tasks: 1}
+graphs:
+  main:
+    max_supersteps: 4
+    nodes:
+      ping:
+        uses: operation:sample-ping
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: ping}
+      - {from: ping, to: END}
+gates: {}
+"""
+
 
 def test_workflow_compile_packaged_prints_digest_and_entrypoints() -> None:
     runner = CliRunner()
@@ -124,3 +148,14 @@ def test_workflow_compile_sample_product_lists_ping_not_full() -> None:
         assert result.exit_code == 0, result.output
         assert '"ping"' in result.output
         assert '"full"' not in result.output
+
+
+def test_sample_product_plus_project_overlay_compiles_project_graph() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        Path(".aa").mkdir()
+        Path(".aa/workflow-schema.yaml").write_text(_SAMPLE_OVERLAY, encoding="utf-8")
+        result = runner.invoke(main, ["--product", "sample", "workflow", "compile", "--json"])
+        assert result.exit_code == 0, result.output
+        assert '"origin": "project"' in result.output
+        assert '"my-pipeline"' in result.output
