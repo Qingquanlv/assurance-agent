@@ -43,11 +43,14 @@ def test_assurance_entry_point_loads_matching_id() -> None:
 
 def test_current_product_id_defaults_to_assurance() -> None:
     reset_current_product_id()
-    assert current_product_id() == "assurance"
-    install_current_product_id("sample")
-    assert current_product_id() == "sample"
-    reset_current_product_id()
-    assert current_product_id() == "assurance"
+    try:
+        assert current_product_id() == "assurance"
+        install_current_product_id("sample")
+        assert current_product_id() == "sample"
+        reset_current_product_id()
+        assert current_product_id() == "assurance"
+    finally:
+        reset_current_product_id()
 
 
 def test_duplicate_product_entry_points_fail(monkeypatch: pytest.MonkeyPatch) -> None:
