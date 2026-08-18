@@ -207,6 +207,25 @@ def default_capability_catalog_digest() -> str:
     )
 
 
+_installed_product_id: str | None = None
+
+
+def install_current_product_id(product_id: str) -> None:
+    global _installed_product_id
+    _installed_product_id = product_id
+
+
+def reset_current_product_id() -> None:
+    global _installed_product_id
+    _installed_product_id = None
+
+
+def current_product_id() -> str:
+    if _installed_product_id is None:
+        return "assurance"
+    return _installed_product_id
+
+
 def assert_capability_catalog_compatible(pinned_digest: str) -> None:
     from assurance_agent.workflow.graph.runtime import CapabilityCatalogDrift
 

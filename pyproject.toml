@@ -16,6 +16,9 @@ dependencies = [
 [project.scripts]
 aa = "assurance_agent.cli:main"
 
+[project.entry-points."assurance_agent.products"]
+assurance = "assurance_agent.product:AssuranceProduct"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
