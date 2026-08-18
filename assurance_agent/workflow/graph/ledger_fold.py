@@ -761,6 +761,7 @@ def fold_invocation_events(invocation_id: str, events: list[dict[str, object]]) 
         commit_safety_semantics_object_id=started.commit_safety_semantics_object_id,
         commit_safety_semantics_digest=started.commit_safety_semantics_digest,
         capability_catalog_digest=started.capability_catalog_digest,
+        product_id=started.product_id,
         params=dict(started.params),
         root_tree_id=started.root_tree_id,
         current_tree_id=current_tree_id,

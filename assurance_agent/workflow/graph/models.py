@@ -468,6 +468,7 @@ class GraphProjection(BaseModel):
     commit_safety_semantics_object_id: str = ""
     commit_safety_semantics_digest: str = ""
     capability_catalog_digest: str = ""
+    product_id: str = ""
     params: dict[str, object]
     root_tree_id: str
     current_tree_id: str

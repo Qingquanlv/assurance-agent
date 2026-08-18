@@ -98,6 +98,10 @@ class CapabilityCatalogError(AaError):
     """Capability catalog registration or lookup failed."""
 
 
+class ProductDrift(AaError):
+    """Pinned product_id does not match the selected product."""
+
+
 @dataclass(frozen=True, slots=True)
 class CapabilityView:
     operation_names: frozenset[str]
@@ -224,6 +228,18 @@ def current_product_id() -> str:
     if _installed_product_id is None:
         return "assurance"
     return _installed_product_id
+
+
+def assert_product_compatible(pinned_product_id: str) -> None:
+    current = current_product_id()
+    if not pinned_product_id:
+        if current != "assurance":
+            raise ProductDrift(
+                f"product_id drifted: ledger has an empty pin but the selected product is {current!r}"
+            )
+        return
+    if pinned_product_id != current:
+        raise ProductDrift(f"product_id drifted: pinned {pinned_product_id!r} != selected {current!r}")
 
 
 def assert_capability_catalog_compatible(pinned_digest: str) -> None:

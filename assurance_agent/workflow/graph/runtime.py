@@ -99,6 +99,7 @@ from assurance_agent.workflow.graph.selected_wave import (
     preview_selected_wave,
 )
 from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
+from assurance_agent.workflow.graph.capability_state import ProductDrift as ProductDrift
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.leases import (
     Clock,
@@ -182,6 +183,7 @@ def _build_invocation_started(
         raise GraphRuntimeError("ingest catalog digest is empty; cannot start graph invocation")
     from assurance_agent.workflow.graph.capability_state import (
         current_capability_view,
+        current_product_id,
         default_capability_catalog_digest,
     )
 
@@ -189,6 +191,9 @@ def _build_invocation_started(
     capability_digest = view.digest if view is not None else default_capability_catalog_digest()
     if not capability_digest:
         raise GraphRuntimeError("capability catalog digest is empty; cannot start graph invocation")
+    product_id = current_product_id()
+    if not product_id:
+        raise GraphRuntimeError("product_id is empty; cannot start graph invocation")
     return GraphInvocationStartedEvent(
         type="graph_invocation_started",
         invocation_id=invocation_id,
@@ -209,6 +214,7 @@ def _build_invocation_started(
         commit_safety_semantics_object_id=binding.commit_safety_semantics_object_id,
         commit_safety_semantics_digest=binding.commit_safety_semantics_digest,
         capability_catalog_digest=capability_digest,
+        product_id=product_id,
         params=params,
         params_sha256=canonical_digest(params),
         root_tree_id=root_tree_id,
@@ -1664,14 +1670,18 @@ class GraphRuntime:
         assert_live_semantic_compatibility(request)
         from assurance_agent.workflow.graph.capability_state import (
             assert_capability_catalog_compatible,
+            assert_product_compatible,
         )
 
+        assert_product_compatible(projection.product_id)
         assert_capability_catalog_compatible(projection.capability_catalog_digest)
         try:
             bundle = self._definition_resolver(request)
         except GraphDefinitionChanged:
             raise
         except CapabilityCatalogDrift:
+            raise
+        except ProductDrift:
             raise
         except Exception as exc:
             raise GraphDefinitionChanged(

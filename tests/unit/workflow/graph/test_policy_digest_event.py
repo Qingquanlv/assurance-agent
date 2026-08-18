@@ -89,3 +89,9 @@ def test_started_accepts_legacy_payload_without_capability_catalog_digest() -> N
 def test_v6_started_does_not_require_capability_catalog_digest() -> None:
     event = _v6_started(capability_catalog_digest="")
     assert event.capability_catalog_digest == ""
+
+
+def test_started_defaults_product_id_empty() -> None:
+    event = _v6_started()
+    assert event.product_id == ""
+    assert event.event_schema_version == 6
