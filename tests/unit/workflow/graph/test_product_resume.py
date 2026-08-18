@@ -1,11 +1,11 @@
 import pytest
 
 from assurance_agent.workflow.graph.capability_state import (
-    ProductDrift,
     assert_product_compatible,
     install_current_product_id,
     reset_current_product_id,
 )
+from assurance_agent.workflow.graph.runtime import GraphRuntimeError, ProductDrift
 
 
 def test_empty_pin_allows_assurance() -> None:
@@ -32,3 +32,7 @@ def test_matching_pin_allows() -> None:
     install_current_product_id("sample")
     assert_product_compatible("sample")
     reset_current_product_id()
+
+
+def test_product_drift_is_graph_runtime_error() -> None:
+    assert issubclass(ProductDrift, GraphRuntimeError)

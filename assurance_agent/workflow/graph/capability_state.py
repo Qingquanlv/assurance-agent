@@ -98,10 +98,6 @@ class CapabilityCatalogError(AaError):
     """Capability catalog registration or lookup failed."""
 
 
-class ProductDrift(AaError):
-    """Pinned product_id does not match the selected product."""
-
-
 @dataclass(frozen=True, slots=True)
 class CapabilityView:
     operation_names: frozenset[str]
@@ -231,6 +227,8 @@ def current_product_id() -> str:
 
 
 def assert_product_compatible(pinned_product_id: str) -> None:
+    from assurance_agent.workflow.graph.runtime import ProductDrift
+
     current = current_product_id()
     if not pinned_product_id:
         if current != "assurance":

@@ -99,7 +99,6 @@ from assurance_agent.workflow.graph.selected_wave import (
     preview_selected_wave,
 )
 from assurance_agent.workflow.graph.ingest_catalog import validate_catalog_runtime
-from assurance_agent.workflow.graph.capability_state import ProductDrift as ProductDrift
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
 from assurance_agent.workflow.graph.leases import (
     Clock,
@@ -238,6 +237,10 @@ class GraphDefinitionChanged(GraphRuntimeError):
 
 class CapabilityCatalogDrift(GraphRuntimeError):
     """Pinned capability catalog digest does not match the installed catalog."""
+
+
+class ProductDrift(GraphRuntimeError):
+    """Pinned product_id does not match the selected product."""
 
 
 class ResumeCompatibilityBarrier(GraphRuntimeError):
