@@ -26,6 +26,7 @@ dev = [
     "pyright>=1.1.380",
     "import-linter>=2.0",
     "mutmut>=3.7.0",
+    "aa-sample-product",
 ]
 
 [build-system]
@@ -56,3 +57,6 @@ include = ["assurance_agent", "tests", "benchmark/specialty"]
 extraPaths = ["."]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
+
+[tool.uv.sources]
+aa-sample-product = { path = "examples/minimal-product", editable = true }

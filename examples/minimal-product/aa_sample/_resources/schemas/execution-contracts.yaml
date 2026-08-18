@@ -1,0 +1,8 @@
+schema_version: "1"
+contracts:
+  operation:sample-ping:
+    handler: operation
+    side_effect_free: true
+  operation:stop:
+    handler: operation
+    side_effect_free: true

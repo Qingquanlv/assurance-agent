@@ -115,3 +115,12 @@ def test_workflow_compile_default_product_still_packaged_full() -> None:
         assert result.exit_code == 0, result.output
         assert '"origin": "packaged"' in result.output
         assert '"full"' in result.output
+
+
+def test_workflow_compile_sample_product_lists_ping_not_full() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        result = runner.invoke(main, ["--product", "sample", "workflow", "compile", "--json"])
+        assert result.exit_code == 0, result.output
+        assert '"ping"' in result.output
+        assert '"full"' not in result.output
