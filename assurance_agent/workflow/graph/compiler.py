@@ -291,10 +291,12 @@ def compile_packaged_workflow(
 
 def compile_loaded_workflow(
     loaded: LoadedWorkflowV2,
-    contracts: ExecutionContractCatalog,
+    contracts: ExecutionContractCatalog | None,
 ) -> CompiledWorkflow:
-    """Compile using packaged activation gates only for packaged origin."""
-    if loaded.origin == "packaged":
+    """Compile using packaged activation gates only for the assurance product."""
+    from assurance_agent.workflow.graph.capability_state import current_product_id
+
+    if loaded.origin == "packaged" and current_product_id() == "assurance":
         return compile_packaged_workflow(loaded.schema, contracts)
     return compile_workflow(loaded.schema, contracts)
 
