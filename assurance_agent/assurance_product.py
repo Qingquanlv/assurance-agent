@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from importlib.abc import Traversable
 from importlib.resources import files
 
@@ -86,4 +87,27 @@ class AssuranceProduct:
             reconcile_healing_allocation=reconcile_healing_allocation,
             reconcile_fixer_proposal_approved=reconcile_fixer_proposal_approved,
             reconcile_heal_record_apply=reconcile_heal_record_apply,
+            resolve_semantic_pin=resolve_semantic_pin,
         )
+
+
+def resolve_semantic_pin(qualified_name: str) -> object:
+    """Import a leftover ``assurance_agent.*`` digest pin from this wheel."""
+    parts = qualified_name.split(".")
+    last_error: Exception | None = None
+    for i in range(len(parts), 0, -1):
+        module_name = ".".join(parts[:i])
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError as exc:
+            last_error = exc
+            continue
+        obj: object = module
+        try:
+            for attr in parts[i:]:
+                obj = getattr(obj, attr)
+        except AttributeError as exc:
+            last_error = exc
+            continue
+        return obj
+    raise ImportError(f"cannot resolve semantic dependency: {qualified_name}") from last_error

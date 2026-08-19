@@ -1,3 +1,4 @@
+import inspect
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from assurance_agent.workflow.graph.product_hooks import (
     current_product_hooks,
     reset_product_hooks,
 )
+from assurance_kernel.workflow.orchestration.gate_semantics import resolve_qualified_object
 
 
 def test_missing_hooks_fail_closed(tmp_path: Path) -> None:
@@ -62,3 +64,16 @@ def test_install_product_does_not_treat_assurance_id_as_special() -> None:
     install_product(Dummy())
     with pytest.raises(ProductHooksMissing):
         current_product_hooks().load_product_code_roots(Path("."))
+
+
+def test_kernel_semantic_pin_resolves_to_kernel_module() -> None:
+    obj = resolve_qualified_object("assurance_agent.workflow.graph.compiler.compile_workflow")
+    module = inspect.getmodule(obj)
+    assert module is not None
+    assert module.__name__.startswith("assurance_kernel")
+
+
+def test_healing_pin_without_hooks_raises_product_hooks_missing() -> None:
+    reset_product_hooks()
+    with pytest.raises(ProductHooksMissing, match="resolve_semantic_pin"):
+        resolve_qualified_object("assurance_agent.workflow.healing.effects.register_healing_effects")

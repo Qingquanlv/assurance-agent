@@ -13,7 +13,9 @@ def test_kernel_policy_is_not_under_product_resources() -> None:
 
 
 def test_ingest_catalog_does_not_use_file_arithmetic() -> None:
-    source = Path("assurance_agent/workflow/graph/ingest_catalog.py").read_text(encoding="utf-8")
+    source = Path("packages/assurance-kernel/assurance_kernel/workflow/graph/ingest_catalog.py").read_text(
+        encoding="utf-8"
+    )
     assert "_resources/schemas/ingest-artifact-catalog.yaml" not in source
     assert "parents[2]" not in source
 

@@ -16,6 +16,8 @@ from importlib import metadata
 from types import MappingProxyType
 from typing import Literal
 
+from assurance_kernel.workflow.core.product_hooks import current_product_hooks
+
 SEMANTICS_ID = "plan_gate_semantics/v1"
 MANIFEST_SCHEMA_VERSION = "1"
 
@@ -137,8 +139,41 @@ def resolve_runtime_versions() -> dict[str, str]:
     }
 
 
-def resolve_qualified_object(qualified_name: str) -> object:
-    """Resolve ``package.module.Attr`` or ``package.module.Class.method``."""
+_AGENT_PREFIX = "assurance_agent."
+_OPERATIONS_CATALOG_PREFIX = "workflow.driver.operations_catalog"
+_MOVED_KERNEL_PREFIXES: tuple[str, ...] = (
+    "workflow.graph",
+    "workflow.core",
+    "workflow.orchestration",
+    "workflow.driver",
+    "workflow.skill_memory",
+    "artifacts",
+    "verification",
+    "evidence",
+    "knowledge",
+    "resources",
+    "product",
+    "exceptions",
+    "config",
+    "identifiers",
+    "change_location",
+)
+
+
+def _rewrite_locked_kernel_pin(qualified_name: str) -> str:
+    """Map frozen ``assurance_agent.<moved>`` digest pins onto ``assurance_kernel``."""
+    if not qualified_name.startswith(_AGENT_PREFIX):
+        return qualified_name
+    rest = qualified_name[len(_AGENT_PREFIX) :]
+    if rest == _OPERATIONS_CATALOG_PREFIX or rest.startswith(f"{_OPERATIONS_CATALOG_PREFIX}."):
+        return qualified_name
+    for prefix in _MOVED_KERNEL_PREFIXES:
+        if rest == prefix or rest.startswith(f"{prefix}."):
+            return f"assurance_kernel.{rest}"
+    return qualified_name
+
+
+def _import_qualified_object(qualified_name: str) -> object:
     parts = qualified_name.split(".")
     last_error: Exception | None = None
     for i in range(len(parts), 0, -1):
@@ -157,6 +192,19 @@ def resolve_qualified_object(qualified_name: str) -> object:
             continue
         return obj
     raise ImportError(f"cannot resolve semantic dependency: {qualified_name}") from last_error
+
+
+def resolve_qualified_object(qualified_name: str) -> object:
+    """Resolve ``package.module.Attr`` or ``package.module.Class.method``.
+
+    Locked kernel pins keep their historical ``assurance_agent.*`` strings for
+    resume digests, but the import is rewritten onto ``assurance_kernel``.
+    Leftover product pins are resolved through ``ProductHooks.resolve_semantic_pin``.
+    """
+    import_name = _rewrite_locked_kernel_pin(qualified_name)
+    if import_name.startswith(_AGENT_PREFIX):
+        return current_product_hooks().resolve_semantic_pin(qualified_name)
+    return _import_qualified_object(import_name)
 
 
 def symbol_implementation_digest(

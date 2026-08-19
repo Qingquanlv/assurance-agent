@@ -37,6 +37,7 @@ class ProductHooks:
     reconcile_healing_allocation: Callable[..., object]
     reconcile_fixer_proposal_approved: Callable[..., object]
     reconcile_heal_record_apply: Callable[..., object]
+    resolve_semantic_pin: Callable[..., object]
 
 
 _hooks: ProductHooks | None = None
