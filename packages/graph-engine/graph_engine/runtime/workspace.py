@@ -5,7 +5,7 @@ import json
 import os
 import stat
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -42,6 +42,10 @@ class WorkspaceViolation(GraphEngineError):
 
 class HeadPublicationIndeterminate(WorkspaceViolation):
     """Raised when a post-replacement failure prevents proving a durable HEAD outcome."""
+
+
+class FinalizationRolledBack(WorkspaceViolation):
+    """Raised when finalization failed after publication and exact HEAD was restored."""
 
 
 def _require_posix_primitives() -> None:
@@ -1017,14 +1021,6 @@ class SnapshotStore:
             except FileNotFoundError:
                 pass
 
-    def _write_head(self, tree_id: str) -> None:
-        with self._opened_layout() as (root_fd, trees_fd, _attempts_fd, _lock_fd):
-            tree = self._open_tree(trees_fd, tree_id)
-            try:
-                self._publish_head(root_fd, trees_fd, tree_id, tree, None)
-            finally:
-                os.close(tree.descriptor)
-
     def head_tree_id(self) -> str:
         with self._opened_layout() as (root_fd, trees_fd, _attempts_fd, _lock_fd):
             document, tree = self._head_tree(root_fd, trees_fd)
@@ -1111,33 +1107,48 @@ class SnapshotStore:
         finally:
             attempt.discard()
 
-    def create_attempt(self, attempt_id: str) -> AttemptWorkspace:
-        validated = _validate_attempt_id(attempt_id)
-        with self._opened_layout() as (root_fd, trees_fd, attempts_fd, _lock_fd):
+    def create_attempts(self, attempt_ids: Sequence[str]) -> tuple[AttemptWorkspace, ...]:
+        validated_ids = tuple(_validate_attempt_id(attempt_id) for attempt_id in attempt_ids)
+        if not validated_ids:
+            raise ValueError("attempt_ids must not be empty")
+        if len(set(validated_ids)) != len(validated_ids):
+            raise WorkspaceViolation("attempt batch contains duplicate ids")
+        with self._opened_layout(lock=True) as (root_fd, trees_fd, attempts_fd, _lock_fd):
             document, baseline = self._head_tree(root_fd, trees_fd)
+            created: list[str] = []
             try:
-                try:
-                    os.mkdir(validated, mode=0o700, dir_fd=attempts_fd)
-                except FileExistsError as error:
-                    raise WorkspaceViolation(f"attempt already exists: {validated}") from error
-                destination_fd, _ = _open_directory_at(attempts_fd, validated, "attempt directory")
-                try:
-                    copied = _copy_tree_fd(
-                        baseline.descriptor,
-                        destination_fd,
-                        source_immutable=True,
-                        seal_destination=False,
-                    )
-                    if copied != baseline.manifest:
-                        raise WorkspaceViolation("attempt copy does not match its baseline")
-                except BaseException:
-                    os.close(destination_fd)
+                for validated in validated_ids:
+                    try:
+                        os.mkdir(validated, mode=0o700, dir_fd=attempts_fd)
+                    except FileExistsError as error:
+                        raise WorkspaceViolation(f"attempt already exists: {validated}") from error
+                    created.append(validated)
+                    destination_fd, _ = _open_directory_at(attempts_fd, validated, "attempt directory")
+                    try:
+                        copied = _copy_tree_fd(
+                            baseline.descriptor,
+                            destination_fd,
+                            source_immutable=True,
+                            seal_destination=False,
+                        )
+                        if copied != baseline.manifest:
+                            raise WorkspaceViolation("attempt copy does not match its baseline")
+                    finally:
+                        os.close(destination_fd)
+                    _attempt_batch_boundary(len(created), document["tree_id"])
+                return tuple(
+                    AttemptWorkspace(self, validated, document["tree_id"]) for validated in validated_ids
+                )
+            except BaseException:
+                for validated in reversed(created):
                     _remove_entry_at(attempts_fd, validated)
-                    raise
-                os.close(destination_fd)
-                return AttemptWorkspace(self, validated, document["tree_id"])
+                os.fsync(attempts_fd)
+                raise
             finally:
                 os.close(baseline.descriptor)
+
+    def create_attempt(self, attempt_id: str) -> AttemptWorkspace:
+        return self.create_attempts((attempt_id,))[0]
 
     def _seal_attempt(self, attempt_id: str, baseline_tree_id: str) -> CandidateWriteSet:
         with self._opened_layout(lock=True) as (_root_fd, trees_fd, attempts_fd, _lock_fd):
@@ -1204,6 +1215,31 @@ class SnapshotStore:
         validators: Sequence[NamedValidator] = (),
         context: ValidationContext | None = None,
     ) -> CommitResult:
+        return self.finalize_candidate(
+            candidate,
+            claims,
+            validators,
+            context,
+            authorize_publish=lambda: None,
+            publish_success=lambda _previous_tree_id, _tree_id: None,
+        )
+
+    def finalize_candidate(
+        self,
+        candidate: CandidateWriteSet,
+        claims: ResourceClaims,
+        validators: Sequence[NamedValidator] = (),
+        context: ValidationContext | None = None,
+        *,
+        authorize_publish: Callable[[], None],
+        publish_success: Callable[[str, str], None],
+    ) -> CommitResult:
+        """Validate, publish, and record success under one stable commit lock.
+
+        If success publication fails after physical HEAD publication, rollback is
+        conditional on HEAD still naming this exact candidate. A newer HEAD is never
+        overwritten and is reported as indeterminate for external reconciliation.
+        """
         selected = tuple(validators)
         validator_context = self._validate_validators(selected, context, claims)
         with self._opened_layout(lock=True) as (root_fd, trees_fd, _attempts_fd, _lock_fd):
@@ -1228,6 +1264,7 @@ class SnapshotStore:
                 )
                 if any(not receipt.accepted for receipt in receipts):
                     return CommitResult(committed=False, receipts=receipts)
+                authorize_publish()
                 previous = canonical_json_bytes(head_document)
                 self._publish_head(
                     root_fd,
@@ -1236,6 +1273,29 @@ class SnapshotStore:
                     candidate_tree,
                     previous,
                 )
+                published = self._head_bytes(candidate.candidate_tree_id, candidate_tree.identity)
+                try:
+                    _finalization_boundary("candidate_published")
+                    publish_success(current_tree_id, candidate.candidate_tree_id)
+                except HeadPublicationIndeterminate:
+                    raise
+                except BaseException as error:
+                    if not self._head_matches(root_fd, published):
+                        raise HeadPublicationIndeterminate(
+                            "candidate success failed after HEAD advanced elsewhere; "
+                            "conditional rollback refused"
+                        ) from error
+                    try:
+                        self._restore_previous_head(root_fd, previous)
+                        if not self._head_matches(root_fd, previous):
+                            raise WorkspaceViolation("conditional HEAD rollback was not durable")
+                    except BaseException as rollback_error:
+                        raise HeadPublicationIndeterminate(
+                            "candidate success failed and conditional HEAD rollback is indeterminate"
+                        ) from rollback_error
+                    raise FinalizationRolledBack(
+                        "candidate success failed; exact candidate HEAD was rolled back"
+                    ) from error
                 return CommitResult(committed=True, receipts=receipts)
             finally:
                 os.close(baseline.descriptor)
@@ -1307,8 +1367,17 @@ def _lock_exclusive(descriptor: int) -> None:
         raise WorkspaceViolation("snapshot commits require POSIX advisory file locking") from error
 
 
+def _finalization_boundary(name: str) -> None:
+    del name
+
+
+def _attempt_batch_boundary(created_count: int, baseline_tree_id: str) -> None:
+    del created_count, baseline_tree_id
+
+
 __all__ = [
     "AttemptWorkspace",
+    "FinalizationRolledBack",
     "HeadPublicationIndeterminate",
     "SnapshotStore",
     "WorkspaceViolation",
