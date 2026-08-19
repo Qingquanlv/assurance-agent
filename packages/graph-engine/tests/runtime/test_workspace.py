@@ -1,10 +1,12 @@
 import os
 import shutil
+import stat
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
@@ -13,7 +15,11 @@ from graph_engine.plugin_api import (
     ValidationContext,
     ValidationResult,
 )
-from graph_engine.runtime.workspace import SnapshotStore, WorkspaceViolation
+from graph_engine.runtime.workspace import (
+    HeadPublicationIndeterminate,
+    SnapshotStore,
+    WorkspaceViolation,
+)
 
 
 def _context(resources: ResourceClaims) -> ValidationContext:
@@ -618,8 +624,8 @@ def test_tree_directory_fsync_failure_prevents_candidate_seal(
 def test_commit_rejects_replaced_lock_inode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = SnapshotStore.create(tmp_path / "store", {})
     candidate = store.create_attempt("attempt-1").seal()
-    lock_path = store.root / ".commit.lock"
-    displaced = store.root / "displaced-lock"
+    lock_path = store.root.parent / store._lock_anchor_name
+    displaced = store.root.parent / f"{store._lock_anchor_name}.displaced"
     real_open = os.open
     swapped = False
 
@@ -627,7 +633,7 @@ def test_commit_rejects_replaced_lock_inode(tmp_path: Path, monkeypatch: pytest.
         path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
     ) -> int:
         nonlocal swapped
-        if not swapped and path == ".commit.lock" and dir_fd is not None:
+        if not swapped and path == store._lock_anchor_name and dir_fd is not None:
             swapped = True
             lock_path.rename(displaced)
             lock_path.write_bytes(b"replacement")
@@ -641,8 +647,8 @@ def test_commit_rejects_replaced_lock_inode(tmp_path: Path, monkeypatch: pytest.
 def test_commit_rejects_lock_symlink_swap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = SnapshotStore.create(tmp_path / "store", {})
     candidate = store.create_attempt("attempt-1").seal()
-    lock_path = store.root / ".commit.lock"
-    displaced = store.root / "displaced-lock"
+    lock_path = store.root.parent / store._lock_anchor_name
+    displaced = store.root.parent / f"{store._lock_anchor_name}.displaced"
     real_open = os.open
     swapped = False
 
@@ -650,7 +656,7 @@ def test_commit_rejects_lock_symlink_swap(tmp_path: Path, monkeypatch: pytest.Mo
         path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
     ) -> int:
         nonlocal swapped
-        if not swapped and path == ".commit.lock" and dir_fd is not None:
+        if not swapped and path == store._lock_anchor_name and dir_fd is not None:
             swapped = True
             lock_path.rename(displaced)
             lock_path.symlink_to(displaced)
@@ -674,24 +680,24 @@ def test_crash_incomplete_initialization_is_recoverable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "store"
-    real_write_head = SnapshotStore._write_head
+    real_publish_head = SnapshotStore._publish_head
     crashed = False
 
-    def crash_once(store: SnapshotStore, tree_id: str) -> None:
+    def crash_once(store: SnapshotStore, *args: Any, **kwargs: Any) -> None:
         nonlocal crashed
         if not crashed:
             crashed = True
             raise KeyboardInterrupt("simulated crash")
-        real_write_head(store, tree_id)
+        real_publish_head(store, *args, **kwargs)
 
-    monkeypatch.setattr(SnapshotStore, "_write_head", crash_once)
+    monkeypatch.setattr(SnapshotStore, "_publish_head", crash_once)
     with pytest.raises(KeyboardInterrupt, match="simulated crash"):
         SnapshotStore.create(root, {"stale.txt": b"stale"})
-    assert (root / ".initializing").exists()
+    assert not root.exists()
+    assert any(tmp_path.glob(".store.snapshot-init-*"))
 
     recovered = SnapshotStore.create(root, {"fresh.txt": b"fresh"})
     assert recovered.read_head("fresh.txt") == b"fresh"
-    assert not (root / ".initializing").exists()
 
 
 def test_initialization_marker_never_resets_established_corrupt_store(tmp_path: Path) -> None:
@@ -704,3 +710,382 @@ def test_initialization_marker_never_resets_established_corrupt_store(tmp_path: 
     assert (root / "trees").exists()
     with pytest.raises(WorkspaceViolation, match="HEAD"):
         store.head_tree_id()
+
+
+def test_seal_rejects_file_added_after_directory_name_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {})
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "first.txt").write_bytes(b"first")
+    attempt_stat = attempt.root.stat()
+    real_listdir = os.listdir
+    injected = False
+
+    def add_after_snapshot(path: Any) -> list[str]:
+        nonlocal injected
+        names = real_listdir(path)
+        if not injected and isinstance(path, int):
+            opened = os.fstat(path)
+            if (opened.st_dev, opened.st_ino) == (attempt_stat.st_dev, attempt_stat.st_ino):
+                injected = True
+                (attempt.root / "added.txt").write_bytes(b"added")
+        return names
+
+    monkeypatch.setattr(os, "listdir", add_after_snapshot)
+    with pytest.raises(WorkspaceViolation, match="name set|changed"):
+        attempt.seal()
+
+
+def test_seal_rejects_processed_file_removed_before_scan_finishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {})
+    attempt = store.create_attempt("attempt-1")
+    path = attempt.root / "first.txt"
+    path.write_bytes(b"first")
+    from graph_engine.runtime import workspace
+
+    real_assert = workspace._assert_entry_identity
+    removed = False
+
+    def remove_after_entry_check(parent_fd: int, name: str, expected: os.stat_result, kind: str) -> None:
+        nonlocal removed
+        real_assert(parent_fd, name, expected, kind)
+        if not removed and name == "first.txt" and kind == "source file":
+            removed = True
+            path.unlink()
+
+    monkeypatch.setattr(workspace, "_assert_entry_identity", remove_after_entry_check)
+    with pytest.raises(WorkspaceViolation, match="name set|changed"):
+        attempt.seal()
+
+
+def test_seal_rejects_processed_file_replaced_under_same_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {})
+    attempt = store.create_attempt("attempt-1")
+    path = attempt.root / "first.txt"
+    path.write_bytes(b"first")
+    from graph_engine.runtime import workspace
+
+    real_assert = workspace._assert_entry_identity
+    replaced = False
+
+    def replace_after_entry_check(parent_fd: int, name: str, expected: os.stat_result, kind: str) -> None:
+        nonlocal replaced
+        real_assert(parent_fd, name, expected, kind)
+        if not replaced and name == "first.txt" and kind == "source file":
+            replaced = True
+            path.unlink()
+            path.write_bytes(b"replacement")
+
+    monkeypatch.setattr(workspace, "_assert_entry_identity", replace_after_entry_check)
+    with pytest.raises(WorkspaceViolation, match="entry state|changed"):
+        attempt.seal()
+
+
+def test_read_head_rejects_path_added_after_manifest_authentication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {})
+    from graph_engine.runtime import workspace
+
+    real_head_tree = workspace.SnapshotStore._head_tree
+
+    def add_after_authentication(self: SnapshotStore, root_fd: int, trees_fd: int):
+        document, tree = real_head_tree(self, root_fd, trees_fd)
+        tree_root = self.root / "trees" / document["tree_id"]
+        tree_root.chmod(0o755)
+        added = tree_root / "added.txt"
+        added.write_bytes(b"unauthenticated")
+        added.chmod(0o444)
+        tree_root.chmod(0o555)
+        return document, tree
+
+    monkeypatch.setattr(workspace.SnapshotStore, "_head_tree", add_after_authentication)
+    with pytest.raises(WorkspaceViolation, match="manifest|authenticated"):
+        store.read_head("added.txt")
+
+
+def test_read_head_rejects_rewritten_bytes_after_manifest_authentication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": b"authenticated"})
+    from graph_engine.runtime import workspace
+
+    real_head_tree = workspace.SnapshotStore._head_tree
+
+    def rewrite_after_authentication(self: SnapshotStore, root_fd: int, trees_fd: int):
+        document, tree = real_head_tree(self, root_fd, trees_fd)
+        path = self.root / "trees" / document["tree_id"] / "value.txt"
+        path.chmod(0o600)
+        path.write_bytes(b"rewritten")
+        path.chmod(0o444)
+        return document, tree
+
+    monkeypatch.setattr(workspace.SnapshotStore, "_head_tree", rewrite_after_authentication)
+    with pytest.raises(WorkspaceViolation, match="hash|authenticated"):
+        store.read_head("value.txt")
+
+
+def test_read_head_rejects_mixed_bytes_from_concurrent_in_place_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from graph_engine.runtime import workspace
+
+    content = b"a" * (workspace._COPY_BUFFER_SIZE * 2)
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": content})
+    tree_id = store.head_tree_id()
+    path = store.root / "trees" / tree_id / "value.txt"
+    target_identity = (path.stat().st_dev, path.stat().st_ino)
+    real_head_tree = workspace.SnapshotStore._head_tree
+    real_read = os.read
+    armed = False
+    mutated = False
+
+    def arm_after_authentication(self: SnapshotStore, root_fd: int, trees_fd: int):
+        nonlocal armed
+        result = real_head_tree(self, root_fd, trees_fd)
+        armed = True
+        return result
+
+    def rewrite_after_first_chunk(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        chunk = real_read(descriptor, size)
+        current = os.fstat(descriptor)
+        if armed and not mutated and (current.st_dev, current.st_ino) == target_identity and chunk:
+            mutated = True
+            path.chmod(0o600)
+            with path.open("r+b") as writable:
+                writable.seek(len(chunk))
+                writable.write(b"b" * (len(content) - len(chunk)))
+            path.chmod(0o444)
+        return chunk
+
+    monkeypatch.setattr(workspace.SnapshotStore, "_head_tree", arm_after_authentication)
+    monkeypatch.setattr(os, "read", rewrite_after_first_chunk)
+    with pytest.raises(WorkspaceViolation, match="hash|authenticated"):
+        store.read_head("value.txt")
+
+
+def test_root_fsync_failure_after_head_replace_rolls_back_visible_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": b"base"})
+    before = store.head_tree_id()
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "value.txt").write_bytes(b"candidate")
+    candidate = attempt.seal()
+    root_stat = store.root.stat()
+    real_fsync = os.fsync
+    failed = False
+
+    def fail_once_after_replace(descriptor: int) -> None:
+        nonlocal failed
+        current = os.fstat(descriptor)
+        if not failed and (current.st_dev, current.st_ino) == (root_stat.st_dev, root_stat.st_ino):
+            failed = True
+            raise OSError("post-replace root fsync failed")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_once_after_replace)
+    with pytest.raises(OSError, match="post-replace"):
+        store.commit_candidate(candidate, ResourceClaims(writes=("value.txt",)))
+    assert store.head_tree_id() == before
+
+
+def test_raw_post_replace_scan_error_rolls_back_visible_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from graph_engine.runtime import workspace
+
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": b"base"})
+    before = store.head_tree_id()
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "value.txt").write_bytes(b"candidate")
+    candidate = attempt.seal()
+    real_replace = os.replace
+    real_scan = workspace._scan_directory_fd
+    replaced = False
+    failed = False
+
+    def track_replace(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+        nonlocal replaced
+        real_replace(source, destination, *args, **kwargs)
+        if destination == "HEAD.json":
+            replaced = True
+
+    def fail_post_replace_scan(*args: Any, **kwargs: Any) -> dict[str, str]:
+        nonlocal failed
+        if replaced and not failed:
+            failed = True
+            raise FileNotFoundError("simulated post-replace entry removal")
+        return real_scan(*args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", track_replace)
+    monkeypatch.setattr(workspace, "_scan_directory_fd", fail_post_replace_scan)
+    with pytest.raises(FileNotFoundError, match="entry removal"):
+        store.commit_candidate(candidate, ResourceClaims(writes=("value.txt",)))
+    assert store.head_tree_id() == before
+
+
+def test_replace_error_after_visible_head_move_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": b"base"})
+    before = store.head_tree_id()
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "value.txt").write_bytes(b"candidate")
+    candidate = attempt.seal()
+    real_replace = os.replace
+    failed = False
+
+    def move_then_fail(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+        nonlocal failed
+        real_replace(source, destination, *args, **kwargs)
+        if not failed and destination == "HEAD.json":
+            failed = True
+            raise OSError("replace result unavailable")
+
+    monkeypatch.setattr(os, "replace", move_then_fail)
+    with pytest.raises(OSError, match="result unavailable"):
+        store.commit_candidate(candidate, ResourceClaims(writes=("value.txt",)))
+    assert store.head_tree_id() == before
+
+
+def test_failed_rollback_raises_dedicated_indeterminate_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": b"base"})
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "value.txt").write_bytes(b"candidate")
+    candidate = attempt.seal()
+    root_stat = store.root.stat()
+    real_fsync = os.fsync
+
+    def fail_every_root_barrier(descriptor: int) -> None:
+        current = os.fstat(descriptor)
+        if (current.st_dev, current.st_ino) == (root_stat.st_dev, root_stat.st_ino):
+            raise OSError("root barrier unavailable")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_every_root_barrier)
+    with pytest.raises(HeadPublicationIndeterminate, match="indeterminate"):
+        store.commit_candidate(candidate, ResourceClaims(writes=("value.txt",)))
+
+
+def test_paired_layout_and_lock_replacement_cannot_change_lock_domain(tmp_path: Path) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {})
+    candidate = store.create_attempt("attempt-1").seal()
+    lock = store.root / ".commit.lock"
+    layout = store.root / ".layout.json"
+    if lock.exists():
+        lock.chmod(0o600)
+    lock.write_bytes(b"\0")
+    lock.chmod(0o400)
+    lock_stat = lock.stat()
+    payload: dict[str, Any] = {
+        "version": 1,
+        "lock_dev": lock_stat.st_dev,
+        "lock_ino": lock_stat.st_ino,
+    }
+    document = {**payload, "digest": canonical_digest(payload)}
+    layout.chmod(0o600)
+    layout.write_bytes(canonical_json_bytes(document))
+    layout.chmod(0o400)
+    with pytest.raises(WorkspaceViolation, match="anchor|lock"):
+        store.commit_candidate(candidate, ResourceClaims())
+
+
+def test_create_never_deletes_unrelated_marker_directory(tmp_path: Path) -> None:
+    root = tmp_path / "store"
+    root.mkdir()
+    marker = root / ".initializing"
+    marker.write_bytes(b"")
+    marker.chmod(0o400)
+    unrelated = root / "unrelated.txt"
+    unrelated.write_bytes(b"keep")
+    with pytest.raises(WorkspaceViolation, match="already exists"):
+        SnapshotStore.create(root, {})
+    assert unrelated.read_bytes() == b"keep"
+
+
+def test_create_never_deletes_established_store_with_missing_head(tmp_path: Path) -> None:
+    root = tmp_path / "store"
+    SnapshotStore.create(root, {"original.txt": b"original"})
+    (root / "HEAD.json").unlink()
+    marker = root / ".initializing"
+    marker.write_bytes(b"")
+    marker.chmod(0o400)
+    with pytest.raises(WorkspaceViolation, match="already exists"):
+        SnapshotStore.create(root, {"replacement.txt": b"replacement"})
+    assert any((root / "trees").iterdir())
+
+
+def test_initialization_fsyncs_parent_before_and_after_atomic_root_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "store"
+    parent_stat = tmp_path.stat()
+    events: list[str] = []
+    real_fsync = os.fsync
+    real_rename = os.rename
+
+    def record_fsync(descriptor: int) -> None:
+        current = os.fstat(descriptor)
+        if (current.st_dev, current.st_ino) == (parent_stat.st_dev, parent_stat.st_ino):
+            events.append("parent-fsync")
+        elif stat.S_ISDIR(current.st_mode):
+            names = set(os.listdir(descriptor))
+            if {"trees", "attempts", ".layout.json"}.issubset(names):
+                events.append("root-fsync")
+        real_fsync(descriptor)
+
+    def record_rename(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+        if destination == root.name and str(source).startswith(f".{root.name}.snapshot-init-"):
+            events.append("root-install")
+        real_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    monkeypatch.setattr(os, "rename", record_rename)
+    SnapshotStore.create(root, {})
+    install = events.index("root-install")
+    assert "parent-fsync" in events[:install]
+    assert "root-fsync" in events[:install]
+    assert "parent-fsync" in events[install + 1 :]
+
+
+def test_parent_fsync_failure_after_root_install_leaves_complete_reopenable_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "store"
+    parent_stat = tmp_path.stat()
+    installed = False
+    failed = False
+    real_fsync = os.fsync
+    real_rename = os.rename
+
+    def track_install(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+        nonlocal installed
+        real_rename(source, destination, *args, **kwargs)
+        if destination == root.name:
+            installed = True
+
+    def fail_post_install_parent_barrier(descriptor: int) -> None:
+        nonlocal failed
+        current = os.fstat(descriptor)
+        identity = current.st_dev, current.st_ino
+        if installed and not failed and identity == (parent_stat.st_dev, parent_stat.st_ino):
+            failed = True
+            raise OSError("post-install parent barrier unavailable")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "rename", track_install)
+    monkeypatch.setattr(os, "fsync", fail_post_install_parent_barrier)
+    with pytest.raises(OSError, match="post-install"):
+        SnapshotStore.create(root, {"value.txt": b"complete"})
+    assert SnapshotStore(root).read_head("value.txt") == b"complete"
+    with pytest.raises(WorkspaceViolation, match="already exists"):
+        SnapshotStore.create(root, {})

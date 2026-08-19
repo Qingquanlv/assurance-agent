@@ -29,16 +29,19 @@ _COPY_BUFFER_SIZE = 1024 * 1024
 _WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 _FILE_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-_INITIALIZING = ".initializing"
 _LAYOUT = ".layout.json"
-_LOCK = ".commit.lock"
 _HEAD = "HEAD.json"
 NamedValidator = tuple[str, CommitValidator]
 Identity = tuple[int, int]
+EntryState = tuple[int, int, int, int, int, int, int]
 
 
 class WorkspaceViolation(GraphEngineError):
     """Raised when workspace state could escape or violate snapshot invariants."""
+
+
+class HeadPublicationIndeterminate(WorkspaceViolation):
+    """Raised when a post-replacement failure prevents proving a durable HEAD outcome."""
 
 
 def _require_posix_primitives() -> None:
@@ -49,6 +52,18 @@ def _require_posix_primitives() -> None:
 
 def _identity(value: os.stat_result) -> Identity:
     return value.st_dev, value.st_ino
+
+
+def _entry_state(value: os.stat_result) -> EntryState:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
 
 
 def _validate_utf8(value: str, kind: str) -> None:
@@ -222,6 +237,23 @@ def _entry_exists(parent_fd: int, name: str) -> bool:
     return True
 
 
+def _assert_directory_snapshot(
+    directory_fd: int,
+    names: Sequence[str],
+    entries: Mapping[str, EntryState],
+    kind: str,
+) -> None:
+    if _validated_names(directory_fd) != list(names):
+        raise WorkspaceViolation(f"{kind} name set changed during operation")
+    for name in names:
+        try:
+            current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except OSError as error:
+            raise WorkspaceViolation(f"{kind} entry changed during operation: {name}") from error
+        if _entry_state(current) != entries[name]:
+            raise WorkspaceViolation(f"{kind} entry state changed during operation: {name}")
+
+
 def _scan_directory_fd(directory_fd: int, *, prefix: str = "", immutable: bool = False) -> dict[str, str]:
     root_stat = os.fstat(directory_fd)
     if not stat.S_ISDIR(root_stat.st_mode):
@@ -229,7 +261,9 @@ def _scan_directory_fd(directory_fd: int, *, prefix: str = "", immutable: bool =
     if immutable and root_stat.st_mode & _WRITE_BITS:
         raise WorkspaceViolation("immutable tree directory is writable")
     files: dict[str, str] = {}
-    for name in _validated_names(directory_fd):
+    initial_names = _validated_names(directory_fd)
+    final_entries: dict[str, EntryState] = {}
+    for name in initial_names:
         relative_path = f"{prefix}/{name}" if prefix else name
         _validate_relative_path(relative_path)
         entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
@@ -241,9 +275,11 @@ def _scan_directory_fd(directory_fd: int, *, prefix: str = "", immutable: bool =
                 if immutable and child_stat.st_mode & _WRITE_BITS:
                     raise WorkspaceViolation(f"immutable tree directory is writable: {relative_path}")
                 files.update(_scan_directory_fd(child_fd, prefix=relative_path, immutable=immutable))
+                child_final = os.fstat(child_fd)
             finally:
                 os.close(child_fd)
             _assert_entry_identity(directory_fd, name, child_stat, "tree directory")
+            final_entries[name] = _entry_state(child_final)
             continue
         if not stat.S_ISREG(entry.st_mode):
             raise WorkspaceViolation(f"path is not a regular file: {relative_path}")
@@ -258,13 +294,16 @@ def _scan_directory_fd(directory_fd: int, *, prefix: str = "", immutable: bool =
                 "tree file",
                 immutable=immutable,
             )
+            file_final = os.fstat(file_fd)
         finally:
             os.close(file_fd)
+        final_entries[name] = _entry_state(file_final)
     final_root = os.fstat(directory_fd)
     if _identity(final_root) != _identity(root_stat):
         raise WorkspaceViolation("directory identity changed during scan")
     if immutable and final_root.st_mode & _WRITE_BITS:
         raise WorkspaceViolation("immutable tree directory became writable")
+    _assert_directory_snapshot(directory_fd, initial_names, final_entries, "directory")
     return files
 
 
@@ -286,7 +325,10 @@ def _copy_tree_fd(
     seal_destination: bool,
 ) -> dict[str, str]:
     manifest: dict[str, str] = {}
-    for name in _validated_names(source_fd):
+    source_names = _validated_names(source_fd)
+    final_source_entries: dict[str, EntryState] = {}
+    final_destination_entries: dict[str, EntryState] = {}
+    for name in source_names:
         relative_path = f"{prefix}/{name}" if prefix else name
         entry = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
         if stat.S_ISLNK(entry.st_mode):
@@ -320,12 +362,16 @@ def _copy_tree_fd(
                 finally:
                     os.close(destination_child)
                 _assert_entry_identity(destination_fd, name, destination_stat, "destination directory")
+                final_destination_entries[name] = _entry_state(
+                    os.stat(name, dir_fd=destination_fd, follow_symlinks=False)
+                )
             finally:
                 final_source = os.fstat(source_child)
                 os.close(source_child)
             if source_immutable and final_source.st_mode & _WRITE_BITS:
                 raise WorkspaceViolation(f"immutable source directory became writable: {relative_path}")
             _assert_entry_identity(source_fd, name, source_stat, "source directory")
+            final_source_entries[name] = _entry_state(final_source)
             continue
         if not stat.S_ISREG(entry.st_mode):
             raise WorkspaceViolation(f"path is not a regular file: {relative_path}")
@@ -352,6 +398,7 @@ def _copy_tree_fd(
                 if seal_destination and destination_stat.st_mode & _WRITE_BITS:
                     raise WorkspaceViolation(f"sealed destination file is writable: {relative_path}")
                 _assert_entry_identity(destination_fd, name, destination_stat, "destination file")
+                final_destination_entries[name] = _entry_state(destination_stat)
             finally:
                 os.close(destination_file)
             _assert_open_file_stable(
@@ -362,9 +409,18 @@ def _copy_tree_fd(
                 "source file",
                 immutable=source_immutable,
             )
+            final_source_file = os.fstat(source_file)
         finally:
             os.close(source_file)
+        final_source_entries[name] = _entry_state(final_source_file)
     os.fsync(destination_fd)
+    _assert_directory_snapshot(source_fd, source_names, final_source_entries, "source directory")
+    _assert_directory_snapshot(
+        destination_fd,
+        source_names,
+        final_destination_entries,
+        "destination directory",
+    )
     return manifest
 
 
@@ -507,94 +563,176 @@ class AttemptWorkspace:
 
 
 class SnapshotStore:
+    """Content-addressed snapshots rooted below a trusted parent directory.
+
+    The store root (except one exact attempt directory granted to a task) and its
+    parent anchor namespace form the POSIX trust boundary. The host must prevent
+    task actors from issuing arbitrary same-UID filesystem operations outside that
+    attempt capability. Portable POSIX mode bits alone cannot enforce that boundary,
+    so every engine access still authenticates tree bytes and fails closed on
+    detected mutation.
+    """
+
     def __init__(self, root: Path) -> None:
         _require_posix_primitives()
         self.root = Path(root).absolute()
 
+    @property
+    def _lock_anchor_name(self) -> str:
+        return f".{self.root.name}.snapshot-lock"
+
     @classmethod
     def create(cls, root: Path, initial_files: Mapping[str, bytes]) -> SnapshotStore:
         store = cls(root)
-        store._recover_incomplete_initialization()
         parent_fd = _open_absolute_directory(store.root.parent)
-        root_fd: int | None = None
-        head_published = False
+        staging_name = f".{store.root.name}.snapshot-init-{uuid.uuid4().hex}"
+        staging_fd: int | None = None
+        installed = False
         try:
-            try:
-                os.mkdir(store.root.name, mode=0o700, dir_fd=parent_fd)
-            except FileExistsError as error:
-                raise WorkspaceViolation(f"snapshot store already exists: {store.root}") from error
-            root_fd, root_stat = _open_directory_at(parent_fd, store.root.name, "snapshot store")
-            marker_fd = os.open(
-                _INITIALIZING,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o400,
-                dir_fd=root_fd,
-            )
-            os.fsync(marker_fd)
-            os.close(marker_fd)
-            os.mkdir("trees", mode=0o700, dir_fd=root_fd)
-            os.mkdir("attempts", mode=0o700, dir_fd=root_fd)
-            lock_fd = os.open(
-                _LOCK,
-                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=root_fd,
-            )
-            _write_all(lock_fd, b"\0")
-            os.fsync(lock_fd)
-            os.fchmod(lock_fd, 0o400)
-            lock_stat = os.fstat(lock_fd)
+            if _entry_exists(parent_fd, store.root.name):
+                raise WorkspaceViolation(f"snapshot store already exists: {store.root}")
+            lock_fd, lock_stat = store._open_or_create_lock_anchor(parent_fd)
             os.close(lock_fd)
-            store._write_layout(root_fd, lock_stat)
-            os.fsync(root_fd)
-            tree = _mapping_tree(initial_files)
-            trees_fd, _ = _open_directory_at(root_fd, "trees", "trees directory")
             try:
-                staging_name, staging_fd = store._create_staging(trees_fd)
+                os.mkdir(staging_name, mode=0o700, dir_fd=parent_fd)
+            except FileExistsError as error:
+                raise WorkspaceViolation("snapshot initialization staging collision") from error
+            os.fsync(parent_fd)
+            staging_fd, _ = _open_directory_at(parent_fd, staging_name, "snapshot initialization staging")
+            os.mkdir("trees", mode=0o700, dir_fd=staging_fd)
+            os.mkdir("attempts", mode=0o700, dir_fd=staging_fd)
+            store._write_layout(staging_fd, lock_stat)
+            os.fsync(staging_fd)
+            tree = _mapping_tree(initial_files)
+            trees_fd, _ = _open_directory_at(staging_fd, "trees", "trees directory")
+            try:
+                tree_staging_name, tree_staging_fd = store._create_staging(trees_fd)
                 try:
-                    manifest = _write_mapping_fd(staging_fd, tree)
-                    tree_id, opened_tree = store._finish_tree(trees_fd, staging_name, staging_fd, manifest)
-                    os.close(opened_tree.descriptor)
-                    store._write_head(tree_id)
-                    head_published = True
+                    manifest = _write_mapping_fd(tree_staging_fd, tree)
+                    tree_id, opened_tree = store._finish_tree(
+                        trees_fd, tree_staging_name, tree_staging_fd, manifest
+                    )
+                    try:
+                        store._publish_head(
+                            staging_fd,
+                            trees_fd,
+                            tree_id,
+                            opened_tree,
+                            None,
+                        )
+                    finally:
+                        os.close(opened_tree.descriptor)
                 finally:
-                    os.close(staging_fd)
+                    os.close(tree_staging_fd)
             finally:
                 os.close(trees_fd)
-            os.unlink(_INITIALIZING, dir_fd=root_fd)
-            os.fsync(root_fd)
+            os.fsync(staging_fd)
+            os.rename(
+                staging_name,
+                store.root.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            installed = True
+            os.fsync(parent_fd)
             return store
         except Exception:
-            head_exists = root_fd is not None and _entry_exists(root_fd, _HEAD)
-            if root_fd is not None and not head_published and not head_exists:
-                os.close(root_fd)
-                root_fd = None
-                _remove_entry_at(parent_fd, store.root.name)
+            if not installed and _entry_exists(parent_fd, staging_name):
+                if staging_fd is not None:
+                    os.close(staging_fd)
+                    staging_fd = None
+                _remove_entry_at(parent_fd, staging_name)
                 os.fsync(parent_fd)
             raise
         finally:
-            if root_fd is not None:
-                os.close(root_fd)
+            if staging_fd is not None:
+                os.close(staging_fd)
             os.close(parent_fd)
 
-    def _recover_incomplete_initialization(self) -> None:
-        if not self.root.exists() and not self.root.is_symlink():
-            return
-        parent_fd = _open_absolute_directory(self.root.parent)
+    def _open_or_create_lock_anchor(self, parent_fd: int) -> tuple[int, os.stat_result]:
+        name = self._lock_anchor_name
         try:
-            root_fd, _ = _open_directory_at(parent_fd, self.root.name, "snapshot store")
+            descriptor = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_fd,
+            )
             try:
-                names = set(_validated_names(root_fd))
-                if _INITIALIZING not in names or _HEAD in names:
-                    return
-                marker_fd, _ = _open_file_at(root_fd, _INITIALIZING, _INITIALIZING, immutable=True)
-                os.close(marker_fd)
-            finally:
-                os.close(root_fd)
-            _remove_entry_at(parent_fd, self.root.name)
+                payload: dict[str, JSONValue] = {
+                    "version": 1,
+                    "store_name": self.root.name,
+                    "nonce": uuid.uuid4().hex,
+                }
+                document: dict[str, JSONValue] = {
+                    **payload,
+                    "digest": canonical_digest(payload),
+                }
+                _write_all(descriptor, canonical_json_bytes(document))
+                os.fsync(descriptor)
+                os.fchmod(descriptor, 0o400)
+                os.fsync(descriptor)
+                anchor_stat = os.fstat(descriptor)
+            except BaseException:
+                os.close(descriptor)
+                os.unlink(name, dir_fd=parent_fd)
+                raise
             os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
+        except FileExistsError:
+            descriptor, anchor_stat = _open_file_at(
+                parent_fd,
+                name,
+                name,
+                immutable=True,
+            )
+        try:
+            self._validate_lock_anchor(descriptor, parent_fd, anchor_stat)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor, anchor_stat
+
+    def _validate_lock_anchor(
+        self,
+        descriptor: int,
+        parent_fd: int,
+        anchor_stat: os.stat_result,
+    ) -> None:
+        try:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            content = os.read(descriptor, 4096)
+            if os.read(descriptor, 1):
+                raise WorkspaceViolation("commit lock anchor is too large")
+            document = json.loads(content.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise WorkspaceViolation("commit lock anchor is invalid") from error
+        _assert_open_file_stable(
+            descriptor,
+            parent_fd,
+            self._lock_anchor_name,
+            anchor_stat,
+            "commit lock anchor",
+            immutable=True,
+        )
+        if not isinstance(document, dict) or set(document) != {
+            "version",
+            "store_name",
+            "nonce",
+            "digest",
+        }:
+            raise WorkspaceViolation("commit lock anchor document is invalid")
+        payload: dict[str, JSONValue] = {
+            "version": document["version"],
+            "store_name": document["store_name"],
+            "nonce": document["nonce"],
+        }
+        if (
+            document["version"] != 1
+            or document["store_name"] != self.root.name
+            or not isinstance(document["nonce"], str)
+            or document["digest"] != canonical_digest(payload)
+        ):
+            raise WorkspaceViolation("commit lock anchor authentication failed")
 
     def _write_layout(self, root_fd: int, lock_stat: os.stat_result) -> None:
         payload: dict[str, JSONValue] = {
@@ -619,9 +757,27 @@ class SnapshotStore:
 
     @contextmanager
     def _opened_layout(self, *, lock: bool = False) -> Iterator[tuple[int, int, int, int | None]]:
-        root_fd = _open_absolute_directory(self.root)
-        trees_fd = attempts_fd = lock_fd = -1
+        parent_fd = _open_absolute_directory(self.root.parent)
+        root_fd = trees_fd = attempts_fd = anchor_fd = -1
         try:
+            anchor_fd, anchor_stat = _open_file_at(
+                parent_fd,
+                self._lock_anchor_name,
+                self._lock_anchor_name,
+                immutable=True,
+            )
+            self._validate_lock_anchor(anchor_fd, parent_fd, anchor_stat)
+            if lock:
+                _lock_exclusive(anchor_fd)
+                _assert_open_file_stable(
+                    anchor_fd,
+                    parent_fd,
+                    self._lock_anchor_name,
+                    anchor_stat,
+                    "commit lock anchor",
+                    immutable=True,
+                )
+            root_fd = _open_absolute_directory(self.root)
             trees_fd, _ = _open_directory_at(root_fd, "trees", "trees directory")
             attempts_fd, _ = _open_directory_at(root_fd, "attempts", "attempts directory")
             layout_fd, layout_stat = _open_file_at(root_fd, _LAYOUT, _LAYOUT, immutable=True)
@@ -651,16 +807,12 @@ class SnapshotStore:
             }
             if layout["digest"] != canonical_digest(payload):
                 raise WorkspaceViolation("layout digest mismatch")
-            if lock:
-                lock_fd, lock_stat = _open_file_at(root_fd, _LOCK, _LOCK, immutable=True)
-                expected = layout["lock_dev"], layout["lock_ino"]
-                if _identity(lock_stat) != expected:
-                    raise WorkspaceViolation("commit lock inode does not match stable layout")
-                _lock_exclusive(lock_fd)
-                _assert_entry_identity(root_fd, _LOCK, lock_stat, "commit lock")
-            yield root_fd, trees_fd, attempts_fd, None if lock_fd < 0 else lock_fd
+            expected = layout["lock_dev"], layout["lock_ino"]
+            if _identity(anchor_stat) != expected:
+                raise WorkspaceViolation("commit lock inode does not match protected anchor")
+            yield root_fd, trees_fd, attempts_fd, anchor_fd if lock else None
         finally:
-            for descriptor in (lock_fd, attempts_fd, trees_fd, root_fd):
+            for descriptor in (attempts_fd, trees_fd, root_fd, anchor_fd, parent_fd):
                 if descriptor >= 0:
                     os.close(descriptor)
 
@@ -790,9 +942,9 @@ class SnapshotStore:
             )
             if _tree_id(current_manifest) != tree_id:
                 raise WorkspaceViolation("candidate tree changed before HEAD publication")
-            os.replace(temporary, _HEAD, src_dir_fd=root_fd, dst_dir_fd=root_fd)
-            os.fsync(root_fd)
             try:
+                os.replace(temporary, _HEAD, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+                os.fsync(root_fd)
                 current_manifest = _scan_directory_fd(tree.descriptor, immutable=True)
                 _assert_entry_identity(
                     trees_fd,
@@ -802,16 +954,66 @@ class SnapshotStore:
                 )
                 if _tree_id(current_manifest) != tree_id:
                     raise WorkspaceViolation("candidate tree changed during HEAD publication")
-            except WorkspaceViolation:
-                if previous is not None:
-                    rollback = f".HEAD-rollback-{uuid.uuid4().hex}.tmp"
-                    self._write_temp(root_fd, rollback, previous)
-                    os.replace(rollback, _HEAD, src_dir_fd=root_fd, dst_dir_fd=root_fd)
-                    os.fsync(root_fd)
+            except BaseException:
+                try:
+                    still_previous = self._head_matches(root_fd, previous)
+                except BaseException:
+                    still_previous = False
+                if still_previous:
+                    raise
+                try:
+                    self._restore_previous_head(root_fd, previous)
+                except BaseException as rollback_error:
+                    raise HeadPublicationIndeterminate(
+                        "HEAD publication outcome is indeterminate after rollback failure"
+                    ) from rollback_error
                 raise
         finally:
             try:
                 os.unlink(temporary, dir_fd=root_fd)
+            except OSError:
+                pass
+
+    def _head_matches(self, root_fd: int, expected: bytes | None) -> bool:
+        if expected is None:
+            return not _entry_exists(root_fd, _HEAD)
+        try:
+            descriptor, head_stat = _open_file_at(root_fd, _HEAD, _HEAD, immutable=False)
+            try:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                chunks: list[bytes] = []
+                while chunk := os.read(descriptor, 4096):
+                    chunks.append(chunk)
+                _assert_open_file_stable(
+                    descriptor,
+                    root_fd,
+                    _HEAD,
+                    head_stat,
+                    "HEAD file",
+                    immutable=False,
+                )
+            finally:
+                os.close(descriptor)
+        except (OSError, WorkspaceViolation):
+            return False
+        return b"".join(chunks) == expected
+
+    def _restore_previous_head(self, root_fd: int, previous: bytes | None) -> None:
+        if previous is None:
+            try:
+                os.unlink(_HEAD, dir_fd=root_fd)
+            except FileNotFoundError:
+                pass
+            os.fsync(root_fd)
+            return
+        rollback = f".HEAD-rollback-{uuid.uuid4().hex}.tmp"
+        try:
+            self._write_temp(root_fd, rollback, previous)
+            os.replace(rollback, _HEAD, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+            os.fsync(root_fd)
+        finally:
+            try:
+                os.unlink(rollback, dir_fd=root_fd)
             except FileNotFoundError:
                 pass
 
@@ -834,6 +1036,8 @@ class SnapshotStore:
         with self._opened_layout() as (root_fd, trees_fd, _attempts_fd, _lock_fd):
             _document, tree = self._head_tree(root_fd, trees_fd)
             try:
+                if path not in tree.manifest:
+                    raise WorkspaceViolation(f"path is not authenticated by HEAD manifest: {path}")
                 descriptor = os.dup(tree.descriptor)
                 try:
                     segments = path.split("/")
@@ -841,12 +1045,26 @@ class SnapshotStore:
                         child, _ = _open_directory_at(descriptor, segment, "HEAD path directory")
                         os.close(descriptor)
                         descriptor = child
-                    file_fd, _ = _open_file_at(descriptor, segments[-1], path, immutable=True)
+                    file_fd, file_stat = _open_file_at(descriptor, segments[-1], path, immutable=True)
                     try:
                         os.lseek(file_fd, 0, os.SEEK_SET)
                         chunks: list[bytes] = []
+                        digest = hashlib.sha256()
                         while chunk := os.read(file_fd, _COPY_BUFFER_SIZE):
                             chunks.append(chunk)
+                            digest.update(chunk)
+                        _assert_open_file_stable(
+                            file_fd,
+                            descriptor,
+                            segments[-1],
+                            file_stat,
+                            "HEAD file",
+                            immutable=True,
+                        )
+                        if digest.hexdigest() != tree.manifest[path]:
+                            raise WorkspaceViolation(
+                                f"HEAD read hash does not match authenticated manifest: {path}"
+                            )
                         return b"".join(chunks)
                     finally:
                         os.close(file_fd)
@@ -1008,6 +1226,7 @@ def _lock_exclusive(descriptor: int) -> None:
 
 __all__ = [
     "AttemptWorkspace",
+    "HeadPublicationIndeterminate",
     "SnapshotStore",
     "WorkspaceViolation",
     "commit_candidate",
