@@ -74,7 +74,7 @@ from assurance_agent.workflow.graph.workspace import (
     WorkspaceError,
     WriteSet,
 )
-from assurance_agent.workflow.healing.allocation import commit_healing_allocation_ledger
+from assurance_agent.workflow.graph.product_hooks import current_product_hooks
 
 
 @dataclass
@@ -840,7 +840,7 @@ class AttemptEngine:
             if all(
                 isinstance(allocation.get(key), str) for key in required if key != "attempt_number"
             ) and isinstance(allocation.get("attempt_number"), int):
-                commit_healing_allocation_ledger(
+                current_product_hooks().commit_healing_allocation_ledger(
                     context.change_dir,
                     episode_id=str(allocation["episode_id"]),
                     attempt_id=str(allocation["attempt_id"]),

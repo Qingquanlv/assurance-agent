@@ -28,6 +28,7 @@ from assurance_agent.workflow.graph.capability_state import (
     reset_current_product_id,
 )
 from assurance_agent.workflow.graph.handlers.operation import stop_operation
+from assurance_agent.workflow.graph.product_hooks import ProductHooksMissing, current_product_hooks
 
 
 def test_validate_product_id_accepts_assurance() -> None:
@@ -173,3 +174,11 @@ def test_install_product_resets_on_catalog_install_failure() -> None:
         install_product(Mismatch())
     assert current_capability_view() is None
     assert current_product_id() == DEFAULT_PRODUCT_ID
+
+
+def test_reset_product_clears_hooks(tmp_path: Path) -> None:
+    select_product(DEFAULT_PRODUCT_ID)
+    assert isinstance(current_product_hooks().load_product_code_roots(tmp_path), list)
+    reset_product()
+    with pytest.raises(ProductHooksMissing, match="load_product_code_roots"):
+        current_product_hooks().load_product_code_roots(tmp_path)

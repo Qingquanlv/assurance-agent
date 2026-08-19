@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
 from assurance_agent.workflow.core.events import Ledger
-from assurance_agent.workflow.healing.projection import project_healing_episode
+from assurance_agent.workflow.core.product_hooks import current_product_hooks
 
 _TERMINAL = {"resolved", "not_needed", "skipped", "exhausted", "failed"}
 
@@ -27,7 +27,7 @@ class HealingStateProvider(Protocol):
 
 def derive_healing_state(change_dir: Path) -> HealingStateSnapshot:
     ledger = Ledger(change_dir)
-    projection = project_healing_episode(change_dir)
+    projection: Any = current_product_hooks().project_healing_episode(change_dir)
     if projection.baseline is None:
         # No episode pinned → attempts stay 0, but the orchestrator may already
         # have recorded a terminal judgment (e.g. `not_needed` on the happy path)

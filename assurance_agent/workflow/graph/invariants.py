@@ -25,11 +25,10 @@ from assurance_agent.artifacts.paths import (
 from assurance_agent.artifacts.registry import load_registered_artifact, match_artifact, parse_wire
 from assurance_agent.config import load_config
 from assurance_agent.exceptions import AaError
+from assurance_agent.workflow.graph.product_hooks import current_product_hooks
 from assurance_agent.workflow.graph.task_inputs import TaskInputSnapshotV1
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WriteSet, WorkspaceError
-from assurance_agent.workflow.healing.safety import load_product_code_roots
-from assurance_agent.workflow.issues.identity import candidate_document_digest
 from assurance_agent.workflow.graph.models import TaskResult
 
 ISSUE_CANDIDATE_DIGEST = "issue_candidate_digest"
@@ -111,7 +110,7 @@ def validate_issue_candidate_digest(authored: Mapping[str, Any]) -> TaskResult |
         status_model = IssueAnalysisStatus.model_validate(analysis_status)
     except ValidationError as exc:
         return task_failure("invalid_output", f"issue candidate digest contract is invalid: {exc}")
-    expected = candidate_document_digest(candidate)
+    expected = current_product_hooks().candidate_document_digest(candidate)
     if status_model.candidate_digest != expected:
         return task_failure(
             "invalid_output",
@@ -243,7 +242,7 @@ def validate_case_design_source_verification_text(
 
     resolved_root = project_root.resolve()
     product_roots: list[Path] = []
-    raw_product_roots = list(load_product_code_roots(project_root))
+    raw_product_roots = list(current_product_hooks().load_product_code_roots(project_root))
     try:
         config = load_config(project_root)
     except AaError:

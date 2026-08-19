@@ -23,6 +23,11 @@ from assurance_agent.workflow.graph.capability_state import (
     reset_current_product_id,
 )
 from assurance_agent.workflow.graph.handlers.operation import OperationFn
+from assurance_agent.workflow.graph.product_hooks import (
+    ProductHooks,
+    install_product_hooks,
+    reset_product_hooks,
+)
 
 PRODUCT_ENTRY_GROUP = "assurance_agent.products"
 _PRODUCT_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
@@ -75,6 +80,49 @@ class AssuranceProduct:
     def register(self) -> tuple[CapabilityView, dict[str, OperationFn], tuple[ArtifactSpec, ...]]:
         return build_default_catalog()
 
+    def product_hooks(self) -> ProductHooks:
+        from assurance_agent.workflow.healing.allocation import commit_healing_allocation_ledger
+        from assurance_agent.workflow.healing.effects import (
+            reconcile_fixer_proposal_approved,
+            reconcile_heal_record_apply,
+            reconcile_healing_allocation,
+            register_healing_effects,
+        )
+        from assurance_agent.workflow.healing.override_policy import (
+            assert_test_changes_override_allowed,
+            build_test_changes_override_token,
+            load_test_changes_override_policy,
+            token_json_bytes,
+        )
+        from assurance_agent.workflow.healing.projection import project_healing_episode
+        from assurance_agent.workflow.healing.safety import (
+            assert_test_tree_unchanged_or_healing,
+            load_product_code_roots,
+        )
+        from assurance_agent.workflow.improvements.reviewer_output import (
+            complete_improvement_reviewer_outputs,
+        )
+        from assurance_agent.workflow.issues.analyzer_output import complete_issue_analyzer_outputs
+        from assurance_agent.workflow.issues.identity import candidate_document_digest
+
+        return ProductHooks(
+            load_product_code_roots=load_product_code_roots,
+            candidate_document_digest=candidate_document_digest,
+            commit_healing_allocation_ledger=commit_healing_allocation_ledger,
+            complete_issue_analyzer_outputs=complete_issue_analyzer_outputs,
+            complete_improvement_reviewer_outputs=complete_improvement_reviewer_outputs,
+            register_healing_effects=register_healing_effects,
+            project_healing_episode=project_healing_episode,
+            assert_test_tree_unchanged_or_healing=assert_test_tree_unchanged_or_healing,
+            assert_test_changes_override_allowed=assert_test_changes_override_allowed,
+            build_test_changes_override_token=build_test_changes_override_token,
+            load_test_changes_override_policy=load_test_changes_override_policy,
+            token_json_bytes=token_json_bytes,
+            reconcile_healing_allocation=reconcile_healing_allocation,
+            reconcile_fixer_proposal_approved=reconcile_fixer_proposal_approved,
+            reconcile_heal_record_apply=reconcile_heal_record_apply,
+        )
+
 
 def load_product(product_id: str) -> Product:
     validate_product_id(product_id)
@@ -92,6 +140,13 @@ def install_product(product: Product) -> None:
         install_current_product_id(product.id)
         set_product_resource_root(product.resource_root())
         install_catalog(view, operations=operations, artifacts=artifacts)
+        hooks_fn = getattr(product, "product_hooks", None)
+        if callable(hooks_fn):
+            hooks = hooks_fn()
+            if isinstance(hooks, ProductHooks):
+                install_product_hooks(hooks)
+                return
+        reset_product_hooks()
     except Exception:
         reset_product()
         raise
@@ -105,3 +160,4 @@ def reset_product() -> None:
     set_product_resource_root(None)
     reset_current_product_id()
     reset_catalog()
+    reset_product_hooks()

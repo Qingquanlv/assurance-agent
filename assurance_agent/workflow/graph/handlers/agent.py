@@ -20,6 +20,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from assurance_agent.change_location import ChangeLocation
+from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.graph_types import ErrorKind
 from assurance_agent.workflow.graph.agent_api import AgentInvoker, AgentRequest, build_node_prompt
 from assurance_agent.workflow.graph.assurance_personas import (
@@ -48,6 +49,7 @@ from assurance_agent.workflow.graph.models import (
     RuntimeContext,
     TaskResult,
 )
+from assurance_agent.workflow.graph.product_hooks import ProductHooksMissing, current_product_hooks
 from assurance_agent.workflow.graph.schema_v2 import NodeDef
 from assurance_agent.workflow.graph.task_inputs import (
     load_runtime_context_sidecar,
@@ -56,14 +58,6 @@ from assurance_agent.workflow.graph.task_inputs import (
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.handlers.operation import link_host_task_paths
 from assurance_agent.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
-from assurance_agent.workflow.issues.analyzer_output import (
-    IssueAnalyzerOutputError,
-    complete_issue_analyzer_outputs,
-)
-from assurance_agent.workflow.improvements.reviewer_output import (
-    ImprovementReviewerOutputError,
-    complete_improvement_reviewer_outputs,
-)
 from assurance_agent.workflow.retro_outputs import (
     CandidateOutputError,
     SignalInvalidError,
@@ -271,6 +265,7 @@ class AgentHandler:
                 result.error or f"agent invocation failed for {task.target}",
             )
         try:
+            hooks = current_product_hooks()
             codegen_receipt = complete_codegen_manifest(
                 task=task,
                 workspace=workspace,
@@ -282,7 +277,7 @@ class AgentHandler:
                 workspace=workspace,
                 context=context,
             )
-            complete_issue_analyzer_outputs(workspace.change_dir, outputs)
+            hooks.complete_issue_analyzer_outputs(workspace.change_dir, outputs)
             complete_signal_outputs(workspace.project_root, outputs)
             complete_candidate_outputs(workspace.project_root, outputs)
             if skill == "aa-fuzz-plan":
@@ -298,7 +293,7 @@ class AgentHandler:
                     else 0
                 )
                 review_dir = workspace.project_root / "qa" / "improvements" / "reviews" / review_id
-                complete_improvement_reviewer_outputs(
+                hooks.complete_improvement_reviewer_outputs(
                     subject_path=workspace.project_root
                     / "qa"
                     / "improvements"
@@ -311,13 +306,14 @@ class AgentHandler:
                     expected_version=expected_version,
                     expected_subject_sha256=subject_sha256,
                 )
+        except ProductHooksMissing:
+            raise
         except (
-            IssueAnalyzerOutputError,
             SignalInvalidError,
             CandidateOutputError,
-            ImprovementReviewerOutputError,
             CodegenManifestError,
             PlanChecksCompletionError,
+            AaError,
             TypeError,
             ValueError,
         ) as exc:

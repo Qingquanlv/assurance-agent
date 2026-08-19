@@ -50,8 +50,8 @@ from assurance_agent.workflow.graph.evidence_paths import (
     resolve_evidence_path,
 )
 from assurance_agent.workflow.graph.task_inputs import TaskInputSnapshotV1
+from assurance_agent.workflow.graph.product_hooks import current_product_hooks
 from assurance_agent.workflow.graph.workspace import TreeStore, WriteSet, WorkspaceError
-from assurance_agent.workflow.healing.safety import load_product_code_roots
 
 GENERATED_FILES_CANDIDATE_V1 = "generated_files_candidate/v1"
 CODEGEN_FIX_CANDIDATE_V1 = "codegen_fix_candidate/v1"
@@ -998,7 +998,11 @@ def _validate_codegen_fix_candidate(
                     blobs[digest] = store.read_object(digest)
                 except WorkspaceError:
                     continue
-    roots = load_product_code_roots(project_root) if project_root is not None else ["app", "web/src", "src"]
+    roots = (
+        current_product_hooks().load_product_code_roots(project_root)
+        if project_root is not None
+        else ["app", "web/src", "src"]
+    )
     private_root = get_generated_files_contract(layer).private_test_root
     safety = evaluate_diff_safety(
         write_bindings=list(write_by_repo.values()),

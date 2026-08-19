@@ -21,17 +21,10 @@ from assurance_agent.artifacts.models import WorkflowState
 from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
+from assurance_agent.workflow.core.override_paths import DECISION_REL_PATH, TOKEN_REL_PATH
+from assurance_agent.workflow.core.product_hooks import current_product_hooks
 from assurance_agent.workflow.core.progression import transaction
 from assurance_agent.workflow.core.tree_hash import hash_test_tree, sha256_file
-from assurance_agent.workflow.healing.override_policy import (
-    DECISION_REL_PATH,
-    TOKEN_REL_PATH,
-    assert_test_changes_override_allowed,
-    build_test_changes_override_token,
-    load_test_changes_override_policy,
-    token_json_bytes,
-)
-from assurance_agent.workflow.healing.safety import assert_test_tree_unchanged_or_healing
 from assurance_agent.workflow.orchestration.decision_support import resolve_decision_support
 from assurance_agent.workflow.orchestration.gates import resolve_change_path
 from assurance_agent.workflow.orchestration.schema import GateDef, normalize_gates
@@ -98,23 +91,24 @@ def record_decision(
 
     override_token_bytes: bytes | None = None
     if support.consumer == "execution-test-changes":
-        integrity = assert_test_tree_unchanged_or_healing(
+        hooks = current_product_hooks()
+        integrity = hooks.assert_test_tree_unchanged_or_healing(
             project_root,
             loc.change_id,
             allow_test_changes=True,
         )
-        assert_test_changes_override_allowed(
+        hooks.assert_test_changes_override_allowed(
             change_dir,
             integrity,
-            load_test_changes_override_policy(project_root),
+            hooks.load_test_changes_override_policy(project_root),
         )
-        token = build_test_changes_override_token(
+        token = hooks.build_test_changes_override_token(
             change_dir,
             change_id=loc.change_id,
             reason=reason,
             tests_tree_sha256=hash_test_tree(project_root).aggregate,
         )
-        override_token_bytes = token_json_bytes(token)
+        override_token_bytes = hooks.token_json_bytes(token)
         evidence_file = DECISION_REL_PATH.as_posix()
         evidence_sha256 = hashlib.sha256(override_token_bytes).hexdigest()
 

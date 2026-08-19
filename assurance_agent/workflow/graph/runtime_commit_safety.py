@@ -12,6 +12,9 @@ from assurance_agent.workflow.graph.durable_effects import (
     COMMIT_SAFETY_INVENTORY as _DURABLE_INVENTORY,
 )
 from assurance_agent.workflow.graph.durable_effects import (
+    FIXER_PROPOSAL_APPROVED_V1,
+    HEAL_RECORD_APPLY_V2,
+    HEALING_ALLOCATION_V2,
     KNOWN_DURABLE_EFFECT_KINDS,
 )
 from assurance_agent.workflow.graph.effect_retry import (
@@ -22,9 +25,6 @@ from assurance_agent.workflow.graph.precommit import (
 )
 from assurance_agent.workflow.graph.precommit import (
     KNOWN_PRECOMMIT_VALIDATORS,
-)
-from assurance_agent.workflow.healing.effects import (
-    COMMIT_SAFETY_INVENTORY as _HEALING_INVENTORY,
 )
 from assurance_agent.workflow.orchestration.gate_semantics import (
     MANIFEST_SCHEMA_VERSION,
@@ -122,6 +122,60 @@ _EVIDENCE_EXPORT_INVENTORY: tuple[tuple[str, str, str], ...] = (
         "assurance_agent.workflow.graph.evidence_paths.verify_write_set_base_tree_roots",
         "helper",
         "evidence_export_base_tree_roots",
+    ),
+)
+
+# Qualified names only: pin healing.effects implementations without importing that domain.
+_HEALING_INVENTORY: tuple[tuple[str, str, str], ...] = (
+    (
+        "assurance_agent.workflow.healing.effects.HealingAllocationEffectV2",
+        "model",
+        HEALING_ALLOCATION_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.FixerProposalApprovedEffectV1",
+        "model",
+        FIXER_PROPOSAL_APPROVED_V1,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.HealRecordApplyEffectV2",
+        "model",
+        HEAL_RECORD_APPLY_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.allocation_idempotency_key",
+        "helper",
+        HEALING_ALLOCATION_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.approval_idempotency_key",
+        "helper",
+        FIXER_PROPOSAL_APPROVED_V1,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.record_idempotency_key",
+        "helper",
+        HEAL_RECORD_APPLY_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.reconcile_healing_allocation",
+        "helper",
+        HEALING_ALLOCATION_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.reconcile_fixer_proposal_approved",
+        "helper",
+        FIXER_PROPOSAL_APPROVED_V1,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.reconcile_heal_record_apply",
+        "helper",
+        HEAL_RECORD_APPLY_V2,
+    ),
+    (
+        "assurance_agent.workflow.healing.effects.register_healing_effects",
+        "helper",
+        "durable_effect_registry",
     ),
 )
 

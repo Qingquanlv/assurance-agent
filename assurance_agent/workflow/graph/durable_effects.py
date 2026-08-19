@@ -279,9 +279,9 @@ def _ensure_healing_effects_registered() -> None:
     global _HEALING_EFFECTS_REGISTERED
     if _HEALING_EFFECTS_REGISTERED:
         return
-    from assurance_agent.workflow.healing.effects import register_healing_effects
+    from assurance_agent.workflow.graph.product_hooks import current_product_hooks
 
-    register_healing_effects(_PRODUCTION_REGISTRY)
+    current_product_hooks().register_healing_effects(_PRODUCTION_REGISTRY)
     _HEALING_EFFECTS_REGISTERED = True
 
 

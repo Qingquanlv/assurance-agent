@@ -79,23 +79,5 @@ layers =
 # Graph delivery ops build a host Eval runner (callables cannot be CLI params).
 # That pulls eval → driver transitively; keep the seam explicit and fail-closed
 # for any new graph → driver edges.
-#
-# Remaining graph→domain seams are registered below as intentional, pending
-# digestion. New graph→domain edges must not be added without an explicit ignore.
 ignore_imports =
     assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.eval.host_runner
-    # Pending seams: graph kernel still reaches a few domain/evidence helpers.
-    assurance_agent.workflow.graph.invariants -> assurance_agent.workflow.healing.safety
-    assurance_agent.workflow.graph.invariants -> assurance_agent.workflow.issues.identity
-    assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.issues.analyzer_output
-    assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.improvements.reviewer_output
-    assurance_agent.workflow.graph.attempt_engine -> assurance_agent.workflow.healing.allocation
-    # V6 durable-effect / precommit / healing-projection seams from main.
-    assurance_agent.workflow.graph.durable_effects -> assurance_agent.workflow.healing.effects
-    assurance_agent.workflow.graph.runtime_commit_safety -> assurance_agent.workflow.healing.effects
-    assurance_agent.workflow.graph.precommit -> assurance_agent.workflow.healing.safety
-    assurance_agent.workflow.orchestration.healing_state -> assurance_agent.workflow.healing.projection
-    # Pre-existing reverse seams: orchestration (below domains) still imports
-    # healing helpers. Keep explicit until those helpers move down.
-    assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.healing.safety
-    assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.healing.override_policy
