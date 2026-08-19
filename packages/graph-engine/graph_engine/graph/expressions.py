@@ -6,9 +6,10 @@ from collections.abc import Mapping
 from typing import cast
 
 from graph_engine.canonical import JSONValue
+from graph_engine.errors import GraphEngineError
 
 
-class ExpressionError(ValueError):
+class ExpressionError(GraphEngineError, ValueError):
     """Raised when an expression is outside the closed expression language."""
 
 

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, NoReturn, TypeVar, cast
+import math
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Annotated, Any, cast
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, field_validator, model_validator
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
@@ -14,32 +17,11 @@ from graph_engine.graph.schema import (
     TimeoutPolicyDef,
     WorkflowDef,
 )
-from graph_engine.plugin_api import CapabilityRegistry
+from graph_engine.plugin_api import CapabilityRegistry, ResourceClaims
 
 
 class CompileError(GraphEngineError):
     """Raised when a structural workflow cannot be compiled."""
-
-
-_Key = TypeVar("_Key")
-_Value = TypeVar("_Value")
-
-
-class _FrozenDict(dict[_Key, _Value]):
-    """A serialization-friendly immutable snapshot of a public mapping."""
-
-    @staticmethod
-    def _blocked(*_args: object, **_kwargs: object) -> NoReturn:
-        raise TypeError("compiled mappings are immutable")
-
-    __setitem__ = _blocked  # type: ignore[assignment]
-    __delitem__ = _blocked  # type: ignore[assignment]
-    __ior__ = _blocked  # type: ignore[assignment]
-    clear = _blocked  # type: ignore[assignment]
-    pop = _blocked  # type: ignore[assignment]
-    popitem = _blocked  # type: ignore[assignment]
-    setdefault = _blocked  # type: ignore[assignment]
-    update = _blocked  # type: ignore[assignment]
 
 
 _COMPILED_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
@@ -49,14 +31,61 @@ class _CompiledModel(BaseModel):
     model_config = _COMPILED_CONFIG
 
 
+def _serialize_frozen_json_map(value: Mapping[str, object]) -> dict[str, Any]:
+    return {key: _thaw_json(item) for key, item in value.items()}
+
+
+FrozenJSONMap = Annotated[
+    Mapping[str, object],
+    PlainSerializer(_serialize_frozen_json_map, return_type=dict[str, Any]),
+]
+
+
+class CompiledNodeDefinition(NodeDef):
+    input: FrozenJSONMap = Field(  # type: ignore[reportIncompatibleVariableOverride]
+        default_factory=lambda: MappingProxyType({})
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_serialized_defaults(cls, value: object) -> object:
+        if isinstance(value, NodeDef):
+            value = value.model_dump(mode="python", by_alias=True)
+        if not isinstance(value, Mapping):
+            return value
+        return {
+            key: item
+            for key, item in value.items()
+            if key == "kind" or not _is_serialized_node_default(key, item)
+        }
+
+    @field_validator("input", mode="after")
+    @classmethod
+    def _freeze_input(cls, value: Mapping[str, object]) -> Mapping[str, object]:
+        return _freeze_json_map(value)
+
+
 class CompiledNode(_CompiledModel):
     graph_id: str
     node_id: str
     declaration_index: int
     topology_rank: int
-    definition: NodeDef
+    definition: CompiledNodeDefinition
     incoming: tuple[EdgeDef, ...]
     outgoing: tuple[EdgeDef, ...]
+
+    @field_validator("definition", mode="before")
+    @classmethod
+    def _normalize_definition(cls, value: object) -> object:
+        if isinstance(value, NodeDef):
+            return value.model_dump(mode="python", by_alias=True)
+        return value
+
+
+CompiledNodeMap = Annotated[
+    Mapping[str, CompiledNode],
+    PlainSerializer(dict, return_type=dict[str, CompiledNode]),
+]
 
 
 class CompiledGraph(_CompiledModel):
@@ -64,28 +93,46 @@ class CompiledGraph(_CompiledModel):
     max_activations: int
     start: str
     declaration_order: tuple[str, ...]
-    nodes: dict[str, CompiledNode]
+    nodes: CompiledNodeMap
     edges: tuple[EdgeDef, ...]
     sccs: tuple[tuple[str, ...], ...]
 
     @field_validator("nodes", mode="after")
     @classmethod
-    def _freeze_nodes(cls, value: dict[str, CompiledNode]) -> dict[str, CompiledNode]:
-        return _FrozenDict(value)
+    def _freeze_nodes(cls, value: Mapping[str, CompiledNode]) -> Mapping[str, CompiledNode]:
+        return MappingProxyType(dict(value))
+
+
+EntrypointMap = Annotated[
+    Mapping[str, str],
+    PlainSerializer(dict, return_type=dict[str, str]),
+]
+RetryMap = Annotated[
+    Mapping[str, RetryPolicyDef],
+    PlainSerializer(dict, return_type=dict[str, RetryPolicyDef]),
+]
+TimeoutMap = Annotated[
+    Mapping[str, TimeoutPolicyDef],
+    PlainSerializer(dict, return_type=dict[str, TimeoutPolicyDef]),
+]
+CompiledGraphMap = Annotated[
+    Mapping[str, CompiledGraph],
+    PlainSerializer(dict, return_type=dict[str, CompiledGraph]),
+]
 
 
 class CompiledWorkflow(_CompiledModel):
     name: str
-    entrypoints: dict[str, str]
-    retry: dict[str, RetryPolicyDef]
-    timeout: dict[str, TimeoutPolicyDef]
-    graphs: dict[str, CompiledGraph]
+    entrypoints: EntrypointMap
+    retry: RetryMap
+    timeout: TimeoutMap
+    graphs: CompiledGraphMap
     digest: str
 
     @field_validator("entrypoints", "retry", "timeout", "graphs", mode="after")
     @classmethod
-    def _freeze_mapping(cls, value: dict[str, Any]) -> dict[str, Any]:
-        return _FrozenDict(value)
+    def _freeze_mapping(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        return MappingProxyType(dict(value))
 
 
 def compile_workflow(workflow: WorkflowDef, registry: CapabilityRegistry) -> CompiledWorkflow:
@@ -175,8 +222,12 @@ def _reachable_from(start: str, outgoing: dict[str, list[str]]) -> set[str]:
 def _compile_graph(graph_id: str, graph: GraphDef) -> CompiledGraph:
     declaration_index = {node_id: index for index, node_id in enumerate(graph.nodes)}
     adjacency = {node_id: [] for node_id in graph.nodes}
+    incoming_edges: dict[str, list[EdgeDef]] = {node_id: [] for node_id in graph.nodes}
+    outgoing_edges: dict[str, list[EdgeDef]] = {node_id: [] for node_id in graph.nodes}
     for edge in graph.edges:
         adjacency[edge.from_].append(edge.to)
+        incoming_edges[edge.to].append(edge)
+        outgoing_edges[edge.from_].append(edge)
 
     sccs = _strongly_connected_components(adjacency)
     ordered_sccs = _condensation_order(adjacency, sccs, declaration_index)
@@ -194,9 +245,9 @@ def _compile_graph(graph_id: str, graph: GraphDef) -> CompiledGraph:
             node_id=node_id,
             declaration_index=declaration_index[node_id],
             topology_rank=topology_rank[node_id],
-            definition=_freeze_node(node),
-            incoming=tuple(edge for edge in graph.edges if edge.to == node_id),
-            outgoing=tuple(edge for edge in graph.edges if edge.from_ == node_id),
+            definition=CompiledNodeDefinition.model_validate(node.model_dump(mode="python", by_alias=True)),
+            incoming=tuple(incoming_edges[node_id]),
+            outgoing=tuple(outgoing_edges[node_id]),
         )
         for node_id, node in graph.nodes.items()
     }
@@ -211,57 +262,88 @@ def _compile_graph(graph_id: str, graph: GraphDef) -> CompiledGraph:
     )
 
 
-def _freeze_node(node: NodeDef) -> NodeDef:
-    values = dict(node.__dict__)
-    values["input"] = _freeze_json(node.input)
-    return NodeDef.model_construct(_fields_set=node.model_fields_set, **values)
+def _is_serialized_node_default(field_name: object, value: object) -> bool:
+    if value is None or value == () or value == [] or value == {}:
+        return True
+    if field_name == "resources":
+        empty_resources = ResourceClaims()
+        if value == empty_resources:
+            return True
+        if isinstance(value, Mapping):
+            return ResourceClaims.model_validate(value) == empty_resources
+    return False
+
+
+def _freeze_json_map(value: Mapping[str, object]) -> Mapping[str, object]:
+    return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
 
 
 def _freeze_json(value: object) -> object:
-    if isinstance(value, dict):
-        return _FrozenDict({key: _freeze_json(item) for key, item in value.items()})
-    if isinstance(value, list):
+    if value is None or isinstance(value, bool | int | str):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("compiled input numbers must be finite")
+        return value
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("compiled input object keys must be strings")
+        return _freeze_json_map(cast(Mapping[str, object], value))
+    if isinstance(value, list | tuple):
         return tuple(_freeze_json(item) for item in value)
+    raise TypeError(f"compiled input value is not JSON-compatible: {type(value).__name__}")
+
+
+def _thaw_json(value: object) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
     return value
 
 
 def _strongly_connected_components(adjacency: dict[str, list[str]]) -> list[tuple[str, ...]]:
-    next_index = 0
-    indices: dict[str, int] = {}
-    lowlinks: dict[str, int] = {}
-    stack: list[str] = []
-    on_stack: set[str] = set()
-    components: list[tuple[str, ...]] = []
-
-    def visit(node_id: str) -> None:
-        nonlocal next_index
-        indices[node_id] = next_index
-        lowlinks[node_id] = next_index
-        next_index += 1
-        stack.append(node_id)
-        on_stack.add(node_id)
-
-        for successor in adjacency[node_id]:
-            if successor not in indices:
-                visit(successor)
-                lowlinks[node_id] = min(lowlinks[node_id], lowlinks[successor])
-            elif successor in on_stack:
-                lowlinks[node_id] = min(lowlinks[node_id], indices[successor])
-
-        if lowlinks[node_id] != indices[node_id]:
-            return
-        component: list[str] = []
-        while True:
-            member = stack.pop()
-            on_stack.remove(member)
-            component.append(member)
-            if member == node_id:
-                break
-        components.append(tuple(component))
-
+    finish_order: list[str] = []
+    visited: set[str] = set()
     for node_id in adjacency:
-        if node_id not in indices:
-            visit(node_id)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        frames: list[tuple[str, int]] = [(node_id, 0)]
+        while frames:
+            current, next_successor = frames[-1]
+            successors = adjacency[current]
+            if next_successor < len(successors):
+                successor = successors[next_successor]
+                frames[-1] = (current, next_successor + 1)
+                if successor not in visited:
+                    visited.add(successor)
+                    frames.append((successor, 0))
+                continue
+            finish_order.append(current)
+            frames.pop()
+
+    reverse_adjacency: dict[str, list[str]] = {node_id: [] for node_id in adjacency}
+    for source, targets in adjacency.items():
+        for target in targets:
+            reverse_adjacency[target].append(source)
+
+    components: list[tuple[str, ...]] = []
+    assigned: set[str] = set()
+    for node_id in reversed(finish_order):
+        if node_id in assigned:
+            continue
+        assigned.add(node_id)
+        component: list[str] = []
+        pending = [node_id]
+        while pending:
+            current = pending.pop()
+            component.append(current)
+            for predecessor in reversed(reverse_adjacency[current]):
+                if predecessor not in assigned:
+                    assigned.add(predecessor)
+                    pending.append(predecessor)
+        components.append(tuple(component))
     return components
 
 

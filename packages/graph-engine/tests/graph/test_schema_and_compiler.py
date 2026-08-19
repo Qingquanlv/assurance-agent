@@ -1,11 +1,15 @@
 import json
+import sys
+from collections.abc import Mapping
 from copy import deepcopy
+from typing import cast
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
-from graph_engine.graph.compiler import CompileError, compile_workflow
+from graph_engine.errors import GraphEngineError
+from graph_engine.graph.compiler import CompiledNode, CompiledWorkflow, CompileError, compile_workflow
 from graph_engine.graph.expressions import ExpressionError, evaluate_expression
 from graph_engine.graph.schema import NodeDef, parse_workflow
 from graph_engine.plugin_api import (
@@ -317,6 +321,12 @@ def test_expression_accepts_exactly_2048_characters() -> None:
     assert evaluate_expression("true" + " " * 2044, {}) is True
 
 
+def test_expression_errors_share_the_package_failure_boundary() -> None:
+    with pytest.raises(GraphEngineError) as caught:
+        evaluate_expression('__import__("os")', {})
+    assert isinstance(caught.value, ValueError)
+
+
 def test_compile_rejects_unknown_entrypoint(registry: CapabilityRegistry) -> None:
     raw = _raw_valid()
     raw["entrypoints"]["main"] = "missing"  # type: ignore[index]
@@ -447,6 +457,30 @@ def test_reachable_cycle_has_stable_declaration_order_ranks(
     assert first.graphs["root"].nodes["done"].topology_rank == 2
 
 
+def test_deep_reachable_cycle_compiles_without_python_recursion(
+    registry: CapabilityRegistry,
+) -> None:
+    node_count = sys.getrecursionlimit() + 100
+    node_ids = [f"node-{index:04d}" for index in range(node_count)]
+    raw = _raw_valid()
+    graph = raw["graphs"]["root"]  # type: ignore[index]
+    graph["max_activations"] = 10_000  # type: ignore[index]
+    graph["start"] = node_ids[0]  # type: ignore[index]
+    graph["nodes"] = {node_id: {"kind": "gate", "expression": "true"} for node_id in node_ids}  # type: ignore[index]
+    graph["edges"] = [  # type: ignore[index]
+        {"from": source, "to": target} for source, target in zip(node_ids[:-1], node_ids[1:], strict=True)
+    ]
+    graph["edges"].append({"from": node_ids[-1], "to": node_ids[-2]})  # type: ignore[index]
+
+    first = compile_workflow(_parse_raw(raw), registry)
+    second = compile_workflow(_parse_raw(deepcopy(raw)), registry)
+
+    assert first.digest == second.digest
+    assert first.graphs["root"].nodes[node_ids[0]].topology_rank == 0
+    assert first.graphs["root"].nodes[node_ids[-2]].topology_rank == node_count - 2
+    assert first.graphs["root"].nodes[node_ids[-1]].topology_rank == node_count - 1
+
+
 def test_compiled_values_are_immutable_and_json_serializable(
     registry: CapabilityRegistry,
 ) -> None:
@@ -469,6 +503,84 @@ def test_compiled_values_are_immutable_and_json_serializable(
     from graph_engine.canonical import canonical_digest
 
     assert canonical_digest(dumped) == digest
+
+
+def test_compiled_mappings_have_an_honest_read_only_contract(
+    registry: CapabilityRegistry,
+) -> None:
+    compiled = compile_workflow(parse_workflow(VALID), registry)
+    graph = compiled.graphs["root"]
+
+    assert isinstance(compiled.graphs, Mapping)
+    assert not isinstance(compiled.graphs, dict)
+    assert isinstance(graph.nodes, Mapping)
+    assert not isinstance(graph.nodes, dict)
+    with pytest.raises(TypeError):
+        dict.__setitem__(compiled.graphs, "other", graph)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        dict.__setitem__(graph.nodes, "other", graph.nodes["ping"])  # type: ignore[arg-type]
+
+    dumped = compiled.model_dump(mode="json", by_alias=True)
+    digest = dumped.pop("digest")
+    from graph_engine.canonical import canonical_digest
+
+    assert canonical_digest(dumped) == digest
+
+
+def test_compiled_nested_input_is_immutable_after_all_validation_paths(
+    registry: CapabilityRegistry,
+) -> None:
+    raw = _raw_valid()
+    raw["graphs"]["root"]["nodes"]["ping"]["input"] = {  # type: ignore[index]
+        "nested": {"items": ["one", "two"]}
+    }
+    compiled = compile_workflow(_parse_raw(raw), registry)
+    reconstructed = (
+        CompiledWorkflow.model_validate(compiled.model_dump(mode="json", by_alias=True)),
+        CompiledWorkflow.model_validate_json(compiled.model_dump_json(by_alias=True)),
+    )
+
+    for candidate in (compiled, *reconstructed):
+        node_input = candidate.graphs["root"].nodes["ping"].definition.input
+        nested = cast(Mapping[str, object], node_input["nested"])
+        items = cast(tuple[object, ...], nested["items"])
+        assert not isinstance(node_input, dict)
+        assert not isinstance(nested, dict)
+        assert isinstance(items, tuple)
+        with pytest.raises(TypeError):
+            node_input["new"] = True
+        with pytest.raises(TypeError):
+            nested["new"] = True  # type: ignore[index]
+        with pytest.raises(TypeError):
+            items[0] = "changed"  # type: ignore[index]
+
+
+def test_compiled_node_freezes_a_normally_validated_node_definition() -> None:
+    definition = NodeDef.model_validate(
+        {
+            "kind": "task",
+            "capability": "toy.one.ping",
+            "retry": "once",
+            "timeout": "short",
+            "input": {"nested": {"items": ["one", "two"]}},
+        }
+    )
+    node = CompiledNode.model_validate(
+        {
+            "graph_id": "root",
+            "node_id": "ping",
+            "declaration_index": 0,
+            "topology_rank": 0,
+            "definition": definition,
+            "incoming": (),
+            "outgoing": (),
+        }
+    )
+
+    nested = cast(Mapping[str, object], node.definition.input["nested"])
+    assert not isinstance(node.definition.input, dict)
+    assert not isinstance(nested, dict)
+    assert isinstance(nested["items"], tuple)
 
 
 def test_compiled_edges_and_adjacency_are_tuples(registry: CapabilityRegistry) -> None:
