@@ -22,6 +22,13 @@ def test_exists_and_missing() -> None:
     assert not resources.exists("schemas", "no-such-file.yaml")
 
 
+def test_slash_joined_product_schema_path_reads_the_product_root() -> None:
+    text = resources.read_text("schemas/workflow-schema.yaml")
+    assert "graphs" in text
+    contracts = resources.read_text("schemas/execution-contracts.yaml")
+    assert "operation:evaluate-memory-improvement" in contracts
+
+
 def test_iter_children_lists_schema_files() -> None:
     names = resources.iter_children("schemas")
     assert "explore-advisory.schema.json" in names

@@ -9,7 +9,6 @@ import pytest
 
 from tests.helpers_aa import write_aa_config
 
-from assurance_agent.workflow.driver import loop as loop_mod
 from assurance_agent.workflow.driver.driver_state import read_driver_state
 from assurance_agent.workflow.driver.loop import (
     EXIT_COMPLETED,
@@ -18,6 +17,7 @@ from assurance_agent.workflow.driver.loop import (
     EXIT_STOPPED,
     run_workflow_loop,
 )
+from assurance_kernel.workflow.driver import loop as loop_mod
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 from assurance_agent.workflow.graph.models import GraphStatus, RunResult
 
@@ -78,7 +78,7 @@ def _patch_bundle(
     entrypoint = MagicMock()
     entrypoint.restart = restart
     compiled = MagicMock()
-    compiled.entrypoints.get.return_value = entrypoint
+    compiled.entrypoints = {"full": entrypoint}
     bundle = MagicMock()
     bundle.runtime = runtime
     bundle.compiled = compiled
@@ -194,7 +194,9 @@ def test_runtime_error_exit_40(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     runtime.latest_root_invocation.return_value = None
     runtime.run.side_effect = GraphRuntimeError("boom")
     runtime.start_invocation.side_effect = GraphRuntimeError("boom")
-    bundle = MagicMock(runtime=runtime, compiled=MagicMock())
+    compiled = MagicMock()
+    compiled.entrypoints = {"full": MagicMock()}
+    bundle = MagicMock(runtime=runtime, compiled=compiled)
     monkeypatch.setattr(loop_mod, "build_graph_runtime", lambda **_kwargs: bundle)
     monkeypatch.setattr(
         loop_mod,

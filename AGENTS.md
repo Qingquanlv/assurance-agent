@@ -2,10 +2,13 @@
 
 ## Cursor Cloud specific instructions
 
-This repo is a single Python 3.11 CLI project (`aa`, the "assurance-agent") managed by
-[`uv`](https://docs.astral.sh/uv/). There is no long-running service, database, web server, or
-frontend to start — the "application" is the `aa` CLI. Standard dev/lint/test/build commands live in
-`README.md` ("开发与测试") and `.github/workflows/ci.yml`; use those as the source of truth.
+This repo is a uv workspace that ships two Python 3.11 packages: `assurance-kernel`
+(graph runtime, product protocol, kernel resources) and `assurance-agent` (the
+default `assurance` product, `aa` CLI, four-layer YAML / skills, domain modules).
+There is no long-running service, database, web server, or frontend to start —
+the "application" is the `aa` CLI. Standard dev/lint/test/build commands live in
+`README.md` ("开发与测试") and `.github/workflows/ci.yml`; use those as the source of
+truth. `uv sync` at the repo root installs both workspace members into one env.
 
 Non-obvious notes:
 
@@ -30,7 +33,7 @@ Non-obvious notes:
 
 ## 自定义编排不是插件平台
 
-YAML 只换「图怎么走」。不要把技能、操作、提交前校验、门控函数做成项目外可加载插件。扩能力改 Python；组织配置放被测项目的 `.aa/`。
+YAML 只换「图怎么走」。不要把技能、操作、提交前校验、门控函数做成被测项目可加载插件。扩能力改 Python 并发成**已安装产品**（entry point 组 `assurance_agent.products`）；组织配置放被测项目的 `.aa/`。内核只加载已安装 wheel 声明的产品，不扫 SUT。
 
 **项目可以替换的（内部编排文件，不是对外扩展接口）**
 
@@ -41,7 +44,7 @@ YAML 只换「图怎么走」。不要把技能、操作、提交前校验、门
 
 **不要从项目外加载、也不要做成 YAML 插件的**
 
-- 操作节点（`operation:`）：登记在 `workflow/driver/operations_catalog.py`，确定性副作用、账本、写集冻结都在引擎里。
+- 操作节点（`operation:`）：由当前已安装产品的 `register()` 整份提供。保障产品的实现表在 `assurance_agent/workflow/driver/operations_catalog.py`；确定性副作用、账本、写集冻结都在内核里。被测树不能再登记操作。
 - 提交前校验（如计划机械候选 `/v1`）：闭集在 `workflow/graph/precommit.py`。合同里写一个新校验器名字，运行仍会缺省拒绝。
 - 门控内置函数（能力是否存在、计划评审怎么走）：白名单在 `workflow/orchestration/dsl.py`。开口等于任意代码执行。
 - 新产物形状：只有 `artifacts/registry.py` 与对应模型。校验命令和门控字段不认登记表外的结构。
@@ -64,8 +67,8 @@ YAML 只换「图怎么走」。不要把技能、操作、提交前校验、门
 
 被测项目要调的是 `.aa/config.yaml`、`.aa/policy.yaml`、`.aa/data-knowledge.yaml`，不是再复制一份包内清单。
 
-**若要「自定义保障产品」**
+**若要「另一个已安装产品」**
 
-另发一版引擎（加 Python 模块、扩闭集），不要让被测项目加载外部技能、操作或校验器。恢复、写集冻结、源码核验都不得被项目代码绕开。
+发一个依赖 `assurance-kernel` 的 Python 包，声明 `assurance_agent.products` 入口点，由 `aa --product <id>` 整份替换。不要让被测项目加载外部技能、操作或校验器。恢复、写集冻结、源码核验都不得被项目代码绕开。另做一版保障产品仍要扩内核闭集时，另发引擎，不要从 SUT 开口。
 
 一句话：YAML 换图；Python 扩能力；`.aa/` 放组织配置。

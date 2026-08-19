@@ -7,9 +7,10 @@ this module.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
+from types import MappingProxyType
 
 from assurance_kernel.exceptions import AaError
 
@@ -37,7 +38,7 @@ class ProductHooks:
     reconcile_healing_allocation: Callable[..., object]
     reconcile_fixer_proposal_approved: Callable[..., object]
     reconcile_heal_record_apply: Callable[..., object]
-    resolve_semantic_pin: Callable[..., object]
+    semantic_pins: Mapping[str, object]
 
 
 _hooks: ProductHooks | None = None
@@ -51,7 +52,12 @@ def _missing_hook(name: str) -> Callable[..., object]:
 
 
 def _fail_closed_hooks() -> ProductHooks:
-    values = {field.name: _missing_hook(field.name) for field in fields(ProductHooks)}
+    values: dict[str, object] = {}
+    for field in fields(ProductHooks):
+        if field.name == "semantic_pins":
+            values[field.name] = MappingProxyType({})
+        else:
+            values[field.name] = _missing_hook(field.name)
     return ProductHooks(**values)  # type: ignore[arg-type]
 
 

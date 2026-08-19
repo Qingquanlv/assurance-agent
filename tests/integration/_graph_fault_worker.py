@@ -873,6 +873,7 @@ def _build_v5_revision(project: Path):
         change_dir=change,
         compiled=compiled,
         contracts=contracts,
+        operations=ops,
         build_node_runner=build_node_runner,
         clock=FakeClock(),
     )
@@ -965,6 +966,7 @@ def _build(project: Path, schema_key: str):
         change_dir=change,
         compiled=compiled,
         contracts=contracts,
+        operations=ops,
         build_node_runner=build_node_runner,
         clock=FakeClock(),
     )

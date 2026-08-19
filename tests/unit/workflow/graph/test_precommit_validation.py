@@ -369,6 +369,8 @@ def _freeze_valid_api_candidate(
     conflicting_import_bindings: bool = False,
     unresolved_pytest_fixture: bool = False,
     resolved_pytest_fixture: bool = False,
+    stale_conftest_missing_helper: bool = False,
+    imported_missing_fixture_module: bool = False,
 ) -> tuple[Path, TreeStore, str, str, PrecommitValidationContext, str]:
     project = _make_project(tmp_path)
     change = project / "qa" / "changes" / "CH-1"
@@ -383,6 +385,18 @@ def _freeze_valid_api_candidate(
             "@pytest.fixture\n"
             "def admin_token():\n"
             "    return 'token'\n",
+            encoding="utf-8",
+        )
+    if stale_conftest_missing_helper:
+        (project / "tests" / "api" / "conftest.py").write_text(
+            "from tests.helpers.dept_assertions import find_dept_in_tree\n\n"
+            "def unused():\n"
+            "    return find_dept_in_tree\n",
+            encoding="utf-8",
+        )
+    if imported_missing_fixture_module:
+        (project / "tests" / "api" / "conftest.py").write_text(
+            "from tests.api.missing_helpers import client, admin_token\n",
             encoding="utf-8",
         )
     store = TreeStore(change)
@@ -435,7 +449,7 @@ def _freeze_valid_api_candidate(
             b"@given(st.integers())\n"
             b"def test_api_001(value):\n    assert value is not None\n"
         )
-    elif unresolved_pytest_fixture or resolved_pytest_fixture:
+    elif unresolved_pytest_fixture or resolved_pytest_fixture or imported_missing_fixture_module:
         test_body = b"def test_api_001(client, admin_token):\n    assert client and admin_token\n"
     else:
         test_body = b"def test_api_001():\n    assert True\n"
@@ -734,6 +748,58 @@ def test_generated_files_candidate_accepts_fixtures_from_ancestor_conftest(tmp_p
     )
 
     assert receipt.validator_id == GENERATED_FILES_CANDIDATE_V1
+
+
+def test_generated_files_candidate_ignores_unresolved_imports_in_base_conftest(
+    tmp_path: Path,
+) -> None:
+    _project, store, _sid, write_set_id, context, _tree = _freeze_valid_api_candidate(
+        tmp_path, stale_conftest_missing_helper=True
+    )
+    write_set = store.load_write_set(write_set_id)
+    snapshot = load_task_input_snapshot(store, context.input_snapshot_id)
+
+    _receipt_id, receipt = validate_candidate(
+        GENERATED_FILES_CANDIDATE_V1,
+        context,
+        store=store,
+        write_set=write_set,
+        input_snapshot=snapshot,
+        plan_text=_api_plan_text(),
+        cases=_api_cases(),
+        change_id="CH-1",
+        layer="api",
+        current_change_repo_path="qa/changes/CH-1",
+    )
+
+    assert receipt.validator_id == GENERATED_FILES_CANDIDATE_V1
+
+
+def test_generated_files_candidate_rejects_missing_imported_conftest_fixtures(
+    tmp_path: Path,
+) -> None:
+    _project, store, _sid, write_set_id, context, _tree = _freeze_valid_api_candidate(
+        tmp_path, imported_missing_fixture_module=True
+    )
+    write_set = store.load_write_set(write_set_id)
+    snapshot = load_task_input_snapshot(store, context.input_snapshot_id)
+
+    with pytest.raises(
+        CandidateValidationError,
+        match=r"unresolved local imports: .*tests/api/conftest.py -> tests.api.missing_helpers",
+    ):
+        validate_candidate(
+            GENERATED_FILES_CANDIDATE_V1,
+            context,
+            store=store,
+            write_set=write_set,
+            input_snapshot=snapshot,
+            plan_text=_api_plan_text(),
+            cases=_api_cases(),
+            change_id="CH-1",
+            layer="api",
+            current_change_repo_path="qa/changes/CH-1",
+        )
 
 
 def test_generated_files_candidate_rejects_summary_only(tmp_path: Path) -> None:

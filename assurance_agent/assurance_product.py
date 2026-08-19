@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import importlib
 from importlib.abc import Traversable
 from importlib.resources import files
+from types import MappingProxyType
 
 from assurance_agent.artifacts.registry import REGISTRY, ArtifactSpec
 from assurance_agent.workflow.driver.operations_catalog import default_operations
@@ -41,11 +41,22 @@ class AssuranceProduct:
         return build_default_catalog()
 
     def product_hooks(self) -> ProductHooks:
+        from assurance_agent.eval.evidence_export import (
+            export_root_execution_closure,
+            select_root_event_slice,
+            verify_export_manifest_closure,
+        )
         from assurance_agent.workflow.healing.allocation import commit_healing_allocation_ledger
         from assurance_agent.workflow.healing.effects import (
+            FixerProposalApprovedEffectV1,
+            HealingAllocationEffectV2,
+            HealRecordApplyEffectV2,
+            allocation_idempotency_key,
+            approval_idempotency_key,
             reconcile_fixer_proposal_approved,
             reconcile_heal_record_apply,
             reconcile_healing_allocation,
+            record_idempotency_key,
             register_healing_effects,
         )
         from assurance_agent.workflow.healing.override_policy import (
@@ -87,27 +98,48 @@ class AssuranceProduct:
             reconcile_healing_allocation=reconcile_healing_allocation,
             reconcile_fixer_proposal_approved=reconcile_fixer_proposal_approved,
             reconcile_heal_record_apply=reconcile_heal_record_apply,
-            resolve_semantic_pin=resolve_semantic_pin,
+            semantic_pins=MappingProxyType(
+                {
+                    "assurance_agent.eval.evidence_export.export_root_execution_closure": (
+                        export_root_execution_closure
+                    ),
+                    "assurance_agent.eval.evidence_export.select_root_event_slice": (select_root_event_slice),
+                    "assurance_agent.eval.evidence_export.verify_export_manifest_closure": (
+                        verify_export_manifest_closure
+                    ),
+                    "assurance_agent.workflow.healing.effects.FixerProposalApprovedEffectV1": (
+                        FixerProposalApprovedEffectV1
+                    ),
+                    "assurance_agent.workflow.healing.effects.HealRecordApplyEffectV2": (
+                        HealRecordApplyEffectV2
+                    ),
+                    "assurance_agent.workflow.healing.effects.HealingAllocationEffectV2": (
+                        HealingAllocationEffectV2
+                    ),
+                    "assurance_agent.workflow.healing.effects.allocation_idempotency_key": (
+                        allocation_idempotency_key
+                    ),
+                    "assurance_agent.workflow.healing.effects.approval_idempotency_key": (
+                        approval_idempotency_key
+                    ),
+                    "assurance_agent.workflow.healing.effects.reconcile_fixer_proposal_approved": (
+                        reconcile_fixer_proposal_approved
+                    ),
+                    "assurance_agent.workflow.healing.effects.reconcile_heal_record_apply": (
+                        reconcile_heal_record_apply
+                    ),
+                    "assurance_agent.workflow.healing.effects.reconcile_healing_allocation": (
+                        reconcile_healing_allocation
+                    ),
+                    "assurance_agent.workflow.healing.effects.record_idempotency_key": (
+                        record_idempotency_key
+                    ),
+                    "assurance_agent.workflow.healing.effects.register_healing_effects": (
+                        register_healing_effects
+                    ),
+                    "assurance_agent.workflow.healing.safety.load_product_code_roots": (
+                        load_product_code_roots
+                    ),
+                }
+            ),
         )
-
-
-def resolve_semantic_pin(qualified_name: str) -> object:
-    """Import a leftover ``assurance_agent.*`` digest pin from this wheel."""
-    parts = qualified_name.split(".")
-    last_error: Exception | None = None
-    for i in range(len(parts), 0, -1):
-        module_name = ".".join(parts[:i])
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError as exc:
-            last_error = exc
-            continue
-        obj: object = module
-        try:
-            for attr in parts[i:]:
-                obj = getattr(obj, attr)
-        except AttributeError as exc:
-            last_error = exc
-            continue
-        return obj
-    raise ImportError(f"cannot resolve semantic dependency: {qualified_name}") from last_error

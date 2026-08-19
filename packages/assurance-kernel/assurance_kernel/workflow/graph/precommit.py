@@ -1456,6 +1456,12 @@ def _validate_generated_pytest_fixture_closure(
     conftests, frozen inputs, and candidate writes without executing SUT fixtures.
     Framework fixtures are a closed allowlist; project fixtures must be defined or
     imported by the test module or an ancestor ``conftest.py``.
+
+    Candidate-written files (the test module and generated conftest) must have
+    resolvable local imports. A pre-existing ancestor conftest may carry unused
+    SUT imports that codegen did not introduce; those are ignored unless they
+    bind a fixture parameter the generated test actually uses. Those imports
+    must resolve, or pytest collection of the new test would fail.
     """
     sources = _candidate_python_sources(
         store=store,
@@ -1510,12 +1516,21 @@ def _validate_generated_pytest_fixture_closure(
             try:
                 conftest_tree = ast.parse(conftest_source, filename=conftest_path)
                 available.update(_module_fixture_bindings(conftest_tree))
-                _collect_unresolved_local_imports(
-                    repo_path=conftest_path,
-                    tree=conftest_tree,
-                    available_paths=available_paths,
-                    unresolved=unresolved_imports,
-                )
+                if conftest_path in write_by_repo:
+                    _collect_unresolved_local_imports(
+                        repo_path=conftest_path,
+                        tree=conftest_tree,
+                        available_paths=available_paths,
+                        unresolved=unresolved_imports,
+                    )
+                else:
+                    _collect_unresolved_required_fixture_imports(
+                        repo_path=conftest_path,
+                        tree=conftest_tree,
+                        available_paths=available_paths,
+                        required_fixtures=required,
+                        unresolved=unresolved_imports,
+                    )
             except SyntaxError as exc:
                 raise CandidateValidationError(
                     f"generated Python is not parseable: {conftest_path}: {exc}"
@@ -1549,6 +1564,30 @@ def _candidate_available_paths(
     )
     paths.update(write_by_repo)
     return paths
+
+
+def _collect_unresolved_required_fixture_imports(
+    *,
+    repo_path: str,
+    tree: ast.Module,
+    available_paths: set[str],
+    required_fixtures: set[str],
+    unresolved: list[str],
+) -> None:
+    """Collect missing local imports that bind fixtures the generated test uses."""
+    local_roots = {PurePosixPath(path).parts[0] for path in available_paths if PurePosixPath(path).parts}
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom) or node.level != 0 or not node.module:
+            continue
+        module = node.module
+        if module.split(".", 1)[0] not in local_roots:
+            continue
+        binds_required = any((alias.asname or alias.name) in required_fixtures for alias in node.names)
+        if not binds_required:
+            continue
+        if _local_module_is_available(module, available_paths):
+            continue
+        unresolved.append(f"{repo_path} -> {module}")
 
 
 def _collect_unresolved_local_imports(

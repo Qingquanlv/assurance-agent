@@ -198,8 +198,10 @@ def assemble_graph_runtime(
     """Wire TreeStore / CheckpointStore / NodeRunner / Scheduler / GraphRuntime.
 
     Provide either ``build_node_runner`` (escape hatch) or ``adapter`` (default
-    path, with ``operations`` defaulting to the driver catalog). ``run_child``
-    for subgraph dispatch is always closed over the assembled runtime.
+    path, with ``operations`` defaulting to the driver catalog). Operation
+    catalog membership is enforced for every assembled graph, including custom
+    runners. ``run_child`` for subgraph dispatch is always closed over the
+    assembled runtime.
     """
     if build_node_runner is None and adapter is None:
         raise ValueError("assemble_graph_runtime requires adapter or build_node_runner")

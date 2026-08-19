@@ -140,7 +140,7 @@ def test_constant_mutation_changes_symbol_and_aggregate_digest(
 
 
 def test_model_validator_mode_mutation_changes_digests() -> None:
-    qualified_name = f"{Review.__module__}.{Review.__qualname__}"
+    qualified_name = "assurance_agent.artifacts.models.review.Review"
     original = inspect.getsource(Review)
     mutated = original.replace('mode="after"', 'mode="before"', 1)
     assert mutated != original
@@ -155,7 +155,7 @@ def test_model_validator_mode_mutation_changes_digests() -> None:
 
 
 def test_field_validator_field_list_mutation_changes_digests() -> None:
-    qualified_name = f"{CheckEvidence.__module__}.{CheckEvidence.__qualname__}"
+    qualified_name = "assurance_agent.artifacts.models.plan_checks.CheckEvidence"
     original = inspect.getsource(CheckEvidence)
     injected = original.replace(
         "    check_id: str\n",

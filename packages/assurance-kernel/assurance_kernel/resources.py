@@ -27,6 +27,13 @@ def set_product_resource_root(root: Traversable | Path | None) -> None:
     _product_root = root
 
 
+def _parts(*relpath: str) -> tuple[str, ...]:
+    parts: list[str] = []
+    for item in relpath:
+        parts.extend(p for p in item.replace("\\", "/").split("/") if p)
+    return tuple(parts)
+
+
 def _is_product_rel(relpath: tuple[str, ...]) -> bool:
     for prefix in _PRODUCT_PREFIXES:
         if relpath[: len(prefix)] == prefix:
@@ -46,8 +53,9 @@ def _root_for(relpath: tuple[str, ...]) -> Traversable | Path:
 
 
 def _node(*relpath: str) -> Traversable | Path:
-    node: Traversable | Path = _root_for(relpath)
-    for part in relpath:
+    parts = _parts(*relpath)
+    node: Traversable | Path = _root_for(parts)
+    for part in parts:
         node = node / part
     return node
 

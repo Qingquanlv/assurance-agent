@@ -73,7 +73,23 @@ def test_kernel_semantic_pin_resolves_to_kernel_module() -> None:
     assert module.__name__.startswith("assurance_kernel")
 
 
-def test_healing_pin_without_hooks_raises_product_hooks_missing() -> None:
+def test_healing_pin_without_hooks_fails_closed() -> None:
     reset_product_hooks()
-    with pytest.raises(ProductHooksMissing, match="resolve_semantic_pin"):
+    with pytest.raises(ImportError, match="cannot resolve semantic dependency"):
         resolve_qualified_object("assurance_agent.workflow.healing.effects.register_healing_effects")
+
+
+def test_assurance_semantic_pin_allowlist_resolves_healing_effect() -> None:
+    reset_product()
+    select_product("assurance")
+    from assurance_agent.workflow.healing.effects import register_healing_effects
+
+    obj = resolve_qualified_object("assurance_agent.workflow.healing.effects.register_healing_effects")
+    assert obj is register_healing_effects
+
+
+def test_unknown_product_pin_is_not_dynamically_imported() -> None:
+    reset_product()
+    select_product("assurance")
+    with pytest.raises(ImportError, match="cannot resolve semantic dependency"):
+        resolve_qualified_object("assurance_agent.commands.workflow_cmd")

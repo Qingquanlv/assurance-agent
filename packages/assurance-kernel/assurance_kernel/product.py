@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from importlib.abc import Traversable
 from importlib.metadata import EntryPoint, distributions
 from typing import Protocol
@@ -68,21 +69,45 @@ def _entry_point_for(product_id: str) -> EntryPoint:
     return matches[0][0]
 
 
+def iter_product_entry_points() -> Iterator[tuple[str, str]]:
+    """Yield ``(product_id, distribution_name)`` for uniquely installed products."""
+    found = _entry_points_by_name()
+    for product_id, matches in sorted(found.items()):
+        if len(matches) > 1:
+            dists = ", ".join(sorted({item[1] for item in matches}))
+            raise ProductError(f"duplicate product id {product_id!r} declared by: {dists}")
+        yield product_id, matches[0][1]
+
+
+def _require_product_protocol(product: object, product_id: str) -> Product:
+    if getattr(product, "id", None) != product_id:
+        raise ProductError(f"product id mismatch: entry {product_id!r} != {getattr(product, 'id', None)!r}")
+    if not callable(getattr(product, "resource_root", None)):
+        raise ProductError(f"product {product_id!r} resource_root is not callable")
+    if not callable(getattr(product, "register", None)):
+        raise ProductError(f"product {product_id!r} register is not callable")
+    return product  # type: ignore[return-value]
+
+
 def load_product(product_id: str) -> Product:
     validate_product_id(product_id)
     ep = _entry_point_for(product_id)
-    loaded = ep.load()
-    product = loaded() if isinstance(loaded, type) else loaded
-    if getattr(product, "id", None) != product_id:
-        raise ProductError(f"product id mismatch: entry {product_id!r} != {getattr(product, 'id', None)!r}")
-    return product
+    try:
+        loaded = ep.load()
+    except Exception as exc:
+        raise ProductError(f"failed to load product {product_id}: {exc}") from exc
+    try:
+        product = loaded() if isinstance(loaded, type) else loaded
+    except Exception as exc:
+        raise ProductError(f"failed to construct product {product_id}: {exc}") from exc
+    return _require_product_protocol(product, product_id)
 
 
 def install_product(product: Product) -> None:
-    view, operations, artifacts = product.register()
     try:
         install_current_product_id(product.id)
         set_product_resource_root(product.resource_root())
+        view, operations, artifacts = product.register()
         install_catalog(view, operations=operations, artifacts=artifacts)
         hooks_fn = getattr(product, "product_hooks", None)
         if callable(hooks_fn):

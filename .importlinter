@@ -116,3 +116,14 @@ layers =
     assurance_kernel.workflow.graph
     assurance_kernel.workflow.orchestration
     assurance_kernel.workflow.core
+
+[importlinter:contract:kernel-domain-layers]
+name = kernel workflow / verification / knowledge+evidence / artifacts / config / resources
+type = layers
+layers =
+    assurance_kernel.workflow
+    assurance_kernel.verification
+    assurance_kernel.knowledge : assurance_kernel.evidence
+    assurance_kernel.artifacts
+    assurance_kernel.config
+    assurance_kernel.resources

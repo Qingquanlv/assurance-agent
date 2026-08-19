@@ -21,6 +21,10 @@ def _synchronized_change_worker(
     start_barrier,
     results,
 ) -> None:  # multiprocessing proxies intentionally stay runtime-typed
+    from assurance_agent.product import select_product
+    from assurance_agent.workflow.graph.capability_state import DEFAULT_PRODUCT_ID
+
+    select_product(DEFAULT_PRODUCT_ID)
     from assurance_agent.workflow.core.events import read_events_strict
     from assurance_agent.workflow.graph.checkpoint import CheckpointStore, project_invocation
     from assurance_agent.workflow.graph.contracts import ResourceClaims, ResourcePath

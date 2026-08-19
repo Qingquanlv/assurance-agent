@@ -200,7 +200,16 @@ aa skill refresh --dry-run       # 只报告将变更的文件，不落盘
 
 ## 资源分发
 
-`schemas/`、`skills/`、`.opencode/` 是运行时资源，唯一源在包内 `assurance_agent/_resources/`，随 wheel/sdist 分发。任何模块只经 `assurance_agent/resources.py`（`importlib.resources`）访问，禁止源码仓库相对路径。workflow schema 解析顺序：项目 `.aa/workflow-schema.yaml` → 项目 `schemas/workflow-schema.yaml` → 包内默认；execution contracts 同序（`.aa/execution-contracts.yaml` → `schemas/execution-contracts.yaml` → 包内默认）。显式 `--schema` / `--contracts` 覆盖是排他的（路径缺失即报错，不回退），且必须落在项目 `.aa/` 或 `schemas/`。项目级覆盖（自定义图、节点与 execution contracts）的编写指南见 `docs/schemas.md`「Workflow schema v2 编排词汇」。
+运行时资源分两根，都经 `assurance_agent/resources.py`（内核实现为 `assurance_kernel.resources`，`importlib.resources`）访问，禁止源码仓库相对路径。
+
+| 根 | 位置 | 内容 |
+|---|---|---|
+| 内核 | `assurance_kernel/_resources/` | 默认策略、摄入产物目录、探索 JSON 样例、失败分类规则、`opencode/{plugins,tools}` |
+| 当前产品 | 已安装产品的 `resource_root()`；保障产品是 `assurance_agent/_resources/` | 四层 `workflow-schema.yaml`、执行合同、技能、`opencode/agents` |
+
+`pip install assurance-agent` 会带上内核。只装内核时没有保障四层图。产品发现只走已安装 entry point，不扫被测树。
+
+workflow schema 解析顺序：项目 `.aa/workflow-schema.yaml` → 项目 `schemas/workflow-schema.yaml` → 当前产品资源根；execution contracts 同序（`.aa/execution-contracts.yaml` → `schemas/execution-contracts.yaml` → 当前产品）。显式 `--schema` / `--contracts` 覆盖是排他的（路径缺失即报错，不回退），且必须落在项目 `.aa/` 或 `schemas/`。项目级覆盖（自定义图、节点与 execution contracts）的编写指南见 `docs/schemas.md`「Workflow schema v2 编排词汇」。
 
 ---
 
@@ -217,7 +226,7 @@ uv run pre-commit run -a      # 本地一键跑 ruff + pyright
 bash scripts/packaging_smoke_test.sh   # 构建 wheel + 全新环境安装 + 源码目录外运行
 ```
 
-分层契约（import-linter）：`cli → commands → eval → risk → workflow → verification → evidence → artifacts → config → resources`，禁止反向依赖。
+分层契约（import-linter）：保障包 `cli → commands → eval → risk → workflow → verification → evidence → artifacts → config → resources`；内核包对迁入的同名层再列一份（`workflow → verification → knowledge|evidence → artifacts → config → resources`），禁止反向依赖。内核不得 `import assurance_agent`。
 
 核心模块：
 
@@ -236,7 +245,8 @@ bash scripts/packaging_smoke_test.sh   # 构建 wheel + 全新环境安装 + 源
 | `assurance_agent/evidence/` | trace fold、证据充分性、verify 裁决 |
 | `assurance_agent/artifacts/` | 产物 pydantic 契约 + 路径注册表 + `aa validate` |
 | `assurance_agent/retro/` `assurance_agent/workflow/improvements/` | 独立 Retro 证据收集 + Project Improvement Ledger |
-| `assurance_agent/_resources/` | 运行时资源唯一源（schemas / skills / opencode） |
+| `assurance_agent/_resources/` | 保障产品资源（四层图 / 合同 / 技能 / OpenCode agents） |
+| `packages/assurance-kernel/` | 内核发行 `assurance-kernel`（运行时、产品协议、内核资源） |
 
 ---
 

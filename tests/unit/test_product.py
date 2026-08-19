@@ -9,6 +9,7 @@ from assurance_agent.assurance_product import AssuranceProduct
 from assurance_agent.product import (
     ProductError,
     install_product,
+    iter_product_entry_points,
     load_product,
     reset_product,
     select_product,
@@ -153,8 +154,57 @@ def test_install_product_does_not_mutate_when_register_fails() -> None:
     install_current_product_id("sample")
     with pytest.raises(RuntimeError, match="boom"):
         install_product(Boom())
-    assert current_product_id() == "sample"
+    assert current_product_id() == DEFAULT_PRODUCT_ID
     assert current_capability_view() is None
+
+
+def test_register_observes_new_product_id_and_resource_root(tmp_path: Path) -> None:
+    (tmp_path / "schemas").mkdir()
+    (tmp_path / "schemas" / "workflow-schema.yaml").write_text("name: probe-schema\n")
+    seen: dict[str, object] = {}
+
+    class Probe:
+        id = "sample"
+
+        def resource_root(self):
+            return tmp_path
+
+        def register(self):
+            seen["product_id"] = current_product_id()
+            seen["schema"] = resources.read_text("schemas", "workflow-schema.yaml")
+            builder = CapabilityCatalog()
+            builder.register_operation("operation:stop")
+            return builder.freeze(), {"operation:stop": stop_operation}, ()
+
+    reset_product()
+    select_product(DEFAULT_PRODUCT_ID)
+    install_product(Probe())
+    assert seen["product_id"] == "sample"
+    assert seen["schema"] == "name: probe-schema\n"
+
+
+def test_iter_product_entry_points_includes_assurance_and_sample() -> None:
+    ids = {product_id for product_id, _dist in iter_product_entry_points()}
+    assert DEFAULT_PRODUCT_ID in ids
+    assert "sample" in ids
+
+
+def test_load_product_rejects_missing_register(monkeypatch: pytest.MonkeyPatch) -> None:
+    from assurance_agent import product as product_mod
+
+    class _Loaded:
+        id = "sample"
+
+        def resource_root(self):
+            return AssuranceProduct().resource_root()
+
+    class _Ep:
+        def load(self) -> object:
+            return _Loaded()
+
+    monkeypatch.setattr(product_mod, "_entry_point_for", lambda _product_id: _Ep())
+    with pytest.raises(ProductError, match="register"):
+        load_product("sample")
 
 
 def test_install_product_resets_on_catalog_install_failure() -> None:

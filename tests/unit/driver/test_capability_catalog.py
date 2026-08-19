@@ -110,6 +110,33 @@ def test_assemble_rejects_operation_missing_from_empty_catalog(tmp_path: Path) -
         reset_catalog()
 
 
+def test_assemble_rejects_unregistered_operation_with_custom_runner(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.models import TaskResult
+
+    write_aa_config(tmp_path)
+    (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True)
+    empty = CapabilityCatalog().freeze()
+    install_catalog(empty, operations={}, artifacts=())
+    compiled = compile_workflow(parse_workflow_v2(_STOP_SCHEMA))
+
+    class _OkRunner:
+        def execute(self, task, workspace, context):  # type: ignore[no-untyped-def]
+            del task, workspace, context
+            return TaskResult(status="succeeded")
+
+    try:
+        with pytest.raises(CapabilityCatalogError, match="operation:stop"):
+            assemble_graph_runtime(
+                project_root=tmp_path,
+                change_dir=tmp_path / "qa" / "changes" / "CH-1",
+                compiled=compiled,
+                contracts=ExecutionContractCatalog(contracts={}),
+                build_node_runner=lambda _store, _run_child: _OkRunner(),
+            )
+    finally:
+        reset_catalog()
+
+
 def test_reset_catalog_allows_later_default_match() -> None:
     empty = CapabilityCatalog().freeze()
     install_catalog(empty, operations={}, artifacts=())

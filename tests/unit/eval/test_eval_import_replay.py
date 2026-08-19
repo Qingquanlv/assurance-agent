@@ -136,6 +136,7 @@ def _runtime_factory(*, write_forbidden: bool = False):
             change_dir=change,
             compiled=compiled,
             contracts=contracts,
+            operations=_ops(),
             build_node_runner=build_node_runner,
         )
 

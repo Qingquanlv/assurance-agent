@@ -356,6 +356,7 @@ def _build_runtime(project: Path, compiled, contracts) -> GraphRuntime:
         change_dir=project / "qa" / "changes" / "CH-1",
         compiled=compiled,
         contracts=contracts,
+        operations=_ops(),
         build_node_runner=build,
         clock=SystemClock(),
     )

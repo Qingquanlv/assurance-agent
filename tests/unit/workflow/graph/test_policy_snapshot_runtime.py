@@ -210,6 +210,7 @@ def _runtime(
         compiled=compiled,
         contracts=contracts,  # type: ignore[arg-type]
         object_store=store,
+        operations={"operation:observe-policy": observe},
         build_node_runner=build,
         clock=SystemClock(),
     )

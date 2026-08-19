@@ -199,11 +199,16 @@ def resolve_qualified_object(qualified_name: str) -> object:
 
     Locked kernel pins keep their historical ``assurance_agent.*`` strings for
     resume digests, but the import is rewritten onto ``assurance_kernel``.
-    Leftover product pins are resolved through ``ProductHooks.resolve_semantic_pin``.
+    Leftover product pins resolve only via the installed product's frozen
+    ``semantic_pins`` table; unknown names fail closed.
     """
     import_name = _rewrite_locked_kernel_pin(qualified_name)
     if import_name.startswith(_AGENT_PREFIX):
-        return current_product_hooks().resolve_semantic_pin(qualified_name)
+        pins = current_product_hooks().semantic_pins
+        try:
+            return pins[qualified_name]
+        except KeyError as exc:
+            raise ImportError(f"cannot resolve semantic dependency: {qualified_name}") from exc
     return _import_qualified_object(import_name)
 
 

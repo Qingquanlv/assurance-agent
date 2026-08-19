@@ -728,6 +728,7 @@ def _build_runtime(
         change_dir=project / "qa" / "changes" / CHANGE_ID,
         compiled=compiled,
         contracts=contracts,
+        operations=_custom_operations(state),
         build_node_runner=build,
         clock=clock,
     )

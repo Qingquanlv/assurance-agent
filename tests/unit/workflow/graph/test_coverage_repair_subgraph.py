@@ -647,6 +647,7 @@ def _build_runtime(
         change_dir=project / "qa" / "changes" / CHANGE_ID,
         compiled=compiled,
         contracts=contracts,
+        operations={**default_operations(), **(extra_ops or {})},
         build_node_runner=build,
         clock=FakeClock(),
     )
