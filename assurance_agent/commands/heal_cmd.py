@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from assurance_agent.artifacts.models import FailureAnalysis, FixProposal, SafetyCheck
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.commands._product_guard import require_assurance_product
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.workflow.core.exit_codes import EXIT_COMPLETED, EXIT_ERROR, EXIT_HUMAN_REVIEW
@@ -22,6 +23,7 @@ from assurance_agent.workflow.healing.safety import HealingGuardError, record_ap
 @click.group("heal")
 def heal_group() -> None:
     """Healing-support commands (fix-proposal validation, eligibility, safety checks)."""
+    require_assurance_product()
 
 
 def _change_base(change_id: str) -> Path:

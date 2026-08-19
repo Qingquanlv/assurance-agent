@@ -16,6 +16,7 @@ from assurance_agent.artifacts.models.improvements import (
     ImprovementLedgerProjection,
     ImprovementState,
 )
+from assurance_agent.commands._product_guard import require_assurance_product
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.improvements.events import (
     ImprovementLedgerIntegrityError,
@@ -43,6 +44,7 @@ def _load_ledger(project_root: Path) -> ImprovementLedgerProjection:
 @click.group("improvement")
 def improvement_group() -> None:
     """Project Improvement Ledger projections (never scans qa/retro/)."""
+    require_assurance_product()
 
 
 @improvement_group.command("list")
