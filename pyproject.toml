@@ -44,7 +44,7 @@ artifacts = ["assurance_agent/_resources/**"]
 exclude = ["scripts", "/scripts/**"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/graph-engine/tests"]
 # Sibling packages under tests/unit/workflow/{issues,improvements}/ share basenames
 # (test_review.py, …); importlib avoids prepend-mode module collisions.
 addopts = ["--import-mode=importlib"]
