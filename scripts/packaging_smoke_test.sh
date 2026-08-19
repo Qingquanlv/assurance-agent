@@ -85,8 +85,10 @@ grep -q '"full"' compile.json
 
 # Packaged resources must be readable from the wheel install.
 "$WORK_DIR/venv-b/bin/python" - <<'PY'
+from assurance_agent.product import select_product
 from assurance_agent import resources
 
+select_product("assurance")
 workflow = resources.read_text("schemas", "workflow-schema.yaml")
 assert "aa-full" in workflow
 assert "manual_revision:" in workflow
@@ -129,7 +131,10 @@ PY
 
 # Packaged skills + opencode assets must resolve from the wheel install.
 "$WORK_DIR/venv-b/bin/python" - <<'PY'
+from assurance_agent.product import select_product
 from assurance_agent import resources
+
+select_product("assurance")
 skills = resources.iter_children("skills")
 assert len(skills) == 36, f"expected 36 skills, got {len(skills)}"
 required = {
