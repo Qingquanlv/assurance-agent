@@ -1,6 +1,7 @@
 from graph_engine.runtime.checkpoint import Checkpoint, load_checkpoint, write_checkpoint
 from graph_engine.runtime.events import (
     EventEnvelope,
+    FailureKind,
     GraphCompleted,
     GraphStarted,
     InterruptResumed,
@@ -17,12 +18,14 @@ from graph_engine.runtime.events import (
     TaskAttemptSucceeded,
     TokenConsumed,
     TokenOffered,
+    TaskFailure,
 )
 from graph_engine.runtime.ledger import (
     Ledger,
     LedgerConflictError,
     LedgerError,
     LedgerIntegrityError,
+    MAX_SEQUENCE,
 )
 from graph_engine.runtime.models import (
     ActivationRecord,
@@ -40,6 +43,7 @@ __all__ = [
     "AttemptRecord",
     "Checkpoint",
     "EventEnvelope",
+    "FailureKind",
     "GraphCompleted",
     "GraphInstanceRecord",
     "GraphStarted",
@@ -51,6 +55,7 @@ __all__ = [
     "LedgerConflictError",
     "LedgerError",
     "LedgerIntegrityError",
+    "MAX_SEQUENCE",
     "NodeActivated",
     "NodeCompleted",
     "NodeInterrupted",
@@ -59,6 +64,7 @@ __all__ = [
     "RuntimeEvent",
     "RuntimeFailure",
     "TaskAttemptFailed",
+    "TaskFailure",
     "TaskAttemptStarted",
     "TaskAttemptStopped",
     "TaskAttemptSucceeded",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import fcntl
 from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
@@ -17,6 +18,7 @@ from graph_engine.runtime.events import EventEnvelope, RuntimeEvent
 
 _FINAL_BATCH = re.compile(r"^(?P<first>[0-9]{10})-(?P<last>[0-9]{10})\.json$")
 _BATCH_ADAPTER = TypeAdapter(tuple[EventEnvelope, ...])
+MAX_SEQUENCE = 9_999_999_999
 
 
 class LedgerError(GraphEngineError):
@@ -48,18 +50,16 @@ class Ledger:
             or expected_next_seq < 1
         ):
             raise ValueError("expected_next_seq must be a positive integer")
+        last_seq = expected_next_seq + len(events) - 1
+        if last_seq > MAX_SEQUENCE:
+            raise ValueError(f"ledger batch exceeds maximum sequence {MAX_SEQUENCE}")
 
         self.root.mkdir(parents=True, exist_ok=True)
-        lock = self.root / ".pending-append.lock"
-        try:
-            lock_fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError as error:
-            raise LedgerConflictError("another ledger append is in progress") from error
-        os.close(lock_fd)
-
+        lock_fd = os.open(self.root / ".append.lock", os.O_WRONLY | os.O_CREAT, 0o600)
         pending: Path | None = None
-        replaced = False
         try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            _append_boundary("lock_acquired")
             current = self.read_all()
             actual_next_seq = current[-1].seq + 1 if current else 1
             if actual_next_seq != expected_next_seq:
@@ -74,8 +74,6 @@ class Ledger:
             first_seq = envelopes[0].seq
             last_seq = envelopes[-1].seq
             destination = self.root / f"{first_seq:010d}-{last_seq:010d}.json"
-            if destination.exists():
-                raise LedgerConflictError(f"immutable ledger batch already exists: {destination.name}")
 
             pending = self.root / f".pending-{uuid4().hex}.json"
             document = cast(
@@ -86,18 +84,20 @@ class Ledger:
                 stream.write(canonical_json_bytes(document))
                 stream.flush()
                 os.fsync(stream.fileno())
+            _append_boundary("pending_fsynced")
 
-            # The append lock makes this no-overwrite precondition stable for all writers.
-            if destination.exists():
-                raise LedgerConflictError(f"immutable ledger batch already exists: {destination.name}")
-            os.replace(pending, destination)
-            replaced = True
+            _publish_no_clobber(pending, destination)
+            _append_boundary("final_installed")
+            _fsync_directory(self.root)
+            _append_boundary("directory_fsynced")
+            pending.unlink()
+            pending = None
             _fsync_directory(self.root)
             return envelopes
         finally:
-            if pending is not None and not replaced:
+            if pending is not None:
                 pending.unlink(missing_ok=True)
-            lock.unlink(missing_ok=True)
+            os.close(lock_fd)
 
     def read_all(self) -> tuple[EventEnvelope, ...]:
         if not self.root.exists():
@@ -107,6 +107,8 @@ class Ledger:
 
         final_batches: list[tuple[int, int, Path]] = []
         for path in self.root.iterdir():
+            if path.name == ".append.lock":
+                continue
             if path.name.startswith(".pending-"):
                 continue
             match = _FINAL_BATCH.fullmatch(path.name)
@@ -169,9 +171,21 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _publish_no_clobber(pending: Path, destination: Path) -> None:
+    try:
+        os.link(pending, destination)
+    except FileExistsError as error:
+        raise LedgerConflictError(f"immutable ledger batch already exists: {destination.name}") from error
+
+
+def _append_boundary(name: str) -> None:
+    del name
+
+
 __all__ = [
     "Ledger",
     "LedgerConflictError",
     "LedgerError",
     "LedgerIntegrityError",
+    "MAX_SEQUENCE",
 ]

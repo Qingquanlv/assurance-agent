@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import Annotated, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from graph_engine.canonical import canonical_digest
-
-if TYPE_CHECKING:
-    from graph_engine.canonical import JSONValue
-else:
-    JSONValue = JsonValue
+from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.plugin_api import FailureKind, TaskFailure
+from graph_engine.runtime.frozen_json import FrozenJSONValue
 
 
 _STRICT_FROZEN = ConfigDict(
@@ -19,16 +16,14 @@ _STRICT_FROZEN = ConfigDict(
     allow_inf_nan=False,
 )
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
+MAX_EVENT_SEQUENCE = 9_999_999_999
 
 
 class RuntimeEventModel(BaseModel):
     model_config = _STRICT_FROZEN
 
 
-class RuntimeFailure(RuntimeEventModel):
-    kind: str
-    message: str
-    details: JSONValue = None
+RuntimeFailure = TaskFailure
 
 
 class InvocationStarted(RuntimeEventModel):
@@ -44,7 +39,7 @@ class GraphStarted(RuntimeEventModel):
     graph_id: str
     parent_graph_instance_id: str | None = None
     parent_node_id: str | None = None
-    input: JSONValue = None
+    input: FrozenJSONValue = None
 
 
 class TokenOffered(RuntimeEventModel):
@@ -53,7 +48,7 @@ class TokenOffered(RuntimeEventModel):
     graph_instance_id: str
     source: str | None
     target: str
-    payload: JSONValue
+    payload: FrozenJSONValue
 
 
 class TokenConsumed(RuntimeEventModel):
@@ -82,14 +77,14 @@ class TaskAttemptSucceeded(RuntimeEventModel):
     kind: Literal["task_attempt_succeeded"] = "task_attempt_succeeded"
     activation_id: str
     attempt: int = Field(ge=1)
-    output: JSONValue
+    output: FrozenJSONValue
 
 
 class TaskAttemptFailed(RuntimeEventModel):
     kind: Literal["task_attempt_failed"] = "task_attempt_failed"
     activation_id: str
     attempt: int = Field(ge=1)
-    failure: RuntimeFailure
+    failure: TaskFailure
 
 
 class TaskAttemptStopped(RuntimeEventModel):
@@ -97,32 +92,32 @@ class TaskAttemptStopped(RuntimeEventModel):
     activation_id: str
     attempt: int = Field(ge=1)
     reason: str
-    output: JSONValue = None
+    output: FrozenJSONValue = None
 
 
 class NodeCompleted(RuntimeEventModel):
     kind: Literal["node_completed"] = "node_completed"
     activation_id: str
-    output: JSONValue = None
+    output: FrozenJSONValue = None
 
 
 class NodeInterrupted(RuntimeEventModel):
     kind: Literal["node_interrupted"] = "node_interrupted"
     activation_id: str
     interrupt_id: str
-    payload: JSONValue = None
+    payload: FrozenJSONValue = None
 
 
 class InterruptResumed(RuntimeEventModel):
     kind: Literal["interrupt_resumed"] = "interrupt_resumed"
     interrupt_id: str
-    payload: JSONValue = None
+    payload: FrozenJSONValue = None
 
 
 class GraphCompleted(RuntimeEventModel):
     kind: Literal["graph_completed"] = "graph_completed"
     graph_instance_id: str
-    output: JSONValue = None
+    output: FrozenJSONValue = None
 
 
 class InvocationFinished(RuntimeEventModel):
@@ -154,7 +149,7 @@ RuntimeEvent = Annotated[
 class EventEnvelope(BaseModel):
     model_config = _STRICT_FROZEN
 
-    seq: int = Field(ge=1)
+    seq: int = Field(ge=1, le=MAX_EVENT_SEQUENCE)
     event: RuntimeEvent
     event_sha256: str = Field(pattern=_SHA256_PATTERN)
 
@@ -186,6 +181,7 @@ def _envelope_digest_payload(seq: int, event: RuntimeEvent) -> JSONValue:
 
 __all__ = [
     "EventEnvelope",
+    "FailureKind",
     "GraphCompleted",
     "GraphStarted",
     "InterruptResumed",
@@ -196,6 +192,7 @@ __all__ = [
     "NodeInterrupted",
     "RuntimeEvent",
     "RuntimeFailure",
+    "TaskFailure",
     "TaskAttemptFailed",
     "TaskAttemptStarted",
     "TaskAttemptStopped",
