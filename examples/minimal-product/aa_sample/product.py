@@ -1,7 +1,7 @@
 from importlib.resources import files
 
-from assurance_agent.workflow.graph.capability_state import CapabilityCatalog
-from assurance_agent.workflow.graph.handlers.operation import no_op, stop_operation
+from assurance_kernel.workflow.graph.capability_state import CapabilityCatalog
+from assurance_kernel.workflow.graph.handlers.operation import no_op, stop_operation
 
 
 class SampleProduct:

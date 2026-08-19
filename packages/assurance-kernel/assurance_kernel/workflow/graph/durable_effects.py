@@ -335,6 +335,8 @@ def validate_durable_effect_kinds(
     registry: EffectRegistry | None = None,
 ) -> None:
     """Reject unknown or unregistered kinds at contract load."""
+    if not kinds:
+        return
     active = registry if registry is not None else production_effect_registry()
     seen: set[str] = set()
     for kind in kinds:

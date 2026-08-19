@@ -2,7 +2,7 @@
 name = "aa-sample-product"
 version = "0.1.0"
 requires-python = ">=3.11,<4.0"
-dependencies = ["assurance-agent"]
+dependencies = ["assurance-kernel"]
 
 [project.entry-points."assurance_agent.products"]
 sample = "aa_sample.product:SampleProduct"
@@ -16,4 +16,4 @@ packages = ["aa_sample"]
 artifacts = ["aa_sample/_resources/**"]
 
 [tool.uv.sources]
-assurance-agent = { workspace = true }
+assurance-kernel = { workspace = true }

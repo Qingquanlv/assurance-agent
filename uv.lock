@@ -19,11 +19,11 @@ name = "aa-sample-product"
 version = "0.1.0"
 source = { editable = "examples/minimal-product" }
 dependencies = [
-    { name = "assurance-agent" },
+    { name = "assurance-kernel" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "assurance-agent", editable = "." }]
+requires-dist = [{ name = "assurance-kernel", editable = "packages/assurance-kernel" }]
 
 [[package]]
 name = "annotated-types"
