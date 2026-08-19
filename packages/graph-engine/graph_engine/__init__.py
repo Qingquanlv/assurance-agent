@@ -22,6 +22,15 @@ from graph_engine.plugin_api import (  # noqa: E402
     ValidationResult,
     assemble_registry,
 )
+from graph_engine.product import (  # noqa: E402
+    PluginRequirement,
+    ProductManifest,
+    ProductProvider,
+    ProductResolutionError,
+    ResolvedProduct,
+    load_product_entrypoint,
+    resolve_product,
+)
 
 __all__ = [
     "ENGINE_API_VERSION",
@@ -35,6 +44,11 @@ __all__ = [
     "PluginDescriptor",
     "PluginProvider",
     "PluginRuntime",
+    "PluginRequirement",
+    "ProductManifest",
+    "ProductProvider",
+    "ProductResolutionError",
+    "ResolvedProduct",
     "ResourceClaims",
     "TaskContext",
     "TaskFailure",
@@ -45,4 +59,6 @@ __all__ = [
     "ValidationContext",
     "ValidationResult",
     "assemble_registry",
+    "load_product_entrypoint",
+    "resolve_product",
 ]
