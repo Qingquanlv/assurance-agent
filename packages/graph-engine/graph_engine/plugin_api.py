@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
@@ -26,6 +26,7 @@ FailureKind = Literal["transient", "timeout", "invalid_input", "invalid_output",
 TaskStatus = Literal["succeeded", "failed", "stopped"]
 
 _FROZEN_MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+_Capability = TypeVar("_Capability")
 
 
 class TaskFailure(BaseModel):
@@ -195,13 +196,24 @@ class CapabilityRegistry:
     commit_validators: Mapping[str, CommitValidator]
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "task_handlers", MappingProxyType(dict(sorted(self.task_handlers.items())))
-        )
+        task_handlers = dict(self.task_handlers)
+        commit_validators = dict(self.commit_validators)
+        for capability_id in task_handlers:
+            _validated_id(capability_id, "task handler id")
+        for capability_id in commit_validators:
+            _validated_id(capability_id, "commit validator id")
+        overlap = task_handlers.keys() & commit_validators.keys()
+        if overlap:
+            capability_id = min(overlap)
+            raise CapabilityRegistryError(
+                f"capability cannot be both handler and validator: {capability_id}"
+            )
+
+        object.__setattr__(self, "task_handlers", MappingProxyType(dict(sorted(task_handlers.items()))))
         object.__setattr__(
             self,
             "commit_validators",
-            MappingProxyType(dict(sorted(self.commit_validators.items()))),
+            MappingProxyType(dict(sorted(commit_validators.items()))),
         )
 
     @classmethod
@@ -234,6 +246,14 @@ def _validate_runtime_ids(ids: object, kind: str) -> tuple[str, ...]:
             raise CapabilityRegistryError(f"invalid bound {kind} id: {capability_id!r}")
         _validated_id(capability_id, f"bound {kind} id")
     return keys
+
+
+def _snapshot_runtime_mapping(
+    capabilities: Mapping[str, _Capability], kind: str
+) -> dict[str, _Capability]:
+    if not isinstance(capabilities, Mapping):
+        raise CapabilityRegistryError(f"bound {kind} must be a mapping")
+    return dict(capabilities)
 
 
 def _ensure_exact_binding(declared: tuple[str, ...], bound: tuple[str, ...], kind: str) -> None:
@@ -274,15 +294,21 @@ def assemble_registry(providers: Sequence[PluginProvider]) -> CapabilityRegistry
             capability_ids.add(capability_id)
 
         runtime = provider.bind(ports)
-        bound_task_ids = _validate_runtime_ids(runtime.task_handlers, "task handler")
-        bound_validator_ids = _validate_runtime_ids(runtime.commit_validators, "commit validator")
+        runtime_task_handlers = _snapshot_runtime_mapping(runtime.task_handlers, "task handler")
+        runtime_commit_validators = _snapshot_runtime_mapping(
+            runtime.commit_validators, "commit validator"
+        )
+        bound_task_ids = _validate_runtime_ids(runtime_task_handlers, "task handler")
+        bound_validator_ids = _validate_runtime_ids(
+            runtime_commit_validators, "commit validator"
+        )
         _ensure_exact_binding(descriptor.task_handlers, bound_task_ids, "task handlers")
         _ensure_exact_binding(
             descriptor.commit_validators, bound_validator_ids, "commit validators"
         )
 
-        task_handlers.update(runtime.task_handlers)
-        commit_validators.update(runtime.commit_validators)
+        task_handlers.update(runtime_task_handlers)
+        commit_validators.update(runtime_commit_validators)
 
     return CapabilityRegistry(
         task_handlers=task_handlers,

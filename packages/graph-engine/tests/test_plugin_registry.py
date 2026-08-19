@@ -1,3 +1,4 @@
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from graph_engine.plugin_api import (
     ResourceClaims,
     TaskContext,
     TaskFailure,
+    TaskHandler,
     TaskOutcome,
     TaskRequest,
     ValidationContext,
@@ -214,6 +216,31 @@ def test_registry_constructor_copies_mappings_to_preserve_immutability() -> None
         registry.task_handlers["toy.two.ping"] = _ping
 
 
+@pytest.mark.parametrize(
+    ("mapping_name", "message"),
+    [("task_handlers", "invalid task handler id"), ("commit_validators", "invalid commit validator id")],
+)
+@pytest.mark.parametrize("invalid_id", ["invalid", 1])
+def test_registry_constructor_rejects_invalid_capability_ids(
+    mapping_name: str, message: str, invalid_id: object
+) -> None:
+    mappings = {"task_handlers": {}, "commit_validators": {}}
+    mappings[mapping_name] = {invalid_id: _ping}
+    with pytest.raises(CapabilityRegistryError, match=message):
+        CapabilityRegistry(
+            task_handlers=mappings["task_handlers"],  # type: ignore[arg-type]
+            commit_validators=mappings["commit_validators"],  # type: ignore[arg-type]
+        )
+
+
+def test_registry_constructor_rejects_cross_kind_capability_collision() -> None:
+    with pytest.raises(CapabilityRegistryError, match="handler and validator"):
+        CapabilityRegistry(
+            task_handlers={"toy.shared.capability": _ping},
+            commit_validators={"toy.shared.capability": _accept},
+        )
+
+
 def test_assembled_registry_copies_runtime_mappings_and_is_immutable() -> None:
     handlers = {"toy.one.ping": _ping}
 
@@ -226,6 +253,34 @@ def test_assembled_registry_copies_runtime_mappings_and_is_immutable() -> None:
     assert set(registry.task_handlers) == {"toy.one.ping"}
     with pytest.raises(TypeError):
         registry.task_handlers["toy.two.ping"] = _ping
+
+
+def test_runtime_mapping_is_snapshotted_once_before_validation_and_installation() -> None:
+    class ChangingMapping(Mapping[str, TaskHandler]):
+        def __init__(self) -> None:
+            self.iterations = 0
+
+        def __getitem__(self, _key: str) -> TaskHandler:
+            return _ping
+
+        def __iter__(self) -> Iterator[str]:
+            self.iterations += 1
+            if self.iterations == 1:
+                return iter(("toy.two.ping",))
+            return iter(("toy.one.ping",))
+
+        def __len__(self) -> int:
+            return 1
+
+    changing_handlers = ChangingMapping()
+
+    class ChangingProvider(Provider):
+        def bind(self, _ports: EnginePorts) -> PluginRuntime:
+            return PluginRuntime(task_handlers=changing_handlers, commit_validators={})
+
+    registry = assemble_registry((Provider("toy.one"), ChangingProvider("toy.two")))
+    assert set(registry.task_handlers) == {"toy.one.ping", "toy.two.ping"}
+    assert changing_handlers.iterations == 1
 
 
 def test_bind_is_called_exactly_once_with_engine_ports() -> None:
