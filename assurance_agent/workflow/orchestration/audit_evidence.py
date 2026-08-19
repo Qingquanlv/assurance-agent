@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from assurance_agent.change_location import ChangeLocation
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
-from assurance_agent.workflow.execution.tree_hash import sha256_file
+from assurance_agent.workflow.core.tree_hash import sha256_file
 from assurance_agent.workflow.orchestration.gates import resolve_change_path
 from assurance_agent.workflow.orchestration.schema import GateDef
 

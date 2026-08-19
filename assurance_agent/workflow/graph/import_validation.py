@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from assurance_agent.artifacts.paths import existing_with_alias
 from assurance_agent.exceptions import AaError
-from assurance_agent.workflow.execution.tree_hash import sha256_file
+from assurance_agent.workflow.core.tree_hash import sha256_file
 from assurance_agent.workflow.graph.models import (
     CompiledGraph,
     CompiledWorkflow,

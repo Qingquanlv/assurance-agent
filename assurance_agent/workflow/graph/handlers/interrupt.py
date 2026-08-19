@@ -20,7 +20,7 @@ from pathlib import Path
 
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
-from assurance_agent.workflow.execution.tree_hash import sha256_file
+from assurance_agent.workflow.core.tree_hash import sha256_file
 from assurance_agent.workflow.graph.compiler import canonical_digest
 from assurance_agent.workflow.graph.manual_revision import (
     RevisionPathBaseline,

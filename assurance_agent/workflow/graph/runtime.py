@@ -58,7 +58,7 @@ from assurance_agent.workflow.graph.manual_revision import (
     stage_missing_resume_suffix,
     transition_from_committed_revision,
 )
-from assurance_agent.workflow.execution.tree_hash import sha256_file
+from assurance_agent.workflow.core.tree_hash import sha256_file
 from assurance_agent.workflow.graph.invocation_bootstrap import (
     append_invocation_bootstrap,
     runtime_context_from_meta,

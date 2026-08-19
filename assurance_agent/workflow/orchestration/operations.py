@@ -22,7 +22,7 @@ from assurance_agent.change_location import ChangeLocation
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.core.progression import transaction
-from assurance_agent.workflow.execution.tree_hash import hash_test_tree, sha256_file
+from assurance_agent.workflow.core.tree_hash import hash_test_tree, sha256_file
 from assurance_agent.workflow.healing.override_policy import (
     DECISION_REL_PATH,
     TOKEN_REL_PATH,

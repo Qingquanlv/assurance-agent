@@ -88,11 +88,8 @@ ignore_imports =
     assurance_agent.workflow.graph.invariants -> assurance_agent.workflow.healing.safety
     assurance_agent.workflow.graph.invariants -> assurance_agent.workflow.issues.identity
     assurance_agent.workflow.graph.handlers.trace_projection -> assurance_agent.workflow.execution.evidence
-    assurance_agent.workflow.graph.import_validation -> assurance_agent.workflow.execution.tree_hash
     assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.issues.analyzer_output
     assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.improvements.reviewer_output
-    assurance_agent.workflow.graph.runtime -> assurance_agent.workflow.execution.tree_hash
-    assurance_agent.workflow.graph.handlers.interrupt -> assurance_agent.workflow.execution.tree_hash
     assurance_agent.workflow.graph.attempt_engine -> assurance_agent.workflow.healing.allocation
     # V6 durable-effect / precommit / healing-projection seams from main.
     assurance_agent.workflow.graph.durable_effects -> assurance_agent.workflow.healing.effects
@@ -100,9 +97,6 @@ ignore_imports =
     assurance_agent.workflow.graph.precommit -> assurance_agent.workflow.healing.safety
     assurance_agent.workflow.orchestration.healing_state -> assurance_agent.workflow.healing.projection
     # Pre-existing reverse seams: orchestration (below domains) still imports
-    # healing/execution helpers. Keep explicit until those helpers move down.
+    # healing helpers. Keep explicit until those helpers move down.
     assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.healing.safety
     assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.healing.override_policy
-    assurance_agent.workflow.orchestration.audit_evidence -> assurance_agent.workflow.execution.tree_hash
-    assurance_agent.workflow.orchestration.gates -> assurance_agent.workflow.execution.tree_hash
-    assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.execution.tree_hash

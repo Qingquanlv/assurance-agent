@@ -24,7 +24,7 @@ from assurance_agent.knowledge.capabilities import compute_missing_capabilities
 from assurance_agent.verification.gate_state import plan_assurance_state
 from assurance_agent.workflow.core.audit_scope import is_audited_gate_read
 from assurance_agent.workflow.core.events import LedgerIntegrityError, read_events_strict
-from assurance_agent.workflow.execution.tree_hash import sha256_file
+from assurance_agent.workflow.core.tree_hash import sha256_file
 from assurance_agent.workflow.orchestration.dsl import (
     MISSING,
     Scope,
