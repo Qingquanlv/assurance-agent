@@ -1,4 +1,11 @@
 from graph_engine.runtime.checkpoint import Checkpoint, load_checkpoint, write_checkpoint
+from graph_engine.runtime.engine import (
+    Engine,
+    EngineConflictError,
+    EngineError,
+    InvocationHandle,
+    RunResult,
+)
 from graph_engine.runtime.events import (
     EventEnvelope,
     FailureKind,
@@ -66,6 +73,9 @@ __all__ = [
     "Checkpoint",
     "Clock",
     "EventEnvelope",
+    "Engine",
+    "EngineConflictError",
+    "EngineError",
     "FailureKind",
     "FakeClock",
     "GraphCompleted",
@@ -75,6 +85,7 @@ __all__ = [
     "HeadAdvanced",
     "InterruptResumed",
     "InvocationFinished",
+    "InvocationHandle",
     "InvocationProjection",
     "InvocationStarted",
     "Ledger",
@@ -95,6 +106,7 @@ __all__ = [
     "PlanningError",
     "ProjectionError",
     "RuntimeEvent",
+    "RunResult",
     "RuntimeFailure",
     "Scheduler",
     "SchedulerStateError",

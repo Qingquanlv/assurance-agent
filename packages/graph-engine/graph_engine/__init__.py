@@ -31,9 +31,19 @@ from graph_engine.product import (  # noqa: E402
     load_product_entrypoint,
     resolve_product,
 )
+from graph_engine.runtime.engine import (  # noqa: E402
+    Engine,
+    EngineConflictError,
+    EngineError,
+    InvocationHandle,
+    RunResult,
+)
 
 __all__ = [
     "ENGINE_API_VERSION",
+    "Engine",
+    "EngineConflictError",
+    "EngineError",
     "CandidateFile",
     "CandidateWriteSet",
     "CapabilityRegistry",
@@ -49,6 +59,8 @@ __all__ = [
     "ProductProvider",
     "ProductResolutionError",
     "ResolvedProduct",
+    "InvocationHandle",
+    "RunResult",
     "ResourceClaims",
     "TaskContext",
     "TaskFailure",

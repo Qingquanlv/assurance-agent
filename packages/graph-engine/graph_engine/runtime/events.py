@@ -39,6 +39,7 @@ class GraphStarted(RuntimeEventModel):
     graph_id: str
     parent_graph_instance_id: str | None = None
     parent_node_id: str | None = None
+    parent_activation_id: str | None = None
     input: FrozenJSONValue = None
 
 
@@ -153,12 +154,17 @@ class NodeInterrupted(RuntimeEventModel):
     kind: Literal["node_interrupted"] = "node_interrupted"
     activation_id: str
     interrupt_id: str
+    graph_instance_id: str | None = None
+    reason: str | None = None
+    actions: tuple[str, ...] = ()
+    input: FrozenJSONValue = None
     payload: FrozenJSONValue = None
 
 
 class InterruptResumed(RuntimeEventModel):
     kind: Literal["interrupt_resumed"] = "interrupt_resumed"
     interrupt_id: str
+    action: str | None = None
     payload: FrozenJSONValue = None
 
 

@@ -14,6 +14,7 @@ from graph_engine.runtime.events import (
     GraphFailed,
     GraphStarted,
     InvocationFinished,
+    NodeInterrupted,
     NodeActivated,
     NodeCompleted,
     NodeFailed,
@@ -36,8 +37,8 @@ class PlanningError(GraphEngineError):
     """Raised when a projection cannot be planned against its compiled workflow."""
 
 
-TerminalStatus = Literal["succeeded", "failed", "stopped"]
-ExecutionMode = Literal["task", "structural", "unsupported"]
+TerminalStatus = Literal["succeeded", "failed", "stopped", "interrupted"]
+ExecutionMode = Literal["task", "structural", "subgraph", "interrupt", "unsupported"]
 ConsumptionMode = Literal["one", "join", "all_available"]
 StructuralOutputBuilder = Callable[
     ["_PlannerState", CompiledNode, ActivationRecord],
@@ -72,6 +73,14 @@ def activation_id(
 
 def task_id(activation: str) -> str:
     return canonical_digest({"activation_id": activation, "kind": "task"})
+
+
+def subgraph_instance_id(parent_activation_id: str, graph_id: str) -> str:
+    return canonical_digest({"parent_activation_id": parent_activation_id, "graph_id": graph_id})
+
+
+def interrupt_id(activation: str) -> str:
+    return canonical_digest({"activation_id": activation, "kind": "interrupt"})
 
 
 def _start_token_id(graph_instance_id: str, node_id: str) -> str:
@@ -152,6 +161,10 @@ def plan_next(compiled: CompiledWorkflow, projection: InvocationProjection) -> P
         return PlanResult(terminal=terminal, reason=projection.terminal_reason)
 
     state = _PlannerState.from_projection(compiled, projection)
+    if projection.pending_interrupt is not None:
+        state.terminal = "interrupted"
+        state.reason = projection.pending_interrupt.reason
+        return state.result()
     _ensure_root_started(state)
     for graph_record in sorted(state.graphs.values(), key=lambda item: item.graph_instance_id):
         if graph_record.status == "running":
@@ -183,6 +196,11 @@ def plan_next(compiled: CompiledWorkflow, projection: InvocationProjection) -> P
         activation = _activate(state, graph_instance_id, node, token_ids)
         if behavior.execution == "task":
             state.tasks.append(_planned_task(state, node, activation))
+        elif behavior.execution == "subgraph":
+            _start_subgraph(state, node, activation)
+        elif behavior.execution == "interrupt":
+            _interrupt(state, node, activation)
+            break
         else:
             _complete_structural(state, node, behavior, activation)
             _finish_settled_graphs(state)
@@ -264,6 +282,28 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
         behavior = _behavior(node)
         if activation.attempts and behavior.execution != "task":
             raise PlanningError("only task nodes can contain attempt history")
+        if activation.status == "completed" and behavior.execution == "subgraph":
+            graph_id = node.definition.graph
+            assert graph_id is not None
+            child_id = subgraph_instance_id(activation.activation_id, graph_id)
+            child = graphs.get(child_id)
+            if (
+                child is None
+                or child.status != "completed"
+                or child.parent_activation_id != activation.activation_id
+                or thaw_json(child.output) != thaw_json(activation.output)
+            ):
+                raise PlanningError(
+                    "planner does not support node kind 'subgraph' without a matching child lifecycle"
+                )
+        if (
+            activation.status == "completed"
+            and behavior.execution == "interrupt"
+            and not activation.interrupt_resumed
+        ):
+            raise PlanningError(
+                "planner does not support node kind 'interrupt' without a matching resume event"
+            )
         activation_tokens = tuple(token_by_id[token_id_] for token_id_ in activation.token_ids)
         if not _matches_consumption_contract(graph, node, behavior, activation_tokens):
             raise PlanningError(
@@ -414,6 +454,9 @@ def _finish_terminal_tasks(state: _PlannerState, terminal_activations: tuple[Act
     if stopped is not None:
         reason = stopped.attempts[-1].stop_reason
         assert reason is not None
+        stopped_graph = state.graphs[stopped.graph_instance_id]
+        if stopped_graph.parent_graph_instance_id is not None:
+            _propagate_graph_failure(state, stopped.graph_instance_id, reason)
         state.events.append(
             InvocationFinished(
                 invocation_id=state.invocation_id,
@@ -432,7 +475,7 @@ def _finish_terminal_tasks(state: _PlannerState, terminal_activations: tuple[Act
         assert failure is not None
         state.events.append(NodeFailed(activation_id=activation.activation_id, failure=failure))
         state.activations[activation.activation_id] = activation.model_copy(
-            update={"status": "failed", "failure": failure}
+            update={"status": "failed", "failure": failure, "structural_failure": True}
         )
         graph_ids.add(activation.graph_instance_id)
         if first_failure is None:
@@ -441,7 +484,7 @@ def _finish_terminal_tasks(state: _PlannerState, terminal_activations: tuple[Act
     activation, failure = first_failure
     reason = f"task_failed:{activation.node_id}:{failure.kind}"
     for graph_instance_id in sorted(graph_ids):
-        _mark_graph_failed(state, graph_instance_id, reason)
+        _propagate_graph_failure(state, graph_instance_id, reason)
     state.events.append(
         InvocationFinished(
             invocation_id=state.invocation_id,
@@ -472,6 +515,12 @@ def _settle_existing_activations(state: _PlannerState) -> None:
             continue
         if activation.status != "active":
             continue
+        if behavior.execution == "subgraph":
+            _settle_subgraph_activation(state, node, activation)
+            continue
+        if behavior.execution == "interrupt":
+            _interrupt(state, node, activation)
+            return
         if behavior.execution == "structural":
             _complete_structural(state, node, behavior, activation)
             if state.terminal is not None:
@@ -660,6 +709,101 @@ def _complete_structural(
         _route_completion(state, graph, node, completed)
 
 
+def _start_subgraph(
+    state: _PlannerState,
+    node: CompiledNode,
+    activation: ActivationRecord,
+) -> None:
+    child_graph_id = node.definition.graph
+    assert child_graph_id is not None
+    identifier = subgraph_instance_id(activation.activation_id, child_graph_id)
+    existing = state.graphs.get(identifier)
+    if existing is not None:
+        if (
+            existing.graph_id != child_graph_id
+            or existing.parent_graph_instance_id != activation.graph_instance_id
+            or existing.parent_node_id != node.node_id
+            or existing.parent_activation_id != activation.activation_id
+        ):
+            raise PlanningError(f"derived subgraph instance {identifier!r} disagrees with projection")
+        return
+    child_input = cast(JSONValue, thaw_json(node.definition.input))
+    record = GraphInstanceRecord(
+        graph_instance_id=identifier,
+        graph_id=child_graph_id,
+        parent_graph_instance_id=activation.graph_instance_id,
+        parent_node_id=node.node_id,
+        parent_activation_id=activation.activation_id,
+        input=child_input,
+    )
+    state.graphs[identifier] = record
+    state.events.append(
+        GraphStarted(
+            graph_instance_id=identifier,
+            graph_id=child_graph_id,
+            parent_graph_instance_id=activation.graph_instance_id,
+            parent_node_id=node.node_id,
+            parent_activation_id=activation.activation_id,
+            input=child_input,
+        )
+    )
+    _ensure_start_token(state, record)
+
+
+def _settle_subgraph_activation(
+    state: _PlannerState,
+    node: CompiledNode,
+    activation: ActivationRecord,
+) -> None:
+    child_graph_id = node.definition.graph
+    assert child_graph_id is not None
+    identifier = subgraph_instance_id(activation.activation_id, child_graph_id)
+    child = state.graphs.get(identifier)
+    if child is None:
+        _start_subgraph(state, node, activation)
+        return
+    if child.status == "completed":
+        completed = activation.model_copy(update={"status": "completed", "output": child.output})
+        state.activations[activation.activation_id] = completed
+        state.events.append(NodeCompleted(activation_id=activation.activation_id, output=child.output))
+        parent = state.graphs[activation.graph_instance_id]
+        _route_completion(state, state.compiled.graphs[parent.graph_id], node, completed)
+    elif child.status == "failed":
+        failure = TaskFailure(
+            kind="internal",
+            message=child.failure_reason or f"child graph failed: {child.graph_id}",
+        )
+        state.events.append(NodeFailed(activation_id=activation.activation_id, failure=failure))
+        state.activations[activation.activation_id] = activation.model_copy(
+            update={"status": "failed", "failure": failure}
+        )
+
+
+def _interrupt(
+    state: _PlannerState,
+    node: CompiledNode,
+    activation: ActivationRecord,
+) -> None:
+    reason = node.definition.reason
+    assert reason is not None
+    node_input = _activation_input(state, node, activation)
+    identifier = interrupt_id(activation.activation_id)
+    state.events.append(
+        NodeInterrupted(
+            activation_id=activation.activation_id,
+            interrupt_id=identifier,
+            graph_instance_id=activation.graph_instance_id,
+            reason=reason,
+            actions=node.definition.actions,
+            input=node_input,
+            payload=node_input,
+        )
+    )
+    state.activations[activation.activation_id] = activation.model_copy(update={"status": "interrupted"})
+    state.terminal = "interrupted"
+    state.reason = reason
+
+
 def _gate_output(state: _PlannerState, node: CompiledNode, activation: ActivationRecord) -> JSONValue:
     activation_input = _activation_input(state, node, activation)
     expression = node.definition.expression
@@ -760,6 +904,13 @@ def _finish_graph_if_settled(state: _PlannerState, end_activation: ActivationRec
     if record.parent_graph_instance_id is None:
         state.events.append(InvocationFinished(invocation_id=state.invocation_id, status="succeeded"))
         state.terminal = "succeeded"
+    elif record.parent_activation_id is not None:
+        parent_activation = state.activations.get(record.parent_activation_id)
+        if parent_activation is None:
+            raise PlanningError("completed child graph has no parent activation")
+        parent_graph = state.graphs[parent_activation.graph_instance_id]
+        parent_node = state.compiled.graphs[parent_graph.graph_id].nodes[parent_activation.node_id]
+        _settle_subgraph_activation(state, parent_node, parent_activation)
 
 
 def _finish_settled_graphs(state: _PlannerState) -> None:
@@ -794,7 +945,7 @@ def _finish_settled_graphs(state: _PlannerState) -> None:
 def _fail_graph(state: _PlannerState, graph_instance_id: str, reason: str) -> None:
     if _has_running_attempt(state):
         return
-    _mark_graph_failed(state, graph_instance_id, reason)
+    _propagate_graph_failure(state, graph_instance_id, reason)
     state.events.append(
         InvocationFinished(
             invocation_id=state.invocation_id,
@@ -808,8 +959,27 @@ def _fail_graph(state: _PlannerState, graph_instance_id: str, reason: str) -> No
 
 def _mark_graph_failed(state: _PlannerState, graph_instance_id: str, reason: str) -> None:
     record = state.graphs[graph_instance_id]
+    if record.status == "failed":
+        return
+    if record.status != "running":
+        raise PlanningError(f"cannot fail {record.status} graph {graph_instance_id!r}")
     state.events.append(GraphFailed(graph_instance_id=graph_instance_id, reason=reason))
     state.graphs[graph_instance_id] = record.model_copy(update={"status": "failed", "failure_reason": reason})
+
+
+def _propagate_graph_failure(state: _PlannerState, graph_instance_id: str, reason: str) -> None:
+    record = state.graphs[graph_instance_id]
+    _mark_graph_failed(state, graph_instance_id, reason)
+    if record.parent_activation_id is None or record.parent_graph_instance_id is None:
+        return
+    parent_activation = state.activations[record.parent_activation_id]
+    if parent_activation.status == "active":
+        failure = TaskFailure(kind="internal", message=reason)
+        state.events.append(NodeFailed(activation_id=parent_activation.activation_id, failure=failure))
+        state.activations[parent_activation.activation_id] = parent_activation.model_copy(
+            update={"status": "failed", "failure": failure, "structural_failure": True}
+        )
+    _propagate_graph_failure(state, record.parent_graph_instance_id, reason)
 
 
 _NODE_BEHAVIORS = {
@@ -836,8 +1006,8 @@ _NODE_BEHAVIORS = {
         output_builder=_end_output,
         completes_graph=True,
     ),
-    "subgraph": _NodeBehavior(execution="unsupported", consumption="one"),
-    "interrupt": _NodeBehavior(execution="unsupported", consumption="one"),
+    "subgraph": _NodeBehavior(execution="subgraph", consumption="one"),
+    "interrupt": _NodeBehavior(execution="interrupt", consumption="one", routes_completion=True),
 }
 
 
@@ -852,4 +1022,6 @@ __all__ = [
     "activation_id",
     "plan_next",
     "task_id",
+    "interrupt_id",
+    "subgraph_instance_id",
 ]
