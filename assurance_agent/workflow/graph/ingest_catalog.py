@@ -5,15 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 from functools import lru_cache
-from pathlib import Path
 from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from assurance_agent import resources
 from assurance_agent.artifacts.models.review import Review
-
-_CATALOG_PATH = Path(__file__).resolve().parents[2] / "_resources/schemas/ingest-artifact-catalog.yaml"
 
 
 def _catalog_digest(payload: dict[str, object]) -> str:
@@ -73,7 +71,7 @@ def model_schema_digest(model_id: str) -> str:
 
 @lru_cache(maxsize=1)
 def load_ingest_catalog() -> IngestArtifactCatalog:
-    raw = yaml.safe_load(_CATALOG_PATH.read_text(encoding="utf-8"))
+    raw = yaml.safe_load(resources.read_text("schemas", "ingest-artifact-catalog.yaml"))
     if not isinstance(raw, dict):
         raise ValueError("ingest catalog root must be a mapping")
     try:

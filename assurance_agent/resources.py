@@ -1,14 +1,17 @@
-"""Sole access point for packaged runtime resources under assurance_agent/_resources/.
+"""Sole access point for packaged runtime resources.
 
-Never locate resources via __file__ arithmetic elsewhere in the codebase;
-importlib.resources keeps this working from wheels and editable installs alike.
+Kernel files live under assurance_agent/_resources_kernel/; product files under
+assurance_agent/_resources/. Never locate resources via __file__ arithmetic
+elsewhere in the codebase; importlib.resources keeps this working from wheels
+and editable installs alike.
 """
 
 from pathlib import Path
 from importlib.resources import files
 from importlib.abc import Traversable
 
-_KERNEL = files("assurance_agent") / "_resources"
+_KERNEL = files("assurance_agent") / "_resources_kernel"
+_PACKAGED_PRODUCT = files("assurance_agent") / "_resources"
 _product_root: Traversable | Path | None = None
 
 _PRODUCT_PREFIXES = (
@@ -32,8 +35,10 @@ def _is_product_rel(relpath: tuple[str, ...]) -> bool:
 
 
 def _root_for(relpath: tuple[str, ...]) -> Traversable | Path:
-    if _is_product_rel(relpath) and _product_root is not None:
-        return _product_root
+    if _is_product_rel(relpath):
+        if _product_root is not None:
+            return _product_root
+        return _PACKAGED_PRODUCT
     return _KERNEL
 
 
