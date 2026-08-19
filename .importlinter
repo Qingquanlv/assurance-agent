@@ -87,7 +87,6 @@ ignore_imports =
     # Pending seams: graph kernel still reaches a few domain/evidence helpers.
     assurance_agent.workflow.graph.invariants -> assurance_agent.workflow.healing.safety
     assurance_agent.workflow.graph.invariants -> assurance_agent.workflow.issues.identity
-    assurance_agent.workflow.graph.handlers.trace_projection -> assurance_agent.workflow.execution.evidence
     assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.issues.analyzer_output
     assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.improvements.reviewer_output
     assurance_agent.workflow.graph.attempt_engine -> assurance_agent.workflow.healing.allocation

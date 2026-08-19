@@ -18,7 +18,7 @@ from assurance_agent.artifacts.policy import load_policy, policy_digest
 from assurance_agent.exceptions import AaError
 from assurance_agent.evidence.sufficiency import evaluate_sufficiency
 from assurance_agent.evidence.trace import authoritative_batch_instant, fold_trace
-from assurance_agent.workflow.execution.evidence import atomic_write_bytes
+from assurance_agent.workflow.core.atomic_io import atomic_write_bytes
 from assurance_agent.workflow.graph.models import ExecutableTask, RuntimeContext, TaskResult
 from assurance_agent.workflow.graph.task_runner import task_failure
 from assurance_agent.workflow.graph.workspace import TaskWorkspace

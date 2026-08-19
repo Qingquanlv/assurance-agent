@@ -12,6 +12,7 @@ from assurance_agent.artifacts.models import (
     QualityGateResultV2,
     SelectedTargets,
 )
+from assurance_agent.workflow.core import atomic_io as atomic_io_mod
 from assurance_agent.workflow.execution import evidence as evidence_mod
 from assurance_agent.workflow.execution.evidence import (
     EvidenceError,
@@ -208,7 +209,7 @@ def test_the_target_still_holds_the_old_bytes_when_the_replace_is_issued(
         observed["temp"] = Path(src).read_bytes()
         return real_replace(src, dst, **kwargs)
 
-    monkeypatch.setattr(evidence_mod.os, "replace", spy)
+    monkeypatch.setattr(atomic_io_mod.os, "replace", spy)
     atomic_write_bytes(target, b"new")
 
     assert observed == {"target": b"old", "temp": b"new"}
@@ -238,7 +239,7 @@ def test_two_writers_of_one_path_never_share_a_temp_name(
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
-    monkeypatch.setattr(evidence_mod.os, "replace", spy)
+    monkeypatch.setattr(atomic_io_mod.os, "replace", spy)
     worker = threading.Thread(target=write_from_thread)
     worker.start()
     try:
@@ -259,7 +260,7 @@ def test_a_failed_replace_reraises_and_leaves_no_temp_file(
     def refuse(src, dst, **kwargs):  # noqa: ANN001, ANN202
         raise OSError("replace refused")
 
-    monkeypatch.setattr(evidence_mod.os, "replace", refuse)
+    monkeypatch.setattr(atomic_io_mod.os, "replace", refuse)
     with pytest.raises(OSError, match="replace refused"):
         atomic_write_bytes(tmp_path / "doc.json", b"new")
 
@@ -278,7 +279,7 @@ def test_a_failed_cleanup_does_not_mask_the_write_failure(
     def refuse_unlink(self, missing_ok: bool = False) -> None:  # noqa: ANN001
         raise OSError("unlink refused")
 
-    monkeypatch.setattr(evidence_mod.os, "replace", refuse_replace)
+    monkeypatch.setattr(atomic_io_mod.os, "replace", refuse_replace)
     monkeypatch.setattr(Path, "unlink", refuse_unlink)
     with pytest.raises(OSError, match="replace refused"):
         atomic_write_bytes(tmp_path / "doc.json", b"new")
