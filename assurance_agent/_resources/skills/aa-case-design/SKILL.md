@@ -258,7 +258,8 @@ Hard rules:
 - E2E keeps 1 happy-path case + at most 2–3 critical exception flows.
 - The same assertion point MUST NOT appear across cases of different `type`.
 - **Fuzz does not replace functional assertions**: every Fuzz case MUST set `related_cases` pointing at the corresponding functional (API) case.
-- **Performance MUST carry execution identity and thresholds**: a Performance case must set non-empty `automation.performance.scenario.capability` and `automation.performance.scenario.endpoint`, plus `automation.performance.scenario.thresholds`; omission is invalid (reviewer blocker).
+- **Fuzz / Performance endpoint identity is semantic**: `automation.fuzz.endpoints[]` and `automation.performance.scenario.endpoint` are semantic endpoint identifiers (for example, `department create operation`), not a literal HTTP route such as `/api/v1/dept/create` and not a method/path pair. These fields must remain non-empty because downstream plans map the semantic identity to the concrete route; never satisfy the no-route rule by deleting them.
+- **Performance MUST carry execution identity and thresholds**: a Performance case must set non-empty `automation.performance.scenario.capability` and the semantic `automation.performance.scenario.endpoint`, plus `automation.performance.scenario.thresholds`; omission is invalid (reviewer blocker).
 - **Fuzz / Performance are additive cases** — they do not cancel the API/E2E functional coverage of the same endpoint.
 - **Selected-layer automation closure** — before writing the final files, read the automated layers named by `.qa.yaml` `approval.approved_approach`. For every selected `API`, `E2E`, `Fuzz`, or `Performance` layer, the case delta MUST contain at least one `added` or `modified` case with the same exact `type` and `automation.required: true`. A selected layer whose cases are all optional (`automation.required: false`) is invalid. Never repair this mismatch by silently removing a pre-approved layer from `.qa.yaml` or marking it declined in `proposal.md`; author a valid required case for that layer, or preserve an explicitly approved scope change from the user/workflow.
 
@@ -1330,8 +1331,8 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 32. `automation` — has `required`, `framework`, `status` (there is **no** `automation.target` — `type` is the single source of truth).
     - `automation.framework` — one of `pytest`, `pytest-playwright`, `schemathesis`, `locust`, `null`, and MUST match `type`: API→pytest, E2E→pytest-playwright, Fuzz→schemathesis, Performance→locust.
     - `automation.status` — one of `not_automated`, `planned`, `automated`, `flaky`, `deprecated`.
-    - When `type == Fuzz`: `automation.fuzz.endpoints` is present and non-empty, and `related_cases` points at ≥1 non-Fuzz case.
-    - When `type == Performance`: `automation.performance.scenario.capability` and `automation.performance.scenario.endpoint` are non-empty strings, and `automation.performance.scenario.thresholds` has non-empty `p95_ms` and `error_rate_max` (no placeholders).
+    - When `type == Fuzz`: `automation.fuzz.endpoints` is present and non-empty, contains semantic endpoint identifiers rather than literal HTTP routes, and `related_cases` points at ≥1 non-Fuzz case.
+    - When `type == Performance`: `automation.performance.scenario.capability` and the semantic endpoint identifier `automation.performance.scenario.endpoint` are non-empty strings (never a literal HTTP route), and `automation.performance.scenario.thresholds` has non-empty `p95_ms` and `error_rate_max` (no placeholders).
 33. `regression` — has `candidate`, `tier`, `rationale`.
 34. `regression.selection_reason` — present (may be empty list).
 35. `regression.maintenance_rule` — present and non-empty.

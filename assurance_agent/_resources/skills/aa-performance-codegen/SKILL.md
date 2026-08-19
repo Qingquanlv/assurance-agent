@@ -23,6 +23,7 @@ Generate performance tests under `tests/perf/**`, shared builders under `tests/t
 ### optional
 
 - `repo:.aa/config.yaml`
+- `repo:app/**` (read-only SUT contract evidence)
 - `repo:tests/perf/**`
 - `repo:tests/testdata/domain/**`
 
@@ -61,3 +62,26 @@ Write only authorized test/testdata paths plus the summary and manifest. Do not 
   as `reused`; omit unchanged support dependencies from the manifest.
 - If Task Mapping itself repeats a Case ID, do not try to compensate in generated
   files; the plan is invalid and must not be represented as a different relation.
+
+## Runtime Contract Closure
+
+Before writing a Locust task or seed adapter, inspect the live OpenAPI document
+when `BASE_URL` is configured; otherwise inspect the actual router and schema
+source. Verify every setup, measured, and cleanup request by exact method/path
+and request schema.
+Resolve the Locust host from the declared benchmark/runtime environment. Do not
+hard-code a local port when `BASE_URL` or `API_BASE_URL` is available.
+
+Inspect real response shapes as well. In particular, do not require a create
+response to return an identifier unless the handler actually does; when it does
+not, use a supported lookup to obtain the manifest-owned identifier. Seed setup
+must fail once with the response status and a redacted diagnostic, rather than
+letting every Locust user repeatedly execute a scenario with missing seed data.
+
+Validate measured assertions against the complete response object before
+unwrapping payload data. Pagination fields may be siblings of a list-valued
+`data`; never unwrap that list and then require the sibling fields inside it.
+
+Validate every positive seed against the real request schema and runtime
+validators before starting Locust. Do not use `example.test` as a valid email
+unless the SUT is proven to accept it; prefer a proven value or `example.com`.

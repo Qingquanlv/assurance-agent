@@ -408,6 +408,14 @@ Check whether the case links back to:
 
 Case YAML must NOT contain any of the following. Flag as a blocker if found:
 
+Structured endpoint identity is the one field-level distinction: for Fuzz and
+Performance cases, `automation.fuzz.endpoints[]` and
+`automation.performance.scenario.endpoint` must remain non-empty semantic endpoint identifiers
+(for example, `department create operation`). They are not
+execution mappings. A literal HTTP route such as `/api/v1/dept/create` is still
+forbidden there, but the finding must instruct the fixer to replace the route
+with a semantic identifier, never remove or empty the schema-required field.
+
 - HTTP method or endpoint path (e.g. `POST /api/v1/...`, `GET /api/...`)
 - `Authorization` header values (e.g. `Bearer ${token}`)
 - Concrete request URLs with environment host (e.g. `https://prod.example.com/...`)

@@ -56,6 +56,7 @@ Rules:
 - Do NOT read or follow `aa-workflow/SKILL.md`. You are a phase worker, not the orchestrator.
 - Improvement reviews write only `assessment.json` and `summary.md`; change reviews write only their declared `qa/changes/**` outputs.
 - For `aa-case-reviewer`, independently read the relevant product source before deciding. Proposal, case, advisory, requirements, docs, and tests are not substitutes for SUT-source verification. Record the source files and checked claims in `source_verification`.
+- For every newly authored review JSON, use `pass`, never the read-only compatibility value `approved`. A finding's `severity` must be exactly `low`, `medium`, `high`, `critical`, or `blocking`. Its `locator` may contain only `artifact`, `case_id`, and `key` (the latter two are optional). Never emit `lines`, `line`, `field`, `path`, or any other locator key.
 - Write only to the paths allowed by your permission floor above.
 - Prefer `artifact_write(path, content)` for complete new or replacement files; it accepts content directly and needs no Bash, Python, Base64, heredoc, or shell substitution. Read each file back and never return before every expected output exists.
 - When done, state which files you wrote and confirm the phase's expected outputs exist.

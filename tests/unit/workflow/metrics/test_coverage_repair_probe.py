@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import get_args
 
+import pytest
 import yaml
 
 from assurance_agent.artifacts.models.coverage_gaps import (
@@ -237,6 +238,139 @@ def test_collection_gap_does_not_hide_independent_repairable_numeric_shortboard(
     assert brief.eligible is True
     assert [item.metric for item in brief.repair_items] == ["constraint_coverage"]
     assert brief.allowed_test_files == ("tests/api/test_management.py",)
+
+
+def _write_api_execution(
+    change_dir: Path,
+    *,
+    status: str,
+    total: int,
+    passed: int,
+    failed: int,
+    skipped: int,
+    final_status: str = "FAIL",
+) -> None:
+    batch = change_dir / "execution" / "runs" / BATCH_NEW
+    (batch / "api-result.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": CHANGE_ID,
+                "batch_id": BATCH_NEW,
+                "target": "api",
+                "status": status,
+                "command": "uv run pytest tests/api/test_management.py",
+                "source": {"framework": "pytest", "raw_log": "raw/api.log"},
+                "total": total,
+                "passed": passed,
+                "failed": failed,
+                "skipped": skipped,
+                "cases": [],
+                "unmapped_tests": [],
+                "property_tests": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (batch / "execution-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "change_id": CHANGE_ID,
+                "batch_id": BATCH_NEW,
+                "selected_targets": {
+                    "api": True,
+                    "e2e": False,
+                    "fuzz": False,
+                    "performance": False,
+                },
+                "result_files": {"api": f"runs/{BATCH_NEW}/api-result.json"},
+                "final_status": final_status,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_constraint_gap(change_dir: Path) -> None:
+    _write_gaps(
+        change_dir,
+        BATCH_NEW,
+        [
+            {
+                "kind": "constraint_without_property",
+                "locator": {"constraint_key": "entities.dept.constraints.name_unique"},
+                "layer": "execution",
+                "batch_id": BATCH_NEW,
+            }
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "total", "passed", "failed", "skipped"),
+    [
+        ("skipped", 1, 0, 0, 1),
+        ("failed", 1, 0, 1, 0),
+        ("passed", 1, 0, 0, 1),
+    ],
+)
+def test_nonpassing_selected_execution_is_not_coverage_repair_eligible(
+    tmp_path: Path,
+    status: str,
+    total: int,
+    passed: int,
+    failed: int,
+    skipped: int,
+) -> None:
+    project_root, change_dir = _seed_low_risk(tmp_path)
+    _seed_batch(change_dir, constraint_covered=1)
+    _write_api_execution(
+        change_dir,
+        status=status,
+        total=total,
+        passed=passed,
+        failed=failed,
+        skipped=skipped,
+    )
+    _write_constraint_gap(change_dir)
+
+    brief = build_repair_brief(
+        change_dir=change_dir,
+        project_root=project_root,
+        change_id=CHANGE_ID,
+        computed_at=COMPUTED_AT,
+    )
+
+    assert brief.eligible is False
+    assert brief.repair_items == ()
+
+
+def test_passing_selected_execution_with_skips_remains_coverage_repair_eligible(
+    tmp_path: Path,
+) -> None:
+    project_root, change_dir = _seed_low_risk(tmp_path)
+    _seed_batch(change_dir, constraint_covered=1)
+    _write_api_execution(
+        change_dir,
+        status="passed",
+        total=10,
+        passed=9,
+        failed=0,
+        skipped=1,
+        final_status="PASS",
+    )
+    _write_constraint_gap(change_dir)
+
+    brief = build_repair_brief(
+        change_dir=change_dir,
+        project_root=project_root,
+        change_id=CHANGE_ID,
+        computed_at=COMPUTED_AT,
+    )
+
+    assert brief.eligible is True
+    assert [item.metric for item in brief.repair_items] == ["constraint_coverage"]
 
 
 def test_fully_passing_batch_is_ineligible(tmp_path: Path) -> None:

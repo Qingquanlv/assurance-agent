@@ -21,6 +21,7 @@ Turn the approved E2E portion of a QA Case Delta into reviewable implementation 
 - `change:facts/fact-baseline.json`
 - `repo:.aa/config.yaml`
 - `repo:.aa/data-knowledge.yaml`
+- `repo:app/**` and `repo:web/**` (read-only SUT and DOM evidence)
 - `repo:tests/testdata/domain/**`
 - `repo:tests/e2e/**`
 - `repo:tests/config.py`
@@ -50,6 +51,11 @@ Turn the approved E2E portion of a QA Case Delta into reviewable implementation 
 Write only the plan artifacts listed in Outputs. Do not write tests or continue into codegen.
 
 ## Domain Notes
+
+Inspect the declared backend source, frontend DOM source, and existing E2E/test-data
+helpers before planning locators or fixture lifecycles. Record the real request and
+response shape for every setup/cleanup operation; when create returns no identifier,
+plan an exact lookup rather than assuming `data.id`.
 
 Authoring tables (keep column names exact):
 

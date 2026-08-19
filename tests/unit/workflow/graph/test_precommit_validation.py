@@ -387,14 +387,14 @@ def _freeze_valid_api_candidate(
             "    return 'token'\n",
             encoding="utf-8",
         )
-    if stale_conftest_missing_helper:
+    elif stale_conftest_missing_helper:
         (project / "tests" / "api" / "conftest.py").write_text(
             "from tests.helpers.dept_assertions import find_dept_in_tree\n\n"
             "def unused():\n"
             "    return find_dept_in_tree\n",
             encoding="utf-8",
         )
-    if imported_missing_fixture_module:
+    elif imported_missing_fixture_module:
         (project / "tests" / "api" / "conftest.py").write_text(
             "from tests.api.missing_helpers import client, admin_token\n",
             encoding="utf-8",

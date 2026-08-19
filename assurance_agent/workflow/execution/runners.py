@@ -369,6 +369,32 @@ def _coverage_from_totals(
     totals: dict[str, Any],
     threshold: CoverageThreshold,
 ) -> CoverageResult:
+    num_statements = int(totals.get("num_statements", 0) or 0)
+    if num_statements <= 0:
+        return CoverageResult(
+            change_id=change_id,
+            batch_id=batch_id,
+            available=False,
+            line_coverage=0.0,
+            branch_coverage=0.0,
+            threshold=threshold,
+            status="SKIPPED",
+            skip_reason="coverage.json contains no measured statements",
+            source={"coverage_json": "raw/coverage.json"},
+        )
+    covered_lines = int(totals.get("covered_lines", 0) or 0)
+    if covered_lines <= 0:
+        return CoverageResult(
+            change_id=change_id,
+            batch_id=batch_id,
+            available=False,
+            line_coverage=0.0,
+            branch_coverage=0.0,
+            threshold=threshold,
+            status="SKIPPED",
+            skip_reason="coverage.json contains no executed statements",
+            source={"coverage_json": "raw/coverage.json"},
+        )
     line = float(totals.get("percent_covered", 0.0) or 0.0)
     num_branches = float(totals.get("num_branches", 0) or 0)
     covered_branches = float(totals.get("covered_branches", 0) or 0)

@@ -25,6 +25,7 @@ Planning establishes case coverage, endpoint and assertion intent, data setup an
 - `change:facts/fact-baseline.json`
 - `repo:.aa/config.yaml`
 - `repo:.aa/data-knowledge.yaml`
+- `repo:app/**` (read-only SUT contract evidence)
 - `repo:tests/testdata/domain/**`
 - `repo:tests/api/adapters/**`
 - `repo:tests/config.py`
@@ -103,6 +104,11 @@ Do not write tests, factories, adapters, helpers, or execution results.
 Do not run pytest or execute data setup during planning.
 
 Do not silently guess endpoints, methods, auth, schemas, fixtures, cleanup, or product behavior.
+
+Before naming an endpoint, payload, response field, or reusable helper, inspect
+the declared `repo:app/**` and test inputs. A plan must describe the observed
+contract, including create operations whose success response has no identifier
+and therefore requires a supported follow-up lookup.
 
 Do not use `removed` cases as plan scope.
 

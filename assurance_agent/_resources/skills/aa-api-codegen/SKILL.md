@@ -31,6 +31,7 @@ implement the selected cases.
 ### optional
 
 - `repo:.aa/config.yaml`
+- `repo:app/**` (read-only SUT contract evidence)
 - `repo:tests/api/**`
 - `repo:tests/api/adapters/**`
 - `repo:tests/testdata/domain/**`
@@ -76,6 +77,26 @@ Before writing the manifest:
 Names such as `client` and `admin_token` are not implicit fixtures. Their provider
 must exist in the candidate tree. The Graph precommit validator is authoritative
 and will reject an unresolved fixture before committing the candidate.
+
+## Runtime Contract Closure
+
+Before writing any HTTP request or the generated-files manifest, inspect the
+live SUT OpenAPI document when `BASE_URL` is configured; otherwise inspect the
+actual router and request-schema source. Build an explicit set of
+`(METHOD, PATH)` operations and verify every generated request against it.
+
+- Do not derive conventional routes such as `/detail` or choose `PUT` for an
+  update merely from its name. Use the exact registered method and path.
+- Build request bodies from the registered request schema, including field
+  types and required fields. Do not infer payload keys from a UI form.
+- Inspect the real response schema or handler. A successful create response
+  that contains no identifier must be followed by a supported lookup; never
+  assume `data.id` exists.
+- If any operation, payload, or response fact cannot be verified, do not emit a
+  runnable test for it or claim readiness in the summary. Record the concrete
+  missing fact so the bounded codegen retry can repair the candidate.
+
+This verification is read-only and is not test execution.
 
 ## Generated-files Manifest Rules
 

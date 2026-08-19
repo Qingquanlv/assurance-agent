@@ -21,6 +21,8 @@ Review performance plans and emit a PlanReview document. This layer is human-onl
 ### optional
 
 - `repo:.aa/data-knowledge.yaml`
+- `repo:app/**` (read-only SUT contract evidence)
+- `repo:tests/perf/**` and `repo:tests/testdata/domain/**` (existing implementation evidence)
 
 ## Outputs
 
@@ -70,3 +72,25 @@ Required capability closure:
   `needs_human_review` with `not_ready` instead of `pass` with a virtual key.
 - Emit `pass` with `ready` / `ready_with_warnings` only when every required key
   resolves exactly in L1.
+
+Runtime contract closure:
+
+- The review input list is not an evidence boundary. When repository files or
+  the live OpenAPI document are readable, you must perform the read-only
+  inspection yourself. Do not return `not_ready` merely because the plan text
+  does not embed the proof that you can independently verify.
+- Verify setup, measured, and cleanup operations by exact method/path against
+  live OpenAPI when available, otherwise against router/schema source.
+- Reject a hard-coded Locust host when the declared benchmark/runtime provides
+  `BASE_URL` or `API_BASE_URL`.
+- Verify that seed identifier extraction matches the real create response, or
+  that the plan names a supported lookup. Reject assumed `data.id` response
+  shapes as `not_ready`.
+- Validate every positive seed field against the real request schema and
+  application validators. Reject unproven reserved email domains such as
+  `example.test`; setup must be known-valid before load metrics can be trusted.
+- Compare measured response assertions with the complete observed response
+  envelope. Reject plans that unwrap `data` and then look for top-level pagination
+  fields inside the unwrapped list.
+- Inspect the declared performance and shared test-data trees before claiming an
+  implementation or lifecycle helper is absent.

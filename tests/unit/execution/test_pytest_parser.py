@@ -100,6 +100,28 @@ def test_empty_tests_list_is_skipped_status(tmp_path: Path) -> None:
     assert result.total == 0
 
 
+def test_all_skipped_tests_are_not_reported_as_passed(tmp_path: Path) -> None:
+    result = parse(
+        tmp_path,
+        [
+            {
+                "nodeid": "tests/api/test_m.py::test_tc_m_001__requires_token",
+                "outcome": "skipped",
+                "setup": {
+                    "outcome": "skipped",
+                    "duration": 0.0,
+                    "longrepr": "Skipped: API_ADMIN_TOKEN is required",
+                },
+            }
+        ],
+    )
+
+    assert result.status == "skipped"
+    assert result.total == 1
+    assert result.passed == 0
+    assert result.skipped == 1
+
+
 def test_no_tests_collected_exit5_is_skipped(tmp_path: Path) -> None:
     """exitcode 5 (no tests collected) with an empty tests list → benign skip."""
     result = parse(tmp_path, [], exitcode=5, summary={"total": 0, "collected": 0})

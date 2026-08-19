@@ -23,6 +23,7 @@ Generate E2E tests under `tests/e2e/**`, shared builders under `tests/testdata/*
 ### optional
 
 - `repo:.aa/config.yaml`
+- `repo:app/**` and `repo:web/**` (read-only SUT and DOM evidence)
 - `repo:tests/e2e/**`
 - `repo:tests/testdata/domain/**`
 
@@ -56,6 +57,31 @@ authorized `tests/e2e/**`, record changed fixture files as `support` with
 `case_ids: []`, and finish only when the unresolved fixture set is empty. The
 Graph precommit validator checks this candidate-tree contract without executing
 the fixtures.
+
+For every generated or reused browser test and shared login fixture, inspect the
+actual login DOM and feature-component DOM before accepting its locators. Do not
+assume an accessible name or control role from visible design intent: an input
+with only a placeholder has no such name, and a checkbox group is not a
+combobox. Prefer a stable observed placeholder, label, role, or test id. Update
+an existing mapped test instead of marking it `reused` when any locator disagrees
+with the current SUT markup.
+
+For synchronous pytest-playwright tests, do not call `asyncio.run()` in a test,
+fixture, setup, cleanup, or adapter bridge. Playwright owns an event loop in the
+test thread, so nested `asyncio.run()` fails before browser assertions execute.
+Use a synchronous HTTP adapter, or an existing project helper that runs the
+coroutine in a separate thread when a loop is already active. Inspect reused
+fixtures as well as newly generated files for this incompatibility.
+
+Inspect the real handler response for every fixture create operation. If success
+contains no identifier, perform an exact supported list/get lookup and verify the
+created record before returning it; never require `data.id`. Reused shared
+test-data helpers are part of this closure and must be updated when their response
+mapping contradicts the current SUT.
+
+Resolve every fixture setup and cleanup operation by exact HTTP method/path from
+the live OpenAPI document when available, otherwise from the declared router and
+schema source. Route naming convention is not evidence.
 
 ## Generated-files Manifest Rules
 

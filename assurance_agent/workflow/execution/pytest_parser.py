@@ -109,6 +109,10 @@ def parse_pytest_json(
         status: ExecutionStatus = "skipped"
     elif failed > 0:
         status = "failed"
+    elif passed == 0:
+        # A report containing only skipped tests proves that collection worked,
+        # not that the selected target executed successfully.
+        status = "skipped"
     else:
         status = "passed"
 

@@ -227,7 +227,13 @@ def test_run_pytest_target_collects_coverage(tmp_path: Path, monkeypatch) -> Non
                     "call": {"outcome": "passed", "duration": 0.0},
                 }
             ],
-            coverage_totals={"percent_covered": 88.0, "num_branches": 10, "covered_branches": 7},
+            coverage_totals={
+                "percent_covered": 88.0,
+                "num_statements": 100,
+                "covered_lines": 88,
+                "num_branches": 10,
+                "covered_branches": 7,
+            },
         ),
     )
     batch_dir = tmp_path / "batch"
@@ -261,6 +267,67 @@ def test_parse_coverage_missing_is_skipped(tmp_path: Path) -> None:
     )
     assert cov.available is False
     assert cov.status == "SKIPPED"
+
+
+def test_parse_coverage_with_no_measured_statements_is_skipped(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "coverage.json").write_text(
+        json.dumps(
+            {
+                "totals": {
+                    "percent_covered": 0.0,
+                    "num_statements": 0,
+                    "num_branches": 0,
+                    "covered_branches": 0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cov = parse_coverage_result(
+        change_id="CH-1",
+        batch_id="b1",
+        batch_dir=tmp_path,
+        threshold=CoverageThreshold(line=70, branch=60),
+    )
+
+    assert cov.available is False
+    assert cov.status == "SKIPPED"
+    assert cov.line_coverage == 0.0
+    assert cov.branch_coverage == 0.0
+    assert "no measured statements" in cov.skip_reason
+
+
+def test_parse_coverage_with_no_executed_statements_is_skipped(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "coverage.json").write_text(
+        json.dumps(
+            {
+                "totals": {
+                    "percent_covered": 0.0,
+                    "num_statements": 100,
+                    "covered_lines": 0,
+                    "num_branches": 10,
+                    "covered_branches": 0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cov = parse_coverage_result(
+        change_id="CH-1",
+        batch_id="b1",
+        batch_dir=tmp_path,
+        threshold=CoverageThreshold(line=70, branch=60),
+    )
+
+    assert cov.available is False
+    assert cov.status == "SKIPPED"
+    assert "no executed statements" in cov.skip_reason
 
 
 def test_parse_locust_stats_reads_p95_and_counts(tmp_path: Path) -> None:

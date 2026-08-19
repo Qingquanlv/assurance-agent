@@ -244,6 +244,7 @@ contracts:
     - change:review/api-plan-review.json
     - repo:.aa/config.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
     - repo:tests/testdata/domain/**
     - repo:tests/api/adapters/**
     - repo:tests/config.py
@@ -281,6 +282,9 @@ contracts:
     - change:review/api-plan-checks.json
     - change:cases/**/case.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
+    - repo:tests/api/**
+    - repo:tests/testdata/domain/**
     writes:
     - change:review/api-plan-review.json
     - change:review/api-plan-review-summary.md
@@ -309,6 +313,7 @@ contracts:
     - change:cases/**/case.yaml
     - repo:.aa/config.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
     - repo:tests/api/**
     - repo:tests/api/adapters/**
     - repo:tests/testdata/domain/**
@@ -342,6 +347,8 @@ contracts:
     - change:review/plan-review.json
     - repo:.aa/config.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
+    - repo:web/**
     - repo:tests/testdata/domain/**
     - repo:tests/e2e/**
     - repo:tests/config.py
@@ -379,6 +386,10 @@ contracts:
     - change:review/e2e-plan-checks.json
     - change:cases/**/case.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
+    - repo:web/**
+    - repo:tests/e2e/**
+    - repo:tests/testdata/domain/**
     writes:
     - change:review/plan-review.json
     - change:review/plan-review-summary.md
@@ -407,6 +418,8 @@ contracts:
     - change:cases/**/case.yaml
     - repo:.aa/config.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
+    - repo:web/**
     - repo:tests/e2e/**
     - repo:tests/testdata/domain/**
     writes:
@@ -437,6 +450,7 @@ contracts:
     - change:facts/fact-baseline.json
     - repo:.aa/config.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
     - repo:tests/fuzz/**
     - repo:tests/testdata/domain/**
     writes:
@@ -466,6 +480,9 @@ contracts:
     - change:review/fuzz-plan-checks.json
     - change:cases/**/case.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
+    - repo:tests/fuzz/**
+    - repo:tests/testdata/domain/**
     writes:
     - change:review/fuzz-plan-review.json
     - change:review/fuzz-plan-review-summary.md
@@ -494,6 +511,7 @@ contracts:
     - change:cases/**/case.yaml
     - repo:.aa/config.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
     - repo:tests/fuzz/**
     - repo:tests/testdata/domain/**
     writes:
@@ -524,6 +542,7 @@ contracts:
     - change:facts/fact-baseline.json
     - repo:.aa/config.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
     - repo:tests/perf/**
     - repo:tests/testdata/domain/**
     writes:
@@ -553,6 +572,9 @@ contracts:
     - change:review/performance-plan-checks.json
     - change:cases/**/case.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
+    - repo:tests/perf/**
+    - repo:tests/testdata/domain/**
     writes:
     - change:review/performance-plan-review.json
     - change:review/performance-plan-review-summary.md
@@ -581,6 +603,7 @@ contracts:
     - change:cases/**/case.yaml
     - repo:.aa/config.yaml
     - repo:.aa/data-knowledge.yaml
+    - repo:app/**
     - repo:tests/perf/**
     - repo:tests/testdata/domain/**
     writes:

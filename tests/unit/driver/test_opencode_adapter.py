@@ -223,6 +223,42 @@ def test_invoke_keeps_polling_for_ordinary_overloaded_retry(tmp_path: Path) -> N
     assert script.abort_calls == 0
 
 
+def test_invoke_fails_fast_after_provider_overload_retry_budget(tmp_path: Path) -> None:
+    script = _StatusScript(
+        [
+            {
+                "type": "retry",
+                "attempt": 9,
+                "message": "Our servers are currently overloaded. Please try again later.",
+                "next": 99_999,
+            },
+            "busy",
+            "idle",
+            "idle",
+        ]
+    )
+    adapter = OpenCodeAdapter("http://host", "/sut", client=_client(script), **_fast())
+
+    result = adapter.invoke(
+        AgentRequest(
+            target="skill:aa-fuzz-codegen",
+            node_id="codegen",
+            change_id="CH-1",
+            workspace_root=tmp_path,
+            allowed_writes=("change:codegen/**",),
+            prompt="p",
+            timeout_seconds=5400.0,
+            agent="aa-test-author",
+        )
+    )
+
+    assert result.ok is False
+    assert result.error_kind == "rate_limit"
+    assert "retry budget exhausted after attempt 9" in (result.error or "")
+    assert script.status_calls == 1
+    assert script.abort_calls == 1
+
+
 def test_invoke_reports_assistant_401_as_auth_instead_of_success(tmp_path: Path) -> None:
     """A provider APIError must not degrade into a later missing-output retry."""
     script = _StatusScript(
