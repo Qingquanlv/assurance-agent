@@ -37,6 +37,32 @@ class ProjectionModel(BaseModel):
     model_config = _FROZEN
 
 
+class ValidationReceipt(ProjectionModel):
+    validator_id: str
+    accepted: bool
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_reason(self) -> Self:
+        if self.accepted and self.reason is not None:
+            raise ValueError("reason is allowed only for rejected validation receipts")
+        if not self.accepted and not self.reason:
+            raise ValueError("rejected validation receipts require a non-empty reason")
+        return self
+
+
+class CommitResult(ProjectionModel):
+    committed: bool
+    receipts: tuple[ValidationReceipt, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_commit_outcome(self) -> Self:
+        all_accepted = all(receipt.accepted for receipt in self.receipts)
+        if self.committed != all_accepted:
+            raise ValueError("commit succeeds exactly when all validation receipts are accepted")
+        return self
+
+
 class GraphInstanceRecord(ProjectionModel):
     graph_instance_id: str
     graph_id: str
@@ -576,10 +602,12 @@ def _replace_activation(
 __all__ = [
     "ActivationRecord",
     "AttemptRecord",
+    "CommitResult",
     "GraphInstanceRecord",
     "InvocationProjection",
     "PendingInterrupt",
     "ProjectionError",
     "TokenRecord",
+    "ValidationReceipt",
     "fold_events",
 ]

@@ -39,6 +39,11 @@ def _accept(_candidate: CandidateWriteSet, _context: ValidationContext) -> Valid
     return ValidationResult(accepted=True)
 
 
+class AcceptingValidator:
+    def validate(self, _candidate: CandidateWriteSet, _context: ValidationContext) -> ValidationResult:
+        return ValidationResult(accepted=True)
+
+
 @dataclass(frozen=True)
 class Provider:
     plugin_id: str
@@ -49,11 +54,14 @@ class Provider:
             plugin_version="1.0.0",
             engine_api="1.0",
             task_handlers=(f"{self.plugin_id}.ping",),
-            commit_validators=(),
+            commit_validators=(f"{self.plugin_id}.validate",),
         )
 
     def bind(self, _ports: EnginePorts) -> PluginRuntime:
-        return PluginRuntime(task_handlers={f"{self.plugin_id}.ping": _ping}, commit_validators={})
+        return PluginRuntime(
+            task_handlers={f"{self.plugin_id}.ping": _ping},
+            commit_validators={f"{self.plugin_id}.validate": AcceptingValidator()},
+        )
 
 
 def test_registry_is_local_and_exact() -> None:
@@ -61,6 +69,8 @@ def test_registry_is_local_and_exact() -> None:
     second = assemble_registry((Provider("toy.two"),))
     assert set(first.task_handlers) == {"toy.one.ping"}
     assert set(second.task_handlers) == {"toy.two.ping"}
+    assert set(first.commit_validators) == {"toy.one.validate"}
+    assert set(second.commit_validators) == {"toy.two.validate"}
 
 
 def test_descriptor_and_runtime_must_match() -> None:
@@ -83,7 +93,10 @@ def test_duplicate_capability_fails_without_last_wins() -> None:
     [
         ({"status": "succeeded", "failure": {"kind": "internal", "message": "bad"}}, "failure"),
         ({"status": "failed"}, "failure"),
-        ({"status": "failed", "failure": {"kind": "internal", "message": "bad"}, "stop_reason": "halt"}, "stop_reason"),
+        (
+            {"status": "failed", "failure": {"kind": "internal", "message": "bad"}, "stop_reason": "halt"},
+            "stop_reason",
+        ),
         ({"status": "stopped"}, "stop_reason"),
         ({"status": "stopped", "stop_reason": ""}, "stop_reason"),
         ({"status": "succeeded", "stop_reason": "halt"}, "stop_reason"),
@@ -246,7 +259,10 @@ def test_assembled_registry_copies_runtime_mappings_and_is_immutable() -> None:
 
     class MutableProvider(Provider):
         def bind(self, _ports: EnginePorts) -> PluginRuntime:
-            return PluginRuntime(task_handlers=handlers, commit_validators={})
+            return PluginRuntime(
+                task_handlers=handlers,
+                commit_validators={"toy.one.validate": AcceptingValidator()},
+            )
 
     registry = assemble_registry((MutableProvider("toy.one"),))
     handlers.clear()
@@ -276,7 +292,10 @@ def test_runtime_mapping_is_snapshotted_once_before_validation_and_installation(
 
     class ChangingProvider(Provider):
         def bind(self, _ports: EnginePorts) -> PluginRuntime:
-            return PluginRuntime(task_handlers=changing_handlers, commit_validators={})
+            return PluginRuntime(
+                task_handlers=changing_handlers,
+                commit_validators={"toy.two.validate": AcceptingValidator()},
+            )
 
     registry = assemble_registry((Provider("toy.one"), ChangingProvider("toy.two")))
     assert set(registry.task_handlers) == {"toy.one.ping", "toy.two.ping"}
@@ -319,7 +338,10 @@ def test_invalid_declared_capability_ids_are_rejected(capability_id: str) -> Non
             )
 
         def bind(self, _ports: EnginePorts) -> PluginRuntime:
-            return PluginRuntime(task_handlers={capability_id: _ping}, commit_validators={})
+            return PluginRuntime(
+                task_handlers={capability_id: _ping},
+                commit_validators={f"{self.plugin_id}.validate": AcceptingValidator()},
+            )
 
     with pytest.raises(CapabilityRegistryError, match="invalid task handler id"):
         assemble_registry((InvalidCapability("toy.one"),))
@@ -328,7 +350,10 @@ def test_invalid_declared_capability_ids_are_rejected(capability_id: str) -> Non
 def test_invalid_bound_capability_id_is_rejected_before_key_comparison() -> None:
     class InvalidRuntime(Provider):
         def bind(self, _ports: EnginePorts) -> PluginRuntime:
-            return PluginRuntime(task_handlers={"invalid": _ping}, commit_validators={})
+            return PluginRuntime(
+                task_handlers={"invalid": _ping},
+                commit_validators={f"{self.plugin_id}.validate": AcceptingValidator()},
+            )
 
     with pytest.raises(CapabilityRegistryError, match="invalid bound task handler id"):
         assemble_registry((InvalidRuntime("toy.one"),))
@@ -432,7 +457,7 @@ def test_validator_descriptor_and_runtime_must_match() -> None:
                 descriptor.plugin_version,
                 descriptor.engine_api,
                 descriptor.task_handlers,
-                ("toy.one.validate",),
+                ("toy.missing.validate",),
             )
 
     with pytest.raises(CapabilityRegistryError, match="declared and bound commit validators differ"):
