@@ -20,7 +20,9 @@ def _chmod_exec(path: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _run_helper(tmp_path: Path, command: str, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run_helper(
+    tmp_path: Path, command: str, *, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     merged = {**os.environ, **(env or {})}
     return subprocess.run(
         ["bash", "-c", f"source {shlex.quote(str(_HELPERS))}; {command}"],
@@ -93,9 +95,7 @@ def test_bootstrap_assurance_runtime_keeps_existing_aa_and_skips_uv(tmp_path: Pa
     _write_exec(fake_bin / "python", "#!/bin/sh\nexit 0\n")
     _write_exec(
         fake_bin / "uv",
-        "#!/bin/sh\n"
-        f'printf "%s\\n" "$*" >> {shlex.quote(str(uv_log))}\n'
-        "exit 99\n",
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >> {shlex.quote(str(uv_log))}\nexit 99\n',
     )
 
     result = _run_helper(
@@ -124,9 +124,7 @@ def test_bootstrap_assurance_runtime_prefers_uv_sync_workspace_venv(tmp_path: Pa
     fake_bin = tmp_path / "fake-bin"
     _write_exec(
         fake_bin / "uv",
-        "#!/bin/sh\n"
-        f'printf "%s\\n" "$*" >> {shlex.quote(str(uv_log))}\n'
-        "exit 0\n",
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >> {shlex.quote(str(uv_log))}\nexit 0\n',
     )
 
     result = _run_helper(
@@ -207,15 +205,11 @@ def test_preflight_assurance_wheels_imports_both_wheels_and_pins_product(tmp_pat
     aa_log = tmp_path / "aa.log"
     _write_exec(
         fake_bin / "python",
-        "#!/bin/sh\n"
-        f'printf "%s\\n" "$*" >> {shlex.quote(str(python_log))}\n'
-        "exit 0\n",
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >> {shlex.quote(str(python_log))}\nexit 0\n',
     )
     _write_exec(
         fake_bin / "aa",
-        "#!/bin/sh\n"
-        f'printf "%s\\n" "$*" >> {shlex.quote(str(aa_log))}\n'
-        "exit 0\n",
+        f'#!/bin/sh\nprintf "%s\\n" "$*" >> {shlex.quote(str(aa_log))}\nexit 0\n',
     )
 
     result = _run_helper(
