@@ -16,6 +16,7 @@ from graph_engine.runtime.events import (
     EventEnvelope,
     GraphCompleted,
     GraphStarted,
+    InterruptResumed,
     InvocationFinished,
     InvocationStarted,
     NodeActivated,
@@ -34,6 +35,7 @@ from graph_engine.runtime.models import (
     InvocationProjection,
     PendingInterrupt,
     ProjectionError,
+    TokenRecord,
     fold_events,
 )
 
@@ -520,11 +522,11 @@ def _attempt_history(status: str) -> list[object]:
         ("failed", "start", True),
         ("failed", "outcome", False),
         ("failed", "complete", False),
-        ("failed", "interrupt", True),
+        ("failed", "interrupt", False),
         ("succeeded", "start", False),
         ("succeeded", "outcome", False),
         ("succeeded", "complete", True),
-        ("succeeded", "interrupt", True),
+        ("succeeded", "interrupt", False),
         ("stopped", "start", False),
         ("stopped", "outcome", False),
         ("stopped", "complete", False),
@@ -553,6 +555,17 @@ def test_attempt_and_node_transition_matrix(prior: str, action: str, allowed: bo
             operation()
 
 
+def test_succeeded_task_cannot_enter_interrupt_resume_lifecycle() -> None:
+    events = _envelopes(
+        *_attempt_history("succeeded"),
+        NodeInterrupted(activation_id="act-1", interrupt_id="int-1"),
+        InterruptResumed(interrupt_id="int-1"),
+        NodeCompleted(activation_id="act-1"),
+    )
+    with pytest.raises(ProjectionError, match="task-attempt history"):
+        fold_events(events)
+
+
 def test_graph_completion_and_successful_invocation_require_settled_state() -> None:
     live_attempt = _envelopes(
         InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
@@ -571,6 +584,74 @@ def test_graph_completion_and_successful_invocation_require_settled_state() -> N
     )
     with pytest.raises(ProjectionError, match="running graph"):
         fold_events(running_graph)
+
+
+@pytest.mark.parametrize("consumed", [False, True])
+def test_graph_completion_rejects_unactivated_token(consumed: bool) -> None:
+    events: list[object] = [
+        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        GraphStarted(graph_instance_id="root", graph_id="root"),
+        TokenOffered(
+            token_id="tok-1",
+            graph_instance_id="root",
+            source=None,
+            target="task",
+            payload=None,
+        ),
+    ]
+    if consumed:
+        events.append(TokenConsumed(token_id="tok-1", graph_instance_id="root", node_id="task"))
+    events.append(GraphCompleted(graph_instance_id="root"))
+    with pytest.raises(ProjectionError, match="unclaimed token"):
+        fold_events(_envelopes(*events))
+
+
+@pytest.mark.parametrize("consumed", [False, True])
+def test_successful_invocation_rejects_token_outside_completed_work(consumed: bool) -> None:
+    events: list[object] = [
+        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        GraphStarted(graph_instance_id="root", graph_id="root"),
+        GraphCompleted(graph_instance_id="root"),
+        TokenOffered(
+            token_id="tok-1",
+            graph_instance_id="ghost",
+            source=None,
+            target="task",
+            payload=None,
+        ),
+    ]
+    if consumed:
+        events.append(TokenConsumed(token_id="tok-1", graph_instance_id="ghost", node_id="task"))
+    events.append(InvocationFinished(invocation_id="inv-1", status="succeeded"))
+    with pytest.raises(ProjectionError, match="unsettled token"):
+        fold_events(_envelopes(*events))
+
+
+def test_claimed_token_settles_with_completed_activation_and_graph() -> None:
+    projection = fold_events(
+        _envelopes(
+            InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+            GraphStarted(graph_instance_id="root", graph_id="root"),
+            TokenOffered(
+                token_id="tok-1",
+                graph_instance_id="root",
+                source=None,
+                target="end",
+                payload=None,
+            ),
+            TokenConsumed(token_id="tok-1", graph_instance_id="root", node_id="end"),
+            NodeActivated(
+                activation_id="act-1",
+                graph_instance_id="root",
+                node_id="end",
+                token_ids=("tok-1",),
+            ),
+            NodeCompleted(activation_id="act-1"),
+            GraphCompleted(graph_instance_id="root"),
+            InvocationFinished(invocation_id="inv-1", status="succeeded"),
+        )
+    )
+    assert projection.status == "succeeded"
 
 
 def test_graph_scoped_activity_is_rejected_after_completion() -> None:
@@ -659,6 +740,24 @@ def test_projection_rejects_semantically_impossible_states() -> None:
             product_digest="a" * 64,
             entrypoint="main",
             pending_interrupt=PendingInterrupt(interrupt_id="int-1", activation_id="missing"),
+        )
+    completed_graph = graph.model_copy(update={"status": "completed"})
+    with pytest.raises(ValidationError, match="unsettled token"):
+        InvocationProjection(
+            status="succeeded",
+            invocation_id="inv-1",
+            product_digest="a" * 64,
+            entrypoint="main",
+            graph_instances=(completed_graph,),
+            offered_tokens=(
+                TokenRecord(
+                    token_id="tok-1",
+                    graph_instance_id="root",
+                    source=None,
+                    target="end",
+                    payload=None,
+                ),
+            ),
         )
 
 

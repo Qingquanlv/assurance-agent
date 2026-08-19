@@ -192,6 +192,8 @@ class InvocationProjection(ProjectionModel):
                 raise ValueError("succeeded projection requires completed activations")
             if self.pending_interrupt is not None:
                 raise ValueError("succeeded projection cannot retain an interrupt")
+            if any(_token_is_unsettled_for_success(self, token) for token in self.offered_tokens):
+                raise ValueError("succeeded projection contains an unsettled token")
         return self
 
 
@@ -402,8 +404,8 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
             _ensure_graph_open_if_known(projection, activation.graph_instance_id, envelope.seq)
             if activation.status != "active":
                 _fail(envelope.seq, "node interrupted from a non-active state")
-            if activation.attempts and activation.attempts[-1].status == "running":
-                _fail(envelope.seq, "node interrupted with an active attempt")
+            if activation.attempts:
+                _fail(envelope.seq, "node interrupted after task-attempt history")
             if projection.pending_interrupt is not None:
                 _fail(envelope.seq, "another interrupt is already pending")
             projection = _replace_activation(
@@ -439,6 +441,16 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
                 _fail(envelope.seq, f"graph instance {event.graph_instance_id!r} was not started")
             if graph.status == "completed":
                 _fail(envelope.seq, f"graph instance {event.graph_instance_id!r} already completed")
+            for token in projection.offered_tokens:
+                if token.graph_instance_id != event.graph_instance_id:
+                    continue
+                activation = (
+                    _find_activation(projection, token.activation_id)
+                    if token.activation_id is not None
+                    else None
+                )
+                if activation is None or activation.status != "completed":
+                    _fail(envelope.seq, f"graph completed with unclaimed token {token.token_id!r}")
             if any(
                 item.graph_instance_id == event.graph_instance_id and item.status != "completed"
                 for item in projection.activations
@@ -474,6 +486,10 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
                     _fail(envelope.seq, "successful invocation finished with an unsettled activation")
                 if projection.pending_interrupt is not None:
                     _fail(envelope.seq, "successful invocation finished with a pending interrupt")
+                if any(
+                    _token_is_unsettled_for_success(projection, token) for token in projection.offered_tokens
+                ):
+                    _fail(envelope.seq, "successful invocation finished with an unsettled token")
             elif event.status == "failed":
                 _require_no_live_attempt_or_interrupt(projection, envelope.seq, "failed")
                 if any(item.status == "stopped" for item in projection.activations):
@@ -491,10 +507,28 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
 
 
 def _activation(projection: InvocationProjection, activation_id: str, seq: int) -> ActivationRecord:
-    activation = next((item for item in projection.activations if item.activation_id == activation_id), None)
+    activation = _find_activation(projection, activation_id)
     if activation is None:
         _fail(seq, f"activation {activation_id!r} does not exist")
     return activation
+
+
+def _find_activation(projection: InvocationProjection, activation_id: str | None) -> ActivationRecord | None:
+    return next(
+        (item for item in projection.activations if item.activation_id == activation_id),
+        None,
+    )
+
+
+def _token_is_unsettled_for_success(projection: InvocationProjection, token: TokenRecord) -> bool:
+    graph = next(
+        (item for item in projection.graph_instances if item.graph_instance_id == token.graph_instance_id),
+        None,
+    )
+    activation = _find_activation(projection, token.activation_id)
+    return (
+        graph is None or graph.status != "completed" or activation is None or activation.status != "completed"
+    )
 
 
 def _ensure_graph_open(
