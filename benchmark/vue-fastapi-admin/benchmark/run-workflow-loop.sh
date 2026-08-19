@@ -889,11 +889,6 @@ run_benchmark_eval() {
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
-if [ ! -x "$AA_PYTHON" ]; then
-  preflight_log "ERROR: pinned assurance-agent Python missing: $AA_PYTHON"
-  exit 1
-fi
-
 if ! command -v "$OPENCODE_BIN" >/dev/null 2>&1; then
   preflight_log "ERROR: OpenCode binary not found: $OPENCODE_BIN"
   exit 1
@@ -904,16 +899,17 @@ if [ "$DRIVER_ADAPTER" != "opencode" ]; then
   exit 1
 fi
 
-# uv-based bootstrap (replaces the TS npm build/link path).
-if ! command -v "$AA_BIN" >/dev/null 2>&1; then
-  if command -v uv >/dev/null 2>&1 && [ -d "$AA_REPO_ROOT" ]; then
-    preflight_log "aa CLI not found - installing via uv from $AA_REPO_ROOT"
-    uv tool install --from "$AA_REPO_ROOT" assurance-agent || {
-      preflight_log "ERROR: uv tool install failed for assurance-agent"; exit 1; }
-  fi
+# T3: install kernel+assurance wheels into one env, then pin product resources.
+if ! bootstrap_assurance_runtime "$AA_REPO_ROOT"; then
+  preflight_log "ERROR: aa CLI not found: $AA_BIN (install with 'uv sync --project $AA_REPO_ROOT' or 'uv tool install --from $AA_REPO_ROOT assurance-agent')"
+  exit 1
 fi
-if ! command -v "$AA_BIN" >/dev/null 2>&1; then
-  preflight_log "ERROR: aa CLI not found: $AA_BIN (install with 'uv tool install .' in $AA_REPO_ROOT)"
+if [ ! -x "$AA_PYTHON" ]; then
+  preflight_log "ERROR: pinned assurance-agent Python missing: $AA_PYTHON"
+  exit 1
+fi
+if ! preflight_assurance_wheels; then
+  preflight_log "ERROR: T3 runtime must import assurance_kernel and assurance_agent from the same env as $AA_BIN"
   exit 1
 fi
 
@@ -922,7 +918,7 @@ preflight_log "syncing and verifying current aa runtime skills and bounded OpenC
   preflight_log "ERROR: aa skill refresh --sync-agents --sync-opencode-user-skills --sync-opencode-user-agents failed"
   exit 1
 }
-if ! "$AA_PYTHON" -c 'import sys; from pathlib import Path; from assurance_agent.workflow.core.assets import opencode_user_agents_root, opencode_user_skills_root, verify_packaged_agents, verify_packaged_skills; root = Path(sys.argv[1]); verify_packaged_skills(root / "skills"); verify_packaged_skills(root / ".opencode" / "skills"); verify_packaged_skills(opencode_user_skills_root(), namespaced_only=True); verify_packaged_agents(opencode_user_agents_root())' "$PROJECT_ROOT"; then
+if ! "$AA_PYTHON" -c "${ASSURANCE_PYTHON_PREAMBLE}"'import sys; from pathlib import Path; from assurance_agent.workflow.core.assets import opencode_user_agents_root, opencode_user_skills_root, verify_packaged_agents, verify_packaged_skills; root = Path(sys.argv[1]); verify_packaged_skills(root / "skills"); verify_packaged_skills(root / ".opencode" / "skills"); verify_packaged_skills(opencode_user_skills_root(), namespaced_only=True); verify_packaged_agents(opencode_user_agents_root())' "$PROJECT_ROOT"; then
   preflight_log "ERROR: synced OpenCode/OMO skill or agent hashes/runtime namespace are invalid"
   exit 1
 fi
@@ -934,14 +930,14 @@ if ! curl -sf -o /dev/null "$OPENCODE_SERVER" 2>/dev/null; then
 fi
 
 preflight_log "validating live bounded OpenCode agent policies"
-if ! "$AA_PYTHON" -c 'import sys; from assurance_agent.workflow.driver.opencode_adapter import validate_bounded_agent_server; validate_bounded_agent_server(sys.argv[1], sys.argv[2])' "$OPENCODE_SERVER" "$PROJECT_ROOT"; then
+if ! "$AA_PYTHON" -c "${ASSURANCE_PYTHON_PREAMBLE}"'import sys; from assurance_agent.workflow.driver.opencode_adapter import validate_bounded_agent_server; validate_bounded_agent_server(sys.argv[1], sys.argv[2])' "$OPENCODE_SERVER" "$PROJECT_ROOT"; then
   preflight_log "ERROR: live OpenCode agents are stale or unsafe after sync"
   preflight_log "       restart OpenCode so it reloads the project .opencode/agents policies"
   exit 1
 fi
 
 preflight_log "validating live bounded OpenCode agents from an isolated Graph task project"
-if ! "$AA_PYTHON" -c '
+if ! "$AA_PYTHON" -c "${ASSURANCE_PYTHON_PREAMBLE}"'
 import subprocess
 import sys
 import tempfile
@@ -956,7 +952,7 @@ with tempfile.TemporaryDirectory(prefix="aa-opencode-agent-preflight-") as direc
 fi
 
 preflight_log "validating OpenCode server working directory, live boundary plugin, and exact skill catalog"
-if ! "$AA_PYTHON" -c 'import sys; from assurance_agent.workflow.driver.opencode_adapter import validate_packaged_skill_server; validate_packaged_skill_server(sys.argv[1], sys.argv[2])' "$OPENCODE_SERVER" "$PROJECT_ROOT"; then
+if ! "$AA_PYTHON" -c "${ASSURANCE_PYTHON_PREAMBLE}"'import sys; from assurance_agent.workflow.driver.opencode_adapter import validate_packaged_skill_server; validate_packaged_skill_server(sys.argv[1], sys.argv[2])' "$OPENCODE_SERVER" "$PROJECT_ROOT"; then
   preflight_log "ERROR: OpenCode server working directory, live boundary plugin, or skill catalog failed validation"
   preflight_log "       restart OpenCode from $PROJECT_ROOT so it loads the synchronized plugin and skill catalog"
   exit 1

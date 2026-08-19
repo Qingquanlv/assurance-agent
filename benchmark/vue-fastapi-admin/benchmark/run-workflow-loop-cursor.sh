@@ -1054,20 +1054,17 @@ if ! command -v "$CURSOR_AGENT_BIN" >/dev/null 2>&1; then
   exit 1
 fi
 
-# uv-based bootstrap (replaces the TS npm build/link path).
-if ! command -v "$AA_BIN" >/dev/null 2>&1; then
-  if command -v uv >/dev/null 2>&1 && [ -d "$AA_REPO_ROOT" ]; then
-    log "aa CLI not found - installing via uv from $AA_REPO_ROOT"
-    uv tool install --from "$AA_REPO_ROOT" assurance-agent || {
-      log "ERROR: uv tool install failed for assurance-agent"; exit 1; }
-  fi
+# T3: install kernel+assurance wheels into one env, then pin product resources.
+if ! bootstrap_assurance_runtime "$AA_REPO_ROOT"; then
+  log "ERROR: aa CLI not found: $AA_BIN (install with 'uv sync --project $AA_REPO_ROOT' or 'uv tool install --from $AA_REPO_ROOT assurance-agent')"
+  exit 1
 fi
 if [ ! -x "$AA_PYTHON" ]; then
   log "ERROR: pinned assurance-agent Python missing: $AA_PYTHON"
   exit 1
 fi
-if ! command -v "$AA_BIN" >/dev/null 2>&1; then
-  log "ERROR: aa CLI not found: $AA_BIN (install with 'uv tool install .' in $AA_REPO_ROOT)"
+if ! preflight_assurance_wheels; then
+  log "ERROR: T3 runtime must import assurance_kernel and assurance_agent from the same env as $AA_BIN"
   exit 1
 fi
 if [ "$DO_SPECIALTY_REPORT" = "true" ] && [ "$DO_TRACE_VERIFY" != "true" ]; then

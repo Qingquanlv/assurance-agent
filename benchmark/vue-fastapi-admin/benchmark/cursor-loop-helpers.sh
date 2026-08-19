@@ -843,6 +843,63 @@ resolve_aa_python_bin() {
   printf '%s' "$interpreter"
 }
 
+# T3: kernel + assurance product share one env. Skills stay on the product
+# wheel (SUT skills/ and .opencode/), not the kernel package.
+ASSURANCE_PYTHON_PREAMBLE='from assurance_agent.product import select_product; from assurance_agent.workflow.graph.capability_state import DEFAULT_PRODUCT_ID; select_product(DEFAULT_PRODUCT_ID); '
+
+install_assurance_cli_from_repo() {
+  local repo_root="$1"
+  if ! command -v uv >/dev/null 2>&1 || [ ! -d "$repo_root" ]; then
+    return 1
+  fi
+  if uv sync --project "$repo_root" && [ -x "$repo_root/.venv/bin/aa" ]; then
+    AA_BIN="$repo_root/.venv/bin/aa"
+    export PATH="$repo_root/.venv/bin:$PATH"
+    return 0
+  fi
+  uv tool install --from "$repo_root" assurance-agent
+}
+
+# macOS ships /usr/bin/aa (Apple Archive). Only treat a binary as the
+# assurance CLI when it accepts the product-group --version probe.
+assurance_cli_available() {
+  command -v "$AA_BIN" >/dev/null 2>&1 || return 1
+  "$AA_BIN" --product "${AA_PRODUCT:-assurance}" --version >/dev/null 2>&1
+}
+
+bootstrap_assurance_runtime() {
+  local repo_root="$1" resolved="" sibling=""
+  AA_PRODUCT="${AA_PRODUCT:-assurance}"
+  export AA_PRODUCT
+
+  if ! assurance_cli_available; then
+    install_assurance_cli_from_repo "$repo_root" || true
+  fi
+  if ! assurance_cli_available; then
+    return 1
+  fi
+
+  if resolved="$(resolve_aa_python_bin "$AA_BIN" "")"; then
+    AA_PYTHON="$resolved"
+  elif [ -x "${AA_PYTHON:-}" ]; then
+    :
+  else
+    sibling="$(dirname "$(command -v "$AA_BIN")")/python"
+    if [ -x "$sibling" ]; then
+      AA_PYTHON="$sibling"
+    else
+      return 1
+    fi
+  fi
+  export AA_BIN AA_PYTHON
+  return 0
+}
+
+preflight_assurance_wheels() {
+  "$AA_PYTHON" -c 'import assurance_kernel, assurance_agent' || return 1
+  "$AA_BIN" --product "${AA_PRODUCT:-assurance}" --version >/dev/null || return 1
+}
+
 collect_trace_verify_evidence() {
   local aa_bin="$1" change_id="$2" trace_file="$3" verify_file="$4" log_file="$5"
   local python_bin="$6"
