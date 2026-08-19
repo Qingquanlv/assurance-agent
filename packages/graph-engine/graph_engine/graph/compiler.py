@@ -3,9 +3,17 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
@@ -13,9 +21,11 @@ from graph_engine.graph.schema import (
     EdgeDef,
     GraphDef,
     NodeDef,
+    NodeKind,
     RetryPolicyDef,
     TimeoutPolicyDef,
     WorkflowDef,
+    validate_node_shape,
 )
 from graph_engine.plugin_api import CapabilityRegistry, ResourceClaims
 
@@ -41,28 +51,29 @@ FrozenJSONMap = Annotated[
 ]
 
 
-class CompiledNodeDefinition(NodeDef):
-    input: FrozenJSONMap = Field(  # type: ignore[reportIncompatibleVariableOverride]
-        default_factory=lambda: MappingProxyType({})
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_serialized_defaults(cls, value: object) -> object:
-        if isinstance(value, NodeDef):
-            value = value.model_dump(mode="python", by_alias=True)
-        if not isinstance(value, Mapping):
-            return value
-        return {
-            key: item
-            for key, item in value.items()
-            if key == "kind" or not _is_serialized_node_default(key, item)
-        }
+class CompiledNodeDefinition(_CompiledModel):
+    kind: NodeKind
+    capability: str | None = None
+    graph: str | None = None
+    join: Literal["all", "any"] | None = None
+    expression: str | None = None
+    reason: str | None = None
+    actions: tuple[str, ...] = ()
+    input: FrozenJSONMap = Field(default_factory=lambda: MappingProxyType({}))
+    retry: str | None = None
+    timeout: str | None = None
+    resources: ResourceClaims = Field(default_factory=ResourceClaims)
+    validators: tuple[str, ...] = ()
 
     @field_validator("input", mode="after")
     @classmethod
     def _freeze_input(cls, value: Mapping[str, object]) -> Mapping[str, object]:
         return _freeze_json_map(value)
+
+    @model_validator(mode="after")
+    def _validate_kind_shape(self) -> Self:
+        validate_node_shape(self.kind, self.model_fields_set, self.__dict__)
+        return self
 
 
 class CompiledNode(_CompiledModel):
@@ -78,8 +89,12 @@ class CompiledNode(_CompiledModel):
     @classmethod
     def _normalize_definition(cls, value: object) -> object:
         if isinstance(value, NodeDef):
-            return value.model_dump(mode="python", by_alias=True)
+            return value.model_dump(mode="python", by_alias=True, exclude_unset=True)
         return value
+
+    @field_serializer("definition")
+    def _serialize_definition(self, value: CompiledNodeDefinition) -> dict[str, Any]:
+        return value.model_dump(mode="json", by_alias=True, exclude_unset=True)
 
 
 CompiledNodeMap = Annotated[
@@ -245,7 +260,9 @@ def _compile_graph(graph_id: str, graph: GraphDef) -> CompiledGraph:
             node_id=node_id,
             declaration_index=declaration_index[node_id],
             topology_rank=topology_rank[node_id],
-            definition=CompiledNodeDefinition.model_validate(node.model_dump(mode="python", by_alias=True)),
+            definition=CompiledNodeDefinition.model_validate(
+                node.model_dump(mode="python", by_alias=True, exclude_unset=True)
+            ),
             incoming=tuple(incoming_edges[node_id]),
             outgoing=tuple(outgoing_edges[node_id]),
         )
@@ -260,18 +277,6 @@ def _compile_graph(graph_id: str, graph: GraphDef) -> CompiledGraph:
         edges=graph.edges,
         sccs=tuple(tuple(sorted(component, key=declaration_index.__getitem__)) for component in ordered_sccs),
     )
-
-
-def _is_serialized_node_default(field_name: object, value: object) -> bool:
-    if value is None or value == () or value == [] or value == {}:
-        return True
-    if field_name == "resources":
-        empty_resources = ResourceClaims()
-        if value == empty_resources:
-            return True
-        if isinstance(value, Mapping):
-            return ResourceClaims.model_validate(value) == empty_resources
-    return False
 
 
 def _freeze_json_map(value: Mapping[str, object]) -> Mapping[str, object]:

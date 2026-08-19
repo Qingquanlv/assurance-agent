@@ -583,6 +583,59 @@ def test_compiled_node_freezes_a_normally_validated_node_definition() -> None:
     assert isinstance(nested["items"], tuple)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("capability", None),
+        ("graph", None),
+        ("join", None),
+        ("expression", None),
+        ("reason", None),
+        ("actions", []),
+        ("input", {}),
+        ("retry", None),
+        ("timeout", None),
+        ("resources", {}),
+        ("validators", []),
+    ],
+)
+def test_compiled_node_rejects_forbidden_explicit_default_fields(field: str, value: object) -> None:
+    with pytest.raises(ValidationError, match=field):
+        CompiledNode.model_validate(
+            {
+                "graph_id": "root",
+                "node_id": "done",
+                "declaration_index": 0,
+                "topology_rank": 0,
+                "definition": {"kind": "end", field: value},
+                "incoming": (),
+                "outgoing": (),
+            }
+        )
+
+
+def test_valid_compiled_json_round_trip_is_sparse_and_immutable(
+    registry: CapabilityRegistry,
+) -> None:
+    raw = _raw_valid()
+    raw["graphs"]["root"]["nodes"]["ping"]["input"] = {  # type: ignore[index]
+        "nested": {"items": ["one", "two"]}
+    }
+    compiled = compile_workflow(_parse_raw(raw), registry)
+
+    serialized = compiled.model_dump_json(by_alias=True)
+    serialized_object = json.loads(serialized)
+    assert serialized_object["graphs"]["root"]["nodes"]["done"]["definition"] == {"kind": "end"}
+
+    reconstructed = CompiledWorkflow.model_validate_json(serialized)
+    assert reconstructed.model_dump_json(by_alias=True) == serialized
+    node_input = reconstructed.graphs["root"].nodes["ping"].definition.input
+    nested = cast(Mapping[str, object], node_input["nested"])
+    assert not isinstance(node_input, dict)
+    assert not isinstance(nested, dict)
+    assert isinstance(nested["items"], tuple)
+
+
 def test_compiled_edges_and_adjacency_are_tuples(registry: CapabilityRegistry) -> None:
     graph = compile_workflow(parse_workflow(VALID), registry).graphs["root"]
     assert isinstance(graph.edges, tuple)
