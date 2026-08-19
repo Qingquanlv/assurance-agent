@@ -216,6 +216,14 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
 
     for graph_record in projection.graph_instances:
         graph = compiled.graphs[graph_record.graph_id]
+        expected_id = _start_token_id(graph_record.graph_instance_id, graph.start)
+        token_with_expected_id = token_by_id.get(expected_id)
+        if token_with_expected_id is not None and not _is_canonical_start_token(
+            token_with_expected_id, graph_record, graph
+        ):
+            raise PlanningError(
+                f"graph instance {graph_record.graph_instance_id!r} has an invalid canonical start token"
+            )
         source_less = tuple(
             token
             for token in projection.offered_tokens
@@ -223,13 +231,7 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
         )
         if not source_less:
             continue
-        expected_id = _start_token_id(graph_record.graph_instance_id, graph.start)
-        if (
-            len(source_less) != 1
-            or source_less[0].token_id != expected_id
-            or source_less[0].target != graph.start
-            or thaw_json(source_less[0].payload) != thaw_json(graph_record.input)
-        ):
+        if len(source_less) != 1 or not _is_canonical_start_token(source_less[0], graph_record, graph):
             raise PlanningError(
                 f"graph instance {graph_record.graph_instance_id!r} has an invalid canonical start token"
             )
@@ -292,7 +294,7 @@ def _matches_consumption_contract(
     if behavior.consumption == "all_available":
         return tuple(token.token_id for token in tokens) == tuple(sorted(token.token_id for token in tokens))
     if node.definition.join == "any":
-        return len(tokens) == 1 and tokens[0].source in predecessors
+        return len(tokens) == 1 and (tokens[0].source is None or tokens[0].source in predecessors)
     return tuple(token.source for token in tokens) == predecessors
 
 
@@ -333,7 +335,12 @@ def _ensure_root_started(state: _PlannerState) -> GraphInstanceRecord:
 def _ensure_start_token(state: _PlannerState, graph_record: GraphInstanceRecord) -> None:
     graph = state.compiled.graphs[graph_record.graph_id]
     identifier = _start_token_id(graph_record.graph_instance_id, graph.start)
-    if identifier in state.tokens:
+    existing = state.tokens.get(identifier)
+    if existing is not None:
+        if not _is_canonical_start_token(existing, graph_record, graph):
+            raise PlanningError(
+                f"graph instance {graph_record.graph_instance_id!r} has an invalid canonical start token"
+            )
         return
     token = TokenRecord(
         token_id=identifier,
@@ -351,6 +358,20 @@ def _ensure_start_token(state: _PlannerState, graph_record: GraphInstanceRecord)
             target=token.target,
             payload=token.payload,
         )
+    )
+
+
+def _is_canonical_start_token(
+    token: TokenRecord,
+    graph_record: GraphInstanceRecord,
+    graph: CompiledGraph,
+) -> bool:
+    return (
+        token.token_id == _start_token_id(graph_record.graph_instance_id, graph.start)
+        and token.graph_instance_id == graph_record.graph_instance_id
+        and token.source is None
+        and token.target == graph.start
+        and thaw_json(token.payload) == thaw_json(graph_record.input)
     )
 
 

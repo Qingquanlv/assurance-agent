@@ -319,6 +319,19 @@ def test_source_less_start_token_must_be_unique_and_canonical(case: str) -> None
         plan_next(compiled, _projection(_invocation(), _root(), *tokens))
 
 
+def test_canonical_start_token_id_rejects_non_start_provenance() -> None:
+    compiled = _compiled(
+        f"{_task_node('seed')}\n      done: {{kind: end}}",
+        "      - {from: seed, to: done}",
+        start="seed",
+    )
+    canonical = _canonical_start_token(compiled)
+    collision = canonical.model_copy(update={"source": "done"})
+
+    with pytest.raises(PlanningError, match="canonical start token"):
+        plan_next(compiled, _projection(_invocation(), _root(), collision))
+
+
 @pytest.mark.parametrize(
     ("node_id", "sources"),
     [
@@ -603,6 +616,27 @@ def test_any_join_consumes_only_the_earliest_token() -> None:
 
     assert activated[0].token_ids == ("tok-a",)
     assert activated[1].token_ids == ("tok-z",)
+
+
+def test_start_any_join_batch_can_be_appended_folded_and_replayed() -> None:
+    compiled = _compiled(
+        """      joined: {kind: join, join: any}
+      done: {kind: end}""",
+        "      - {from: joined, to: done, condition: 'false'}",
+        start="joined",
+    )
+    starting_events = (_invocation(),)
+
+    first = plan_next(compiled, _projection(*starting_events))
+    appended = _projection_after(starting_events, first.events)
+    replay = plan_next(compiled, appended)
+
+    assert first.terminal is None
+    assert appended.status == "running"
+    assert replay == plan_next(compiled, appended)
+    assert replay.events == ()
+    assert replay.tasks == ()
+    assert replay.terminal is None
 
 
 def test_conditional_edges_use_activation_input_and_completion_output() -> None:
