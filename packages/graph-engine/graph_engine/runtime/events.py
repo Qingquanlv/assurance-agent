@@ -101,6 +101,12 @@ class NodeCompleted(RuntimeEventModel):
     output: FrozenJSONValue = None
 
 
+class NodeFailed(RuntimeEventModel):
+    kind: Literal["node_failed"] = "node_failed"
+    activation_id: str
+    failure: TaskFailure
+
+
 class NodeInterrupted(RuntimeEventModel):
     kind: Literal["node_interrupted"] = "node_interrupted"
     activation_id: str
@@ -118,6 +124,12 @@ class GraphCompleted(RuntimeEventModel):
     kind: Literal["graph_completed"] = "graph_completed"
     graph_instance_id: str
     output: FrozenJSONValue = None
+
+
+class GraphFailed(RuntimeEventModel):
+    kind: Literal["graph_failed"] = "graph_failed"
+    graph_instance_id: str
+    reason: str
 
 
 class InvocationFinished(RuntimeEventModel):
@@ -138,9 +150,11 @@ RuntimeEvent = Annotated[
     | TaskAttemptFailed
     | TaskAttemptStopped
     | NodeCompleted
+    | NodeFailed
     | NodeInterrupted
     | InterruptResumed
     | GraphCompleted
+    | GraphFailed
     | InvocationFinished,
     Field(discriminator="kind"),
 ]
@@ -183,12 +197,14 @@ __all__ = [
     "EventEnvelope",
     "FailureKind",
     "GraphCompleted",
+    "GraphFailed",
     "GraphStarted",
     "InterruptResumed",
     "InvocationFinished",
     "InvocationStarted",
     "NodeActivated",
     "NodeCompleted",
+    "NodeFailed",
     "NodeInterrupted",
     "RuntimeEvent",
     "RuntimeFailure",

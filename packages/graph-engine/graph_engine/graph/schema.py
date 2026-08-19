@@ -101,6 +101,7 @@ class NodeDef(FrozenModel):
 class EdgeDef(FrozenModel):
     from_: str = Field(alias="from")
     to: str
+    condition: str | None = None
 
 
 class GraphDef(FrozenModel):

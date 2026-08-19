@@ -2,20 +2,23 @@ from __future__ import annotations
 
 from typing import Literal, NoReturn, Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from graph_engine.errors import GraphEngineError
-from graph_engine.plugin_api import TaskFailure
+from graph_engine.plugin_api import ResourceClaims, TaskFailure
 from graph_engine.runtime.events import (
     EventEnvelope,
     GraphCompleted,
+    GraphFailed,
     GraphStarted,
     InterruptResumed,
     InvocationFinished,
     InvocationStarted,
     NodeActivated,
     NodeCompleted,
+    NodeFailed,
     NodeInterrupted,
+    RuntimeEvent,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
@@ -68,9 +71,16 @@ class GraphInstanceRecord(ProjectionModel):
     graph_id: str
     parent_graph_instance_id: str | None
     parent_node_id: str | None
-    status: Literal["running", "completed"] = "running"
+    status: Literal["running", "completed", "failed"] = "running"
     input: FrozenJSONValue = None
     output: FrozenJSONValue = None
+    failure_reason: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_outcome(self) -> Self:
+        if (self.failure_reason is not None) != (self.status == "failed"):
+            raise ValueError("graph failure reason is required exactly for failed status")
+        return self
 
 
 class TokenRecord(ProjectionModel):
@@ -84,7 +94,7 @@ class TokenRecord(ProjectionModel):
 
 
 class AttemptRecord(ProjectionModel):
-    attempt: int
+    attempt: int = Field(ge=1)
     lease_expires_at: str
     status: Literal["running", "succeeded", "failed", "stopped"] = "running"
     output: FrozenJSONValue = None
@@ -108,15 +118,52 @@ class ActivationRecord(ProjectionModel):
     graph_instance_id: str
     node_id: str
     token_ids: tuple[str, ...]
-    status: Literal["active", "completed", "interrupted", "stopped"] = "active"
+    status: Literal["active", "completed", "failed", "interrupted", "stopped"] = "active"
     attempts: tuple[AttemptRecord, ...] = ()
     output: FrozenJSONValue = None
+    failure: TaskFailure | None = None
+
+    @model_validator(mode="after")
+    def _validate_outcome(self) -> Self:
+        if (self.failure is not None) != (self.status == "failed"):
+            raise ValueError("activation failure is required exactly for failed status")
+        return self
 
 
 class PendingInterrupt(ProjectionModel):
     interrupt_id: str
     activation_id: str
     payload: FrozenJSONValue = None
+
+
+class PlannedTask(ProjectionModel):
+    invocation_id: str
+    task_id: str
+    activation_id: str
+    graph_instance_id: str
+    node_id: str
+    capability_id: str
+    attempt: int
+    input: FrozenJSONValue
+    prior_failure: TaskFailure | None = None
+    timeout_seconds: float = Field(gt=0)
+    resources: ResourceClaims = ResourceClaims()
+    validators: tuple[str, ...] = ()
+
+
+class PlanResult(ProjectionModel):
+    tasks: tuple[PlannedTask, ...] = ()
+    events: tuple[RuntimeEvent, ...] = ()
+    terminal: Literal["succeeded", "failed", "stopped"] | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_terminal_reason(self) -> Self:
+        if self.terminal is None and self.reason is not None:
+            raise ValueError("non-terminal plans cannot have a terminal reason")
+        if self.terminal == "succeeded" and self.reason is not None:
+            raise ValueError("successful plans cannot have a terminal reason")
+        return self
 
 
 class InvocationProjection(ProjectionModel):
@@ -238,6 +285,9 @@ def _validate_attempt_history(activation: ActivationRecord) -> None:
     if activation.status == "completed" and activation.attempts:
         if activation.attempts[-1].status != "succeeded":
             raise ValueError("completed task activation requires a successful attempt")
+    if activation.status == "failed":
+        if not activation.attempts or activation.attempts[-1].status != "failed":
+            raise ValueError("failed activation requires a failed attempt")
     if activation.status == "stopped":
         if not activation.attempts or activation.attempts[-1].status != "stopped":
             raise ValueError("stopped activation requires a stopped attempt")
@@ -425,6 +475,19 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
                 projection,
                 activation.model_copy(update={"status": "completed", "output": event.output}),
             )
+        elif isinstance(event, NodeFailed):
+            activation = _activation(projection, event.activation_id, envelope.seq)
+            _ensure_graph_open_if_known(projection, activation.graph_instance_id, envelope.seq)
+            if activation.status != "active":
+                _fail(envelope.seq, "node failed from a non-active state")
+            if not activation.attempts or activation.attempts[-1].status != "failed":
+                _fail(envelope.seq, "node failed without a failed latest attempt")
+            if activation.attempts[-1].failure != event.failure:
+                _fail(envelope.seq, "node failure disagrees with latest attempt failure")
+            projection = _replace_activation(
+                projection,
+                activation.model_copy(update={"status": "failed", "failure": event.failure}),
+            )
         elif isinstance(event, NodeInterrupted):
             activation = _activation(projection, event.activation_id, envelope.seq)
             _ensure_graph_open_if_known(projection, activation.graph_instance_id, envelope.seq)
@@ -467,6 +530,8 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
                 _fail(envelope.seq, f"graph instance {event.graph_instance_id!r} was not started")
             if graph.status == "completed":
                 _fail(envelope.seq, f"graph instance {event.graph_instance_id!r} already completed")
+            if graph.status == "failed":
+                _fail(envelope.seq, f"graph instance {event.graph_instance_id!r} already failed")
             for token in projection.offered_tokens:
                 if token.graph_instance_id != event.graph_instance_id:
                     continue
@@ -495,6 +560,33 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
                     _fail(envelope.seq, "graph completed with a pending interrupt")
             graphs = tuple(
                 item.model_copy(update={"status": "completed", "output": event.output})
+                if item.graph_instance_id == event.graph_instance_id
+                else item
+                for item in projection.graph_instances
+            )
+            projection = projection.model_copy(update={"graph_instances": graphs})
+        elif isinstance(event, GraphFailed):
+            graph = next(
+                (
+                    item
+                    for item in projection.graph_instances
+                    if item.graph_instance_id == event.graph_instance_id
+                ),
+                None,
+            )
+            if graph is None:
+                _fail(envelope.seq, f"graph instance {event.graph_instance_id!r} was not started")
+            if graph.status != "running":
+                _fail(envelope.seq, f"graph instance {event.graph_instance_id!r} is not running")
+            if any(
+                item.graph_instance_id == event.graph_instance_id
+                and item.attempts
+                and item.attempts[-1].status == "running"
+                for item in projection.activations
+            ):
+                _fail(envelope.seq, "graph failed with an active attempt")
+            graphs = tuple(
+                item.model_copy(update={"status": "failed", "failure_reason": event.reason})
                 if item.graph_instance_id == event.graph_instance_id
                 else item
                 for item in projection.graph_instances
@@ -568,6 +660,8 @@ def _ensure_graph_open(
         _fail(seq, f"graph instance {graph_instance_id!r} was not started")
     if graph.status == "completed":
         _fail(seq, f"graph instance {graph_instance_id!r} already completed")
+    if graph.status == "failed":
+        _fail(seq, f"graph instance {graph_instance_id!r} already failed")
     return graph
 
 
@@ -578,6 +672,8 @@ def _ensure_graph_open_if_known(projection: InvocationProjection, graph_instance
     )
     if graph is not None and graph.status == "completed":
         _fail(seq, f"graph instance {graph_instance_id!r} already completed")
+    if graph is not None and graph.status == "failed":
+        _fail(seq, f"graph instance {graph_instance_id!r} already failed")
 
 
 def _require_no_live_attempt_or_interrupt(
@@ -606,6 +702,8 @@ __all__ = [
     "GraphInstanceRecord",
     "InvocationProjection",
     "PendingInterrupt",
+    "PlannedTask",
+    "PlanResult",
     "ProjectionError",
     "TokenRecord",
     "ValidationReceipt",
