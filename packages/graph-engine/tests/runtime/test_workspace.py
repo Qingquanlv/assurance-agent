@@ -1,11 +1,14 @@
 import os
+import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
+    CommitValidator,
     ResourceClaims,
     ValidationContext,
     ValidationResult,
@@ -266,7 +269,7 @@ def test_missing_or_tampered_candidate_tree_is_rejected(tmp_path: Path) -> None:
     tree_file.chmod(0o600)
     tree_file.write_bytes(b"tampered")
     before = store.head_tree_id()
-    with pytest.raises(WorkspaceViolation, match="tree id"):
+    with pytest.raises(WorkspaceViolation, match="tree id|writable"):
         store.commit_candidate(candidate, ResourceClaims(writes=("value.txt",)))
     assert store.head_tree_id() == before
 
@@ -311,18 +314,18 @@ def test_selected_validators_are_snapshotted_before_execution(tmp_path: Path) ->
     candidate = store.create_attempt("attempt-1").seal()
     claims = ResourceClaims()
     calls: list[str] = []
-    validators: list[tuple[str, object]] = []
+    validators: list[tuple[str, CommitValidator]] = []
 
     class AppendingValidator:
-        def validate(self, _candidate: CandidateWriteSet, _context: ValidationContext) -> ValidationResult:
+        def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+            assert candidate.candidate_tree_id
+            assert context.invocation_id == "inv-1"
             calls.append("toy.first")
             validators.append(("not a valid id", RecordingValidator("unexpected", calls)))
             return ValidationResult(accepted=True)
 
     validators.append(("toy.first", AppendingValidator()))
-    result = store.commit_candidate(  # type: ignore[arg-type]
-        candidate, claims, validators, _context(claims)
-    )
+    result = store.commit_candidate(candidate, claims, validators, _context(claims))
     assert result.committed is True
     assert calls == ["toy.first"]
     assert [receipt.validator_id for receipt in result.receipts] == ["toy.first"]
@@ -382,12 +385,14 @@ def test_validator_cannot_tamper_candidate_tree_before_head_publish(tmp_path: Pa
     claims = ResourceClaims(writes=("value.txt",))
 
     class TamperingValidator:
-        def validate(self, _candidate: CandidateWriteSet, _context: ValidationContext) -> ValidationResult:
+        def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+            assert candidate.candidate_tree_id
+            assert context.invocation_id == "inv-1"
             candidate_path.chmod(0o600)
             candidate_path.write_bytes(b"tampered")
             return ValidationResult(accepted=True)
 
-    with pytest.raises(WorkspaceViolation, match="tree id"):
+    with pytest.raises(WorkspaceViolation, match="tree id|writable"):
         store.commit_candidate(
             candidate,
             claims,
@@ -422,7 +427,7 @@ def test_failed_atomic_head_replace_leaves_old_head_authoritative(
 
     from graph_engine.runtime import workspace
 
-    def fail_replace(_source: Path, _destination: Path) -> None:
+    def fail_replace(_source: object, _destination: object, **_kwargs: object) -> None:
         raise OSError("simulated crash")
 
     monkeypatch.setattr(workspace.os, "replace", fail_replace)
@@ -435,5 +440,267 @@ def test_failed_atomic_head_replace_leaves_old_head_authoritative(
 def test_corrupt_head_document_fails_closed(tmp_path: Path) -> None:
     store = SnapshotStore.create(tmp_path / "store", {})
     (store.root / "HEAD.json").write_text('{"tree_id":"missing"}', encoding="utf-8")
+    with pytest.raises(WorkspaceViolation, match="HEAD"):
+        store.head_tree_id()
+
+
+def test_nested_source_directory_swap_cannot_escape_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {})
+    attempt = store.create_attempt("attempt-1")
+    nested = attempt.root / "nested"
+    nested.mkdir()
+    (nested / "inside.txt").write_bytes(b"inside")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_bytes(b"secret")
+    displaced = attempt.root / "displaced"
+    real_open = os.open
+    swapped = False
+
+    def swap_before_nested_open(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        nonlocal swapped
+        if not swapped and path == "nested" and dir_fd is not None:
+            swapped = True
+            nested.rename(displaced)
+            nested.symlink_to(outside, target_is_directory=True)
+        return real_open(path, flags, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "open", swap_before_nested_open)
+    with pytest.raises(WorkspaceViolation):
+        attempt.seal()
+
+
+def test_nested_destination_directory_swap_cannot_escape_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {})
+    attempt = store.create_attempt("attempt-1")
+    nested = attempt.root / "nested"
+    nested.mkdir()
+    (nested / "file.txt").write_bytes(b"candidate")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    real_mkdir = os.mkdir
+    swapped = False
+
+    def swap_destination_parent(path: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+        nonlocal swapped
+        real_mkdir(path, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+        if not swapped and path == "nested" and dir_fd is not None:
+            swapped = True
+            os.rename(
+                "nested",
+                "displaced-destination",
+                src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd,
+            )
+            os.symlink(outside, "nested", target_is_directory=True, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "mkdir", swap_destination_parent)
+    with pytest.raises(WorkspaceViolation):
+        attempt.seal()
+    assert not (outside / "file.txt").exists()
+
+
+def test_post_verify_candidate_replacement_cannot_publish_unverified_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": b"base"})
+    before = store.head_tree_id()
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "value.txt").write_bytes(b"candidate")
+    candidate = attempt.seal()
+    candidate_root = store.root / "trees" / candidate.candidate_tree_id
+    displaced = store.root / "trees" / "displaced-candidate"
+    real_replace = os.replace
+    swapped = False
+
+    def replace_after_candidate_swap(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+        nonlocal swapped
+        if not swapped and Path(destination).name == "HEAD.json":
+            swapped = True
+            candidate_root.chmod(0o755)
+            candidate_root.rename(displaced)
+            shutil.copytree(displaced, candidate_root)
+            candidate_file = candidate_root / "value.txt"
+            candidate_file.chmod(0o600)
+            candidate_file.write_bytes(b"unverified")
+        real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", replace_after_candidate_swap)
+    with pytest.raises(WorkspaceViolation):
+        store.commit_candidate(candidate, ResourceClaims(writes=("value.txt",)))
+    assert store.head_tree_id() == before
+
+
+def test_post_verify_writable_mode_change_cannot_publish_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": b"base"})
+    before = store.head_tree_id()
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "value.txt").write_bytes(b"candidate")
+    candidate = attempt.seal()
+    candidate_file = store.root / "trees" / candidate.candidate_tree_id / "value.txt"
+    real_replace = os.replace
+    changed = False
+
+    def change_mode_before_replace(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+        nonlocal changed
+        if not changed and Path(destination).name == "HEAD.json":
+            changed = True
+            candidate_file.chmod(0o600)
+        real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", change_mode_before_replace)
+    with pytest.raises(WorkspaceViolation, match="writable"):
+        store.commit_candidate(candidate, ResourceClaims(writes=("value.txt",)))
+    assert store.head_tree_id() == before
+
+
+def test_candidate_tree_durability_barrier_precedes_head_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {})
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "nested").mkdir()
+    (attempt.root / "nested" / "value.txt").write_bytes(b"candidate")
+    tree_stat = (store.root / "trees").stat()
+    events: list[str] = []
+    real_fsync = os.fsync
+    real_replace = os.replace
+
+    def record_fsync(descriptor: int) -> None:
+        descriptor_stat = os.fstat(descriptor)
+        if (descriptor_stat.st_dev, descriptor_stat.st_ino) == (tree_stat.st_dev, tree_stat.st_ino):
+            events.append("trees-fsync")
+        real_fsync(descriptor)
+
+    def record_replace(source: Any, destination: Any, *args: Any, **kwargs: Any) -> None:
+        if Path(destination).name == "HEAD.json":
+            events.append("head-replace")
+        real_replace(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    monkeypatch.setattr(os, "replace", record_replace)
+    candidate = attempt.seal()
+    store.commit_candidate(candidate, ResourceClaims(writes=("nested",)))
+    assert "trees-fsync" in events
+    assert events.index("trees-fsync") < events.index("head-replace")
+
+
+def test_tree_directory_fsync_failure_prevents_candidate_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {})
+    before = store.head_tree_id()
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "value.txt").write_bytes(b"candidate")
+    tree_stat = (store.root / "trees").stat()
+    real_fsync = os.fsync
+
+    def fail_tree_barrier(descriptor: int) -> None:
+        descriptor_stat = os.fstat(descriptor)
+        if (descriptor_stat.st_dev, descriptor_stat.st_ino) == (tree_stat.st_dev, tree_stat.st_ino):
+            raise OSError("simulated trees fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_tree_barrier)
+    with pytest.raises(OSError, match="simulated trees fsync failure"):
+        attempt.seal()
+    assert store.head_tree_id() == before
+
+
+def test_commit_rejects_replaced_lock_inode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {})
+    candidate = store.create_attempt("attempt-1").seal()
+    lock_path = store.root / ".commit.lock"
+    displaced = store.root / "displaced-lock"
+    real_open = os.open
+    swapped = False
+
+    def replace_lock_before_open(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        nonlocal swapped
+        if not swapped and path == ".commit.lock" and dir_fd is not None:
+            swapped = True
+            lock_path.rename(displaced)
+            lock_path.write_bytes(b"replacement")
+        return real_open(path, flags, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "open", replace_lock_before_open)
+    with pytest.raises(WorkspaceViolation, match="lock"):
+        store.commit_candidate(candidate, ResourceClaims())
+
+
+def test_commit_rejects_lock_symlink_swap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {})
+    candidate = store.create_attempt("attempt-1").seal()
+    lock_path = store.root / ".commit.lock"
+    displaced = store.root / "displaced-lock"
+    real_open = os.open
+    swapped = False
+
+    def symlink_lock_before_open(
+        path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        nonlocal swapped
+        if not swapped and path == ".commit.lock" and dir_fd is not None:
+            swapped = True
+            lock_path.rename(displaced)
+            lock_path.symlink_to(displaced)
+        return real_open(path, flags, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "open", symlink_lock_before_open)
+    with pytest.raises(WorkspaceViolation, match="lock"):
+        store.commit_candidate(candidate, ResourceClaims())
+
+
+def test_ordinary_initialization_failure_removes_exact_new_root(tmp_path: Path) -> None:
+    root = tmp_path / "store"
+    with pytest.raises(WorkspaceViolation):
+        SnapshotStore.create(root, {"../escape": b"x"})
+    assert not root.exists()
+    recovered = SnapshotStore.create(root, {"ok.txt": b"ok"})
+    assert recovered.read_head("ok.txt") == b"ok"
+
+
+def test_crash_incomplete_initialization_is_recoverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "store"
+    real_write_head = SnapshotStore._write_head
+    crashed = False
+
+    def crash_once(store: SnapshotStore, tree_id: str) -> None:
+        nonlocal crashed
+        if not crashed:
+            crashed = True
+            raise KeyboardInterrupt("simulated crash")
+        real_write_head(store, tree_id)
+
+    monkeypatch.setattr(SnapshotStore, "_write_head", crash_once)
+    with pytest.raises(KeyboardInterrupt, match="simulated crash"):
+        SnapshotStore.create(root, {"stale.txt": b"stale"})
+    assert (root / ".initializing").exists()
+
+    recovered = SnapshotStore.create(root, {"fresh.txt": b"fresh"})
+    assert recovered.read_head("fresh.txt") == b"fresh"
+    assert not (root / ".initializing").exists()
+
+
+def test_initialization_marker_never_resets_established_corrupt_store(tmp_path: Path) -> None:
+    root = tmp_path / "store"
+    store = SnapshotStore.create(root, {"original.txt": b"original"})
+    (root / ".initializing").write_bytes(b"")
+    (root / "HEAD.json").write_text("not-json", encoding="utf-8")
+    with pytest.raises(WorkspaceViolation, match="already exists"):
+        SnapshotStore.create(root, {"replacement.txt": b"replacement"})
+    assert (root / "trees").exists()
     with pytest.raises(WorkspaceViolation, match="HEAD"):
         store.head_tree_id()
