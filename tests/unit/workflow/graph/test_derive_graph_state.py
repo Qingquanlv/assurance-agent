@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import assurance_agent.workflow.graph as graph_package
+import assurance_kernel.workflow.graph as graph_package
 from assurance_agent.workflow.graph.checkpoint import (
     derive_graph_state,
     fold_invocation_events,

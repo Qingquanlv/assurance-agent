@@ -7,6 +7,13 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[manifest]
+members = [
+    "aa-sample-product",
+    "assurance-agent",
+    "assurance-kernel",
+]
+
 [[package]]
 name = "aa-sample-product"
 version = "0.1.0"
@@ -16,7 +23,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "assurance-agent" }]
+requires-dist = [{ name = "assurance-agent", editable = "." }]
 
 [[package]]
 name = "annotated-types"
@@ -45,6 +52,7 @@ name = "assurance-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "assurance-kernel" },
     { name = "click" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -64,6 +72,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "assurance-kernel", editable = "packages/assurance-kernel" },
     { name = "click", specifier = ">=8.1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.7" },
@@ -79,6 +88,25 @@ dev = [
     { name = "pyright", specifier = ">=1.1.380" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.5" },
+]
+
+[[package]]
+name = "assurance-kernel"
+version = "0.1.0"
+source = { editable = "packages/assurance-kernel" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "ruamel-yaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruamel-yaml", specifier = ">=0.18" },
 ]
 
 [[package]]

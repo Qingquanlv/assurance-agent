@@ -1,6 +1,4 @@
-"""Sunk relative paths for execution test-change override artifacts."""
+from importlib import import_module
+import sys
 
-from pathlib import Path
-
-DECISION_REL_PATH = Path("execution") / "test-changes-decision.json"
-TOKEN_REL_PATH = Path("execution") / "test-changes-override-token.json"
+sys.modules[__name__] = import_module("assurance_kernel.workflow.core.override_paths")

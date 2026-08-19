@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from assurance_agent.artifacts.registry import match_artifact
+from assurance_agent.product import select_product
 from assurance_agent.workflow.driver.capability_catalog import (
     ensure_default_catalog,
     install_catalog,
@@ -16,6 +17,7 @@ from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runti
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
 from assurance_agent.workflow.graph.capability_state import (
     DEFAULT_OPERATION_NAMES,
+    DEFAULT_PRODUCT_ID,
     CapabilityCatalog,
     CapabilityCatalogError,
     current_capability_view,
@@ -41,7 +43,7 @@ def test_default_operations_keys_match_named_set() -> None:
 
 
 def test_ensure_default_catalog_pins_today_closed_sets() -> None:
-    reset_catalog()
+    select_product(DEFAULT_PRODUCT_ID)
     view = ensure_default_catalog()
     assert view.operation_names == DEFAULT_OPERATION_NAMES
     assert view.validator_ids == KNOWN_PRECOMMIT_VALIDATORS
@@ -111,15 +113,19 @@ def test_reset_catalog_allows_later_default_match() -> None:
     empty = CapabilityCatalog().freeze()
     install_catalog(empty, operations={}, artifacts=())
     reset_catalog()
+    select_product(DEFAULT_PRODUCT_ID)
     ensure_default_catalog()
     assert match_artifact("review/api-plan-review.json") is not None
 
 
 def test_ensure_default_catalog_fails_closed_for_non_default_product() -> None:
     reset_catalog()
+    with pytest.raises(CapabilityCatalogError, match="select_product"):
+        ensure_default_catalog()
+    assert current_capability_view() is None
     install_current_product_id("sample")
     try:
-        with pytest.raises(CapabilityCatalogError, match="no capability catalog"):
+        with pytest.raises(CapabilityCatalogError, match="select_product"):
             ensure_default_catalog()
         assert current_capability_view() is None
     finally:

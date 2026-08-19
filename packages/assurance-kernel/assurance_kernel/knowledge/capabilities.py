@@ -1,0 +1,156 @@
+"""Capability presence checks for plan-review gates (spec C7)."""
+
+from __future__ import annotations
+
+from pydantic import ValidationError
+
+from assurance_kernel.artifacts.models.data_knowledge import (
+    LIST_AUTH_ROUTES_CAPABILITY,
+    LIST_AUTH_ROUTES_KIND,
+    AccountLeaf,
+    AuthLeaf,
+    AuthMatrixCell,
+    CapabilitiesBlock,
+    CapabilityLeaf,
+    CleanupLeaf,
+    DataKnowledge,
+    DataKnowledgeProposal,
+    PersistedEntityLeaf,
+    assert_list_auth_routes_contract,
+)
+
+
+def _get_nested(doc: dict, parts: list[str]) -> object | None:
+    cur: object = doc
+    for part in parts:
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def is_leaf_present(dk: dict, dotted: str) -> bool:
+    """Return whether a dotted key resolves to a valid canonical leaf in L1."""
+    parts = dotted.split(".")
+    if dotted.startswith("entities."):
+        return _entity_leaf_present(dk, dotted, parts)
+    value = _get_nested(dk, parts)
+    if not isinstance(value, dict):
+        return False
+    try:
+        if dotted.startswith("auth."):
+            AuthLeaf.model_validate(value)
+        elif dotted.startswith("accounts."):
+            AccountLeaf.model_validate(value)
+        elif dotted.startswith("auth_matrix."):
+            AuthMatrixCell.model_validate(value)
+        elif dotted.startswith("capabilities.cleanup."):
+            CleanupLeaf.model_validate(value)
+        elif dotted.startswith("capabilities.domain_factories.") or dotted.startswith(
+            "capabilities.adapters."
+        ):
+            CapabilityLeaf.model_validate(value)
+        else:
+            return False
+    except ValidationError:
+        return False
+    return True
+
+
+def _entity_leaf_present(dk: dict, dotted: str, parts: list[str]) -> bool:
+    """Validate an entity container or one canonical flattened constraint leaf."""
+
+    if len(parts) < 2:
+        return False
+    entity = _get_nested(dk, parts[:2])
+    if not isinstance(entity, dict):
+        return False
+    try:
+        # Capability checks consume canonical persisted L1. Historical L1
+        # entity leaves may still carry legacy boolean max-length flags,
+        # which PersistedEntityLeaf deliberately preserves.
+        PersistedEntityLeaf.model_validate(entity)
+    except ValidationError:
+        return False
+    if len(parts) == 2:
+        return True
+    if len(parts) != 4 or parts[2] != "constraints":
+        return False
+
+    from assurance_kernel.knowledge.extract_constraints import constraint_known_keys
+
+    return dotted in constraint_known_keys(dk)
+
+
+def compute_missing_capabilities(review_doc: dict, dk_doc: dict) -> list[str]:
+    """Compare review.required_capabilities against typed leaves in L1."""
+    required = review_doc.get("required_capabilities")
+    if not isinstance(required, list):
+        return []
+    missing: list[str] = []
+    for item in required:
+        if not isinstance(item, str) or not item.strip():
+            missing.append(str(item))
+            continue
+        key = item.strip()
+        if not is_leaf_present(dk_doc, key):
+            missing.append(key)
+    return missing
+
+
+def capabilities_present(review_doc: object, dk_doc: object) -> bool:
+    if not isinstance(review_doc, dict) or not isinstance(dk_doc, dict):
+        return False
+    return len(compute_missing_capabilities(review_doc, dk_doc)) == 0
+
+
+def plan_review_route(node_result: object) -> str:
+    """Split needs_human_review into knowledge_remediation when L1 leaves are missing."""
+    if not isinstance(node_result, dict):
+        return "stop"
+    gate = node_result.get("gate")
+    if not isinstance(gate, dict):
+        return "stop"
+    verdict = gate.get("verdict")
+    if not isinstance(verdict, str):
+        return "stop"
+    details = gate.get("details")
+    missing: object = None
+    if isinstance(details, dict):
+        missing = details.get("missing_capabilities")
+    if verdict == "needs_human_review" and isinstance(missing, list) and len(missing) > 0:
+        return "knowledge_remediation"
+    return verdict
+
+
+def validate_list_auth_routes_contract(
+    knowledge: DataKnowledge | DataKnowledgeProposal | CapabilitiesBlock | dict,
+) -> None:
+    """Validate ``capabilities.domain_factories.api.list_auth_routes`` when present.
+
+    Absent capability is allowed (A3 cold start may land later). When declared, kind must
+    be ``async_factory`` and ``symbol`` must reference ``list_auth_routes``.
+    """
+    if isinstance(knowledge, (DataKnowledge, DataKnowledgeProposal)):
+        assert_list_auth_routes_contract(knowledge.capabilities)
+        return
+    if isinstance(knowledge, CapabilitiesBlock):
+        assert_list_auth_routes_contract(knowledge)
+        return
+    if not isinstance(knowledge, dict):
+        raise TypeError("knowledge must be DataKnowledge, proposal, CapabilitiesBlock, or dict")
+    caps = knowledge.get("capabilities", knowledge)
+    block = CapabilitiesBlock.model_validate(caps)
+    assert_list_auth_routes_contract(block)
+
+
+# Re-export contract constants for callers/tests.
+__all__ = [
+    "LIST_AUTH_ROUTES_CAPABILITY",
+    "LIST_AUTH_ROUTES_KIND",
+    "capabilities_present",
+    "compute_missing_capabilities",
+    "is_leaf_present",
+    "plan_review_route",
+    "validate_list_auth_routes_contract",
+]

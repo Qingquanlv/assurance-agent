@@ -1,5 +1,7 @@
 [importlinter]
-root_package = assurance_agent
+root_packages =
+    assurance_agent
+    assurance_kernel
 
 [importlinter:contract:layers]
 name = commands depend on eval domain, never the reverse
@@ -81,3 +83,36 @@ layers =
 # for any new graph → driver edges.
 ignore_imports =
     assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.eval.host_runner
+
+[importlinter:contract:kernel-not-assurance]
+name = kernel must not import assurance_agent
+type = forbidden
+source_modules =
+    assurance_kernel
+forbidden_modules =
+    assurance_agent
+
+[importlinter:contract:kernel-artifacts-below-workflow]
+name = kernel artifacts must not import workflow
+type = forbidden
+source_modules =
+    assurance_kernel.artifacts
+forbidden_modules =
+    assurance_kernel.workflow
+
+[importlinter:contract:kernel-core-below-orchestration]
+name = kernel workflow.core must not import workflow.orchestration
+type = forbidden
+source_modules =
+    assurance_kernel.workflow.core
+forbidden_modules =
+    assurance_kernel.workflow.orchestration
+
+[importlinter:contract:kernel-graph-runtime-layer]
+name = kernel driver / graph / orchestration / core layers
+type = layers
+layers =
+    assurance_kernel.workflow.driver
+    assurance_kernel.workflow.graph
+    assurance_kernel.workflow.orchestration
+    assurance_kernel.workflow.core

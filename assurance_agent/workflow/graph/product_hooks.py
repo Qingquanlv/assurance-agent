@@ -1,9 +1,4 @@
-"""Product hooks the graph kernel invokes. Implementation lives in ``workflow.core``."""
+from importlib import import_module
+import sys
 
-from assurance_agent.workflow.core.product_hooks import (  # noqa: F401
-    ProductHooks,
-    ProductHooksMissing,
-    current_product_hooks,
-    install_product_hooks,
-    reset_product_hooks,
-)
+sys.modules[__name__] = import_module("assurance_kernel.workflow.graph.product_hooks")

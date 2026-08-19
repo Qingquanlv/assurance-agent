@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from assurance_agent import resources
+from assurance_agent.assurance_product import AssuranceProduct
 from assurance_agent.product import (
-    AssuranceProduct,
     ProductError,
     install_product,
     load_product,

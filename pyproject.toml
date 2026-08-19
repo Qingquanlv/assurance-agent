@@ -11,13 +11,14 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "ruamel.yaml>=0.18",
+    "assurance-kernel",
 ]
 
 [project.scripts]
 aa = "assurance_agent.cli:main"
 
 [project.entry-points."assurance_agent.products"]
-assurance = "assurance_agent.product:AssuranceProduct"
+assurance = "assurance_agent.assurance_product:AssuranceProduct"
 
 [dependency-groups]
 dev = [
@@ -53,10 +54,14 @@ target-version = "py311"
 extend-exclude = ["benchmark/vue-fastapi-admin", ".worktrees", ".history"]
 
 [tool.pyright]
-include = ["assurance_agent", "tests", "benchmark/specialty"]
-extraPaths = ["."]
+include = ["assurance_agent", "packages/assurance-kernel/assurance_kernel", "tests", "benchmark/specialty"]
+extraPaths = [".", "packages/assurance-kernel"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
 
+[tool.uv.workspace]
+members = ["packages/assurance-kernel", "examples/minimal-product"]
+
 [tool.uv.sources]
-aa-sample-product = { path = "examples/minimal-product", editable = true }
+aa-sample-product = { workspace = true }
+assurance-kernel = { workspace = true }

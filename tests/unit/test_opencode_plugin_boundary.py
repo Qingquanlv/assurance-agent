@@ -14,7 +14,10 @@ from assurance_agent.workflow.graph.workspace import TaskWorkspace
 
 
 _NODE = shutil.which("node")
-_PLUGIN = Path(__file__).parents[2] / "assurance_agent/_resources_kernel/opencode/plugins/aa.mjs"
+_PLUGIN = (
+    Path(__file__).parents[2]
+    / "packages/assurance-kernel/assurance_kernel/_resources/opencode/plugins/aa.mjs"
+)
 _HOOK_DRIVER = r"""
 import { pathToFileURL } from "url";
 
@@ -1258,9 +1261,7 @@ def test_bootstrap_renders_yaml_block_scalar_descriptions(tmp_path: Path) -> Non
     plugin_dir.mkdir(parents=True)
     plugin = plugin_dir / "aa.mjs"
     plugin.write_bytes(_PLUGIN.read_bytes())
-    (tmp_path / "skills").symlink_to(
-        Path(__file__).parents[2] / "assurance_agent/_resources/skills"
-    )
+    (tmp_path / "skills").symlink_to(Path(__file__).parents[2] / "assurance_agent/_resources/skills")
     completed = subprocess.run(
         [
             _NODE or "node",

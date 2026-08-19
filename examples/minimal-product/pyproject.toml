@@ -14,3 +14,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["aa_sample"]
 artifacts = ["aa_sample/_resources/**"]
+
+[tool.uv.sources]
+assurance-agent = { workspace = true }

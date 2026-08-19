@@ -1068,6 +1068,10 @@ def assert_revision_resume_chain(root_id: str, *, expected_ordinals: tuple[int, 
 
 
 def main() -> int:
+    from assurance_agent.product import select_product
+    from assurance_agent.workflow.graph.capability_state import DEFAULT_PRODUCT_ID
+
+    select_product(DEFAULT_PRODUCT_ID)
     project = Path(os.environ["AA_FAULT_PROJECT"])
     point = os.environ.get("AA_FAULT_POINT", "")
     mode = os.environ.get("AA_FAULT_MODE", "run")

@@ -1,0 +1,314 @@
+"""Graph schema 模型 + YAML 加载器。
+
+``graphs:`` 是唯一拓扑声明。根级未知键在加载期拒绝。所有 schema 模型冻结且
+禁止额外字段。gate 定义复用 ``orchestration.schema`` 的共享模型与 normalization。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+from assurance_kernel import resources
+from assurance_kernel.exceptions import AaError
+from assurance_kernel.workflow.core.graph_types import ErrorKind
+from assurance_kernel.workflow.orchestration.schema import (
+    GateDef,
+    SchemaError,
+    normalize_gates,
+)
+
+_ALLOWED_ROOT_KEYS = frozenset({"name", "params", "entrypoints", "policies", "graphs", "gates"})
+
+
+class SchemaV2Error(AaError):
+    """Graph schema 结构非法，或根级未知键不被满足。"""
+
+
+class _FrozenModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ParamDef(_FrozenModel):
+    type: Literal["enum", "list", "object", "bool", "int", "str"]
+    values: list[object] | None = None
+    min_items: int | None = Field(default=None, ge=0)
+    unique: bool = False
+    default: object = None
+
+
+class EntrypointDef(_FrozenModel):
+    graph: str
+    allow: str | None = None
+    with_: dict[str, object] = Field(default_factory=dict, alias="with")
+    restart: Literal["once", "repeatable"] = "once"
+
+
+class BackoffDef(_FrozenModel):
+    initial_seconds: float = Field(default=0, ge=0)
+    multiplier: float = Field(default=1, ge=1)
+    max_seconds: float = Field(default=0, ge=0)
+    jitter: bool = False
+
+
+class RetryPolicyDef(_FrozenModel):
+    max_attempts: int = Field(ge=1, le=10)
+    retry_on: list[ErrorKind] = Field(default_factory=list)
+    backoff: BackoffDef = Field(default_factory=BackoffDef)
+
+
+class TimeoutPolicyDef(_FrozenModel):
+    run_seconds: float = Field(gt=0)
+    heartbeat_seconds: float = Field(gt=0)
+
+
+class SchedulerPolicyDef(_FrozenModel):
+    max_parallel_tasks: int = Field(default=4, ge=1, le=64)
+    conflict_order: list[Literal["topology", "declaration", "task_id"]] = Field(
+        default_factory=lambda: ["topology", "declaration", "task_id"]
+    )
+
+
+class PoliciesDef(_FrozenModel):
+    retry: dict[str, RetryPolicyDef] = Field(default_factory=dict)
+    timeout: dict[str, TimeoutPolicyDef] = Field(default_factory=dict)
+    scheduler: SchedulerPolicyDef = Field(default_factory=SchedulerPolicyDef)
+
+
+class StateDef(_FrozenModel):
+    type: Literal["list", "object", "str", "int", "bool"]
+    default: object
+    reducer: Literal["replace", "append", "merge_disjoint", "set_union"] = "replace"
+
+
+class ResourceDef(_FrozenModel):
+    reads: list[str] = Field(default_factory=list)
+    writes: list[str] = Field(default_factory=list)
+    synchronized: list[str] = Field(default_factory=list)
+    exclusive: list[str] = Field(default_factory=list)
+
+
+class JoinDef(_FrozenModel):
+    sources: list[str]
+    mode: Literal["all", "all_active", "any"]
+    cancel_remaining: bool = False
+
+
+class ReduceDef(_FrozenModel):
+    into: str
+    using: Literal["replace", "append", "merge_disjoint", "set_union"]
+
+
+class FanOutDef(_FrozenModel):
+    items: str
+    item_as: str
+    key: str
+    max_items: int = Field(default=32, ge=1, le=128)
+    completion: Literal["all"] = "all"
+    reduce: ReduceDef | None = None
+
+
+class BudgetUseDef(_FrozenModel):
+    consume: str
+    on: Literal["committed"]
+    exhausted_to: str
+
+
+class ManualRevisionDef(_FrozenModel):
+    action: Literal["fix_and_proceed"]
+    paths: list[str] = Field(min_length=1)
+
+    @field_validator("paths")
+    @classmethod
+    def paths_are_exact_change_plan_files(cls, paths: list[str]) -> list[str]:
+        if len(set(paths)) != len(paths):
+            raise ValueError("manual_revision.paths must not contain duplicate paths")
+        for path in paths:
+            if any(marker in path for marker in ("*", "?", "[", "]")):
+                raise ValueError(f"manual_revision path must not contain globs: {path}")
+            if "${" in path or "{" in path or "}" in path:
+                raise ValueError(f"manual_revision path must not contain templates: {path}")
+            if not path.startswith("change:"):
+                raise ValueError(f"manual_revision path must start with 'change:': {path}")
+            if ".." in path:
+                raise ValueError(f"manual_revision path must not contain '..': {path}")
+            if not path.startswith("change:plans/"):
+                raise ValueError(f"manual_revision path must stay under change:plans/: {path}")
+            relative = path.removeprefix("change:plans/")
+            if not relative or relative.endswith("/"):
+                raise ValueError(f"manual_revision path must be a file, not a directory: {path}")
+        return paths
+
+
+class InterruptDef(_FrozenModel):
+    reason: str
+    checkpoint: str
+    bind: Literal["audited_gate_read"]
+    actions: list[str] = Field(min_length=1)
+    manual_revision: ManualRevisionDef | None = None
+
+    @field_validator("actions")
+    @classmethod
+    def actions_are_unique_and_nonblank(cls, actions: list[str]) -> list[str]:
+        if any(not action.strip() for action in actions):
+            raise ValueError("interrupt.actions must not contain blank values")
+        if len(set(actions)) != len(actions):
+            raise ValueError("interrupt.actions must be unique")
+        return actions
+
+    @model_validator(mode="after")
+    def manual_revision_action_must_be_declared(self) -> InterruptDef:
+        if self.manual_revision is None:
+            return self
+        if self.manual_revision.action not in self.actions:
+            raise ValueError(
+                "manual_revision.action must be present in interrupt.actions: "
+                f"{self.manual_revision.action!r}"
+            )
+        return self
+
+
+class EvidenceRef(_FrozenModel):
+    node: str
+    symbol: str
+    task_key: str | None = None
+
+
+class ExportDef(_FrozenModel):
+    from_: str = Field(alias="from")
+    output: str
+
+
+class RecoverDef(_FrozenModel):
+    """Fallback taken only after the recovering node exhausts its normal retry policy."""
+
+    errors: list[ErrorKind] = Field(min_length=1)
+    via: str
+    continue_to: str
+
+    @model_validator(mode="after")
+    def unique_errors(self) -> "RecoverDef":
+        if len(set(self.errors)) != len(self.errors):
+            raise ValueError("recover.errors must be unique")
+        return self
+
+
+VALIDATE_NONE = "none"
+
+
+class NodeDef(_FrozenModel):
+    uses: str
+    agent: str | None = None
+    when: str | None = None
+    outputs: list[str] = Field(default_factory=list)
+    evidence: dict[str, EvidenceRef] = Field(default_factory=dict)
+    gate: str | None = None
+    # Class II reconciler id, or the literal "none". Missing (None) is only
+    # legal on historical/replay graphs; packaged current graphs must declare it.
+    # Aliased like ``with_``: ``validate`` collides with ``BaseModel.validate``.
+    validate_: str | None = Field(default=None, alias="validate")
+    retry: str | None = None
+    timeout: str | None = None
+    with_: dict[str, object] = Field(default_factory=dict, alias="with")
+    resources: ResourceDef | None = None
+    state_writes: dict[str, str] = Field(default_factory=dict)
+    join: JoinDef | None = None
+    fan_out: FanOutDef | None = None
+    budget: BudgetUseDef | None = None
+    interrupt: InterruptDef | None = None
+    recover: RecoverDef | None = None
+
+
+class EdgeDef(_FrozenModel):
+    from_: str = Field(alias="from")
+    to: str
+    when: str | None = None
+
+
+class RouteDef(_FrozenModel):
+    from_: str = Field(alias="from")
+    select: str
+    cases: dict[str, str]
+    default: str | None = None
+
+
+class BudgetDef(_FrozenModel):
+    limit: str | int
+
+
+class GraphDef(_FrozenModel):
+    max_supersteps: int = Field(gt=0)
+    state: dict[str, StateDef] = Field(default_factory=dict)
+    budgets: dict[str, BudgetDef] = Field(default_factory=dict)
+    nodes: dict[str, NodeDef]
+    edges: list[EdgeDef] = Field(default_factory=list)
+    routes: list[RouteDef] = Field(default_factory=list)
+    exports: dict[str, ExportDef] = Field(default_factory=dict)
+
+
+class WorkflowSchemaV2(_FrozenModel):
+    name: str
+    params: dict[str, ParamDef] = Field(default_factory=dict)
+    entrypoints: dict[str, EntrypointDef]
+    policies: PoliciesDef = Field(default_factory=PoliciesDef)
+    graphs: dict[str, GraphDef]
+    gates: dict[str, GateDef] = Field(default_factory=dict)
+
+
+def parse_workflow_v2(yaml_text: str) -> WorkflowSchemaV2:
+    try:
+        doc = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as exc:
+        raise SchemaV2Error(f"invalid workflow schema v2: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise SchemaV2Error("schema root is not a mapping")
+
+    unknown = sorted(str(k) for k in doc if k not in _ALLOWED_ROOT_KEYS)
+    if unknown:
+        raise SchemaV2Error("unknown root keys: " + ", ".join(unknown))
+
+    try:
+        gates = normalize_gates(doc.get("gates"))
+        return WorkflowSchemaV2.model_validate({**doc, "gates": gates})
+    except (SchemaError, ValidationError) as exc:
+        raise SchemaV2Error(f"invalid workflow schema v2: {exc}") from exc
+
+
+WorkflowSchemaOrigin = Literal["packaged", "project", "explicit"]
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedWorkflowV2:
+    schema: WorkflowSchemaV2
+    origin: WorkflowSchemaOrigin
+
+
+def load_workflow_v2_with_origin(project_root: Path, explicit: Path | None = None) -> LoadedWorkflowV2:
+    if explicit is not None:
+        path = explicit if explicit.is_absolute() else project_root / explicit
+        if not path.exists():
+            raise SchemaV2Error(f"explicit schema not found: {path}")
+        return LoadedWorkflowV2(
+            schema=parse_workflow_v2(path.read_text(encoding="utf-8")),
+            origin="explicit",
+        )
+    for rel in (Path(".aa/workflow-schema.yaml"), Path("schemas/workflow-schema.yaml")):
+        candidate = project_root / rel
+        if candidate.exists():
+            return LoadedWorkflowV2(
+                schema=parse_workflow_v2(candidate.read_text(encoding="utf-8")),
+                origin="project",
+            )
+    return LoadedWorkflowV2(
+        schema=parse_workflow_v2(resources.read_text("schemas", "workflow-schema.yaml")),
+        origin="packaged",
+    )
+
+
+def load_workflow_v2(project_root: Path, explicit: Path | None = None) -> WorkflowSchemaV2:
+    """Compatibility wrapper; does not select a compilation purpose."""
+    return load_workflow_v2_with_origin(project_root, explicit).schema
