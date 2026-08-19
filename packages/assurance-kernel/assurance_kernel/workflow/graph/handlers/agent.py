@@ -58,12 +58,6 @@ from assurance_kernel.workflow.graph.task_inputs import (
 from assurance_kernel.workflow.graph.task_runner import task_failure
 from assurance_kernel.workflow.graph.handlers.operation import link_host_task_paths
 from assurance_kernel.workflow.graph.workspace import TaskWorkspace, TreeStore, WorkspaceError
-from assurance_kernel.workflow.retro_outputs import (
-    CandidateOutputError,
-    SignalInvalidError,
-    complete_candidate_outputs,
-    complete_signal_outputs,
-)
 from assurance_kernel.workflow.orchestration.gates import valid_ancestor_accept_risk_decisions
 
 _PROTECTED_CANONICAL_AGENT_INPUTS = (Path(".aa/data-knowledge.yaml"),)
@@ -278,8 +272,8 @@ class AgentHandler:
                 context=context,
             )
             hooks.complete_issue_analyzer_outputs(workspace.change_dir, outputs)
-            complete_signal_outputs(workspace.project_root, outputs)
-            complete_candidate_outputs(workspace.project_root, outputs)
+            hooks.complete_signal_outputs(workspace.project_root, outputs)
+            hooks.complete_candidate_outputs(workspace.project_root, outputs)
             if skill == "aa-fuzz-plan":
                 validate_fuzz_plan_outputs(workspace.change_dir)
             if skill == "aa-improvement-reviewer":
@@ -309,8 +303,6 @@ class AgentHandler:
         except ProductHooksMissing:
             raise
         except (
-            SignalInvalidError,
-            CandidateOutputError,
             CodegenManifestError,
             PlanChecksCompletionError,
             AaError,

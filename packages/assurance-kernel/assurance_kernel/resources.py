@@ -38,7 +38,10 @@ def _root_for(relpath: tuple[str, ...]) -> Traversable | Path:
     if _is_product_rel(relpath):
         if _product_root is not None:
             return _product_root
-        return files("assurance_agent") / "_resources"
+        raise FileNotFoundError(
+            "product resource root is not installed; cannot load product files "
+            "(call select_product before reading product resources)"
+        )
     return _KERNEL
 
 

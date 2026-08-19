@@ -25,6 +25,8 @@ class ProductHooks:
     commit_healing_allocation_ledger: Callable[..., bool]
     complete_issue_analyzer_outputs: Callable[..., None]
     complete_improvement_reviewer_outputs: Callable[..., object]
+    complete_signal_outputs: Callable[..., None]
+    complete_candidate_outputs: Callable[..., None]
     register_healing_effects: Callable[..., None]
     project_healing_episode: Callable[..., object]
     assert_test_tree_unchanged_or_healing: Callable[..., object]

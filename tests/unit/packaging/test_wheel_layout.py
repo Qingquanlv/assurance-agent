@@ -56,6 +56,16 @@ def test_operations_catalog_stays_on_assurance_agent() -> None:
     assert "assurance-kernel" not in parts
 
 
+def test_retro_outputs_stays_on_assurance_agent() -> None:
+    import assurance_agent.workflow.retro_outputs as retro_outputs
+
+    assert retro_outputs.__file__ is not None
+    parts = Path(retro_outputs.__file__).parts
+    assert "assurance_agent" in parts
+    assert "assurance-kernel" not in parts
+    assert not (KERNEL / "workflow/retro_outputs.py").exists()
+
+
 def test_kernel_capability_catalog_has_no_product_catalog_edge() -> None:
     text = (KERNEL / "workflow/driver/capability_catalog.py").read_text(encoding="utf-8")
     assert "operations_catalog" not in text

@@ -63,6 +63,10 @@ class AssuranceProduct:
         )
         from assurance_agent.workflow.issues.analyzer_output import complete_issue_analyzer_outputs
         from assurance_agent.workflow.issues.identity import candidate_document_digest
+        from assurance_agent.workflow.retro_outputs import (
+            complete_candidate_outputs,
+            complete_signal_outputs,
+        )
 
         return ProductHooks(
             load_product_code_roots=load_product_code_roots,
@@ -70,6 +74,8 @@ class AssuranceProduct:
             commit_healing_allocation_ledger=commit_healing_allocation_ledger,
             complete_issue_analyzer_outputs=complete_issue_analyzer_outputs,
             complete_improvement_reviewer_outputs=complete_improvement_reviewer_outputs,
+            complete_signal_outputs=complete_signal_outputs,
+            complete_candidate_outputs=complete_candidate_outputs,
             register_healing_effects=register_healing_effects,
             project_healing_episode=project_healing_episode,
             assert_test_tree_unchanged_or_healing=assert_test_tree_unchanged_or_healing,

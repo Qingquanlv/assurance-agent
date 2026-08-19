@@ -23,6 +23,22 @@ def test_select_assurance_installs_product_code_roots_hook(tmp_path: Path) -> No
     assert isinstance(roots, list)
 
 
+def test_missing_retro_hooks_fail_closed(tmp_path: Path) -> None:
+    reset_product_hooks()
+    with pytest.raises(ProductHooksMissing, match="complete_signal_outputs"):
+        current_product_hooks().complete_signal_outputs(tmp_path, ())
+    with pytest.raises(ProductHooksMissing, match="complete_candidate_outputs"):
+        current_product_hooks().complete_candidate_outputs(tmp_path, ())
+
+
+def test_select_assurance_installs_retro_output_hooks(tmp_path: Path) -> None:
+    reset_product()
+    select_product("assurance")
+    hooks = current_product_hooks()
+    hooks.complete_signal_outputs(tmp_path, ())
+    hooks.complete_candidate_outputs(tmp_path, ())
+
+
 def test_install_product_does_not_treat_assurance_id_as_special() -> None:
     """Kernel must not fill hooks by id. A dummy with id=assurance and no product_hooks stays fail-closed."""
 
