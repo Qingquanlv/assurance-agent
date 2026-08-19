@@ -1,3 +1,4 @@
+from assurance_kernel.artifacts.models.minimum_coverage import *  # noqa: F403
 from importlib import import_module
 import sys
 

@@ -1,3 +1,4 @@
+from assurance_kernel.artifacts.models.improvements import *  # noqa: F403
 from importlib import import_module
 import sys
 

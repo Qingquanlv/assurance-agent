@@ -58,8 +58,9 @@ def test_ensure_default_does_not_override_explicit_empty() -> None:
     install_catalog(empty, operations={}, artifacts=())
     try:
         ensure_default_catalog()
-        assert current_capability_view() is not None
-        assert current_capability_view().operation_names == frozenset()
+        view = current_capability_view()
+        assert view is not None
+        assert view.operation_names == frozenset()
         assert current_validator_ids() == frozenset()
         assert match_artifact("review/api-plan-review.json") is None
     finally:

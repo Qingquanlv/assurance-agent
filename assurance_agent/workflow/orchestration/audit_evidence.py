@@ -1,3 +1,4 @@
+from assurance_kernel.workflow.orchestration.audit_evidence import *  # noqa: F403
 from importlib import import_module
 import sys
 

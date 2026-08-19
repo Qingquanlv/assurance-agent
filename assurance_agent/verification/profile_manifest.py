@@ -1,3 +1,4 @@
+from assurance_kernel.verification.profile_manifest import *  # noqa: F403
 from importlib import import_module
 import sys
 

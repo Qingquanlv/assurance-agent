@@ -1,3 +1,4 @@
+from assurance_kernel.artifacts.models.eval_projection import *  # noqa: F403
 from importlib import import_module
 import sys
 
