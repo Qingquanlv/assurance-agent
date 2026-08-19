@@ -11,6 +11,7 @@ from graph_engine.runtime.events import (
     GraphCompleted,
     GraphFailed,
     GraphStarted,
+    HeadAdvanced,
     InterruptResumed,
     InvocationFinished,
     InvocationStarted,
@@ -23,6 +24,8 @@ from graph_engine.runtime.events import (
     TaskAttemptStarted,
     TaskAttemptStopped,
     TaskAttemptSucceeded,
+    TaskLeaseAcquired,
+    TaskLeaseHeartbeat,
     TokenConsumed,
     TokenOffered,
 )
@@ -100,6 +103,12 @@ class AttemptRecord(ProjectionModel):
     output: FrozenJSONValue = None
     failure: TaskFailure | None = None
     stop_reason: str | None = None
+    lease_task_id: str | None = None
+    lease_owner_id: str | None = None
+    lease_acquired_at: float | None = None
+    lease_heartbeat_at: float | None = None
+    lease_expires_at_value: float | None = None
+    committed_tree_id: str | None = None
 
     @model_validator(mode="after")
     def _validate_outcome(self) -> Self:
@@ -110,6 +119,22 @@ class AttemptRecord(ProjectionModel):
                 raise ValueError("stopped attempt requires a stop reason")
         elif self.stop_reason is not None:
             raise ValueError("stop reason is allowed only for stopped status")
+        lease_values = (
+            self.lease_task_id,
+            self.lease_owner_id,
+            self.lease_acquired_at,
+            self.lease_heartbeat_at,
+            self.lease_expires_at_value,
+        )
+        if any(value is not None for value in lease_values) and any(value is None for value in lease_values):
+            raise ValueError("attempt lease fields must be present together")
+        if (
+            self.lease_acquired_at is not None
+            and self.lease_heartbeat_at is not None
+            and self.lease_expires_at_value is not None
+            and not (self.lease_acquired_at <= self.lease_heartbeat_at <= self.lease_expires_at_value)
+        ):
+            raise ValueError("attempt lease timestamps are inconsistent")
         return self
 
 
@@ -149,6 +174,8 @@ class PlannedTask(ProjectionModel):
     timeout_seconds: float = Field(gt=0)
     resources: ResourceClaims = ResourceClaims()
     validators: tuple[str, ...] = ()
+    topology_rank: int = Field(ge=0)
+    declaration_index: int = Field(ge=0)
 
 
 class PlanResult(ProjectionModel):
@@ -177,6 +204,7 @@ class InvocationProjection(ProjectionModel):
     activations: tuple[ActivationRecord, ...] = ()
     pending_interrupt: PendingInterrupt | None = None
     terminal_reason: str | None = None
+    head_tree_id: str | None = None
 
     @model_validator(mode="after")
     def _validate_semantics(self) -> Self:
@@ -190,6 +218,7 @@ class InvocationProjection(ProjectionModel):
                     self.activations,
                     self.pending_interrupt,
                     self.terminal_reason,
+                    self.head_tree_id,
                 )
             ):
                 raise ValueError("not_started projection cannot contain runtime state")
@@ -439,6 +468,59 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
                 projection,
                 activation.model_copy(update={"attempts": (*activation.attempts, attempt)}),
             )
+        elif isinstance(event, TaskLeaseAcquired):
+            activation = _activation(projection, event.activation_id, envelope.seq)
+            if not activation.attempts or activation.attempts[-1].status != "running":
+                _fail(envelope.seq, "lease acquired without a matching active attempt")
+            attempt = activation.attempts[-1]
+            if attempt.attempt != event.attempt or attempt.lease_owner_id is not None:
+                _fail(envelope.seq, "lease acquired without a matching active attempt")
+            if event.heartbeat_at != event.acquired_at or event.expires_at < event.heartbeat_at:
+                _fail(envelope.seq, "lease acquisition timestamps are inconsistent")
+            attempt = attempt.model_copy(
+                update={
+                    "lease_owner_id": event.owner_id,
+                    "lease_task_id": event.task_id,
+                    "lease_acquired_at": event.acquired_at,
+                    "lease_heartbeat_at": event.heartbeat_at,
+                    "lease_expires_at_value": event.expires_at,
+                }
+            )
+            projection = _replace_activation(
+                projection,
+                activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)}),
+            )
+        elif isinstance(event, TaskLeaseHeartbeat):
+            activation = _activation(projection, event.activation_id, envelope.seq)
+            if not activation.attempts or activation.attempts[-1].status != "running":
+                _fail(envelope.seq, "lease heartbeat without a matching active attempt")
+            attempt = activation.attempts[-1]
+            if (
+                attempt.attempt != event.attempt
+                or attempt.lease_task_id != event.task_id
+                or attempt.lease_owner_id != event.owner_id
+            ):
+                _fail(envelope.seq, "lease heartbeat does not match the active lease")
+            if (
+                attempt.lease_heartbeat_at is None
+                or event.heartbeat_at < attempt.lease_heartbeat_at
+                or (
+                    attempt.lease_expires_at_value is not None
+                    and event.heartbeat_at > attempt.lease_expires_at_value
+                )
+                or event.expires_at < event.heartbeat_at
+            ):
+                _fail(envelope.seq, "lease heartbeat timestamps are inconsistent")
+            attempt = attempt.model_copy(
+                update={
+                    "lease_heartbeat_at": event.heartbeat_at,
+                    "lease_expires_at_value": event.expires_at,
+                }
+            )
+            projection = _replace_activation(
+                projection,
+                activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)}),
+            )
         elif isinstance(event, TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptStopped):
             activation = _activation(projection, event.activation_id, envelope.seq)
             _ensure_graph_open_if_known(projection, activation.graph_instance_id, envelope.seq)
@@ -508,6 +590,25 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
                     )
                 }
             )
+        elif isinstance(event, HeadAdvanced):
+            activation = _activation(projection, event.activation_id, envelope.seq)
+            _ensure_graph_open_if_known(projection, activation.graph_instance_id, envelope.seq)
+            if activation.status != "active":
+                _fail(envelope.seq, "HEAD advanced for a non-active activation")
+            if not activation.attempts or activation.attempts[-1].status != "succeeded":
+                _fail(envelope.seq, "HEAD advanced without a successful task attempt")
+            attempt = activation.attempts[-1]
+            if attempt.attempt != event.attempt or attempt.lease_task_id != event.task_id:
+                _fail(envelope.seq, "HEAD advance does not match the successful attempt")
+            if attempt.committed_tree_id is not None:
+                _fail(envelope.seq, "successful task attempt already advanced HEAD")
+            if projection.head_tree_id is not None and projection.head_tree_id != event.previous_tree_id:
+                _fail(envelope.seq, "HEAD advance previous tree does not match projection")
+            attempt = attempt.model_copy(update={"committed_tree_id": event.tree_id})
+            projection = _replace_activation(
+                projection,
+                activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)}),
+            ).model_copy(update={"head_tree_id": event.tree_id})
         elif isinstance(event, InterruptResumed):
             pending = projection.pending_interrupt
             if pending is None or pending.interrupt_id != event.interrupt_id:

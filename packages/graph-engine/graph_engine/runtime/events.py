@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import FailureKind, TaskFailure
@@ -73,6 +73,39 @@ class TaskAttemptStarted(RuntimeEventModel):
     lease_expires_at: str
 
 
+class TaskLeaseAcquired(RuntimeEventModel):
+    kind: Literal["task_lease_acquired"] = "task_lease_acquired"
+    task_id: str
+    activation_id: str
+    attempt: int = Field(ge=1)
+    owner_id: str = Field(min_length=1)
+    acquired_at: float
+    heartbeat_at: float
+    expires_at: float
+
+    @model_validator(mode="after")
+    def _validate_times(self) -> Self:
+        if self.heartbeat_at != self.acquired_at or self.expires_at < self.heartbeat_at:
+            raise ValueError("lease acquisition timestamps are inconsistent")
+        return self
+
+
+class TaskLeaseHeartbeat(RuntimeEventModel):
+    kind: Literal["task_lease_heartbeat"] = "task_lease_heartbeat"
+    task_id: str
+    activation_id: str
+    attempt: int = Field(ge=1)
+    owner_id: str = Field(min_length=1)
+    heartbeat_at: float
+    expires_at: float
+
+    @model_validator(mode="after")
+    def _validate_times(self) -> Self:
+        if self.expires_at < self.heartbeat_at:
+            raise ValueError("lease heartbeat expiry precedes heartbeat time")
+        return self
+
+
 class TaskAttemptSucceeded(RuntimeEventModel):
     kind: Literal["task_attempt_succeeded"] = "task_attempt_succeeded"
     activation_id: str
@@ -93,6 +126,15 @@ class TaskAttemptStopped(RuntimeEventModel):
     attempt: int = Field(ge=1)
     reason: str
     output: FrozenJSONValue = None
+
+
+class HeadAdvanced(RuntimeEventModel):
+    kind: Literal["head_advanced"] = "head_advanced"
+    task_id: str
+    activation_id: str
+    attempt: int = Field(ge=1)
+    previous_tree_id: str = Field(pattern=_SHA256_PATTERN)
+    tree_id: str = Field(pattern=_SHA256_PATTERN)
 
 
 class NodeCompleted(RuntimeEventModel):
@@ -146,9 +188,12 @@ RuntimeEvent = Annotated[
     | TokenConsumed
     | NodeActivated
     | TaskAttemptStarted
+    | TaskLeaseAcquired
+    | TaskLeaseHeartbeat
     | TaskAttemptSucceeded
     | TaskAttemptFailed
     | TaskAttemptStopped
+    | HeadAdvanced
     | NodeCompleted
     | NodeFailed
     | NodeInterrupted
@@ -199,6 +244,7 @@ __all__ = [
     "GraphCompleted",
     "GraphFailed",
     "GraphStarted",
+    "HeadAdvanced",
     "InterruptResumed",
     "InvocationFinished",
     "InvocationStarted",
@@ -213,6 +259,8 @@ __all__ = [
     "TaskAttemptStarted",
     "TaskAttemptStopped",
     "TaskAttemptSucceeded",
+    "TaskLeaseAcquired",
+    "TaskLeaseHeartbeat",
     "TokenConsumed",
     "TokenOffered",
 ]

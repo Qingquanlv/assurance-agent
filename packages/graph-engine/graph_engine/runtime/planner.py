@@ -635,6 +635,8 @@ def _planned_task(state: _PlannerState, node: CompiledNode, activation: Activati
         timeout_seconds=state.compiled.timeout[timeout_name].run_seconds,
         resources=node.definition.resources,
         validators=node.definition.validators,
+        topology_rank=node.topology_rank,
+        declaration_index=node.declaration_index,
     )
 
 

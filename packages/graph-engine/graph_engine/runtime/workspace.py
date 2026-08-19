@@ -1036,42 +1036,80 @@ class SnapshotStore:
         with self._opened_layout() as (root_fd, trees_fd, _attempts_fd, _lock_fd):
             _document, tree = self._head_tree(root_fd, trees_fd)
             try:
-                if path not in tree.manifest:
-                    raise WorkspaceViolation(f"path is not authenticated by HEAD manifest: {path}")
-                descriptor = os.dup(tree.descriptor)
-                try:
-                    segments = path.split("/")
-                    for segment in segments[:-1]:
-                        child, _ = _open_directory_at(descriptor, segment, "HEAD path directory")
-                        os.close(descriptor)
-                        descriptor = child
-                    file_fd, file_stat = _open_file_at(descriptor, segments[-1], path, immutable=True)
-                    try:
-                        os.lseek(file_fd, 0, os.SEEK_SET)
-                        chunks: list[bytes] = []
-                        digest = hashlib.sha256()
-                        while chunk := os.read(file_fd, _COPY_BUFFER_SIZE):
-                            chunks.append(chunk)
-                            digest.update(chunk)
-                        _assert_open_file_stable(
-                            file_fd,
-                            descriptor,
-                            segments[-1],
-                            file_stat,
-                            "HEAD file",
-                            immutable=True,
-                        )
-                        if digest.hexdigest() != tree.manifest[path]:
-                            raise WorkspaceViolation(
-                                f"HEAD read hash does not match authenticated manifest: {path}"
-                            )
-                        return b"".join(chunks)
-                    finally:
-                        os.close(file_fd)
-                finally:
-                    os.close(descriptor)
+                return _read_opened_tree_file(tree, path, "HEAD")
             finally:
                 os.close(tree.descriptor)
+
+    def _candidate_contents(self, candidate: CandidateWriteSet) -> dict[str, bytes | None]:
+        """Authenticate a sealed candidate and materialize only its declared changes."""
+        with self._opened_layout(lock=True) as (_root_fd, trees_fd, _attempts_fd, _lock_fd):
+            baseline = self._open_tree(trees_fd, candidate.baseline_tree_id)
+            candidate_tree = self._open_tree(trees_fd, candidate.candidate_tree_id)
+            try:
+                actual_diff = _diff_manifests(baseline.manifest, candidate_tree.manifest)
+                if actual_diff != candidate.files:
+                    raise WorkspaceViolation("candidate diff does not match baseline and candidate trees")
+                return {
+                    item.path: (
+                        None
+                        if item.after_sha256 is None
+                        else _read_opened_tree_file(candidate_tree, item.path, "candidate")
+                    )
+                    for item in candidate.files
+                }
+            finally:
+                os.close(candidate_tree.descriptor)
+                os.close(baseline.descriptor)
+
+    def rebase_candidate(self, candidate: CandidateWriteSet, attempt_id: str) -> CandidateWriteSet:
+        """Reapply an authenticated candidate diff to current HEAD and seal the result.
+
+        The rebase is conservative: every changed path must still have the exact
+        baseline hash observed by the handler. This prevents a stale candidate from
+        overwriting a concurrent change even if a caller selected an unsafe wave.
+        """
+        contents = self._candidate_contents(candidate)
+        attempt = self.create_attempt(attempt_id)
+        try:
+            for item in sorted(candidate.files, key=lambda value: (-value.path.count("/"), value.path)):
+                if item.before_sha256 is None:
+                    continue
+                target = attempt.root / item.path
+                if target.is_file():
+                    target.unlink()
+                elif target.exists():
+                    raise WorkspaceViolation(f"candidate changed path is not a regular file: {item.path}")
+                _remove_empty_parents(target.parent, attempt.root)
+
+            for item in candidate.files:
+                content = contents[item.path]
+                if content is None:
+                    continue
+                target = attempt.root / item.path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.is_dir():
+                    try:
+                        target.rmdir()
+                    except OSError as error:
+                        raise WorkspaceViolation(
+                            f"candidate file path collides with a non-empty directory: {item.path}"
+                        ) from error
+                target.write_bytes(content)
+
+            rebased = attempt.seal()
+            rebased_by_path = {item.path: item for item in rebased.files}
+            if set(rebased_by_path) != {item.path for item in candidate.files}:
+                raise WorkspaceViolation("rebased candidate changed an unexpected path")
+            for item in candidate.files:
+                rebased_file = rebased_by_path[item.path]
+                if (
+                    rebased_file.before_sha256 != item.before_sha256
+                    or rebased_file.after_sha256 != item.after_sha256
+                ):
+                    raise WorkspaceViolation(f"candidate path changed since handler baseline: {item.path}")
+            return rebased
+        finally:
+            attempt.discard()
 
     def create_attempt(self, attempt_id: str) -> AttemptWorkspace:
         validated = _validate_attempt_id(attempt_id)
@@ -1213,6 +1251,51 @@ def commit_candidate(
     context: ValidationContext | None = None,
 ) -> CommitResult:
     return store.commit_candidate(candidate, claims, validators, context)
+
+
+def _read_opened_tree_file(tree: _OpenedTree, relative_path: str, kind: str) -> bytes:
+    path = _validate_relative_path(relative_path)
+    expected = tree.manifest.get(path)
+    if expected is None:
+        raise WorkspaceViolation(f"path is not authenticated by {kind} manifest: {path}")
+    descriptor = os.dup(tree.descriptor)
+    try:
+        segments = path.split("/")
+        for segment in segments[:-1]:
+            child, _ = _open_directory_at(descriptor, segment, f"{kind} path directory")
+            os.close(descriptor)
+            descriptor = child
+        file_fd, file_stat = _open_file_at(descriptor, segments[-1], path, immutable=True)
+        try:
+            digest = hashlib.sha256()
+            chunks: list[bytes] = []
+            while chunk := os.read(file_fd, _COPY_BUFFER_SIZE):
+                chunks.append(chunk)
+                digest.update(chunk)
+            _assert_open_file_stable(
+                file_fd,
+                descriptor,
+                segments[-1],
+                file_stat,
+                f"{kind} file",
+                immutable=True,
+            )
+            if digest.hexdigest() != expected:
+                raise WorkspaceViolation(f"{kind} file hash does not match manifest: {path}")
+            return b"".join(chunks)
+        finally:
+            os.close(file_fd)
+    finally:
+        os.close(descriptor)
+
+
+def _remove_empty_parents(path: Path, stop: Path) -> None:
+    while path != stop:
+        try:
+            path.rmdir()
+        except OSError:
+            return
+        path = path.parent
 
 
 def _lock_exclusive(descriptor: int) -> None:
