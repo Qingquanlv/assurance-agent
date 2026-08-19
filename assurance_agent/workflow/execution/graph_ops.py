@@ -17,7 +17,7 @@ from assurance_agent.workflow.metrics.pr_metrics import collect_pr_metrics_batch
 @contextmanager
 def _host_uv_environment(context: RuntimeContext) -> Iterator[None]:
     """Force ``uv run`` to reuse the host project venv (not a task-local rebuild)."""
-    host_venv = context.project_root.resolve() / ".venv"
+    host_venv = context.resolved_host_root.resolve() / ".venv"
     host_python = host_venv / "bin" / "python"
     keys = ("UV_PROJECT_ENVIRONMENT", "UV_PYTHON", "VIRTUAL_ENV")
     previous = {key: os.environ.get(key) for key in keys}
@@ -45,7 +45,7 @@ def run_tests(task: ExecutableTask, workspace: TaskWorkspace, context: RuntimeCo
     del task  # contract signature
     link_host_task_paths(workspace, context)
     with _host_uv_environment(context):
-        config = load_config(workspace.project_root)
+        config = load_config(context.resolved_host_root)
         manifest = run_change(workspace.project_root, workspace.change_dir, config)
     final_status = getattr(manifest.final_status, "value", manifest.final_status)
     return TaskResult(

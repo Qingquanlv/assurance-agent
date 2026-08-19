@@ -13,6 +13,21 @@ def test_init_yes_writes_scaffold(tmp_path: Path) -> None:
         assert "created: .aa/config.yaml" in result.output
         assert Path(".aa/execution-policy.json").is_file()
         assert Path("qa/changes/.gitkeep").is_file()
+        assert not Path(".aa/workflow-schema.yaml").exists()
+
+
+def test_init_yes_with_schema_writes_minimal_custom_schema(tmp_path: Path) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(main, ["init", "--yes", "--with-schema"])
+        assert result.exit_code == 0, result.output
+        assert "created: .aa/workflow-schema.yaml" in result.output
+        schema = Path(".aa/workflow-schema.yaml").read_text(encoding="utf-8")
+        assert "my-pipeline" in schema
+        compiled = runner.invoke(main, ["workflow", "compile", "--json"])
+        assert compiled.exit_code == 0, compiled.output
+        assert '"origin": "project"' in compiled.output
+        assert '"my-pipeline"' in compiled.output
 
 
 def test_init_options_override_defaults(tmp_path: Path) -> None:
@@ -49,7 +64,16 @@ def test_init_repair_recreates_missing_gitkeep(tmp_path: Path) -> None:
 def test_init_interactive_prompts_for_frameworks(tmp_path: Path) -> None:
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path):
-        # prompts: api framework, e2e framework, enable MCP, confirm
-        result = runner.invoke(main, ["init"], input="pytest\nplaywright\nn\ny\n")
+        # prompts: api framework, e2e framework, enable MCP, write schema, confirm
+        result = runner.invoke(main, ["init"], input="pytest\nplaywright\nn\nn\ny\n")
         assert result.exit_code == 0, result.output
         assert Path(".aa/config.yaml").is_file()
+        assert not Path(".aa/workflow-schema.yaml").exists()
+
+
+def test_init_interactive_can_write_minimal_schema(tmp_path: Path) -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(main, ["init"], input="pytest\nplaywright\nn\ny\ny\n")
+        assert result.exit_code == 0, result.output
+        assert Path(".aa/workflow-schema.yaml").is_file()

@@ -14,11 +14,13 @@ from pydantic import BaseModel, ConfigDict
 
 from assurance_agent.artifacts.paths import existing_with_alias
 from assurance_agent.workflow.core.events import read_events
+from assurance_agent.workflow.core.override_paths import (
+    DECISION_REL_PATH,  # noqa: F401 — re-exported for callers
+    TOKEN_REL_PATH,
+)
 from assurance_agent.workflow.healing.safety import HealingGuardError, TestTreeIntegrity
 
 POLICY_REL_PATH = Path(".aa") / "execution-policy.json"
-TOKEN_REL_PATH = Path("execution") / "test-changes-override-token.json"
-DECISION_REL_PATH = Path("execution") / "test-changes-decision.json"
 
 TestChangesOverrideMode = Literal["forbidden", "with-evidence", "free", "conditional"]
 

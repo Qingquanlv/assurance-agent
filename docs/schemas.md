@@ -7,7 +7,7 @@
 | 机器契约 | 适用对象 | 用途 |
 |---|---|---|
 | `schemas/workflow-schema.yaml` | 工作流 entrypoints / graphs / gates / params / policies（schema v2） | 随 CLI 分发的运行期编排契约，可被项目 schema 覆盖 |
-| `schemas/execution-contracts.yaml` | 节点 target（`skill:*` / `operation:*` / `builtin:*`） | 资源 claim、写授权与可重试错误的执行契约目录，可被项目 `.aa/execution-contracts.yaml` 整体覆盖 |
+| `schemas/execution-contracts.yaml` | 节点 target（`skill:*` / `operation:*` / `builtin:*`） | 资源 claim、写授权与可重试错误的执行契约目录，可被项目 `.aa/execution-contracts.yaml` 或 `schemas/execution-contracts.yaml` 整体覆盖 |
 | `schemas/explore-advisory.schema.json` | `qa/changes/<id>/explore/advisory.json` | Explore advisory 产物的 JSON Schema 参考 |
 | `schemas/explore-context.schema.json` | `qa/changes/<id>/explore/context.json` | 聚合 explore context 产物的 JSON Schema 参考 |
 
@@ -21,7 +21,20 @@ JSON Schema 文件是给非 Python 消费者的参考。运行期产物校验由
 2. 项目 `schemas/workflow-schema.yaml`；
 3. 包内默认 `schemas/workflow-schema.yaml`。
 
-显式 `--schema` 覆盖是**排他**的：路径缺失即报错，不回退到隐式候选。
+显式 `--schema` 覆盖是**排他**的：路径缺失即报错，不回退到隐式候选。CLI `--schema` / `--contracts` 必须解析到项目 `.aa/` 或 `schemas/` 下的文件。
+
+只编译、不驱动 change：`aa workflow compile [--schema <path>] [--contracts <path>] [--json]`，打印 origin / name / digest / entrypoints（或编译错误）。`aa init --with-schema` 可写入一份最小可编译的 `.aa/workflow-schema.yaml`（`--yes` 单独不会写 schema）。
+
+## Execution contracts 解析顺序
+
+与 schema 同序：
+
+1. 显式 `--contracts`（排他：缺失即报错）；
+2. 项目 `.aa/execution-contracts.yaml`；
+3. 项目 `schemas/execution-contracts.yaml`；
+4. 包内默认 `schemas/execution-contracts.yaml`。
+
+自定义 `uses:` target 需要对应合同条目；可用 `--contracts` 指向 `.aa/` 或 `schemas/` 下的合同文件，不必改包内目录。
 
 ## Workflow schema v2 编排词汇
 
@@ -58,6 +71,7 @@ JSON Schema 文件是给非 Python 消费者的参考。运行期产物校验由
 **执行体目录与自定义**——`schemas/execution-contracts.yaml` 是全部 `skill:*` / `operation:*` / `builtin:*` target 的唯一目录：每条声明 handler、资源 claim、写授权（`authorization_writes`）与可重试错误；未登记的 target 编译期报错，写范围不可推导的保守为 `global:exclusive`。自定义路径：
 
 - **换图/改图（零引擎代码）**：项目放 `.aa/workflow-schema.yaml`（或 `schemas/workflow-schema.yaml`）即可整体替换拓扑；运行中改图会产生新 digest，旧 invocation 拒绝普通 resume（fail closed）。
+- **换执行合同**：项目放 `.aa/execution-contracts.yaml`（或 `schemas/execution-contracts.yaml`）整体替换打包合同；CLI `--contracts` 与 `--schema` 同序、同目录限制。
 - **新增 skill 节点（零引擎代码）**：skill 文件 + contracts 加条目，node 声明 `uses: skill:<name>` 与 `agent:`。
 - **新增 operation（需改引擎，三步）**：`workflow/graph/handlers/operation.py` 的 `default_operations()` 注册 callable → contracts 加条目 → schema 中 `uses: operation:<name>`。operation 的参数经 node `with:` 传入，由函数自行校验。
 
@@ -70,11 +84,11 @@ JSON Schema 文件是给非 Python 消费者的参考。运行期产物校验由
 `aa validate` 不调用 LLM，确定性校验结构化 change 产物：
 
 ```text
-aa validate --change <id> [--phase <phase>] [--artifact <relpath>] [--json]
+aa validate --change <id> [--phase <phase>] [--artifact <relpath>] [--schema <path>] [--contracts <path>] [--json]
 ```
 
 - 默认校验 `qa/changes/<id>/` 下每个被识别的产物，用 `assurance_agent/artifacts/registry.py` 的路径注册表匹配。
-- `--phase <phase>` 限定到该阶段 `produces` 声明的产物。
+- `--phase <phase>` 限定到该节点 `outputs` 声明的产物；schema 与 `aa workflow run` 同一套加载器（项目覆盖或 `--schema`），不是打包图的硬编码节点列表。
 - `--artifact <relpath>` 校验单个 change 相对文件。
 - `--json` 输出机器可读的 `{ ok, results }`；每个 result 为 `{ path, artifact_type, ok, errors[] }`。
 

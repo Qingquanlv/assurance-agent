@@ -71,3 +71,27 @@ def test_v6_started_accepts_complete_six_field_binding() -> None:
     assert event.event_schema_version == 6
     assert event.gate_semantics_object_id == v6_semantic_bindings()["gate_semantics_object_id"]
     assert event.commit_safety_semantics_digest == v6_semantic_bindings()["commit_safety_semantics_digest"]
+
+
+def test_started_defaults_capability_catalog_digest_empty() -> None:
+    event = _v6_started()
+    assert event.capability_catalog_digest == ""
+    assert event.event_schema_version == 6
+
+
+def test_started_accepts_legacy_payload_without_capability_catalog_digest() -> None:
+    payload = _v6_started().model_dump()
+    payload.pop("capability_catalog_digest", None)
+    event = GraphInvocationStartedEvent.model_validate(payload)
+    assert event.capability_catalog_digest == ""
+
+
+def test_v6_started_does_not_require_capability_catalog_digest() -> None:
+    event = _v6_started(capability_catalog_digest="")
+    assert event.capability_catalog_digest == ""
+
+
+def test_started_defaults_product_id_empty() -> None:
+    event = _v6_started()
+    assert event.product_id == ""
+    assert event.event_schema_version == 6

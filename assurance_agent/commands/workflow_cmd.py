@@ -1,4 +1,4 @@
-"""`aa workflow run|resume|import-checkpoint|start|supersede` — GraphRuntime CLI."""
+"""`aa workflow run|resume|import-checkpoint|start|supersede|compile` — GraphRuntime CLI."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import click
 import yaml
 
 from assurance_agent.change_location import ChangeNotFoundError, resolve_change
+from assurance_agent.commands.overlay_cli import overlay_options, resolve_cli_overlays
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError
 from assurance_agent.retro.supervisor import RetroInvocation, run_retro_supervised
@@ -34,6 +35,9 @@ from assurance_agent.workflow.driver.loop import (
     run_workflow_loop,
 )
 from assurance_agent.workflow.driver.runtime_factory import build_graph_runtime, runtime_context_for
+from assurance_agent.workflow.graph.compiler import compile_loaded_workflow
+from assurance_agent.workflow.graph.contracts import load_execution_contracts
+from assurance_agent.workflow.graph.schema_v2 import load_workflow_v2_with_origin
 from assurance_agent.workflow.driver.workflow_start import start_workflow_detached
 from assurance_agent.workflow.graph.checkpoint import CheckpointImportError, parse_import_manifest
 from assurance_agent.workflow.graph.models import ResumeCommand
@@ -157,25 +161,15 @@ def _default_who(explicit: str | None) -> str:
 
 
 _ADAPTER_CHOICE = click.Choice(["opencode", "headless"])
-_ENTRYPOINT_CHOICE = click.Choice(
-    [
-        "full",
-        "intake",
-        "execute",
-        "case",
-        "archive",
-        "retro",
-        "issue-review",
-        "issue-analyze",
-        "issue-reconcile",
-        "improvement-review",
-        "improvement-evaluate",
-        "improvement-export",
-        "improvement-apply",
-        "improvement-rollback",
-        "metrics-nightly",
-    ]
-)
+
+
+def _require_entrypoint(project_root: Path, entrypoint: str, explicit_schema: Path | None) -> None:
+    loaded = load_workflow_v2_with_origin(project_root, explicit_schema)
+    if entrypoint in loaded.schema.entrypoints:
+        return
+    available = ", ".join(sorted(loaded.schema.entrypoints))
+    click.secho(f"unknown entrypoint {entrypoint!r}; available: {available}", fg="red")
+    raise SystemExit(EXIT_ERROR)
 
 
 def _run_or_detach(
@@ -192,8 +186,16 @@ def _run_or_detach(
     detach: bool,
     adopt_lock: str | None,
     result_json: Path | None = None,
+    explicit_schema: Path | None = None,
+    explicit_contracts: Path | None = None,
 ) -> None:
     project_root = Path.cwd()
+    schema_path, contracts_path = resolve_cli_overlays(project_root, explicit_schema, explicit_contracts)
+    try:
+        _require_entrypoint(project_root, entrypoint, schema_path)
+    except AaError as err:
+        click.secho(str(err), fg="red")
+        raise SystemExit(EXIT_ERROR) from err
     parsed_params = _parse_params(params)
     if detach:
         if adopt_lock:
@@ -209,6 +211,8 @@ def _run_or_detach(
             parent_session=parent_session,
             server=server,
             directory=directory,
+            explicit_schema=schema_path,
+            explicit_contracts=contracts_path,
         )
         if not started.ok:
             click.secho(started.message, fg="red")
@@ -229,6 +233,8 @@ def _run_or_detach(
                 entrypoint="retro",
                 adapter=adapter,
                 params=dict(invocation.params),
+                explicit_schema=schema_path,
+                explicit_contracts=contracts_path,
                 parent_session_id=parent_session,
                 adopt_lock_token=adopt_lock,
                 adapter_name=adapter_name,
@@ -268,6 +274,8 @@ def _run_or_detach(
         entrypoint=entrypoint,
         adapter=adapter,
         params=parsed_params,
+        explicit_schema=schema_path,
+        explicit_contracts=contracts_path,
         parent_session_id=parent_session,
         adopt_lock_token=adopt_lock,
         adapter_name=adapter_name,
@@ -294,7 +302,13 @@ def _run_or_detach(
 
 @workflow_group.command("run")
 @click.option("--change", "change_id", required=True, help="Change ID under qa/changes/.")
-@click.option("--entrypoint", type=_ENTRYPOINT_CHOICE, default="execute", show_default=True)
+@click.option(
+    "--entrypoint",
+    default="execute",
+    show_default=True,
+    help="Graph entrypoint from the loaded workflow schema.",
+)
+@overlay_options
 @click.option("--adapter", "adapter_name", type=_ADAPTER_CHOICE, default="headless", show_default=True)
 @click.option("--params", default=None, help="Runtime params JSON override.")
 @click.option("--server", default=None, help="OpenCode server URL (opencode adapter).")
@@ -333,6 +347,8 @@ def workflow_run(
     detach: bool,
     adopt_lock: str | None,
     result_json: Path | None,
+    explicit_schema: Path | None,
+    explicit_contracts: Path | None,
 ) -> None:
     """Run a new graph invocation, or plain-resume the latest root if one exists."""
     _run_or_detach(
@@ -348,12 +364,20 @@ def workflow_run(
         detach=detach,
         adopt_lock=adopt_lock,
         result_json=result_json,
+        explicit_schema=explicit_schema,
+        explicit_contracts=explicit_contracts,
     )
 
 
 @workflow_group.command("start")
 @click.option("--change", "change_id", required=True, help="Change ID under qa/changes/.")
-@click.option("--entrypoint", type=_ENTRYPOINT_CHOICE, default="execute", show_default=True)
+@click.option(
+    "--entrypoint",
+    default="execute",
+    show_default=True,
+    help="Graph entrypoint from the loaded workflow schema.",
+)
+@overlay_options
 @click.option("--adapter", "adapter_name", type=_ADAPTER_CHOICE, default="headless", show_default=True)
 @click.option("--params", default=None, help="Runtime params JSON override.")
 @click.option("--server", default=None, help="OpenCode server URL (opencode adapter).")
@@ -375,6 +399,8 @@ def workflow_start(
     model: str | None,
     parent_session: str | None,
     agent_cmd: str,
+    explicit_schema: Path | None,
+    explicit_contracts: Path | None,
 ) -> None:
     """Detached alias for ``aa workflow run --detach``."""
     _run_or_detach(
@@ -389,6 +415,8 @@ def workflow_start(
         agent_cmd=agent_cmd,
         detach=True,
         adopt_lock=None,
+        explicit_schema=explicit_schema,
+        explicit_contracts=explicit_contracts,
     )
 
 
@@ -409,6 +437,7 @@ def workflow_start(
 )
 @click.option("--parent-session", "parent_session", default=None, help="Parent session id.")
 @click.option("--agent-cmd", "agent_cmd", default="cursor-agent --print", show_default=True)
+@overlay_options
 @click.option(
     "--invocation",
     "invocation_id",
@@ -419,7 +448,6 @@ def workflow_start(
     "--entrypoint",
     "expected_entrypoint",
     default=None,
-    type=_ENTRYPOINT_CHOICE,
     help="Expected entrypoint for --invocation validation.",
 )
 def workflow_resume(
@@ -435,6 +463,8 @@ def workflow_resume(
     model: str | None,
     parent_session: str | None,
     agent_cmd: str,
+    explicit_schema: Path | None,
+    explicit_contracts: Path | None,
     invocation_id: str | None,
     expected_entrypoint: str | None,
 ) -> None:
@@ -467,6 +497,7 @@ def workflow_resume(
         command = None
 
     project_root = Path.cwd()
+    schema_path, contracts_path = resolve_cli_overlays(project_root, explicit_schema, explicit_contracts)
     try:
         change_dir = resolve_change(project_root, change_id).path
     except (UnsafeIdentifierError, ChangeNotFoundError) as err:
@@ -484,6 +515,8 @@ def workflow_resume(
             project_root=project_root,
             change_id=change_id,
             adapter=adapter,
+            explicit_schema=schema_path,
+            explicit_contracts=contracts_path,
             adapter_name=adapter_name,
             cli_model_override=model,
         )
@@ -557,10 +590,10 @@ def workflow_resume(
 )
 @click.option("--parent-session", "parent_session", default=None, help="Parent session id.")
 @click.option("--agent-cmd", "agent_cmd", default="cursor-agent --print", show_default=True)
+@overlay_options
 @click.option(
     "--entrypoint",
     "expected_entrypoint",
-    type=_ENTRYPOINT_CHOICE,
     default=None,
     help="Optional entrypoint check; must match the root when provided.",
 )
@@ -577,6 +610,8 @@ def workflow_supersede(
     model: str | None,
     parent_session: str | None,
     agent_cmd: str,
+    explicit_schema: Path | None,
+    explicit_contracts: Path | None,
     expected_entrypoint: str | None,
 ) -> None:
     """Audited exit for a legacy root blocked on unbound commit-safety semantics."""
@@ -588,6 +623,7 @@ def workflow_supersede(
         raise SystemExit(EXIT_ERROR)
 
     project_root = Path.cwd()
+    schema_path, contracts_path = resolve_cli_overlays(project_root, explicit_schema, explicit_contracts)
     try:
         change_dir = resolve_change(project_root, change_id).path
     except (UnsafeIdentifierError, ChangeNotFoundError) as err:
@@ -606,6 +642,8 @@ def workflow_supersede(
             project_root=project_root,
             change_id=change_id,
             adapter=adapter,
+            explicit_schema=schema_path,
+            explicit_contracts=contracts_path,
         )
         projection = bundle.runtime._checkpoints.project(invocation_id)  # noqa: SLF001
         entrypoint = expected_entrypoint or projection.entrypoint
@@ -691,6 +729,7 @@ def workflow_supersede(
 )
 @click.option("--parent-session", "parent_session", default=None, help="Parent session id.")
 @click.option("--agent-cmd", "agent_cmd", default="cursor-agent --print", show_default=True)
+@overlay_options
 def workflow_import_checkpoint(
     change_id: str,
     manifest_path: Path,
@@ -701,9 +740,12 @@ def workflow_import_checkpoint(
     model: str | None,
     parent_session: str | None,
     agent_cmd: str,
+    explicit_schema: Path | None,
+    explicit_contracts: Path | None,
 ) -> None:
     """Import an explicit checkpoint manifest, then continue from the ledger."""
     project_root = Path.cwd()
+    schema_path, contracts_path = resolve_cli_overlays(project_root, explicit_schema, explicit_contracts)
     parsed_params = _parse_params(params)
     path = manifest_path if manifest_path.is_absolute() else project_root / manifest_path
     if not path.is_file():
@@ -721,6 +763,8 @@ def workflow_import_checkpoint(
             project_root=project_root,
             change_id=change_id,
             adapter=adapter,
+            explicit_schema=schema_path,
+            explicit_contracts=contracts_path,
             adapter_name=adapter_name,
             cli_model_override=model,
         )
@@ -736,3 +780,42 @@ def workflow_import_checkpoint(
         fg="green",
     )
     raise SystemExit(EXIT_COMPLETED)
+
+
+@workflow_group.command("compile")
+@overlay_options
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable compile report.")
+def workflow_compile(
+    explicit_schema: Path | None,
+    explicit_contracts: Path | None,
+    as_json: bool,
+) -> None:
+    """Load and compile the workflow schema without driving a change."""
+    project_root = Path.cwd()
+    schema_path, contracts_path = resolve_cli_overlays(project_root, explicit_schema, explicit_contracts)
+    try:
+        loaded = load_workflow_v2_with_origin(project_root, schema_path)
+        contracts = load_execution_contracts(project_root, contracts_path)
+        compiled = compile_loaded_workflow(loaded, contracts)
+    except AaError as err:
+        if as_json:
+            click.echo(json.dumps({"ok": False, "error": str(err)}, sort_keys=True))
+        else:
+            click.secho(str(err), fg="red")
+        raise SystemExit(EXIT_ERROR) from err
+    payload = {
+        "ok": True,
+        "origin": loaded.origin,
+        "name": loaded.schema.name,
+        "digest": compiled.digest,
+        "entrypoints": sorted(compiled.entrypoints),
+    }
+    if as_json:
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    click.echo(f"origin: {loaded.origin}")
+    click.echo(f"name: {loaded.schema.name}")
+    click.echo(f"digest: {compiled.digest}")
+    click.echo("entrypoints:")
+    for name in payload["entrypoints"]:
+        click.echo(f"  - {name}")

@@ -488,6 +488,10 @@ def _collect_complete_traceability(
 
 
 def collect_v3_report(inputs: TraceCollectionInputs) -> SpecialtyReportV3:
+    from assurance_agent.product import select_product
+    from assurance_agent.workflow.graph.capability_state import DEFAULT_PRODUCT_ID
+
+    select_product(DEFAULT_PRODUCT_ID)
     capability = collect_capability_policy_replay(
         change_dir=inputs.change_dir,
         change_id=inputs.change_id,

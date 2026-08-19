@@ -238,6 +238,34 @@ def test_project_local_registry_overrides_packaged(tmp_path: Path) -> None:
     assert "operation:no-op" not in catalog.contracts  # 项目本地整体取代打包默认
 
 
+def test_schemas_directory_registry_overrides_packaged_when_aa_absent(tmp_path: Path) -> None:
+    local = tmp_path / "schemas" / "execution-contracts.yaml"
+    local.parent.mkdir(parents=True)
+    local.write_text(
+        'schema_version: "1"\ncontracts:\n  operation:from-schemas:\n    handler: operation\n    side_effect_free: true\n',
+        encoding="utf-8",
+    )
+    catalog = load_execution_contracts(tmp_path)
+    assert "operation:from-schemas" in catalog.contracts
+    assert "operation:no-op" not in catalog.contracts
+
+
+def test_aa_registry_wins_over_schemas_directory(tmp_path: Path) -> None:
+    (tmp_path / ".aa").mkdir()
+    (tmp_path / "schemas").mkdir()
+    (tmp_path / ".aa" / "execution-contracts.yaml").write_text(
+        'schema_version: "1"\ncontracts:\n  operation:from-aa:\n    handler: operation\n    side_effect_free: true\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "schemas" / "execution-contracts.yaml").write_text(
+        'schema_version: "1"\ncontracts:\n  operation:from-schemas:\n    handler: operation\n    side_effect_free: true\n',
+        encoding="utf-8",
+    )
+    catalog = load_execution_contracts(tmp_path)
+    assert "operation:from-aa" in catalog.contracts
+    assert "operation:from-schemas" not in catalog.contracts
+
+
 def test_explicit_registry_path(tmp_path: Path) -> None:
     explicit = tmp_path / "custom" / "contracts.yaml"
     explicit.parent.mkdir(parents=True)

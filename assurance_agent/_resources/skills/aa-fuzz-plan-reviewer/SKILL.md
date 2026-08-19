@@ -53,3 +53,13 @@ complete Case ID. Return a non-pass review when a symbol is shortened or cannot
 be mapped back to its Case ID. Emit PlanReview fields consumed by the graph gate.
 For an approved, codegen-ready plan, emit the exact JSON value
 `"decision": "pass"`; never emit the legacy compatibility value `"approved"`.
+
+Required capability closure:
+
+- Copy every `required_capabilities` key verbatim from a typed leaf that exists
+  in `repo:.aa/data-knowledge.yaml`; a valid-looking prefix is not evidence.
+- Never invent constraint suffixes such as `entities.<name>.constraints.*`. If
+  a needed leaf is absent, use `needs_human_review` with `not_ready` instead of
+  `pass` with a virtual key.
+- Emit `pass` with `ready` / `ready_with_warnings` only when every required key
+  resolves exactly in L1.

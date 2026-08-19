@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from click.testing import CliRunner
 
 import assurance_agent.commands.workflow_cmd as wf
@@ -14,6 +16,30 @@ from assurance_agent.workflow.driver.loop import (
     LoopResult,
 )
 from assurance_agent.workflow.driver.workflow_start import StartResult
+
+_MINIMAL_SCHEMA = """\
+name: project-custom
+entrypoints:
+  my-pipeline: {graph: main, restart: repeatable}
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 10}
+  scheduler: {max_parallel_tasks: 1}
+graphs:
+  main:
+    max_supersteps: 4
+    nodes:
+      noop:
+        uses: operation:no-op
+        retry: never
+        timeout: local
+    edges:
+      - {from: START, to: noop}
+      - {from: noop, to: END}
+gates: {}
+"""
 
 
 def _patch_loop(monkeypatch, result: LoopResult) -> None:
@@ -144,3 +170,111 @@ def test_workflow_run_detach_conflicts_with_adopt_lock() -> None:
         )
         assert result.exit_code != EXIT_COMPLETED
         assert "cannot be combined" in result.output
+
+
+def test_workflow_run_accepts_custom_entrypoint_from_project_schema(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_loop(**kwargs):
+        captured.update(kwargs)
+        return LoopResult(EXIT_COMPLETED, "done")
+
+    monkeypatch.setattr(wf, "run_workflow_loop", fake_loop)
+    with CliRunner().isolated_filesystem():
+        Path(".aa").mkdir()
+        Path(".aa/workflow-schema.yaml").write_text(_MINIMAL_SCHEMA, encoding="utf-8")
+        result = CliRunner().invoke(
+            main,
+            [
+                "workflow",
+                "run",
+                "--change",
+                "CH-1",
+                "--entrypoint",
+                "my-pipeline",
+                "--adapter",
+                "headless",
+            ],
+        )
+        assert result.exit_code == EXIT_COMPLETED, result.output
+        assert captured["entrypoint"] == "my-pipeline"
+
+
+def test_workflow_run_rejects_unknown_entrypoint_listing_loaded_names() -> None:
+    with CliRunner().isolated_filesystem():
+        Path(".aa").mkdir()
+        Path(".aa/workflow-schema.yaml").write_text(_MINIMAL_SCHEMA, encoding="utf-8")
+        result = CliRunner().invoke(
+            main,
+            [
+                "workflow",
+                "run",
+                "--change",
+                "CH-1",
+                "--entrypoint",
+                "full",
+                "--adapter",
+                "headless",
+            ],
+        )
+        assert result.exit_code == EXIT_ERROR
+        assert "unknown entrypoint 'full'" in result.output
+        assert "my-pipeline" in result.output
+
+
+def test_workflow_run_forwards_explicit_schema_and_contracts(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_loop(**kwargs):
+        captured.update(kwargs)
+        return LoopResult(EXIT_COMPLETED, "done")
+
+    monkeypatch.setattr(wf, "run_workflow_loop", fake_loop)
+    with CliRunner().isolated_filesystem():
+        Path(".aa").mkdir()
+        Path(".aa/workflow-schema.yaml").write_text(_MINIMAL_SCHEMA, encoding="utf-8")
+        Path(".aa/execution-contracts.yaml").write_text(
+            "schema_version: '1'\ncontracts: {}\n", encoding="utf-8"
+        )
+        result = CliRunner().invoke(
+            main,
+            [
+                "workflow",
+                "run",
+                "--change",
+                "CH-1",
+                "--entrypoint",
+                "my-pipeline",
+                "--adapter",
+                "headless",
+                "--schema",
+                ".aa/workflow-schema.yaml",
+                "--contracts",
+                ".aa/execution-contracts.yaml",
+            ],
+        )
+        assert result.exit_code == EXIT_COMPLETED, result.output
+        assert captured["explicit_schema"] is not None
+        assert captured["explicit_schema"].name == "workflow-schema.yaml"
+        assert captured["explicit_contracts"] is not None
+        assert captured["explicit_contracts"].name == "execution-contracts.yaml"
+
+
+def test_workflow_run_missing_schema_fails_closed() -> None:
+    with CliRunner().isolated_filesystem():
+        Path(".aa").mkdir()
+        result = CliRunner().invoke(
+            main,
+            [
+                "workflow",
+                "run",
+                "--change",
+                "CH-1",
+                "--adapter",
+                "headless",
+                "--schema",
+                ".aa/missing.yaml",
+            ],
+        )
+        assert result.exit_code == EXIT_ERROR
+        assert "not found" in result.output

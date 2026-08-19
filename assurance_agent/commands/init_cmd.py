@@ -41,6 +41,11 @@ def _register_opencode(root: Path) -> None:
 @click.option("--frontend", default=None, help="Frontend source path (default ./frontend).")
 @click.option("--backend", default=None, help="Backend source path (default ./backend).")
 @click.option("--enable-mcp", is_flag=True, default=None)
+@click.option(
+    "--with-schema",
+    is_flag=True,
+    help="Write a minimal custom .aa/workflow-schema.yaml (not written by --yes alone).",
+)
 def init_command(
     repair: bool,
     yes: bool,
@@ -49,6 +54,7 @@ def init_command(
     frontend: str | None,
     backend: str | None,
     enable_mcp: bool | None,
+    with_schema: bool,
 ) -> None:
     """Initialize an assurance-agent QA project in the current directory."""
     root = Path.cwd()
@@ -62,7 +68,7 @@ def init_command(
         # click.Choice already restricts these to the literal values at runtime.
         api_choice = cast("ApiFramework | None", api_framework)
         e2e_choice = cast("E2eFramework | None", e2e_framework)
-        answers = _collect_answers(yes, api_choice, e2e_choice, frontend, backend, enable_mcp)
+        answers = _collect_answers(yes, api_choice, e2e_choice, frontend, backend, enable_mcp, with_schema)
         if answers is None:
             click.echo("Init cancelled.")
             return
@@ -85,6 +91,7 @@ def _collect_answers(
     frontend: str | None,
     backend: str | None,
     enable_mcp: bool | None,
+    with_schema: bool,
 ) -> InitAnswers | None:
     if yes:
         return InitAnswers(
@@ -93,6 +100,7 @@ def _collect_answers(
             enable_mcp=bool(enable_mcp),
             frontend_path=frontend,
             backend_path=backend,
+            with_schema=with_schema,
         )
 
     api = api_framework or cast(
@@ -104,6 +112,10 @@ def _collect_answers(
         click.prompt("E2E test framework", type=click.Choice(["playwright", "none"]), default="playwright"),
     )
     mcp = enable_mcp if enable_mcp is not None else click.confirm("Enable MCP config?", default=False)
+    write_schema = with_schema or click.confirm(
+        "Write a minimal custom workflow schema to .aa/workflow-schema.yaml?",
+        default=False,
+    )
     if not click.confirm("Confirm and write files?", default=True):
         return None
     return InitAnswers(
@@ -112,4 +124,5 @@ def _collect_answers(
         enable_mcp=mcp,
         frontend_path=frontend,
         backend_path=backend,
+        with_schema=write_schema,
     )

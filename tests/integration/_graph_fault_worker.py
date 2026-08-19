@@ -873,6 +873,7 @@ def _build_v5_revision(project: Path):
         change_dir=change,
         compiled=compiled,
         contracts=contracts,
+        operations=ops,
         build_node_runner=build_node_runner,
         clock=FakeClock(),
     )
@@ -965,6 +966,7 @@ def _build(project: Path, schema_key: str):
         change_dir=change,
         compiled=compiled,
         contracts=contracts,
+        operations=ops,
         build_node_runner=build_node_runner,
         clock=FakeClock(),
     )
@@ -1068,6 +1070,10 @@ def assert_revision_resume_chain(root_id: str, *, expected_ordinals: tuple[int, 
 
 
 def main() -> int:
+    from assurance_agent.product import select_product
+    from assurance_agent.workflow.graph.capability_state import DEFAULT_PRODUCT_ID
+
+    select_product(DEFAULT_PRODUCT_ID)
     project = Path(os.environ["AA_FAULT_PROJECT"])
     point = os.environ.get("AA_FAULT_POINT", "")
     mode = os.environ.get("AA_FAULT_MODE", "run")

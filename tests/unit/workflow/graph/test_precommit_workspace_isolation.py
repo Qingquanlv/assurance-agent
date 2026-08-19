@@ -363,6 +363,145 @@ def test_source_verification_rejects_subgraph_project_root(tmp_path: Path) -> No
         )
 
 
+def test_source_verification_uses_host_root_not_workspace_forgeries(tmp_path: Path) -> None:
+    host = tmp_path / "sut"
+    host_change = host / "qa" / "changes" / "CH-1"
+    host_change.mkdir(parents=True)
+    (host / "app").mkdir()
+    (host / "app" / "api.py").write_text("def handler():\n    return 1\n", encoding="utf-8")
+    (host / ".aa").mkdir()
+    (host / ".aa" / "config.yaml").write_text(
+        yaml.safe_dump({"sources": {"frontend": "web", "backend": "app"}}),
+        encoding="utf-8",
+    )
+    task_ws = tmp_path / "task-ws"
+    (task_ws / "app").mkdir(parents=True)
+    (task_ws / "app" / "api.py").write_text("def forged():\n    return 0\n", encoding="utf-8")
+    (task_ws / "app" / "fake.py").write_text("def fake():\n    return 0\n", encoding="utf-8")
+    store = TreeStore(host_change)
+    proposal = (
+        "# Proposal\n\n"
+        "## Product Source Verification\n"
+        "- independently_read: true\n"
+        "- reviewed_source_files:\n"
+        "  - `app/api.py`\n"
+    ).encode("utf-8")
+    context, write_set = _bind(
+        store,
+        target="skill:aa-case-design",
+        outputs={"change:proposal.md": proposal},
+        snapshot_entries=[],
+    )
+    _receipt_id, receipt = _validate(
+        CROSS_ARTIFACT_INVARIANTS_V1,
+        store,
+        context,
+        write_set,
+        project_root=host,
+        host_change_dir=host_change,
+    )
+    assert receipt.validator_id == CROSS_ARTIFACT_INVARIANTS_V1
+
+    forged = (
+        "# Proposal\n\n"
+        "## Product Source Verification\n"
+        "- independently_read: true\n"
+        "- reviewed_source_files:\n"
+        "  - `app/fake.py`\n"
+    ).encode("utf-8")
+    forged_context, forged_write_set = _bind(
+        store,
+        target="skill:aa-case-design",
+        outputs={"change:proposal.md": forged},
+        snapshot_entries=[],
+    )
+    with pytest.raises(CandidateValidationError, match="reviewed_source_files"):
+        _validate(
+            CROSS_ARTIFACT_INVARIANTS_V1,
+            store,
+            forged_context,
+            forged_write_set,
+            project_root=host,
+            host_change_dir=host_change,
+        )
+
+
+def test_nested_runtime_context_source_verification_uses_host_not_workspace(
+    tmp_path: Path,
+) -> None:
+    """Nested subgraph remaps ``project_root``; live-read must still use the SUT."""
+    from assurance_agent.workflow.graph.attempt_engine import _precommit_project_root
+    from assurance_agent.workflow.graph.models import RuntimeContext
+
+    host = tmp_path / "sut"
+    host_change = host / "qa" / "changes" / "CH-1"
+    host_change.mkdir(parents=True)
+    (host / "app").mkdir()
+    (host / "app" / "api.py").write_text("def handler():\n    return 1\n", encoding="utf-8")
+    (host / ".aa").mkdir()
+    (host / ".aa" / "config.yaml").write_text(
+        yaml.safe_dump({"sources": {"frontend": "web", "backend": "app"}}),
+        encoding="utf-8",
+    )
+    task_ws = tmp_path / "task-ws"
+    (task_ws / "app").mkdir(parents=True)
+    (task_ws / "app" / "api.py").write_text("def forged():\n    return 0\n", encoding="utf-8")
+    (task_ws / "app" / "fake.py").write_text("def fake():\n    return 0\n", encoding="utf-8")
+    store = TreeStore(host_change)
+    proposal = (
+        "# Proposal\n\n"
+        "## Product Source Verification\n"
+        "- independently_read: true\n"
+        "- reviewed_source_files:\n"
+        "  - `app/api.py`\n"
+    ).encode("utf-8")
+    context, write_set = _bind(
+        store,
+        target="skill:aa-case-design",
+        outputs={"change:proposal.md": proposal},
+        snapshot_entries=[],
+    )
+    runtime = RuntimeContext(
+        project_root=task_ws,
+        repo_root=task_ws,
+        change_dir=host_change,
+        change_id="CH-1",
+        host_project_root=host,
+    )
+    _receipt_id, receipt = _validate(
+        CROSS_ARTIFACT_INVARIANTS_V1,
+        store,
+        context,
+        write_set,
+        project_root=_precommit_project_root(runtime),
+        host_change_dir=runtime.change_dir,
+    )
+    assert receipt.validator_id == CROSS_ARTIFACT_INVARIANTS_V1
+
+    forged = (
+        "# Proposal\n\n"
+        "## Product Source Verification\n"
+        "- independently_read: true\n"
+        "- reviewed_source_files:\n"
+        "  - `app/fake.py`\n"
+    ).encode("utf-8")
+    forged_context, forged_write_set = _bind(
+        store,
+        target="skill:aa-case-design",
+        outputs={"change:proposal.md": forged},
+        snapshot_entries=[],
+    )
+    with pytest.raises(CandidateValidationError, match="reviewed_source_files"):
+        _validate(
+            CROSS_ARTIFACT_INVARIANTS_V1,
+            store,
+            forged_context,
+            forged_write_set,
+            project_root=_precommit_project_root(runtime),
+            host_change_dir=runtime.change_dir,
+        )
+
+
 def test_issue_candidate_digest_mismatch_is_precommit_error(tmp_path: Path) -> None:
     change = tmp_path / "qa" / "changes" / "CH-1"
     change.mkdir(parents=True)

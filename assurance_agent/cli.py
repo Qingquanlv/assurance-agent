@@ -22,12 +22,30 @@ from assurance_agent.commands.improvement_cmd import improvement_group
 from assurance_agent.commands.retro_cmd import register_retro
 from assurance_agent.commands.trace_cmd import trace_command
 from assurance_agent.commands.verify_cmd import verify_command
+from assurance_agent.workflow.graph.capability_state import DEFAULT_PRODUCT_ID
 
 
 @click.group()
 @click.version_option(__version__, prog_name="aa")
-def main() -> None:
+@click.option(
+    "--product",
+    "product_id",
+    default=DEFAULT_PRODUCT_ID,
+    show_default=True,
+    help="Installed product id (entry point assurance_agent.products).",
+)
+@click.pass_context
+def main(ctx: click.Context, product_id: str) -> None:
     """aa - Assurance Agent deterministic QA workflow CLI."""
+    ctx.ensure_object(dict)
+    ctx.obj["product_id"] = product_id
+    from assurance_agent.product import ProductError, select_product
+
+    try:
+        select_product(product_id)
+    except ProductError as err:
+        click.secho(str(err), fg="red")
+        raise SystemExit(1) from err
 
 
 main.add_command(knowledge_group)

@@ -322,6 +322,7 @@ def _build_runtime(
         change_dir=change_dir,
         compiled=compiled,
         contracts=contracts,
+        operations=ops,
         build_node_runner=build,
         clock=clock,
     )
@@ -406,7 +407,7 @@ child_b:
   edges:
     - {from: START, to: work}
     - {from: work, to: END}
-"""
+    """
     project = _make_project(tmp_path)
     compiled, contracts = _compile(body)
     runtime = _build_runtime(project, compiled, contracts, ops=_ops())
@@ -1754,6 +1755,103 @@ def test_accept_risk_through_synchronized_four_level_nest_completes(tmp_path: Pa
 
     assert done.exit_code == 0, done.reason
     assert done.status.status == "completed"
+
+
+def test_resume_replays_nested_repo_delta_before_resolved_gate_tree(
+    tmp_path: Path,
+) -> None:
+    """Later metadata commits must not hide an earlier nested repository delta."""
+    body = """
+main:
+  max_supersteps: 6
+  nodes:
+    mid:
+      uses: graph:mid
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: mid}
+    - {from: mid, to: END}
+mid:
+  max_supersteps: 8
+  nodes:
+    child:
+      uses: graph:child
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: child}
+    - {from: child, to: END}
+child:
+  max_supersteps: 10
+  nodes:
+    repo-write:
+      uses: operation:write-marker
+      retry: never
+      timeout: local
+    review:
+      uses: operation:write-review
+      outputs: [change:review/case-review.json]
+      retry: never
+      timeout: local
+    ordinary-metadata:
+      uses: operation:write-child-a
+      outputs: [change:branch-a/out.txt]
+      retry: never
+      timeout: local
+    review-gate:
+      uses: builtin:gate
+      with: {gate: case-review-gate}
+      retry: never
+      timeout: local
+    human:
+      uses: builtin:interrupt
+      interrupt:
+        reason: needs a human
+        checkpoint: case-review-gate
+        bind: audited_gate_read
+        actions: [accept_risk, stop]
+      retry: never
+      timeout: local
+  edges:
+    - {from: START, to: repo-write}
+    - {from: repo-write, to: review}
+    - {from: review, to: ordinary-metadata}
+    - {from: ordinary-metadata, to: review-gate}
+  routes:
+    - from: review-gate
+      select: "node('review-gate').gate.verdict"
+      cases:
+        needs_human_review: human
+      default: STOP
+    - from: human
+      select: "resume.action"
+      cases:
+        accept_risk: END
+        stop: STOP
+      default: STOP
+"""
+    project = _make_project(tmp_path)
+    (project / "tests/api/marker.py").write_text("before synchronized repair\n", encoding="utf-8")
+    compiled, contracts = _compile(body)
+    runtime = _build_runtime(project, compiled, contracts, ops=_ops())
+
+    interrupted = runtime.run(compiled, "full", _context(project))
+    assert interrupted.exit_code == 30
+
+    interrupt = interrupted.status.pending_interrupts[0]
+    done = runtime.resume(
+        interrupted.invocation_id,
+        ResumeCommand(
+            interrupt_id=interrupt.interrupt_id,
+            action="accept_risk",
+            reason="accept nested repository repair",
+            who="reviewer",
+        ),
+    )
+
+    assert done.exit_code == 0, done.reason
+    assert (project / "tests/api/marker.py").read_text(encoding="utf-8") == "marker\n"
 
 
 def test_build_graph_interrupted_event_carries_revision_lineage_fields() -> None:

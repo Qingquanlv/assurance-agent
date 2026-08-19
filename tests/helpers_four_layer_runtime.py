@@ -247,7 +247,10 @@ class FourLayerDeterministicAdapter:
         payload = json.loads(bundle.review_bytes.decode("utf-8"))
         payload["change_id"] = change_id
         scripts = list(self.review_scripts.get(layer, ()))
-        script: ReviewScript = scripts[attempt - 1] if attempt <= len(scripts) else "pass"
+        if scripts:
+            script = scripts[attempt - 1] if attempt <= len(scripts) else scripts[-1]
+        else:
+            script = "pass"
         if script == "needs_fix_auto":
             payload["decision"] = "needs_fix"
             payload["auto_fix_allowed"] = True
@@ -270,9 +273,10 @@ class FourLayerDeterministicAdapter:
             payload["decision"] = "pass"
             # Must be a fully-qualified L1 leaf key (PlanReview validation) that is
             # absent from the seeded data-knowledge.yaml so the gate routes to
-            # knowledge_remediation rather than pass.
+            # knowledge_remediation rather than pass. Precommit rejects ready
+            # reviews that still name missing capabilities.
             payload["required_capabilities"] = ["capabilities.domain_factories.account.missing_fixture_only"]
-            payload["codegen_readiness"] = "ready"
+            payload["codegen_readiness"] = "not_ready"
         else:
             payload["decision"] = "pass"
             payload["auto_fix_allowed"] = False
@@ -964,6 +968,17 @@ def _behavior_source(layer: str, case_id: str, *, symbol: str | None = None) -> 
     if layer == "api":
         fn = symbol or "test_api_acc_001__create_account_success"
         return (
+            "import pytest\n\n"
+            "@pytest.fixture\n"
+            "def client():\n"
+            "    class _Resp:\n"
+            "        status_code = 201\n"
+            "        def json(self):\n"
+            "            return {'id': '1'}\n"
+            "    class _Client:\n"
+            "        def post(self, *args, **kwargs):\n"
+            "            return _Resp()\n"
+            "    return _Client()\n\n"
             f"def {fn}(client):\n"
             f"    response = client.post('/api/v1/api/create', json={{'name': '{case_id}'}})\n"
             f"    assert response.status_code == 201\n"
@@ -981,7 +996,14 @@ def _behavior_source(layer: str, case_id: str, *, symbol: str | None = None) -> 
     if layer == "fuzz":
         fn = symbol or "test_fuzz_001__account_create_schema"
         return (
+            "import pytest\n"
             "import schemathesis\n\n"
+            "@pytest.fixture\n"
+            "def case():\n"
+            "    class _Case:\n"
+            "        def call_and_validate(self):\n"
+            "            return None\n"
+            "    return _Case()\n\n"
             "schema = schemathesis.openapi.from_asgi('/openapi.json', app=None)\n\n"
             "@schema.parametrize()\n"
             f"def {fn}(case):\n"

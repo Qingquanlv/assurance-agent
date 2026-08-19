@@ -12,6 +12,7 @@ import pytest
 
 from assurance_agent.workflow.core.events import read_events_strict
 from assurance_agent.workflow.driver.operations_catalog import default_operations
+from assurance_agent.workflow.driver.capability_catalog import current_operations
 from assurance_agent.workflow.driver.runtime_factory import assemble_graph_runtime
 from assurance_agent.workflow.graph.leases import LeaseRegistry, SystemClock, new_lease
 from assurance_agent.workflow.graph.agent_api import AgentRequest, AgentResult
@@ -257,7 +258,20 @@ def _build_runtime(
     from assurance_agent.workflow.graph.definition_pinning import request_for_compiled
 
     change_dir = project / "qa" / "changes" / change_id
+    extra_ops = dict(current_operations())
     if node_runner is not None:
+        needed = {
+            node.uses
+            for graph in compiled.schema.graphs.values()
+            for node in graph.nodes.values()
+            if node.uses.startswith("operation:")
+        }
+
+        def _placeholder(task: ExecutableTask, workspace, context: RuntimeContext) -> TaskResult:
+            raise AssertionError(f"placeholder executed for {task.target}")
+
+        for name in needed:
+            extra_ops.setdefault(name, _placeholder)
         runtime = assemble_graph_runtime(
             project_root=project,
             change_dir=change_dir,
@@ -265,6 +279,7 @@ def _build_runtime(
             contracts=contracts,
             clock=clock,
             object_store=object_store,
+            operations=extra_ops,
             build_node_runner=lambda _store, _run_child: node_runner,
         )
     else:
@@ -1141,6 +1156,7 @@ def test_nested_drive_run_child_single_synchronized_capture(tmp_path: Path) -> N
         compiled=compiled,
         contracts=contracts,
         object_store=store,
+        operations=ops,
         build_node_runner=build_node_runner,
         clock=SystemClock(),
     )
@@ -1233,6 +1249,7 @@ def test_nested_synchronized_publication_survives_later_sibling_subgraph(
         compiled=compiled,
         contracts=contracts,
         object_store=store,
+        operations=ops,
         build_node_runner=build_node_runner,
         clock=SystemClock(),
     )

@@ -1,2 +1,5 @@
-class AaError(Exception):
-    """Base error for assurance-agent. CLI catches it and exits 1 with the message."""
+from assurance_kernel.exceptions import *  # noqa: F403
+from importlib import import_module
+import sys
+
+sys.modules[__name__] = import_module("assurance_kernel.exceptions")

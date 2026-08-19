@@ -61,3 +61,12 @@ Emit the PlanReview fields consumed by the graph gate.
 For an approved, codegen-ready plan, emit the exact JSON value
 `"decision": "pass"`. Never emit `"approved"`: that legacy value remains
 readable for historical artifacts but intentionally does not release the gate.
+
+Required capability closure:
+
+- Copy every `required_capabilities` key verbatim from a typed leaf that exists
+  in `repo:.aa/data-knowledge.yaml`; a valid-looking prefix is not evidence.
+- Never invent a constraint or adapter suffix. If a needed leaf is absent, use
+  `needs_human_review` with `not_ready` instead of `pass` with a virtual key.
+- Emit `pass` with `ready` / `ready_with_warnings` only when every required key
+  resolves exactly in L1.

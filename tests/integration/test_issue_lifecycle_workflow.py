@@ -581,6 +581,7 @@ def _build(
         change_dir=project / "qa" / "changes" / "CH-1",
         compiled=compiled,
         contracts=contracts,
+        operations=ops or {},
         build_node_runner=build_node_runner,
     )
 

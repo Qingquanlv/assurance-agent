@@ -402,9 +402,13 @@ def run_performance_target(
     raw_dir = batch_dir / _RAW
     log_path = raw_dir / "performance.log"
 
-    def skipped(reason: str) -> PerformanceResult:
+    def skipped(reason: str, *, preserve_existing_log: bool = False) -> PerformanceResult:
         raw_dir.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(reason, encoding="utf-8")
+        if preserve_existing_log and log_path.is_file():
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(f"\n{reason}\n")
+        else:
+            log_path.write_text(reason, encoding="utf-8")
         return PerformanceResult(
             change_id=change_id,
             batch_id=batch_id,
@@ -508,7 +512,8 @@ def run_performance_target(
 
     if not any_traffic:
         return skipped(
-            "Locust ran but recorded no successful traffic (environment likely unreachable) — SKIPPED."
+            "Locust ran but recorded no successful traffic (environment likely unreachable) — SKIPPED.",
+            preserve_existing_log=True,
         )
 
     verdicts = build_scenario_verdicts(scenarios, stats)

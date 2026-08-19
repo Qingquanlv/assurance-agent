@@ -719,7 +719,7 @@ def test_no_workflow_imports_under_evidence() -> None:
     import ast
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[4] / "assurance_agent" / "evidence"
+    root = Path(__file__).resolve().parents[4] / "packages/assurance-kernel/assurance_kernel/evidence"
     offenders: list[str] = []
     for path in root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -727,12 +727,17 @@ def test_no_workflow_imports_under_evidence() -> None:
             if (
                 isinstance(node, ast.ImportFrom)
                 and node.module
-                and node.module.startswith("assurance_agent.workflow")
+                and (
+                    node.module.startswith("assurance_agent.workflow")
+                    or node.module.startswith("assurance_kernel.workflow")
+                )
             ):
                 offenders.append(f"{path}:{node.lineno}")
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.startswith("assurance_agent.workflow"):
+                    if alias.name.startswith("assurance_agent.workflow") or alias.name.startswith(
+                        "assurance_kernel.workflow"
+                    ):
                         offenders.append(f"{path}:{node.lineno}")
     assert offenders == []
 

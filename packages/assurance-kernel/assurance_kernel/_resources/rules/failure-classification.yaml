@@ -16,6 +16,7 @@ patterns:
   business_logic: "400 bad request|401 unauthorized|403 forbidden|404 not found|422 unprocessable|500 internal server|business rule|validation error|permission denied|insufficient"
   server_error_5xx: "server error|5\\d\\d|internal server"
   test_code: "syntaxerror|typeerror|nameerror|importerror|attributeerror|referenceerror|cannot read properties|is not a function|is not defined|indentationerror"
+  fixture_not_found: "fixture.+not[ ]+found"
   case_semantic: "step not covered|missing step|precondition not met|out of scope|no acceptance criteria"
 
 pipelines:
@@ -38,6 +39,7 @@ pipelines:
   fuzz:
     fallback: fuzz_stateful_failure
     rules:
+      - {category: test_code_error, match: fixture_not_found}
       - {category: fuzz_configuration_error, match: fuzz_configuration}
       - {category: environment_failure, match: environment}
       - {category: fuzz_stateful_failure, match: fuzz_stateful}

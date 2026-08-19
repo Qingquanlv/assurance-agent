@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from assurance_agent.artifacts.canonical import canonical_json_bytes, sha256_bytes
 from assurance_agent.artifacts.models.retro_batch import RetroBatchScope, RetroPipelineFailure
+from assurance_agent.commands._product_guard import require_assurance_product
 from assurance_agent.exceptions import AaError
 from assurance_agent.identifiers import UnsafeIdentifierError, assert_path_segment_safe
 from assurance_agent.retro.supervisor import RetroInvocation, run_retro_supervised
@@ -332,6 +333,7 @@ def register_retro(main_group: click.Group) -> None:
         agent_cmd,
     ) -> None:  # noqa: ANN001
         """Trigger the canonical Retro graph or show one current run."""
+        require_assurance_product()
         if ctx.invoked_subcommand is not None:
             return
         _run_retro_graph(

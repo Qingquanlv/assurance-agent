@@ -436,7 +436,7 @@ def materialize_minimum_coverage_operation(
             f"mrc_category_unresolved: {keys}",
         )
 
-    knowledge = _load_data_knowledge(workspace.project_root)
+    knowledge = _load_data_knowledge(context.resolved_host_root)
     constraint_keys = constraint_known_keys(knowledge) if knowledge is not None else frozenset()
     auth_keys = auth_known_keys(knowledge) if knowledge is not None else frozenset()
     journey_keys = _journey_keys_from_advisory(advisory_mrc)

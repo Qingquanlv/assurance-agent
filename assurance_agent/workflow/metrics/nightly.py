@@ -315,7 +315,7 @@ def aggregate_nightly_metrics_operation(
     del task
     change_id = context.change_id or workspace.change_dir.name
     try:
-        policy = load_policy(workspace.project_root)
+        policy = load_policy(context.resolved_host_root)
         digest = compute_policy_digest(policy)
     except Exception as err:  # noqa: BLE001 — surface as invalid_input
         return task_failure("invalid_input", f"cannot load policy digest: {err}")
@@ -413,7 +413,7 @@ def evaluate_retrospective_shortboards_operation(
             document = MetricsDocument.model_validate(raw_doc)
             shortboards = [board.model_dump(mode="json") for board in document.shortboards]
             floor_ratio = document.floor_ratio
-            policy = load_policy(workspace.project_root)
+            policy = load_policy(context.resolved_host_root)
             decision = evaluate_metrics_sufficiency(document, policy.evidence_sufficiency)
             sufficiency_verdict = decision.verdict
             mutation_budget_seconds = decision.mutation_budget_seconds

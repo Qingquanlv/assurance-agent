@@ -52,7 +52,7 @@ from tests.helpers_graph_v6 import v6_semantic_bindings
 
 # Pinned after archive/problem-apply/cross-artifact reconcilers joined the
 # commit-safety semantics.
-_PINNED_COMMIT_SAFETY_DIGEST = "dd7f986b66574c023738596e8b62a254d0f279e534201abcdc80c0d540575f39"
+_PINNED_COMMIT_SAFETY_DIGEST = "e4bb80df23f24fd4dd46fcfc19d549d44419c729dc8790645da402468f6785c4"
 
 
 def _projection(

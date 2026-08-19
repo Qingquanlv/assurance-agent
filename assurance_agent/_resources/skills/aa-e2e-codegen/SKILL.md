@@ -47,6 +47,16 @@ Generate E2E tests under `tests/e2e/**`, shared builders under `tests/testdata/*
 
 Write only authorized test/testdata paths plus the summary and manifest. Do not modify product source. Do not run pytest.
 
+## Fixture Closure
+
+Before writing the manifest, resolve every mapped test parameter to a fixture
+defined or imported by the test module, an ancestor `conftest.py`, or the
+installed Playwright pytest plugin. Generate any missing project fixture under
+authorized `tests/e2e/**`, record changed fixture files as `support` with
+`case_ids: []`, and finish only when the unresolved fixture set is empty. The
+Graph precommit validator checks this candidate-tree contract without executing
+the fixtures.
+
 ## Generated-files Manifest Rules
 
 - Only `test_entry` entries may claim mapped Case IDs, and their `case_ids` must

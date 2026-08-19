@@ -5,6 +5,7 @@ import pytest
 from click.testing import CliRunner
 
 from assurance_agent.cli import main
+from assurance_agent.workflow.driver.loop import EXIT_ERROR
 from tests.helpers_aa import write_aa_config
 from tests.unit.artifacts.test_validate import (
     VALID_QUALITY_V1,
@@ -88,6 +89,32 @@ def test_validate_unknown_phase_exits_2() -> None:
         assert "unknown phase" in result.output
 
 
+_CUSTOM_PHASE_SCHEMA = """\
+name: project-custom
+entrypoints:
+  my-pipeline: {graph: main, restart: repeatable}
+policies:
+  retry:
+    never: {max_attempts: 1, retry_on: []}
+  timeout:
+    local: {run_seconds: 60, heartbeat_seconds: 10}
+  scheduler: {max_parallel_tasks: 1}
+graphs:
+  main:
+    max_supersteps: 4
+    nodes:
+      my-step:
+        uses: operation:no-op
+        retry: never
+        timeout: local
+        outputs: [change:review/case-review.json]
+    edges:
+      - {from: START, to: my-step}
+      - {from: my-step, to: END}
+gates: {}
+"""
+
+
 def test_validate_phase_filters_to_produced_artifacts() -> None:
     runner = CliRunner()
     with runner.isolated_filesystem():
@@ -120,6 +147,32 @@ approval:
         assert result.exit_code == 0, result.output
         doc = json.loads(result.output)
         assert [r["path"] for r in doc["results"]] == [".qa.yaml"]
+
+
+def test_validate_phase_uses_loaded_schema_outputs_not_packaged() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        change_dir = make_change()
+        Path(".aa/workflow-schema.yaml").write_text(_CUSTOM_PHASE_SCHEMA, encoding="utf-8")
+        (change_dir / "review/case-review.json").write_text(VALID_REVIEW, encoding="utf-8")
+        result = runner.invoke(main, ["validate", "--change", "CH-1", "--phase", "my-step", "--json"])
+        assert result.exit_code == 0, result.output
+        doc = json.loads(result.output)
+        assert [r["path"] for r in doc["results"]] == ["review/case-review.json"]
+
+        unknown = runner.invoke(main, ["validate", "--change", "CH-1", "--phase", "case-design"])
+        assert unknown.exit_code == 2
+        assert "unknown phase" in unknown.output
+
+
+def test_validate_explicit_schema_missing_exits_error() -> None:
+    runner = CliRunner()
+    with runner.isolated_filesystem():
+        make_change()
+        Path(".aa").mkdir(exist_ok=True)
+        result = runner.invoke(main, ["validate", "--change", "CH-1", "--schema", ".aa/missing.yaml"])
+        assert result.exit_code == EXIT_ERROR
+        assert "not found" in result.output
 
 
 def test_validate_single_artifact_missing_exits_1() -> None:

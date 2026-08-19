@@ -20,7 +20,12 @@ from assurance_agent.artifacts.models import (
     ImprovementAutoReviewAssessment,
     ImprovementAutoReviewAssessmentAuthoring,
 )
-from assurance_agent.artifacts.registry import REGISTRY, match_artifact
+from assurance_agent.artifacts.registry import (
+    REGISTRY,
+    install_artifact_table,
+    match_artifact,
+    reset_artifact_table,
+)
 
 
 def test_registry_covers_every_expected_artifact_type() -> None:
@@ -415,3 +420,19 @@ def test_issue_reconcile_status_registry_uses_document_wrapper() -> None:
     assert spec is not None
     assert spec.model is IssueReconcileStatusDocument
     assert spec.compat == "versioned"
+
+
+def test_empty_artifact_table_matches_nothing() -> None:
+    install_artifact_table(())
+    try:
+        assert match_artifact("review/api-plan-review.json") is None
+    finally:
+        reset_artifact_table()
+
+
+def test_reset_artifact_table_restores_default_match() -> None:
+    install_artifact_table(())
+    reset_artifact_table()
+    spec = match_artifact("review/api-plan-review.json")
+    assert spec is not None
+    assert spec.pattern in {item.pattern for item in REGISTRY}

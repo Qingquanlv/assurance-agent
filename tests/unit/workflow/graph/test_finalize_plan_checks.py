@@ -165,3 +165,79 @@ def test_reviewer_finalize_succeeds_when_check_fails_under_warn(
     assert doc["status"] == "fail"
     l1 = next(check for check in doc["checks"] if check["check_id"] == "l1_path")
     assert l1["status"] == "fail"
+
+
+def test_reviewer_plan_checks_read_l1_from_host_not_workspace(tmp_path: Path) -> None:
+    from assurance_agent.workflow.graph.reviewer_plan_checks import complete_reviewer_plan_checks
+
+    host = tmp_path / "sut"
+    host_change = host / "qa" / "changes" / "CH-1"
+    (host_change / "plans").mkdir(parents=True)
+    (host_change / "cases" / "system" / "dept").mkdir(parents=True)
+    (host_change / "review").mkdir(parents=True)
+    (host / ".aa").mkdir()
+    (host / ".aa" / "data-knowledge.yaml").write_text(yaml.safe_dump(_DK), encoding="utf-8")
+    (host_change / "cases" / "system" / "dept" / "case.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0",
+                "added": [
+                    {
+                        "case_id": "TC_DEPT_001",
+                        "title": "case",
+                        "status": "active",
+                        "priority": "P1",
+                        "severity": "major",
+                        "type": "API",
+                        "module": "dept",
+                        "automation": {"required": True},
+                    }
+                ],
+                "modified": [],
+                "removed": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    task_ws = tmp_path / "task-ws"
+    task_ws.mkdir()
+    (task_ws / ".aa").mkdir()
+    (task_ws / ".aa" / "data-knowledge.yaml").write_text(
+        yaml.safe_dump({"version": 1, "capabilities": {"domain_factories": {}}}),
+        encoding="utf-8",
+    )
+    for name in ("api-plan.md", "api-test-data-plan.md", "api-codegen-plan.md"):
+        (host_change / "plans" / name).write_text(
+            "Data knowledge: `.aa/data-knowledge.yaml`\n",
+            encoding="utf-8",
+        )
+    (host_change / "review" / "api-plan-review.json").write_text(json.dumps(_REVIEW), encoding="utf-8")
+    workspace = TaskWorkspace(
+        task_id="t1",
+        root=task_ws,
+        project_root=task_ws,
+        repo_root=task_ws,
+        change_dir=host_change,
+        base_tree_id="",
+    )
+    task = cast(
+        ExecutableTask,
+        SimpleNamespace(
+            graph_id="api-plan-cycle",
+            node_id="review",
+            target="skill:aa-api-plan-reviewer",
+            input={},
+            resources=ResourceClaims(),
+        ),
+    )
+    context = RuntimeContext(
+        project_root=task_ws,
+        repo_root=task_ws,
+        change_dir=host_change,
+        change_id="CH-1",
+        host_project_root=host,
+    )
+    complete_reviewer_plan_checks(task=task, workspace=workspace, context=context)
+    doc = json.loads((host_change / "review" / "api-plan-checks.json").read_text(encoding="utf-8"))
+    capability = next(check for check in doc["checks"] if check["check_id"] == "capability_keys")
+    assert capability["status"] == "pass"

@@ -63,6 +63,29 @@ def test_detached_spawn_writes_driver_and_lock(tmp_path: Path) -> None:
     assert "--scope" not in calls[0]["argv"]
 
 
+def test_detached_argv_forwards_schema_and_contracts(tmp_path: Path) -> None:
+    write_aa_config(tmp_path)
+    (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)
+    schema = tmp_path / ".aa" / "workflow-schema.yaml"
+    contracts = tmp_path / ".aa" / "execution-contracts.yaml"
+    schema.write_text("name: custom\n", encoding="utf-8")
+    contracts.write_text("schema_version: '1'\ncontracts: {}\n", encoding="utf-8")
+    calls: list = []
+    start_workflow_detached(
+        project_root=tmp_path,
+        change_id="CH-1",
+        entrypoint="execute",
+        adapter="headless",
+        explicit_schema=schema,
+        explicit_contracts=contracts,
+        spawn=_spy_spawn(calls),
+        aa_command=["aa"],
+    )
+    argv = calls[0]["argv"]
+    assert "--schema" in argv and str(schema) in argv
+    assert "--contracts" in argv and str(contracts) in argv
+
+
 def test_detached_argv_for_opencode(tmp_path: Path) -> None:
     write_aa_config(tmp_path)
     (tmp_path / "qa" / "changes" / "CH-1").mkdir(parents=True, exist_ok=True)

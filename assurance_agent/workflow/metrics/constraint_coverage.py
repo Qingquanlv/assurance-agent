@@ -203,7 +203,7 @@ def compute_constraint_coverage_operation(
     context: RuntimeContext,
 ) -> TaskResult:
     change_dir = workspace.change_dir
-    project_root = workspace.project_root
+    project_root = context.resolved_host_root
     try:
         batch_id = resolve_batch_id(
             change_dir,

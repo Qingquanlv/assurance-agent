@@ -541,8 +541,8 @@ def evaluate_memory_improvement_operation(
                 "evaluate-memory-improvement: reject non-memory_patch before target write",
             )
         # Never read eval_runner from params — not a declared schema param.
-        engine_root = context.project_root
-        sut_root = context.project_root
+        engine_root = context.resolved_host_root
+        sut_root = context.resolved_host_root
         eval_runner = build_eval_runner(engine_root, sut_root)
         delivery = MemoryPatchDelivery(
             workspace.project_root,

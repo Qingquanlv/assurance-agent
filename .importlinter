@@ -1,12 +1,16 @@
 [importlinter]
-root_package = assurance_agent
+root_packages =
+    assurance_agent
+    assurance_kernel
 
 [importlinter:contract:layers]
 name = commands depend on eval domain, never the reverse
 type = layers
 layers =
     assurance_agent.cli
-    assurance_agent.commands
+    # Installed-product selection lives with commands: workflow.driver must not
+    # import assurance_agent.product (CLI calls select_product; driver reads id).
+    assurance_agent.commands : assurance_agent.product
     assurance_agent.eval
     assurance_agent.risk
     assurance_agent.workflow
@@ -77,30 +81,49 @@ layers =
 # Graph delivery ops build a host Eval runner (callables cannot be CLI params).
 # That pulls eval → driver transitively; keep the seam explicit and fail-closed
 # for any new graph → driver edges.
-#
-# Remaining graph→domain seams are registered below as intentional, pending
-# digestion. New graph→domain edges must not be added without an explicit ignore.
 ignore_imports =
     assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.eval.host_runner
-    # Pending seams: graph kernel still reaches a few domain/evidence helpers.
-    assurance_agent.workflow.graph.invariants -> assurance_agent.workflow.healing.safety
-    assurance_agent.workflow.graph.invariants -> assurance_agent.workflow.issues.identity
-    assurance_agent.workflow.graph.handlers.trace_projection -> assurance_agent.workflow.execution.evidence
-    assurance_agent.workflow.graph.import_validation -> assurance_agent.workflow.execution.tree_hash
-    assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.issues.analyzer_output
-    assurance_agent.workflow.graph.handlers.agent -> assurance_agent.workflow.improvements.reviewer_output
-    assurance_agent.workflow.graph.runtime -> assurance_agent.workflow.execution.tree_hash
-    assurance_agent.workflow.graph.handlers.interrupt -> assurance_agent.workflow.execution.tree_hash
-    assurance_agent.workflow.graph.attempt_engine -> assurance_agent.workflow.healing.allocation
-    # V6 durable-effect / precommit / healing-projection seams from main.
-    assurance_agent.workflow.graph.durable_effects -> assurance_agent.workflow.healing.effects
-    assurance_agent.workflow.graph.runtime_commit_safety -> assurance_agent.workflow.healing.effects
-    assurance_agent.workflow.graph.precommit -> assurance_agent.workflow.healing.safety
-    assurance_agent.workflow.orchestration.healing_state -> assurance_agent.workflow.healing.projection
-    # Pre-existing reverse seams: orchestration (below domains) still imports
-    # healing/execution helpers. Keep explicit until those helpers move down.
-    assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.healing.safety
-    assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.healing.override_policy
-    assurance_agent.workflow.orchestration.audit_evidence -> assurance_agent.workflow.execution.tree_hash
-    assurance_agent.workflow.orchestration.gates -> assurance_agent.workflow.execution.tree_hash
-    assurance_agent.workflow.orchestration.operations -> assurance_agent.workflow.execution.tree_hash
+
+[importlinter:contract:kernel-not-assurance]
+name = kernel must not import assurance_agent
+type = forbidden
+source_modules =
+    assurance_kernel
+forbidden_modules =
+    assurance_agent
+
+[importlinter:contract:kernel-artifacts-below-workflow]
+name = kernel artifacts must not import workflow
+type = forbidden
+source_modules =
+    assurance_kernel.artifacts
+forbidden_modules =
+    assurance_kernel.workflow
+
+[importlinter:contract:kernel-core-below-orchestration]
+name = kernel workflow.core must not import workflow.orchestration
+type = forbidden
+source_modules =
+    assurance_kernel.workflow.core
+forbidden_modules =
+    assurance_kernel.workflow.orchestration
+
+[importlinter:contract:kernel-graph-runtime-layer]
+name = kernel driver / graph / orchestration / core layers
+type = layers
+layers =
+    assurance_kernel.workflow.driver
+    assurance_kernel.workflow.graph
+    assurance_kernel.workflow.orchestration
+    assurance_kernel.workflow.core
+
+[importlinter:contract:kernel-domain-layers]
+name = kernel workflow / verification / knowledge+evidence / artifacts / config / resources
+type = layers
+layers =
+    assurance_kernel.workflow
+    assurance_kernel.verification
+    assurance_kernel.knowledge : assurance_kernel.evidence
+    assurance_kernel.artifacts
+    assurance_kernel.config
+    assurance_kernel.resources

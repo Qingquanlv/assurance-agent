@@ -578,12 +578,14 @@ def test_ast_consumer_set_guards_for_snapshot_and_runtime_context_fields() -> No
     repo = Path(__file__).resolve().parents[4]
     inventory = {
         "input_snapshot_id": {
-            "assurance_agent/workflow/graph/attempt_engine.py": {
+            "packages/assurance-kernel/assurance_kernel/workflow/graph/attempt_engine.py": {
                 "_begin_attempt",
                 "_persist_success",
             },
-            "assurance_agent/workflow/graph/ledger_fold.py": {"fold_invocation_events"},
-            "assurance_agent/workflow/core/graph_events.py": {
+            "packages/assurance-kernel/assurance_kernel/workflow/graph/ledger_fold.py": {
+                "fold_invocation_events"
+            },
+            "packages/assurance-kernel/assurance_kernel/workflow/core/graph_events.py": {
                 "TaskAttemptStartedEvent",
                 "TaskAttemptSucceededEvent",
             },
@@ -594,20 +596,22 @@ def test_ast_consumer_set_guards_for_snapshot_and_runtime_context_fields() -> No
             },
         },
         "runtime_context_sha256": {
-            "assurance_agent/workflow/graph/attempt_engine.py": {
+            "packages/assurance-kernel/assurance_kernel/workflow/graph/attempt_engine.py": {
                 "_begin_attempt",
                 "_persist_success",
             },
-            "assurance_agent/workflow/graph/ledger_fold.py": {"fold_invocation_events"},
-            "assurance_agent/workflow/graph/agent_api.py": {
+            "packages/assurance-kernel/assurance_kernel/workflow/graph/ledger_fold.py": {
+                "fold_invocation_events"
+            },
+            "packages/assurance-kernel/assurance_kernel/workflow/graph/agent_api.py": {
                 "AgentRequest",
                 "build_node_prompt",
             },
-            "assurance_agent/workflow/graph/task_inputs.py": {
+            "packages/assurance-kernel/assurance_kernel/workflow/graph/task_inputs.py": {
                 "prepare_plan_fixer_runtime_context",
                 "resume_plan_fixer_runtime_context",
             },
-            "assurance_agent/workflow/core/graph_events.py": {
+            "packages/assurance-kernel/assurance_kernel/workflow/core/graph_events.py": {
                 "TaskAttemptStartedEvent",
                 "TaskAttemptSucceededEvent",
             },
@@ -642,9 +646,9 @@ def test_dormant_runtime_context_surface_has_zero_events_jsonl_references() -> N
     """Closed inventory for Task 4 dormant code only; skill SKILL.md flip waits for Task 15."""
     repo = Path(__file__).resolve().parents[4]
     closed_paths = (
-        "assurance_agent/workflow/graph/task_inputs.py",
-        "assurance_agent/workflow/graph/agent_api.py",
-        "assurance_agent/workflow/graph/handlers/agent.py",
+        "packages/assurance-kernel/assurance_kernel/workflow/graph/task_inputs.py",
+        "packages/assurance-kernel/assurance_kernel/workflow/graph/agent_api.py",
+        "packages/assurance-kernel/assurance_kernel/workflow/graph/handlers/agent.py",
     )
     needle = "events.jsonl"
     for rel in closed_paths:

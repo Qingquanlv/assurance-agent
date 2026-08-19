@@ -18,6 +18,7 @@ from assurance_agent.eval.paths import run_dir as run_dir_for
 from assurance_agent.eval.plan import generate_plan, load_suite, write_plan
 from assurance_agent.eval.report import generate_trend_report
 from assurance_agent.eval.runner import run_plan, run_suite
+from assurance_agent.commands._product_guard import require_assurance_product
 from assurance_agent.exceptions import AaError
 from assurance_agent.workflow.graph.agent_api import AgentInvoker
 
@@ -61,6 +62,7 @@ def _resolve_sut(project_root: Path, sut_dir: str | None) -> Path:
 @click.group("eval")
 def eval_group() -> None:
     """AI Eval Harness — evaluate AI tool quality."""
+    require_assurance_product()
 
 
 @eval_group.command("run")

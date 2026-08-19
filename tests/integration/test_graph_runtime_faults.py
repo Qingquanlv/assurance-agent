@@ -432,6 +432,7 @@ graphs:
         change_dir=change,
         compiled=compiled,
         contracts=contracts,
+        operations=ops,
         build_node_runner=build,
         clock=clock,
     )

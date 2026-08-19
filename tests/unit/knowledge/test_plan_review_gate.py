@@ -129,3 +129,29 @@ def test_plan_review_gate_passes_when_leaves_present(tmp_path: Path) -> None:
     report = check_gate_in_view(GATES, "api-plan-review-gate", ctx)
     assert report.verdict.value == "pass"
     assert report.details == {"missing_capabilities": []}
+
+
+def test_plan_review_gate_reads_host_l1_not_workspace_forgery(tmp_path: Path) -> None:
+    host = tmp_path / "sut"
+    workspace = tmp_path / "task-ws"
+    change = tmp_path / "qa" / "changes" / "CH-1"
+    change.mkdir(parents=True)
+    _write(change, "review/api-plan-review.json", json.dumps(_review()))
+    _write(host, ".aa/data-knowledge.yaml", _l1_yaml())
+    _write(
+        workspace,
+        ".aa/data-knowledge.yaml",
+        "version: 1\ncapabilities:\n  domain_factories: {}\n",
+    )
+    ctx = GateEvaluationContext(
+        project_root=workspace,
+        repo_root=workspace,
+        change_dir=change,
+        change_id="CH-1",
+        params={},
+        state_values={},
+        node_results={},
+        host_project_root=host,
+    )
+    report = check_gate_in_view(GATES, "api-plan-review-gate", ctx)
+    assert report.verdict.value == "pass"

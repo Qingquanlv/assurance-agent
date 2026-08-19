@@ -18,9 +18,30 @@ def test_generate_project_writes_config_and_scaffold(tmp_path: Path) -> None:
     assert policy["targets"] == ["api", "e2e"]
     assert (tmp_path / ".aa/module-map.yaml").is_file()
     assert (tmp_path / ".aa/data-knowledge.yaml").is_file()
+    assert not (tmp_path / ".aa/workflow-schema.yaml").exists()
     for rel in GITKEEP_DIRS:
         assert (tmp_path / rel / ".gitkeep").is_file(), rel
     assert result.skipped == []
+
+
+def test_generate_project_with_schema_writes_minimal_custom_schema(tmp_path: Path) -> None:
+    result = generate_project(tmp_path, InitAnswers(with_schema=True))
+
+    assert ".aa/workflow-schema.yaml" in result.created
+    schema = yaml.safe_load((tmp_path / ".aa/workflow-schema.yaml").read_text())
+    assert schema["name"] == "project-custom"
+    assert "my-pipeline" in schema["entrypoints"]
+
+
+def test_generate_project_with_schema_never_overwrites_existing(tmp_path: Path) -> None:
+    generate_project(tmp_path, InitAnswers(with_schema=True))
+    schema_path = tmp_path / ".aa/workflow-schema.yaml"
+    schema_path.write_text("name: keep-me\n", encoding="utf-8")
+
+    result = generate_project(tmp_path, InitAnswers(with_schema=True))
+
+    assert ".aa/workflow-schema.yaml" in result.skipped
+    assert schema_path.read_text(encoding="utf-8") == "name: keep-me\n"
 
 
 def test_generate_project_never_overwrites_data_knowledge(tmp_path: Path) -> None:

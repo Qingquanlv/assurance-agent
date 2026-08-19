@@ -11,7 +11,6 @@ from assurance_agent.artifacts.models.metrics import (
     PR_METRICS_REL,
 )
 from assurance_agent.artifacts.registry import match_artifact
-from assurance_agent.commands.workflow_cmd import _ENTRYPOINT_CHOICE
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import load_execution_contracts
 from assurance_agent.workflow.driver.operations_catalog import default_operations
@@ -86,10 +85,6 @@ def test_metrics_nightly_entrypoint_is_repeatable_for_explicit_change() -> None:
     assert ep.allow is None
     assert compiled.entrypoints["metrics-nightly"].restart == "repeatable"
     assert compiled.entrypoints["metrics-nightly"].graph_id == "metrics-nightly-workflow"
-
-
-def test_workflow_cli_choice_includes_metrics_nightly() -> None:
-    assert "metrics-nightly" in set(_ENTRYPOINT_CHOICE.choices)
 
 
 def test_metrics_nightly_graph_is_a_single_pipeline_host() -> None:

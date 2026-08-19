@@ -473,7 +473,7 @@ def materialize_pr_metrics_operation(
     change_id = context.change_id or workspace.change_dir.name
     explicit = str(task_with(task).get("batch_id") or "") or None
     try:
-        digest = _policy_digest(workspace.project_root)
+        digest = _policy_digest(context.resolved_host_root)
     except Exception as err:  # noqa: BLE001 — surface as invalid_input
         return task_failure("invalid_input", f"cannot load policy digest: {err}")
 
