@@ -14,7 +14,7 @@ from assurance_agent.workflow.graph.workspace import TaskWorkspace
 
 
 _NODE = shutil.which("node")
-_PLUGIN = Path(__file__).parents[2] / "assurance_agent/_resources/opencode/plugins/aa.mjs"
+_PLUGIN = Path(__file__).parents[2] / "assurance_agent/_resources_kernel/opencode/plugins/aa.mjs"
 _HOOK_DRIVER = r"""
 import { pathToFileURL } from "url";
 
@@ -1251,14 +1251,23 @@ def test_non_aa_agent_can_use_tool_blocked_only_for_bounded_agents(tmp_path: Pat
     assert completed.stdout == "ALLOW\n"
 
 
-def test_bootstrap_renders_yaml_block_scalar_descriptions() -> None:
+def test_bootstrap_renders_yaml_block_scalar_descriptions(tmp_path: Path) -> None:
+    # Packaged plugin is kernel-only; skills stay in the product tree. The plugin
+    # still resolves ../../skills from its own file (project layout after aa init).
+    plugin_dir = tmp_path / "opencode" / "plugins"
+    plugin_dir.mkdir(parents=True)
+    plugin = plugin_dir / "aa.mjs"
+    plugin.write_bytes(_PLUGIN.read_bytes())
+    (tmp_path / "skills").symlink_to(
+        Path(__file__).parents[2] / "assurance_agent/_resources/skills"
+    )
     completed = subprocess.run(
         [
             _NODE or "node",
             "--input-type=module",
             "-e",
             _BOOTSTRAP_DRIVER,
-            str(_PLUGIN),
+            str(plugin),
         ],
         check=False,
         capture_output=True,

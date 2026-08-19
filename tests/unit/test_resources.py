@@ -24,5 +24,7 @@ def test_exists_and_missing() -> None:
 
 def test_iter_children_lists_schema_files() -> None:
     names = resources.iter_children("schemas")
-    assert "workflow-schema.yaml" in names
     assert "explore-advisory.schema.json" in names
+    assert "workflow-schema.yaml" not in names
+    assert resources.exists("schemas", "workflow-schema.yaml")
+    assert "graphs" in resources.read_text("schemas", "workflow-schema.yaml")
