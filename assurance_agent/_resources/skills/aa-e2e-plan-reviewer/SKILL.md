@@ -23,6 +23,8 @@ Review the E2E plan package and emit a runtime PlanReview document. Mechanical P
 
 - `change:plans/data-knowledge.proposal.e2e.yaml`
 - `repo:.aa/data-knowledge.yaml`
+- `repo:app/**` and `repo:web/**` (read-only SUT and DOM evidence)
+- `repo:tests/e2e/**` and `repo:tests/testdata/domain/**` (existing implementation evidence)
 
 ## Outputs
 
@@ -58,3 +60,17 @@ Required capability closure:
   `needs_human_review` with `not_ready` instead of `pass` with a virtual key.
 - Emit `pass` with `ready` / `ready_with_warnings` only when every required key
   resolves exactly in L1.
+
+Runtime contract closure:
+
+- The review input list is not an evidence boundary. When bounded repository
+  evidence is readable, you must perform the read-only inspection yourself;
+  do not return `not_ready` merely because the plan text does not embed the proof.
+- Independently inspect the declared backend/frontend sources and existing
+  E2E/test-data trees. Do not claim a test, fixture, helper, route, locator, or
+  response fact is unavailable until those bounded inputs have been checked.
+- Compare setup and cleanup payloads, identifier extraction, and browser locators
+  with the real handlers and DOM. A create response without an identifier requires
+  an exact supported lookup; assumed `data.id` is `not_ready`.
+- Verify each setup and cleanup HTTP method/path against live OpenAPI when
+  available, otherwise against the declared router/schema source.

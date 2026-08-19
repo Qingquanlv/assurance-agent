@@ -291,12 +291,119 @@ def test_case_design_requires_selected_layer_automation_closure() -> None:
     assert "`automation.required: true`" in skill
 
 
+def test_case_skills_define_semantic_endpoint_identifiers() -> None:
+    design = resources.read_text("skills", "aa-case-design", "SKILL.md")
+    reviewer = resources.read_text("skills", "aa-case-reviewer", "SKILL.md")
+
+    for skill in (design, reviewer):
+        assert "semantic endpoint identifier" in skill
+        assert "literal HTTP route" in skill
+        assert "must remain non-empty" in skill
+
+
+def test_reviewer_agent_pins_authoring_enums_and_locator_keys() -> None:
+    agent = resources.read_text("opencode", "agents", "aa-reviewer.md")
+
+    assert "`pass`, never the read-only compatibility value `approved`" in agent
+    assert "`low`, `medium`, `high`, `critical`, or `blocking`" in agent
+    assert "`artifact`, `case_id`, and `key`" in agent
+    assert "Never emit `lines`, `line`, `field`" in agent
+
+
 def test_codegen_skills_explain_strict_manifest_role_and_reuse_rules() -> None:
     for layer in ("api", "e2e", "fuzz", "performance"):
         skill = resources.read_text("skills", f"aa-{layer}-codegen", "SKILL.md")
         assert "case_ids: []" in skill
         assert "selected private-root `test_entry`" in skill
         assert "unchanged support dependencies" in skill
+
+
+def test_fuzz_codegen_uses_live_schema_mode_without_inventing_app_modules() -> None:
+    skill = resources.read_text("skills", "aa-fuzz-codegen", "SKILL.md")
+
+    assert "QA_FUZZ_SCHEMA_MODE" in skill
+    assert "live SUT" in skill
+    assert "never import an application module" in skill
+    assert "never invent" in skill
+    normalized = " ".join(skill.split())
+    assert "generation input, not as an assertion" in normalized
+    assert "exact `(METHOD, PATH)` membership" in normalized
+
+
+def test_e2e_codegen_requires_dom_verified_login_locators() -> None:
+    skill = resources.read_text("skills", "aa-e2e-codegen", "SKILL.md")
+
+    assert "actual login DOM" in skill
+    assert "accessible name" in skill
+    assert "placeholder" in skill
+    assert "do not call `asyncio.run()`" in skill
+
+
+def test_http_codegen_and_review_skills_require_runtime_contract_closure() -> None:
+    for name in (
+        "aa-api-codegen",
+        "aa-api-plan-reviewer",
+        "aa-e2e-codegen",
+        "aa-e2e-plan-reviewer",
+        "aa-fuzz-codegen",
+        "aa-fuzz-plan-reviewer",
+        "aa-performance-codegen",
+        "aa-performance-plan-reviewer",
+    ):
+        skill = resources.read_text("skills", name, "SKILL.md")
+        assert "OpenAPI" in skill, name
+        assert "method" in skill.lower(), name
+        assert "path" in skill.lower(), name
+
+    api = resources.read_text("skills", "aa-api-codegen", "SKILL.md")
+    performance = resources.read_text("skills", "aa-performance-codegen", "SKILL.md")
+    assert "never\n  assume `data.id` exists" in api
+    assert "do not require a create\nresponse to return an identifier" in performance
+
+
+def test_http_plan_reviewers_treat_repository_and_openapi_as_review_evidence() -> None:
+    for name in (
+        "aa-api-plan-reviewer",
+        "aa-e2e-plan-reviewer",
+        "aa-fuzz-plan-reviewer",
+        "aa-performance-plan-reviewer",
+    ):
+        skill = resources.read_text("skills", name, "SKILL.md")
+        normalized = " ".join(skill.split())
+        assert "review input list is not an evidence boundary" in normalized, name
+        assert "must perform the read-only inspection yourself" in normalized, name
+        assert "plan text does not embed the proof" in normalized, name
+
+
+def test_fuzz_and_performance_skills_preserve_observed_semantics() -> None:
+    for name in ("aa-fuzz-plan", "aa-fuzz-plan-reviewer", "aa-fuzz-codegen"):
+        skill = " ".join(resources.read_text("skills", name, "SKILL.md").split()).lower()
+        assert "unconstrained long string" in skill, name
+        assert "schema" in skill, name
+
+    for name in (
+        "aa-performance-plan",
+        "aa-performance-plan-reviewer",
+        "aa-performance-codegen",
+    ):
+        skill = " ".join(resources.read_text("skills", name, "SKILL.md").split()).lower()
+        assert "pagination" in skill, name
+        assert "unwrap" in skill, name
+
+
+def test_fuzz_and_performance_skills_validate_positive_seed_data() -> None:
+    for name in (
+        "aa-fuzz-plan",
+        "aa-fuzz-plan-reviewer",
+        "aa-fuzz-codegen",
+        "aa-performance-plan",
+        "aa-performance-plan-reviewer",
+        "aa-performance-codegen",
+    ):
+        skill = resources.read_text("skills", name, "SKILL.md")
+        normalized = " ".join(skill.split()).lower()
+        assert "positive seed" in normalized, name
+        assert "example.test" in normalized, name
 
 
 def test_case_design_forbids_inventing_mrc_keys_without_knowledge_proposal() -> None:

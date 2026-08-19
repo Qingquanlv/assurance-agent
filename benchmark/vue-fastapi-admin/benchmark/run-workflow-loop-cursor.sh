@@ -130,12 +130,16 @@ CURSOR_MAX_WORKFLOW_ATTEMPTS="${CURSOR_MAX_WORKFLOW_ATTEMPTS:-3}"
 CURSOR_OUTPUT_FORMAT="${CURSOR_OUTPUT_FORMAT:-stream-json}"
 
 # QA test-runtime endpoints (inherited by the driver → operation:run-tests → pytest).
-# The isolated task sandbox excludes db.sqlite3 from tree capture, so the fuzz/api
-# isolated_worker would otherwise fall back to an empty DB ("no such table"). Pin
-# QA_SQLITE_FILE to the live SUT DB by absolute path so workers read the migrated DB.
-export QA_SQLITE_FILE="${QA_SQLITE_FILE:-$PROJECT_ROOT/db.sqlite3}"
+# QA_SQLITE_FILE is pinned later to the run-scoped SUT copy so isolated workers
+# share the migrated DB without mutating the benchmark checkout.
 export BASE_URL="${BASE_URL:-http://127.0.0.1:9999}"
+export API_BASE_URL="${API_BASE_URL:-$BASE_URL}"
+export E2E_BACKEND_URL="${E2E_BACKEND_URL:-$BASE_URL}"
 export E2E_FRONTEND_URL="${E2E_FRONTEND_URL:-http://127.0.0.1:3100}"
+export QA_ADMIN_USERNAME="${QA_ADMIN_USERNAME:-admin}"
+export QA_ADMIN_PASSWORD="${QA_ADMIN_PASSWORD:-123456}"
+export AA_ADMIN_USERNAME="${AA_ADMIN_USERNAME:-$QA_ADMIN_USERNAME}"
+export AA_ADMIN_PASSWORD="${AA_ADMIN_PASSWORD:-$QA_ADMIN_PASSWORD}"
 # Fuzz schema acquisition: hit the LIVE SUT (from_url) instead of importing the
 # app in-process (from_asgi). from_asgi boots the app lifespan → aerich migrate →
 # writes migrations/** inside the task sandbox (forbidden_write) AND fuzzes an
@@ -178,6 +182,10 @@ SUT_START_MAX_ATTEMPTS="${SUT_START_MAX_ATTEMPTS:-60}"
 SUT_START_DELAY_S="${SUT_START_DELAY_S:-0.5}"
 SUT_PID_FILE="$RUN_DIR/sut.pid"
 SUT_LOG="$RUN_DIR/sut.log"
+SUT_RUNTIME_ROOT="$RUN_DIR/sut-runtime"
+# The backend is launched from a run-scoped copy of app/migrations, so its
+# settings-derived SQLite path is isolated without modifying the benchmark SUT.
+export QA_SQLITE_FILE="${QA_SQLITE_FILE:-$SUT_RUNTIME_ROOT/db.sqlite3}"
 MANAGE_BENCHMARK_FRONTEND="${MANAGE_BENCHMARK_FRONTEND:-true}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-3100}"
@@ -224,15 +232,69 @@ ensure_loop_sut() {
     log "ERROR: SUT Python missing: $python_bin"
     return 1
   fi
+  mkdir -p "$SUT_RUNTIME_ROOT/app" "$SUT_RUNTIME_ROOT/migrations"
+  if ! cp -R "$PROJECT_ROOT/app/." "$SUT_RUNTIME_ROOT/app"; then
+    log "ERROR: failed to prepare run-scoped SUT app at $SUT_RUNTIME_ROOT"
+    return 1
+  fi
+  if ! cp -R "$PROJECT_ROOT/migrations/." "$SUT_RUNTIME_ROOT/migrations"; then
+    log "ERROR: failed to prepare run-scoped SUT migrations at $SUT_RUNTIME_ROOT"
+    return 1
+  fi
   log "sut: starting managed backend at $SUT_HOST:$SUT_PORT (log=$(basename "$SUT_LOG"))"
   if ! ensure_benchmark_sut \
     "$SUT_READY_URL" "$SUT_LOG" "$SUT_PID_FILE" \
     "$SUT_START_MAX_ATTEMPTS" "$SUT_START_DELAY_S" -- \
-    "$python_bin" -m uvicorn app:app --host "$SUT_HOST" --port "$SUT_PORT"; then
+    /bin/sh -c 'cd "$1" && exec "$2" -m uvicorn app:app --host "$3" --port "$4"' \
+    benchmark-sut "$SUT_RUNTIME_ROOT" "$python_bin" "$SUT_HOST" "$SUT_PORT"; then
     log "ERROR: managed SUT failed readiness at $SUT_READY_URL (see $SUT_LOG)"
     return 1
   fi
   log "sut: ready at $SUT_READY_URL pid=$(cat "$SUT_PID_FILE")"
+}
+
+prepare_execution_credentials() {
+  local token
+  if [ -n "${E2E_API_TOKEN:-}" ]; then
+    export E2E_API_TOKEN
+    export API_ADMIN_TOKEN="${API_ADMIN_TOKEN:-$E2E_API_TOKEN}"
+    log "test credentials: reuse configured API token"
+    return 0
+  fi
+  if ! token="$("$AA_PYTHON" - <<'PY'
+import json
+import os
+import urllib.request
+
+request = urllib.request.Request(
+    os.environ["BASE_URL"].rstrip("/") + "/api/v1/base/access_token",
+    data=json.dumps(
+        {
+            "username": os.environ["QA_ADMIN_USERNAME"],
+            "password": os.environ["QA_ADMIN_PASSWORD"],
+        }
+    ).encode(),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(request, timeout=10) as response:
+    payload = json.load(response)
+token = payload.get("data", {}).get("access_token")
+if not isinstance(token, str) or not token:
+    raise SystemExit("login response did not contain data.access_token")
+print(token)
+PY
+)"; then
+    log "ERROR: failed to acquire benchmark administrator token"
+    return 1
+  fi
+  if [ -z "$token" ]; then
+    log "ERROR: benchmark administrator token is empty"
+    return 1
+  fi
+  export E2E_API_TOKEN="${E2E_API_TOKEN:-$token}"
+  export API_ADMIN_TOKEN="${API_ADMIN_TOKEN:-$E2E_API_TOKEN}"
+  log "test credentials: administrator token acquired"
 }
 
 ensure_loop_frontend() {
@@ -336,17 +398,17 @@ clean_generated_artifacts() {
 }
 
 # The codegen/execution phases assume the shared pytest scaffold already exists in
-# the SUT repo (tests/config.py, tests/conftest.py, tests/schema_validation.py).
+# the SUT repo (tests/__init__.py, config.py, conftest.py, schema_validation.py).
 # Verify they are present up front so codegen does not STOP and tests can run.
 ensure_test_infra() {
   local missing=()
   local f
-  for f in tests/config.py tests/conftest.py tests/schema_validation.py; do
+  for f in tests/__init__.py tests/config.py tests/conftest.py tests/schema_validation.py; do
     [ -f "$PROJECT_ROOT/$f" ] || missing+=("$f")
   done
   if [ ${#missing[@]} -ne 0 ]; then
     log "ERROR: missing test infra: ${missing[*]}"
-    log "       restore tests/config.py, tests/conftest.py, tests/schema_validation.py"
+    log "       restore tests/__init__.py, tests/config.py, tests/conftest.py, tests/schema_validation.py"
     log "       (codegen phases STOP and tests cannot run without them)"
     exit 1
   fi
@@ -1121,6 +1183,7 @@ else
 fi
 ensure_test_infra
 ensure_loop_sut || exit 1
+prepare_execution_credentials || exit 1
 ensure_loop_frontend || exit 1
 
 declare -a ROW_RESULTS=()

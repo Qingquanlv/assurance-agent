@@ -57,7 +57,9 @@ def test_opencode_loop_uses_hard_timeout_managed_services_and_graph_archive() ->
 
     assert 'HARD_TIMEOUT_PY="$SCRIPT_DIR/run_with_hard_timeout.py"' in source
     assert "run_hard_timeout" in source
-    assert "ensure_loop_sut || exit 1\nensure_loop_frontend || exit 1" in source
+    assert (
+        "ensure_loop_sut || exit 1\nprepare_execution_credentials || exit 1\nensure_loop_frontend || exit 1"
+    ) in source
     assert 'FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"' in source
     assert 'stop_benchmark_sut "$FRONTEND_PID_FILE"' in source
     assert "run_archive_stage" in source

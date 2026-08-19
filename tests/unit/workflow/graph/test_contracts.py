@@ -1057,6 +1057,7 @@ _FUZZ_PLAN_READS = (
     "change:facts/fact-baseline.json",
     "repo:.aa/config.yaml",
     "repo:.aa/data-knowledge.yaml",
+    "repo:app/**",
     "repo:tests/fuzz/**",
     "repo:tests/testdata/domain/**",
 )
@@ -1074,6 +1075,9 @@ _FUZZ_REVIEWER_READS = (
     "change:review/fuzz-plan-checks.json",
     "change:cases/**/case.yaml",
     "repo:.aa/data-knowledge.yaml",
+    "repo:app/**",
+    "repo:tests/fuzz/**",
+    "repo:tests/testdata/domain/**",
 )
 _FUZZ_REVIEWER_WRITES = (
     "change:review/fuzz-plan-review.json",
@@ -1090,6 +1094,7 @@ _FUZZ_CODEGEN_READS = (
     "change:cases/**/case.yaml",
     "repo:.aa/config.yaml",
     "repo:.aa/data-knowledge.yaml",
+    "repo:app/**",
     "repo:tests/fuzz/**",
     "repo:tests/testdata/domain/**",
 )
@@ -1106,6 +1111,7 @@ _PERF_PLAN_READS = (
     "change:facts/fact-baseline.json",
     "repo:.aa/config.yaml",
     "repo:.aa/data-knowledge.yaml",
+    "repo:app/**",
     "repo:tests/perf/**",
     "repo:tests/testdata/domain/**",
 )
@@ -1123,6 +1129,9 @@ _PERF_REVIEWER_READS = (
     "change:review/performance-plan-checks.json",
     "change:cases/**/case.yaml",
     "repo:.aa/data-knowledge.yaml",
+    "repo:app/**",
+    "repo:tests/perf/**",
+    "repo:tests/testdata/domain/**",
 )
 _PERF_REVIEWER_WRITES = (
     "change:review/performance-plan-review.json",
@@ -1139,6 +1148,7 @@ _PERF_CODEGEN_READS = (
     "change:cases/**/case.yaml",
     "repo:.aa/config.yaml",
     "repo:.aa/data-knowledge.yaml",
+    "repo:app/**",
     "repo:tests/perf/**",
     "repo:tests/testdata/domain/**",
 )

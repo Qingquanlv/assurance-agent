@@ -41,6 +41,7 @@ from assurance_agent.artifacts.models.coverage_repair import (
     RepairableGapKind,
     RepairItem,
 )
+from assurance_agent.artifacts.models.execution import ExecutionManifest
 from assurance_agent.artifacts.models.metrics import MetricKey
 from assurance_agent.artifacts.models.policy import MetricFloor
 from assurance_agent.artifacts.policy import load_policy
@@ -52,6 +53,7 @@ from assurance_agent.evidence.metrics_sufficiency import (
 from assurance_agent.workflow.execution.evidence import atomic_write_bytes
 from assurance_agent.workflow.execution.scope import resolve_test_paths
 from assurance_agent.workflow.execution.selection import resolve_selected_targets
+from assurance_agent.workflow.execution.results import PerformanceResult, TargetResult
 from assurance_agent.workflow.execution.tree_hash import (
     diff_trees,
     hash_product_tree,
@@ -105,6 +107,65 @@ def _load_coverage_gaps(change_dir: Path) -> tuple[CoverageGap, ...]:
     except (OSError, ValueError, ValidationError):
         return ()
     return document.gaps
+
+
+def _has_executed_selected_target(change_dir: Path, batch_id: str) -> bool:
+    """Return whether every selected target has usable passing execution.
+
+    Legacy metric-only batches have no execution manifest and retain their prior
+    eligibility semantics. For normal workflow batches, coverage-only repair is
+    unsafe while any selected target failed, skipped the whole target, ran no
+    passing tests, or has missing/stale evidence: adding tests cannot repair
+    runner, fixture, credential, import, connectivity, or product-behaviour
+    failures. Individual skipped tests in an otherwise passing target do not
+    block repair.
+    """
+    execution_dir = change_dir / "execution"
+    batch_dir = execution_dir / "runs" / batch_id
+    manifest_path = batch_dir / "execution-manifest.json"
+    if not manifest_path.is_file():
+        return True
+    try:
+        manifest = ExecutionManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, ValidationError):
+        return False
+    if manifest.batch_id != batch_id:
+        return False
+
+    selected = False
+    for target in ("api", "e2e", "fuzz"):
+        if not getattr(manifest.selected_targets, target):
+            continue
+        selected = True
+        relative = manifest.result_files.get(target)
+        if not relative:
+            return False
+        try:
+            result = TargetResult.model_validate_json((execution_dir / relative).read_text(encoding="utf-8"))
+        except (OSError, ValueError, ValidationError):
+            return False
+        if (
+            result.batch_id != batch_id
+            or result.status != "passed"
+            or result.passed <= 0
+            or result.failed != 0
+        ):
+            return False
+
+    if manifest.selected_targets.performance:
+        selected = True
+        relative = manifest.result_files.get("performance")
+        if not relative:
+            return False
+        try:
+            result = PerformanceResult.model_validate_json(
+                (execution_dir / relative).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, ValidationError):
+            return False
+        if result.batch_id != batch_id or not result.available or result.status != "PASS":
+            return False
+    return selected
 
 
 def _locator_label(locator: CoverageGapLocator) -> str:
@@ -231,6 +292,15 @@ def build_repair_brief(
         return CoverageRepairBrief(
             change_id=change_id,
             batch_id=None,
+            probe_verdict="reject",
+            eligible=False,
+            computed_at=computed_at,
+        )
+
+    if not _has_executed_selected_target(change_dir, batch_id):
+        return CoverageRepairBrief(
+            change_id=change_id,
+            batch_id=batch_id,
             probe_verdict="reject",
             eligible=False,
             computed_at=computed_at,

@@ -76,6 +76,30 @@ def test_persisted_entity_leaf_with_legacy_max_length_flag_counts_as_present() -
     )
 
 
+def test_persisted_entity_constraint_key_counts_as_present() -> None:
+    persisted_l1 = yaml.safe_load(yaml.safe_dump(L1))
+    persisted_l1["entities"]["user"] = {
+        "required_fields": ["email"],
+        "constraints": {"missing_required_fields": True},
+    }
+
+    key = "entities.user.constraints.missing_required_fields"
+    assert is_leaf_present(persisted_l1, key) is True
+    assert compute_missing_capabilities({**REVIEW, "required_capabilities": [key]}, persisted_l1) == []
+    assert is_leaf_present(persisted_l1, "entities.user.constraints.invented") is False
+
+
+def test_nested_entity_constraint_uses_canonical_flattened_key() -> None:
+    persisted_l1 = yaml.safe_load(yaml.safe_dump(L1))
+    persisted_l1["entities"]["dept"] = {
+        "required_fields": ["name"],
+        "constraints": {"name": {"max_length": 20}},
+    }
+
+    assert is_leaf_present(persisted_l1, "entities.dept.constraints.name_has_max_length") is True
+    assert is_leaf_present(persisted_l1, "entities.dept.constraints.name.max_length") is False
+
+
 def test_capabilities_present_true_when_all_leaves_exist() -> None:
     review = {**REVIEW, "required_capabilities": ["auth.api_admin_token"]}
     assert capabilities_present(review, L1) is True

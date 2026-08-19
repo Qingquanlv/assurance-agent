@@ -555,7 +555,9 @@ def test_cursor_loop_manages_backend_and_frontend_lifecycles() -> None:
     assert 'ensure_benchmark_sut \\\n    "$FRONTEND_READY_URL" "$FRONTEND_LOG" "$FRONTEND_PID_FILE"' in source
     assert '"$PNPM_BIN" --dir "$PROJECT_ROOT/web" run dev' in source
     assert '"$PNPM_BIN" --dir "$PROJECT_ROOT/web" run dev --' not in source
-    assert "ensure_loop_sut || exit 1\nensure_loop_frontend || exit 1" in source
+    assert (
+        "ensure_loop_sut || exit 1\nprepare_execution_credentials || exit 1\nensure_loop_frontend || exit 1"
+    ) in source
 
 
 def test_cursor_loop_enforces_task_workspace_sandbox_for_every_cursor_invocation() -> None:

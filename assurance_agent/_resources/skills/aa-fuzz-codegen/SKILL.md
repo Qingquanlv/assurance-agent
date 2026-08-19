@@ -23,6 +23,7 @@ Generate fuzz tests under `tests/fuzz/**`, shared builders under `tests/testdata
 ### optional
 
 - `repo:.aa/config.yaml`
+- `repo:app/**` (read-only SUT contract evidence)
 - `repo:tests/fuzz/**`
 - `repo:tests/testdata/domain/**`
 
@@ -75,6 +76,36 @@ authorized `tests/fuzz/**` tree, list the changed fixture file as `support` with
 and finish only when the unresolved fixture set is empty. `client` and
 `admin_token` are not implicit. The Graph precommit validator rejects unresolved
 fixture parameters before commit.
+
+When `QA_FUZZ_SCHEMA_MODE=uri` or `FUZZ_SCHEMA_MODE=uri`, acquire the OpenAPI
+document from the live SUT with the configured HTTP client. In this mode never import an application module,
+request an `app` fixture, or use an in-process ASGI client. If in-process mode is explicitly selected, inspect the actual SUT
+entrypoint first; never invent paths such as `app.main` from framework
+convention.
+
+Treat that OpenAPI document as a generation input, not as an assertion that can
+fail later. Before writing the test, resolve every target operation by exact
+`(METHOD, PATH)` membership and derive the request-body schema from the resolved
+operation. Never hard-code a guessed operation and then assert at runtime that
+OpenAPI contains it. If a planned operation is absent or uses a different
+method, repair the candidate to the registered operation or report it as
+unverifiable; do not commit a guaranteed-failing fuzz test.
+
+Validate each positive seed before applying fuzz mutations. It must satisfy the
+real request schema and runtime/persistence validators so a failed setup cannot masquerade
+as a property result. Do not use the reserved `example.test` domain for a valid
+email unless the SUT is proven to accept it; prefer a proven value or
+`example.com`.
+Calculate the final length after all fixed prefixes and candidate markers are
+added; validating only the generated suffix is insufficient.
+When an association field is optional or has an observed valid default, use that
+contract instead of requiring a pre-existing related record from a fresh SUT.
+
+Apply rejection assertions only to mutations that violate an observed schema or
+application constraint. For unconstrained long strings, assert transport safety
+instead. Track and clean any mutation that creates state—even when acceptance was
+unexpected—before reusing its username, email, or other unique value, so Hypothesis
+replay remains deterministic.
 
 Implement every mapped test with the exact canonical symbol
 `test_<case_id_lowercase>__<behavior>` so the test-tree scanner can recover the

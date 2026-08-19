@@ -19,6 +19,7 @@ Turn the approved Performance portion of a QA Case Delta into reviewable impleme
 - `change:facts/fact-baseline.json`
 - `repo:.aa/config.yaml`
 - `repo:.aa/data-knowledge.yaml`
+- `repo:app/**` (read-only SUT contract evidence)
 - `repo:tests/perf/**`
 - `repo:tests/testdata/domain/**`
 
@@ -57,6 +58,16 @@ Task Mapping is a strict one-to-one execution-entry relation:
   or a separate Seed Lifecycle section instead.
 - A Case ID repeated in Task Mapping is invalid even when the method or target file
   differs.
+
+Every setup lifecycle must document a concrete positive seed and how each field
+was validated against the frozen OpenAPI/fact evidence. Never assume a reserved
+domain such as `example.test` satisfies an email validator; use a runtime-proven
+value or a generally valid domain such as `example.com`. A load plan with an
+unverified seed is not codegen-ready.
+
+Inspect the declared router response construction and existing Locust/support
+code before specifying measured assertions. Preserve the observed envelope level:
+do not unwrap `data` and then expect top-level pagination fields inside it.
 
 Valid example:
 

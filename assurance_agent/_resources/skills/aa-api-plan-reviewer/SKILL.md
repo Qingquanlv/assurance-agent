@@ -23,6 +23,8 @@ Review the API plan package and emit a runtime PlanReview document. Mechanical P
 
 - `change:plans/data-knowledge.proposal.api.yaml`
 - `repo:.aa/data-knowledge.yaml`
+- `repo:app/**` (read-only SUT contract evidence)
+- `repo:tests/api/**` and `repo:tests/testdata/domain/**` (existing implementation evidence)
 
 ## Outputs
 
@@ -60,3 +62,21 @@ Required capability closure:
   `needs_human_review` with `not_ready` instead of `pass` with a virtual key.
 - Emit `pass` with `ready` / `ready_with_warnings` only when every required key
   resolves exactly in L1.
+
+Runtime contract closure:
+
+- The review input list is not an evidence boundary. When repository files or
+  the live OpenAPI document are readable, you must perform the read-only
+  inspection yourself. Do not return `not_ready` merely because the plan text
+  does not embed the proof that you can independently verify.
+- Independently compare every method/path named by the API plan and codegen
+  plan with the live OpenAPI document when available, otherwise with the actual
+  router source. Naming convention is not evidence.
+- Compare seed and mutation payloads with the registered request schema and
+  compare identifier extraction with the real response shape.
+- A missing operation, wrong HTTP method, unverified payload field, or assumed
+  response identifier is a non-pass finding with `not_ready`; do not defer it
+  to execution.
+- Inspect the declared API and shared test-data trees before claiming a mapped
+  test, fixture, or helper is absent. Review the existing implementation when it
+  is present; absence from the plan prose is not absence from the repository.
