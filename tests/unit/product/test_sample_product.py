@@ -15,33 +15,11 @@ from assurance_agent.workflow.graph.schema_v2 import (
     load_workflow_v2_with_origin,
     parse_workflow_v2,
 )
-from tests.helpers_aa import write_aa_config
+from tests.helpers_aa import overlay_workflow_yaml, write_aa_config
 
 _SAMPLE_CONTRACTS = Path("examples/minimal-product/aa_sample/_resources/schemas/execution-contracts.yaml")
 
-_NOOP_OVERLAY = """\
-name: project-custom
-entrypoints:
-  my-pipeline: {graph: main, restart: repeatable}
-policies:
-  retry:
-    never: {max_attempts: 1, retry_on: []}
-  timeout:
-    local: {run_seconds: 60, heartbeat_seconds: 10}
-  scheduler: {max_parallel_tasks: 1}
-graphs:
-  main:
-    max_supersteps: 4
-    nodes:
-      noop:
-        uses: operation:no-op
-        retry: never
-        timeout: local
-    edges:
-      - {from: START, to: noop}
-      - {from: noop, to: END}
-gates: {}
-"""
+_NOOP_OVERLAY = overlay_workflow_yaml(node="noop", uses="operation:no-op")
 
 
 class _NeverInvoker:

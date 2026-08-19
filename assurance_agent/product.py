@@ -6,8 +6,7 @@ import re
 from importlib.abc import Traversable
 from importlib.metadata import EntryPoint, distributions
 from importlib.resources import files
-
-from typing import Any
+from typing import Protocol
 
 from assurance_agent.artifacts.registry import ArtifactSpec
 from assurance_agent.exceptions import AaError
@@ -18,6 +17,7 @@ from assurance_agent.workflow.driver.capability_catalog import (
     reset_catalog,
 )
 from assurance_agent.workflow.graph.capability_state import (
+    DEFAULT_PRODUCT_ID,
     CapabilityView,
     install_current_product_id,
     reset_current_product_id,
@@ -30,6 +30,14 @@ _PRODUCT_ID_RE = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 
 class ProductError(AaError):
     """Product discovery or selection failed."""
+
+
+class Product(Protocol):
+    id: str
+
+    def resource_root(self) -> Traversable: ...
+
+    def register(self) -> tuple[CapabilityView, dict[str, OperationFn], tuple[ArtifactSpec, ...]]: ...
 
 
 def validate_product_id(product_id: str) -> str:
@@ -59,7 +67,7 @@ def _entry_point_for(product_id: str) -> EntryPoint:
 
 
 class AssuranceProduct:
-    id = "assurance"
+    id = DEFAULT_PRODUCT_ID
 
     def resource_root(self) -> Traversable:
         return files("assurance_agent") / "_resources"
@@ -68,7 +76,7 @@ class AssuranceProduct:
         return build_default_catalog()
 
 
-def load_product(product_id: str) -> AssuranceProduct:
+def load_product(product_id: str) -> Product:
     validate_product_id(product_id)
     ep = _entry_point_for(product_id)
     loaded = ep.load()
@@ -78,12 +86,15 @@ def load_product(product_id: str) -> AssuranceProduct:
     return product
 
 
-def install_product(product: object) -> None:
-    selected: Any = product
-    install_current_product_id(selected.id)
-    set_product_resource_root(selected.resource_root())
-    view, operations, artifacts = selected.register()
-    install_catalog(view, operations=operations, artifacts=artifacts)
+def install_product(product: Product) -> None:
+    view, operations, artifacts = product.register()
+    try:
+        install_current_product_id(product.id)
+        set_product_resource_root(product.resource_root())
+        install_catalog(view, operations=operations, artifacts=artifacts)
+    except Exception:
+        reset_product()
+        raise
 
 
 def select_product(product_id: str) -> None:

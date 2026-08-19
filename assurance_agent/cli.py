@@ -22,6 +22,7 @@ from assurance_agent.commands.improvement_cmd import improvement_group
 from assurance_agent.commands.retro_cmd import register_retro
 from assurance_agent.commands.trace_cmd import trace_command
 from assurance_agent.commands.verify_cmd import verify_command
+from assurance_agent.workflow.graph.capability_state import DEFAULT_PRODUCT_ID
 
 
 @click.group()
@@ -29,7 +30,7 @@ from assurance_agent.commands.verify_cmd import verify_command
 @click.option(
     "--product",
     "product_id",
-    default="assurance",
+    default=DEFAULT_PRODUCT_ID,
     show_default=True,
     help="Installed product id (entry point assurance_agent.products).",
 )

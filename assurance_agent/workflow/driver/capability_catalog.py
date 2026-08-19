@@ -16,10 +16,12 @@ from assurance_agent.artifacts.registry import (
 )
 from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_agent.workflow.graph.capability_state import (
+    DEFAULT_PRODUCT_ID,
     CapabilityCatalog,
     CapabilityCatalogError,
     CapabilityView,
     current_capability_view,
+    current_product_id,
     install_capability_view,
     reset_capability_view,
 )
@@ -67,13 +69,11 @@ def ensure_default_catalog() -> CapabilityView:
     existing = current_capability_view()
     if existing is not None:
         return existing
-    from assurance_agent.product import select_product
-    from assurance_agent.workflow.graph.capability_state import current_product_id
-
-    select_product(current_product_id())
-    view = current_capability_view()
-    if view is None:
-        raise CapabilityCatalogError("product register did not install a catalog")
+    product_id = current_product_id()
+    if product_id != DEFAULT_PRODUCT_ID:
+        raise CapabilityCatalogError(f"no capability catalog is installed for product {product_id!r}")
+    view, operations, artifacts = build_default_catalog()
+    install_catalog(view, operations=operations, artifacts=artifacts)
     return view
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -101,6 +102,41 @@ def sufficient_evidence_coverage(
         report=SufficiencyReportV2.model_validate(make_report_v2(verdicts=[])),
         action=action,  # type: ignore[arg-type]
         error_code=None,
+    )
+
+
+def overlay_workflow_yaml(
+    *,
+    node: str,
+    uses: str,
+    name: str = "project-custom",
+    entrypoint: str = "my-pipeline",
+) -> str:
+    """Minimal v2 workflow YAML: one operation node from START to END."""
+    return textwrap.dedent(
+        f"""\
+        name: {name}
+        entrypoints:
+          {entrypoint}: {{graph: main, restart: repeatable}}
+        policies:
+          retry:
+            never: {{max_attempts: 1, retry_on: []}}
+          timeout:
+            local: {{run_seconds: 60, heartbeat_seconds: 10}}
+          scheduler: {{max_parallel_tasks: 1}}
+        graphs:
+          main:
+            max_supersteps: 4
+            nodes:
+              {node}:
+                uses: {uses}
+                retry: never
+                timeout: local
+            edges:
+              - {{from: START, to: {node}}}
+              - {{from: {node}, to: END}}
+        gates: {{}}
+        """
     )
 
 

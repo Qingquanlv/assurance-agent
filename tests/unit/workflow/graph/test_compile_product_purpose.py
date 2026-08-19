@@ -6,30 +6,14 @@ from assurance_agent.workflow.graph.capability_state import (
 )
 from assurance_agent.workflow.graph.compiler import compile_loaded_workflow
 from assurance_agent.workflow.graph.schema_v2 import LoadedWorkflowV2, parse_workflow_v2
+from tests.helpers_aa import overlay_workflow_yaml
 
-_MINIMAL = """\
-name: sample-product
-entrypoints:
-  ping: {graph: main, restart: repeatable}
-policies:
-  retry:
-    never: {max_attempts: 1, retry_on: []}
-  timeout:
-    local: {run_seconds: 60, heartbeat_seconds: 10}
-  scheduler: {max_parallel_tasks: 1}
-graphs:
-  main:
-    max_supersteps: 4
-    nodes:
-      ping:
-        uses: operation:no-op
-        retry: never
-        timeout: local
-    edges:
-      - {from: START, to: ping}
-      - {from: ping, to: END}
-gates: {}
-"""
+_MINIMAL = overlay_workflow_yaml(
+    name="sample-product",
+    entrypoint="ping",
+    node="ping",
+    uses="operation:no-op",
+)
 
 
 def test_packaged_origin_non_assurance_skips_four_layer_gates() -> None:

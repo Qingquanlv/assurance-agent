@@ -6,7 +6,9 @@ name = commands depend on eval domain, never the reverse
 type = layers
 layers =
     assurance_agent.cli
-    assurance_agent.commands
+    # Installed-product selection lives with commands: workflow.driver must not
+    # import assurance_agent.product (CLI calls select_product; driver reads id).
+    assurance_agent.commands : assurance_agent.product
     assurance_agent.eval
     assurance_agent.risk
     assurance_agent.workflow

@@ -64,7 +64,11 @@ from assurance_agent.workflow.graph.replay_schema import (
     validate_current_assurance_activation,
     validate_historical_replay_surface,
 )
-from assurance_agent.workflow.graph.capability_state import current_validator_ids
+from assurance_agent.workflow.graph.capability_state import (
+    DEFAULT_PRODUCT_ID,
+    current_product_id,
+    current_validator_ids,
+)
 from assurance_agent.workflow.graph.precommit import (
     PLAN_MECHANICAL_CANDIDATE_V1,
 )
@@ -294,9 +298,7 @@ def compile_loaded_workflow(
     contracts: ExecutionContractCatalog | None,
 ) -> CompiledWorkflow:
     """Compile using packaged activation gates only for the assurance product."""
-    from assurance_agent.workflow.graph.capability_state import current_product_id
-
-    if loaded.origin == "packaged" and current_product_id() == "assurance":
+    if loaded.origin == "packaged" and current_product_id() == DEFAULT_PRODUCT_ID:
         return compile_packaged_workflow(loaded.schema, contracts)
     return compile_workflow(loaded.schema, contracts)
 

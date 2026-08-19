@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from assurance_agent.artifacts.registry import ArtifactSpec
 from assurance_agent.exceptions import AaError
 
+DEFAULT_PRODUCT_ID = "assurance"
+
 DEFAULT_OPERATION_NAMES: frozenset[str] = frozenset(
     {
         "operation:no-op",
@@ -222,7 +224,7 @@ def reset_current_product_id() -> None:
 
 def current_product_id() -> str:
     if _installed_product_id is None:
-        return "assurance"
+        return DEFAULT_PRODUCT_ID
     return _installed_product_id
 
 
@@ -231,7 +233,7 @@ def assert_product_compatible(pinned_product_id: str) -> None:
 
     current = current_product_id()
     if not pinned_product_id:
-        if current != "assurance":
+        if current != DEFAULT_PRODUCT_ID:
             raise ProductDrift(
                 f"product_id drifted: ledger has an empty pin but the selected product is {current!r}"
             )

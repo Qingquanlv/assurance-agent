@@ -21,6 +21,8 @@ from assurance_agent.workflow.graph.capability_state import (
     current_capability_view,
     current_validator_ids,
     default_capability_catalog_digest,
+    install_current_product_id,
+    reset_current_product_id,
 )
 from assurance_agent.workflow.graph.compiler import compile_workflow
 from assurance_agent.workflow.graph.contracts import ExecutionContractCatalog
@@ -111,3 +113,14 @@ def test_reset_catalog_allows_later_default_match() -> None:
     reset_catalog()
     ensure_default_catalog()
     assert match_artifact("review/api-plan-review.json") is not None
+
+
+def test_ensure_default_catalog_fails_closed_for_non_default_product() -> None:
+    reset_catalog()
+    install_current_product_id("sample")
+    try:
+        with pytest.raises(CapabilityCatalogError, match="no capability catalog"):
+            ensure_default_catalog()
+        assert current_capability_view() is None
+    finally:
+        reset_current_product_id()

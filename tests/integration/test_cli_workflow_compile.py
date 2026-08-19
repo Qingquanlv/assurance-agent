@@ -8,55 +8,11 @@ from click.testing import CliRunner
 
 from assurance_agent.cli import main
 from assurance_agent.workflow.driver.loop import EXIT_ERROR
+from tests.helpers_aa import overlay_workflow_yaml
 
 
-_MINIMAL = """\
-name: project-custom
-entrypoints:
-  my-pipeline: {graph: main, restart: repeatable}
-policies:
-  retry:
-    never: {max_attempts: 1, retry_on: []}
-  timeout:
-    local: {run_seconds: 60, heartbeat_seconds: 10}
-  scheduler: {max_parallel_tasks: 1}
-graphs:
-  main:
-    max_supersteps: 4
-    nodes:
-      noop:
-        uses: operation:no-op
-        retry: never
-        timeout: local
-    edges:
-      - {from: START, to: noop}
-      - {from: noop, to: END}
-gates: {}
-"""
-
-_SAMPLE_OVERLAY = """\
-name: project-custom
-entrypoints:
-  my-pipeline: {graph: main, restart: repeatable}
-policies:
-  retry:
-    never: {max_attempts: 1, retry_on: []}
-  timeout:
-    local: {run_seconds: 60, heartbeat_seconds: 10}
-  scheduler: {max_parallel_tasks: 1}
-graphs:
-  main:
-    max_supersteps: 4
-    nodes:
-      ping:
-        uses: operation:sample-ping
-        retry: never
-        timeout: local
-    edges:
-      - {from: START, to: ping}
-      - {from: ping, to: END}
-gates: {}
-"""
+_MINIMAL = overlay_workflow_yaml(node="noop", uses="operation:no-op")
+_SAMPLE_OVERLAY = overlay_workflow_yaml(node="ping", uses="operation:sample-ping")
 
 
 def test_workflow_compile_packaged_prints_digest_and_entrypoints() -> None:
