@@ -1,0 +1,3 @@
+ENGINE_API_VERSION = "1.0"
+
+__all__ = ["ENGINE_API_VERSION"]

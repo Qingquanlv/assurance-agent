@@ -28,6 +28,7 @@ dev = [
     "import-linter>=2.0",
     "mutmut>=3.7.0",
     "aa-sample-product",
+    "graph-engine",
 ]
 
 [build-system]
@@ -54,14 +55,15 @@ target-version = "py311"
 extend-exclude = ["benchmark/vue-fastapi-admin", ".worktrees", ".history"]
 
 [tool.pyright]
-include = ["assurance_agent", "packages/assurance-kernel/assurance_kernel", "tests", "benchmark/specialty"]
+include = ["assurance_agent", "packages/assurance-kernel/assurance_kernel", "packages/graph-engine/graph_engine", "tests", "benchmark/specialty"]
 extraPaths = [".", "packages/assurance-kernel"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
 
 [tool.uv.workspace]
-members = ["packages/assurance-kernel", "examples/minimal-product"]
+members = ["packages/assurance-kernel", "packages/graph-engine", "examples/minimal-product"]
 
 [tool.uv.sources]
 aa-sample-product = { workspace = true }
 assurance-kernel = { workspace = true }
+graph-engine = { workspace = true }
