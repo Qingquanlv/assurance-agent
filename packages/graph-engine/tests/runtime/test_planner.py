@@ -79,50 +79,43 @@ def _root() -> GraphStarted:
 
 
 def _task_activation_events(
+    compiled: CompiledWorkflow,
     *,
-    token: str = "tok-1",
     node: str = "work",
-    payload: object = None,
 ) -> tuple[object, ...]:
-    activation = activation_id("root", node, 0, (token,))
+    token = _canonical_start_token(compiled)
+    activation = activation_id("root", node, 0, (token.token_id,))
     return (
-        TokenOffered(
-            token_id=token,
-            graph_instance_id="root",
-            source=None,
-            target=node,
-            payload=payload,
-        ),
-        TokenConsumed(token_id=token, graph_instance_id="root", node_id=node),
+        token,
+        TokenConsumed(token_id=token.token_id, graph_instance_id="root", node_id=node),
         NodeActivated(
             activation_id=activation,
             graph_instance_id="root",
             node_id=node,
-            token_ids=(token,),
+            token_ids=(token.token_id,),
         ),
     )
 
 
-def _completed_start_gate_events(node: str) -> tuple[object, ...]:
-    token = f"{node}-start"
-    activation = activation_id("root", node, 0, (token,))
+def _completed_start_gate_events(compiled: CompiledWorkflow, node: str) -> tuple[object, ...]:
+    token = _canonical_start_token(compiled)
+    activation = activation_id("root", node, 0, (token.token_id,))
     return (
-        TokenOffered(
-            token_id=token,
-            graph_instance_id="root",
-            source=None,
-            target=node,
-            payload=None,
-        ),
-        TokenConsumed(token_id=token, graph_instance_id="root", node_id=node),
+        token,
+        TokenConsumed(token_id=token.token_id, graph_instance_id="root", node_id=node),
         NodeActivated(
             activation_id=activation,
             graph_instance_id="root",
             node_id=node,
-            token_ids=(token,),
+            token_ids=(token.token_id,),
         ),
         NodeCompleted(activation_id=activation, output={"value": False}),
     )
+
+
+def _canonical_start_token(compiled: CompiledWorkflow) -> TokenOffered:
+    plan = plan_next(compiled, _projection(_invocation(), _root()))
+    return next(event for event in plan.events if event.kind == "token_offered" and event.source is None)
 
 
 def test_start_token_plans_the_first_task_with_canonical_input() -> None:
@@ -222,7 +215,7 @@ graphs:
         _invocation(),
         GraphStarted(graph_instance_id="root", graph_id="root"),
         GraphStarted(
-            graph_instance_id="child-1",
+            graph_instance_id="z-child",
             graph_id="child",
             parent_graph_instance_id="root",
             parent_node_id="root_done",
@@ -237,21 +230,270 @@ graphs:
         for event in plan.events
         if event.kind == "token_offered" and event.source is None
     ]
-    assert start_tokens == [("child-1", "child_done"), ("root", "root_done")]
+    assert start_tokens == [("root", "root_done"), ("z-child", "child_done")]
+    assert [event.graph_instance_id for event in plan.events if event.kind == "graph_completed"] == [
+        "z-child",
+        "root",
+    ]
     assert _projection_after(events, plan.events).status == "succeeded"
+
+
+def test_nested_graphs_settle_deepest_first_independent_of_instance_id_order() -> None:
+    compiled = compile_workflow(
+        parse_workflow(
+            """
+name: planner-test
+entrypoints: {main: root}
+retry: {}
+timeout: {}
+graphs:
+  root:
+    max_activations: 2
+    start: root_done
+    nodes:
+      root_done: {kind: end}
+    edges: []
+  child:
+    max_activations: 2
+    start: child_done
+    nodes:
+      child_done: {kind: end}
+    edges: []
+  grandchild:
+    max_activations: 2
+    start: grandchild_done
+    nodes:
+      grandchild_done: {kind: end}
+    edges: []
+"""
+        ),
+        CapabilityRegistry.empty(),
+    )
+    events = (
+        _invocation(),
+        GraphStarted(graph_instance_id="root", graph_id="root"),
+        GraphStarted(
+            graph_instance_id="z-child",
+            graph_id="child",
+            parent_graph_instance_id="root",
+            parent_node_id="root_done",
+        ),
+        GraphStarted(
+            graph_instance_id="zz-grandchild",
+            graph_id="grandchild",
+            parent_graph_instance_id="z-child",
+            parent_node_id="child_done",
+        ),
+    )
+
+    plan = plan_next(compiled, _projection(*events))
+
+    assert [event.graph_instance_id for event in plan.events if event.kind == "graph_completed"] == [
+        "zz-grandchild",
+        "z-child",
+        "root",
+    ]
+    assert plan.terminal == "succeeded"
+    assert _projection_after(events, plan.events).status == "succeeded"
+
+
+@pytest.mark.parametrize("case", ["foreign_id", "wrong_payload", "duplicate"])
+def test_source_less_start_token_must_be_unique_and_canonical(case: str) -> None:
+    compiled = _compiled(
+        f"{_task_node('seed')}\n      done: {{kind: end}}",
+        "      - {from: seed, to: done}",
+        start="seed",
+    )
+    canonical = _canonical_start_token(compiled)
+    if case == "foreign_id":
+        tokens = (canonical.model_copy(update={"token_id": "foreign"}),)
+    elif case == "wrong_payload":
+        tokens = (canonical.model_copy(update={"payload": {"wrong": True}}),)
+    else:
+        tokens = (
+            canonical,
+            canonical.model_copy(update={"token_id": "duplicate"}),
+        )
+
+    with pytest.raises(PlanningError, match="canonical start token"):
+        plan_next(compiled, _projection(_invocation(), _root(), *tokens))
+
+
+@pytest.mark.parametrize(
+    ("node_id", "sources"),
+    [
+        ("work", ()),
+        ("work", ("left", "right")),
+        ("work", ("start",)),
+        ("any_join", ()),
+        ("any_join", ("left", "right")),
+        ("any_join", ("start",)),
+        ("all_join", ("right", "left")),
+        ("all_join", ("left", "left")),
+        ("all_join", ("left",)),
+        ("all_join", ("left", "start")),
+        ("all_join", ("left", "right", "left")),
+    ],
+)
+def test_existing_activation_must_match_compiled_consumption_contract(
+    node_id: str, sources: tuple[str, ...]
+) -> None:
+    compiled = _compiled(
+        f"""      start: {{kind: gate, expression: 'false'}}
+      left: {{kind: gate, expression: 'false'}}
+      right: {{kind: gate, expression: 'false'}}
+{_task_node("work")}
+      any_join: {{kind: join, join: any}}
+      all_join: {{kind: join, join: all}}
+      done: {{kind: end}}""",
+        """      - {from: start, to: left, condition: 'false'}
+      - {from: start, to: right, condition: 'false'}
+      - {from: left, to: work, condition: 'false'}
+      - {from: right, to: work, condition: 'false'}
+      - {from: left, to: any_join, condition: 'false'}
+      - {from: right, to: any_join, condition: 'false'}
+      - {from: left, to: all_join, condition: 'false'}
+      - {from: right, to: all_join, condition: 'false'}
+      - {from: work, to: done}
+      - {from: any_join, to: done}
+      - {from: all_join, to: done}""",
+        start="start",
+    )
+    token_ids = tuple(f"input-{index}" for index in range(len(sources)))
+    activation = activation_id("root", node_id, 0, token_ids)
+    input_events: list[object] = []
+    for token_id_, source in zip(token_ids, sources, strict=True):
+        input_events.extend(
+            (
+                TokenOffered(
+                    token_id=token_id_,
+                    graph_instance_id="root",
+                    source=source,
+                    target=node_id,
+                    payload=source,
+                ),
+                TokenConsumed(token_id=token_id_, graph_instance_id="root", node_id=node_id),
+            )
+        )
+    projection = _projection(
+        _invocation(),
+        _root(),
+        *_completed_start_gate_events(compiled, "start"),
+        *input_events,
+        NodeActivated(
+            activation_id=activation,
+            graph_instance_id="root",
+            node_id=node_id,
+            token_ids=token_ids,
+        ),
+    )
+
+    with pytest.raises(PlanningError, match="consumption contract"):
+        plan_next(compiled, projection)
+
+
+def test_existing_end_activation_requires_canonical_token_id_order() -> None:
+    compiled = _compiled(
+        """      source: {kind: gate, expression: 'false'}
+      done: {kind: end}""",
+        "      - {from: source, to: done, condition: 'false'}",
+        start="source",
+    )
+    tokens = (
+        TokenOffered(
+            token_id="z-token",
+            graph_instance_id="root",
+            source="source",
+            target="done",
+            payload="Z",
+        ),
+        TokenOffered(
+            token_id="a-token",
+            graph_instance_id="root",
+            source="source",
+            target="done",
+            payload="A",
+        ),
+    )
+    token_ids = tuple(token.token_id for token in tokens)
+    activation = activation_id("root", "done", 0, token_ids)
+    projection = _projection(
+        _invocation(),
+        _root(),
+        *_completed_start_gate_events(compiled, "source"),
+        *tokens,
+        *(
+            TokenConsumed(token_id=token.token_id, graph_instance_id="root", node_id="done")
+            for token in tokens
+        ),
+        NodeActivated(
+            activation_id=activation,
+            graph_instance_id="root",
+            node_id="done",
+            token_ids=token_ids,
+        ),
+    )
+
+    with pytest.raises(PlanningError, match="consumption contract"):
+        plan_next(compiled, projection)
+
+
+@pytest.mark.parametrize(
+    "unsupported_node",
+    [
+        "{kind: subgraph, graph: root}",
+        "{kind: interrupt, reason: review, actions: [continue]}",
+    ],
+)
+def test_completed_unsupported_activation_is_rejected_fail_closed(unsupported_node: str) -> None:
+    compiled = _compiled(
+        f"""      start: {{kind: gate, expression: 'false'}}
+      blocked: {unsupported_node}
+      done: {{kind: end}}""",
+        """      - {from: start, to: blocked, condition: 'false'}
+      - {from: blocked, to: done}""",
+        start="start",
+    )
+    token = TokenOffered(
+        token_id="blocked-input",
+        graph_instance_id="root",
+        source="start",
+        target="blocked",
+        payload=None,
+    )
+    activation = activation_id("root", "blocked", 0, (token.token_id,))
+    projection = _projection(
+        _invocation(),
+        _root(),
+        *_completed_start_gate_events(compiled, "start"),
+        token,
+        TokenConsumed(token_id=token.token_id, graph_instance_id="root", node_id="blocked"),
+        NodeActivated(
+            activation_id=activation,
+            graph_instance_id="root",
+            node_id="blocked",
+            token_ids=(token.token_id,),
+        ),
+        NodeCompleted(activation_id=activation, output=None),
+    )
+
+    with pytest.raises(PlanningError, match="does not support node kind"):
+        plan_next(compiled, projection)
 
 
 def test_multiple_tokens_plan_in_token_id_order_with_distinct_generations() -> None:
     compiled = _compiled(
-        f"{_task_node('work')}\n      done: {{kind: end}}",
-        "      - {from: work, to: done}",
-        start="work",
+        f"      source: {{kind: gate, expression: 'false'}}\n{_task_node('work')}\n      done: {{kind: end}}",
+        """      - {from: source, to: work, condition: 'false'}
+      - {from: work, to: done}""",
+        start="source",
     )
     projection = _projection(
         _invocation(),
         _root(),
-        TokenOffered(token_id="tok-z", graph_instance_id="root", source=None, target="work", payload=2),
-        TokenOffered(token_id="tok-a", graph_instance_id="root", source=None, target="work", payload=1),
+        *_completed_start_gate_events(compiled, "source"),
+        TokenOffered(token_id="tok-z", graph_instance_id="root", source="source", target="work", payload=2),
+        TokenOffered(token_id="tok-a", graph_instance_id="root", source="source", target="work", payload=1),
     )
 
     plan = plan_next(compiled, projection)
@@ -281,7 +523,7 @@ def test_all_join_waits_for_each_distinct_predecessor() -> None:
     projection = _projection(
         _invocation(),
         _root(),
-        *_completed_start_gate_events("left"),
+        *_completed_start_gate_events(compiled, "left"),
         TokenOffered(
             token_id="left-1", graph_instance_id="root", source="left", target="joined", payload="L"
         ),
@@ -311,7 +553,7 @@ def test_all_join_consumes_one_token_per_predecessor_in_compiled_order() -> None
     projection = _projection(
         _invocation(),
         _root(),
-        *_completed_start_gate_events("left"),
+        *_completed_start_gate_events(compiled, "left"),
         TokenOffered(
             token_id="z-right", graph_instance_id="root", source="right", target="joined", payload="R"
         ),
@@ -347,7 +589,7 @@ def test_any_join_consumes_only_the_earliest_token() -> None:
     projection = _projection(
         _invocation(),
         _root(),
-        *_completed_start_gate_events("first"),
+        *_completed_start_gate_events(compiled, "first"),
         TokenOffered(
             token_id="tok-z", graph_instance_id="root", source="first", target="joined", payload="Z"
         ),
@@ -417,11 +659,12 @@ def test_stopped_task_terminates_without_outgoing_token() -> None:
         "      - {from: work, to: done}",
         start="work",
     )
-    activation = activation_id("root", "work", 0, ("tok-1",))
+    start_token = _canonical_start_token(compiled)
+    activation = activation_id("root", "work", 0, (start_token.token_id,))
     events = (
         _invocation(),
         _root(),
-        *_task_activation_events(),
+        *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
         TaskAttemptStopped(activation_id=activation, attempt=1, reason="operator_stop"),
     )
@@ -445,18 +688,28 @@ def test_stopped_task_terminates_without_outgoing_token() -> None:
 def test_end_node_completes_root_with_consumed_payloads(
     payloads: tuple[object, ...], expected: object
 ) -> None:
-    compiled = _compiled("      done: {kind: end}", "      []", start="done")
+    compiled = _compiled(
+        """      source: {kind: gate, expression: 'false'}
+      done: {kind: end}""",
+        "      - {from: source, to: done, condition: 'false'}",
+        start="source",
+    )
     token_events = tuple(
         TokenOffered(
             token_id=f"tok-{index}",
             graph_instance_id="root",
-            source=None,
+            source="source",
             target="done",
             payload=payload,
         )
         for index, payload in enumerate(payloads)
     )
-    projection = _projection(_invocation(), _root(), *token_events)
+    projection = _projection(
+        _invocation(),
+        _root(),
+        *_completed_start_gate_events(compiled, "source"),
+        *token_events,
+    )
 
     plan = plan_next(compiled, projection)
 
@@ -473,12 +726,13 @@ def test_allowed_retry_preserves_ids_and_includes_prior_failure() -> None:
         retry_on="[transient, timeout]",
         max_attempts=3,
     )
-    activation = activation_id("root", "work", 0, ("tok-1",))
+    start_token = _canonical_start_token(compiled)
+    activation = activation_id("root", "work", 0, (start_token.token_id,))
     failure = TaskFailure(kind="timeout", message="lease expired")
     events = (
         _invocation(),
         _root(),
-        *_task_activation_events(),
+        *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
         TaskAttemptFailed(activation_id=activation, attempt=1, failure=failure),
     )
@@ -508,12 +762,13 @@ def test_disallowed_or_exhausted_failure_fails_node_graph_and_invocation(
         retry_on=retry_on,
         max_attempts=max_attempts,
     )
-    activation = activation_id("root", "work", 0, ("tok-1",))
+    start_token = _canonical_start_token(compiled)
+    activation = activation_id("root", "work", 0, (start_token.token_id,))
     failure = TaskFailure(kind=failure_kind, message="closed failure")  # type: ignore[arg-type]
     events = (
         _invocation(),
         _root(),
-        *_task_activation_events(),
+        *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
         TaskAttemptFailed(activation_id=activation, attempt=1, failure=failure),
     )
@@ -540,11 +795,12 @@ def test_successful_task_completion_is_routed_structurally() -> None:
         "      - {from: work, to: done}",
         start="work",
     )
-    activation = activation_id("root", "work", 0, ("tok-1",))
+    start_token = _canonical_start_token(compiled)
+    activation = activation_id("root", "work", 0, (start_token.token_id,))
     events = (
         _invocation(),
         _root(),
-        *_task_activation_events(payload={"request": 1}),
+        *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
         TaskAttemptSucceeded(activation_id=activation, attempt=1, output={"result": 2}),
     )
@@ -573,7 +829,8 @@ def test_completed_end_is_rechecked_after_later_task_settlement() -> None:
         start="work",
     )
     end_activation = activation_id("root", "done", 0, ("end-token",))
-    work_activation = activation_id("root", "work", 0, ("work-token",))
+    start_token = _canonical_start_token(compiled)
+    work_activation = activation_id("root", "work", 0, (start_token.token_id,))
     assert end_activation < work_activation
     events = (
         _invocation(),
@@ -593,19 +850,13 @@ def test_completed_end_is_rechecked_after_later_task_settlement() -> None:
             token_ids=("end-token",),
         ),
         NodeCompleted(activation_id=end_activation, output="final"),
-        TokenOffered(
-            token_id="work-token",
-            graph_instance_id="root",
-            source=None,
-            target="work",
-            payload=None,
-        ),
-        TokenConsumed(token_id="work-token", graph_instance_id="root", node_id="work"),
+        start_token,
+        TokenConsumed(token_id=start_token.token_id, graph_instance_id="root", node_id="work"),
         NodeActivated(
             activation_id=work_activation,
             graph_instance_id="root",
             node_id="work",
-            token_ids=("work-token",),
+            token_ids=(start_token.token_id,),
         ),
         TaskAttemptStarted(
             activation_id=work_activation,
@@ -628,16 +879,21 @@ def test_completed_end_is_rechecked_after_later_task_settlement() -> None:
 
 def test_projection_order_does_not_change_task_order() -> None:
     compiled = _compiled(
-        f"{_task_node('work')}\n      done: {{kind: end}}",
-        "      - {from: work, to: done}",
-        start="work",
+        f"      source: {{kind: gate, expression: 'false'}}\n{_task_node('work')}\n      done: {{kind: end}}",
+        """      - {from: source, to: work, condition: 'false'}
+      - {from: work, to: done}""",
+        start="source",
     )
     tokens = (
-        TokenOffered(token_id="tok-b", graph_instance_id="root", source=None, target="work", payload="B"),
-        TokenOffered(token_id="tok-a", graph_instance_id="root", source=None, target="work", payload="A"),
+        TokenOffered(token_id="tok-b", graph_instance_id="root", source="source", target="work", payload="B"),
+        TokenOffered(token_id="tok-a", graph_instance_id="root", source="source", target="work", payload="A"),
     )
-    first = plan_next(compiled, _projection(_invocation(), _root(), *tokens))
-    second = plan_next(compiled, _projection(_invocation(), _root(), *reversed(tokens)))
+    start_events = _completed_start_gate_events(compiled, "source")
+    first = plan_next(compiled, _projection(_invocation(), _root(), *start_events, *tokens))
+    second = plan_next(
+        compiled,
+        _projection(_invocation(), _root(), *start_events, *reversed(tokens)),
+    )
 
     assert first == second
 
@@ -667,11 +923,12 @@ def test_active_attempt_is_not_planned_twice() -> None:
         "      - {from: work, to: done}",
         start="work",
     )
-    activation = activation_id("root", "work", 0, ("tok-1",))
+    start_token = _canonical_start_token(compiled)
+    activation = activation_id("root", "work", 0, (start_token.token_id,))
     projection = _projection(
         _invocation(),
         _root(),
-        *_task_activation_events(),
+        *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
     )
 

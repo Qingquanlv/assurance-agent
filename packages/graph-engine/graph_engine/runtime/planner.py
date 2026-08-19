@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
@@ -36,6 +37,21 @@ class PlanningError(GraphEngineError):
 
 
 TerminalStatus = Literal["succeeded", "failed", "stopped"]
+ExecutionMode = Literal["task", "structural", "unsupported"]
+ConsumptionMode = Literal["one", "join", "all_available"]
+StructuralOutputBuilder = Callable[
+    ["_PlannerState", CompiledNode, ActivationRecord],
+    JSONValue,
+]
+
+
+@dataclass(frozen=True, slots=True)
+class _NodeBehavior:
+    execution: ExecutionMode
+    consumption: ConsumptionMode
+    output_builder: StructuralOutputBuilder | None = None
+    routes_completion: bool = False
+    completes_graph: bool = False
 
 
 def activation_id(
@@ -161,11 +177,14 @@ def plan_next(compiled: CompiledWorkflow, projection: InvocationProjection) -> P
         if _activation_count(state, graph_instance_id) >= graph.max_activations:
             _fail_graph(state, graph_instance_id, f"max_activations_exceeded:{graph_instance_id}")
             break
+        behavior = _behavior(node)
+        if behavior.execution == "unsupported":
+            raise PlanningError(f"planner does not support node kind {node.definition.kind!r}")
         activation = _activate(state, graph_instance_id, node, token_ids)
-        if node.definition.kind == "task":
+        if behavior.execution == "task":
             state.tasks.append(_planned_task(state, node, activation))
         else:
-            _complete_structural(state, graph, node, activation)
+            _complete_structural(state, node, behavior, activation)
             _finish_settled_graphs(state)
             if state.terminal is not None:
                 break
@@ -183,6 +202,38 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
     for graph in projection.graph_instances:
         if graph.graph_id not in compiled.graphs:
             raise PlanningError(f"unknown graph {graph.graph_id!r}")
+
+    token_by_id = {token.token_id: token for token in projection.offered_tokens}
+    for token in projection.offered_tokens:
+        graph_record = graphs.get(token.graph_instance_id)
+        if graph_record is None:
+            raise PlanningError(f"token {token.token_id!r} references an unknown graph instance")
+        graph = compiled.graphs[graph_record.graph_id]
+        if token.target not in graph.nodes:
+            raise PlanningError(f"token {token.token_id!r} targets unknown node {token.target!r}")
+        if token.source is not None and token.source not in graph.nodes:
+            raise PlanningError(f"token {token.token_id!r} has unknown source node {token.source!r}")
+
+    for graph_record in projection.graph_instances:
+        graph = compiled.graphs[graph_record.graph_id]
+        source_less = tuple(
+            token
+            for token in projection.offered_tokens
+            if token.graph_instance_id == graph_record.graph_instance_id and token.source is None
+        )
+        if not source_less:
+            continue
+        expected_id = _start_token_id(graph_record.graph_instance_id, graph.start)
+        if (
+            len(source_less) != 1
+            or source_less[0].token_id != expected_id
+            or source_less[0].target != graph.start
+            or thaw_json(source_less[0].payload) != thaw_json(graph_record.input)
+        ):
+            raise PlanningError(
+                f"graph instance {graph_record.graph_instance_id!r} has an invalid canonical start token"
+            )
+
     generations: dict[tuple[str, str], int] = {}
     for activation in projection.activations:
         graph_record = graphs.get(activation.graph_instance_id)
@@ -208,18 +259,41 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
         if activation.activation_id != expected:
             raise PlanningError(f"activation {activation.activation_id!r} has a non-canonical id")
         generations[key] = generation + 1
-        if activation.attempts and node.definition.kind != "task":
+        behavior = _behavior(node)
+        if activation.attempts and behavior.execution != "task":
             raise PlanningError("only task nodes can contain attempt history")
+        activation_tokens = tuple(token_by_id[token_id_] for token_id_ in activation.token_ids)
+        if not _matches_consumption_contract(graph, node, behavior, activation_tokens):
+            raise PlanningError(
+                f"activation {activation.activation_id!r} violates the compiled consumption contract"
+            )
 
-    for token in projection.offered_tokens:
-        graph_record = graphs.get(token.graph_instance_id)
-        if graph_record is None:
-            raise PlanningError(f"token {token.token_id!r} references an unknown graph instance")
-        graph = compiled.graphs[graph_record.graph_id]
-        if token.target not in graph.nodes:
-            raise PlanningError(f"token {token.token_id!r} targets unknown node {token.target!r}")
-        if token.source is not None and token.source not in graph.nodes:
-            raise PlanningError(f"token {token.token_id!r} has unknown source node {token.source!r}")
+
+def _matches_consumption_contract(
+    graph: CompiledGraph,
+    node: CompiledNode,
+    behavior: _NodeBehavior,
+    tokens: tuple[TokenRecord, ...],
+) -> bool:
+    if not tokens:
+        return False
+    predecessors = tuple(dict.fromkeys(edge.from_ for edge in node.incoming))
+    for token in tokens:
+        if token.source is None:
+            if node.node_id != graph.start or token.token_id != _start_token_id(
+                token.graph_instance_id, graph.start
+            ):
+                return False
+        elif token.source not in predecessors:
+            return False
+
+    if behavior.consumption == "one":
+        return len(tokens) == 1
+    if behavior.consumption == "all_available":
+        return tuple(token.token_id for token in tokens) == tuple(sorted(token.token_id for token in tokens))
+    if node.definition.join == "any":
+        return len(tokens) == 1 and tokens[0].source in predecessors
+    return tuple(token.source for token in tokens) == predecessors
 
 
 def _ensure_root_started(state: _PlannerState) -> GraphInstanceRecord:
@@ -256,22 +330,17 @@ def _ensure_root_started(state: _PlannerState) -> GraphInstanceRecord:
     return root
 
 
-def _ensure_start_token(state: _PlannerState, root: GraphInstanceRecord) -> None:
-    graph = state.compiled.graphs[root.graph_id]
-    identifier = _start_token_id(root.graph_instance_id, graph.start)
-    if identifier in state.tokens or any(
-        token.graph_instance_id == root.graph_instance_id
-        and token.source is None
-        and token.target == graph.start
-        for token in state.tokens.values()
-    ):
+def _ensure_start_token(state: _PlannerState, graph_record: GraphInstanceRecord) -> None:
+    graph = state.compiled.graphs[graph_record.graph_id]
+    identifier = _start_token_id(graph_record.graph_instance_id, graph.start)
+    if identifier in state.tokens:
         return
     token = TokenRecord(
         token_id=identifier,
-        graph_instance_id=root.graph_instance_id,
+        graph_instance_id=graph_record.graph_instance_id,
         source=None,
         target=graph.start,
-        payload=root.input,
+        payload=graph_record.input,
     )
     state.tokens[token.token_id] = token
     state.events.append(
@@ -290,7 +359,7 @@ def _terminal_task_activations(state: _PlannerState) -> tuple[ActivationRecord, 
     for activation in state.activations.values():
         graph_record = state.graphs[activation.graph_instance_id]
         node = state.compiled.graphs[graph_record.graph_id].nodes[activation.node_id]
-        if node.definition.kind != "task":
+        if _behavior(node).execution != "task":
             continue
         if activation.status == "stopped":
             terminal.append(activation)
@@ -369,18 +438,21 @@ def _settle_existing_activations(state: _PlannerState) -> None:
         graph_record = state.graphs[activation.graph_instance_id]
         graph = state.compiled.graphs[graph_record.graph_id]
         node = graph.nodes[activation.node_id]
+        behavior = _behavior(node)
+        if behavior.execution == "unsupported":
+            raise PlanningError(f"planner does not support node kind {node.definition.kind!r}")
         if activation.status == "completed":
-            if node.definition.kind == "end":
-                _finish_graph_if_settled(state, graph, activation)
-            else:
+            if behavior.completes_graph:
+                _finish_graph_if_settled(state, activation)
+            elif behavior.routes_completion:
                 _route_completion(state, graph, node, activation)
             if state.terminal is not None:
                 return
             continue
         if activation.status != "active":
             continue
-        if node.definition.kind != "task":
-            _complete_structural(state, graph, node, activation)
+        if behavior.execution == "structural":
+            _complete_structural(state, node, behavior, activation)
             if state.terminal is not None:
                 return
             continue
@@ -392,7 +464,8 @@ def _settle_existing_activations(state: _PlannerState) -> None:
             completed = activation.model_copy(update={"status": "completed", "output": latest.output})
             state.events.append(NodeCompleted(activation_id=activation.activation_id, output=latest.output))
             state.activations[activation.activation_id] = completed
-            _route_completion(state, graph, node, completed)
+            if behavior.routes_completion:
+                _route_completion(state, graph, node, completed)
         elif latest.status == "failed":
             assert latest.failure is not None
             state.tasks.append(_planned_task(state, node, activation))
@@ -443,9 +516,10 @@ def _ready_token_ids(state: _PlannerState, graph_instance_id: str, node: Compile
     )
     if not available:
         return ()
-    if node.definition.kind == "end":
+    behavior = _behavior(node)
+    if behavior.consumption == "all_available":
         return tuple(token.token_id for token in available)
-    if node.definition.kind != "join" or node.definition.join == "any":
+    if behavior.consumption == "one" or node.definition.join == "any":
         return (available[0].token_id,)
 
     predecessors = tuple(dict.fromkeys(edge.from_ for edge in node.incoming))
@@ -545,34 +619,39 @@ def _planned_task(state: _PlannerState, node: CompiledNode, activation: Activati
 
 def _complete_structural(
     state: _PlannerState,
-    graph: CompiledGraph,
     node: CompiledNode,
+    behavior: _NodeBehavior,
     activation: ActivationRecord,
 ) -> None:
-    kind = node.definition.kind
-    activation_input = _activation_input(state, node, activation)
-    if kind == "gate":
-        expression = node.definition.expression
-        assert expression is not None
-        scope = cast(dict[str, JSONValue], thaw_json(activation_input))
-        output: JSONValue = {"value": bool(evaluate_expression(expression, scope))}
-    elif kind == "join":
-        output = {
-            "tokens": [thaw_json(state.tokens[token_id_].payload) for token_id_ in activation.token_ids]
-        }
-    elif kind == "end":
-        payloads = [thaw_json(state.tokens[token_id_].payload) for token_id_ in activation.token_ids]
-        output = payloads[0] if len(payloads) == 1 else {"tokens": payloads}
-    else:
-        raise PlanningError(f"planner does not support structural node kind {kind!r}")
-
+    if behavior.output_builder is None:
+        raise PlanningError(f"planner does not support structural node kind {node.definition.kind!r}")
+    output = behavior.output_builder(state, node, activation)
     completed = activation.model_copy(update={"status": "completed", "output": output})
     state.activations[activation.activation_id] = completed
     state.events.append(NodeCompleted(activation_id=activation.activation_id, output=output))
-    if kind == "end":
-        _finish_graph_if_settled(state, graph, completed)
-    else:
+    if behavior.completes_graph:
+        _finish_graph_if_settled(state, completed)
+    elif behavior.routes_completion:
+        graph_record = state.graphs[activation.graph_instance_id]
+        graph = state.compiled.graphs[graph_record.graph_id]
         _route_completion(state, graph, node, completed)
+
+
+def _gate_output(state: _PlannerState, node: CompiledNode, activation: ActivationRecord) -> JSONValue:
+    activation_input = _activation_input(state, node, activation)
+    expression = node.definition.expression
+    assert expression is not None
+    scope = cast(dict[str, JSONValue], thaw_json(activation_input))
+    return {"value": bool(evaluate_expression(expression, scope))}
+
+
+def _join_output(state: _PlannerState, _node: CompiledNode, activation: ActivationRecord) -> JSONValue:
+    return {"tokens": [thaw_json(state.tokens[token_id_].payload) for token_id_ in activation.token_ids]}
+
+
+def _end_output(state: _PlannerState, _node: CompiledNode, activation: ActivationRecord) -> JSONValue:
+    payloads = [thaw_json(state.tokens[token_id_].payload) for token_id_ in activation.token_ids]
+    return payloads[0] if len(payloads) == 1 else {"tokens": payloads}
 
 
 def _route_completion(
@@ -630,9 +709,7 @@ def _route_completion(
         )
 
 
-def _finish_graph_if_settled(
-    state: _PlannerState, graph: CompiledGraph, end_activation: ActivationRecord
-) -> None:
+def _finish_graph_if_settled(state: _PlannerState, end_activation: ActivationRecord) -> None:
     graph_instance_id = end_activation.graph_instance_id
     if any(
         token.graph_instance_id == graph_instance_id
@@ -643,6 +720,11 @@ def _finish_graph_if_settled(
     if any(
         activation.graph_instance_id == graph_instance_id and activation.status != "completed"
         for activation in state.activations.values()
+    ):
+        return
+    if any(
+        graph.parent_graph_instance_id == graph_instance_id and graph.status != "completed"
+        for graph in state.graphs.values()
     ):
         return
     record = state.graphs[graph_instance_id]
@@ -658,27 +740,32 @@ def _finish_graph_if_settled(
 
 
 def _finish_settled_graphs(state: _PlannerState) -> None:
-    for graph_instance_id in sorted(state.graphs):
-        if state.graphs[graph_instance_id].status != "running":
-            continue
-        completed_ends = sorted(
-            (
-                activation
-                for activation in state.activations.values()
-                if activation.graph_instance_id == graph_instance_id
-                and activation.status == "completed"
-                and state.compiled.graphs[state.graphs[graph_instance_id].graph_id]
-                .nodes[activation.node_id]
-                .definition.kind
-                == "end"
-            ),
-            key=lambda item: item.activation_id,
-        )
-        if completed_ends:
-            graph = state.compiled.graphs[state.graphs[graph_instance_id].graph_id]
-            _finish_graph_if_settled(state, graph, completed_ends[0])
-            if state.terminal is not None:
-                return
+    while True:
+        made_progress = False
+        for graph_instance_id in sorted(state.graphs):
+            if state.graphs[graph_instance_id].status != "running":
+                continue
+            completed_ends = sorted(
+                (
+                    activation
+                    for activation in state.activations.values()
+                    if activation.graph_instance_id == graph_instance_id
+                    and activation.status == "completed"
+                    and _behavior(
+                        state.compiled.graphs[state.graphs[graph_instance_id].graph_id].nodes[
+                            activation.node_id
+                        ]
+                    ).completes_graph
+                ),
+                key=lambda item: item.activation_id,
+            )
+            if completed_ends:
+                _finish_graph_if_settled(state, completed_ends[0])
+                if state.terminal is not None:
+                    return
+                made_progress = state.graphs[graph_instance_id].status == "completed" or made_progress
+        if not made_progress:
+            return
 
 
 def _fail_graph(state: _PlannerState, graph_instance_id: str, reason: str) -> None:
@@ -700,6 +787,39 @@ def _mark_graph_failed(state: _PlannerState, graph_instance_id: str, reason: str
     record = state.graphs[graph_instance_id]
     state.events.append(GraphFailed(graph_instance_id=graph_instance_id, reason=reason))
     state.graphs[graph_instance_id] = record.model_copy(update={"status": "failed", "failure_reason": reason})
+
+
+_NODE_BEHAVIORS = {
+    "task": _NodeBehavior(
+        execution="task",
+        consumption="one",
+        routes_completion=True,
+    ),
+    "gate": _NodeBehavior(
+        execution="structural",
+        consumption="one",
+        output_builder=_gate_output,
+        routes_completion=True,
+    ),
+    "join": _NodeBehavior(
+        execution="structural",
+        consumption="join",
+        output_builder=_join_output,
+        routes_completion=True,
+    ),
+    "end": _NodeBehavior(
+        execution="structural",
+        consumption="all_available",
+        output_builder=_end_output,
+        completes_graph=True,
+    ),
+    "subgraph": _NodeBehavior(execution="unsupported", consumption="one"),
+    "interrupt": _NodeBehavior(execution="unsupported", consumption="one"),
+}
+
+
+def _behavior(node: CompiledNode) -> _NodeBehavior:
+    return _NODE_BEHAVIORS[node.definition.kind]
 
 
 __all__ = [
