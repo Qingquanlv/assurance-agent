@@ -7,22 +7,31 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import NoReturn, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Literal, NoReturn, TypeAlias, TypeVar, cast
 
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
+from pydantic import Field, field_serializer, field_validator, model_validator
 
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.frozen_json import freeze_json
+from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
+from graph_engine.graph.schema import WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
     CommitValidator,
     DurableEffectHandler,
     EffectPolicy,
+    FrozenModel,
+    PluginDescriptor,
     TaskContext,
     TaskHandler,
     TaskOutcome,
     TaskRequest,
 )
+
+if TYPE_CHECKING:
+    from graph_engine.composition.lock import InvocationLock
+    from graph_engine.graph.compiler import CompiledWorkflow
 
 
 class SourceKind(str, Enum):
@@ -428,22 +437,36 @@ def _validate_registry_id(value: object, kind: str) -> str:
 
 
 def _snapshot_registry_id(snapshot: SourceSnapshot) -> str:
+    owner_id = _snapshot_owner_id(snapshot)
+    if snapshot.identity.kind in {SourceKind.PRODUCT_FILE, SourceKind.WHEEL_PRODUCT}:
+        return _product_source_registry_id(owner_id)
+    return owner_id
+
+
+def _snapshot_owner_id(snapshot: SourceSnapshot) -> str:
     identity = snapshot.identity
     if identity.kind == SourceKind.CONFIG_TREE:
         value = identity.plugin_id
-    elif identity.kind in {SourceKind.WHEEL_PLUGIN, SourceKind.EDITABLE_PLUGIN}:
+    elif identity.kind in {
+        SourceKind.WHEEL_PLUGIN,
+        SourceKind.EDITABLE_PLUGIN,
+        SourceKind.WHEEL_PRODUCT,
+    }:
         value = identity.entrypoint_name
     elif identity.kind == SourceKind.PRODUCT_FILE:
         value = identity.product_id
-    elif identity.kind == SourceKind.WHEEL_PRODUCT:
-        value = identity.entrypoint_name
     elif identity.kind == SourceKind.ENGINE:
         value = "graph.engine"
     else:  # pragma: no cover - SourceKind is closed, defensive against unsafe construction.
         raise ValueError(f"source kind has no registry identity: {identity.kind!r}")
     if value is None:
         raise ValueError(f"source snapshot lacks registry identity: {identity.kind.value}")
-    return _validate_registry_id(value, "snapshot registry id")
+    return _validate_registry_id(value, "snapshot owner id")
+
+
+def _product_source_registry_id(product_id: object) -> str:
+    value = _validate_registry_id(product_id, "source product id")
+    return f"{value}.product-source"
 
 
 def _validate_owned_registry_id(value: object, owner_id: object, kind: str) -> None:
@@ -633,17 +656,25 @@ class RegistrySet:
             *self.resources.entries.values(),
             *self.effects.entries.values(),
         )
+        sources_by_owner: dict[str, list[SourceEntry]] = {}
+        for source in self.sources.entries.values():
+            owner_id = _snapshot_owner_id(source.snapshot)
+            sources_by_owner.setdefault(owner_id, []).append(source)
+        plugin_kinds = {
+            SourceKind.WHEEL_PLUGIN,
+            SourceKind.EDITABLE_PLUGIN,
+            SourceKind.CONFIG_TREE,
+        }
         for entry in owned_entries:
-            source = self.sources.entries.get(entry.owner_id)
-            if source is None:
+            candidates = sources_by_owner.get(entry.owner_id, [])
+            if not candidates:
                 raise ValueError(f"registry entry owner has no selected source: {entry.owner_id}")
-            source_kind = source.snapshot.identity.kind
-            if source_kind not in {
-                SourceKind.WHEEL_PLUGIN,
-                SourceKind.EDITABLE_PLUGIN,
-                SourceKind.CONFIG_TREE,
-            }:
+            plugin_sources = tuple(
+                source for source in candidates if source.snapshot.identity.kind in plugin_kinds
+            )
+            if not plugin_sources:
                 raise ValueError(f"registry entry owner is not a plugin source: {entry.owner_id}")
+            source_kind = plugin_sources[0].snapshot.identity.kind
             if source_kind == SourceKind.CONFIG_TREE and isinstance(
                 entry,
                 TaskHandlerEntry | CommitValidatorEntry | EffectEntry,
@@ -658,6 +689,268 @@ class RegistrySet:
                 raise ValueError(f"effect intent schema is not registered: {effect.intent_schema_id}")
             if effect.receipt_schema_id not in self.schemas.entries:
                 raise ValueError(f"effect receipt schema is not registered: {effect.receipt_schema_id}")
+
+
+class PluginRequirement(FrozenModel):
+    """One exact source requirement expressed as a PEP 440 constraint."""
+
+    plugin_id: str
+    version_specifier: str
+
+    @field_validator("plugin_id")
+    @classmethod
+    def _validate_plugin_id(cls, value: str) -> str:
+        return _validate_manifest_id(value, "plugin requirement id")
+
+    @field_validator("version_specifier")
+    @classmethod
+    def _validate_version_specifier(cls, value: str) -> str:
+        try:
+            return str(SpecifierSet(value))
+        except InvalidSpecifier as error:
+            raise ValueError(f"invalid plugin version specifier: {value!r}") from error
+
+
+class ProductManifest(FrozenModel):
+    """Normalized product input consumed by the registry platform."""
+
+    schema_version: Literal["1"] = "1"
+    product_id: str
+    product_version: str
+    engine_api: str
+    plugins: tuple[PluginRequirement, ...]
+    entrypoints: Mapping[str, str]
+    configuration: FrozenJSONValue = Field(default_factory=dict)
+    config_plugin_paths: tuple[str, ...] = ()
+    workflow: WorkflowDef | None = None
+    workflow_resource_id: str | None = None
+
+    @field_validator("product_id")
+    @classmethod
+    def _validate_product_id(cls, value: str) -> str:
+        return _validate_manifest_id(value, "product id")
+
+    @field_validator("product_version")
+    @classmethod
+    def _validate_product_version(cls, value: str) -> str:
+        try:
+            return str(Version(value))
+        except InvalidVersion as error:
+            raise ValueError(f"invalid product version: {value!r}") from error
+
+    @field_validator("engine_api")
+    @classmethod
+    def _validate_engine_api(cls, value: str) -> str:
+        try:
+            return str(Version(value))
+        except InvalidVersion:
+            try:
+                return str(SpecifierSet(value))
+            except InvalidSpecifier as error:
+                raise ValueError(f"invalid engine API requirement: {value!r}") from error
+
+    @field_validator("entrypoints", mode="after")
+    @classmethod
+    def _freeze_entrypoints(cls, values: Mapping[str, str]) -> Mapping[str, str]:
+        copied = dict(values)
+        if not copied:
+            raise ValueError("product entrypoints must not be empty")
+        if any(
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(graph_id, str)
+            or not graph_id.strip()
+            for name, graph_id in copied.items()
+        ):
+            raise ValueError("product entrypoints must map non-empty names to graph ids")
+        return MappingProxyType(dict(sorted(copied.items())))
+
+    @field_validator("configuration", mode="after")
+    @classmethod
+    def _validate_configuration(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            raise ValueError("product configuration must be a namespaced mapping")
+        for plugin_id, plugin_configuration in cast(Mapping[object, object], value).items():
+            if not isinstance(plugin_id, str):
+                raise ValueError("product configuration namespace must be text")
+            _validate_manifest_id(plugin_id, "configuration plugin id")
+            if not isinstance(plugin_configuration, Mapping):
+                raise ValueError(f"configuration for {plugin_id} must be a mapping")
+        return value
+
+    @field_validator("config_plugin_paths")
+    @classmethod
+    def _validate_config_plugin_paths(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        frozen = tuple(values)
+        if any(not isinstance(value, str) or not value for value in frozen):
+            raise ValueError("config plugin paths must be non-empty text")
+        if len(set(frozen)) != len(frozen):
+            raise ValueError("config plugin paths must be unique")
+        return frozen
+
+    @field_validator("workflow_resource_id")
+    @classmethod
+    def _validate_workflow_resource_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_manifest_id(value, "workflow resource id")
+
+    @model_validator(mode="after")
+    def _validate_manifest_closure(self) -> ProductManifest:
+        if (self.workflow is None) == (self.workflow_resource_id is None):
+            raise ValueError("product manifest requires exactly one workflow form")
+        if not self.plugins:
+            raise ValueError("product manifest must require at least one plugin")
+        plugin_ids = tuple(requirement.plugin_id for requirement in self.plugins)
+        if len(set(plugin_ids)) != len(plugin_ids):
+            raise ValueError("product plugin requirements must be unique")
+        if self.workflow is not None and dict(self.workflow.entrypoints) != dict(self.entrypoints):
+            raise ValueError("inline workflow entrypoints must equal product entrypoints")
+        return self
+
+    @field_serializer("entrypoints")
+    def _serialize_entrypoints(self, value: Mapping[str, str]) -> dict[str, str]:
+        return dict(value)
+
+    @field_serializer("configuration")
+    def _serialize_configuration(self, value: object) -> object:
+        return thaw_json(value)
+
+    @property
+    def required_plugin_ids(self) -> tuple[str, ...]:
+        return tuple(requirement.plugin_id for requirement in self.plugins)
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenComposition:
+    """The sole immutable composition value accepted by the Phase 2 runtime."""
+
+    manifest: ProductManifest
+    descriptors: tuple[PluginDescriptor, ...]
+    registries: RegistrySet
+    workflow: CompiledWorkflow
+    configuration: object
+    providers: Mapping[str, object]
+    product_provider: object | None
+    declarative_sources: Mapping[str, SourceSnapshot]
+    lock: InvocationLock
+    digest: str
+
+    def __post_init__(self) -> None:
+        from graph_engine.composition.lock import InvocationLock, authenticate_composition_lock
+        from graph_engine.graph.compiler import CompiledWorkflow
+
+        if not isinstance(self.manifest, ProductManifest):
+            raise TypeError("frozen composition manifest must be a ProductManifest")
+        descriptors = tuple(self.descriptors)
+        if any(not isinstance(descriptor, PluginDescriptor) for descriptor in descriptors):
+            raise TypeError("frozen composition descriptors must contain PluginDescriptor values")
+        if not isinstance(self.registries, RegistrySet):
+            raise TypeError("frozen composition registries must be a RegistrySet")
+        if not isinstance(self.workflow, CompiledWorkflow):
+            raise TypeError("frozen composition workflow must be a CompiledWorkflow")
+        if not isinstance(self.lock, InvocationLock):
+            raise TypeError("frozen composition lock must be an InvocationLock")
+        providers = _immutable_mapping(self.providers)
+        declarative_sources = _immutable_mapping(self.declarative_sources)
+        if any(not isinstance(snapshot, SourceSnapshot) for snapshot in declarative_sources.values()):
+            raise TypeError("declarative source view must contain SourceSnapshot values")
+        configuration = freeze_json(self.configuration)
+        if not isinstance(configuration, Mapping):
+            raise TypeError("frozen composition configuration must be a mapping")
+        object.__setattr__(self, "descriptors", descriptors)
+        object.__setattr__(self, "providers", providers)
+        object.__setattr__(self, "declarative_sources", declarative_sources)
+        object.__setattr__(self, "configuration", configuration)
+
+        authenticate_composition_lock(
+            self.manifest,
+            descriptors,
+            self.registries,
+            self.workflow,
+            configuration,
+            self.lock,
+        )
+        expected_digest = canonical_digest({"lock_digest": self.lock.digest})
+        if self.digest != expected_digest:
+            raise ValueError("frozen composition digest does not authenticate its lock")
+
+        descriptor_ids = tuple(descriptor.plugin_id for descriptor in descriptors)
+        if descriptor_ids != self.lock.dependency_order:
+            raise ValueError("composition descriptors disagree with locked dependency order")
+        implementation_ids = set(providers) | set(declarative_sources)
+        if implementation_ids != set(descriptor_ids):
+            raise ValueError("composition provider set disagrees with selected descriptors")
+        for plugin_id, snapshot in declarative_sources.items():
+            source = self.registries.sources.entries.get(plugin_id)
+            if source is None or source.snapshot is not snapshot:
+                raise ValueError("composition declarative source is not the selected snapshot")
+
+        engine_source = self.registries.sources.entries.get("graph.engine")
+        if engine_source is None or engine_source.snapshot.digest != self.lock.engine_digest:
+            raise ValueError("composition engine source disagrees with invocation lock")
+        product_source = self.registries.sources.entries.get(
+            _product_source_registry_id(self.manifest.product_id)
+        )
+        if product_source is None or (product_source.snapshot.digest != self.lock.product.source.digest):
+            raise ValueError("composition product source disagrees with invocation lock")
+        locked_plugins = {plugin.plugin_id: plugin for plugin in self.lock.plugins}
+        for plugin_id in descriptor_ids:
+            source = self.registries.sources.entries.get(plugin_id)
+            if source is None or source.snapshot.digest != locked_plugins[plugin_id].source.digest:
+                raise ValueError("composition plugin source disagrees with invocation lock")
+
+    @classmethod
+    def freeze(
+        cls,
+        manifest: ProductManifest,
+        registries: RegistrySet,
+        workflow: CompiledWorkflow,
+        lock: InvocationLock,
+        *,
+        descriptors: tuple[PluginDescriptor, ...] = (),
+        configuration: object | None = None,
+        providers: Mapping[str, object] | None = None,
+        product_provider: object | None = None,
+        declarative_sources: Mapping[str, SourceSnapshot] | None = None,
+    ) -> FrozenComposition:
+        from graph_engine.composition.lock import authenticate_composition_lock
+
+        frozen_configuration = freeze_json(manifest.configuration if configuration is None else configuration)
+        authenticate_composition_lock(
+            manifest,
+            tuple(descriptors),
+            registries,
+            workflow,
+            frozen_configuration,
+            lock,
+        )
+        digest = canonical_digest({"lock_digest": lock.digest})
+        return cls(
+            manifest=manifest,
+            descriptors=tuple(descriptors),
+            registries=registries,
+            workflow=workflow,
+            configuration=frozen_configuration,
+            providers={} if providers is None else providers,
+            product_provider=product_provider,
+            declarative_sources={} if declarative_sources is None else declarative_sources,
+            lock=lock,
+            digest=digest,
+        )
+
+    @property
+    def lock_digest(self) -> str:
+        return self.lock.digest
+
+
+def _validate_manifest_id(value: object, kind: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"invalid {kind}: {value!r}")
+    try:
+        return validate_qualified_id(value)
+    except IdentifierError as error:
+        raise ValueError(f"invalid {kind}: {value!r}") from error
 
 
 def _file_digest_document(files: tuple[SourceFile, ...]) -> JSONValue:
@@ -732,6 +1025,9 @@ __all__ = [
     "CommitValidatorEntry",
     "EffectEntry",
     "EffectRegistry",
+    "FrozenComposition",
+    "PluginRequirement",
+    "ProductManifest",
     "RegistrySet",
     "ResourceEntry",
     "ResourceRegistry",

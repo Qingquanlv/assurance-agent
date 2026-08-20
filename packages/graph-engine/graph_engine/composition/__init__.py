@@ -9,6 +9,16 @@ from graph_engine.composition.declarative import (
     load_product_file,
 )
 from graph_engine.composition.dependencies import DependencyConflict, resolve_dependency_order
+from graph_engine.composition.lock import (
+    InvocationLock,
+    LockedDependency,
+    LockedPlugin,
+    LockedProduct,
+    LockedSource,
+    LockedSourceFile,
+    RegistryDigests,
+    RegistryProjections,
+)
 from graph_engine.composition.models import (
     CapabilityBindingEntry,
     CapabilityEntry,
@@ -16,6 +26,9 @@ from graph_engine.composition.models import (
     CommitValidatorEntry,
     EffectEntry,
     EffectRegistry,
+    FrozenComposition,
+    PluginRequirement,
+    ProductManifest,
     RegistrySet,
     ResourceEntry,
     ResourceRegistry,
@@ -30,6 +43,13 @@ from graph_engine.composition.models import (
     TaskHandlerEntry,
 )
 from graph_engine.composition.registries import RegistryConflict, build_registries
+from graph_engine.composition.resolver import (
+    PluginSource,
+    ProductSource,
+    RegistryPlatform,
+    ResolutionError,
+    ResolutionRequest,
+)
 from graph_engine.composition.source_fs import (
     DeclaredTreePolicy,
     SourceSnapshotError,
@@ -38,6 +58,7 @@ from graph_engine.composition.source_fs import (
 )
 from graph_engine.composition.sources import (
     EditableWheelPluginSource,
+    MetadataProvider,
     WheelPluginSource,
     WheelProductSource,
     load_snapshotted_entrypoint,
@@ -59,8 +80,25 @@ __all__ = [
     "EditableWheelPluginSource",
     "EffectEntry",
     "EffectRegistry",
+    "FrozenComposition",
+    "InvocationLock",
+    "LockedDependency",
+    "LockedPlugin",
+    "LockedProduct",
+    "LockedSource",
+    "LockedSourceFile",
+    "MetadataProvider",
+    "PluginSource",
+    "PluginRequirement",
+    "ProductManifest",
     "ProductFileSource",
+    "ProductSource",
+    "RegistryPlatform",
     "RegistryConflict",
+    "RegistryDigests",
+    "RegistryProjections",
+    "ResolutionError",
+    "ResolutionRequest",
     "RegistrySet",
     "ResourceEntry",
     "ResourceRegistry",

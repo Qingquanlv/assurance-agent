@@ -4,8 +4,9 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal, Self, cast
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FailureKind, ResourceClaims
 
 if TYPE_CHECKING:
@@ -114,14 +115,34 @@ class GraphDef(FrozenModel):
 class WorkflowDef(FrozenModel):
     name: str
     entrypoints: dict[str, str]
+    schemas: tuple[str, ...] = ()
+    resources: tuple[str, ...] = ()
+    effects: tuple[str, ...] = ()
     retry: dict[str, RetryPolicyDef]
     timeout: dict[str, TimeoutPolicyDef]
     graphs: dict[str, GraphDef]
 
+    @field_validator("schemas", "resources", "effects")
+    @classmethod
+    def _validate_registry_references(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for value in values:
+            try:
+                normalized.append(validate_qualified_id(value))
+            except IdentifierError as error:
+                raise ValueError(f"invalid workflow registry reference: {value!r}") from error
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("workflow registry references must be unique")
+        return tuple(sorted(normalized))
+
 
 def parse_workflow(text: str) -> WorkflowDef:
     raw = yaml.safe_load(text)
-    return WorkflowDef.model_validate(raw, by_alias=True, by_name=False)
+    return WorkflowDef.model_validate(
+        raw,
+        by_alias=True,  # pyright: ignore[reportCallIssue]
+        by_name=False,  # pyright: ignore[reportCallIssue]
+    )
 
 
 __all__ = [

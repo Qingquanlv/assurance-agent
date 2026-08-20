@@ -21,6 +21,8 @@ from graph_engine.composition.models import (
     SourceRegistry,
     SourceSnapshot,
     TaskHandlerEntry,
+    _snapshot_owner_id,
+    _snapshot_registry_id,
 )
 from graph_engine.errors import GraphEngineError
 from graph_engine.frozen_json import freeze_json
@@ -99,7 +101,10 @@ def _build_source_registry(
     for snapshot in tuple(sources):
         if not isinstance(snapshot, SourceSnapshot):
             raise RegistryConflict("source registry accepts only SourceSnapshot entries")
-        source_id = _source_id(snapshot)
+        try:
+            source_id = _snapshot_registry_id(snapshot)
+        except (TypeError, ValueError) as error:
+            raise RegistryConflict(str(error)) from error
         if source_id in entries:
             raise RegistryConflict(f"duplicate source id: {source_id}")
         entry = SourceEntry(source_id=source_id, snapshot=snapshot)
@@ -124,35 +129,17 @@ def _build_source_registry(
     return SourceRegistry(entries), MappingProxyType(dict(sorted(plugin_entries.items())))
 
 
-def _source_id(snapshot: SourceSnapshot) -> str:
-    identity = snapshot.identity
-    plugin_id = _plugin_source_id(snapshot)
-    if plugin_id is not None:
-        return plugin_id
-    if identity.kind == SourceKind.PRODUCT_FILE:
-        if identity.product_id is None:
-            raise RegistryConflict("product source has no product id")
-        return _qualified_id(identity.product_id, "source product id")
-    if identity.kind == SourceKind.WHEEL_PRODUCT:
-        if identity.entrypoint_name is None:
-            raise RegistryConflict("wheel product source has no entry point id")
-        return _qualified_id(identity.entrypoint_name, "source product id")
-    if identity.kind == SourceKind.ENGINE:
-        return "graph.engine"
-    raise RegistryConflict(f"source kind has no closed registry identity: {identity.kind.value}")
-
-
 def _plugin_source_id(snapshot: SourceSnapshot) -> str | None:
-    identity = snapshot.identity
-    if identity.kind == SourceKind.CONFIG_TREE:
-        if identity.plugin_id is None:
-            raise RegistryConflict("config plugin source has no plugin id")
-        return _qualified_id(identity.plugin_id, "source plugin id")
-    if identity.kind in {SourceKind.WHEEL_PLUGIN, SourceKind.EDITABLE_PLUGIN}:
-        if identity.entrypoint_name is None:
-            raise RegistryConflict("wheel plugin source has no entry point id")
-        return _qualified_id(identity.entrypoint_name, "source plugin id")
-    return None
+    if snapshot.identity.kind not in {
+        SourceKind.CONFIG_TREE,
+        SourceKind.WHEEL_PLUGIN,
+        SourceKind.EDITABLE_PLUGIN,
+    }:
+        return None
+    try:
+        return _snapshot_owner_id(snapshot)
+    except (TypeError, ValueError) as error:
+        raise RegistryConflict(str(error)) from error
 
 
 def _pair_contributions(

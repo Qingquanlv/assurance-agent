@@ -13,7 +13,7 @@ from pathlib import Path
 import stat
 import sys
 from types import ModuleType
-from typing import Literal, TypeAlias, cast
+from typing import Literal, Protocol, TypeAlias, cast
 
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
@@ -82,17 +82,33 @@ class _ResolvedWheelSnapshot:
     entrypoint: metadata.EntryPoint
 
 
+@dataclass(frozen=True, slots=True)
+class _LoadedSnapshottedEntrypoint:
+    provider: WheelProvider
+    declaration: object
+
+
 class _EntryPointConfigParser(configparser.ConfigParser):
     def optionxform(self, optionstr: str) -> str:
         return optionstr
 
 
-def snapshot_wheel_source(source: WheelSource) -> SourceSnapshot:
-    return _resolve_wheel_snapshot(source).snapshot
+class MetadataProvider(Protocol):
+    def distribution(self, distribution_name: str, /) -> metadata.Distribution: ...
 
 
-def _resolve_wheel_snapshot(source: WheelSource) -> _ResolvedWheelSnapshot:
-    distribution = _selected_distribution(source)
+def snapshot_wheel_source(
+    source: WheelSource,
+    metadata_provider: MetadataProvider = metadata,
+) -> SourceSnapshot:
+    return _resolve_wheel_snapshot(source, metadata_provider).snapshot
+
+
+def _resolve_wheel_snapshot(
+    source: WheelSource,
+    metadata_provider: MetadataProvider,
+) -> _ResolvedWheelSnapshot:
+    distribution = _selected_distribution(source, metadata_provider)
     entrypoint = _selected_entrypoint(distribution, source)
     version = _normalized_version(distribution.version, "distribution version")
     kind = SourceKind(source.kind)
@@ -135,18 +151,30 @@ def _resolve_wheel_snapshot(source: WheelSource) -> _ResolvedWheelSnapshot:
     )
 
 
-def load_snapshotted_entrypoint(source: WheelSource, snapshot: SourceSnapshot) -> WheelProvider:
+def load_snapshotted_entrypoint(
+    source: WheelSource,
+    snapshot: SourceSnapshot,
+    metadata_provider: MetadataProvider = metadata,
+) -> WheelProvider:
+    return _load_snapshotted_entrypoint_binding(source, snapshot, metadata_provider).provider
+
+
+def _load_snapshotted_entrypoint_binding(
+    source: WheelSource,
+    snapshot: SourceSnapshot,
+    metadata_provider: MetadataProvider = metadata,
+) -> _LoadedSnapshottedEntrypoint:
     _validate_snapshot_matches_source(source, snapshot)
-    resolved = _resolve_wheel_snapshot(source)
+    resolved = _resolve_wheel_snapshot(source, metadata_provider)
     if resolved.snapshot != snapshot:
         raise SourceSnapshotError("wheel source changed after snapshot")
-    _reject_preloaded_entrypoint_modules(resolved.entrypoint)
+    _reject_preloaded_entrypoint_modules(resolved.entrypoint, snapshot)
     try:
         loaded = resolved.entrypoint.load()
     except Exception as error:
         raise SourceSnapshotError("cannot load snapshotted entry point") from error
     _verify_loaded_provider_provenance(loaded, resolved.entrypoint, snapshot)
-    after_load = _resolve_wheel_snapshot(source)
+    after_load = _resolve_wheel_snapshot(source, metadata_provider)
     if after_load.snapshot != snapshot:
         raise SourceSnapshotError("wheel source changed while loading its entry point")
 
@@ -156,14 +184,14 @@ def load_snapshotted_entrypoint(source: WheelSource, snapshot: SourceSnapshot) -
             raise SourceSnapshotError("loaded product id does not match source identity")
         if _normalized_version(manifest.product_version, "product version") != snapshot.identity.version:
             raise SourceSnapshotError("loaded product version does not match source identity")
-        return cast(ProductProvider, loaded)
+        return _LoadedSnapshottedEntrypoint(cast(ProductProvider, loaded), manifest)
 
     descriptor = cast(PluginDescriptor, _call_descriptor(loaded, "descriptor", "plugin"))
     if descriptor.plugin_id != snapshot.identity.entrypoint_name:
         raise SourceSnapshotError("loaded plugin id does not match source identity")
     if _normalized_version(descriptor.plugin_version, "plugin version") != snapshot.identity.version:
         raise SourceSnapshotError("loaded plugin version does not match source identity")
-    return cast(PluginProvider, loaded)
+    return _LoadedSnapshottedEntrypoint(cast(PluginProvider, loaded), descriptor)
 
 
 def _normalized_distribution_name(value: str) -> str:
@@ -182,9 +210,12 @@ def _normalized_version(value: str, kind: str) -> str:
         raise SourceSnapshotError(f"invalid {kind}: {value!r}") from error
 
 
-def _selected_distribution(source: WheelSource) -> metadata.Distribution:
+def _selected_distribution(
+    source: WheelSource,
+    metadata_provider: MetadataProvider,
+) -> metadata.Distribution:
     try:
-        distribution = metadata.distribution(source.distribution)
+        distribution = metadata_provider.distribution(source.distribution)
     except metadata.PackageNotFoundError as error:
         raise SourceSnapshotError(f"installed distribution not found: {source.distribution}") from error
     try:
@@ -216,6 +247,39 @@ def _capture_installed_distribution(
     entrypoint: metadata.EntryPoint,
     version: str,
 ) -> tuple[Path, tuple[SourceFile, ...]]:
+    root, files, record_relative = _capture_installed_distribution_files(distribution)
+    _validate_frozen_installed_metadata(
+        files,
+        record_relative,
+        source,
+        entrypoint,
+        version,
+    )
+    return root, files
+
+
+def _snapshot_installed_engine_distribution(
+    distribution: metadata.Distribution,
+) -> SourceSnapshot:
+    """Capture an installed graph-engine wheel with its authenticated metadata."""
+
+    version = _normalized_version(distribution.version, "engine distribution version")
+    root, files, record_relative = _capture_installed_distribution_files(distribution)
+    _validate_frozen_distribution_metadata(
+        files,
+        record_relative,
+        distribution_name="graph-engine",
+        version=version,
+    )
+    return SourceSnapshot.from_identity(
+        SourceIdentity(kind=SourceKind.ENGINE, root=root),
+        files,
+    )
+
+
+def _capture_installed_distribution_files(
+    distribution: metadata.Distribution,
+) -> tuple[Path, tuple[SourceFile, ...], str]:
     root = Path(str(distribution.locate_file("")))
     record_relative = _record_relative_path(distribution, root)
     root_fd = _open_physical_root(root)
@@ -256,16 +320,9 @@ def _capture_installed_distribution(
         rescanned_record, rescanned_state = _read_stable_installed_file(root_fd, record_relative)
         if rescanned_state != record_state or rescanned_record.content != record_file.content:
             raise SourceSnapshotError("installed distribution RECORD changed while it was captured")
-        _validate_frozen_installed_metadata(
-            files,
-            record_relative,
-            source,
-            entrypoint,
-            version,
-        )
         _snapshot_boundary("after_rescan", None)
         resolved_root = _resolve_stable_root(root, root_fd)
-        return resolved_root, tuple(files)
+        return resolved_root, tuple(files), record_relative
     finally:
         os.close(root_fd)
 
@@ -481,38 +538,25 @@ def _parse_record(record_bytes: bytes) -> tuple[tuple[str, str | None, int | Non
 
 
 def _validate_frozen_installed_metadata(
-    files: list[SourceFile],
+    files: tuple[SourceFile, ...] | list[SourceFile],
     record_relative: str,
     source: WheelProductSource | WheelPluginSource,
     entrypoint: metadata.EntryPoint,
     version: str,
 ) -> None:
+    captured = _validate_frozen_distribution_metadata(
+        files,
+        record_relative,
+        distribution_name=source.distribution,
+        version=version,
+    )
     dist_info = record_relative.rsplit("/", 1)[0]
-    required = {
-        f"{dist_info}/METADATA": "METADATA",
-        f"{dist_info}/entry_points.txt": "entry_points.txt",
-    }
-    captured = {source_file.path: source_file.content for source_file in files}
-    if not required.keys() <= captured.keys():
+    entrypoints_path = f"{dist_info}/entry_points.txt"
+    if entrypoints_path not in captured:
         raise SourceSnapshotError("installed distribution authenticated metadata is incomplete")
-
-    try:
-        message = BytesParser(policy=compat32).parsebytes(captured[f"{dist_info}/METADATA"])
-        frozen_name = message["Name"]
-        frozen_version = message["Version"]
-    except Exception as error:
-        raise SourceSnapshotError("installed distribution METADATA is malformed") from error
-    if (
-        not frozen_name
-        or canonicalize_name(frozen_name) != source.distribution
-        or not frozen_version
-        or _normalized_version(frozen_version, "frozen distribution version") != version
-    ):
-        raise SourceSnapshotError("installed distribution METADATA disagrees with source identity")
-
     parser = _EntryPointConfigParser(interpolation=None, delimiters=("=",), strict=True)
     try:
-        parser.read_string(captured[f"{dist_info}/entry_points.txt"].decode("utf-8"))
+        parser.read_string(captured[entrypoints_path].decode("utf-8"))
         matches = tuple(
             value.strip()
             for name, value in parser.items(source.entrypoint_group)
@@ -522,6 +566,34 @@ def _validate_frozen_installed_metadata(
         raise SourceSnapshotError("installed distribution entry point metadata is malformed") from error
     if matches != (entrypoint.value,):
         raise SourceSnapshotError("installed distribution entry point metadata disagrees with selection")
+
+
+def _validate_frozen_distribution_metadata(
+    files: tuple[SourceFile, ...] | list[SourceFile],
+    record_relative: str,
+    *,
+    distribution_name: str,
+    version: str,
+) -> dict[str, bytes]:
+    dist_info = record_relative.rsplit("/", 1)[0]
+    metadata_path = f"{dist_info}/METADATA"
+    captured = {source_file.path: source_file.content for source_file in files}
+    if metadata_path not in captured:
+        raise SourceSnapshotError("installed distribution authenticated metadata is incomplete")
+    try:
+        message = BytesParser(policy=compat32).parsebytes(captured[metadata_path])
+        frozen_name = message["Name"]
+        frozen_version = message["Version"]
+    except Exception as error:
+        raise SourceSnapshotError("installed distribution METADATA is malformed") from error
+    if (
+        not frozen_name
+        or canonicalize_name(frozen_name) != canonicalize_name(distribution_name)
+        or not frozen_version
+        or _normalized_version(frozen_version, "frozen distribution version") != version
+    ):
+        raise SourceSnapshotError("installed distribution METADATA disagrees with source identity")
+    return captured
 
 
 def _validate_record_hash(relative_path: str, content: bytes, declared_hash: str) -> None:
@@ -573,12 +645,17 @@ def _canonical_declared_paths(files: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(sorted(paths))
 
 
-def _reject_preloaded_entrypoint_modules(entrypoint: metadata.EntryPoint) -> None:
+def _reject_preloaded_entrypoint_modules(
+    entrypoint: metadata.EntryPoint,
+    snapshot: SourceSnapshot,
+) -> None:
     parts = entrypoint.module.split(".")
     module_names = tuple(".".join(parts[:index]) for index in range(1, len(parts) + 1))
-    loaded = tuple(module_name for module_name in module_names if module_name in sys.modules)
-    if loaded:
-        raise SourceSnapshotError(f"entry point module is already loaded: {loaded[0]}")
+    if entrypoint.module in sys.modules:
+        raise SourceSnapshotError(f"entry point module is already loaded: {entrypoint.module}")
+    for module_name in module_names[:-1]:
+        if module_name in sys.modules:
+            _verify_snapshotted_module(module_name, snapshot)
 
 
 def _verify_loaded_provider_provenance(
@@ -639,6 +716,7 @@ def _call_descriptor(loaded: object, method_name: str, kind: str) -> object:
 
 __all__ = [
     "EditableWheelPluginSource",
+    "MetadataProvider",
     "WheelPluginSource",
     "WheelProductSource",
     "load_snapshotted_entrypoint",

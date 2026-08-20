@@ -268,7 +268,9 @@ def test_registry_set_rejects_executable_owner_that_is_not_a_plugin_source() -> 
 
     with pytest.raises(ValueError, match="owner is not a plugin source"):
         RegistrySet(
-            sources=SourceRegistry({"toy.product": SourceEntry("toy.product", product_snapshot)}),
+            sources=SourceRegistry(
+                {"toy.product.product-source": SourceEntry("toy.product.product-source", product_snapshot)}
+            ),
             capabilities=CapabilityRegistry(
                 entries={handler_entry.capability_id: handler_entry},
                 task_handlers={handler_entry.capability_id: handler},

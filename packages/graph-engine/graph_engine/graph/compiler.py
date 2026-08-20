@@ -38,6 +38,25 @@ class _CapabilityRegistryView(Protocol):
     def commit_validators(self) -> Mapping[str, object]: ...
 
 
+class _EntryRegistryView(Protocol):
+    @property
+    def entries(self) -> Mapping[str, object]: ...
+
+
+class _RegistrySetView(Protocol):
+    @property
+    def capabilities(self) -> _CapabilityRegistryView: ...
+
+    @property
+    def schemas(self) -> _EntryRegistryView: ...
+
+    @property
+    def resources(self) -> _EntryRegistryView: ...
+
+    @property
+    def effects(self) -> _EntryRegistryView: ...
+
+
 class CompileError(GraphEngineError):
     """Raised when a structural workflow cannot be compiled."""
 
@@ -147,6 +166,9 @@ CompiledGraphMap = Annotated[
 class CompiledWorkflow(_CompiledModel):
     name: str
     entrypoints: EntrypointMap
+    schemas: tuple[str, ...] = ()
+    resources: tuple[str, ...] = ()
+    effects: tuple[str, ...] = ()
     retry: RetryMap
     timeout: TimeoutMap
     graphs: CompiledGraphMap
@@ -158,12 +180,19 @@ class CompiledWorkflow(_CompiledModel):
         return MappingProxyType(dict(value))
 
 
-def compile_workflow(workflow: WorkflowDef, registry: _CapabilityRegistryView) -> CompiledWorkflow:
-    _validate_workflow(workflow, registry)
+def compile_workflow(
+    workflow: WorkflowDef,
+    registry: _CapabilityRegistryView | _RegistrySetView,
+) -> CompiledWorkflow:
+    capabilities, schemas, resources, effects = _registry_views(registry)
+    _validate_workflow(workflow, capabilities, schemas, resources, effects)
     graphs = {graph_id: _compile_graph(graph_id, graph) for graph_id, graph in workflow.graphs.items()}
     compiled = CompiledWorkflow(
         name=workflow.name,
         entrypoints=workflow.entrypoints,
+        schemas=workflow.schemas,
+        resources=workflow.resources,
+        effects=workflow.effects,
         retry=workflow.retry,
         timeout=workflow.timeout,
         graphs=graphs,
@@ -176,7 +205,22 @@ def compile_workflow(workflow: WorkflowDef, registry: _CapabilityRegistryView) -
     return compiled.model_copy(update={"digest": canonical_digest(payload)})
 
 
-def _validate_workflow(workflow: WorkflowDef, registry: _CapabilityRegistryView) -> None:
+def _validate_workflow(
+    workflow: WorkflowDef,
+    capabilities: _CapabilityRegistryView,
+    schemas: Mapping[str, object],
+    resources: Mapping[str, object],
+    effects: Mapping[str, object],
+) -> None:
+    for schema_id in workflow.schemas:
+        if schema_id not in schemas:
+            raise CompileError(f"unknown schema {schema_id}")
+    for resource_id in workflow.resources:
+        if resource_id not in resources:
+            raise CompileError(f"unknown resource {resource_id}")
+    for effect_id in workflow.effects:
+        if effect_id not in effects:
+            raise CompileError(f"unknown effect {effect_id}")
     for graph_id in workflow.entrypoints.values():
         if graph_id not in workflow.graphs:
             raise CompileError(f"entrypoint references unknown graph {graph_id}")
@@ -198,7 +242,7 @@ def _validate_workflow(workflow: WorkflowDef, registry: _CapabilityRegistryView)
             outgoing[edge.from_].append(edge.to)
 
         for node_id, node in graph.nodes.items():
-            _validate_node_references(workflow, registry, graph_id, node_id, node)
+            _validate_node_references(workflow, capabilities, graph_id, node_id, node)
             if node.kind == "end" and outgoing[node_id]:
                 raise CompileError(f"end node {graph_id}/{node_id} has outgoing edge")
             if node.kind == "join" and node.join == "all" and len(incoming_sources[node_id]) < 2:
@@ -210,6 +254,28 @@ def _validate_workflow(workflow: WorkflowDef, registry: _CapabilityRegistryView)
                 raise CompileError(f"unreachable node {graph_id}/{node_id}")
 
     _validate_subgraph_dependency_dag(workflow)
+
+
+def _registry_views(
+    registry: _CapabilityRegistryView | _RegistrySetView,
+) -> tuple[
+    _CapabilityRegistryView,
+    Mapping[str, object],
+    Mapping[str, object],
+    Mapping[str, object],
+]:
+    capabilities = getattr(registry, "capabilities", None)
+    if capabilities is None:
+        return cast(_CapabilityRegistryView, registry), {}, {}, {}
+    schemas = getattr(getattr(registry, "schemas", None), "entries", {})
+    resources = getattr(getattr(registry, "resources", None), "entries", {})
+    effects = getattr(getattr(registry, "effects", None), "entries", {})
+    return (
+        cast(_CapabilityRegistryView, capabilities),
+        cast(Mapping[str, object], schemas),
+        cast(Mapping[str, object], resources),
+        cast(Mapping[str, object], effects),
+    )
 
 
 def _validate_subgraph_dependency_dag(workflow: WorkflowDef) -> None:
