@@ -80,6 +80,9 @@ def _source(plugin_id: str) -> SourceSnapshot:
             version="1.0.0",
             entrypoint_group="graph_engine.plugins",
             entrypoint_name=plugin_id,
+            declaration_path=f"{plugin_id.replace('.', '_')}/plugin-declaration.json",
+            plugin_id=plugin_id,
+            plugin_version="1.0.0",
         ),
         (),
     )

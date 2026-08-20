@@ -1,11 +1,29 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from importlib.resources import files
 from pathlib import Path
 
+from graph_engine.composition.sources import WheelPluginDeclaration, WheelProductDeclaration
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 from graph_engine.product import load_plugin_entrypoint, load_product_entrypoint, resolve_product
 from graph_engine.runtime.engine import Engine
+
+
+def test_toy_a_static_declarations_match_live_providers() -> None:
+    package = files("graph_engine_toy_a")
+    product = load_product_entrypoint("toy-a")
+    plugin = load_plugin_entrypoint("toy-a")
+
+    product_declaration = WheelProductDeclaration.model_validate_json(
+        package.joinpath("product-declaration.json").read_bytes()
+    )
+    plugin_declaration = WheelPluginDeclaration.model_validate_json(
+        package.joinpath("plugin-declaration.json").read_bytes()
+    )
+
+    assert product_declaration.manifest == product.manifest()
+    assert plugin_declaration.descriptor == plugin.descriptor()
 
 
 class _InProcessTestHost:

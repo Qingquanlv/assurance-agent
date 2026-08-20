@@ -20,6 +20,7 @@ from graph_engine.plugin_api import (
     PluginContractError,
     PluginDescriptor,
     PluginProvider,
+    ProviderSource,
     RegistryPorts,
     ResourceClaims,
     ResourceContribution,
@@ -41,6 +42,38 @@ class _Handler:
 
 
 _handler = _Handler()
+
+
+def test_plugin_descriptor_authenticates_its_static_source_expectation() -> None:
+    source = ProviderSource(
+        distribution="Toy_Runtime",
+        version="1.0",
+        entrypoint_group="graph_engine.plugins",
+        entrypoint_name="toy.runtime",
+        declaration_path="toy_runtime/plugin-declaration.json",
+    )
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=source,
+        plugin_id="toy.runtime",
+        plugin_version="1.0.0",
+        engine_api=">=0.2,<0.3",
+        dependencies=(),
+        task_handlers=(),
+        commit_validators=(),
+    )
+
+    assert descriptor.source.distribution == "toy-runtime"
+    assert descriptor.source.version == "1.0"
+    with pytest.raises(ValidationError, match="source version must equal plugin version"):
+        PluginDescriptor.model_validate(
+            {
+                **descriptor.model_dump(mode="json"),
+                "source": {**source.model_dump(mode="json"), "version": "2.0.0"},
+            }
+        )
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        ProviderSource.model_validate({**source.model_dump(mode="json"), "inferred": True})
 
 
 class _EffectHandler:
@@ -76,6 +109,8 @@ def test_task_failure_retryability_and_effect_outcome_invariants() -> None:
 def test_plugin_contribution_must_match_descriptor_ids() -> None:
     provider = _Provider(
         descriptor_value=PluginDescriptor(
+            schema_version="1",
+            source=None,
             plugin_id="toy.runtime",
             plugin_version="1.0.0",
             engine_api=">=0.2,<0.3",
@@ -259,23 +294,33 @@ def test_plugin_contribution_snapshots_implementation_mappings() -> None:
 @pytest.mark.parametrize(
     "factory",
     [
-        lambda: PluginDescriptor("toy.runtime", "not-a-version", "1.0", (), ()),
+        lambda: PluginDescriptor(
+            schema_version="1",
+            source=None,
+            plugin_id="toy.runtime",
+            plugin_version="not-a-version",
+            engine_api="1.0",
+            task_handlers=(),
+            commit_validators=(),
+        ),
         lambda: RegistryPorts("not-a-version-or-specifier"),
         lambda: PluginDependency("toy.runtime", "not-a-specifier"),
     ],
 )
 def test_plugin_contracts_reject_invalid_versions_and_specifiers(factory: object) -> None:
-    with pytest.raises(PluginContractError):
+    with pytest.raises((PluginContractError, ValidationError)):
         factory()  # type: ignore[operator]
 
 
 def test_validate_contribution_rejects_duplicate_declared_ids() -> None:
     descriptor = PluginDescriptor(
-        "toy.runtime",
-        "1.0.0",
-        ">=0.2,<0.3",
-        (),
-        (),
+        schema_version="1",
+        source=None,
+        plugin_id="toy.runtime",
+        plugin_version="1.0.0",
+        engine_api=">=0.2,<0.3",
+        task_handlers=(),
+        commit_validators=(),
         schemas=("toy.runtime.schema", "toy.runtime.schema"),
     )
     contribution = PluginContribution(
@@ -290,11 +335,13 @@ def test_validate_contribution_rejects_duplicate_declared_ids() -> None:
 
 def test_validate_contribution_rejects_cross_kind_declared_ids() -> None:
     descriptor = PluginDescriptor(
-        "toy.runtime",
-        "1.0.0",
-        ">=0.2,<0.3",
-        ("toy.runtime.shared",),
-        (),
+        schema_version="1",
+        source=None,
+        plugin_id="toy.runtime",
+        plugin_version="1.0.0",
+        engine_api=">=0.2,<0.3",
+        task_handlers=("toy.runtime.shared",),
+        commit_validators=(),
         schemas=("toy.runtime.shared",),
     )
     contribution = PluginContribution(
@@ -307,11 +354,13 @@ def test_validate_contribution_rejects_cross_kind_declared_ids() -> None:
 
 def test_validate_contribution_matches_all_declared_contribution_kinds() -> None:
     descriptor = PluginDescriptor(
-        "toy.runtime",
-        "1.0.0",
-        ">=0.2,<0.3",
-        ("toy.runtime.run",),
-        ("toy.runtime.validate",),
+        schema_version="1",
+        source=None,
+        plugin_id="toy.runtime",
+        plugin_version="1.0.0",
+        engine_api=">=0.2,<0.3",
+        task_handlers=("toy.runtime.run",),
+        commit_validators=("toy.runtime.validate",),
         schemas=("toy.runtime.schema",),
         resources=("toy.runtime.resource",),
         effects=("toy.runtime.effect",),

@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from importlib import metadata
 import os
 from pathlib import Path
-from typing import Annotated, TypeAlias, cast
+import tomllib
+from typing import Annotated, Literal, TypeAlias, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
@@ -40,23 +41,27 @@ from graph_engine.composition.source_fs import (
     capture_explicit_file,
 )
 from graph_engine.composition.sources import (
+    EditableWheelProductSource,
     EditableWheelPluginSource,
     MetadataProvider,
     WheelPluginSource,
+    WheelPluginDeclaration,
+    WheelProductDeclaration,
     WheelProductSource,
     _load_snapshotted_entrypoint_binding,
+    _resolve_wheel_snapshot,
     _snapshot_installed_engine_distribution,
-    snapshot_wheel_source,
 )
 from graph_engine.errors import GraphEngineError
 from graph_engine.frozen_json import freeze_json
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
-from graph_engine.graph.schema import WorkflowDef, parse_workflow
+from graph_engine.graph.schema import parse_workflow
 from graph_engine.plugin_api import (
     FrozenModel,
     PluginContribution,
     PluginDescriptor,
     PluginProvider,
+    ProviderSource,
     RegistryPorts,
     validate_contribution,
 )
@@ -67,7 +72,7 @@ class ResolutionError(GraphEngineError):
 
 
 ProductSource: TypeAlias = Annotated[
-    WheelProductSource | ProductFileSource,
+    WheelProductSource | EditableWheelProductSource | ProductFileSource,
     Field(discriminator="kind"),
 ]
 PluginSource: TypeAlias = Annotated[
@@ -98,23 +103,19 @@ class _ProductSeed:
 class _PluginCapture:
     source: PluginSource
     snapshot: SourceSnapshot
+    descriptor: PluginDescriptor
     declarative: DeclarativePlugin | None
 
     @property
     def plugin_id(self) -> str:
-        identity = self.snapshot.identity
-        plugin_id = (
-            identity.plugin_id if identity.kind == SourceKind.CONFIG_TREE else identity.entrypoint_name
-        )
-        if plugin_id is None:  # pragma: no cover - authenticated source identities require it.
-            raise ResolutionError("captured plugin source has no plugin id")
-        return plugin_id
+        return self.descriptor.plugin_id
 
 
 @dataclass(frozen=True, slots=True)
 class _CapturedSources:
     engine: SourceSnapshot
     product: SourceSnapshot
+    product_manifest: ProductManifest | None
     plugins: tuple[_PluginCapture, ...]
 
 
@@ -144,22 +145,23 @@ class RegistryPlatform:
         # 2. Capture every explicit product, plugin, config, and engine source.
         captured = self._snapshot_sources(request, seed)
 
-        # 3. Authenticate and normalize the effective product manifest.
-        manifest, product_provider = self._load_product(seed, captured.product)
-
-        # 4-6. Load only already-snapshotted trusted providers and freeze descriptors.
+        # 3. Normalize only the authenticated, data-only product declaration.
+        manifest = self._declared_product_manifest(seed, captured)
         manifest = self._extend_manifest_with_explicit_configs(manifest, captured.plugins)
-        _validate_root_source_set(manifest, captured.plugins)
+
+        # 4. Validate the complete exact dependency closure and canonical topology
+        # before importing any wheel provider code.
+        descriptors = self._declared_plugin_descriptors(captured.plugins)
+        _validate_product_requirements(manifest, descriptors)
+        dependency_order = resolve_dependency_order(descriptors, manifest.required_plugin_ids)
+
+        # 5-6. Load only providers selected by the already-validated topology and
+        # require their live declarations to equal the authenticated static data.
+        product_provider = self._load_product_provider(seed, captured.product, manifest)
         loaded = self._load_plugin_descriptors(
             captured.plugins,
-            manifest.required_plugin_ids,
-        )
-
-        # 7. Validate the exact selected source set, constraints, and canonical topology.
-        _validate_product_requirements(manifest, loaded.descriptors)
-        dependency_order = resolve_dependency_order(
-            loaded.descriptors,
-            manifest.required_plugin_ids,
+            descriptors,
+            dependency_order,
         )
 
         # 8. Obtain validated frozen wheel/config contributions in dependency order.
@@ -191,7 +193,7 @@ class RegistryPlatform:
             registries=registries,
             configuration=configuration,
             workflow=workflow,
-            engine_digest=captured.engine.digest,
+            engine_snapshot=captured.engine,
         )
 
         # 15. Return the sole complete composition value; no runtime path was touched.
@@ -220,7 +222,7 @@ class RegistryPlatform:
     def _parse_product(self, request: ResolutionRequest) -> _ProductSeed:
         if isinstance(request.product, ProductFileSource):
             return _ProductSeed(request.product, load_product_file(request.product))
-        if isinstance(request.product, WheelProductSource):
+        if isinstance(request.product, WheelProductSource | EditableWheelProductSource):
             return _ProductSeed(request.product, None)
         raise ResolutionError("unsupported product source kind")
 
@@ -232,9 +234,15 @@ class RegistryPlatform:
         engine_snapshot = _capture_engine_snapshot()
         if seed.declarative is not None:
             product_snapshot = seed.declarative.snapshot
+            product_manifest: ProductManifest | None = None
         else:
-            assert isinstance(seed.source, WheelProductSource)
-            product_snapshot = snapshot_wheel_source(seed.source, self._metadata_provider)
+            assert isinstance(seed.source, WheelProductSource | EditableWheelProductSource)
+            resolved_product = _resolve_wheel_snapshot(seed.source, self._metadata_provider)
+            product_snapshot = resolved_product.snapshot
+            declaration = resolved_product.declaration
+            if not isinstance(declaration, WheelProductDeclaration):  # pragma: no cover - typed source.
+                raise ResolutionError("wheel product source returned a plugin declaration")
+            product_manifest = declaration.manifest
 
         sources: list[PluginSource] = list(request.plugins)
         if seed.declarative is not None:
@@ -247,74 +255,96 @@ class RegistryPlatform:
         for source in sorted(sources, key=_source_reference_key):
             if isinstance(source, ConfigTreePluginSource):
                 declarative = load_config_tree(source)
-                captured.append(_PluginCapture(source, declarative.snapshot, declarative))
-            else:
                 captured.append(
                     _PluginCapture(
                         source,
-                        snapshot_wheel_source(source, self._metadata_provider),
+                        declarative.snapshot,
+                        declarative.descriptor,
+                        declarative,
+                    )
+                )
+            else:
+                resolved_plugin = _resolve_wheel_snapshot(source, self._metadata_provider)
+                declaration = resolved_plugin.declaration
+                if not isinstance(declaration, WheelPluginDeclaration):  # pragma: no cover
+                    raise ResolutionError("wheel plugin source returned a product declaration")
+                captured.append(
+                    _PluginCapture(
+                        source,
+                        resolved_plugin.snapshot,
+                        declaration.descriptor,
                         None,
                     )
                 )
         return _CapturedSources(
             engine=engine_snapshot,
             product=product_snapshot,
+            product_manifest=product_manifest,
             plugins=tuple(captured),
         )
 
-    def _load_product(
+    def _declared_product_manifest(
+        self,
+        seed: _ProductSeed,
+        captured: _CapturedSources,
+    ) -> ProductManifest:
+        manifest = (
+            _normalize_declarative_product(seed.declarative)
+            if seed.declarative is not None
+            else captured.product_manifest
+        )
+        if manifest is None:  # pragma: no cover - captured wheel declarations are mandatory.
+            raise ResolutionError("captured product has no static declaration")
+        _validate_product_source_identity(manifest, captured.product)
+        _validate_engine_api(manifest.engine_api, "product")
+        return manifest
+
+    def _load_product_provider(
         self,
         seed: _ProductSeed,
         snapshot: SourceSnapshot,
-    ) -> tuple[ProductManifest, object | None]:
+        manifest: ProductManifest,
+    ) -> object | None:
         if seed.declarative is not None:
-            manifest = _normalize_declarative_product(seed.declarative)
-            provider: object | None = None
-        else:
-            assert isinstance(seed.source, WheelProductSource)
-            binding = _load_snapshotted_entrypoint_binding(
-                seed.source,
-                snapshot,
-                self._metadata_provider,
-            )
-            provider = binding.provider
-            first = binding.declaration
-            second = _call_product_manifest(provider)
-            third = _call_product_manifest(provider)
-            if first != second or second != third:
-                raise ResolutionError("product provider manifest drifted during resolution")
-            manifest = _normalize_wheel_product(first)
-        _validate_product_source_identity(manifest, snapshot)
-        _validate_engine_api(manifest.engine_api, "product")
-        return manifest, provider
+            return None
+        assert isinstance(seed.source, WheelProductSource | EditableWheelProductSource)
+        binding = _load_snapshotted_entrypoint_binding(
+            seed.source,
+            snapshot,
+            self._metadata_provider,
+        )
+        provider = binding.provider
+        if binding.declaration != manifest:
+            raise ResolutionError("product provider manifest disagrees with static declaration")
+        if _call_product_manifest(provider) != manifest or _call_product_manifest(provider) != manifest:
+            raise ResolutionError("product provider manifest drifted during resolution")
+        return provider
+
+    def _declared_plugin_descriptors(
+        self,
+        captures: tuple[_PluginCapture, ...],
+    ) -> Mapping[str, PluginDescriptor]:
+        descriptors: dict[str, PluginDescriptor] = {}
+        for capture in captures:
+            plugin_id = capture.plugin_id
+            if plugin_id in descriptors:
+                raise ResolutionError(f"duplicate selected plugin source: {plugin_id}")
+            _validate_descriptor_source_identity(capture.descriptor, capture.snapshot)
+            descriptors[plugin_id] = capture.descriptor
+        return dict(sorted(descriptors.items()))
 
     def _load_plugin_descriptors(
         self,
         captures: tuple[_PluginCapture, ...],
-        required_plugin_ids: tuple[str, ...],
+        descriptors: Mapping[str, PluginDescriptor],
+        dependency_order: tuple[str, ...],
     ) -> _LoadedPlugins:
-        descriptors: dict[str, PluginDescriptor] = {}
         providers: dict[str, PluginProvider] = {}
         declarative: dict[str, DeclarativePlugin] = {}
-        by_id: dict[str, _PluginCapture] = {}
-        for capture in captures:
-            plugin_id = capture.plugin_id
-            if plugin_id in by_id:
-                raise ResolutionError(f"duplicate selected plugin source: {plugin_id}")
-            by_id[plugin_id] = capture
-
-        pending = list(sorted(required_plugin_ids))
-        missing_source = False
-        while pending:
-            plugin_id = pending.pop(0)
-            if plugin_id in descriptors:
-                continue
-            capture = by_id.get(plugin_id)
-            if capture is None:
-                missing_source = True
-                continue
+        by_id = {capture.plugin_id: capture for capture in captures}
+        for plugin_id in dependency_order:
+            capture = by_id[plugin_id]
             if capture.declarative is not None:
-                descriptor = capture.declarative.descriptor
                 declarative[plugin_id] = capture.declarative
             else:
                 assert isinstance(capture.source, WheelPluginSource | EditableWheelPluginSource)
@@ -324,34 +354,19 @@ class RegistryPlatform:
                     self._metadata_provider,
                 )
                 provider = cast(PluginProvider, binding.provider)
-                first = binding.declaration
-                if not isinstance(first, PluginDescriptor):
+                declared = binding.declaration
+                if not isinstance(declared, PluginDescriptor):
                     raise ResolutionError(f"plugin provider returned an invalid descriptor: {plugin_id}")
-                second = _call_plugin_descriptor(provider, plugin_id)
-                third = _call_plugin_descriptor(provider, plugin_id)
-                if first != second or second != third:
+                if declared != descriptors[plugin_id]:
+                    raise ResolutionError(
+                        f"plugin provider descriptor disagrees with static declaration: {plugin_id}"
+                    )
+                if (
+                    _call_plugin_descriptor(provider, plugin_id) != declared
+                    or _call_plugin_descriptor(provider, plugin_id) != declared
+                ):
                     raise ResolutionError(f"plugin provider descriptor drifted: {plugin_id}")
-                descriptor = first
                 providers[plugin_id] = provider
-            _validate_descriptor_source_identity(descriptor, capture.snapshot)
-            descriptors[plugin_id] = descriptor
-            _validate_dependency_source_set(descriptor, by_id)
-            pending.extend(
-                dependency.plugin_id
-                for dependency in sorted(
-                    descriptor.dependencies,
-                    key=lambda dependency: dependency.plugin_id,
-                )
-                if dependency.plugin_id not in descriptors
-            )
-            pending.sort()
-
-        if missing_source:
-            resolve_dependency_order(descriptors, required_plugin_ids)
-            raise AssertionError("dependency validation returned despite a missing source")
-        unexpected = tuple(sorted(set(by_id).difference(descriptors)))
-        if unexpected:
-            raise DependencyConflict(f"unexpected selected plugin source: {', '.join(unexpected)}")
         return _LoadedPlugins(
             descriptors=dict(sorted(descriptors.items())),
             providers=dict(sorted(providers.items())),
@@ -509,8 +524,22 @@ def _capture_editable_engine_snapshot(project_root: Path) -> SourceSnapshot:
     packaging_files = tuple(
         SourceFile.from_bytes(source_file.path, source_file.content) for source_file in first_metadata.files
     )
+    try:
+        project = tomllib.loads(first_metadata.files[0].content.decode("utf-8"))["project"]
+        distribution = str(project["name"])
+        version = str(Version(str(project["version"])))
+    except (KeyError, TypeError, UnicodeDecodeError, tomllib.TOMLDecodeError, InvalidVersion) as error:
+        raise SourceSnapshotError("editable engine pyproject has invalid identity metadata") from error
+    if distribution != "graph-engine":
+        raise SourceSnapshotError("editable engine pyproject has the wrong distribution name")
     return SourceSnapshot.from_identity(
-        SourceIdentity(kind=SourceKind.ENGINE, root=project_root.resolve(strict=True)),
+        SourceIdentity(
+            kind=SourceKind.ENGINE,
+            root=project_root.resolve(strict=True),
+            distribution=distribution,
+            version=version,
+            engine_installation="editable",
+        ),
         (*package_files, *packaging_files),
     )
 
@@ -533,6 +562,7 @@ def _normalize_declarative_product(product: DeclarativeProduct) -> ProductManife
     document = product.manifest
     return ProductManifest(
         schema_version=document.schema_version,
+        source=None,
         product_id=document.product_id,
         product_version=document.product_version,
         engine_api=document.engine_api,
@@ -551,48 +581,14 @@ def _normalize_declarative_product(product: DeclarativeProduct) -> ProductManife
     )
 
 
-def _normalize_wheel_product(value: object) -> ProductManifest:
-    if isinstance(value, ProductManifest):
-        return value
-    try:
-        workflow = cast(WorkflowDef, getattr(value, "workflow"))
-        raw_requirements = tuple(getattr(value, "plugins"))
-        requirements = tuple(
-            PluginRequirement(
-                plugin_id=getattr(requirement, "plugin_id"),
-                version_specifier=(
-                    getattr(requirement, "version_specifier")
-                    if hasattr(requirement, "version_specifier")
-                    else f"=={Version(getattr(requirement, 'version'))}"
-                ),
-            )
-            for requirement in raw_requirements
-        )
-        entrypoints = getattr(value, "entrypoints", workflow.entrypoints)
-        return ProductManifest(
-            schema_version=getattr(value, "schema_version", "1"),
-            product_id=getattr(value, "product_id"),
-            product_version=getattr(value, "product_version"),
-            engine_api=getattr(value, "engine_api"),
-            plugins=requirements,
-            entrypoints=entrypoints,
-            configuration=getattr(value, "configuration", {}),
-            config_plugin_paths=tuple(getattr(value, "config_plugin_paths", ())),
-            workflow=workflow,
-            workflow_resource_id=getattr(value, "workflow_resource_id", None),
-        )
-    except (AttributeError, InvalidVersion, TypeError, ValueError) as error:
-        raise ResolutionError("product provider returned an invalid manifest") from error
-
-
 def _validate_product_source_identity(
     manifest: ProductManifest,
     snapshot: SourceSnapshot,
 ) -> None:
     identity = snapshot.identity
-    expected_id = identity.product_id or identity.entrypoint_name
+    expected_id = identity.product_id
     expected_version = identity.product_version or identity.version
-    if manifest.product_id != expected_id:
+    if expected_id is not None and manifest.product_id != expected_id:
         raise ResolutionError("product manifest id disagrees with selected source")
     try:
         selected_version = str(Version(expected_version or ""))
@@ -600,6 +596,12 @@ def _validate_product_source_identity(
         raise ResolutionError("selected product source has an invalid version") from error
     if manifest.product_version != selected_version:
         raise ResolutionError("product manifest version disagrees with selected source")
+    if identity.kind in {SourceKind.WHEEL_PRODUCT, SourceKind.EDITABLE_PRODUCT}:
+        expected_source = _provider_source_from_identity(identity)
+        if manifest.source != expected_source:
+            raise ResolutionError("product manifest source disagrees with selected source")
+    elif manifest.source is not None:
+        raise ResolutionError("declarative product manifest cannot claim a wheel source")
 
 
 def _validate_descriptor_source_identity(
@@ -607,9 +609,9 @@ def _validate_descriptor_source_identity(
     snapshot: SourceSnapshot,
 ) -> None:
     identity = snapshot.identity
-    expected_id = identity.plugin_id or identity.entrypoint_name
+    expected_id = identity.plugin_id
     expected_version = identity.plugin_version or identity.version
-    if descriptor.plugin_id != expected_id:
+    if expected_id is not None and descriptor.plugin_id != expected_id:
         raise ResolutionError("plugin descriptor id disagrees with selected source")
     try:
         selected_version = str(Version(expected_version or ""))
@@ -617,7 +619,37 @@ def _validate_descriptor_source_identity(
         raise ResolutionError("selected plugin source has an invalid version") from error
     if str(Version(descriptor.plugin_version)) != selected_version:
         raise ResolutionError("plugin descriptor version disagrees with selected source")
+    if identity.kind in {SourceKind.WHEEL_PLUGIN, SourceKind.EDITABLE_PLUGIN}:
+        expected_source = _provider_source_from_identity(identity)
+        if descriptor.source != expected_source:
+            raise ResolutionError("plugin descriptor source disagrees with selected source")
+    elif descriptor.source is not None:
+        raise ResolutionError("declarative plugin descriptor cannot claim a wheel source")
     _validate_engine_api(descriptor.engine_api, f"plugin {descriptor.plugin_id}")
+
+
+def _provider_source_from_identity(identity: SourceIdentity) -> ProviderSource:
+    if any(
+        value is None
+        for value in (
+            identity.distribution,
+            identity.version,
+            identity.entrypoint_group,
+            identity.entrypoint_name,
+            identity.declaration_path,
+        )
+    ):
+        raise ResolutionError("wheel source identity is incomplete")
+    return ProviderSource(
+        distribution=cast(str, identity.distribution),
+        version=cast(str, identity.version),
+        entrypoint_group=cast(
+            Literal["graph_engine.products", "graph_engine.plugins"],
+            identity.entrypoint_group,
+        ),
+        entrypoint_name=cast(str, identity.entrypoint_name),
+        declaration_path=cast(str, identity.declaration_path),
+    )
 
 
 def _validate_product_requirements(
@@ -636,54 +668,6 @@ def _validate_product_requirements(
                 f"{requirement.plugin_id}{requirement.version_specifier}, but selected "
                 f"{requirement.plugin_id}=={selected_version}"
             )
-
-
-def _validate_root_source_set(
-    manifest: ProductManifest,
-    captures: tuple[_PluginCapture, ...],
-) -> None:
-    by_id = {capture.plugin_id: capture for capture in captures}
-    missing = tuple(
-        requirement.plugin_id for requirement in manifest.plugins if requirement.plugin_id not in by_id
-    )
-    if missing:
-        raise DependencyConflict(f"missing selected plugin source: {', '.join(sorted(missing))}")
-    for requirement in manifest.plugins:
-        selected_version = _captured_plugin_version(by_id[requirement.plugin_id])
-        if selected_version not in SpecifierSet(requirement.version_specifier):
-            raise DependencyConflict(
-                f"product {manifest.product_id} requires "
-                f"{requirement.plugin_id}{requirement.version_specifier}, but selected "
-                f"{requirement.plugin_id}=={selected_version}"
-            )
-
-
-def _validate_dependency_source_set(
-    descriptor: PluginDescriptor,
-    captures: Mapping[str, _PluginCapture],
-) -> None:
-    for dependency in descriptor.dependencies:
-        capture = captures.get(dependency.plugin_id)
-        if capture is None:
-            raise DependencyConflict(f"missing selected plugin source: {dependency.plugin_id}")
-        selected_version = _captured_plugin_version(capture)
-        if selected_version not in SpecifierSet(dependency.version_specifier):
-            raise DependencyConflict(
-                f"{descriptor.plugin_id} requires "
-                f"{dependency.plugin_id}{dependency.version_specifier}, but selected "
-                f"{dependency.plugin_id}=={selected_version}"
-            )
-
-
-def _captured_plugin_version(capture: _PluginCapture) -> Version:
-    identity = capture.snapshot.identity
-    value = identity.plugin_version or identity.version
-    try:
-        return Version(value or "")
-    except InvalidVersion as error:  # pragma: no cover - snapshot identities normalize versions.
-        raise ResolutionError(
-            f"selected plugin source has an invalid version: {capture.plugin_id}"
-        ) from error
 
 
 def _validate_engine_api(requirement: str, owner: str) -> None:

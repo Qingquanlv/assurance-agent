@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from importlib.resources import files
 from pathlib import Path
 from typing import cast, get_args
 
 import pytest
 
 from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.composition.sources import WheelPluginDeclaration, WheelProductDeclaration
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 from graph_engine.product import load_plugin_entrypoint, load_product_entrypoint, resolve_product
 from graph_engine.runtime.engine import Engine, EngineError, RunResult
@@ -19,6 +21,22 @@ from graph_engine.runtime.events import (
 )
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import ActivationRecord
+
+
+def test_toy_b_static_declarations_match_live_providers() -> None:
+    package = files("graph_engine_toy_b")
+    product = load_product_entrypoint("toy-b")
+    plugin = load_plugin_entrypoint("toy-b")
+
+    product_declaration = WheelProductDeclaration.model_validate_json(
+        package.joinpath("product-declaration.json").read_bytes()
+    )
+    plugin_declaration = WheelPluginDeclaration.model_validate_json(
+        package.joinpath("plugin-declaration.json").read_bytes()
+    )
+
+    assert product_declaration.manifest == product.manifest()
+    assert plugin_declaration.descriptor == plugin.descriptor()
 
 
 class _InProcessTestHost:

@@ -74,6 +74,8 @@ class _StaticPlugin:
 
     def descriptor(self) -> PluginDescriptor:
         return PluginDescriptor(
+            schema_version="1",
+            source=None,
             plugin_id="test.empty",
             plugin_version="1.0.0",
             engine_api=ENGINE_API_VERSION,
@@ -103,10 +105,14 @@ class _StaticProduct:
 
     def manifest(self) -> ProductManifest:
         return ProductManifest(
+            schema_version="1",
+            source=None,
             product_id="test.product",
             product_version="1.0.0",
             engine_api=ENGINE_API_VERSION,
-            plugins=(PluginRequirement(plugin_id="test.empty", version="1.0.0"),),
+            plugins=(PluginRequirement(plugin_id="test.empty", version_specifier="==1.0.0"),),
+            entrypoints=dict(self.workflow.entrypoints),
+            configuration={},
             workflow=self.workflow,
         )
 

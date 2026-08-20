@@ -17,12 +17,13 @@ from graph_engine.composition.models import (
     SchemaEntry,
     SchemaRegistry,
     SourceEntry,
+    SourceKey,
     SourceKind,
     SourceRegistry,
     SourceSnapshot,
     TaskHandlerEntry,
     _snapshot_owner_id,
-    _snapshot_registry_id,
+    _snapshot_source_key,
 )
 from graph_engine.errors import GraphEngineError
 from graph_engine.frozen_json import freeze_json
@@ -66,7 +67,6 @@ def build_registries(
     capability_view = _build_capability_registry(owned)
     effect_view = _build_effect_registry(owned, schema_view)
     _validate_cross_kind_ids(
-        source_view,
         capability_view,
         schema_view,
         resource_view,
@@ -96,19 +96,19 @@ def _build_source_registry(
     sources: tuple[SourceSnapshot, ...],
     dependency_order: tuple[str, ...],
 ) -> tuple[SourceRegistry, Mapping[str, SourceEntry]]:
-    entries: dict[str, SourceEntry] = {}
+    entries: dict[SourceKey, SourceEntry] = {}
     plugin_entries: dict[str, SourceEntry] = {}
     for snapshot in tuple(sources):
         if not isinstance(snapshot, SourceSnapshot):
             raise RegistryConflict("source registry accepts only SourceSnapshot entries")
         try:
-            source_id = _snapshot_registry_id(snapshot)
+            source_key = _snapshot_source_key(snapshot)
         except (TypeError, ValueError) as error:
             raise RegistryConflict(str(error)) from error
-        if source_id in entries:
-            raise RegistryConflict(f"duplicate source id: {source_id}")
-        entry = SourceEntry(source_id=source_id, snapshot=snapshot)
-        entries[source_id] = entry
+        if source_key in entries:
+            raise RegistryConflict(f"duplicate source key: {source_key}")
+        entry = SourceEntry(source_key=source_key, snapshot=snapshot)
+        entries[source_key] = entry
         plugin_id = _plugin_source_id(snapshot)
         if plugin_id is not None:
             if plugin_id in plugin_entries:
@@ -354,14 +354,12 @@ def _build_effect_registry(
 
 
 def _validate_cross_kind_ids(
-    sources: SourceRegistry,
     capabilities: CapabilityRegistry,
     schemas: SchemaRegistry,
     resources: ResourceRegistry,
     effects: EffectRegistry,
 ) -> None:
     kinds: tuple[tuple[str, Mapping[str, object]], ...] = (
-        ("source", sources.entries),
         ("capability", capabilities.entries),
         ("schema", schemas.entries),
         ("resource", resources.entries),

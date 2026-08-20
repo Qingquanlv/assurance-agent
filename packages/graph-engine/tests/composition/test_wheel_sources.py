@@ -4,6 +4,7 @@ import base64
 import csv
 import hashlib
 from importlib import metadata
+import json
 import os
 from pathlib import Path
 import sys
@@ -12,17 +13,19 @@ from types import ModuleType
 import pytest
 
 import graph_engine.composition.sources as wheel_sources
+from graph_engine.canonical import canonical_json_bytes
 from graph_engine.composition import (
-    EditableWheelPluginSource,
+    EditableWheelProductSource as _EditableWheelProductSource,
+    EditableWheelPluginSource as _EditableWheelPluginSource,
     SourceIdentity,
     SourceKind,
     SourceSnapshotError,
-    WheelPluginSource,
-    WheelProductSource,
+    WheelPluginSource as _WheelPluginSource,
+    WheelProductSource as _WheelProductSource,
     load_snapshotted_entrypoint,
     snapshot_wheel_source,
 )
-from graph_engine.plugin_api import PluginContribution, PluginDescriptor
+from graph_engine.plugin_api import PluginContribution, PluginDescriptor, ProviderSource
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.product import PluginRequirement, ProductManifest
 
@@ -30,6 +33,14 @@ from graph_engine.product import PluginRequirement, ProductManifest
 class _PluginProvider:
     def __init__(self, plugin_id: str = "toy.runtime", version: str = "1.2.3") -> None:
         self._descriptor = PluginDescriptor(
+            schema_version="1",
+            source=ProviderSource(
+                distribution="toy-runtime",
+                version=version,
+                entrypoint_group="graph_engine.plugins",
+                entrypoint_name="toy.runtime",
+                declaration_path="toy_plugin/plugin-declaration.json",
+            ),
             plugin_id=plugin_id,
             plugin_version=version,
             engine_api="0.2",
@@ -47,10 +58,20 @@ class _PluginProvider:
 class _ProductProvider:
     def manifest(self) -> ProductManifest:
         return ProductManifest(
+            schema_version="1",
+            source=ProviderSource(
+                distribution="toy-product",
+                version="1.2.3",
+                entrypoint_group="graph_engine.products",
+                entrypoint_name="toy.product",
+                declaration_path="toy_plugin/product-declaration.json",
+            ),
             product_id="toy.product",
             product_version="1.2.3",
             engine_api="0.2",
-            plugins=(PluginRequirement(plugin_id="toy.runtime", version="1.2.3"),),
+            plugins=(PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.2.3"),),
+            entrypoints={"main": "root"},
+            configuration={},
             workflow=WorkflowDef.model_validate(
                 {
                     "name": "toy",
@@ -70,16 +91,123 @@ class _ProductProvider:
         )
 
 
+def WheelPluginSource(**values: object) -> _WheelPluginSource:
+    values.setdefault("declaration_path", "toy_plugin/plugin-declaration.json")
+    return _WheelPluginSource.model_validate(values)
+
+
+def WheelProductSource(**values: object) -> _WheelProductSource:
+    values.setdefault("declaration_path", "toy_plugin/product-declaration.json")
+    return _WheelProductSource.model_validate(values)
+
+
+def EditableWheelPluginSource(**values: object) -> _EditableWheelPluginSource:
+    root = Path(str(values["source_root"]))
+    declaration_path = str(values.setdefault("declaration_path", "plugin-declaration.json"))
+    source_files = tuple(values["source_files"])  # type: ignore[arg-type]
+    if declaration_path not in source_files:
+        values["source_files"] = (*source_files, declaration_path)
+    source = ProviderSource(
+        distribution=str(values["distribution"]),
+        version="1.2.3",
+        entrypoint_group="graph_engine.plugins",
+        entrypoint_name=str(values["entrypoint_name"]),
+        declaration_path=declaration_path,
+    )
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=source,
+        plugin_id=str(values["entrypoint_name"]),
+        plugin_version="1.2.3",
+        engine_api="0.2",
+        task_handlers=(),
+        commit_validators=(),
+    )
+    (root / declaration_path).write_bytes(
+        canonical_json_bytes(
+            {
+                "schema_version": "1",
+                "kind": "plugin",
+                "source": source.model_dump(mode="json"),
+                "descriptor": descriptor.model_dump(mode="json"),
+            }
+        )
+    )
+    return _EditableWheelPluginSource.model_validate(values)
+
+
+def EditableWheelProductSource(**values: object) -> _EditableWheelProductSource:
+    root = Path(str(values["source_root"]))
+    declaration_path = str(values.setdefault("declaration_path", "product-declaration.json"))
+    source_files = tuple(values["source_files"])  # type: ignore[arg-type]
+    if declaration_path not in source_files:
+        values["source_files"] = (*source_files, declaration_path)
+    source = ProviderSource(
+        distribution=str(values["distribution"]),
+        version="1.2.3",
+        entrypoint_group="graph_engine.products",
+        entrypoint_name=str(values["entrypoint_name"]),
+        declaration_path=declaration_path,
+    )
+    workflow = WorkflowDef.model_validate(
+        {
+            "name": "toy",
+            "entrypoints": {"main": "root"},
+            "retry": {},
+            "timeout": {},
+            "graphs": {
+                "root": {
+                    "max_activations": 1,
+                    "start": "done",
+                    "nodes": {"done": {"kind": "end"}},
+                    "edges": [],
+                }
+            },
+        }
+    )
+    manifest = ProductManifest(
+        schema_version="1",
+        source=source,
+        product_id=str(values["entrypoint_name"]),
+        product_version="1.2.3",
+        engine_api="0.2",
+        plugins=(PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.2.3"),),
+        entrypoints={"main": "root"},
+        configuration={},
+        workflow=workflow,
+    )
+    manifest_document = manifest.model_dump(mode="json")
+    manifest_document["workflow"] = workflow.model_dump(mode="json", exclude_defaults=True)
+    (root / declaration_path).write_bytes(
+        canonical_json_bytes(
+            {
+                "schema_version": "1",
+                "kind": "product",
+                "source": source.model_dump(mode="json"),
+                "manifest": manifest_document,
+            }
+        )
+    )
+    return _EditableWheelProductSource.model_validate(values)
+
+
 def _record_hash(content: bytes) -> str:
     encoded = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
     return f"sha256={encoded}"
 
 
 def _write_record(root: Path, dist_info: Path, relative_paths: tuple[str, ...]) -> None:
+    declared = list(relative_paths)
+    for declaration_path in (
+        "toy_plugin/plugin-declaration.json",
+        "toy_plugin/product-declaration.json",
+    ):
+        if (root / declaration_path).is_file() and declaration_path not in declared:
+            declared.append(declaration_path)
     record_path = dist_info / "RECORD"
     with record_path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.writer(stream, lineterminator="\n")
-        for relative_path in relative_paths:
+        for relative_path in declared:
             content = (root / relative_path).read_bytes()
             writer.writerow((relative_path, _record_hash(content), len(content)))
         writer.writerow((record_path.relative_to(root).as_posix(), "", ""))
@@ -114,6 +242,98 @@ def _installed_distribution(
     package_init = package / "__init__.py"
     package_init.write_text("provider = object()\n", encoding="utf-8")
 
+    plugin_name = next(
+        (
+            entrypoint_name
+            for group, entrypoint_name, _value in entrypoints
+            if group == "graph_engine.plugins"
+        ),
+        "toy.runtime",
+    )
+    plugin_source = ProviderSource(
+        distribution=name,
+        version=version,
+        entrypoint_group="graph_engine.plugins",
+        entrypoint_name=plugin_name,
+        declaration_path="toy_plugin/plugin-declaration.json",
+    )
+    plugin_descriptor = PluginDescriptor(
+        schema_version="1",
+        source=plugin_source,
+        plugin_id=plugin_name,
+        plugin_version=version,
+        engine_api="0.2",
+        task_handlers=(),
+        commit_validators=(),
+    )
+    plugin_declaration = package / "plugin-declaration.json"
+    plugin_declaration.write_bytes(
+        canonical_json_bytes(
+            {
+                "schema_version": "1",
+                "kind": "plugin",
+                "source": plugin_source.model_dump(mode="json"),
+                "descriptor": plugin_descriptor.model_dump(mode="json"),
+            }
+        )
+    )
+
+    product_name = next(
+        (
+            entrypoint_name
+            for group, entrypoint_name, _value in entrypoints
+            if group == "graph_engine.products"
+        ),
+        "toy.product",
+    )
+    product_source = ProviderSource(
+        distribution=name,
+        version=version,
+        entrypoint_group="graph_engine.products",
+        entrypoint_name=product_name,
+        declaration_path="toy_plugin/product-declaration.json",
+    )
+    workflow = WorkflowDef.model_validate(
+        {
+            "name": "toy",
+            "entrypoints": {"main": "root"},
+            "retry": {},
+            "timeout": {},
+            "graphs": {
+                "root": {
+                    "max_activations": 1,
+                    "start": "done",
+                    "nodes": {"done": {"kind": "end"}},
+                    "edges": [],
+                }
+            },
+        }
+    )
+    product_manifest = ProductManifest(
+        schema_version="1",
+        source=product_source,
+        product_id=product_name,
+        product_version=version,
+        engine_api="0.2",
+        plugins=(PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.2.3"),),
+        entrypoints={"main": "root"},
+        configuration={},
+        workflow=workflow,
+    )
+    product_manifest_document = product_manifest.model_dump(mode="json")
+    product_manifest_document["workflow"] = workflow.model_dump(mode="json", exclude_defaults=True)
+    product_declaration = package / "product-declaration.json"
+    product_declaration.write_bytes(
+        canonical_json_bytes(
+            {
+                "schema_version": "1",
+                "kind": "product",
+                "source": product_source.model_dump(mode="json"),
+                "manifest": product_manifest_document,
+            }
+        )
+    )
+
     dist_info = root / f"{name.replace('-', '_')}-{version}.dist-info"
     dist_info.mkdir()
     metadata_path = dist_info / "METADATA"
@@ -137,6 +357,8 @@ def _installed_distribution(
         dist_info,
         (
             package_init.relative_to(root).as_posix(),
+            plugin_declaration.relative_to(root).as_posix(),
+            product_declaration.relative_to(root).as_posix(),
             metadata_path.relative_to(root).as_posix(),
             entrypoints_path.relative_to(root).as_posix(),
         ),
@@ -187,10 +409,44 @@ def test_wheel_snapshot_binds_distribution_and_entrypoint(
     assert snapshot.digest == snapshot_wheel_source(source).digest
     assert {item.path for item in snapshot.files} == {
         "toy_plugin/__init__.py",
+        "toy_plugin/plugin-declaration.json",
+        "toy_plugin/product-declaration.json",
         "Toy_Runtime-1.2.3.dist-info/METADATA",
         "Toy_Runtime-1.2.3.dist-info/RECORD",
         "Toy_Runtime-1.2.3.dist-info/entry_points.txt",
     }
+
+
+@pytest.mark.parametrize("drift", ("schema", "source"))
+def test_static_declaration_drift_rejects_before_provider_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    declaration_path = Path(distribution.locate_file("toy_plugin/plugin-declaration.json"))
+    document = json.loads(declaration_path.read_bytes())
+    if drift == "schema":
+        document["schema_version"] = "2"
+    else:
+        document["source"]["entrypoint_name"] = "toy.other"
+    declaration_path.write_bytes(canonical_json_bytes(document))
+    _write_record(
+        Path(distribution.locate_file("")),
+        Path(distribution.locate_file("toy_runtime-1.2.3.dist-info")),
+        (
+            "toy_plugin/__init__.py",
+            "toy_runtime-1.2.3.dist-info/METADATA",
+            "toy_runtime-1.2.3.dist-info/entry_points.txt",
+        ),
+    )
+    loaded: list[str] = []
+    monkeypatch.setattr(metadata.EntryPoint, "load", lambda entrypoint: loaded.append(entrypoint.name))
+
+    with pytest.raises(SourceSnapshotError, match="declaration"):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+    assert loaded == []
 
 
 @pytest.mark.parametrize("kind", (SourceKind.WHEEL_PRODUCT, SourceKind.WHEEL_PLUGIN))
@@ -662,12 +918,41 @@ def test_editable_snapshot_captures_exact_closed_tree_and_mutation(
 
     assert first.identity.kind == SourceKind.EDITABLE_PLUGIN
     assert first.identity.root == root.resolve()
-    assert tuple(item.path for item in first.files) == ("plugin.py",)
+    assert tuple(item.path for item in first.files) == ("plugin-declaration.json", "plugin.py")
     assert first.digest != second.digest
 
     (root / "undeclared.py").write_bytes(b"unexpected\n")
     with pytest.raises(SourceSnapshotError, match="declared source file set"):
         snapshot_wheel_source(source)
+
+
+def test_editable_product_snapshot_captures_explicit_static_declaration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(
+        tmp_path / "installed",
+        entrypoints=(("graph_engine.products", "toy.product", "toy_plugin:provider"),),
+    )
+    _select_distribution(monkeypatch, distribution)
+    root = tmp_path / "editable"
+    root.mkdir()
+    (root / "product.py").write_bytes(b"VERSION = 'one'\n")
+    source = EditableWheelProductSource(
+        distribution="toy-runtime",
+        entrypoint_name="toy.product",
+        source_root=root,
+        source_files=("product.py",),
+    )
+
+    snapshot = snapshot_wheel_source(source)
+
+    assert snapshot.identity.kind == SourceKind.EDITABLE_PRODUCT
+    assert snapshot.identity.product_id == "toy.product"
+    assert snapshot.identity.root == root.resolve()
+    assert tuple(item.path for item in snapshot.files) == (
+        "product-declaration.json",
+        "product.py",
+    )
 
 
 def test_editable_load_rejects_a_different_explicit_file_tuple(
@@ -800,7 +1085,7 @@ def test_load_rejects_preloaded_target_module_shadow(tmp_path: Path, monkeypatch
         lambda entrypoint: loaded.append(entrypoint.name) or _PluginProvider(),
     )
 
-    with pytest.raises(SourceSnapshotError, match="already loaded"):
+    with pytest.raises(SourceSnapshotError, match="outside the authenticated root"):
         load_snapshotted_entrypoint(source, snapshot)
     assert loaded == []
 
@@ -865,7 +1150,7 @@ def test_provider_load_occurs_only_after_successful_snapshot(
 
 
 @pytest.mark.parametrize(
-    ("plugin_id", "version", "message"),
+    ("plugin_id", "version", "_message"),
     (
         ("toy.other", "1.2.3", "plugin id"),
         ("toy.runtime", "9.9.9", "plugin version"),
@@ -876,7 +1161,7 @@ def test_loaded_plugin_descriptor_must_match_snapshotted_identity(
     monkeypatch: pytest.MonkeyPatch,
     plugin_id: str,
     version: str,
-    message: str,
+    _message: str,
 ) -> None:
     distribution = _installed_distribution(tmp_path)
     _select_distribution(monkeypatch, distribution)
@@ -888,7 +1173,7 @@ def test_loaded_plugin_descriptor_must_match_snapshotted_identity(
         _PluginProvider(plugin_id=plugin_id, version=version),
     )
 
-    with pytest.raises(SourceSnapshotError, match=message):
+    with pytest.raises(SourceSnapshotError, match="static declaration"):
         load_snapshotted_entrypoint(source, snapshot)
 
 

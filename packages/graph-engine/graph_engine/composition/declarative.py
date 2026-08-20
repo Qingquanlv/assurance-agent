@@ -660,6 +660,8 @@ def _plugin_values(
         for binding in document.bindings
     )
     descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
         plugin_id=document.plugin_id,
         plugin_version=document.plugin_version,
         engine_api=document.engine_api,

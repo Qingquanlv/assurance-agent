@@ -1,0 +1,26 @@
+{
+  "descriptor": {
+    "commit_validators": [],
+    "engine_api": "1.0",
+    "plugin_id": "toy.a",
+    "plugin_version": "1.0.0",
+    "schema_version": "1",
+    "source": {
+      "declaration_path": "graph_engine_toy_a/plugin-declaration.json",
+      "distribution": "graph-engine-toy-a",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "toy-a",
+      "version": "1.0.0"
+    },
+    "task_handlers": ["toy.a.greet"]
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "graph_engine_toy_a/plugin-declaration.json",
+    "distribution": "graph-engine-toy-a",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "toy-a",
+    "version": "1.0.0"
+  }
+}

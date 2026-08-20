@@ -23,6 +23,7 @@ from graph_engine.plugin_api import (
     EffectPolicy,
     FrozenModel,
     PluginDescriptor,
+    ProviderSource,
     TaskContext,
     TaskHandler,
     TaskOutcome,
@@ -39,10 +40,29 @@ class SourceKind(str, Enum):
 
     WHEEL_PRODUCT = "wheel_product"
     WHEEL_PLUGIN = "wheel_plugin"
+    EDITABLE_PRODUCT = "editable_product"
     EDITABLE_PLUGIN = "editable_plugin"
     PRODUCT_FILE = "product_file"
     CONFIG_TREE = "config_tree"
     ENGINE = "engine"
+
+
+class SourceRole(str, Enum):
+    ENGINE = "engine"
+    PRODUCT = "product"
+    PLUGIN = "plugin"
+    CONFIG = "config"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceKey:
+    role: SourceRole
+    owner_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.role, SourceRole):
+            raise TypeError("source key role must be a SourceRole")
+        _validate_registry_id(self.owner_id, "source owner id")
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,10 +73,12 @@ class SourceIdentity:
     version: str | None = None
     entrypoint_group: str | None = None
     entrypoint_name: str | None = None
+    declaration_path: str | None = None
     product_id: str | None = None
     product_version: str | None = None
     plugin_id: str | None = None
     plugin_version: str | None = None
+    engine_installation: Literal["installed", "editable"] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SourceKind):
@@ -70,22 +92,46 @@ class SourceIdentity:
             self.version,
             self.entrypoint_group,
             self.entrypoint_name,
+            self.declaration_path,
         )
         product_coordinates = (self.product_id, self.product_version)
         plugin_coordinates = (self.plugin_id, self.plugin_version)
         if self.kind in {SourceKind.WHEEL_PRODUCT, SourceKind.WHEEL_PLUGIN}:
             if any(not isinstance(value, str) or not value for value in wheel_coordinates):
                 raise ValueError("wheel source identity requires complete wheel coordinates")
-        elif self.kind == SourceKind.EDITABLE_PLUGIN:
+        elif self.kind in {SourceKind.EDITABLE_PRODUCT, SourceKind.EDITABLE_PLUGIN}:
             # Task 2's low-level editable tree capture temporarily has no wheel
             # coordinates; Task 3 rewraps its authenticated files before exposure.
             if any(value is not None for value in wheel_coordinates) and any(
                 not isinstance(value, str) or not value for value in wheel_coordinates
             ):
                 raise ValueError("wheel source identity requires complete wheel coordinates")
+        elif self.kind == SourceKind.ENGINE:
+            has_engine_coordinates = any(
+                value is not None for value in (self.distribution, self.version, self.engine_installation)
+            )
+            if has_engine_coordinates and (
+                not isinstance(self.distribution, str)
+                or not self.distribution
+                or not isinstance(self.version, str)
+                or not self.version
+                or self.engine_installation not in {"installed", "editable"}
+            ):
+                raise ValueError("engine source identity requires complete installation coordinates")
+            if any(
+                value is not None
+                for value in (self.entrypoint_group, self.entrypoint_name, self.declaration_path)
+            ):
+                raise ValueError("engine source identity does not accept entrypoint coordinates")
         elif any(value is not None for value in wheel_coordinates):
             raise ValueError("wheel coordinates are allowed only for wheel source identities")
-        if self.kind == SourceKind.PRODUCT_FILE:
+        if self.kind != SourceKind.ENGINE and self.engine_installation is not None:
+            raise ValueError("engine installation is allowed only for engine source identities")
+        if self.kind in {
+            SourceKind.PRODUCT_FILE,
+            SourceKind.WHEEL_PRODUCT,
+            SourceKind.EDITABLE_PRODUCT,
+        }:
             if any(value is not None for value in product_coordinates):
                 if any(not isinstance(value, str) or not value for value in product_coordinates):
                     raise ValueError("product source identity requires complete product coordinates")
@@ -101,7 +147,7 @@ class SourceIdentity:
                     raise ValueError("product source identity requires a normalized product version")
         elif any(value is not None for value in product_coordinates):
             raise ValueError("product coordinates are allowed only for product file source identities")
-        if self.kind == SourceKind.CONFIG_TREE:
+        if self.kind in {SourceKind.CONFIG_TREE, SourceKind.WHEEL_PLUGIN, SourceKind.EDITABLE_PLUGIN}:
             if any(value is not None for value in plugin_coordinates):
                 if any(not isinstance(value, str) or not value for value in plugin_coordinates):
                     raise ValueError("config source identity requires complete plugin coordinates")
@@ -184,16 +230,19 @@ class SourceSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class SourceEntry:
-    source_id: str
+    source_key: SourceKey
     snapshot: SourceSnapshot
 
     def __post_init__(self) -> None:
         if not isinstance(self.snapshot, SourceSnapshot):
             raise TypeError("source entry snapshot must be a SourceSnapshot")
-        source_id = _validate_registry_id(self.source_id, "source id")
-        expected = _snapshot_registry_id(self.snapshot)
-        if source_id != expected:
-            raise ValueError(f"source id disagrees with snapshot identity: {source_id}; expected {expected}")
+        if not isinstance(self.source_key, SourceKey):
+            raise TypeError("source entry key must be a SourceKey")
+        expected = _snapshot_source_key(self.snapshot)
+        if self.source_key != expected:
+            raise ValueError(
+                f"source key disagrees with snapshot identity: {self.source_key}; expected {expected}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,11 +485,17 @@ def _validate_registry_id(value: object, kind: str) -> str:
         raise ValueError(f"invalid {kind}: {value!r}") from error
 
 
-def _snapshot_registry_id(snapshot: SourceSnapshot) -> str:
-    owner_id = _snapshot_owner_id(snapshot)
-    if snapshot.identity.kind in {SourceKind.PRODUCT_FILE, SourceKind.WHEEL_PRODUCT}:
-        return _product_source_registry_id(owner_id)
-    return owner_id
+def _snapshot_source_key(snapshot: SourceSnapshot) -> SourceKey:
+    roles = {
+        SourceKind.ENGINE: SourceRole.ENGINE,
+        SourceKind.WHEEL_PRODUCT: SourceRole.PRODUCT,
+        SourceKind.EDITABLE_PRODUCT: SourceRole.PRODUCT,
+        SourceKind.PRODUCT_FILE: SourceRole.PRODUCT,
+        SourceKind.WHEEL_PLUGIN: SourceRole.PLUGIN,
+        SourceKind.EDITABLE_PLUGIN: SourceRole.PLUGIN,
+        SourceKind.CONFIG_TREE: SourceRole.CONFIG,
+    }
+    return SourceKey(role=roles[snapshot.identity.kind], owner_id=_snapshot_owner_id(snapshot))
 
 
 def _snapshot_owner_id(snapshot: SourceSnapshot) -> str:
@@ -451,8 +506,13 @@ def _snapshot_owner_id(snapshot: SourceSnapshot) -> str:
         SourceKind.WHEEL_PLUGIN,
         SourceKind.EDITABLE_PLUGIN,
         SourceKind.WHEEL_PRODUCT,
+        SourceKind.EDITABLE_PRODUCT,
     }:
-        value = identity.entrypoint_name
+        value = (
+            identity.product_id
+            if identity.kind in {SourceKind.WHEEL_PRODUCT, SourceKind.EDITABLE_PRODUCT}
+            else identity.plugin_id
+        )
     elif identity.kind == SourceKind.PRODUCT_FILE:
         value = identity.product_id
     elif identity.kind == SourceKind.ENGINE:
@@ -462,11 +522,6 @@ def _snapshot_owner_id(snapshot: SourceSnapshot) -> str:
     if value is None:
         raise ValueError(f"source snapshot lacks registry identity: {identity.kind.value}")
     return _validate_registry_id(value, "snapshot owner id")
-
-
-def _product_source_registry_id(product_id: object) -> str:
-    value = _validate_registry_id(product_id, "source product id")
-    return f"{value}.product-source"
 
 
 def _validate_owned_registry_id(value: object, owner_id: object, kind: str) -> None:
@@ -500,15 +555,19 @@ def _validate_object_view(
 
 @dataclass(frozen=True, slots=True)
 class SourceRegistry:
-    entries: Mapping[str, SourceEntry]
+    entries: Mapping[SourceKey, SourceEntry]
 
     def __post_init__(self) -> None:
-        entries = _immutable_mapping(self.entries)
-        for source_id, entry in entries.items():
+        if not isinstance(self.entries, Mapping):
+            raise TypeError("registry entries must be a mapping")
+        entries = MappingProxyType(
+            dict(sorted(dict(self.entries).items(), key=lambda item: (item[0].role.value, item[0].owner_id)))
+        )
+        for source_key, entry in entries.items():
             if not isinstance(entry, SourceEntry):
                 raise TypeError("source registry accepts only SourceEntry values")
-            if source_id != entry.source_id:
-                raise ValueError(f"source registry key disagrees with entry: {source_id}")
+            if source_key != entry.source_key:
+                raise ValueError(f"source registry key disagrees with entry: {source_key}")
         object.__setattr__(self, "entries", entries)
 
 
@@ -636,7 +695,6 @@ class RegistrySet:
                 raise TypeError(f"registry set {name} must be a {expected.__name__}")
 
         kinds: tuple[tuple[str, Mapping[str, object]], ...] = (
-            ("source", self.sources.entries),
             ("capability", self.capabilities.entries),
             ("schema", self.schemas.entries),
             ("resource", self.resources.entries),
@@ -714,7 +772,8 @@ class PluginRequirement(FrozenModel):
 class ProductManifest(FrozenModel):
     """Normalized product input consumed by the registry platform."""
 
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["1"]
+    source: ProviderSource | None
     product_id: str
     product_version: str
     engine_api: str
@@ -806,6 +865,11 @@ class ProductManifest(FrozenModel):
             raise ValueError("product plugin requirements must be unique")
         if self.workflow is not None and dict(self.workflow.entrypoints) != dict(self.entrypoints):
             raise ValueError("inline workflow entrypoints must equal product entrypoints")
+        if self.source is not None:
+            if self.source.entrypoint_group != "graph_engine.products":
+                raise ValueError("product source must use graph_engine.products")
+            if Version(self.source.version) != Version(self.product_version):
+                raise ValueError("source version must equal product version")
         return self
 
     @field_serializer("entrypoints")
@@ -882,21 +946,26 @@ class FrozenComposition:
         if implementation_ids != set(descriptor_ids):
             raise ValueError("composition provider set disagrees with selected descriptors")
         for plugin_id, snapshot in declarative_sources.items():
-            source = self.registries.sources.entries.get(plugin_id)
+            source = self.registries.sources.entries.get(SourceKey(SourceRole.CONFIG, plugin_id))
             if source is None or source.snapshot is not snapshot:
                 raise ValueError("composition declarative source is not the selected snapshot")
 
-        engine_source = self.registries.sources.entries.get("graph.engine")
+        engine_source = self.registries.sources.entries.get(SourceKey(SourceRole.ENGINE, "graph.engine"))
         if engine_source is None or engine_source.snapshot.digest != self.lock.engine_digest:
             raise ValueError("composition engine source disagrees with invocation lock")
         product_source = self.registries.sources.entries.get(
-            _product_source_registry_id(self.manifest.product_id)
+            SourceKey(SourceRole.PRODUCT, self.manifest.product_id)
         )
         if product_source is None or (product_source.snapshot.digest != self.lock.product.source.digest):
             raise ValueError("composition product source disagrees with invocation lock")
         locked_plugins = {plugin.plugin_id: plugin for plugin in self.lock.plugins}
         for plugin_id in descriptor_ids:
-            source = self.registries.sources.entries.get(plugin_id)
+            role = (
+                SourceRole.PLUGIN
+                if locked_plugins[plugin_id].descriptor.source is not None
+                else SourceRole.CONFIG
+            )
+            source = self.registries.sources.entries.get(SourceKey(role, plugin_id))
             if source is None or source.snapshot.digest != locked_plugins[plugin_id].source.digest:
                 raise ValueError("composition plugin source disagrees with invocation lock")
 
@@ -959,7 +1028,21 @@ def _file_digest_document(files: tuple[SourceFile, ...]) -> JSONValue:
 
 def _snapshot_digest(identity: SourceIdentity, files: tuple[SourceFile, ...]) -> str:
     file_document = _file_digest_document(files)
-    if identity.product_id is not None:
+    if identity.kind == SourceKind.ENGINE:
+        if identity.engine_installation is None:
+            return canonical_digest(file_document)
+        engine_identity: dict[str, JSONValue] = {
+            "kind": identity.kind.value,
+            "distribution": identity.distribution,
+            "version": identity.version,
+            "installation": identity.engine_installation,
+        }
+        if identity.engine_installation == "editable":
+            engine_identity["root"] = str(identity.root)
+        return canonical_digest({"identity": engine_identity, "files": file_document})
+    if identity.kind == SourceKind.PRODUCT_FILE:
+        if identity.product_id is None:
+            return canonical_digest(file_document)
         return canonical_digest(
             {
                 "identity": {
@@ -971,7 +1054,9 @@ def _snapshot_digest(identity: SourceIdentity, files: tuple[SourceFile, ...]) ->
                 "files": file_document,
             }
         )
-    if identity.plugin_id is not None:
+    if identity.kind == SourceKind.CONFIG_TREE:
+        if identity.plugin_id is None:
+            return canonical_digest(file_document)
         return canonical_digest(
             {
                 "identity": {
@@ -991,8 +1076,15 @@ def _snapshot_digest(identity: SourceIdentity, files: tuple[SourceFile, ...]) ->
         "version": identity.version,
         "entrypoint_group": identity.entrypoint_group,
         "entrypoint_name": identity.entrypoint_name,
+        "declaration_path": identity.declaration_path,
     }
-    if identity.kind == SourceKind.EDITABLE_PLUGIN:
+    if identity.product_id is not None:
+        identity_document["product_id"] = identity.product_id
+        identity_document["product_version"] = identity.product_version
+    if identity.plugin_id is not None:
+        identity_document["plugin_id"] = identity.plugin_id
+        identity_document["plugin_version"] = identity.plugin_version
+    if identity.kind in {SourceKind.EDITABLE_PRODUCT, SourceKind.EDITABLE_PLUGIN}:
         identity_document["root"] = str(identity.root)
     return canonical_digest({"identity": identity_document, "files": file_document})
 
@@ -1036,7 +1128,9 @@ __all__ = [
     "SourceEntry",
     "SourceFile",
     "SourceIdentity",
+    "SourceKey",
     "SourceKind",
+    "SourceRole",
     "SourceRegistry",
     "SourceSnapshot",
     "TaskHandlerEntry",

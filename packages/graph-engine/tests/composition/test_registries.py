@@ -19,7 +19,9 @@ from graph_engine.composition import (
     SchemaRegistry,
     SourceEntry,
     SourceIdentity,
+    SourceKey,
     SourceKind,
+    SourceRole,
     SourceRegistry,
     SourceSnapshot,
     TaskHandlerEntry,
@@ -93,6 +95,9 @@ def _source(plugin_id: str, *, kind: SourceKind = SourceKind.CONFIG_TREE) -> Sou
             version="1.0.0",
             entrypoint_group="graph_engine.plugins",
             entrypoint_name=plugin_id,
+            declaration_path=f"{plugin_id.replace('.', '_')}/plugin-declaration.json",
+            plugin_id=plugin_id,
+            plugin_version="1.0.0",
         )
     return SourceSnapshot.from_identity(identity, ())
 
@@ -155,7 +160,7 @@ def test_registry_builder_freezes_all_five_views() -> None:
         dependency_order=("toy.runtime",),
     )
 
-    assert tuple(registries.sources.entries) == ("toy.runtime",)
+    assert tuple(registries.sources.entries) == (SourceKey(SourceRole.PLUGIN, "toy.runtime"),)
     assert tuple(registries.capabilities.task_handlers) == ("toy.runtime.execute",)
     assert tuple(registries.schemas.entries) == (
         "toy.runtime.intent",
@@ -198,7 +203,13 @@ def test_public_registry_views_reject_inconsistent_entry_mappings() -> None:
 
     source = _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN)
     with pytest.raises(ValueError, match="source registry key disagrees"):
-        SourceRegistry({"toy.other": SourceEntry("toy.runtime", source)})
+        SourceRegistry(
+            {
+                SourceKey(SourceRole.PLUGIN, "toy.other"): SourceEntry(
+                    SourceKey(SourceRole.PLUGIN, "toy.runtime"), source
+                )
+            }
+        )
 
 
 def test_public_registry_rejects_value_equal_unselected_binding_projection() -> None:
@@ -244,9 +255,9 @@ def test_public_binding_entry_rejects_untrusted_handler() -> None:
 
 
 def test_public_source_entry_authenticates_its_snapshot_identity() -> None:
-    with pytest.raises(ValueError, match="source id disagrees with snapshot identity"):
+    with pytest.raises(ValueError, match="source key disagrees with snapshot identity"):
         SourceEntry(
-            source_id="toy.fake",
+            source_key=SourceKey(SourceRole.PLUGIN, "toy.fake"),
             snapshot=_source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),
         )
 
@@ -260,6 +271,9 @@ def test_registry_set_rejects_executable_owner_that_is_not_a_plugin_source() -> 
             version="1.0.0",
             entrypoint_group="graph_engine.products",
             entrypoint_name="toy.product",
+            declaration_path="toy_product/product-declaration.json",
+            product_id="toy.product",
+            product_version="1.0.0",
         ),
         (),
     )
@@ -269,7 +283,11 @@ def test_registry_set_rejects_executable_owner_that_is_not_a_plugin_source() -> 
     with pytest.raises(ValueError, match="owner is not a plugin source"):
         RegistrySet(
             sources=SourceRegistry(
-                {"toy.product.product-source": SourceEntry("toy.product.product-source", product_snapshot)}
+                {
+                    SourceKey(SourceRole.PRODUCT, "toy.product"): SourceEntry(
+                        SourceKey(SourceRole.PRODUCT, "toy.product"), product_snapshot
+                    )
+                }
             ),
             capabilities=CapabilityRegistry(
                 entries={handler_entry.capability_id: handler_entry},
@@ -442,11 +460,13 @@ def test_registry_rejects_cross_kind_ids() -> None:
 
 def test_descriptor_contribution_disagreement_remains_a_contract_error() -> None:
     descriptor = PluginDescriptor(
-        "toy.runtime",
-        "1.0.0",
-        "1.0",
-        ("toy.runtime.execute",),
-        (),
+        schema_version="1",
+        source=None,
+        plugin_id="toy.runtime",
+        plugin_version="1.0.0",
+        engine_api="1.0",
+        task_handlers=("toy.runtime.execute",),
+        commit_validators=(),
     )
     with pytest.raises(PluginContractError, match="task handler declarations disagree"):
         validate_contribution(descriptor, PluginContribution.empty())

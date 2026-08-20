@@ -17,19 +17,23 @@ from graph_engine import ENGINE_API_VERSION
 from graph_engine.composition import (
     ConfigTreePluginSource,
     FrozenComposition,
+    InvocationLock,
     PluginRequirement,
     ProductFileSource,
     ProductManifest,
     RegistryPlatform,
     ResolutionRequest,
+    SourceKey,
+    SourceRole,
     WheelPluginSource,
     WheelProductSource,
 )
 from graph_engine.composition.dependencies import DependencyConflict
+from graph_engine.composition.lock import _locked_source
 from graph_engine.composition.registries import RegistryConflict
 from graph_engine.composition.resolver import _capture_editable_engine_snapshot
 from graph_engine.composition.sources import _snapshot_installed_engine_distribution
-from graph_engine.canonical import canonical_digest
+from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.graph.compiler import CompileError
 from graph_engine.graph.schema import WorkflowDef
@@ -42,6 +46,7 @@ from graph_engine.plugin_api import (
     PluginContribution,
     PluginDependency,
     PluginDescriptor,
+    ProviderSource,
     RegistryPorts,
     SchemaContribution,
     TaskContext,
@@ -74,6 +79,8 @@ class _PluginProvider:
     ) -> None:
         self._descriptors = descriptors or (
             PluginDescriptor(
+                schema_version="1",
+                source=None,
                 plugin_id=plugin_id,
                 plugin_version="1.0.0",
                 engine_api=ENGINE_API_VERSION,
@@ -183,6 +190,7 @@ def _manifest(
     selected_workflow = workflow or _workflow()
     return ProductManifest(
         schema_version="1",
+        source=None,
         product_id=product_id,
         product_version="1.0.0",
         engine_api=ENGINE_API_VERSION,
@@ -198,12 +206,21 @@ def _record_hash(content: bytes) -> str:
     return f"sha256={encoded}"
 
 
+def _manifest_declaration(manifest: ProductManifest) -> dict[str, object]:
+    document = manifest.model_dump(mode="json")
+    if manifest.workflow is not None:
+        document["workflow"] = manifest.workflow.model_dump(mode="json", exclude_defaults=True)
+    return document
+
+
 def _distribution(
     root: Path,
     *,
     distribution_name: str,
     entrypoint_group: str,
     entrypoint_name: str,
+    declaration_path: str | None = None,
+    declaration: dict[str, object] | None = None,
 ) -> tuple[metadata.Distribution, Path]:
     package_name = distribution_name.replace("-", "_")
     site = root / distribution_name
@@ -211,6 +228,11 @@ def _distribution(
     package.mkdir(parents=True)
     module_path = package / "__init__.py"
     module_path.write_text("provider = object()\n", encoding="utf-8")
+    declaration_file: Path | None = None
+    if declaration_path is not None and declaration is not None:
+        declaration_file = site / declaration_path
+        declaration_file.parent.mkdir(parents=True, exist_ok=True)
+        declaration_file.write_bytes(canonical_json_bytes(declaration))
     dist_info = site / f"{package_name}-1.0.0.dist-info"
     dist_info.mkdir()
     metadata_path = dist_info / "METADATA"
@@ -226,7 +248,10 @@ def _distribution(
     record_path = dist_info / "RECORD"
     with record_path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.writer(stream, lineterminator="\n")
-        for path in (module_path, metadata_path, entrypoints_path):
+        declared_files = (module_path, metadata_path, entrypoints_path)
+        if declaration_file is not None:
+            declared_files = (module_path, declaration_file, metadata_path, entrypoints_path)
+        for path in declared_files:
             relative = path.relative_to(site).as_posix()
             content = path.read_bytes()
             writer.writerow((relative, _record_hash(content), len(content)))
@@ -239,6 +264,8 @@ def _combined_distribution(
     *,
     product_id: str,
     plugin_id: str,
+    product_manifest: ProductManifest,
+    plugin_descriptor: PluginDescriptor,
 ) -> tuple[metadata.Distribution, dict[str, Path]]:
     site = root / "toy-combined"
     package = site / "toy_combined"
@@ -250,6 +277,28 @@ def _combined_distribution(
     }
     for path in paths.values():
         path.write_text("provider = object()\n", encoding="utf-8")
+    product_declaration = package / "product-declaration.json"
+    product_declaration.write_bytes(
+        canonical_json_bytes(
+            {
+                "schema_version": "1",
+                "kind": "product",
+                "source": product_manifest.source.model_dump(mode="json"),
+                "manifest": _manifest_declaration(product_manifest),
+            }
+        )
+    )
+    plugin_declaration = package / "plugin-declaration.json"
+    plugin_declaration.write_bytes(
+        canonical_json_bytes(
+            {
+                "schema_version": "1",
+                "kind": "plugin",
+                "source": plugin_descriptor.source.model_dump(mode="json"),
+                "descriptor": plugin_descriptor.model_dump(mode="json"),
+            }
+        )
+    )
     dist_info = site / "toy_combined-1.0.0.dist-info"
     dist_info.mkdir()
     metadata_path = dist_info / "METADATA"
@@ -268,7 +317,13 @@ def _combined_distribution(
     record_path = dist_info / "RECORD"
     with record_path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.writer(stream, lineterminator="\n")
-        for path in (*paths.values(), metadata_path, entrypoints_path):
+        for path in (
+            *paths.values(),
+            product_declaration,
+            plugin_declaration,
+            metadata_path,
+            entrypoints_path,
+        ):
             relative = path.relative_to(site).as_posix()
             content = path.read_bytes()
             writer.writerow((relative, _record_hash(content), len(content)))
@@ -282,40 +337,88 @@ def _platform(
     *,
     product: _ProductProvider | None = None,
     plugins: dict[str, _PluginProvider] | None = None,
+    load_log: list[tuple[str, str]] | None = None,
 ) -> tuple[RegistryPlatform, dict[str, WheelPluginSource], WheelProductSource | None]:
     distributions: dict[str, metadata.Distribution] = {}
     load_values: dict[tuple[str, str], tuple[object, Path]] = {}
     product_source: WheelProductSource | None = None
     if product is not None:
+        initial_manifest = product.manifest()
+        declaration_path = "toy_product/product-declaration.json"
+        source_expectation = ProviderSource(
+            distribution="toy-product",
+            version="1.0.0",
+            entrypoint_group="graph_engine.products",
+            entrypoint_name=initial_manifest.product_id,
+            declaration_path=declaration_path,
+        )
+        product._manifest = initial_manifest.model_copy(update={"source": source_expectation})
+        if isinstance(product, _DriftingProductProvider):
+            product._manifests = tuple(
+                manifest.model_copy(update={"source": source_expectation}) for manifest in product._manifests
+            )
+            product._manifest = product._manifests[0]
+        static_manifest = product._manifest
         product_distribution, module_path = _distribution(
             tmp_path,
             distribution_name="toy-product",
             entrypoint_group="graph_engine.products",
-            entrypoint_name=product.manifest().product_id,
+            entrypoint_name=static_manifest.product_id,
+            declaration_path=declaration_path,
+            declaration={
+                "schema_version": "1",
+                "kind": "product",
+                "source": source_expectation.model_dump(mode="json"),
+                "manifest": _manifest_declaration(static_manifest),
+            },
         )
         distributions["toy-product"] = product_distribution
-        load_values[("graph_engine.products", product.manifest().product_id)] = (product, module_path)
+        load_values[("graph_engine.products", static_manifest.product_id)] = (product, module_path)
         product_source = WheelProductSource(
             distribution="toy-product",
-            entrypoint_name=product.manifest().product_id,
+            entrypoint_name=static_manifest.product_id,
+            declaration_path=declaration_path,
         )
     plugin_sources: dict[str, WheelPluginSource] = {}
     for plugin_id, provider in (plugins or {}).items():
         distribution_name = plugin_id.replace(".", "-")
+        declaration_path = f"{distribution_name.replace('-', '_')}/plugin-declaration.json"
+        source_expectation = ProviderSource(
+            distribution=distribution_name,
+            version="1.0.0",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name=plugin_id,
+            declaration_path=declaration_path,
+        )
+        provider._descriptors = tuple(
+            descriptor.model_copy(update={"source": source_expectation})
+            for descriptor in provider._descriptors
+        )
+        static_descriptor = provider._descriptors[0]
         distribution, module_path = _distribution(
             tmp_path,
             distribution_name=distribution_name,
             entrypoint_group="graph_engine.plugins",
             entrypoint_name=plugin_id,
+            declaration_path=declaration_path,
+            declaration={
+                "schema_version": "1",
+                "kind": "plugin",
+                "source": source_expectation.model_dump(mode="json"),
+                "descriptor": static_descriptor.model_dump(mode="json"),
+            },
         )
         distributions[distribution_name] = distribution
         load_values[("graph_engine.plugins", plugin_id)] = (provider, module_path)
         plugin_sources[plugin_id] = WheelPluginSource(
             distribution=distribution_name,
             entrypoint_name=plugin_id,
+            declaration_path=declaration_path,
         )
 
     def load(entrypoint: metadata.EntryPoint) -> object:
+        if load_log is not None:
+            load_log.append((entrypoint.group, entrypoint.name))
         provider, module_path = load_values[(entrypoint.group, entrypoint.name)]
         module = ModuleType(entrypoint.module)
         module.__file__ = str(module_path)
@@ -331,9 +434,58 @@ def _platform(
     )
 
 
-def _clear_loaded_modules(sources: tuple[WheelPluginSource | WheelProductSource, ...]) -> None:
-    for source in sources:
-        sys.modules.pop(source.distribution.replace("-", "_"), None)
+def test_invalid_topology_executes_no_wheel_provider_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id="toy.runtime",
+        plugin_version="1.0.0",
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=("toy.runtime.greet",),
+        commit_validators=(),
+        dependencies=(PluginDependency("toy.flow", "==1.0.0"),),
+    )
+    flow_descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id="toy.flow",
+        plugin_version="1.0.0",
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=("toy.flow.greet",),
+        commit_validators=(),
+        dependencies=(PluginDependency("toy.runtime", "==1.0.0"),),
+    )
+    load_log: list[tuple[str, str]] = []
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(
+            _manifest(
+                plugins=(
+                    PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.0.0"),
+                    PluginRequirement(plugin_id="toy.flow", version_specifier="==1.0.0"),
+                )
+            )
+        ),
+        plugins={
+            "toy.runtime": _PluginProvider("toy.runtime", descriptors=(runtime_descriptor,)),
+            "toy.flow": _PluginProvider("toy.flow", descriptors=(flow_descriptor,)),
+        },
+        load_log=load_log,
+    )
+    assert product_source is not None
+
+    with pytest.raises(DependencyConflict, match="cycle"):
+        platform.resolve(
+            ResolutionRequest(
+                product=product_source,
+                plugins=(plugins["toy.runtime"], plugins["toy.flow"]),
+            )
+        )
+
+    assert load_log == []
 
 
 def test_registry_platform_resolves_one_frozen_composition(
@@ -359,9 +511,9 @@ def test_registry_platform_resolves_one_frozen_composition(
     assert composition.registries.capabilities.task_handlers["toy.runtime.greet"]
     assert composition.providers["toy.runtime"] is provider
     assert tuple(composition.registries.sources.entries) == (
-        "graph.engine",
-        "toy.a.product-source",
-        "toy.runtime",
+        SourceKey(SourceRole.ENGINE, "graph.engine"),
+        SourceKey(SourceRole.PLUGIN, "toy.runtime"),
+        SourceKey(SourceRole.PRODUCT, "toy.a"),
     )
     assert thaw_json(composition.lock.configuration) == {}
     assert composition.lock.configuration_digest == canonical_digest({})
@@ -373,11 +525,17 @@ def test_registry_platform_resolves_one_frozen_composition(
     assert thaw_json(composition.lock.capability_bindings) == []
     assert composition.lock.capability_bindings_digest == canonical_digest([])
 
+    repeated = platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],)))
+    assert repeated == composition
+    assert repeated.lock.canonical_bytes == composition.lock.canonical_bytes
+
     with pytest.raises(TypeError):
         composition.providers["toy.other"] = object()  # type: ignore[index]
     with pytest.raises(ValueError, match="composition digest"):
         replace(composition, digest="0" * 64)
     drifted_descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
         plugin_id="toy.runtime",
         plugin_version="1.0.0",
         engine_api=">=1,<2",
@@ -386,6 +544,33 @@ def test_registry_platform_resolves_one_frozen_composition(
     )
     with pytest.raises(ValueError, match="descriptor"):
         replace(composition, descriptors=(drifted_descriptor,))
+
+    engine_identity = cast(dict[str, object], thaw_json(composition.lock.engine.identity))
+    drifted_engine = composition.lock.engine.model_copy(
+        update={"identity": {**engine_identity, "version": "9.9.9"}}
+    )
+    drifted_lock = InvocationLock.create(
+        engine_api=composition.lock.engine_api,
+        engine=drifted_engine,
+        engine_digest=drifted_engine.digest,
+        product=composition.lock.product,
+        plugins=composition.lock.plugins,
+        dependency_order=composition.lock.dependency_order,
+        registry_projections=composition.lock.registry_projections,
+        registry_digests=composition.lock.registry_digests,
+        configuration=composition.lock.configuration,
+        configuration_digest=composition.lock.configuration_digest,
+        capability_bindings=composition.lock.capability_bindings,
+        capability_bindings_digest=composition.lock.capability_bindings_digest,
+        compiled_workflow=composition.lock.compiled_workflow,
+        compiled_workflow_digest=composition.lock.compiled_workflow_digest,
+    )
+    with pytest.raises(ValueError, match="engine source"):
+        replace(
+            composition,
+            lock=drifted_lock,
+            digest=canonical_digest({"lock_digest": drifted_lock.digest}),
+        )
 
 
 def test_registry_platform_strictly_parses_mapping_requests(
@@ -443,10 +628,33 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
         )
     )
     plugin = _PluginProvider(domain_id)
+    product_path = "toy_combined/product-declaration.json"
+    plugin_path = "toy_combined/plugin-declaration.json"
+    product_source_expectation = ProviderSource(
+        distribution="toy-combined",
+        version="1.0.0",
+        entrypoint_group="graph_engine.products",
+        entrypoint_name=domain_id,
+        declaration_path=product_path,
+    )
+    plugin_source_expectation = ProviderSource(
+        distribution="toy-combined",
+        version="1.0.0",
+        entrypoint_group="graph_engine.plugins",
+        entrypoint_name=domain_id,
+        declaration_path=plugin_path,
+    )
+    product._manifest = product._manifest.model_copy(update={"source": product_source_expectation})
+    plugin._descriptors = tuple(
+        descriptor.model_copy(update={"source": plugin_source_expectation})
+        for descriptor in plugin._descriptors
+    )
     distribution, paths = _combined_distribution(
         tmp_path,
         product_id=domain_id,
         plugin_id=domain_id,
+        product_manifest=product._manifest,
+        plugin_descriptor=plugin._descriptors[0],
     )
     providers = {
         ("graph_engine.products", domain_id): product,
@@ -472,11 +680,13 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
             product=WheelProductSource(
                 distribution="toy-combined",
                 entrypoint_name=domain_id,
+                declaration_path=product_path,
             ),
             plugins=(
                 WheelPluginSource(
                     distribution="toy-combined",
                     entrypoint_name=domain_id,
+                    declaration_path=plugin_path,
                 ),
             ),
         )
@@ -562,7 +772,6 @@ def test_resolution_is_identical_for_permuted_explicit_sources(
     product = ProductFileSource(path=product_file)
 
     first = platform.resolve(ResolutionRequest(product=product, plugins=(flow, runtime)))
-    _clear_loaded_modules((runtime,))
     second = platform.resolve(ResolutionRequest(product=product, plugins=(runtime, flow)))
 
     assert first.lock.canonical_bytes == second.lock.canonical_bytes
@@ -644,6 +853,8 @@ def test_resolution_rejects_drifted_provider_descriptor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     expected = PluginDescriptor(
+        schema_version="1",
+        source=None,
         plugin_id="toy.runtime",
         plugin_version="1.0.0",
         engine_api=ENGINE_API_VERSION,
@@ -651,6 +862,8 @@ def test_resolution_rejects_drifted_provider_descriptor(
         commit_validators=(),
     )
     drifted = PluginDescriptor(
+        schema_version="1",
+        source=None,
         plugin_id="toy.runtime",
         plugin_version="1.0.0",
         engine_api=">=1,<2",
@@ -665,9 +878,41 @@ def test_resolution_rejects_drifted_provider_descriptor(
         plugins={"toy.runtime": provider},
     )
     assert product_source is not None
+    authenticated = provider._descriptors[0]
 
     with pytest.raises(Exception, match="descriptor|declarations"):
         platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],)))
+
+    provider._descriptors = (authenticated,)
+    provider._descriptor_calls = 0
+    corrected = platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],)))
+    assert corrected.providers["toy.runtime"] is provider
+
+
+def test_source_roles_disjoin_adversarial_product_and_plugin_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "toy.a.product-source"
+    workflow = _workflow(f"{plugin_id}.greet")
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(
+            _manifest(
+                product_id="toy.a",
+                plugins=(PluginRequirement(plugin_id=plugin_id, version_specifier="==1.0.0"),),
+                workflow=workflow,
+            )
+        ),
+        plugins={plugin_id: _PluginProvider(plugin_id)},
+    )
+    assert product_source is not None
+
+    composition = platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins[plugin_id],)))
+
+    assert SourceKey(SourceRole.PRODUCT, "toy.a") in composition.registries.sources.entries
+    assert SourceKey(SourceRole.PLUGIN, plugin_id) in composition.registries.sources.entries
 
 
 def test_resolution_rejects_drifted_product_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -736,6 +981,8 @@ def test_resolution_rejects_unknown_effect_schema_reference(
         )
     )
     descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
         plugin_id="toy.runtime",
         plugin_version="1.0.0",
         engine_api=ENGINE_API_VERSION,
@@ -791,6 +1038,7 @@ def test_product_manifest_requires_one_workflow_form_and_entrypoint_closure() ->
     workflow = _workflow()
     base = {
         "schema_version": "1",
+        "source": None,
         "product_id": "toy.a",
         "product_version": "1.0.0",
         "engine_api": ENGINE_API_VERSION,
@@ -899,6 +1147,8 @@ def test_registry_digests_cover_complete_registered_schema_resource_and_effect_v
         ),
     )
     descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
         plugin_id="toy.runtime",
         plugin_version="1.0.0",
         engine_api=ENGINE_API_VERSION,
@@ -955,7 +1205,9 @@ def test_registry_digests_cover_complete_registered_schema_resource_and_effect_v
     }
     assert effect_projection == [
         {
-            "implementation_digest": composition.registries.sources.entries["toy.runtime"].snapshot.digest,
+            "implementation_digest": composition.registries.sources.entries[
+                SourceKey(SourceRole.PLUGIN, "toy.runtime")
+            ].snapshot.digest,
             "intent_schema_id": "toy.runtime.intent",
             "kind": "toy.runtime.audit",
             "owner_id": "toy.runtime",
@@ -986,6 +1238,10 @@ def test_editable_engine_snapshot_includes_packaging_metadata(tmp_path: Path) ->
         "graph_engine/__init__.py",
         "pyproject.toml",
     )
+    assert first.identity.distribution == "graph-engine"
+    assert first.identity.version == "1.0.0"
+    assert first.identity.engine_installation == "editable"
+    assert first.identity.root == project_root.resolve()
     assert first.digest != second.digest
 
 
@@ -1000,5 +1256,31 @@ def test_installed_engine_snapshot_uses_authenticated_wheel_metadata(tmp_path: P
     snapshot = _snapshot_installed_engine_distribution(distribution)
 
     assert snapshot.identity.kind.value == "engine"
+    assert snapshot.identity.distribution == "graph-engine"
+    assert snapshot.identity.version == "1.0.0"
+    assert snapshot.identity.engine_installation == "installed"
     assert any(item.path.endswith(".dist-info/METADATA") for item in snapshot.files)
     assert any(item.path.endswith(".dist-info/RECORD") for item in snapshot.files)
+
+
+def test_installed_engine_lock_identity_is_relocatable(tmp_path: Path) -> None:
+    first_distribution, _ = _distribution(
+        tmp_path / "one",
+        distribution_name="graph-engine",
+        entrypoint_group="console_scripts",
+        entrypoint_name="graph-engine",
+    )
+    second_distribution, _ = _distribution(
+        tmp_path / "two",
+        distribution_name="graph-engine",
+        entrypoint_group="console_scripts",
+        entrypoint_name="graph-engine",
+    )
+
+    first = _snapshot_installed_engine_distribution(first_distribution)
+    second = _snapshot_installed_engine_distribution(second_distribution)
+
+    assert first.identity.root != second.identity.root
+    assert first.digest == second.digest
+    assert _locked_source(first) == _locked_source(second)
+    assert "root" not in thaw_json(_locked_source(first).identity)

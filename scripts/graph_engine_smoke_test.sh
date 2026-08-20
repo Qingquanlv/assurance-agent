@@ -137,6 +137,13 @@ import importlib.util
 import json
 import sys
 
+from graph_engine.composition import (
+    RegistryPlatform,
+    ResolutionRequest,
+    WheelPluginSource,
+    WheelProductSource,
+)
+
 compiled = json.load(open(sys.argv[1], encoding="utf-8"))
 completed = json.load(open(sys.argv[2], encoding="utf-8"))
 assert compiled["compiled_digest"] == completed["compiled_digest"]
@@ -144,6 +151,26 @@ assert completed["status"] == "succeeded", completed
 assert completed["output"] == {"message": "hello Ada"}, completed
 for package in ("assurance_agent", "assurance_kernel", "graph_engine_toy_b"):
     assert importlib.util.find_spec(package) is None, package
+composition = RegistryPlatform().resolve(
+    ResolutionRequest(
+        product=WheelProductSource(
+            distribution="graph-engine-toy-a",
+            entrypoint_name="toy-a",
+            declaration_path="graph_engine_toy_a/product-declaration.json",
+        ),
+        plugins=(
+            WheelPluginSource(
+                distribution="graph-engine-toy-a",
+                entrypoint_name="toy-a",
+                declaration_path="graph_engine_toy_a/plugin-declaration.json",
+            ),
+        ),
+    )
+)
+assert composition.manifest.product_id == "toy.a"
+assert composition.lock.product.source.identity["declaration_path"] == (
+    "graph_engine_toy_a/product-declaration.json"
+)
 print("TOY_A_EVIDENCE=" + json.dumps(completed, sort_keys=True, separators=(",", ":")))
 PY
 

@@ -3,30 +3,36 @@ from __future__ import annotations
 import base64
 import configparser
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from email.parser import BytesParser
 from email.policy import compat32
 import hashlib
 from importlib import metadata
+import json
 import os
 from pathlib import Path
 import stat
 import sys
 from types import ModuleType
-from typing import Literal, Protocol, TypeAlias, cast
+from typing import Literal, NoReturn, Protocol, TypeAlias, cast
 
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
-from pydantic import field_validator
+from pydantic import ValidationError, field_validator, model_validator
 
-from graph_engine.composition.models import SourceFile, SourceIdentity, SourceKind, SourceSnapshot
+from graph_engine.composition.models import (
+    ProductManifest,
+    SourceFile,
+    SourceIdentity,
+    SourceKind,
+    SourceSnapshot,
+)
 from graph_engine.composition.source_fs import (
     DeclaredTreePolicy,
     SourceSnapshotError,
     capture_declared_tree,
 )
-from graph_engine.plugin_api import FrozenModel, PluginDescriptor, PluginProvider
-from graph_engine.product import ProductManifest, ProductProvider
+from graph_engine.plugin_api import FrozenModel, PluginDescriptor, PluginProvider, ProviderSource
 
 
 class WheelProductSource(FrozenModel):
@@ -34,11 +40,17 @@ class WheelProductSource(FrozenModel):
     distribution: str
     entrypoint_group: Literal["graph_engine.products"] = "graph_engine.products"
     entrypoint_name: str
+    declaration_path: str
 
     @field_validator("distribution")
     @classmethod
     def _normalize_distribution(cls, value: str) -> str:
         return _normalized_distribution_name(value)
+
+    @field_validator("declaration_path")
+    @classmethod
+    def _validate_declaration_path(cls, value: str) -> str:
+        return _canonical_declaration_path(value)
 
 
 class WheelPluginSource(FrozenModel):
@@ -46,18 +58,25 @@ class WheelPluginSource(FrozenModel):
     distribution: str
     entrypoint_group: Literal["graph_engine.plugins"] = "graph_engine.plugins"
     entrypoint_name: str
+    declaration_path: str
 
     @field_validator("distribution")
     @classmethod
     def _normalize_distribution(cls, value: str) -> str:
         return _normalized_distribution_name(value)
 
+    @field_validator("declaration_path")
+    @classmethod
+    def _validate_declaration_path(cls, value: str) -> str:
+        return _canonical_declaration_path(value)
 
-class EditableWheelPluginSource(FrozenModel):
-    kind: Literal["editable_plugin"] = "editable_plugin"
+
+class EditableWheelProductSource(FrozenModel):
+    kind: Literal["editable_product"] = "editable_product"
     distribution: str
-    entrypoint_group: Literal["graph_engine.plugins"] = "graph_engine.plugins"
+    entrypoint_group: Literal["graph_engine.products"] = "graph_engine.products"
     entrypoint_name: str
+    declaration_path: str
     source_root: Path
     source_files: tuple[str, ...]
 
@@ -66,9 +85,81 @@ class EditableWheelPluginSource(FrozenModel):
     def _normalize_distribution(cls, value: str) -> str:
         return _normalized_distribution_name(value)
 
+    @field_validator("declaration_path")
+    @classmethod
+    def _validate_declaration_path(cls, value: str) -> str:
+        return _canonical_declaration_path(value)
 
-WheelSource: TypeAlias = WheelProductSource | WheelPluginSource | EditableWheelPluginSource
-WheelProvider: TypeAlias = ProductProvider | PluginProvider
+    @model_validator(mode="after")
+    def _require_declared_declaration(self) -> EditableWheelProductSource:
+        if self.declaration_path not in self.source_files:
+            raise ValueError("editable declaration path must be present in source_files")
+        return self
+
+
+class EditableWheelPluginSource(FrozenModel):
+    kind: Literal["editable_plugin"] = "editable_plugin"
+    distribution: str
+    entrypoint_group: Literal["graph_engine.plugins"] = "graph_engine.plugins"
+    entrypoint_name: str
+    declaration_path: str
+    source_root: Path
+    source_files: tuple[str, ...]
+
+    @field_validator("distribution")
+    @classmethod
+    def _normalize_distribution(cls, value: str) -> str:
+        return _normalized_distribution_name(value)
+
+    @field_validator("declaration_path")
+    @classmethod
+    def _validate_declaration_path(cls, value: str) -> str:
+        return _canonical_declaration_path(value)
+
+    @model_validator(mode="after")
+    def _require_declared_declaration(self) -> EditableWheelPluginSource:
+        if self.declaration_path not in self.source_files:
+            raise ValueError("editable declaration path must be present in source_files")
+        return self
+
+
+class WheelProductDeclaration(FrozenModel):
+    schema_version: Literal["1"]
+    kind: Literal["product"]
+    source: ProviderSource
+    manifest: ProductManifest
+
+    @model_validator(mode="after")
+    def _validate_manifest_source(self) -> WheelProductDeclaration:
+        if self.manifest.source != self.source:
+            raise ValueError("product manifest source must equal declaration source")
+        return self
+
+
+class WheelPluginDeclaration(FrozenModel):
+    schema_version: Literal["1"]
+    kind: Literal["plugin"]
+    source: ProviderSource
+    descriptor: PluginDescriptor
+
+    @model_validator(mode="after")
+    def _validate_descriptor_source(self) -> WheelPluginDeclaration:
+        if self.descriptor.source != self.source:
+            raise ValueError("plugin descriptor source must equal declaration source")
+        return self
+
+
+WheelSource: TypeAlias = (
+    WheelProductSource | WheelPluginSource | EditableWheelProductSource | EditableWheelPluginSource
+)
+WheelDeclaration: TypeAlias = WheelProductDeclaration | WheelPluginDeclaration
+
+
+class WheelProductProvider(Protocol):
+    def manifest(self) -> ProductManifest: ...
+
+
+WheelProvider: TypeAlias = WheelProductProvider | PluginProvider
 _EntryState: TypeAlias = tuple[int, int, int, int, int, int]
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
@@ -80,6 +171,7 @@ _FILE_FLAGS = os.O_RDONLY | _NOFOLLOW | _NONBLOCK
 class _ResolvedWheelSnapshot:
     snapshot: SourceSnapshot
     entrypoint: metadata.EntryPoint
+    declaration: WheelDeclaration
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,11 +204,16 @@ def _resolve_wheel_snapshot(
     entrypoint = _selected_entrypoint(distribution, source)
     version = _normalized_version(distribution.version, "distribution version")
     kind = SourceKind(source.kind)
-    if isinstance(source, EditableWheelPluginSource):
+    if isinstance(source, EditableWheelProductSource | EditableWheelPluginSource):
+        policy = (
+            DeclaredTreePolicy.editable_product()
+            if isinstance(source, EditableWheelProductSource)
+            else DeclaredTreePolicy.editable()
+        )
         tree = capture_declared_tree(
             source.source_root,
             source.source_files,
-            DeclaredTreePolicy.editable(),
+            policy,
         )
         identity = SourceIdentity(
             kind=kind,
@@ -125,10 +222,16 @@ def _resolve_wheel_snapshot(
             version=version,
             entrypoint_group=entrypoint.group,
             entrypoint_name=entrypoint.name,
+            declaration_path=source.declaration_path,
         )
+        provisional = SourceSnapshot.from_identity(identity, tree.files)
+        declaration = _parse_wheel_declaration(source, provisional, version)
+        identity = _identity_with_declaration(identity, declaration)
+        snapshot = SourceSnapshot.from_identity(identity, tree.files)
         return _ResolvedWheelSnapshot(
-            snapshot=SourceSnapshot.from_identity(identity, tree.files),
+            snapshot=snapshot,
             entrypoint=entrypoint,
+            declaration=declaration,
         )
 
     root, files = _capture_installed_distribution(
@@ -144,10 +247,33 @@ def _resolve_wheel_snapshot(
         version=version,
         entrypoint_group=entrypoint.group,
         entrypoint_name=entrypoint.name,
+        declaration_path=source.declaration_path,
     )
+    provisional = SourceSnapshot.from_identity(identity, files)
+    declaration = _parse_wheel_declaration(source, provisional, version)
+    identity = _identity_with_declaration(identity, declaration)
+    snapshot = SourceSnapshot.from_identity(identity, files)
     return _ResolvedWheelSnapshot(
-        snapshot=SourceSnapshot.from_identity(identity, files),
+        snapshot=snapshot,
         entrypoint=entrypoint,
+        declaration=declaration,
+    )
+
+
+def _identity_with_declaration(
+    identity: SourceIdentity,
+    declaration: WheelDeclaration,
+) -> SourceIdentity:
+    if isinstance(declaration, WheelProductDeclaration):
+        return replace(
+            identity,
+            product_id=declaration.manifest.product_id,
+            product_version=declaration.manifest.product_version,
+        )
+    return replace(
+        identity,
+        plugin_id=declaration.descriptor.plugin_id,
+        plugin_version=declaration.descriptor.plugin_version,
     )
 
 
@@ -168,7 +294,7 @@ def _load_snapshotted_entrypoint_binding(
     resolved = _resolve_wheel_snapshot(source, metadata_provider)
     if resolved.snapshot != snapshot:
         raise SourceSnapshotError("wheel source changed after snapshot")
-    _reject_preloaded_entrypoint_modules(resolved.entrypoint, snapshot)
+    _validate_preloaded_entrypoint_modules(resolved.entrypoint, snapshot)
     try:
         loaded = resolved.entrypoint.load()
     except Exception as error:
@@ -178,20 +304,76 @@ def _load_snapshotted_entrypoint_binding(
     if after_load.snapshot != snapshot:
         raise SourceSnapshotError("wheel source changed while loading its entry point")
 
-    if isinstance(source, WheelProductSource):
-        manifest = cast(ProductManifest, _call_descriptor(loaded, "manifest", "product"))
-        if manifest.product_id != snapshot.identity.entrypoint_name:
-            raise SourceSnapshotError("loaded product id does not match source identity")
-        if _normalized_version(manifest.product_version, "product version") != snapshot.identity.version:
-            raise SourceSnapshotError("loaded product version does not match source identity")
-        return _LoadedSnapshottedEntrypoint(cast(ProductProvider, loaded), manifest)
+    if isinstance(source, WheelProductSource | EditableWheelProductSource):
+        manifest = _call_descriptor(loaded, "manifest", "product")
+        if not isinstance(manifest, ProductManifest):
+            raise SourceSnapshotError("loaded product provider returned an invalid manifest")
+        declaration = cast(WheelProductDeclaration, resolved.declaration)
+        if manifest != declaration.manifest:
+            raise SourceSnapshotError("loaded product manifest disagrees with static declaration")
+        return _LoadedSnapshottedEntrypoint(cast(WheelProductProvider, loaded), manifest)
 
-    descriptor = cast(PluginDescriptor, _call_descriptor(loaded, "descriptor", "plugin"))
-    if descriptor.plugin_id != snapshot.identity.entrypoint_name:
-        raise SourceSnapshotError("loaded plugin id does not match source identity")
-    if _normalized_version(descriptor.plugin_version, "plugin version") != snapshot.identity.version:
-        raise SourceSnapshotError("loaded plugin version does not match source identity")
+    descriptor = _call_descriptor(loaded, "descriptor", "plugin")
+    if not isinstance(descriptor, PluginDescriptor):
+        raise SourceSnapshotError("loaded plugin provider returned an invalid descriptor")
+    declaration = cast(WheelPluginDeclaration, resolved.declaration)
+    if descriptor != declaration.descriptor:
+        raise SourceSnapshotError("loaded plugin descriptor disagrees with static declaration")
     return _LoadedSnapshottedEntrypoint(cast(PluginProvider, loaded), descriptor)
+
+
+def _parse_wheel_declaration(
+    source: WheelSource,
+    snapshot: SourceSnapshot,
+    version: str,
+) -> WheelDeclaration:
+    declaration_file = next(
+        (source_file for source_file in snapshot.files if source_file.path == source.declaration_path),
+        None,
+    )
+    if declaration_file is None:
+        raise SourceSnapshotError("wheel declaration path is absent from the authenticated snapshot")
+    try:
+        document = json.loads(
+            declaration_file.content,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise SourceSnapshotError("wheel declaration must be strict JSON") from error
+    expected_source = ProviderSource(
+        distribution=source.distribution,
+        version=version,
+        entrypoint_group=source.entrypoint_group,
+        entrypoint_name=source.entrypoint_name,
+        declaration_path=source.declaration_path,
+    )
+    declaration_type: type[WheelProductDeclaration] | type[WheelPluginDeclaration]
+    declaration_type = (
+        WheelProductDeclaration
+        if isinstance(source, WheelProductSource | EditableWheelProductSource)
+        else WheelPluginDeclaration
+    )
+    try:
+        declaration = declaration_type.model_validate(document)
+    except ValidationError as error:
+        raise SourceSnapshotError("wheel declaration violates its frozen schema") from error
+    if declaration.source != expected_source:
+        raise SourceSnapshotError("wheel declaration source disagrees with selected source")
+    return declaration
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"non-finite JSON number: {value}")
 
 
 def _normalized_distribution_name(value: str) -> str:
@@ -201,6 +383,13 @@ def _normalized_distribution_name(value: str) -> str:
     if not normalized:
         raise ValueError("distribution name must be non-empty text")
     return normalized
+
+
+def _canonical_declaration_path(value: str) -> str:
+    try:
+        return SourceFile.from_bytes(value, b"").path
+    except (TypeError, ValueError) as error:
+        raise ValueError("declaration path must be a canonical relative path") from error
 
 
 def _normalized_version(value: str, kind: str) -> str:
@@ -272,7 +461,13 @@ def _snapshot_installed_engine_distribution(
         version=version,
     )
     return SourceSnapshot.from_identity(
-        SourceIdentity(kind=SourceKind.ENGINE, root=root),
+        SourceIdentity(
+            kind=SourceKind.ENGINE,
+            root=root,
+            distribution="graph-engine",
+            version=version,
+            engine_installation="installed",
+        ),
         files,
     )
 
@@ -619,11 +814,15 @@ def _validate_snapshot_matches_source(source: WheelSource, snapshot: SourceSnaps
         or identity.distribution != source.distribution
         or identity.entrypoint_group != source.entrypoint_group
         or identity.entrypoint_name != source.entrypoint_name
+        or identity.declaration_path != source.declaration_path
     ):
         raise SourceSnapshotError("snapshot identity does not match requested wheel source")
-    if isinstance(source, EditableWheelPluginSource) and identity.root != source.source_root.resolve():
+    if (
+        isinstance(source, EditableWheelProductSource | EditableWheelPluginSource)
+        and identity.root != source.source_root.resolve()
+    ):
         raise SourceSnapshotError("snapshot root does not match requested editable source")
-    if isinstance(source, EditableWheelPluginSource):
+    if isinstance(source, EditableWheelProductSource | EditableWheelPluginSource):
         declared_paths = _canonical_declared_paths(source.source_files)
         snapshot_paths = tuple(source_file.path for source_file in snapshot.files)
         if declared_paths != snapshot_paths:
@@ -645,15 +844,13 @@ def _canonical_declared_paths(files: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(sorted(paths))
 
 
-def _reject_preloaded_entrypoint_modules(
+def _validate_preloaded_entrypoint_modules(
     entrypoint: metadata.EntryPoint,
     snapshot: SourceSnapshot,
 ) -> None:
     parts = entrypoint.module.split(".")
     module_names = tuple(".".join(parts[:index]) for index in range(1, len(parts) + 1))
-    if entrypoint.module in sys.modules:
-        raise SourceSnapshotError(f"entry point module is already loaded: {entrypoint.module}")
-    for module_name in module_names[:-1]:
+    for module_name in module_names:
         if module_name in sys.modules:
             _verify_snapshotted_module(module_name, snapshot)
 
@@ -715,9 +912,12 @@ def _call_descriptor(loaded: object, method_name: str, kind: str) -> object:
 
 
 __all__ = [
+    "EditableWheelProductSource",
     "EditableWheelPluginSource",
     "MetadataProvider",
+    "WheelPluginDeclaration",
     "WheelPluginSource",
+    "WheelProductDeclaration",
     "WheelProductSource",
     "load_snapshotted_entrypoint",
     "snapshot_wheel_source",

@@ -7,6 +7,7 @@ from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import (
     PluginContribution,
     PluginDescriptor,
+    ProviderSource,
     RegistryPorts,
     TaskContext,
     TaskOutcome,
@@ -49,6 +50,14 @@ class ToyBPlugin:
     @staticmethod
     def descriptor() -> PluginDescriptor:
         return PluginDescriptor(
+            schema_version="1",
+            source=ProviderSource(
+                distribution="graph-engine-toy-b",
+                version="1.0.0",
+                entrypoint_group="graph_engine.plugins",
+                entrypoint_name="toy-b",
+                declaration_path="graph_engine_toy_b/plugin-declaration.json",
+            ),
             plugin_id="toy.b",
             plugin_version="1.0.0",
             engine_api=ENGINE_API_VERSION,

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field as dataclass_field
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 from pydantic import (
     BaseModel,
@@ -385,8 +386,56 @@ class PluginContribution:
         return cls()
 
 
-@dataclass(frozen=True, slots=True)
-class PluginDescriptor:
+class ProviderSource(FrozenModel):
+    distribution: str
+    version: str
+    entrypoint_group: Literal["graph_engine.products", "graph_engine.plugins"]
+    entrypoint_name: str
+    declaration_path: str
+
+    @field_validator("distribution")
+    @classmethod
+    def _normalize_distribution(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("distribution must be non-empty text")
+        normalized = canonicalize_name(value)
+        if not normalized:
+            raise ValueError("distribution must be non-empty text")
+        return normalized
+
+    @field_validator("version")
+    @classmethod
+    def _normalize_version(cls, value: str) -> str:
+        try:
+            return str(Version(value))
+        except (InvalidVersion, TypeError) as error:
+            raise ValueError(f"invalid provider source version: {value!r}") from error
+
+    @field_validator("entrypoint_name")
+    @classmethod
+    def _validate_entrypoint_name(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("provider entrypoint name must be non-empty text")
+        return value
+
+    @field_validator("declaration_path")
+    @classmethod
+    def _validate_declaration_path(cls, value: str) -> str:
+        if not isinstance(value, str) or not value or "\\" in value:
+            raise ValueError("declaration path must be a canonical relative POSIX path")
+        path = PurePosixPath(value)
+        if (
+            path.is_absolute()
+            or path.as_posix() != value
+            or any(part in ("", ".", "..") for part in path.parts)
+        ):
+            raise ValueError("declaration path must be a canonical relative POSIX path")
+        return value
+
+
+class PluginDescriptor(FrozenModel):
+    schema_version: Literal["1"]
+    source: ProviderSource | None
     plugin_id: str
     plugin_version: str
     engine_api: str
@@ -398,16 +447,30 @@ class PluginDescriptor:
     effects: tuple[str, ...] = ()
     bindings: tuple[str, ...] = ()
 
-    def __post_init__(self) -> None:
-        _validate_version(self.plugin_version, "plugin version")
-        _validate_engine_api(self.engine_api)
-        object.__setattr__(self, "dependencies", tuple(self.dependencies))
-        object.__setattr__(self, "task_handlers", tuple(self.task_handlers))
-        object.__setattr__(self, "commit_validators", tuple(self.commit_validators))
-        object.__setattr__(self, "schemas", tuple(self.schemas))
-        object.__setattr__(self, "resources", tuple(self.resources))
-        object.__setattr__(self, "effects", tuple(self.effects))
-        object.__setattr__(self, "bindings", tuple(self.bindings))
+    @field_validator("plugin_id")
+    @classmethod
+    def _validate_plugin_id(cls, value: str) -> str:
+        return _validate_contract_id(value, "plugin id")
+
+    @field_validator("plugin_version")
+    @classmethod
+    def _normalize_plugin_version(cls, value: str) -> str:
+        return str(Version(_validate_version(value, "plugin version")))
+
+    @field_validator("engine_api")
+    @classmethod
+    def _validate_descriptor_engine_api(cls, value: str) -> str:
+        return _validate_engine_api(value)
+
+    @model_validator(mode="after")
+    def _validate_source_expectation(self) -> PluginDescriptor:
+        if self.source is None:
+            return self
+        if self.source.entrypoint_group != "graph_engine.plugins":
+            raise ValueError("plugin source must use graph_engine.plugins")
+        if Version(self.source.version) != Version(self.plugin_version):
+            raise ValueError("source version must equal plugin version")
+        return self
 
 
 class PluginProvider(Protocol):
@@ -544,6 +607,7 @@ __all__ = [
     "PluginDependency",
     "PluginDescriptor",
     "PluginProvider",
+    "ProviderSource",
     "RegistryPorts",
     "ResourceContribution",
     "ResourceClaims",

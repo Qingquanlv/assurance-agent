@@ -16,6 +16,8 @@ def _descriptor(
     requires: tuple[tuple[str, str], ...] = (),
 ) -> PluginDescriptor:
     return PluginDescriptor(
+        schema_version="1",
+        source=None,
         plugin_id=plugin_id,
         plugin_version=version,
         engine_api=engine_api,
@@ -129,7 +131,7 @@ def test_resolver_rejects_engine_api_mismatch() -> None:
 def test_resolver_rejects_unqualified_selected_ids_for_all_input_permutations() -> None:
     entries = (
         ("toy.runtime", _descriptor("toy.runtime")),
-        ("not-qualified", _descriptor("not-qualified")),
+        ("not-qualified", _descriptor("toy.other")),
     )
     errors: set[str] = set()
 

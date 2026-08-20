@@ -42,6 +42,8 @@ class _PingHandler:
 class _Provider:
     def descriptor(self) -> PluginDescriptor:
         return PluginDescriptor(
+            schema_version="1",
+            source=None,
             plugin_id="toy.one",
             plugin_version="1.0.0",
             engine_api=ENGINE_API_VERSION,
@@ -75,6 +77,9 @@ def registry() -> CapabilityRegistry:
             version="1.0.0",
             entrypoint_group="graph_engine.plugins",
             entrypoint_name="toy.one",
+            declaration_path="toy_one/plugin-declaration.json",
+            plugin_id="toy.one",
+            plugin_version="1.0.0",
         ),
         (),
     )

@@ -38,6 +38,8 @@ class _PluginProvider:
 
     def descriptor(self) -> PluginDescriptor:
         return PluginDescriptor(
+            schema_version="1",
+            source=None,
             plugin_id=self.plugin_id,
             plugin_version="1.0.0",
             engine_api="1.0",
@@ -56,10 +58,14 @@ class _PluginProvider:
 class _ProductProvider:
     def manifest(self) -> ProductManifest:
         return ProductManifest(
+            schema_version="1",
+            source=None,
             product_id="toy.product",
             product_version="1.0.0",
             engine_api="1.0",
-            plugins=(PluginRequirement(plugin_id="toy.one", version="1.0.0"),),
+            plugins=(PluginRequirement(plugin_id="toy.one", version_specifier="==1.0.0"),),
+            entrypoints={"main": "root"},
+            configuration={},
             workflow=WorkflowDef.model_validate(
                 {
                     "name": "toy",
@@ -146,6 +152,8 @@ def _descriptor(
     task_handlers: tuple[str, ...] = ("toy.one.ping",),
 ) -> PluginDescriptor:
     return PluginDescriptor(
+        schema_version="1",
+        source=None,
         plugin_id=plugin_id,
         plugin_version=version,
         engine_api=engine_api,
@@ -234,7 +242,7 @@ def test_unlisted_provider_is_never_observed(
 @pytest.mark.parametrize(
     ("descriptor", "message"),
     [
-        (_descriptor(version="1.0.1"), "version '1.0.1'; expected '1.0.0'"),
+        (_descriptor(version="1.0.1"), "version '1.0.1'; expected '==1.0.0'"),
         (_descriptor(engine_api="1.0.0"), "engine API '1.0.0'; expected '1.0'"),
         (_descriptor(plugin_id="toy.other"), "for toy.one described toy.other"),
     ],
@@ -355,8 +363,8 @@ def test_product_manifest_rejects_invalid_product_ids(
 
 @pytest.mark.parametrize("plugin_id", ["toy", "Toy.one", "toy_one.plugin", "toy/one"])
 def test_plugin_requirement_rejects_invalid_plugin_ids(plugin_id: str) -> None:
-    with pytest.raises(ValidationError, match="plugin id"):
-        PluginRequirement(plugin_id=plugin_id, version="1.0.0")
+    with pytest.raises(ValidationError, match="plugin requirement id"):
+        PluginRequirement(plugin_id=plugin_id, version_specifier="==1.0.0")
 
 
 def test_product_manifest_requires_a_nonempty_unique_plugin_list(
@@ -366,7 +374,7 @@ def test_product_manifest_requires_a_nonempty_unique_plugin_list(
     payload = manifest.model_dump(mode="python", by_alias=True, exclude_unset=True)
     with pytest.raises(ValidationError, match="at least one plugin"):
         ProductManifest.model_validate({**payload, "plugins": []})
-    with pytest.raises(ValidationError, match="repeat a plugin id"):
+    with pytest.raises(ValidationError, match="requirements must be unique"):
         ProductManifest.model_validate({**payload, "plugins": [payload["plugins"][0], payload["plugins"][0]]})
 
 
@@ -377,7 +385,9 @@ def test_product_models_are_frozen_and_forbid_extra(
     with pytest.raises(ValidationError, match="frozen"):
         manifest.product_version = "2.0.0"
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        PluginRequirement.model_validate({"plugin_id": "toy.one", "version": "1.0.0", "optional": True})
+        PluginRequirement.model_validate(
+            {"plugin_id": "toy.one", "version_specifier": "==1.0.0", "optional": True}
+        )
 
 
 @dataclass(frozen=True)

@@ -7,13 +7,14 @@ from pathlib import Path
 import re
 from typing import TYPE_CHECKING, Protocol, cast
 
-from pydantic import field_validator, model_validator
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.composition.models import PluginRequirement, ProductManifest
 from graph_engine.errors import GraphEngineError
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
-from graph_engine.graph.schema import FrozenModel, WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
     PluginContribution,
@@ -29,38 +30,6 @@ if TYPE_CHECKING:
 
 class ProductResolutionError(GraphEngineError):
     """Raised when an explicit product bundle cannot be resolved exactly."""
-
-
-class PluginRequirement(FrozenModel):
-    plugin_id: str
-    version: str
-
-    @field_validator("plugin_id")
-    @classmethod
-    def _validate_plugin_id(cls, value: str) -> str:
-        return _qualified_id(value, "plugin id")
-
-
-class ProductManifest(FrozenModel):
-    product_id: str
-    product_version: str
-    engine_api: str
-    plugins: tuple[PluginRequirement, ...]
-    workflow: WorkflowDef
-
-    @field_validator("product_id")
-    @classmethod
-    def _validate_product_id(cls, value: str) -> str:
-        return _qualified_id(value, "product id")
-
-    @model_validator(mode="after")
-    def _validate_plugins(self) -> ProductManifest:
-        if not self.plugins:
-            raise ValueError("product manifest must require at least one plugin")
-        plugin_ids = tuple(requirement.plugin_id for requirement in self.plugins)
-        if len(set(plugin_ids)) != len(plugin_ids):
-            raise ValueError("product manifest cannot repeat a plugin id")
-        return self
 
 
 class ProductProvider(Protocol):
@@ -91,13 +60,6 @@ class _SelectedPluginProvider:
         return self.provider.contribute(ports)
 
 
-def _qualified_id(value: str, kind: str) -> str:
-    try:
-        return validate_qualified_id(value)
-    except IdentifierError as error:
-        raise ValueError(f"invalid {kind}: {value!r}") from error
-
-
 def _select_plugin(
     requirement: PluginRequirement,
     available_plugins: Mapping[str, PluginProvider],
@@ -106,7 +68,7 @@ def _select_plugin(
         provider = available_plugins[requirement.plugin_id]
     except KeyError as error:
         raise ProductResolutionError(
-            f"missing plugin {requirement.plugin_id}=={requirement.version}"
+            f"missing plugin {requirement.plugin_id}{requirement.version_specifier}"
         ) from error
 
     descriptor = provider.descriptor()
@@ -114,10 +76,10 @@ def _select_plugin(
         raise ProductResolutionError(
             f"plugin provider for {requirement.plugin_id} described {descriptor.plugin_id}"
         )
-    if descriptor.plugin_version != requirement.version:
+    if Version(descriptor.plugin_version) not in SpecifierSet(requirement.version_specifier):
         raise ProductResolutionError(
             f"plugin {requirement.plugin_id} version {descriptor.plugin_version!r}; "
-            f"expected {requirement.version!r}"
+            f"expected {requirement.version_specifier!r}"
         )
     if descriptor.engine_api != ENGINE_API_VERSION:
         raise ProductResolutionError(
@@ -125,6 +87,8 @@ def _select_plugin(
             f"expected {ENGINE_API_VERSION!r}"
         )
     snapshot = PluginDescriptor(
+        schema_version=descriptor.schema_version,
+        source=descriptor.source,
         plugin_id=descriptor.plugin_id,
         plugin_version=descriptor.plugin_version,
         engine_api=descriptor.engine_api,
@@ -193,6 +157,9 @@ def _assemble_selected_contributions(
                     version=descriptor.plugin_version,
                     entrypoint_group="graph_engine.plugins",
                     entrypoint_name=descriptor.plugin_id,
+                    declaration_path=f"{descriptor.plugin_id.replace('.', '_')}/plugin-declaration.json",
+                    plugin_id=descriptor.plugin_id,
+                    plugin_version=descriptor.plugin_version,
                 ),
                 (),
             )
@@ -214,6 +181,8 @@ def resolve_product(
     selected = tuple(_select_plugin(requirement, available_plugins) for requirement in manifest.plugins)
     descriptors = tuple(item.selected_descriptor for item in selected)
     registry = _assemble_selected_contributions(selected)
+    if manifest.workflow is None:
+        raise ProductResolutionError("phase-one product resolver requires an inline workflow")
     workflow = compile_workflow(manifest.workflow, registry)
     digest_payload = cast(
         JSONValue,

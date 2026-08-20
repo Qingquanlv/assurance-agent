@@ -7,6 +7,7 @@ from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
     PluginContribution,
     PluginDescriptor,
+    ProviderSource,
     RegistryPorts,
     TaskContext,
     TaskOutcome,
@@ -27,6 +28,14 @@ class ToyAPlugin:
     @staticmethod
     def descriptor() -> PluginDescriptor:
         return PluginDescriptor(
+            schema_version="1",
+            source=ProviderSource(
+                distribution="graph-engine-toy-a",
+                version="1.0.0",
+                entrypoint_group="graph_engine.plugins",
+                entrypoint_name="toy-a",
+                declaration_path="graph_engine_toy_a/plugin-declaration.json",
+            ),
             plugin_id="toy.a",
             plugin_version="1.0.0",
             engine_api=ENGINE_API_VERSION,

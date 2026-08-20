@@ -41,6 +41,7 @@ class DeclaredTreePolicy:
     def require_single_link(self) -> bool:
         return self.kind in {
             SourceKind.CONFIG_TREE,
+            SourceKind.EDITABLE_PRODUCT,
             SourceKind.EDITABLE_PLUGIN,
             SourceKind.PRODUCT_FILE,
         }
@@ -56,6 +57,10 @@ class DeclaredTreePolicy:
     @classmethod
     def editable(cls) -> DeclaredTreePolicy:
         return cls(kind=SourceKind.EDITABLE_PLUGIN)
+
+    @classmethod
+    def editable_product(cls) -> DeclaredTreePolicy:
+        return cls(kind=SourceKind.EDITABLE_PRODUCT)
 
     @classmethod
     def product_file(cls) -> DeclaredTreePolicy:
@@ -168,15 +173,9 @@ def _open_directory_at(parent_fd: int, name: str, relative_path: str) -> int:
         try:
             opened = os.fstat(descriptor)
         except OSError as error:
-            raise SourceSnapshotError(
-                f"cannot authenticate source directory: {relative_path}"
-            ) from error
-        if not stat.S_ISDIR(opened.st_mode) or _entry_identity(opened) != _entry_identity(
-            enumerated
-        ):
-            raise SourceSnapshotError(
-                f"source directory identity changed while opening: {relative_path}"
-            )
+            raise SourceSnapshotError(f"cannot authenticate source directory: {relative_path}") from error
+        if not stat.S_ISDIR(opened.st_mode) or _entry_identity(opened) != _entry_identity(enumerated):
+            raise SourceSnapshotError(f"source directory identity changed while opening: {relative_path}")
         _snapshot_boundary("after_component_open", relative_path)
     except BaseException:
         _close_descriptors_preserving_primary((descriptor,), sys.exception())
@@ -245,17 +244,13 @@ def _read_stable_file_at(
         try:
             enumerated = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except OSError as error:
-            raise SourceSnapshotError(
-                f"cannot safely inspect regular file: {relative_path}"
-            ) from error
+            raise SourceSnapshotError(f"cannot safely inspect regular file: {relative_path}") from error
         _require_regular_file(enumerated, relative_path, policy)
         _snapshot_boundary("before_component_open", relative_path)
         try:
             descriptor = os.open(name, _FILE_READ_FLAGS, dir_fd=parent_fd)
         except OSError as error:
-            raise SourceSnapshotError(
-                f"cannot safely open regular file: {relative_path}"
-            ) from error
+            raise SourceSnapshotError(f"cannot safely open regular file: {relative_path}") from error
         opened = os.fstat(descriptor)
         _require_regular_file(opened, relative_path, policy)
         if _entry_identity(opened) != _entry_identity(enumerated):
@@ -273,15 +268,11 @@ def _read_stable_file_at(
         try:
             final_opened = os.fstat(descriptor)
         except OSError as error:
-            raise SourceSnapshotError(
-                f"source file changed while it was read: {relative_path}"
-            ) from error
+            raise SourceSnapshotError(f"source file changed while it was read: {relative_path}") from error
         try:
             final_entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except OSError as error:
-            raise SourceSnapshotError(
-                f"source file changed while it was read: {relative_path}"
-            ) from error
+            raise SourceSnapshotError(f"source file changed while it was read: {relative_path}") from error
         _snapshot_boundary("after_final_stat", relative_path)
         if not _stable_file_stats(enumerated, opened, final_opened, final_entry):
             raise SourceSnapshotError(f"source file changed while it was read: {relative_path}")
@@ -289,9 +280,7 @@ def _read_stable_file_at(
         _require_regular_file(final_entry, relative_path, policy)
         return SourceFile.from_bytes(relative_path, b"".join(chunks))
     finally:
-        descriptors = (() if descriptor is None else (descriptor,)) + tuple(
-            reversed(opened_directories)
-        )
+        descriptors = (() if descriptor is None else (descriptor,)) + tuple(reversed(opened_directories))
         _close_descriptors_preserving_primary(descriptors, sys.exception())
 
 

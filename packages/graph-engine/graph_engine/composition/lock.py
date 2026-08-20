@@ -17,17 +17,38 @@ from graph_engine.composition.models import (
     ProductManifest,
     RegistrySet,
     SourceIdentity,
+    SourceKey,
     SourceKind,
+    SourceRole,
     SourceSnapshot,
     TaskHandlerEntry,
 )
+from graph_engine.composition.dependencies import DependencyConflict, resolve_dependency_order
 from graph_engine.frozen_json import FrozenJSONValue, thaw_json
 from graph_engine.graph.compiler import CompiledWorkflow
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
-from graph_engine.plugin_api import FrozenModel, PluginDescriptor
+from graph_engine.plugin_api import FrozenModel, PluginDescriptor, ProviderSource
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _validate_provider_source_identity(
+    source: ProviderSource | None,
+    identity: Mapping[str, object],
+    kind: str,
+) -> None:
+    if source is None:
+        raise ValueError(f"locked wheel {kind} declaration lacks a source expectation")
+    expected = {
+        "distribution": source.distribution,
+        "version": source.version,
+        "entrypoint_group": source.entrypoint_group,
+        "entrypoint_name": source.entrypoint_name,
+        "declaration_path": source.declaration_path,
+    }
+    if any(identity.get(name) != value for name, value in expected.items()):
+        raise ValueError(f"locked {kind} declaration disagrees with its source identity")
 
 
 class LockedSourceFile(FrozenModel):
@@ -125,7 +146,20 @@ class LockedProduct(FrozenModel):
         manifest = cast(JSONValue, thaw_json(self.manifest))
         if canonical_digest(manifest) != self.manifest_digest:
             raise ValueError("locked product manifest digest does not authenticate its projection")
-        if self.source.kind not in {SourceKind.WHEEL_PRODUCT, SourceKind.PRODUCT_FILE}:
+        try:
+            parsed_manifest = ProductManifest.model_validate(manifest)
+        except (TypeError, ValueError) as error:
+            raise ValueError("locked product manifest violates its frozen schema") from error
+        if (
+            parsed_manifest.product_id != self.product_id
+            or parsed_manifest.product_version != self.product_version
+        ):
+            raise ValueError("locked product fields disagree with its manifest")
+        if self.source.kind not in {
+            SourceKind.WHEEL_PRODUCT,
+            SourceKind.EDITABLE_PRODUCT,
+            SourceKind.PRODUCT_FILE,
+        }:
             raise ValueError("locked product source identity has the wrong source kind")
         identity = cast(dict[str, object], thaw_json(self.source.identity))
         source_id = identity.get("product_id", identity.get("entrypoint_name"))
@@ -134,12 +168,17 @@ class LockedProduct(FrozenModel):
             raise ValueError("locked product disagrees with its source identity")
         if source_version is not None and source_version != self.product_version:
             raise ValueError("locked product disagrees with its source identity")
+        if self.source.kind in {SourceKind.WHEEL_PRODUCT, SourceKind.EDITABLE_PRODUCT}:
+            _validate_provider_source_identity(parsed_manifest.source, identity, "product")
+        elif parsed_manifest.source is not None:
+            raise ValueError("locked declarative product cannot claim a wheel source")
         return self
 
 
 class LockedPlugin(FrozenModel):
     plugin_id: str
     plugin_version: str
+    descriptor: PluginDescriptor
     descriptor_digest: str
     dependencies: tuple[LockedDependency, ...]
     source: LockedSource
@@ -161,9 +200,29 @@ class LockedPlugin(FrozenModel):
 
     @model_validator(mode="after")
     def _validate_dependencies(self) -> LockedPlugin:
+        descriptor_projection = _descriptor_projection(self.descriptor)
+        if canonical_digest(descriptor_projection) != self.descriptor_digest:
+            raise ValueError("locked plugin descriptor digest does not authenticate its projection")
+        if (
+            self.descriptor.plugin_id != self.plugin_id
+            or self.descriptor.plugin_version != self.plugin_version
+        ):
+            raise ValueError("locked plugin fields disagree with its descriptor")
         dependency_ids = tuple(item.plugin_id for item in self.dependencies)
         if dependency_ids != tuple(sorted(dependency_ids)) or len(dependency_ids) != len(set(dependency_ids)):
             raise ValueError("locked plugin dependencies must have unique canonical order")
+        descriptor_dependencies = tuple(
+            (dependency.plugin_id, str(SpecifierSet(dependency.version_specifier)))
+            for dependency in sorted(
+                self.descriptor.dependencies,
+                key=lambda dependency: dependency.plugin_id,
+            )
+        )
+        locked_dependencies = tuple(
+            (dependency.plugin_id, dependency.version_specifier) for dependency in self.dependencies
+        )
+        if locked_dependencies != descriptor_dependencies:
+            raise ValueError("locked plugin dependencies disagree with its descriptor")
         if self.source.kind not in {
             SourceKind.WHEEL_PLUGIN,
             SourceKind.EDITABLE_PLUGIN,
@@ -177,6 +236,10 @@ class LockedPlugin(FrozenModel):
             raise ValueError("locked plugin disagrees with its source identity")
         if source_version is not None and source_version != self.plugin_version:
             raise ValueError("locked plugin disagrees with its source identity")
+        if self.source.kind in {SourceKind.WHEEL_PLUGIN, SourceKind.EDITABLE_PLUGIN}:
+            _validate_provider_source_identity(self.descriptor.source, identity, "plugin")
+        elif self.descriptor.source is not None:
+            raise ValueError("locked declarative plugin cannot claim a wheel source")
         return self
 
 
@@ -214,6 +277,7 @@ class InvocationLock(FrozenModel):
     schema_version: Literal["1"] = "1"
     digest_algorithm: Literal["graph-engine-source-v1"] = "graph-engine-source-v1"
     engine_api: str
+    engine: LockedSource
     engine_digest: str
     product: LockedProduct
     plugins: tuple[LockedPlugin, ...]
@@ -247,6 +311,19 @@ class InvocationLock(FrozenModel):
             raise ValueError("invocation lock canonical bytes disagree with its projection")
         if hashlib.sha256(expected).hexdigest() != self.digest:
             raise ValueError("invocation lock digest does not authenticate canonical bytes")
+        if self.engine.kind != SourceKind.ENGINE or self.engine.digest != self.engine_digest:
+            raise ValueError("invocation lock engine identity disagrees with its digest")
+        engine_identity = thaw_json(self.engine.identity)
+        if not isinstance(engine_identity, dict) or (
+            engine_identity.get("distribution") != "graph-engine"
+            or not isinstance(engine_identity.get("version"), str)
+            or engine_identity.get("installation") not in {"installed", "editable"}
+        ):
+            raise ValueError("invocation lock engine identity is incomplete")
+        if engine_identity["installation"] == "installed" and "root" in engine_identity:
+            raise ValueError("installed engine identity must be relocatable")
+        if engine_identity["installation"] == "editable" and not isinstance(engine_identity.get("root"), str):
+            raise ValueError("editable engine identity must retain its root")
         plugin_ids = tuple(plugin.plugin_id for plugin in self.plugins)
         if plugin_ids != tuple(sorted(plugin_ids)) or len(plugin_ids) != len(set(plugin_ids)):
             raise ValueError("locked plugins must have unique canonical order")
@@ -254,6 +331,16 @@ class InvocationLock(FrozenModel):
             raise ValueError("invocation lock dependency order must not repeat plugin ids")
         if set(self.dependency_order) != set(plugin_ids):
             raise ValueError("invocation lock dependency order disagrees with locked plugins")
+        try:
+            manifest = ProductManifest.model_validate(thaw_json(self.product.manifest))
+            expected_order = resolve_dependency_order(
+                {plugin.plugin_id: plugin.descriptor for plugin in self.plugins},
+                manifest.required_plugin_ids,
+            )
+        except (ValueError, TypeError, DependencyConflict) as error:
+            raise ValueError("invocation lock dependency declarations are invalid") from error
+        if self.dependency_order != expected_order:
+            raise ValueError("invocation lock dependency order is not canonical")
         expected_registry_digests = _registry_digests_from_projections(self.registry_projections)
         if self.registry_digests != expected_registry_digests:
             raise ValueError("invocation lock registry digests do not authenticate their projections")
@@ -280,6 +367,7 @@ class InvocationLock(FrozenModel):
         cls,
         *,
         engine_api: str,
+        engine: LockedSource,
         engine_digest: str,
         product: LockedProduct,
         plugins: tuple[LockedPlugin, ...],
@@ -298,6 +386,7 @@ class InvocationLock(FrozenModel):
             "schema_version": "1",
             "digest_algorithm": "graph-engine-source-v1",
             "engine_api": engine_api,
+            "engine": engine,
             "engine_digest": engine_digest,
             "product": product,
             "plugins": ordered_plugins,
@@ -329,7 +418,7 @@ def build_invocation_lock(
     registries: RegistrySet,
     configuration: object,
     workflow: CompiledWorkflow,
-    engine_digest: str,
+    engine_snapshot: SourceSnapshot,
 ) -> InvocationLock:
     manifest_projection = _manifest_projection(manifest)
     locked_product = LockedProduct(
@@ -342,7 +431,8 @@ def build_invocation_lock(
     locked_plugins: list[LockedPlugin] = []
     for plugin_id in sorted(descriptors):
         descriptor = descriptors[plugin_id]
-        source_entry = registries.sources.entries.get(plugin_id)
+        role = SourceRole.PLUGIN if descriptor.source is not None else SourceRole.CONFIG
+        source_entry = registries.sources.entries.get(SourceKey(role, plugin_id))
         if source_entry is None:
             raise ValueError(f"locked plugin has no selected source: {plugin_id}")
         descriptor_projection = _descriptor_projection(descriptor)
@@ -350,6 +440,7 @@ def build_invocation_lock(
             LockedPlugin(
                 plugin_id=plugin_id,
                 plugin_version=descriptor.plugin_version,
+                descriptor=descriptor,
                 descriptor_digest=canonical_digest(descriptor_projection),
                 dependencies=tuple(
                     LockedDependency(
@@ -370,7 +461,8 @@ def build_invocation_lock(
     compiled_workflow = _compiled_workflow_projection(workflow)
     return InvocationLock.create(
         engine_api=ENGINE_API_VERSION,
-        engine_digest=engine_digest,
+        engine=_locked_source(engine_snapshot),
+        engine_digest=engine_snapshot.digest,
         product=locked_product,
         plugins=tuple(locked_plugins),
         dependency_order=dependency_order,
@@ -387,14 +479,19 @@ def build_invocation_lock(
 
 def compute_registry_projections(registries: RegistrySet) -> RegistryProjections:
     source_digest_by_owner = {
-        source_id: entry.snapshot.digest for source_id, entry in registries.sources.entries.items()
+        source_key.owner_id: entry.snapshot.digest
+        for source_key, entry in registries.sources.entries.items()
+        if source_key.role in {SourceRole.PLUGIN, SourceRole.CONFIG}
     }
     sources: list[JSONValue] = []
-    for source_id, entry in registries.sources.entries.items():
+    for source_key, entry in registries.sources.entries.items():
         source = _locked_source(entry.snapshot)
         sources.append(
             {
-                "source_id": source_id,
+                "source_key": {
+                    "role": source_key.role.value,
+                    "owner_id": source_key.owner_id,
+                },
                 "kind": source.kind.value,
                 "identity": cast(JSONValue, thaw_json(source.identity)),
                 "digest": source.digest,
@@ -485,10 +582,16 @@ def authenticate_composition_lock(
 ) -> None:
     if not isinstance(workflow, CompiledWorkflow):
         raise TypeError("composition workflow must be compiled")
+    engine_source = registries.sources.entries.get(SourceKey(SourceRole.ENGINE, "graph.engine"))
+    if engine_source is None or lock.engine != _locked_source(engine_source.snapshot):
+        raise ValueError("invocation lock engine source disagrees with composition")
     if lock.product.product_id != manifest.product_id or (
         lock.product.product_version != manifest.product_version
     ):
         raise ValueError("invocation lock product disagrees with composition manifest")
+    product_source = registries.sources.entries.get(SourceKey(SourceRole.PRODUCT, manifest.product_id))
+    if product_source is None or lock.product.source != _locked_source(product_source.snapshot):
+        raise ValueError("invocation lock product source disagrees with composition")
     manifest_projection = _manifest_projection(manifest)
     if lock.product.manifest_digest != canonical_digest(manifest_projection):
         raise ValueError("invocation lock manifest digest disagrees with composition")
@@ -498,10 +601,16 @@ def authenticate_composition_lock(
         raise ValueError("invocation lock plugins disagree with composition descriptors")
     for plugin_id, descriptor in descriptor_by_id.items():
         locked_plugin = locked_plugin_by_id[plugin_id]
-        if locked_plugin.plugin_version != str(
-            Version(descriptor.plugin_version)
-        ) or locked_plugin.descriptor_digest != canonical_digest(_descriptor_projection(descriptor)):
+        if (
+            locked_plugin.plugin_version != str(Version(descriptor.plugin_version))
+            or locked_plugin.descriptor != descriptor
+            or locked_plugin.descriptor_digest != canonical_digest(_descriptor_projection(descriptor))
+        ):
             raise ValueError(f"invocation lock descriptor disagrees with composition: {plugin_id}")
+        role = SourceRole.PLUGIN if descriptor.source is not None else SourceRole.CONFIG
+        plugin_source = registries.sources.entries.get(SourceKey(role, plugin_id))
+        if plugin_source is None or locked_plugin.source != _locked_source(plugin_source.snapshot):
+            raise ValueError(f"invocation lock plugin source disagrees with composition: {plugin_id}")
         expected_dependencies = tuple(
             (dependency.plugin_id, str(SpecifierSet(dependency.version_specifier)))
             for dependency in sorted(
@@ -514,6 +623,12 @@ def authenticate_composition_lock(
         )
         if locked_dependencies != expected_dependencies:
             raise ValueError(f"invocation lock dependencies disagree with composition: {plugin_id}")
+    try:
+        expected_order = resolve_dependency_order(descriptor_by_id, manifest.required_plugin_ids)
+    except DependencyConflict as error:
+        raise ValueError("composition dependency declarations are invalid") from error
+    if lock.dependency_order != expected_order:
+        raise ValueError("invocation lock dependency order disagrees with canonical composition order")
     registry_projections = compute_registry_projections(registries)
     if lock.registry_projections != registry_projections:
         raise ValueError("invocation lock registry projections disagree with composition")
@@ -551,11 +666,11 @@ def _locked_source(snapshot: SourceSnapshot) -> LockedSource:
 def _source_identity_projection(identity: SourceIdentity) -> dict[str, JSONValue]:
     projection: dict[str, JSONValue] = {}
     if identity.kind in {
+        SourceKind.EDITABLE_PRODUCT,
         SourceKind.EDITABLE_PLUGIN,
         SourceKind.PRODUCT_FILE,
         SourceKind.CONFIG_TREE,
-        SourceKind.ENGINE,
-    }:
+    } or (identity.kind == SourceKind.ENGINE and identity.engine_installation == "editable"):
         projection["root"] = str(identity.root)
     for field_name in (
         "distribution",
@@ -566,24 +681,33 @@ def _source_identity_projection(identity: SourceIdentity) -> dict[str, JSONValue
         "product_version",
         "plugin_id",
         "plugin_version",
+        "declaration_path",
     ):
         value = getattr(identity, field_name)
         if value is not None:
             projection[field_name] = value
+    if identity.engine_installation is not None:
+        projection["installation"] = identity.engine_installation
     return projection
 
 
 def _manifest_projection(manifest: ProductManifest) -> JSONValue:
-    return cast(
-        JSONValue,
-        manifest.model_dump(mode="json", by_alias=True, exclude_none=True),
-    )
+    projection = manifest.model_dump(mode="json", by_alias=True)
+    if manifest.workflow is not None:
+        projection["workflow"] = manifest.workflow.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_defaults=True,
+        )
+    return cast(JSONValue, projection)
 
 
 def _descriptor_projection(descriptor: PluginDescriptor) -> JSONValue:
     return cast(
         JSONValue,
         {
+            "schema_version": descriptor.schema_version,
+            "source": (descriptor.source.model_dump(mode="json") if descriptor.source is not None else None),
             "plugin_id": descriptor.plugin_id,
             "plugin_version": str(Version(descriptor.plugin_version)),
             "engine_api": _normalized_engine_api(descriptor.engine_api),
@@ -612,6 +736,7 @@ def _invocation_lock_projection(lock: InvocationLock) -> JSONValue:
         schema_version=lock.schema_version,
         digest_algorithm=lock.digest_algorithm,
         engine_api=lock.engine_api,
+        engine=lock.engine,
         engine_digest=lock.engine_digest,
         product=lock.product,
         plugins=lock.plugins,
@@ -632,6 +757,7 @@ def _invocation_lock_values_projection(
     schema_version: str,
     digest_algorithm: str,
     engine_api: str,
+    engine: LockedSource,
     engine_digest: str,
     product: LockedProduct,
     plugins: tuple[LockedPlugin, ...],
@@ -649,6 +775,7 @@ def _invocation_lock_values_projection(
         "schema_version": schema_version,
         "digest_algorithm": digest_algorithm,
         "engine_api": engine_api,
+        "engine": _locked_source_projection(engine),
         "engine_digest": engine_digest,
         "product": _locked_product_projection(product),
         "plugins": [_locked_plugin_projection(plugin) for plugin in plugins],
@@ -722,6 +849,7 @@ def _locked_plugin_projection(plugin: LockedPlugin) -> JSONValue:
     return {
         "plugin_id": plugin.plugin_id,
         "plugin_version": plugin.plugin_version,
+        "descriptor": _descriptor_projection(plugin.descriptor),
         "descriptor_digest": plugin.descriptor_digest,
         "dependencies": [
             {
