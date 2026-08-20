@@ -17,7 +17,7 @@ class ToyAProduct:
                 {
                     "name": "toy-a",
                     "entrypoints": {"hello": "root"},
-                    "retry": {"once": {"max_attempts": 1}},
+                    "retry": {"once": {"max_attempts": 2, "retry_on": ["transient"]}},
                     "timeout": {"short": {"run_seconds": 5}},
                     "graphs": {
                         "root": {
