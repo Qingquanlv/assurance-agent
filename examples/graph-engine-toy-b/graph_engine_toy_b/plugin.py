@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import (
-    EnginePorts,
+    PluginContribution,
     PluginDescriptor,
-    PluginRuntime,
+    RegistryPorts,
     TaskContext,
     TaskOutcome,
     TaskRequest,
@@ -34,6 +37,14 @@ async def _combine(request: TaskRequest, context: TaskContext) -> TaskOutcome:
     return TaskOutcome.succeeded({"combined": True})
 
 
+@dataclass(frozen=True, slots=True)
+class _Handler:
+    implementation: Callable[[TaskRequest, TaskContext], Awaitable[TaskOutcome]]
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await self.implementation(request, context)
+
+
 class ToyBPlugin:
     @staticmethod
     def descriptor() -> PluginDescriptor:
@@ -51,15 +62,14 @@ class ToyBPlugin:
         )
 
     @staticmethod
-    def bind(ports: EnginePorts) -> PluginRuntime:
+    def contribute(ports: RegistryPorts) -> PluginContribution:
         if ports.engine_api != ENGINE_API_VERSION:
             raise ValueError(f"unsupported engine API: {ports.engine_api!r}")
-        return PluginRuntime(
+        return PluginContribution(
             task_handlers={
-                "toy.b.seed": _seed,
-                "toy.b.left": _left,
-                "toy.b.child": _child,
-                "toy.b.combine": _combine,
+                "toy.b.seed": _Handler(_seed),
+                "toy.b.left": _Handler(_left),
+                "toy.b.child": _Handler(_child),
+                "toy.b.combine": _Handler(_combine),
             },
-            commit_validators={},
         )

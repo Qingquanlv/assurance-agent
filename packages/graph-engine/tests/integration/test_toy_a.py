@@ -26,7 +26,7 @@ class _InProcessTestHost:
         self.executions += 1
         if self._fail_first_greet and self.executions == 1:
             return TaskOutcome.failed("transient", "retry the toy greeting")
-        return await handler(
+        return await handler.execute(
             request,
             TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
         )

@@ -8,10 +8,10 @@ import graph_engine
 from graph_engine.graph.compiler import CompileError
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
-    EnginePorts,
+    PluginContribution,
     PluginDescriptor,
     PluginProvider,
-    PluginRuntime,
+    RegistryPorts,
     TaskContext,
     TaskOutcome,
     TaskRequest,
@@ -26,9 +26,10 @@ from graph_engine.product import (
 )
 
 
-async def _ping(request: TaskRequest, context: TaskContext) -> TaskOutcome:
-    del request, context
-    return TaskOutcome.succeeded({"pong": True})
+class _PingHandler:
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        del request, context
+        return TaskOutcome.succeeded({"pong": True})
 
 
 @dataclass(frozen=True)
@@ -44,11 +45,10 @@ class _PluginProvider:
             commit_validators=(),
         )
 
-    def bind(self, ports: EnginePorts) -> PluginRuntime:
+    def contribute(self, ports: RegistryPorts) -> PluginContribution:
         del ports
-        return PluginRuntime(
-            task_handlers={f"{self.plugin_id}.ping": _ping},
-            commit_validators={},
+        return PluginContribution(
+            task_handlers={f"{self.plugin_id}.ping": _PingHandler()},
         )
 
 
@@ -102,20 +102,19 @@ class _ChangingProductProvider:
 class _ChangingPluginProvider:
     descriptors: tuple[PluginDescriptor, ...]
     descriptor_calls: int = 0
-    bind_calls: int = 0
+    contribution_calls: int = 0
 
     def descriptor(self) -> PluginDescriptor:
         descriptor = self.descriptors[min(self.descriptor_calls, len(self.descriptors) - 1)]
         self.descriptor_calls += 1
         return descriptor
 
-    def bind(self, ports: EnginePorts) -> PluginRuntime:
-        self.bind_calls += 1
+    def contribute(self, ports: RegistryPorts) -> PluginContribution:
+        self.contribution_calls += 1
         descriptor = self.descriptors[0]
-        assert ports == EnginePorts(engine_api="1.0")
-        return PluginRuntime(
-            task_handlers={capability_id: _ping for capability_id in descriptor.task_handlers},
-            commit_validators={},
+        assert ports == RegistryPorts(engine_api="1.0")
+        return PluginContribution(
+            task_handlers={capability_id: _PingHandler() for capability_id in descriptor.task_handlers},
         )
 
 
@@ -212,7 +211,7 @@ def test_selected_provider_and_custom_map_are_each_read_once(
     assert set(resolved.registry.task_handlers) == {"toy.one.ping"}
     assert available.lookups == 1
     assert provider.descriptor_calls == 1
-    assert provider.bind_calls == 1
+    assert provider.contribution_calls == 1
 
 
 def test_unlisted_provider_is_never_observed(
@@ -222,8 +221,8 @@ def test_unlisted_provider_is_never_observed(
         def descriptor(self) -> PluginDescriptor:
             raise AssertionError("unlisted provider was observed")
 
-        def bind(self, ports: EnginePorts) -> PluginRuntime:
-            raise AssertionError(f"unlisted provider was bound with {ports}")
+        def contribute(self, ports: RegistryPorts) -> PluginContribution:
+            raise AssertionError(f"unlisted provider contributed with {ports}")
 
     resolved = resolve_product(
         product_provider,
@@ -240,7 +239,7 @@ def test_unlisted_provider_is_never_observed(
         (_descriptor(plugin_id="toy.other"), "for toy.one described toy.other"),
     ],
 )
-def test_selected_plugin_descriptor_must_match_exactly_before_binding(
+def test_selected_plugin_descriptor_must_match_exactly_before_contribution(
     product_provider: _ProductProvider,
     descriptor: PluginDescriptor,
     message: str,
@@ -248,7 +247,7 @@ def test_selected_plugin_descriptor_must_match_exactly_before_binding(
     plugin = _ChangingPluginProvider((descriptor,))
     with pytest.raises(ProductResolutionError, match=message):
         resolve_product(product_provider, {"toy.one": plugin})
-    assert plugin.bind_calls == 0
+    assert plugin.contribution_calls == 0
 
 
 def test_product_engine_api_must_match_exactly_before_plugin_lookup(

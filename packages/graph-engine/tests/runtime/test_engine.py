@@ -21,9 +21,9 @@ from graph_engine.graph.compiler import compile_workflow
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import (
-    EnginePorts,
+    PluginContribution,
     PluginDescriptor,
-    PluginRuntime,
+    RegistryPorts,
     ResourceClaims,
     TaskContext,
     TaskHandler,
@@ -81,9 +81,20 @@ class _StaticPlugin:
             commit_validators=(),
         )
 
-    def bind(self, ports: EnginePorts) -> PluginRuntime:
+    def contribute(self, ports: RegistryPorts) -> PluginContribution:
         assert ports.engine_api == ENGINE_API_VERSION
-        return PluginRuntime(task_handlers=self.handlers, commit_validators={})
+        return PluginContribution(task_handlers=self.handlers)
+
+
+class _FunctionHandler:
+    def __init__(
+        self,
+        implementation: Callable[[TaskRequest, TaskContext], Awaitable[TaskOutcome]],
+    ) -> None:
+        self._implementation = implementation
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await self._implementation(request, context)
 
 
 @dataclass(frozen=True)
@@ -162,7 +173,7 @@ class _InProcessTestHost:
         workspace_root: Path,
         heartbeat: Callable[[], None],
     ) -> TaskOutcome:
-        return await handler(
+        return await handler.execute(
             request,
             TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
         )
@@ -220,7 +231,7 @@ def _task_product(
             "timeout": {"short": {"run_seconds": 5}},
             "graphs": graphs,
         },
-        {"test.empty.run": cast(TaskHandler, handler)},
+        {"test.empty.run": _FunctionHandler(handler)},
     )
 
 
@@ -253,7 +264,7 @@ def _two_task_product(handler: Callable[..., Awaitable[TaskOutcome]]) -> Resolve
                 }
             },
         },
-        {"test.empty.run": cast(TaskHandler, handler)},
+        {"test.empty.run": _FunctionHandler(handler)},
     )
 
 
@@ -296,7 +307,7 @@ def _sibling_task_product() -> ResolvedProduct:
                 },
             },
         },
-        {"test.empty.run": cast(TaskHandler, unused)},
+        {"test.empty.run": _FunctionHandler(unused)},
     )
 
 
@@ -415,7 +426,7 @@ def _parallel_task_product(*, activation_bound: bool = False) -> ResolvedProduct
                 }
             },
         },
-        {"test.empty.run": cast(TaskHandler, unused)},
+        {"test.empty.run": _FunctionHandler(unused)},
     )
 
 
@@ -565,7 +576,7 @@ def _nested_task_interrupt_product(
                 },
             },
         },
-        {"test.empty.run": cast(TaskHandler, handler)},
+        {"test.empty.run": _FunctionHandler(handler)},
     )
 
 
@@ -1218,7 +1229,7 @@ def test_concurrent_reopeners_execute_one_live_persisted_attempt_exclusively(
             if current == 1:
                 entered.set()
                 assert release.wait(timeout=5)
-            return await handler(
+            return await handler.execute(
                 request,
                 TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
             )
@@ -2881,7 +2892,7 @@ def test_open_rejects_task_failure_relabelled_as_activation_bound(tmp_path: Path
                 }
             },
         },
-        {"test.empty.run": cast(TaskHandler, fail)},
+        {"test.empty.run": _FunctionHandler(fail)},
     )
     engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
     handle = engine.start(product, entrypoint="main", invocation_id="task-failure-at-bound")

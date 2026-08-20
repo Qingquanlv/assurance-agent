@@ -22,7 +22,7 @@ from graph_engine.composition import (
     load_snapshotted_entrypoint,
     snapshot_wheel_source,
 )
-from graph_engine.plugin_api import PluginContribution, PluginDescriptor, PluginRuntime
+from graph_engine.plugin_api import PluginContribution, PluginDescriptor
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.product import PluginRequirement, ProductManifest
 
@@ -42,9 +42,6 @@ class _PluginProvider:
 
     def contribute(self, _ports: object) -> PluginContribution:
         return PluginContribution.empty()
-
-    def bind(self, _ports: object) -> PluginRuntime:
-        return PluginRuntime(task_handlers={}, commit_validators={})
 
 
 class _ProductProvider:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
@@ -8,20 +8,25 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_serializer, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_serializer,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
-from graph_engine import ENGINE_API_VERSION
 from graph_engine.errors import GraphEngineError
+from graph_engine.frozen_json import FrozenJSONContainerValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 
 if TYPE_CHECKING:
     from graph_engine.canonical import JSONValue
 else:
     JSONValue = JsonValue
-
-
-class CapabilityRegistryError(GraphEngineError):
-    """Raised when plugin declarations cannot form an exact capability registry."""
 
 
 class PluginContractError(GraphEngineError):
@@ -61,19 +66,44 @@ class EffectIntent(FrozenModel):
 
 
 class TaskRequest(FrozenModel):
-
     invocation_id: str
     task_id: str
     graph_instance_id: str
     node_id: str
     capability_id: str
+    target_capability_id: str | None = None
+    binding_data: JSONValue = None
+    resource_ids: tuple[str, ...] = ()
     attempt: int = Field(ge=1)
     input: JSONValue
     prior_failure: TaskFailure | None = None
 
+    @field_validator("target_capability_id")
+    @classmethod
+    def _validate_target_capability_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_contract_id(value, "target capability id")
+
+    @field_validator("binding_data", mode="after")
+    @classmethod
+    def _freeze_binding_data(cls, value: JSONValue) -> Any:
+        return freeze_json(value)
+
+    @field_validator("resource_ids")
+    @classmethod
+    def _validate_resource_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        validated = tuple(_validate_contract_id(value, "request resource id") for value in values)
+        if len(set(validated)) != len(validated):
+            raise ValueError("request resource ids must be unique")
+        return validated
+
+    @field_serializer("binding_data")
+    def _serialize_binding_data(self, value: object) -> Any:
+        return thaw_json(value)
+
 
 class TaskOutcome(FrozenModel):
-
     status: TaskStatus
     output: JSONValue = None
     failure: TaskFailure | None = None
@@ -152,14 +182,18 @@ class EffectReconcileResult(FrozenModel):
     def _validate_status_fields(self) -> EffectReconcileResult:
         if self.status == "applied":
             if self.failure is not None:
-                raise ValueError("failure is allowed only when effect reconciliation applied")
+                raise ValueError("failure is not allowed when effect reconciliation applied")
         elif self.status == "permanently_failed":
             if self.receipt is not None or self.failure is None:
-                raise ValueError("receipt and failure are mutually exclusive for effect reconciliation results")
+                raise ValueError(
+                    "receipt and failure are mutually exclusive for effect reconciliation results"
+                )
             if self.failure.retryable:
                 raise ValueError("permanent effect failure must not be retryable")
         elif self.receipt is not None or self.failure is not None:
-            raise ValueError("receipt and failure are allowed only for terminal effect reconciliation results")
+            raise ValueError(
+                "receipt and failure are allowed only for terminal effect reconciliation results"
+            )
         return self
 
     @classmethod
@@ -183,7 +217,7 @@ class TaskContext:
 
 
 class TaskHandler(Protocol):
-    async def __call__(self, request: TaskRequest, context: TaskContext) -> TaskOutcome: ...
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome: ...
 
 
 def _validate_resource_prefix(value: str) -> str:
@@ -202,7 +236,6 @@ def _validate_resource_prefix(value: str) -> str:
 
 
 class ResourceClaims(FrozenModel):
-
     reads: tuple[str, ...] = ()
     writes: tuple[str, ...] = ()
     exclusive: tuple[str, ...] = ()
@@ -214,21 +247,18 @@ class ResourceClaims(FrozenModel):
 
 
 class CandidateFile(FrozenModel):
-
     path: str
     before_sha256: str | None
     after_sha256: str | None
 
 
 class CandidateWriteSet(FrozenModel):
-
     baseline_tree_id: str
     candidate_tree_id: str
     files: tuple[CandidateFile, ...]
 
 
 class ValidationContext(FrozenModel):
-
     invocation_id: str
     task_id: str
     graph_instance_id: str
@@ -237,7 +267,6 @@ class ValidationContext(FrozenModel):
 
 
 class ValidationResult(FrozenModel):
-
     accepted: bool
     reason: str | None = None
 
@@ -252,11 +281,6 @@ class ValidationResult(FrozenModel):
 
 class CommitValidator(Protocol):
     def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult: ...
-
-
-@dataclass(frozen=True, slots=True)
-class EnginePorts:
-    engine_api: str = ENGINE_API_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,7 +328,7 @@ class ResourceContribution:
 class CapabilityBindingContribution(FrozenModel):
     capability_id: str
     target_capability_id: str
-    data: JSONValue = None
+    data: FrozenJSONContainerValue = None
     resource_ids: tuple[str, ...] = ()
 
     @field_validator("capability_id", "target_capability_id")
@@ -386,56 +410,10 @@ class PluginDescriptor:
         object.__setattr__(self, "bindings", tuple(self.bindings))
 
 
-@dataclass(frozen=True, slots=True)
-class PluginRuntime:
-    task_handlers: Mapping[str, TaskHandler]
-    commit_validators: Mapping[str, CommitValidator]
-
-
 class PluginProvider(Protocol):
     def descriptor(self) -> PluginDescriptor: ...
 
     def contribute(self, ports: RegistryPorts) -> PluginContribution: ...
-
-    def bind(self, ports: EnginePorts) -> PluginRuntime: ...
-
-
-@dataclass(frozen=True, slots=True)
-class CapabilityRegistry:
-    task_handlers: Mapping[str, TaskHandler]
-    commit_validators: Mapping[str, CommitValidator]
-
-    def __post_init__(self) -> None:
-        task_handlers = dict(self.task_handlers)
-        commit_validators = dict(self.commit_validators)
-        for capability_id in task_handlers:
-            _validated_id(capability_id, "task handler id")
-        for capability_id in commit_validators:
-            _validated_id(capability_id, "commit validator id")
-        overlap = task_handlers.keys() & commit_validators.keys()
-        if overlap:
-            capability_id = min(overlap)
-            raise CapabilityRegistryError(f"capability cannot be both handler and validator: {capability_id}")
-
-        object.__setattr__(self, "task_handlers", MappingProxyType(dict(sorted(task_handlers.items()))))
-        object.__setattr__(
-            self,
-            "commit_validators",
-            MappingProxyType(dict(sorted(commit_validators.items()))),
-        )
-
-    @classmethod
-    def empty(cls) -> CapabilityRegistry:
-        return cls(task_handlers={}, commit_validators={})
-
-
-def _validated_id(value: object, kind: str) -> str:
-    if not isinstance(value, str):
-        raise CapabilityRegistryError(f"invalid {kind}: {value!r}")
-    try:
-        return validate_qualified_id(value)
-    except IdentifierError as error:
-        raise CapabilityRegistryError(f"invalid {kind}: {value!r}") from error
 
 
 def _validate_contract_id(value: object, kind: str) -> str:
@@ -548,91 +526,12 @@ def validate_contribution(descriptor: PluginDescriptor, contribution: PluginCont
             raise PluginContractError(f"{kind} declarations disagree with contribution")
 
 
-def _validate_declared_ids(ids: tuple[str, ...], kind: str) -> None:
-    for capability_id in ids:
-        _validated_id(capability_id, kind)
-    if len(set(ids)) != len(ids):
-        raise CapabilityRegistryError(f"duplicate declared {kind}")
-
-
-def _validate_runtime_ids(ids: object, kind: str) -> tuple[str, ...]:
-    if not isinstance(ids, Mapping):
-        raise CapabilityRegistryError(f"bound {kind} must be a mapping")
-    keys = tuple(ids)
-    for capability_id in keys:
-        if not isinstance(capability_id, str):
-            raise CapabilityRegistryError(f"invalid bound {kind} id: {capability_id!r}")
-        _validated_id(capability_id, f"bound {kind} id")
-    return keys
-
-
-def _snapshot_runtime_mapping(capabilities: Mapping[str, _Capability], kind: str) -> dict[str, _Capability]:
-    if not isinstance(capabilities, Mapping):
-        raise CapabilityRegistryError(f"bound {kind} must be a mapping")
-    return dict(capabilities)
-
-
-def _ensure_exact_binding(declared: tuple[str, ...], bound: tuple[str, ...], kind: str) -> None:
-    if set(declared) != set(bound):
-        raise CapabilityRegistryError(f"declared and bound {kind} differ")
-
-
-def assemble_registry(providers: Sequence[PluginProvider]) -> CapabilityRegistry:
-    plugin_ids: set[str] = set()
-    capability_ids: set[str] = set()
-    task_handlers: dict[str, TaskHandler] = {}
-    commit_validators: dict[str, CommitValidator] = {}
-    ports = EnginePorts()
-
-    for provider in providers:
-        descriptor = provider.descriptor()
-        plugin_id = _validated_id(descriptor.plugin_id, "plugin id")
-        if plugin_id in plugin_ids:
-            raise CapabilityRegistryError(f"duplicate plugin id: {plugin_id}")
-        plugin_ids.add(plugin_id)
-
-        if descriptor.engine_api != ENGINE_API_VERSION:
-            raise CapabilityRegistryError(
-                f"plugin {plugin_id} requires engine API {descriptor.engine_api!r}; "
-                f"expected {ENGINE_API_VERSION!r}"
-            )
-
-        _validate_declared_ids(descriptor.task_handlers, "task handler id")
-        _validate_declared_ids(descriptor.commit_validators, "commit validator id")
-
-        declared_capabilities = (*descriptor.task_handlers, *descriptor.commit_validators)
-        for capability_id in declared_capabilities:
-            if capability_id in capability_ids:
-                kind = "task handler" if capability_id in descriptor.task_handlers else "commit validator"
-                raise CapabilityRegistryError(f"duplicate {kind}: {capability_id}")
-            capability_ids.add(capability_id)
-
-        runtime = provider.bind(ports)
-        runtime_task_handlers = _snapshot_runtime_mapping(runtime.task_handlers, "task handler")
-        runtime_commit_validators = _snapshot_runtime_mapping(runtime.commit_validators, "commit validator")
-        bound_task_ids = _validate_runtime_ids(runtime_task_handlers, "task handler")
-        bound_validator_ids = _validate_runtime_ids(runtime_commit_validators, "commit validator")
-        _ensure_exact_binding(descriptor.task_handlers, bound_task_ids, "task handlers")
-        _ensure_exact_binding(descriptor.commit_validators, bound_validator_ids, "commit validators")
-
-        task_handlers.update(runtime_task_handlers)
-        commit_validators.update(runtime_commit_validators)
-
-    return CapabilityRegistry(
-        task_handlers=task_handlers,
-        commit_validators=commit_validators,
-    )
-
-
 __all__ = [
     "CapabilityBindingContribution",
     "CandidateFile",
     "CandidateWriteSet",
-    "CapabilityRegistry",
-    "CapabilityRegistryError",
     "CommitValidator",
     "DurableEffectHandler",
-    "EnginePorts",
     "EffectApplyResult",
     "EffectIntent",
     "EffectPolicy",
@@ -645,7 +544,6 @@ __all__ = [
     "PluginDependency",
     "PluginDescriptor",
     "PluginProvider",
-    "PluginRuntime",
     "RegistryPorts",
     "ResourceContribution",
     "ResourceClaims",
@@ -658,6 +556,5 @@ __all__ = [
     "TaskStatus",
     "ValidationContext",
     "ValidationResult",
-    "assemble_registry",
     "validate_contribution",
 ]

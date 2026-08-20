@@ -11,10 +11,10 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from graph_engine.canonical import canonical_digest
+from graph_engine.composition.models import CapabilityRegistry
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
     CandidateWriteSet,
-    CapabilityRegistry,
     FailureKind,
     ResourceClaims,
     TaskHandler,

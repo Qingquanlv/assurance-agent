@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import cast
 
@@ -10,9 +10,16 @@ import graph_engine.runtime.ledger as ledger_runtime
 import graph_engine.runtime.workspace as workspace_runtime
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.composition import (
+    CapabilityRegistry,
+    SourceIdentity,
+    SourceKind,
+    SourceSnapshot,
+    build_registries,
+)
 from graph_engine.plugin_api import (
     CandidateWriteSet,
-    CapabilityRegistry,
+    PluginContribution,
     ResourceClaims,
     TaskContext,
     TaskHandler,
@@ -53,7 +60,44 @@ from graph_engine.runtime.workspace import (
 )
 
 
-Handler = Callable[[TaskRequest, TaskContext], object]
+Handler = Callable[[TaskRequest, TaskContext], Awaitable[object]]
+
+
+class _FunctionHandler:
+    def __init__(self, implementation: Callable[[TaskRequest, TaskContext], Awaitable[object]]) -> None:
+        self._implementation = implementation
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return cast(TaskOutcome, await self._implementation(request, context))
+
+
+def _source(plugin_id: str) -> SourceSnapshot:
+    return SourceSnapshot.from_identity(
+        SourceIdentity(
+            kind=SourceKind.WHEEL_PLUGIN,
+            root=Path(f"/sources/{plugin_id}"),
+            distribution=plugin_id.replace(".", "-"),
+            version="1.0.0",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name=plugin_id,
+        ),
+        (),
+    )
+
+
+def _registry(
+    handlers: Mapping[str, Handler],
+    validators: Mapping[str, object] | None = None,
+) -> CapabilityRegistry:
+    adapted = {capability_id: _FunctionHandler(handler) for capability_id, handler in handlers.items()}
+    sources = [_source("test.tasks")]
+    contributions = [PluginContribution(task_handlers=adapted)]
+    order = ["test.tasks"]
+    if validators:
+        sources.append(_source("test.validators"))
+        contributions.append(PluginContribution(commit_validators=validators))
+        order.append("test.validators")
+    return build_registries(tuple(sources), tuple(contributions), tuple(order)).capabilities
 
 
 class _InProcessTestHost:
@@ -71,7 +115,7 @@ class _InProcessTestHost:
         heartbeat: Callable[[], None],
     ) -> TaskOutcome:
         self.workspace_roots.append(workspace_root)
-        return await handler(
+        return await handler.execute(
             request,
             TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
         )
@@ -106,7 +150,7 @@ def _task(
 
 def _scheduler(
     tmp_path: Path,
-    handlers: dict[str, object],
+    handlers: dict[str, Handler],
     *,
     initial: dict[str, bytes] | None = None,
     validators: dict[str, object] | None = None,
@@ -132,10 +176,7 @@ def _scheduler(
     if handlers:
         ledger.append_batch(lifecycle, expected_next_seq=1)  # type: ignore[arg-type]
     scheduler = Scheduler(
-        CapabilityRegistry(
-            task_handlers=handlers,  # type: ignore[arg-type]
-            commit_validators=validators or {},  # type: ignore[arg-type]
-        ),
+        _registry(handlers, validators),
         store,
         ledger,
         host or _InProcessTestHost(),
@@ -1285,10 +1326,7 @@ def test_start_rejects_task_without_folded_active_activation(tmp_path: Path) -> 
     store = SnapshotStore.create(tmp_path / "store", {})
     ledger = Ledger(tmp_path / "ledger")
     scheduler = Scheduler(
-        CapabilityRegistry(
-            task_handlers={task.capability_id: handler},  # type: ignore[arg-type]
-            commit_validators={},
-        ),
+        _registry({task.capability_id: handler}),
         store,
         ledger,
         _InProcessTestHost(),
@@ -1360,10 +1398,7 @@ def test_concurrent_duplicate_attempt_start_has_one_semantic_winner(tmp_path: Pa
     task = _task("duplicate-race")
     first, store, ledger = _scheduler(tmp_path, {task.capability_id: handler})
     second = Scheduler(
-        CapabilityRegistry(
-            task_handlers={task.capability_id: handler},  # type: ignore[arg-type]
-            commit_validators={},
-        ),
+        _registry({task.capability_id: handler}),
         store,
         Ledger(ledger.root),
         _InProcessTestHost(),

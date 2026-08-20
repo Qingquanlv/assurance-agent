@@ -2,32 +2,41 @@ import json
 import sys
 from collections.abc import Mapping
 from copy import deepcopy
+from pathlib import Path
 from typing import cast
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
+from graph_engine import ENGINE_API_VERSION
+from graph_engine.composition import (
+    CapabilityRegistry,
+    SourceIdentity,
+    SourceKind,
+    SourceSnapshot,
+    build_registries,
+)
 from graph_engine.errors import GraphEngineError
 from graph_engine.graph.compiler import CompiledNode, CompiledWorkflow, CompileError, compile_workflow
 from graph_engine.graph.expressions import ExpressionError, evaluate_expression
 from graph_engine.graph.schema import NodeDef, parse_workflow
 from graph_engine.plugin_api import (
     CandidateWriteSet,
-    CapabilityRegistry,
-    EnginePorts,
+    PluginContribution,
     PluginDescriptor,
-    PluginRuntime,
+    RegistryPorts,
     ValidationContext,
     ValidationResult,
-    assemble_registry,
+    validate_contribution,
 )
 
 
-async def _ping(_request, _context):
-    from graph_engine.plugin_api import TaskOutcome
+class _PingHandler:
+    async def execute(self, _request, _context):
+        from graph_engine.plugin_api import TaskOutcome
 
-    return TaskOutcome.succeeded({"pong": True})
+        return TaskOutcome.succeeded({"pong": True})
 
 
 class _Provider:
@@ -35,14 +44,14 @@ class _Provider:
         return PluginDescriptor(
             plugin_id="toy.one",
             plugin_version="1.0.0",
-            engine_api="1.0",
+            engine_api=ENGINE_API_VERSION,
             task_handlers=("toy.one.ping",),
             commit_validators=("toy.one.clean",),
         )
 
-    def bind(self, _ports: EnginePorts) -> PluginRuntime:
-        return PluginRuntime(
-            task_handlers={"toy.one.ping": _ping},
+    def contribute(self, _ports: RegistryPorts) -> PluginContribution:
+        return PluginContribution(
+            task_handlers={"toy.one.ping": _PingHandler()},
             commit_validators={"toy.one.clean": _Validator()},
         )
 
@@ -54,7 +63,22 @@ class _Validator:
 
 @pytest.fixture
 def registry() -> CapabilityRegistry:
-    return assemble_registry((_Provider(),))
+    provider = _Provider()
+    descriptor = provider.descriptor()
+    contribution = provider.contribute(RegistryPorts(ENGINE_API_VERSION))
+    validate_contribution(descriptor, contribution)
+    source = SourceSnapshot.from_identity(
+        SourceIdentity(
+            kind=SourceKind.WHEEL_PLUGIN,
+            root=Path("/sources/toy.one"),
+            distribution="toy-one",
+            version="1.0.0",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name="toy.one",
+        ),
+        (),
+    )
+    return build_registries((source,), (contribution,), ("toy.one",)).capabilities
 
 
 VALID = """

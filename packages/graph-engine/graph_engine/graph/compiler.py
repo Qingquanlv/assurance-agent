@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Annotated, Any, Literal, Self, cast
+from typing import Annotated, Any, Literal, Protocol, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -27,7 +27,15 @@ from graph_engine.graph.schema import (
     WorkflowDef,
     validate_node_shape,
 )
-from graph_engine.plugin_api import CapabilityRegistry, ResourceClaims
+from graph_engine.plugin_api import ResourceClaims
+
+
+class _CapabilityRegistryView(Protocol):
+    @property
+    def task_handlers(self) -> Mapping[str, object]: ...
+
+    @property
+    def commit_validators(self) -> Mapping[str, object]: ...
 
 
 class CompileError(GraphEngineError):
@@ -150,7 +158,7 @@ class CompiledWorkflow(_CompiledModel):
         return MappingProxyType(dict(value))
 
 
-def compile_workflow(workflow: WorkflowDef, registry: CapabilityRegistry) -> CompiledWorkflow:
+def compile_workflow(workflow: WorkflowDef, registry: _CapabilityRegistryView) -> CompiledWorkflow:
     _validate_workflow(workflow, registry)
     graphs = {graph_id: _compile_graph(graph_id, graph) for graph_id, graph in workflow.graphs.items()}
     compiled = CompiledWorkflow(
@@ -168,7 +176,7 @@ def compile_workflow(workflow: WorkflowDef, registry: CapabilityRegistry) -> Com
     return compiled.model_copy(update={"digest": canonical_digest(payload)})
 
 
-def _validate_workflow(workflow: WorkflowDef, registry: CapabilityRegistry) -> None:
+def _validate_workflow(workflow: WorkflowDef, registry: _CapabilityRegistryView) -> None:
     for graph_id in workflow.entrypoints.values():
         if graph_id not in workflow.graphs:
             raise CompileError(f"entrypoint references unknown graph {graph_id}")
@@ -233,7 +241,7 @@ def _validate_subgraph_dependency_dag(workflow: WorkflowDef) -> None:
 
 def _validate_node_references(
     workflow: WorkflowDef,
-    registry: CapabilityRegistry,
+    registry: _CapabilityRegistryView,
     graph_id: str,
     node_id: str,
     node: NodeDef,

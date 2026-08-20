@@ -181,7 +181,7 @@ class TrustedSmokeHost:
         workspace_root: Path,
         heartbeat: Callable[[], None],
     ) -> TaskOutcome:
-        return await handler(
+        return await handler.execute(
             request,
             TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
         )

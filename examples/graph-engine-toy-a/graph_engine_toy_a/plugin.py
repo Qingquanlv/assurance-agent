@@ -5,21 +5,22 @@ from typing import cast
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
-    EnginePorts,
+    PluginContribution,
     PluginDescriptor,
-    PluginRuntime,
+    RegistryPorts,
     TaskContext,
     TaskOutcome,
     TaskRequest,
 )
 
 
-async def _greet(request: TaskRequest, context: TaskContext) -> TaskOutcome:
-    config = cast(dict[str, str], cast(dict[str, JSONValue], request.input)["config"])
-    name = config["name"]
-    message = f"hello {name}"
-    (context.workspace_root / "greeting.txt").write_text(f"{message}\n", encoding="utf-8")
-    return TaskOutcome.succeeded(cast(JSONValue, {"message": message}))
+class _GreetHandler:
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        config = cast(dict[str, str], cast(dict[str, JSONValue], request.input)["config"])
+        name = config["name"]
+        message = f"hello {name}"
+        (context.workspace_root / "greeting.txt").write_text(f"{message}\n", encoding="utf-8")
+        return TaskOutcome.succeeded(cast(JSONValue, {"message": message}))
 
 
 class ToyAPlugin:
@@ -34,7 +35,7 @@ class ToyAPlugin:
         )
 
     @staticmethod
-    def bind(ports: EnginePorts) -> PluginRuntime:
+    def contribute(ports: RegistryPorts) -> PluginContribution:
         if ports.engine_api != ENGINE_API_VERSION:
             raise ValueError(f"unsupported engine API: {ports.engine_api!r}")
-        return PluginRuntime(task_handlers={"toy.a.greet": _greet}, commit_validators={})
+        return PluginContribution(task_handlers={"toy.a.greet": _GreetHandler()})

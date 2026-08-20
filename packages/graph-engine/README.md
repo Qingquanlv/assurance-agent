@@ -30,24 +30,24 @@ entrypoints, and structural workflow. `resolve_product()` creates a fresh,
 invocation-scoped capability registry; importing or merely installing a wheel
 does not mutate a global registry.
 
-`PluginProvider` declares and binds one reviewed wheel plugin:
+`PluginProvider` declares and contributes one reviewed wheel plugin:
 
 ```python
 class PluginProvider(Protocol):
     def descriptor(self) -> PluginDescriptor: ...
-    def bind(self, ports: EnginePorts) -> PluginRuntime: ...
+    def contribute(self, ports: RegistryPorts) -> PluginContribution: ...
 ```
 
-The descriptor and bound runtime must expose exactly the same task-handler and
+The descriptor and immutable contribution must expose exactly the same task-handler and
 commit-validator IDs. Entry-point discovery is inventory only;
 `load_product_entrypoint()` and `load_plugin_entrypoint()` load only the name
 the caller supplies.
 
-`TaskHandler` is an asynchronous callable:
+`TaskHandler` exposes one asynchronous execution method:
 
 ```python
 class TaskHandler(Protocol):
-    async def __call__(
+    async def execute(
         self,
         request: TaskRequest,
         context: TaskContext,

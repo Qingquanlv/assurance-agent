@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping
-from typing import cast
+from pathlib import Path
 
 import pytest
 import yaml
 
 from graph_engine.canonical import canonical_digest
+from graph_engine.composition import (
+    CapabilityRegistry,
+    SourceIdentity,
+    SourceKind,
+    SourceSnapshot,
+    build_registries,
+)
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.graph.schema import parse_workflow
-from graph_engine.plugin_api import CapabilityRegistry, TaskFailure, TaskHandler
+from graph_engine.plugin_api import PluginContribution, TaskFailure
 from graph_engine.runtime.events import (
     EventEnvelope,
     GraphStarted,
@@ -34,6 +41,27 @@ from graph_engine.runtime.planner import (
     task_id,
     validate_event_history,
 )
+
+
+class _PlaceholderHandler:
+    async def execute(self, _request: object, _context: object) -> object:
+        raise AssertionError("planner tests never execute task handlers")
+
+
+def _registry() -> CapabilityRegistry:
+    source = SourceSnapshot.from_identity(
+        SourceIdentity(
+            kind=SourceKind.WHEEL_PLUGIN,
+            root=Path("/sources/test.tasks"),
+            distribution="test-tasks",
+            version="1.0.0",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name="test.tasks",
+        ),
+        (),
+    )
+    contribution = PluginContribution(task_handlers={"test.tasks.run": _PlaceholderHandler()})
+    return build_registries((source,), (contribution,), ("test.tasks",)).capabilities
 
 
 def _compiled(
@@ -63,11 +91,7 @@ graphs:
 {edges}
 {extra_graphs}
 """
-    registry = CapabilityRegistry(
-        task_handlers={"test.tasks.run": cast(TaskHandler, object())},
-        commit_validators={},
-    )
-    return compile_workflow(parse_workflow(text), registry)  # type: ignore[arg-type]
+    return compile_workflow(parse_workflow(text), _registry())
 
 
 def _task_node(name: str, *, input_: str = "") -> str:
@@ -746,11 +770,10 @@ def test_deep_acyclic_child_failure_propagates_without_python_recursion() -> Non
         "timeout": {"short": {"run_seconds": 5}},
         "graphs": graphs,
     }
-    registry = CapabilityRegistry(
-        task_handlers={"test.tasks.run": cast(TaskHandler, object())},
-        commit_validators={},
+    compiled = compile_workflow(
+        parse_workflow(yaml.safe_dump(workflow, sort_keys=False)),
+        _registry(),
     )
-    compiled = compile_workflow(parse_workflow(yaml.safe_dump(workflow, sort_keys=False)), registry)
     first = plan_next(compiled, _projection(_invocation()))
     assert len(first.tasks) == 1
     task = first.tasks[0]

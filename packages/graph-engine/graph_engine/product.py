@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import metadata
+from pathlib import Path
 import re
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from pydantic import field_validator, model_validator
 
@@ -15,13 +16,15 @@ from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.graph.schema import FrozenModel, WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
-    CapabilityRegistry,
-    EnginePorts,
+    PluginContribution,
     PluginDescriptor,
     PluginProvider,
-    PluginRuntime,
-    assemble_registry,
+    RegistryPorts,
+    validate_contribution,
 )
+
+if TYPE_CHECKING:
+    from graph_engine.composition.models import CapabilityRegistry
 
 
 class ProductResolutionError(GraphEngineError):
@@ -84,8 +87,8 @@ class _SelectedPluginProvider:
     def descriptor(self) -> PluginDescriptor:
         return self.selected_descriptor
 
-    def bind(self, ports: EnginePorts) -> PluginRuntime:
-        return self.provider.bind(ports)
+    def contribute(self, ports: RegistryPorts) -> PluginContribution:
+        return self.provider.contribute(ports)
 
 
 def _qualified_id(value: str, kind: str) -> str:
@@ -127,6 +130,11 @@ def _select_plugin(
         engine_api=descriptor.engine_api,
         task_handlers=tuple(descriptor.task_handlers),
         commit_validators=tuple(descriptor.commit_validators),
+        dependencies=tuple(descriptor.dependencies),
+        schemas=tuple(descriptor.schemas),
+        resources=tuple(descriptor.resources),
+        effects=tuple(descriptor.effects),
+        bindings=tuple(descriptor.bindings),
     )
     return _SelectedPluginProvider(provider=provider, selected_descriptor=snapshot)
 
@@ -138,7 +146,58 @@ def _descriptor_json(descriptor: PluginDescriptor) -> dict[str, JSONValue]:
         "engine_api": descriptor.engine_api,
         "task_handlers": cast(list[JSONValue], sorted(descriptor.task_handlers)),
         "commit_validators": cast(list[JSONValue], sorted(descriptor.commit_validators)),
+        "dependencies": cast(
+            list[JSONValue],
+            [
+                {
+                    "plugin_id": dependency.plugin_id,
+                    "version_specifier": dependency.version_specifier,
+                }
+                for dependency in sorted(
+                    descriptor.dependencies,
+                    key=lambda item: item.plugin_id,
+                )
+            ],
+        ),
+        "schemas": cast(list[JSONValue], sorted(descriptor.schemas)),
+        "resources": cast(list[JSONValue], sorted(descriptor.resources)),
+        "effects": cast(list[JSONValue], sorted(descriptor.effects)),
+        "bindings": cast(list[JSONValue], sorted(descriptor.bindings)),
     }
+
+
+def _assemble_selected_contributions(
+    selected: tuple[_SelectedPluginProvider, ...],
+) -> CapabilityRegistry:
+    """Temporary Phase 1 product bridge; Task 8 removes this resolver."""
+
+    from graph_engine.composition.models import SourceIdentity, SourceKind, SourceSnapshot
+    from graph_engine.composition.registries import build_registries
+
+    ports = RegistryPorts(ENGINE_API_VERSION)
+    contributions = []
+    sources = []
+    order = []
+    for item in selected:
+        descriptor = item.selected_descriptor
+        contribution = item.contribute(ports)
+        validate_contribution(descriptor, contribution)
+        contributions.append(contribution)
+        order.append(descriptor.plugin_id)
+        sources.append(
+            SourceSnapshot.from_identity(
+                SourceIdentity(
+                    kind=SourceKind.WHEEL_PLUGIN,
+                    root=Path(f"/phase-one/{descriptor.plugin_id}"),
+                    distribution=descriptor.plugin_id.replace(".", "-"),
+                    version=descriptor.plugin_version,
+                    entrypoint_group="graph_engine.plugins",
+                    entrypoint_name=descriptor.plugin_id,
+                ),
+                (),
+            )
+        )
+    return build_registries(tuple(sources), tuple(contributions), tuple(order)).capabilities
 
 
 def resolve_product(
@@ -154,7 +213,7 @@ def resolve_product(
 
     selected = tuple(_select_plugin(requirement, available_plugins) for requirement in manifest.plugins)
     descriptors = tuple(item.selected_descriptor for item in selected)
-    registry = assemble_registry(selected)
+    registry = _assemble_selected_contributions(selected)
     workflow = compile_workflow(manifest.workflow, registry)
     digest_payload = cast(
         JSONValue,
@@ -230,7 +289,7 @@ def load_plugin_entrypoint(entrypoint_name: str) -> PluginProvider:
         entrypoint_name,
         group="graph_engine.plugins",
         kind="plugin",
-        required_methods=("descriptor", "bind"),
+        required_methods=("descriptor", "contribute"),
     )
     return cast(PluginProvider, loaded)
 

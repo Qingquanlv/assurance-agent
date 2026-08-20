@@ -1,8 +1,14 @@
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+import graph_engine
+import graph_engine.plugin_api as plugin_api
 from graph_engine.plugin_api import (
+    CandidateFile,
+    CandidateWriteSet,
     CapabilityBindingContribution,
     EffectApplyResult,
     EffectIntent,
@@ -15,16 +21,26 @@ from graph_engine.plugin_api import (
     PluginDescriptor,
     PluginProvider,
     RegistryPorts,
+    ResourceClaims,
     ResourceContribution,
     SchemaContribution,
     TaskFailure,
+    TaskContext,
+    TaskHandler,
     TaskOutcome,
+    TaskRequest,
+    ValidationContext,
+    ValidationResult,
     validate_contribution,
 )
 
 
-async def _handler(*_args: object) -> TaskOutcome:
-    return TaskOutcome.succeeded()
+class _Handler:
+    async def execute(self, *_args: object) -> TaskOutcome:
+        return TaskOutcome.succeeded()
+
+
+_handler = _Handler()
 
 
 class _EffectHandler:
@@ -77,8 +93,39 @@ def test_plugin_contribution_must_match_descriptor_ids() -> None:
         validate_contribution(provider.descriptor(), provider.contribute(RegistryPorts("0.2")))
 
 
-def test_plugin_provider_additively_exposes_contribution_method() -> None:
+def test_plugin_binding_contribution_deep_freezes_data() -> None:
+    contribution = PluginContribution(
+        bindings=(
+            CapabilityBindingContribution(
+                capability_id="toy.flow.run",
+                target_capability_id="toy.runtime.execute",
+                data={"steps": ["one", "two"]},
+            ),
+        )
+    )
+
+    assert contribution.bindings[0].data == {"steps": ["one", "two"]}
+    with pytest.raises(TypeError):
+        contribution.bindings[0].data["steps"] = ()  # type: ignore[index]
+
+
+def test_plugin_provider_exposes_only_the_phase_two_execution_methods() -> None:
     assert "contribute" in PluginProvider.__dict__
+    assert "bind" not in PluginProvider.__dict__
+    assert "execute" in TaskHandler.__dict__
+    assert "__call__" not in TaskHandler.__dict__
+
+
+def test_phase_one_registry_spi_has_no_public_aliases() -> None:
+    retired = (
+        "CapabilityRegistry",
+        "CapabilityRegistryError",
+        "EnginePorts",
+        "PluginRuntime",
+        "assemble_registry",
+    )
+    assert all(not hasattr(plugin_api, name) for name in retired)
+    assert all(not hasattr(graph_engine, name) for name in retired)
 
 
 @pytest.mark.parametrize(
@@ -287,3 +334,65 @@ def test_validate_contribution_matches_all_declared_contribution_kinds() -> None
         ),
     )
     validate_contribution(descriptor, contribution)
+
+
+def test_task_request_is_frozen_forbids_extra_and_enforces_attempts() -> None:
+    request = TaskRequest(
+        invocation_id="inv-1",
+        task_id="task-1",
+        graph_instance_id="graph-1",
+        node_id="node-1",
+        capability_id="toy.runtime.run",
+        attempt=1,
+        input={"items": [1, None]},
+    )
+    with pytest.raises(ValidationError, match="frozen"):
+        request.attempt = 2
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        TaskRequest.model_validate({**request.model_dump(), "attempt": 0})
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        TaskFailure.model_validate({"kind": "internal", "message": "bad", "code": 500})
+
+
+def test_task_context_and_candidate_contracts_remain_frozen() -> None:
+    context = TaskContext(workspace_root=Path("/workspace"), heartbeat=lambda: None)
+    with pytest.raises(AttributeError):
+        context.workspace_root = Path("/elsewhere")
+
+    candidate = CandidateWriteSet(
+        baseline_tree_id="base",
+        candidate_tree_id="candidate",
+        files=(CandidateFile(path="src/a.py", before_sha256=None, after_sha256="abc"),),
+    )
+    validation = ValidationContext(
+        invocation_id="inv-1",
+        task_id="task-1",
+        graph_instance_id="graph-1",
+        node_id="node-1",
+        resources=ResourceClaims(reads=("src",)),
+    )
+    assert candidate.model_dump(mode="json")["files"] == [
+        {"path": "src/a.py", "before_sha256": None, "after_sha256": "abc"}
+    ]
+    assert validation.resources.reads == ("src",)
+
+
+@pytest.mark.parametrize("prefix", ("", "/root", "../secret", "src/../secret", "C:\\secret"))
+def test_resource_claims_reject_unsafe_relative_prefixes(prefix: str) -> None:
+    with pytest.raises(ValidationError, match="relative resource prefix"):
+        ResourceClaims(writes=(prefix,))
+
+
+@pytest.mark.parametrize(
+    "fields",
+    (
+        {"accepted": False},
+        {"accepted": False, "reason": ""},
+        {"accepted": True, "reason": "not actually accepted"},
+    ),
+)
+def test_validation_result_requires_reason_exactly_for_rejection(
+    fields: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="reason"):
+        ValidationResult.model_validate(fields)
