@@ -14,6 +14,7 @@ members = [
     "assurance-kernel",
     "graph-engine",
     "graph-engine-toy-a",
+    "graph-engine-toy-b",
 ]
 
 [[package]]
@@ -67,6 +68,7 @@ dev = [
     { name = "aa-sample-product" },
     { name = "graph-engine" },
     { name = "graph-engine-toy-a" },
+    { name = "graph-engine-toy-b" },
     { name = "import-linter" },
     { name = "mutmut" },
     { name = "pyright" },
@@ -89,6 +91,7 @@ dev = [
     { name = "aa-sample-product", editable = "examples/minimal-product" },
     { name = "graph-engine", editable = "packages/graph-engine" },
     { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },
+    { name = "graph-engine-toy-b", editable = "examples/graph-engine-toy-b" },
     { name = "import-linter", specifier = ">=2.0" },
     { name = "mutmut", specifier = ">=3.7.0" },
     { name = "pyright", specifier = ">=1.1.380" },
@@ -248,6 +251,17 @@ requires-dist = [
 name = "graph-engine-toy-a"
 version = "1.0.0"
 source = { editable = "examples/graph-engine-toy-a" }
+dependencies = [
+    { name = "graph-engine" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "graph-engine", editable = "packages/graph-engine" }]
+
+[[package]]
+name = "graph-engine-toy-b"
+version = "1.0.0"
+source = { editable = "examples/graph-engine-toy-b" }
 dependencies = [
     { name = "graph-engine" },
 ]

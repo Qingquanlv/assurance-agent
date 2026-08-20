@@ -30,6 +30,7 @@ dev = [
     "aa-sample-product",
     "graph-engine",
     "graph-engine-toy-a",
+    "graph-engine-toy-b",
 ]
 
 [build-system]
@@ -67,6 +68,7 @@ members = [
     "packages/graph-engine",
     "examples/minimal-product",
     "examples/graph-engine-toy-a",
+    "examples/graph-engine-toy-b",
 ]
 
 [tool.uv.sources]
@@ -74,3 +76,4 @@ aa-sample-product = { workspace = true }
 assurance-kernel = { workspace = true }
 graph-engine = { workspace = true }
 graph-engine-toy-a = { workspace = true }
+graph-engine-toy-b = { workspace = true }
