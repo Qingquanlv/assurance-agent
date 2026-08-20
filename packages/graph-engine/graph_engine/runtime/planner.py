@@ -35,12 +35,12 @@ from graph_engine.runtime.events import (
 from graph_engine.runtime.frozen_json import thaw_json
 from graph_engine.runtime.models import (
     ActivationRecord,
+    FoldCursor,
     GraphInstanceRecord,
     InvocationProjection,
     PlanResult,
     PlannedTask,
     TokenRecord,
-    fold_events,
 )
 
 
@@ -255,26 +255,27 @@ def validate_event_history(
     )
     _require_exact_history_events(envelopes, 0, bootstrap)
 
-    cursor = len(bootstrap)
-    prefix = envelopes[:cursor]
-    current = fold_events(prefix)
-    while cursor < len(envelopes):
+    offset = len(bootstrap)
+    fold_cursor = FoldCursor().advance(envelopes[:offset])
+    current = fold_cursor.projection
+    while offset < len(envelopes):
         _validate_projection(compiled, current)
         planned = plan_next(compiled, current)
-        actual = envelopes[cursor].event
+        actual = envelopes[offset].event
         defer_planned = planned.events and _can_defer_planned_events(current, actual)
         if planned.events and not defer_planned:
-            _require_exact_history_events(envelopes, cursor, planned.events)
-            cursor += len(planned.events)
+            _require_exact_history_events(envelopes, offset, planned.events)
+            batch_size = len(planned.events)
         else:
-            cursor += _validate_external_history_transition(
+            batch_size = _validate_external_history_transition(
                 planned.tasks,
                 current,
                 envelopes,
-                cursor,
+                offset,
             )
-        prefix = envelopes[:cursor]
-        current = fold_events(prefix)
+        fold_cursor = fold_cursor.advance(envelopes[offset : offset + batch_size])
+        offset += batch_size
+        current = fold_cursor.projection
 
     _validate_projection(compiled, current)
     if current.model_dump(mode="json") != projection.model_dump(mode="json"):

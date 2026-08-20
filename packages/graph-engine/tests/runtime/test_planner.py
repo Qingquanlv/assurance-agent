@@ -843,6 +843,52 @@ def test_event_history_accepts_parallel_successes_before_deterministic_all_join(
     assert len(joined.token_ids) == 2
 
 
+@pytest.mark.parametrize(
+    ("transition", "match"),
+    [
+        ("start", "partial task-start publication"),
+        ("success", "partial task-success publication"),
+    ],
+)
+def test_event_history_rejects_partial_external_atomic_transition(
+    transition: str,
+    match: str,
+) -> None:
+    compiled = _compiled(
+        f"{_task_node('work')}\n      done: {{kind: end}}",
+        "      - {from: work, to: done}",
+        start="work",
+    )
+    bootstrap = (_invocation(), _root(), _canonical_start_token(compiled))
+    planned = plan_next(compiled, _projection(*bootstrap))
+    assert len(planned.tasks) == 1
+    task = planned.tasks[0]
+    started = TaskAttemptStarted(
+        activation_id=task.activation_id,
+        attempt=task.attempt,
+        lease_expires_at="2",
+    )
+    events: tuple[object, ...] = (*bootstrap, *planned.events, started)
+    if transition == "success":
+        events = (
+            *events,
+            _task_lease(task.activation_id),
+            TaskAttemptSucceeded(
+                activation_id=task.activation_id,
+                attempt=task.attempt,
+                output={"ok": True},
+            ),
+        )
+    envelopes = tuple(
+        EventEnvelope.from_event(index, event)  # type: ignore[arg-type]
+        for index, event in enumerate(events, start=1)
+    )
+    projection = fold_events(envelopes)
+
+    with pytest.raises(PlanningError, match=match):
+        validate_event_history(compiled, envelopes, projection)
+
+
 def test_stopped_task_terminates_without_outgoing_token() -> None:
     compiled = _compiled(
         f"{_task_node('work')}\n      done: {{kind: end}}",

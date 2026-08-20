@@ -56,6 +56,7 @@ from graph_engine.runtime.events import (
     TaskAttemptStopped,
     TaskAttemptSucceeded,
     TaskLeaseAcquired,
+    TaskLeaseHeartbeat,
     TokenConsumed,
     TokenOffered,
 )
@@ -943,6 +944,83 @@ def test_explicit_host_runs_task_and_terminal_invocation_reopens(tmp_path: Path)
         .workspace.head_tree_id()
         == reopened.workspace.head_tree_id()
     )
+
+
+def test_open_applies_heartbeat_heavy_history_linearly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unused(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.succeeded("unused")
+
+    product = _task_product(unused)
+    clock = FakeClock(100.0)
+    with Engine(tmp_path, clock=clock, host=_InProcessTestHost()) as bootstrap:
+        with bootstrap.start(product, entrypoint="main", invocation_id="heartbeat-heavy") as handle:
+            ledger = Ledger(handle.invocation_root / "ledger")
+            initial = ledger.read_all()
+            planned = plan_next(product.workflow, fold_events(initial))
+            assert len(planned.tasks) == 1
+            task = planned.tasks[0]
+            ledger.append_batch(
+                planned.events,
+                expected_next_seq=initial[-1].seq + 1,
+            )
+            ledger.append_batch(
+                (
+                    TaskAttemptStarted(
+                        activation_id=task.activation_id,
+                        attempt=task.attempt,
+                        lease_expires_at="10000",
+                    ),
+                    TaskLeaseAcquired(
+                        task_id=task.task_id,
+                        activation_id=task.activation_id,
+                        attempt=task.attempt,
+                        owner_id="heartbeat-owner",
+                        acquired_at=0.0,
+                        heartbeat_at=0.0,
+                        expires_at=10_000.0,
+                    ),
+                ),
+                expected_next_seq=ledger.read_all()[-1].seq + 1,
+            )
+            heartbeat_count = 64
+            ledger.append_batch(
+                tuple(
+                    TaskLeaseHeartbeat(
+                        task_id=task.task_id,
+                        activation_id=task.activation_id,
+                        attempt=task.attempt,
+                        owner_id="heartbeat-owner",
+                        heartbeat_at=float(index),
+                        expires_at=10_000.0,
+                    )
+                    for index in range(1, heartbeat_count + 1)
+                ),
+                expected_next_seq=ledger.read_all()[-1].seq + 1,
+            )
+            envelopes = ledger.read_all()
+            assert (
+                sum(isinstance(envelope.event, TaskLeaseHeartbeat) for envelope in envelopes)
+                == heartbeat_count
+            )
+            assert fold_events(envelopes).status == "running"
+
+    processed_envelopes = 0
+    original_digest_check = EventEnvelope.has_valid_digest
+
+    def count_processed_envelope(envelope: EventEnvelope) -> bool:
+        nonlocal processed_envelopes
+        processed_envelopes += 1
+        return original_digest_check(envelope)
+
+    monkeypatch.setattr(EventEnvelope, "has_valid_digest", count_processed_envelope)
+    with Engine(tmp_path, clock=clock, host=_InProcessTestHost()) as engine:
+        with engine.open("heartbeat-heavy", product):
+            pass
+
+    assert processed_envelopes <= 12 * len(envelopes)
 
 
 def test_child_task_failure_and_stop_propagate_to_root(tmp_path: Path) -> None:

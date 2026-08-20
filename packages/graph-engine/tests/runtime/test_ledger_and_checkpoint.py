@@ -19,6 +19,7 @@ from graph_engine.runtime.events import (
     EventEnvelope,
     GraphCompleted,
     GraphStarted,
+    HeadAdvanced,
     InterruptResumed,
     InvocationFinished,
     InvocationStarted,
@@ -29,11 +30,14 @@ from graph_engine.runtime.events import (
     TaskAttemptStarted,
     TaskAttemptStopped,
     TaskAttemptSucceeded,
+    TaskLeaseAcquired,
+    TaskLeaseHeartbeat,
     TokenConsumed,
     TokenOffered,
 )
 from graph_engine.runtime.ledger import MAX_SEQUENCE, Ledger, LedgerConflictError, LedgerIntegrityError
 from graph_engine.runtime.models import (
+    FoldCursor,
     GraphInstanceRecord,
     InvocationProjection,
     PendingInterrupt,
@@ -376,6 +380,108 @@ def _envelopes(*events: object) -> tuple[EventEnvelope, ...]:
         EventEnvelope.from_event(seq, event)  # type: ignore[arg-type]
         for seq, event in enumerate(events, start=1)
     )
+
+
+def _complete_task_history() -> tuple[EventEnvelope, ...]:
+    return _envelopes(
+        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        GraphStarted(graph_instance_id="root", graph_id="root"),
+        TokenOffered(
+            token_id="tok-1",
+            graph_instance_id="root",
+            source=None,
+            target="task",
+            payload={"input": True},
+        ),
+        TokenConsumed(token_id="tok-1", graph_instance_id="root", node_id="task"),
+        NodeActivated(
+            activation_id="act-1",
+            graph_instance_id="root",
+            node_id="task",
+            token_ids=("tok-1",),
+        ),
+        TaskAttemptStarted(
+            activation_id="act-1",
+            attempt=1,
+            lease_expires_at="11",
+        ),
+        TaskLeaseAcquired(
+            task_id="task-1",
+            activation_id="act-1",
+            attempt=1,
+            owner_id="worker-1",
+            acquired_at=1.0,
+            heartbeat_at=1.0,
+            expires_at=11.0,
+        ),
+        TaskLeaseHeartbeat(
+            task_id="task-1",
+            activation_id="act-1",
+            attempt=1,
+            owner_id="worker-1",
+            heartbeat_at=5.0,
+            expires_at=15.0,
+        ),
+        TaskAttemptSucceeded(activation_id="act-1", attempt=1, output={"ok": True}),
+        HeadAdvanced(
+            task_id="task-1",
+            activation_id="act-1",
+            attempt=1,
+            previous_tree_id="a" * 64,
+            tree_id="b" * 64,
+        ),
+        NodeCompleted(activation_id="act-1", output={"ok": True}),
+        GraphCompleted(graph_instance_id="root", output={"ok": True}),
+        InvocationFinished(invocation_id="inv-1", status="succeeded"),
+    )
+
+
+@pytest.mark.parametrize(
+    "batch_sizes",
+    [
+        (13,),
+        (1,) * 13,
+        (3, 4, 1, 2, 3),
+    ],
+)
+def test_incremental_fold_matches_one_shot_across_batch_partitions(
+    batch_sizes: tuple[int, ...],
+) -> None:
+    envelopes = _complete_task_history()
+    cursor = FoldCursor()
+    offset = 0
+
+    for batch_size in batch_sizes:
+        cursor = cursor.advance(envelopes[offset : offset + batch_size])
+        offset += batch_size
+
+    assert offset == len(envelopes)
+    assert cursor.next_seq == len(envelopes) + 1
+    assert cursor.projection == fold_events(envelopes)
+
+
+def test_incremental_fold_rejects_batch_starting_at_wrong_sequence() -> None:
+    envelopes = _complete_task_history()
+    cursor = FoldCursor().advance(envelopes[:3])
+    wrong_start = EventEnvelope.from_event(cursor.next_seq + 1, envelopes[3].event)
+
+    with pytest.raises(ProjectionError, match="expected sequence 4, found 5"):
+        cursor.advance((wrong_start,))
+
+    assert cursor.projection == fold_events(envelopes[:3])
+    assert cursor.next_seq == 4
+
+
+def test_incremental_fold_rejects_digest_mismatch_without_partial_advance() -> None:
+    envelopes = _complete_task_history()
+    cursor = FoldCursor().advance(envelopes[:3])
+    forged = envelopes[4].model_copy(update={"event_sha256": "0" * 64})
+
+    with pytest.raises(ProjectionError, match="envelope digest mismatch"):
+        cursor.advance((envelopes[3], forged))
+
+    assert cursor.projection == fold_events(envelopes[:3])
+    assert cursor.next_seq == 4
 
 
 def test_fold_rejects_success_without_started_attempt() -> None:

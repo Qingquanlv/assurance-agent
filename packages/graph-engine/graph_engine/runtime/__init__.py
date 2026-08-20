@@ -43,6 +43,7 @@ from graph_engine.runtime.ledger import (
 from graph_engine.runtime.models import (
     ActivationRecord,
     AttemptRecord,
+    FoldCursor,
     GraphInstanceRecord,
     InvocationProjection,
     PendingInterrupt,
@@ -80,6 +81,7 @@ __all__ = [
     "EnginePublicationIndeterminate",
     "FailureKind",
     "FakeClock",
+    "FoldCursor",
     "GraphCompleted",
     "GraphFailed",
     "GraphInstanceRecord",

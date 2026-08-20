@@ -360,6 +360,17 @@ class InvocationProjection(ProjectionModel):
         return self
 
 
+class FoldCursor(ProjectionModel):
+    """Immutable cursor for applying contiguous event-envelope batches once."""
+
+    projection: InvocationProjection = Field(default_factory=InvocationProjection)
+    next_seq: int = Field(default=1, ge=1)
+
+    def advance(self, envelopes: tuple[EventEnvelope, ...]) -> FoldCursor:
+        """Purely advance this cursor through one ordered envelope batch."""
+        return _advance_fold(self, envelopes)
+
+
 def _require_unique(values: object, kind: str) -> None:
     materialized = tuple(values)  # type: ignore[arg-type]
     if len(materialized) != len(set(materialized)):
@@ -394,8 +405,15 @@ def _fail(seq: int, message: str) -> NoReturn:
 
 def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
     """Purely derive invocation state from a complete, ordered event stream."""
-    projection = InvocationProjection()
-    expected_seq = 1
+    return FoldCursor().advance(envelopes).projection
+
+
+def _advance_fold(
+    cursor: FoldCursor,
+    envelopes: tuple[EventEnvelope, ...],
+) -> FoldCursor:
+    projection = cursor.projection
+    expected_seq = cursor.next_seq
 
     for envelope in envelopes:
         if envelope.seq != expected_seq:
@@ -839,9 +857,10 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
             )
 
     try:
-        return InvocationProjection.model_validate_json(projection.model_dump_json(), strict=True)
+        validated = InvocationProjection.model_validate_json(projection.model_dump_json(), strict=True)
     except ValueError as error:
         raise ProjectionError(f"fold produced an invalid projection: {error}") from error
+    return FoldCursor(projection=validated, next_seq=expected_seq)
 
 
 def _activation(projection: InvocationProjection, activation_id: str, seq: int) -> ActivationRecord:
@@ -919,6 +938,7 @@ __all__ = [
     "ActivationRecord",
     "AttemptRecord",
     "CommitResult",
+    "FoldCursor",
     "GraphInstanceRecord",
     "InvocationProjection",
     "PendingInterrupt",
