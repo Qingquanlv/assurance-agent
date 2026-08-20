@@ -384,51 +384,65 @@ def _parallel_task_ledger(
 def _failed_attempt_events(
     activation_id_: str,
     failure_kind: Literal["invalid_input", "transient"],
+    *,
+    attempt: int = 1,
 ) -> tuple[RuntimeEvent, ...]:
     failure = TaskOutcome.failed(failure_kind, f"{failure_kind} failure").failure
     assert failure is not None
-    return (
+    events: tuple[RuntimeEvent, ...] = (
         TaskAttemptStarted(
             activation_id=activation_id_,
-            attempt=1,
+            attempt=attempt,
             lease_expires_at="40",
         ),
+    )
+    events += (
         TaskLeaseAcquired(
             task_id=task_id(activation_id_),
             activation_id=activation_id_,
-            attempt=1,
-            owner_id=f"owner-{activation_id_}",
+            attempt=attempt,
+            owner_id=f"owner-{activation_id_}-{attempt}",
             acquired_at=10,
             heartbeat_at=10,
             expires_at=40,
         ),
+    )
+    return events + (
         TaskAttemptFailed(
             activation_id=activation_id_,
-            attempt=1,
+            attempt=attempt,
             failure=failure,
         ),
     )
 
 
-def _stopped_attempt_events(activation_id_: str) -> tuple[RuntimeEvent, ...]:
-    return (
+def _stopped_attempt_events(
+    activation_id_: str,
+    *,
+    attempt: int = 1,
+) -> tuple[RuntimeEvent, ...]:
+    events: tuple[RuntimeEvent, ...] = (
         TaskAttemptStarted(
             activation_id=activation_id_,
-            attempt=1,
+            attempt=attempt,
             lease_expires_at="40",
         ),
+    )
+    events += (
         TaskLeaseAcquired(
             task_id=task_id(activation_id_),
             activation_id=activation_id_,
-            attempt=1,
-            owner_id=f"owner-{activation_id_}",
+            attempt=attempt,
+            owner_id=f"owner-{activation_id_}-{attempt}",
             acquired_at=10,
             heartbeat_at=10,
             expires_at=40,
         ),
+    )
+    return events + (
         TaskAttemptStopped(
             activation_id=activation_id_,
-            attempt=1,
+            attempt=attempt,
             reason="operator_stop",
         ),
     )
@@ -1904,19 +1918,114 @@ def test_open_rejects_terminal_task_without_canonical_lease_binding(
         if terminal_kind == "failed"
         else _stopped_attempt_events(activations["cause"])
     )
-    ledger.append_batch(
-        tuple(event for event in attempt_events if not isinstance(event, TaskLeaseAcquired)),
-        expected_next_seq=ledger.read_all()[-1].seq + 1,
-    )
+    ledger.append_batch(attempt_events, expected_next_seq=ledger.read_all()[-1].seq + 1)
     terminal = plan_next(product.workflow, fold_events(ledger.read_all()))
     assert terminal.terminal == terminal_kind
     ledger.append_batch(
         terminal.events,
         expected_next_seq=ledger.read_all()[-1].seq + 1,
     )
+    _rewrite_ledger(
+        ledger_root,
+        tuple(
+            envelope.event
+            for envelope in ledger.read_all()
+            if not isinstance(envelope.event, TaskLeaseAcquired)
+        ),
+    )
     assert fold_events(ledger.read_all()).status == terminal_kind
 
-    with pytest.raises(EngineError, match="causal proof"):
+    with pytest.raises(EngineError, match="canonical lease"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            invocation_id,
+            product,
+        )
+
+
+@pytest.mark.parametrize("terminal_kind", ["failed", "stopped", "activation_bound"])
+def test_open_rejects_terminal_with_retryable_sibling_missing_canonical_lease(
+    tmp_path: Path,
+    terminal_kind: Literal["failed", "stopped", "activation_bound"],
+) -> None:
+    invocation_id = f"missing-retryable-sibling-lease-{terminal_kind}"
+    product, ledger_root, activations = _parallel_task_ledger(
+        tmp_path,
+        invocation_id,
+        activation_bound=terminal_kind == "activation_bound",
+    )
+    ledger = Ledger(ledger_root)
+    events: tuple[RuntimeEvent, ...] = _failed_attempt_events(
+        activations["sibling"],
+        "transient",
+    )
+    if terminal_kind == "failed":
+        events = (*_failed_attempt_events(activations["cause"], "invalid_input"), *events)
+    elif terminal_kind == "stopped":
+        events = (*_stopped_attempt_events(activations["cause"]), *events)
+    ledger.append_batch(events, expected_next_seq=ledger.read_all()[-1].seq + 1)
+    terminal = plan_next(product.workflow, fold_events(ledger.read_all()))
+    expected_status = "failed" if terminal_kind != "stopped" else "stopped"
+    assert terminal.terminal == expected_status
+    ledger.append_batch(terminal.events, expected_next_seq=ledger.read_all()[-1].seq + 1)
+    _rewrite_ledger(
+        ledger_root,
+        tuple(
+            envelope.event
+            for envelope in ledger.read_all()
+            if not (
+                isinstance(envelope.event, TaskLeaseAcquired)
+                and envelope.event.activation_id == activations["sibling"]
+            )
+        ),
+    )
+    assert fold_events(ledger.read_all()).status == expected_status
+
+    with pytest.raises(EngineError, match="canonical lease"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            invocation_id,
+            product,
+        )
+
+
+@pytest.mark.parametrize("terminal_kind", ["failed", "stopped"])
+def test_open_rejects_terminal_task_with_earlier_attempt_missing_canonical_lease(
+    tmp_path: Path,
+    terminal_kind: Literal["failed", "stopped"],
+) -> None:
+    invocation_id = f"missing-earlier-attempt-lease-{terminal_kind}"
+    product, ledger_root, activations = _parallel_task_ledger(tmp_path, invocation_id)
+    cause = activations["cause"]
+    terminal_events = (
+        _failed_attempt_events(cause, "invalid_input", attempt=2)
+        if terminal_kind == "failed"
+        else _stopped_attempt_events(cause, attempt=2)
+    )
+    ledger = Ledger(ledger_root)
+    ledger.append_batch(
+        (
+            *_failed_attempt_events(cause, "transient"),
+            *terminal_events,
+        ),
+        expected_next_seq=ledger.read_all()[-1].seq + 1,
+    )
+    terminal = plan_next(product.workflow, fold_events(ledger.read_all()))
+    assert terminal.terminal == terminal_kind
+    ledger.append_batch(terminal.events, expected_next_seq=ledger.read_all()[-1].seq + 1)
+    _rewrite_ledger(
+        ledger_root,
+        tuple(
+            envelope.event
+            for envelope in ledger.read_all()
+            if not (
+                isinstance(envelope.event, TaskLeaseAcquired)
+                and envelope.event.activation_id == cause
+                and envelope.event.attempt == 1
+            )
+        ),
+    )
+    assert fold_events(ledger.read_all()).status == terminal_kind
+
+    with pytest.raises(EngineError, match="canonical lease"):
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             invocation_id,
             product,

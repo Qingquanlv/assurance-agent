@@ -104,6 +104,18 @@ def _task_activation_events(
     )
 
 
+def _task_lease(activation: str, *, attempt: int = 1) -> TaskLeaseAcquired:
+    return TaskLeaseAcquired(
+        task_id=task_id(activation),
+        activation_id=activation,
+        attempt=attempt,
+        owner_id=f"worker-{attempt}",
+        acquired_at=1.0,
+        heartbeat_at=1.0,
+        expires_at=2.0,
+    )
+
+
 def _completed_start_gate_events(compiled: CompiledWorkflow, node: str) -> tuple[object, ...]:
     token = _canonical_start_token(compiled)
     activation = activation_id("root", node, 0, (token.token_id,))
@@ -694,6 +706,7 @@ def test_stopped_task_terminates_without_outgoing_token() -> None:
         _root(),
         *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
+        _task_lease(activation),
         TaskAttemptStopped(activation_id=activation, attempt=1, reason="operator_stop"),
     )
     projection = _projection(*events)
@@ -762,6 +775,7 @@ def test_allowed_retry_preserves_ids_and_includes_prior_failure() -> None:
         _root(),
         *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
+        _task_lease(activation),
         TaskAttemptFailed(activation_id=activation, attempt=1, failure=failure),
     )
     projection = _projection(*events)
@@ -798,6 +812,7 @@ def test_disallowed_or_exhausted_failure_fails_node_graph_and_invocation(
         _root(),
         *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
+        _task_lease(activation),
         TaskAttemptFailed(activation_id=activation, attempt=1, failure=failure),
     )
     projection = _projection(*events)
@@ -995,6 +1010,7 @@ def test_active_attempt_is_not_planned_twice() -> None:
         _root(),
         *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
+        _task_lease(activation),
     )
 
     assert plan_next(compiled, projection).tasks == ()

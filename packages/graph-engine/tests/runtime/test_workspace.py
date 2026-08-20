@@ -747,6 +747,81 @@ def test_create_at_closes_owned_descriptor_when_parent_dup_fails_with_retained_t
         os.close(parent_fd)
 
 
+def test_create_at_closes_internal_parent_descriptor_when_prologue_fails_with_retained_tracebacks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graph_engine.runtime import workspace
+
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    failures: list[BaseException] = []
+    baseline = len(os.listdir("/dev/fd"))
+
+    def fail_after_internal_parent_dup() -> object:
+        raise RuntimeError("fail before snapshot creation cleanup domain")
+
+    monkeypatch.setattr(workspace.uuid, "uuid4", fail_after_internal_parent_dup)
+    try:
+        for _index in range(24):
+            try:
+                SnapshotStore.create_at(
+                    parent_fd,
+                    "store",
+                    {"seed.txt": b"seed"},
+                    display_root=tmp_path / "store",
+                )
+            except RuntimeError as error:
+                failures.append(error)
+        assert len(failures) == 24
+        assert len(os.listdir("/dev/fd")) <= baseline + 1
+    finally:
+        failures.clear()
+        os.close(parent_fd)
+
+
+def test_create_at_parent_close_failure_does_not_mask_prologue_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graph_engine.runtime import workspace
+
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_dup = os.dup
+    real_close = os.close
+    internal_parent_fd: int | None = None
+    duplicate_calls = 0
+
+    def record_internal_parent_dup(descriptor: int) -> int:
+        nonlocal duplicate_calls, internal_parent_fd
+        duplicate_calls += 1
+        duplicated = real_dup(descriptor)
+        if duplicate_calls == 2:
+            internal_parent_fd = duplicated
+        return duplicated
+
+    def fail_after_internal_parent_close(descriptor: int) -> None:
+        real_close(descriptor)
+        if descriptor == internal_parent_fd:
+            raise OSError("injected parent close failure")
+
+    def fail_prologue() -> object:
+        raise RuntimeError("original prologue failure")
+
+    monkeypatch.setattr(workspace.os, "dup", record_internal_parent_dup)
+    monkeypatch.setattr(workspace.os, "close", fail_after_internal_parent_close)
+    monkeypatch.setattr(workspace.uuid, "uuid4", fail_prologue)
+    try:
+        with pytest.raises(RuntimeError, match="original prologue failure"):
+            SnapshotStore.create_at(
+                parent_fd,
+                "store",
+                {"seed.txt": b"seed"},
+                display_root=tmp_path / "store",
+            )
+    finally:
+        real_close(parent_fd)
+
+
 def test_crash_incomplete_initialization_is_recoverable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

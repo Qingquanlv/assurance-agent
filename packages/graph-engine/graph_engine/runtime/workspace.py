@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import stat
+import sys
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
@@ -648,15 +649,19 @@ class SnapshotStore:
         try:
             return store._create_at(os.dup(parent_fd), initial_files)
         except BaseException:
-            store.close()
+            try:
+                store.close()
+            except BaseException:
+                pass
             raise
 
     def _create_at(self, parent_fd: int, initial_files: Mapping[str, bytes]) -> SnapshotStore:
         store = self
-        staging_name = f".{store.root.name}.snapshot-init-{uuid.uuid4().hex}"
+        staging_name: str | None = None
         staging_fd: int | None = None
         installed = False
         try:
+            staging_name = f".{store.root.name}.snapshot-init-{uuid.uuid4().hex}"
             if _entry_exists(parent_fd, store.root.name):
                 raise WorkspaceViolation(f"snapshot store already exists: {store.root}")
             lock_fd, lock_stat = store._open_or_create_lock_anchor(parent_fd)
@@ -705,17 +710,32 @@ class SnapshotStore:
             os.fsync(parent_fd)
             return store
         except Exception:
-            if not installed and _entry_exists(parent_fd, staging_name):
+            if staging_name is not None and not installed and _entry_exists(parent_fd, staging_name):
                 if staging_fd is not None:
-                    os.close(staging_fd)
-                    staging_fd = None
+                    try:
+                        os.close(staging_fd)
+                    except BaseException:
+                        pass
+                    else:
+                        staging_fd = None
                 _remove_entry_at(parent_fd, staging_name)
                 os.fsync(parent_fd)
             raise
         finally:
+            active_exception = sys.exception()
+            cleanup_error: BaseException | None = None
             if staging_fd is not None:
-                os.close(staging_fd)
-            os.close(parent_fd)
+                try:
+                    os.close(staging_fd)
+                except BaseException as error:
+                    cleanup_error = error
+            try:
+                os.close(parent_fd)
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+            if active_exception is None and cleanup_error is not None:
+                raise cleanup_error
 
     def _open_or_create_lock_anchor(self, parent_fd: int) -> tuple[int, os.stat_result]:
         name = self._lock_anchor_name

@@ -368,10 +368,11 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
             raise PlanningError("only task nodes can contain attempt history")
         if behavior.execution == "task":
             canonical_task_id = task_id(activation.activation_id)
-            if any(
-                attempt.lease_task_id is not None and attempt.lease_task_id != canonical_task_id
-                for attempt in activation.attempts
-            ):
+            if any(attempt.lease_task_id is None for attempt in activation.attempts):
+                raise PlanningError(
+                    f"task activation {activation.activation_id!r} lacks an exact canonical lease"
+                )
+            if any(attempt.lease_task_id != canonical_task_id for attempt in activation.attempts):
                 raise PlanningError(
                     f"task activation {activation.activation_id!r} has a non-canonical task id"
                 )
@@ -614,16 +615,12 @@ def _task_terminal_settlement(
         }
     )
     terminal = _terminal_task_activations(_PlannerState.from_projection(compiled, predecessor))
-    canonical_leases = all(
-        activation.attempts and activation.attempts[-1].lease_task_id == task_id(activation.activation_id)
-        for activation in terminal
-    )
     stopped = tuple(activation for activation in terminal if activation.status == "stopped")
     if stopped:
-        return "stopped", stopped, canonical_leases and not actual_settled
+        return "stopped", stopped, not actual_settled
     if terminal:
         expected_settled = {activation.activation_id for activation in terminal}
-        return "failed", terminal, canonical_leases and actual_settled == expected_settled
+        return "failed", terminal, actual_settled == expected_settled
     return None, (), not actual_settled
 
 
