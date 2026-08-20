@@ -98,3 +98,62 @@ invocation-scoped and introduces no default instance or registry.
 ## Commit
 
 `ab91ca3` — `test(graph-engine): add sequential toy product`
+
+## Review correction — executable one-retry policy
+
+The Task 10 review found that the initial `max_attempts: 1` declaration and
+empty default `retry_on` tuple made every first failure terminal.  The planner
+counts the first execution as attempt 1 and permits another attempt only when
+the failure kind is in `retry_on` and the current attempt remains below
+`max_attempts`.
+
+### RED / GREEN
+
+Added `test_toy_a_retries_a_transient_first_greet_attempt`, using the existing
+explicit, test-only `_InProcessTestHost` to return
+`TaskOutcome.failed("transient", ...)` for its first Toy A execution.  RED:
+
+```console
+uv run pytest packages/graph-engine/tests/integration/test_toy_a.py -v
+# 1 passed, 1 failed. The new test ended as
+# task_failed:greet:transient after attempt 1.
+```
+
+GREEN changes only the Toy A policy to
+`max_attempts: 2, retry_on: [transient]`; the production `toy.a.greet` handler
+is unchanged.  The integration assertion observes exactly attempts `(1, 2)`,
+the first attempt's `transient` failure, the second success, final
+`{"message": "hello Ada"}` output, and `greeting.txt` content.
+
+### Correction gates
+
+```console
+uv sync --dev
+# Resolved 43 packages; audited 41 packages; exit 0.
+
+uv run pytest packages/graph-engine/tests/integration/test_toy_a.py -v
+# 2 passed in 0.26s.
+
+uv run python -c "import graph_engine_toy_a; import graph_engine; assert 'assurance_agent' not in __import__('sys').modules"
+# exit 0.
+
+uv run pytest packages/graph-engine/tests/test_product_resolution.py -v
+# 33 passed in 0.11s.
+
+uv run pytest packages/graph-engine/tests -v
+# 554 passed, 1 skipped in 5.68s.
+
+uv run ruff check examples/graph-engine-toy-a packages/graph-engine/tests/integration/test_toy_a.py
+# All checks passed.
+
+uv run ruff format --check examples/graph-engine-toy-a packages/graph-engine/tests/integration/test_toy_a.py
+# 4 files already formatted.
+
+uv run pyright examples/graph-engine-toy-a packages/graph-engine/tests/integration/test_toy_a.py
+# 0 errors, 0 warnings, 0 informations.
+
+git diff --check
+# exit 0.
+```
+
+Correction commit: `93f9174` — `fix(graph-engine): enable toy product retry`.
