@@ -8,6 +8,7 @@ from graph_engine.composition.declarative import (
     load_config_tree,
     load_product_file,
 )
+from graph_engine.composition.dependencies import DependencyConflict, resolve_dependency_order
 from graph_engine.composition.models import (
     SourceFile,
     SourceIdentity,
@@ -30,6 +31,7 @@ from graph_engine.composition.sources import (
 
 __all__ = [
     "ConfigTreePluginSource",
+    "DependencyConflict",
     "DeclaredTreePolicy",
     "DeclarativePlugin",
     "DeclarativePluginRejected",
@@ -49,5 +51,6 @@ __all__ = [
     "load_snapshotted_entrypoint",
     "load_config_tree",
     "load_product_file",
+    "resolve_dependency_order",
     "snapshot_wheel_source",
 ]
