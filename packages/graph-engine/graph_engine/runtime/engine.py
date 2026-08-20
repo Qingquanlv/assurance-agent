@@ -74,17 +74,44 @@ class InvocationHandle:
     product_digest: str
     _product: ResolvedProduct = field(repr=False, compare=False)
     _invocation_fd: int = field(repr=False, compare=False)
+    _closed: bool = field(default=False, init=False, repr=False, compare=False)
 
     @property
     def workspace(self) -> SnapshotStore:
+        if self._closed:
+            raise EngineError("invocation handle is closed")
         return SnapshotStore.at(
             self._invocation_fd,
             "workspace",
             display_root=self.invocation_root / "workspace",
         )
 
+    def close(self) -> None:
+        if self._closed:
+            return
+        descriptor = self._invocation_fd
+        object.__setattr__(self, "_closed", True)
+        object.__setattr__(self, "_invocation_fd", -1)
+        os.close(descriptor)
+
+    def __enter__(self) -> InvocationHandle:
+        if self._closed:
+            raise EngineError("invocation handle is closed")
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
+
 
 _RESULT_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+_RUNNER_LOCK = ".engine-runner.lock"
+_EMPTY_TREE_ID = canonical_digest([])
 
 
 class RunResult(BaseModel):
@@ -127,6 +154,29 @@ class Engine:
         self._clock = clock or SystemClock()
         self._host = host
         self._invocations_fd = _open_or_create_namespace(self._root)
+        self._closed = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        descriptor = self._invocations_fd
+        self._closed = True
+        self._invocations_fd = -1
+        os.close(descriptor)
+
+    def __enter__(self) -> Engine:
+        if self._closed:
+            raise EngineError("engine is closed")
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
 
     def start(
         self,
@@ -243,8 +293,17 @@ class Engine:
                 "workspace",
                 display_root=invocation_root / "workspace",
             )
+            try:
+                ledger.ensure_durable()
+            except OSError as error:
+                raise EnginePublicationIndeterminate(
+                    "authoritative ledger durability is indeterminate"
+                ) from error
             store.recover_head_transaction(projection.head_tree_id)
-            store.head_tree_id()
+            actual_tree_id = store.head_tree_id()
+            expected_tree_id = projection.head_tree_id or _EMPTY_TREE_ID
+            if actual_tree_id != expected_tree_id:
+                raise EngineError("workspace HEAD disagrees with the authoritative ledger")
             if projection.status == "running":
                 scheduler = self._scheduler(invocation_id, product, invocation_root, store, ledger)
                 try:
@@ -271,6 +330,14 @@ class Engine:
             raise
 
     def run_until_blocked(self, handle: InvocationHandle) -> RunResult:
+        _product, _invocation_root, invocation_fd = self._validated_handle(handle)
+        claim_fd = self._acquire_runner_claim(invocation_fd)
+        try:
+            return self._run_until_blocked_claimed(handle)
+        finally:
+            os.close(claim_fd)
+
+    def _run_until_blocked_claimed(self, handle: InvocationHandle) -> RunResult:
         product, invocation_root, invocation_fd = self._validated_handle(handle)
         ledger = Ledger.at(
             invocation_fd,
@@ -343,7 +410,44 @@ class Engine:
                     return result
             raise EngineError("running invocation has no planned transition or runnable task")
 
+    def _acquire_runner_claim(self, invocation_fd: int) -> int:
+        try:
+            descriptor = os.open(
+                _RUNNER_LOCK,
+                os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=invocation_fd,
+            )
+        except OSError as error:
+            raise EngineError("cannot open the invocation runner claim") from error
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                raise EngineError("invocation runner claim is not a stable regular file")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise EngineConflictError("another runner holds the invocation claim") from error
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
     def resume(
+        self,
+        handle: InvocationHandle,
+        *,
+        action: str,
+        payload: JSONValue,
+    ) -> InvocationHandle:
+        _product, _invocation_root, invocation_fd = self._validated_handle(handle)
+        claim_fd = self._acquire_runner_claim(invocation_fd)
+        try:
+            return self._resume_claimed(handle, action=action, payload=payload)
+        finally:
+            os.close(claim_fd)
+
+    def _resume_claimed(
         self,
         handle: InvocationHandle,
         *,
@@ -420,6 +524,8 @@ class Engine:
 
     def _validated_handle(self, handle: InvocationHandle) -> tuple[ResolvedProduct, Path, int]:
         self._assert_namespace_path_current()
+        if handle._closed:
+            raise EngineError("invocation handle is closed")
         expected_root = self._invocation_root(handle.invocation_id)
         if handle.invocation_root.absolute() != expected_root:
             raise EngineError("invocation handle root is outside the engine namespace")
@@ -440,6 +546,8 @@ class Engine:
         return product, expected_root, handle._invocation_fd
 
     def _assert_namespace_path_current(self) -> None:
+        if self._closed:
+            raise EngineError("engine is closed")
         try:
             current_fd = _open_absolute_directory(self._invocations_root)
         except (OSError, EngineError) as error:

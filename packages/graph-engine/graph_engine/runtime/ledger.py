@@ -147,6 +147,14 @@ class Ledger:
         finally:
             os.close(root_fd)
 
+    def ensure_durable(self) -> None:
+        """Establish a durability barrier for every currently visible ledger entry."""
+        root_fd = self._open_root(create=False)
+        try:
+            os.fsync(root_fd)
+        finally:
+            os.close(root_fd)
+
     def _read_all_fd(self, root_fd: int) -> tuple[EventEnvelope, ...]:
         if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
             raise LedgerIntegrityError(f"ledger root is not a directory: {self.root}")
@@ -251,6 +259,12 @@ def append_validated_batch(
             ) from reconciliation_error
         offset = expected_next_seq - 1
         if persisted[offset : offset + len(expected)] == expected:
+            try:
+                ledger.ensure_durable()
+            except BaseException as durability_error:
+                raise LedgerPublicationIndeterminate(
+                    "ledger range is visible but its directory durability is indeterminate"
+                ) from durability_error
             published = expected
         else:
             raise

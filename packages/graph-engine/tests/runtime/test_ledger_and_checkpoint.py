@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import subprocess
 import sys
 import textwrap
@@ -176,6 +178,75 @@ def test_validated_append_reports_indeterminate_reconciliation_read(
         append(
             ledger,
             (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+            expected_next_seq=1,
+        )
+
+
+def test_validated_append_syncs_visible_exact_range_before_acknowledging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = Ledger(tmp_path / "ledger")
+    installed = False
+    durable_after_install = False
+    original_fsync = os.fsync
+
+    def fail_after_link(name: str) -> None:
+        nonlocal installed
+        if name == "final_installed":
+            installed = True
+            raise OSError("link result unavailable")
+
+    def track_fsync(descriptor: int) -> None:
+        nonlocal durable_after_install
+        if installed and stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            durable_after_install = True
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(ledger_runtime, "_append_boundary", fail_after_link)
+    monkeypatch.setattr(ledger_runtime.os, "fsync", track_fsync)
+
+    ledger_runtime.append_validated_batch(
+        ledger,
+        (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+        expected_next_seq=1,
+    )
+
+    assert durable_after_install
+
+
+def test_visible_exact_range_with_failed_durability_barrier_is_indeterminate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = Ledger(tmp_path / "ledger")
+    installed = False
+    original_fsync = os.fsync
+
+    def fail_after_link(name: str) -> None:
+        nonlocal installed
+        if name == "final_installed":
+            installed = True
+            raise OSError("link result unavailable")
+
+    def fail_reconciliation_barrier(descriptor: int) -> None:
+        if installed and stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("ledger directory durability unavailable")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(ledger_runtime, "_append_boundary", fail_after_link)
+    monkeypatch.setattr(ledger_runtime.os, "fsync", fail_reconciliation_barrier)
+
+    with pytest.raises(ledger_runtime.LedgerPublicationIndeterminate, match="durab"):
+        ledger_runtime.append_validated_batch(
+            ledger,
+            (
+                InvocationStarted(
+                    invocation_id="inv-1",
+                    product_digest="a" * 64,
+                    entrypoint="main",
+                ),
+            ),
             expected_next_seq=1,
         )
 

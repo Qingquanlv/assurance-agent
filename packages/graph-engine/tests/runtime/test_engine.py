@@ -22,6 +22,7 @@ from graph_engine.plugin_api import (
     EnginePorts,
     PluginDescriptor,
     PluginRuntime,
+    ResourceClaims,
     TaskContext,
     TaskHandler,
     TaskOutcome,
@@ -49,6 +50,7 @@ from graph_engine.runtime.models import fold_events
 from graph_engine.runtime.planner import plan_next
 from graph_engine.runtime.scheduler import FakeClock
 from graph_engine.runtime.scheduler import Scheduler
+from graph_engine.runtime.workspace import SnapshotStore
 
 
 @dataclass(frozen=True)
@@ -758,6 +760,75 @@ def test_concurrent_open_reclaim_has_one_winner_and_one_engine_conflict(
     assert [item.event.kind for item in ledger.read_all()].count("task_attempt_failed") == 1
 
 
+def test_concurrent_reopeners_execute_one_live_persisted_attempt_exclusively(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    async def task_handler(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.succeeded("once")
+
+    class BlockingHost:
+        async def execute(
+            self,
+            handler: TaskHandler,
+            request: TaskRequest,
+            *,
+            workspace_root: Path,
+            heartbeat: Callable[[], None],
+        ) -> TaskOutcome:
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+                current = calls
+            if current == 1:
+                entered.set()
+                assert release.wait(timeout=5)
+            return await handler(
+                request,
+                TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
+            )
+
+    product = _task_product(task_handler)
+    root = tmp_path / "exclusive-recovery"
+    bootstrap = Engine(root, clock=FakeClock(10), host=BlockingHost())
+    initial = bootstrap.start(product, entrypoint="main", invocation_id="exclusive")
+
+    def stop_after_attempt_started(phase: str, events: object) -> None:
+        if phase == "after" and any(
+            getattr(event, "kind", None) == "task_attempt_started"
+            for event in events  # type: ignore[union-attr]
+        ):
+            raise RuntimeError("stop after persisted task start")
+
+    with monkeypatch.context() as crash:
+        crash.setattr(ledger_runtime, "_validated_append_boundary", stop_after_attempt_started)
+        with pytest.raises(RuntimeError, match="persisted task start"):
+            bootstrap.run_until_blocked(initial)
+
+    host = BlockingHost()
+    first_engine = Engine(root, clock=FakeClock(10), host=host)
+    second_engine = Engine(root, clock=FakeClock(10), host=host)
+    first_handle = first_engine.open("exclusive", product)
+    second_handle = second_engine.open("exclusive", product)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(first_engine.run_until_blocked, first_handle)
+        assert entered.wait(timeout=5)
+        second = pool.submit(second_engine.run_until_blocked, second_handle)
+        try:
+            with pytest.raises(EngineConflictError, match="runner|claim"):
+                second.result(timeout=5)
+        finally:
+            release.set()
+        assert first.result(timeout=5).status == "succeeded"
+
+    assert calls == 1
+
+
 class _CrashAfterAppendEngine(Engine):
     def __init__(self, root: Path, cut: int) -> None:
         super().__init__(root)
@@ -904,6 +975,91 @@ def test_fresh_open_after_exact_facade_crash_matrix_has_identical_digests(
     recovered = _finish_crash_matrix_invocation(crash_root, product)
 
     assert recovered == baseline
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires process-crash fork semantics")
+def test_open_durably_syncs_linked_success_before_clearing_head_journal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    armed = False
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        nonlocal armed
+        (context.workspace_root / "out.txt").write_bytes(b"durable")
+        armed = True
+        return TaskOutcome.succeeded("done")
+
+    product = _nested_task_interrupt_product(handler)
+    root = tmp_path / "durability-cut"
+    Engine(root, clock=FakeClock(10), host=_InProcessTestHost()).start(
+        product,
+        entrypoint="main",
+        invocation_id="durability",
+    )
+    process_id = os.fork()
+    if process_id == 0:
+
+        def crash_after_link(name: str) -> None:
+            if armed and name == "final_installed":
+                os._exit(91)
+
+        ledger_runtime._append_boundary = crash_after_link
+        child_engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
+        child_handle = child_engine.open("durability", product)
+        child_engine.run_until_blocked(child_handle)
+        os._exit(0)
+
+    _child, status = os.waitpid(process_id, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    journal = root / "invocations" / "durability" / "workspace" / ".HEAD-transaction.json"
+    assert journal.exists()
+
+    ledger_synced = False
+    real_sync = Ledger.ensure_durable
+    real_clear = SnapshotStore._clear_head_transaction
+
+    def track_sync(self: Ledger) -> None:
+        nonlocal ledger_synced
+        real_sync(self)
+        ledger_synced = True
+
+    def require_sync_before_clear(self: SnapshotStore, root_fd: int) -> None:
+        assert ledger_synced
+        real_clear(self, root_fd)
+
+    monkeypatch.setattr(Ledger, "ensure_durable", track_sync)
+    monkeypatch.setattr(SnapshotStore, "_clear_head_transaction", require_sync_before_clear)
+
+    reopened = Engine(root, clock=FakeClock(10), host=_InProcessTestHost()).open(
+        "durability",
+        product,
+    )
+
+    assert (
+        reopened.workspace.head_tree_id()
+        == fold_events(Ledger(reopened.invocation_root / "ledger").read_all()).head_tree_id
+    )
+    assert not journal.exists()
+
+
+def test_open_rejects_workspace_head_without_authoritative_head_advance(
+    tmp_path: Path,
+    resolved_interrupt_product: ResolvedProduct,
+) -> None:
+    engine = Engine(tmp_path)
+    handle = engine.start(
+        resolved_interrupt_product,
+        entrypoint="main",
+        invocation_id="orphan-head",
+    )
+    attempt = handle.workspace.create_attempt("orphan")
+    (attempt.root / "orphan.txt").write_bytes(b"not authoritative")
+    candidate = attempt.seal()
+    handle.workspace.commit_candidate(candidate, ResourceClaims(writes=("orphan.txt",)))
+
+    with pytest.raises(EngineError, match="HEAD.*authoritative ledger"):
+        Engine(tmp_path).open("orphan-head", resolved_interrupt_product)
 
 
 def test_same_digest_products_keep_exact_handler_binding_per_handle(tmp_path: Path) -> None:
@@ -1150,6 +1306,118 @@ def test_open_rejects_forged_terminal_structural_output(tmp_path: Path) -> None:
         Engine(tmp_path).open("forged-structural-output", product)
 
 
+@pytest.mark.parametrize("status", ["failed", "stopped"])
+def test_open_rejects_terminal_status_without_compiled_causal_proof(
+    tmp_path: Path,
+    resolved_interrupt_product: ResolvedProduct,
+    status: str,
+) -> None:
+    engine = Engine(tmp_path)
+    handle = engine.start(
+        resolved_interrupt_product,
+        entrypoint="main",
+        invocation_id=f"forged-{status}",
+    )
+    ledger = Ledger(handle.invocation_root / "ledger")
+    existing = ledger.read_all()
+    ledger.append_batch(
+        (
+            InvocationFinished(
+                invocation_id=f"forged-{status}",
+                status=status,  # type: ignore[arg-type]
+                terminal_reason=f"forged-{status}",
+            ),
+        ),
+        expected_next_seq=existing[-1].seq + 1,
+    )
+    assert fold_events(ledger.read_all()).status == status
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path).open(f"forged-{status}", resolved_interrupt_product)
+
+
+def test_open_rejects_stopped_child_without_compiled_failure_propagation(tmp_path: Path) -> None:
+    async def stop(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.stopped("operator_stop")
+
+    product = _task_product(stop, nested=True)
+    engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id="forged-stop-propagation")
+    assert engine.run_until_blocked(handle).status == "stopped"
+    ledger_root = handle.invocation_root / "ledger"
+    forged_events = tuple(
+        envelope.event
+        for envelope in Ledger(ledger_root).read_all()
+        if envelope.event.kind not in {"graph_failed", "node_failed"}
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "stopped"
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            "forged-stop-propagation",
+            product,
+        )
+
+
+def test_open_rejects_failed_child_without_compiled_failure_propagation(tmp_path: Path) -> None:
+    async def fail(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.failed("invalid_input", "bad child")
+
+    product = _task_product(fail, nested=True)
+    engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id="forged-failure-propagation")
+    result = engine.run_until_blocked(handle)
+    assert result.status == "failed"
+    root_graph_id = next(
+        graph.graph_instance_id
+        for graph in result.projection.graph_instances
+        if graph.parent_graph_instance_id is None
+    )
+    ledger_root = handle.invocation_root / "ledger"
+    forged_events = tuple(
+        envelope.event
+        for envelope in Ledger(ledger_root).read_all()
+        if not (
+            (envelope.event.kind == "graph_failed" and envelope.event.graph_instance_id != root_graph_id)
+            or (envelope.event.kind == "node_failed" and envelope.event.failure.kind == "internal")
+        )
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "failed"
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            "forged-failure-propagation",
+            product,
+        )
+
+
+def test_open_rejects_noncanonical_task_id_in_terminal_ledger(tmp_path: Path) -> None:
+    async def handler(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.succeeded("done")
+
+    product = _task_product(handler)
+    engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id="forged-task-id")
+    assert engine.run_until_blocked(handle).status == "succeeded"
+    ledger_root = handle.invocation_root / "ledger"
+    forged_events = tuple(
+        event.model_copy(update={"task_id": "forged-task-id"})
+        if event.kind in {"task_lease_acquired", "task_lease_heartbeat", "head_advanced"}
+        else event
+        for event in (envelope.event for envelope in Ledger(ledger_root).read_all())
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
+
+    with pytest.raises(EngineError, match="canonical task id"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            "forged-task-id",
+            product,
+        )
+
+
 def test_open_rejects_forged_child_input_even_with_matching_start_token(
     tmp_path: Path,
     resolved_subgraph_product: ResolvedProduct,
@@ -1357,6 +1625,52 @@ def test_leaf_swap_after_handle_binding_is_rejected_as_stale(
     with pytest.raises(EngineError, match="trusted|stale"):
         engine.run_until_blocked(handle)
     assert tuple(outside.iterdir()) == ()
+
+
+def test_engine_and_handle_lifecycle_is_context_managed_idempotent_and_fail_closed(
+    tmp_path: Path,
+    resolved_subgraph_product: ResolvedProduct,
+) -> None:
+    engine = Engine(tmp_path)
+    with engine:
+        handle = engine.start(
+            resolved_subgraph_product,
+            entrypoint="main",
+            invocation_id="lifecycle",
+        )
+        with handle:
+            assert engine.run_until_blocked(handle).status == "succeeded"
+        handle.close()
+        with pytest.raises(EngineError, match="closed"):
+            _ = handle.workspace
+        with pytest.raises(EngineError, match="closed"):
+            engine.run_until_blocked(handle)
+
+    engine.close()
+    with pytest.raises(EngineError, match="closed"):
+        engine.open("lifecycle", resolved_subgraph_product)
+
+
+def test_repeated_open_close_does_not_grow_invocation_descriptors(
+    tmp_path: Path,
+    resolved_subgraph_product: ResolvedProduct,
+) -> None:
+    engine = Engine(tmp_path)
+    initial = engine.start(
+        resolved_subgraph_product,
+        entrypoint="main",
+        invocation_id="descriptor-growth",
+    )
+    assert engine.run_until_blocked(initial).status == "succeeded"
+    initial.close()
+    baseline = len(os.listdir("/dev/fd"))
+
+    for _index in range(50):
+        with engine.open("descriptor-growth", resolved_subgraph_product):
+            pass
+
+    assert len(os.listdir("/dev/fd")) <= baseline + 1
+    engine.close()
 
 
 def test_open_rejects_interrupt_metadata_that_differs_from_compiled_definition(

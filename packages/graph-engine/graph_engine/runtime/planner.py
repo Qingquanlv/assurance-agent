@@ -353,6 +353,14 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
         if activation.attempts and behavior.execution != "task":
             raise PlanningError("only task nodes can contain attempt history")
         if behavior.execution == "task":
+            canonical_task_id = task_id(activation.activation_id)
+            if any(
+                attempt.lease_task_id is not None and attempt.lease_task_id != canonical_task_id
+                for attempt in activation.attempts
+            ):
+                raise PlanningError(
+                    f"task activation {activation.activation_id!r} has a non-canonical task id"
+                )
             if activation.structural_failure:
                 raise PlanningError("task activation cannot be marked as a structural failure")
             if activation.status == "completed":
@@ -429,6 +437,8 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
                 f"activation {activation.activation_id!r} violates the compiled consumption contract"
             )
 
+    _validate_terminal_causal_proof(compiled, projection, graphs)
+
     pending = projection.pending_interrupt
     if pending is not None:
         activation = next(
@@ -453,6 +463,178 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
             or thaw_json(pending.input) != expected_input
         ):
             raise PlanningError("pending interrupt metadata disagrees with compiled workflow")
+
+
+def _validate_terminal_causal_proof(
+    compiled: CompiledWorkflow,
+    projection: InvocationProjection,
+    graphs: dict[str, GraphInstanceRecord],
+) -> None:
+    if projection.status not in {"failed", "stopped"}:
+        return
+
+    roots = tuple(graph for graph in projection.graph_instances if graph.parent_graph_instance_id is None)
+    root = roots[0] if len(roots) == 1 else None
+    if projection.status == "stopped":
+        stopped: list[ActivationRecord] = []
+        for activation in projection.activations:
+            graph_record = graphs[activation.graph_instance_id]
+            node = compiled.graphs[graph_record.graph_id].nodes[activation.node_id]
+            latest = activation.attempts[-1] if activation.attempts else None
+            if (
+                node.definition.kind == "task"
+                and activation.status == "stopped"
+                and latest is not None
+                and latest.status == "stopped"
+                and latest.lease_task_id == task_id(activation.activation_id)
+            ):
+                stopped.append(activation)
+        stopped.sort(key=lambda item: item.activation_id)
+        expected_reason = stopped[0].attempts[-1].stop_reason if stopped else None
+        cause_graph_id = stopped[0].graph_instance_id if stopped else None
+        if (
+            expected_reason is None
+            or cause_graph_id is None
+            or projection.terminal_reason != expected_reason
+            or not _stopped_graph_propagation_matches(
+                projection,
+                graphs,
+                cause_graph_id,
+                expected_reason,
+            )
+        ):
+            raise PlanningError("stopped invocation lacks exact compiled causal proof")
+        return
+
+    failed_tasks: list[ActivationRecord] = []
+    for activation in projection.activations:
+        graph_record = graphs[activation.graph_instance_id]
+        node = compiled.graphs[graph_record.graph_id].nodes[activation.node_id]
+        latest = activation.attempts[-1] if activation.attempts else None
+        if (
+            node.definition.kind != "task"
+            or activation.status != "failed"
+            or latest is None
+            or latest.status != "failed"
+            or latest.failure is None
+            or latest.lease_task_id != task_id(activation.activation_id)
+        ):
+            continue
+        retry_name = node.definition.retry
+        assert retry_name is not None
+        policy = compiled.retry[retry_name]
+        if latest.failure.kind not in policy.retry_on or latest.attempt >= policy.max_attempts:
+            failed_tasks.append(activation)
+    failed_tasks.sort(key=lambda item: item.activation_id)
+    expected_reason = None
+    if failed_tasks:
+        first = failed_tasks[0]
+        failure = first.attempts[-1].failure
+        assert failure is not None
+        expected_reason = f"task_failed:{first.node_id}:{failure.kind}"
+    task_cause = (
+        expected_reason is not None
+        and projection.terminal_reason == expected_reason
+        and root is not None
+        and root.status == "failed"
+        and root.failure_reason == expected_reason
+        and all(
+            _failed_graph_propagation_matches(
+                projection,
+                graphs,
+                activation.graph_instance_id,
+                expected_reason,
+            )
+            for activation in failed_tasks
+        )
+    )
+
+    activation_bound_cause = False
+    reason = projection.terminal_reason
+    if reason is not None and reason.startswith("max_activations_exceeded:"):
+        graph_instance_id = reason.removeprefix("max_activations_exceeded:")
+        graph_record = graphs.get(graph_instance_id)
+        if graph_record is not None:
+            graph = compiled.graphs[graph_record.graph_id]
+            activation_bound_cause = (
+                sum(
+                    activation.graph_instance_id == graph_instance_id for activation in projection.activations
+                )
+                >= graph.max_activations
+                and graph_record.status == "failed"
+                and graph_record.failure_reason == reason
+                and root is not None
+                and root.status == "failed"
+                and root.failure_reason == reason
+                and _failed_graph_propagation_matches(
+                    projection,
+                    graphs,
+                    graph_instance_id,
+                    reason,
+                )
+            )
+    if not task_cause and not activation_bound_cause:
+        raise PlanningError("failed invocation lacks exact compiled causal proof")
+
+
+def _stopped_graph_propagation_matches(
+    projection: InvocationProjection,
+    graphs: dict[str, GraphInstanceRecord],
+    cause_graph_instance_id: str,
+    reason: str,
+) -> bool:
+    activations = {activation.activation_id: activation for activation in projection.activations}
+    current = graphs[cause_graph_instance_id]
+    if current.parent_graph_instance_id is None:
+        return current.status == "running"
+    while True:
+        if current.status != "failed" or current.failure_reason != reason:
+            return False
+        if current.parent_activation_id is None or current.parent_graph_instance_id is None:
+            return current.parent_graph_instance_id is None
+        parent_activation = activations.get(current.parent_activation_id)
+        if (
+            parent_activation is None
+            or parent_activation.status != "failed"
+            or not parent_activation.structural_failure
+            or parent_activation.failure is None
+            or parent_activation.failure.kind != "internal"
+            or parent_activation.failure.message != reason
+        ):
+            return False
+        parent = graphs.get(current.parent_graph_instance_id)
+        if parent is None:
+            return False
+        current = parent
+
+
+def _failed_graph_propagation_matches(
+    projection: InvocationProjection,
+    graphs: dict[str, GraphInstanceRecord],
+    cause_graph_instance_id: str,
+    reason: str,
+) -> bool:
+    activations = {activation.activation_id: activation for activation in projection.activations}
+    current = graphs[cause_graph_instance_id]
+    while True:
+        if current.status != "failed" or current.failure_reason != reason:
+            return False
+        if current.parent_activation_id is None or current.parent_graph_instance_id is None:
+            return current.parent_activation_id is None and current.parent_graph_instance_id is None
+        parent_activation = activations.get(current.parent_activation_id)
+        if (
+            parent_activation is None
+            or parent_activation.status != "failed"
+            or not parent_activation.structural_failure
+            or parent_activation.failure is None
+            or parent_activation.failure.kind != "internal"
+            or parent_activation.failure.message != reason
+        ):
+            return False
+        parent = graphs.get(current.parent_graph_instance_id)
+        if parent is None:
+            return False
+        current = parent
 
 
 def _matches_consumption_contract(

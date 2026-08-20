@@ -976,6 +976,42 @@ def test_failed_rollback_raises_dedicated_indeterminate_error(
         store.commit_candidate(candidate, ResourceClaims(writes=("value.txt",)))
 
 
+def test_failed_new_head_transaction_preserves_prior_recovery_journal(tmp_path: Path) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": b"base"})
+    authoritative = store.head_tree_id()
+    first_attempt = store.create_attempt("first")
+    (first_attempt.root / "value.txt").write_bytes(b"first candidate")
+    first_candidate = first_attempt.seal()
+
+    def leave_recovery_journal(_previous_tree_id: str, _tree_id: str) -> None:
+        raise HeadPublicationIndeterminate("ledger outcome unavailable")
+
+    with pytest.raises(HeadPublicationIndeterminate, match="unavailable"):
+        store.finalize_candidate(
+            first_candidate,
+            ResourceClaims(writes=("value.txt",)),
+            authorize_publish=lambda: None,
+            publish_success=leave_recovery_journal,
+        )
+    assert store.head_tree_id() == first_candidate.candidate_tree_id
+
+    second_attempt = store.create_attempt("second")
+    (second_attempt.root / "value.txt").write_bytes(b"second candidate")
+    second_candidate = second_attempt.seal()
+    with pytest.raises(WorkspaceViolation, match="unfinished HEAD transaction"):
+        store.finalize_candidate(
+            second_candidate,
+            ResourceClaims(writes=("value.txt",)),
+            authorize_publish=lambda: None,
+            publish_success=lambda _previous, _tree: None,
+        )
+
+    store.recover_head_transaction(authoritative)
+
+    assert store.head_tree_id() == authoritative
+    assert store.read_head("value.txt") == b"base"
+
+
 def test_paired_layout_and_lock_replacement_cannot_change_lock_domain(tmp_path: Path) -> None:
     store = SnapshotStore.create(tmp_path / "store", {})
     candidate = store.create_attempt("attempt-1").seal()

@@ -49,6 +49,10 @@ class FinalizationRolledBack(WorkspaceViolation):
     """Raised when finalization failed after publication and exact HEAD was restored."""
 
 
+class _HeadTransactionExists(WorkspaceViolation):
+    """Raised when a prior authenticated HEAD transaction requires recovery."""
+
+
 def _require_posix_primitives() -> None:
     required = ("O_DIRECTORY", "O_NOFOLLOW", "supports_dir_fd")
     if any(not hasattr(os, name) for name in required) or os.open not in os.supports_dir_fd:
@@ -1059,7 +1063,7 @@ class SnapshotStore:
         candidate_tree_id: str,
     ) -> None:
         if _entry_exists(root_fd, _HEAD_TRANSACTION):
-            raise WorkspaceViolation("unfinished HEAD transaction requires recovery")
+            raise _HeadTransactionExists("unfinished HEAD transaction requires recovery")
         previous_head = json.loads(previous)
         payload: dict[str, JSONValue] = {
             "version": 1,
@@ -1413,6 +1417,8 @@ class SnapshotStore:
                         previous,
                         candidate.candidate_tree_id,
                     )
+                except _HeadTransactionExists:
+                    raise
                 except BaseException:
                     try:
                         self._clear_head_transaction(root_fd)
