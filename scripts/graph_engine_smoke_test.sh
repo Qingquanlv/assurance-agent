@@ -4,6 +4,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/graph-engine-smoke.XXXXXX")"
+smoke_root="$(cd "$smoke_root" && pwd -P)"
 trap 'rm -rf "$smoke_root"' EXIT
 
 source_root="$smoke_root/source"
