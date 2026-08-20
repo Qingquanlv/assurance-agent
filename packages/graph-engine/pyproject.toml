@@ -3,7 +3,7 @@ name = "graph-engine"
 version = "0.1.0"
 description = "Business-neutral deterministic graph runtime"
 requires-python = ">=3.11,<4.0"
-dependencies = ["pydantic>=2.7", "pyyaml>=6.0"]
+dependencies = ["packaging>=24", "pydantic>=2.7", "pyyaml>=6.0"]
 
 [build-system]
 requires = ["hatchling"]

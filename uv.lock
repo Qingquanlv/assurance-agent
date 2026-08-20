@@ -58,6 +58,7 @@ dependencies = [
     { name = "assurance-kernel" },
     { name = "click" },
     { name = "httpx" },
+    { name = "packaging" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "ruamel-yaml" },
@@ -81,6 +82,7 @@ requires-dist = [
     { name = "assurance-kernel", editable = "packages/assurance-kernel" },
     { name = "click", specifier = ">=8.1" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "packaging", specifier = ">=24" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
@@ -237,12 +239,14 @@ name = "graph-engine"
 version = "0.1.0"
 source = { editable = "packages/graph-engine" }
 dependencies = [
+    { name = "packaging" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "packaging", specifier = ">=24" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
