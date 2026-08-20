@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from pydantic import ValidationError
@@ -44,7 +44,9 @@ from graph_engine.runtime.events import (
     InterruptResumed,
     InvocationFinished,
     NodeInterrupted,
+    TaskAttemptFailed,
     TaskAttemptStarted,
+    TaskAttemptStopped,
     TaskLeaseAcquired,
 )
 from graph_engine.runtime.ledger import Ledger
@@ -178,6 +180,119 @@ def _task_product(
         },
         {"test.empty.run": cast(TaskHandler, handler)},
     )
+
+
+def _sibling_task_product() -> ResolvedProduct:
+    async def unused(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.succeeded("unused")
+
+    return _resolved(
+        {
+            "name": "sibling-terminal-cause",
+            "entrypoints": {"main": "root"},
+            "retry": {"once": {"max_attempts": 1}},
+            "timeout": {"short": {"run_seconds": 5}},
+            "graphs": {
+                "root": {
+                    "max_activations": 3,
+                    "start": "split",
+                    "nodes": {
+                        "split": {"kind": "gate", "expression": "true"},
+                        "a": {"kind": "subgraph", "graph": "child"},
+                        "b": {"kind": "subgraph", "graph": "child"},
+                    },
+                    "edges": [
+                        {"from": "split", "to": "a"},
+                        {"from": "split", "to": "b"},
+                    ],
+                },
+                "child": {
+                    "max_activations": 1,
+                    "start": "work",
+                    "nodes": {
+                        "work": {
+                            "kind": "task",
+                            "capability": "test.empty.run",
+                            "retry": "once",
+                            "timeout": "short",
+                        }
+                    },
+                    "edges": [],
+                },
+            },
+        },
+        {"test.empty.run": cast(TaskHandler, unused)},
+    )
+
+
+def _forge_unrelated_failed_sibling(
+    root: Path,
+    terminal_status: Literal["failed", "stopped"],
+) -> tuple[ResolvedProduct, str]:
+    product = _sibling_task_product()
+    invocation_id = f"unrelated-sibling-{terminal_status}"
+    engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id)
+    ledger = Ledger(handle.invocation_root / "ledger")
+    envelopes = ledger.read_all()
+    structural = plan_next(product.workflow, fold_events(envelopes))
+    ledger.append_batch(structural.events, expected_next_seq=envelopes[-1].seq + 1)
+    projection = fold_events(ledger.read_all())
+    tasks = plan_next(product.workflow, projection).tasks
+    child_a = next(
+        graph.graph_instance_id for graph in projection.graph_instances if graph.parent_node_id == "a"
+    )
+    child_b = next(
+        graph.graph_instance_id for graph in projection.graph_instances if graph.parent_node_id == "b"
+    )
+    selected = next(task for task in tasks if task.graph_instance_id == child_a)
+    attempt_events: tuple[object, ...] = (
+        TaskAttemptStarted(
+            activation_id=selected.activation_id,
+            attempt=1,
+            lease_expires_at="40",
+        ),
+        TaskLeaseAcquired(
+            task_id=selected.task_id,
+            activation_id=selected.activation_id,
+            attempt=1,
+            owner_id="selected-owner",
+            acquired_at=10,
+            heartbeat_at=10,
+            expires_at=40,
+        ),
+    )
+    if terminal_status == "failed":
+        failure = TaskOutcome.failed("invalid_input", "selected failure").failure
+        assert failure is not None
+        attempt_events += (
+            TaskAttemptFailed(
+                activation_id=selected.activation_id,
+                attempt=1,
+                failure=failure,
+            ),
+        )
+    else:
+        attempt_events += (
+            TaskAttemptStopped(
+                activation_id=selected.activation_id,
+                attempt=1,
+                reason="operator_stop",
+            ),
+        )
+    ledger.append_batch(  # type: ignore[arg-type]
+        attempt_events,
+        expected_next_seq=ledger.read_all()[-1].seq + 1,
+    )
+    terminal = plan_next(product.workflow, fold_events(ledger.read_all()))
+    assert terminal.terminal == terminal_status
+    forged_events = tuple(envelope.event for envelope in ledger.read_all()) + (
+        GraphFailed(graph_instance_id=child_b, reason="unrelated sibling failure"),
+        *terminal.events,
+    )
+    _rewrite_ledger(handle.invocation_root / "ledger", forged_events)
+    assert fold_events(ledger.read_all()).status == terminal_status
+    return product, invocation_id
 
 
 def _nested_task_interrupt_product(
@@ -1569,6 +1684,26 @@ def test_open_rejects_failed_child_without_compiled_failure_propagation(tmp_path
         )
 
 
+def test_open_rejects_task_failure_with_unrelated_failed_sibling(tmp_path: Path) -> None:
+    product, invocation_id = _forge_unrelated_failed_sibling(tmp_path, "failed")
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            invocation_id,
+            product,
+        )
+
+
+def test_open_rejects_stop_with_unrelated_failed_sibling(tmp_path: Path) -> None:
+    product, invocation_id = _forge_unrelated_failed_sibling(tmp_path, "stopped")
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            invocation_id,
+            product,
+        )
+
+
 def test_open_rejects_activation_bound_failure_without_next_ready_activation(
     tmp_path: Path,
 ) -> None:
@@ -1731,6 +1866,50 @@ def test_open_rejects_activation_bound_failure_missing_deterministic_settlement(
 
     with pytest.raises(EngineError, match="causal proof"):
         Engine(tmp_path).open("incomplete-activation-bound", product)
+
+
+def test_open_rejects_activation_bound_history_beyond_compiled_maximum(tmp_path: Path) -> None:
+    def cyclic_product(maximum: int) -> ResolvedProduct:
+        return _resolved(
+            {
+                "name": "over-bound-history",
+                "entrypoints": {"main": "root"},
+                "retry": {},
+                "timeout": {},
+                "graphs": {
+                    "root": {
+                        "max_activations": maximum,
+                        "start": "loop",
+                        "nodes": {"loop": {"kind": "gate", "expression": "true"}},
+                        "edges": [{"from": "loop", "to": "loop"}],
+                    }
+                },
+            }
+        )
+
+    source_product = cyclic_product(2)
+    compiled_product = cyclic_product(1)
+    engine = Engine(tmp_path)
+    handle = engine.start(
+        source_product,
+        entrypoint="main",
+        invocation_id="over-bound-history",
+    )
+    assert engine.run_until_blocked(handle).status == "failed"
+    ledger_root = handle.invocation_root / "ledger"
+    forged_events = tuple(
+        event.model_copy(update={"product_digest": compiled_product.digest})
+        if event.kind == "invocation_started"
+        else event
+        for event in (envelope.event for envelope in Ledger(ledger_root).read_all())
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    projection = fold_events(Ledger(ledger_root).read_all())
+    assert len(projection.activations) == 2
+    assert projection.status == "failed"
+
+    with pytest.raises(EngineError, match="causal proof|activation"):
+        Engine(tmp_path).open("over-bound-history", compiled_product)
 
 
 def test_open_rejects_noncanonical_task_id_in_terminal_ledger(tmp_path: Path) -> None:
@@ -2077,6 +2256,124 @@ def test_workspace_store_lifecycle_is_idempotent_and_does_not_grow_descriptors(
     store.close()
     with pytest.raises(WorkspaceViolation, match="closed"):
         store.head_tree_id()
+
+
+def test_repeated_failed_initialization_closes_internal_workspace_with_retained_tracebacks(
+    tmp_path: Path,
+    resolved_subgraph_product: ResolvedProduct,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = Engine(tmp_path)
+    failures: list[BaseException] = []
+    baseline = len(os.listdir("/dev/fd"))
+
+    def fail_after_workspace(phase: str) -> None:
+        if phase == "workspace_ready":
+            raise RuntimeError("fail after workspace initialization")
+
+    monkeypatch.setattr(engine_runtime, "_initialization_boundary", fail_after_workspace)
+    try:
+        for _index in range(24):
+            try:
+                engine.start(
+                    resolved_subgraph_product,
+                    entrypoint="main",
+                    invocation_id="retained-start-failure",
+                )
+            except RuntimeError as error:
+                failures.append(error)
+        assert len(failures) == 24
+        assert len(os.listdir("/dev/fd")) <= baseline + 1
+    finally:
+        failures.clear()
+        engine.close()
+
+
+@pytest.mark.parametrize("failure_stage", ["recovery", "validation"])
+def test_repeated_failed_open_closes_internal_workspace_with_retained_tracebacks(
+    tmp_path: Path,
+    resolved_interrupt_product: ResolvedProduct,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    bootstrap = Engine(tmp_path)
+    handle = bootstrap.start(
+        resolved_interrupt_product,
+        entrypoint="main",
+        invocation_id=f"retained-open-{failure_stage}",
+    )
+    handle.close()
+    bootstrap.close()
+    opener = Engine(tmp_path)
+    failures: list[BaseException] = []
+    if failure_stage == "recovery":
+
+        def fail_recovery(self: SnapshotStore, authoritative_tree_id: str | None) -> None:
+            del self, authoritative_tree_id
+            raise RuntimeError("fail HEAD recovery")
+
+        monkeypatch.setattr(SnapshotStore, "recover_head_transaction", fail_recovery)
+    else:
+        real_validate = Engine._validate_workflow
+        validation_calls = 0
+
+        def fail_second_validation(
+            self: Engine,
+            product: ResolvedProduct,
+            projection: object,
+        ) -> None:
+            nonlocal validation_calls
+            validation_calls += 1
+            if validation_calls % 2 == 0:
+                raise RuntimeError("fail post-recovery validation")
+            real_validate(self, product, projection)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Engine, "_validate_workflow", fail_second_validation)
+    baseline = len(os.listdir("/dev/fd"))
+    try:
+        for _index in range(24):
+            try:
+                opener.open(f"retained-open-{failure_stage}", resolved_interrupt_product)
+            except RuntimeError as error:
+                failures.append(error)
+        assert len(failures) == 24
+        assert len(os.listdir("/dev/fd")) <= baseline + 1
+    finally:
+        failures.clear()
+        opener.close()
+
+
+def test_repeated_failed_run_closes_internal_workspace_with_retained_tracebacks(
+    tmp_path: Path,
+    resolved_interrupt_product: ResolvedProduct,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = Engine(tmp_path)
+    handle = engine.start(
+        resolved_interrupt_product,
+        entrypoint="main",
+        invocation_id="retained-run-failure",
+    )
+    failures: list[BaseException] = []
+
+    def fail_workspace_preflight(self: SnapshotStore) -> str:
+        del self
+        raise RuntimeError("fail workspace preflight")
+
+    monkeypatch.setattr(SnapshotStore, "head_tree_id", fail_workspace_preflight)
+    baseline = len(os.listdir("/dev/fd"))
+    try:
+        for _index in range(24):
+            try:
+                engine.run_until_blocked(handle)
+            except RuntimeError as error:
+                failures.append(error)
+        assert len(failures) == 24
+        assert len(os.listdir("/dev/fd")) <= baseline + 1
+    finally:
+        failures.clear()
+        handle.close()
+        engine.close()
 
 
 def test_open_rejects_interrupt_metadata_that_differs_from_compiled_definition(

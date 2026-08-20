@@ -194,6 +194,7 @@ class Engine:
             raise EngineError(f"invocation already exists: {invocation_id}")
         staging_name = f".{invocation_id}.invocation-init-{uuid.uuid4().hex}"
         staging_fd: int | None = None
+        store: SnapshotStore | None = None
         installed = False
         try:
             os.mkdir(staging_name, mode=0o700, dir_fd=self._invocations_fd)
@@ -250,6 +251,9 @@ class Engine:
                 os.dup(staging_fd),
             )
         except Exception:
+            if store is not None:
+                store.close()
+                store = None
             if not installed and _entry_exists(self._invocations_fd, staging_name):
                 if staging_fd is not None:
                     os.close(staging_fd)
@@ -258,6 +262,8 @@ class Engine:
                 os.fsync(self._invocations_fd)
             raise
         finally:
+            if store is not None:
+                store.close()
             if staging_fd is not None:
                 os.close(staging_fd)
 
@@ -266,6 +272,7 @@ class Engine:
         invocation_root = self._invocation_root(invocation_id)
         invocation_fd = self._open_invocation(invocation_id)
         claim_fd: int | None = None
+        store: SnapshotStore | None = None
         try:
             claim_fd = self._acquire_runner_claim(invocation_fd)
             ledger = Ledger.at(
@@ -331,6 +338,8 @@ class Engine:
             os.close(invocation_fd)
             raise
         finally:
+            if store is not None:
+                store.close()
             if claim_fd is not None:
                 os.close(claim_fd)
 
@@ -344,12 +353,28 @@ class Engine:
 
     def _run_until_blocked_claimed(self, handle: InvocationHandle) -> RunResult:
         product, invocation_root, invocation_fd = self._validated_handle(handle)
+        with handle.workspace as store:
+            return self._run_until_blocked_with_store(
+                handle,
+                product,
+                invocation_root,
+                invocation_fd,
+                store,
+            )
+
+    def _run_until_blocked_with_store(
+        self,
+        handle: InvocationHandle,
+        product: ResolvedProduct,
+        invocation_root: Path,
+        invocation_fd: int,
+        store: SnapshotStore,
+    ) -> RunResult:
         ledger = Ledger.at(
             invocation_fd,
             "ledger",
             display_root=invocation_root / "ledger",
         )
-        store = handle.workspace
         store.head_tree_id()
         scheduler = self._scheduler(handle.invocation_id, product, invocation_root, store, ledger)
 

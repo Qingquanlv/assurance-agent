@@ -187,7 +187,10 @@ def plan_next(compiled: CompiledWorkflow, projection: InvocationProjection) -> P
         if candidate is None:
             break
         graph_instance_id, graph, node, token_ids = candidate
-        if _activation_count(state, graph_instance_id) >= graph.max_activations:
+        activation_count = _activation_count(state, graph_instance_id)
+        if activation_count > graph.max_activations:
+            raise PlanningError(f"graph instance {graph_instance_id!r} exceeds its compiled activation bound")
+        if activation_count == graph.max_activations:
             _fail_graph(state, graph_instance_id, f"max_activations_exceeded:{graph_instance_id}")
             break
         behavior = _behavior(node)
@@ -257,6 +260,17 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
     for graph in projection.graph_instances:
         if graph.graph_id not in compiled.graphs:
             raise PlanningError(f"unknown graph {graph.graph_id!r}")
+        maximum = compiled.graphs[graph.graph_id].max_activations
+        if (
+            sum(
+                activation.graph_instance_id == graph.graph_instance_id
+                for activation in projection.activations
+            )
+            > maximum
+        ):
+            raise PlanningError(
+                f"graph instance {graph.graph_instance_id!r} exceeds its compiled activation bound"
+            )
         if graph.parent_activation_id is not None:
             parent_activation = next(
                 (item for item in projection.activations if item.activation_id == graph.parent_activation_id),
@@ -502,6 +516,12 @@ def _validate_terminal_causal_proof(
                 cause_graph_id,
                 expected_reason,
             )
+            or not _selected_failure_state_matches(
+                projection,
+                graphs,
+                (cause_graph_id,),
+                include_root_causes=False,
+            )
         ):
             raise PlanningError("stopped invocation lacks exact compiled causal proof")
         return
@@ -547,6 +567,12 @@ def _validate_terminal_causal_proof(
             )
             for activation in failed_tasks
         )
+        and _selected_failure_state_matches(
+            projection,
+            graphs,
+            tuple(activation.graph_instance_id for activation in failed_tasks),
+            include_root_causes=True,
+        )
     )
 
     activation_bound_cause = False
@@ -560,7 +586,7 @@ def _validate_terminal_causal_proof(
                 sum(
                     activation.graph_instance_id == graph_instance_id for activation in projection.activations
                 )
-                >= graph.max_activations
+                == graph.max_activations
                 and graph_record.status == "failed"
                 and graph_record.failure_reason == reason
                 and root is not None
@@ -639,6 +665,36 @@ def _failed_graph_propagation_matches(
         current = parent
 
 
+def _selected_failure_state_matches(
+    projection: InvocationProjection,
+    graphs: dict[str, GraphInstanceRecord],
+    cause_graph_instance_ids: tuple[str, ...],
+    *,
+    include_root_causes: bool,
+) -> bool:
+    expected_graphs: set[str] = set()
+    expected_structural_activations: set[str] = set()
+    for graph_instance_id in cause_graph_instance_ids:
+        current = graphs[graph_instance_id]
+        if current.parent_graph_instance_id is None and not include_root_causes:
+            continue
+        while True:
+            expected_graphs.add(current.graph_instance_id)
+            if current.parent_activation_id is None or current.parent_graph_instance_id is None:
+                break
+            expected_structural_activations.add(current.parent_activation_id)
+            current = graphs[current.parent_graph_instance_id]
+    actual_graphs = {
+        graph.graph_instance_id for graph in projection.graph_instances if graph.status == "failed"
+    }
+    actual_structural_activations = {
+        activation.activation_id for activation in projection.activations if activation.structural_failure
+    }
+    return (
+        actual_graphs == expected_graphs and actual_structural_activations == expected_structural_activations
+    )
+
+
 def _activation_bound_failure_matches(
     compiled: CompiledWorkflow,
     projection: InvocationProjection,
@@ -700,7 +756,7 @@ def _activation_bound_failure_matches(
     if candidate is None or candidate[0] != cause_graph_instance_id:
         return False
     graph = candidate[1]
-    return _activation_count(state, cause_graph_instance_id) >= graph.max_activations
+    return _activation_count(state, cause_graph_instance_id) == graph.max_activations
 
 
 def _matches_consumption_contract(
