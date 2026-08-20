@@ -79,6 +79,10 @@ for wheel_path in (engine_path, toy_a_path, toy_b_path):
 print("ENGINE_WHEEL_FILES=" + json.dumps(names, separators=(",", ":")))
 PY
 
+# All installed-wheel checks run outside both the repository and archived
+# source trees so imports cannot succeed through the current working directory.
+cd "$smoke_root"
+
 uv venv --offline --python 3.11 "$smoke_root/venv-a"
 uv pip install \
   --offline \
