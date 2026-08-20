@@ -102,10 +102,12 @@ def test_toy_b_recovers_then_interrupts_and_resumes(tmp_path: Path) -> None:
     root = resolved.workflow.graphs["root"]
     child = resolved.workflow.graphs["child"]
     left_claims = root.nodes["left"].definition.resources
-    child_claims = child.nodes["child"].definition.resources
+    child_subgraph_claims = root.nodes["child-subgraph"].definition.resources
+    child_task_claims = child.nodes["child"].definition.resources
     assert left_claims.writes == ("left.txt",)
-    assert child_claims.writes == ("child.txt",)
-    assert set(left_claims.writes).isdisjoint(child_claims.writes)
+    assert child_subgraph_claims.writes == ("child.txt",)
+    assert child_task_claims.writes == ("child.txt",)
+    assert set(left_claims.writes).isdisjoint(child_subgraph_claims.writes)
 
     with Engine(tmp_path / "engine", host=_InProcessTestHost()) as engine:
         with engine.start(resolved, entrypoint="review", invocation_id="toy-b-1") as handle:
