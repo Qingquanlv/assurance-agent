@@ -205,9 +205,7 @@ class CapabilityRegistry:
         overlap = task_handlers.keys() & commit_validators.keys()
         if overlap:
             capability_id = min(overlap)
-            raise CapabilityRegistryError(
-                f"capability cannot be both handler and validator: {capability_id}"
-            )
+            raise CapabilityRegistryError(f"capability cannot be both handler and validator: {capability_id}")
 
         object.__setattr__(self, "task_handlers", MappingProxyType(dict(sorted(task_handlers.items()))))
         object.__setattr__(
@@ -248,9 +246,7 @@ def _validate_runtime_ids(ids: object, kind: str) -> tuple[str, ...]:
     return keys
 
 
-def _snapshot_runtime_mapping(
-    capabilities: Mapping[str, _Capability], kind: str
-) -> dict[str, _Capability]:
+def _snapshot_runtime_mapping(capabilities: Mapping[str, _Capability], kind: str) -> dict[str, _Capability]:
     if not isinstance(capabilities, Mapping):
         raise CapabilityRegistryError(f"bound {kind} must be a mapping")
     return dict(capabilities)
@@ -287,25 +283,17 @@ def assemble_registry(providers: Sequence[PluginProvider]) -> CapabilityRegistry
         declared_capabilities = (*descriptor.task_handlers, *descriptor.commit_validators)
         for capability_id in declared_capabilities:
             if capability_id in capability_ids:
-                kind = (
-                    "task handler" if capability_id in descriptor.task_handlers else "commit validator"
-                )
+                kind = "task handler" if capability_id in descriptor.task_handlers else "commit validator"
                 raise CapabilityRegistryError(f"duplicate {kind}: {capability_id}")
             capability_ids.add(capability_id)
 
         runtime = provider.bind(ports)
         runtime_task_handlers = _snapshot_runtime_mapping(runtime.task_handlers, "task handler")
-        runtime_commit_validators = _snapshot_runtime_mapping(
-            runtime.commit_validators, "commit validator"
-        )
+        runtime_commit_validators = _snapshot_runtime_mapping(runtime.commit_validators, "commit validator")
         bound_task_ids = _validate_runtime_ids(runtime_task_handlers, "task handler")
-        bound_validator_ids = _validate_runtime_ids(
-            runtime_commit_validators, "commit validator"
-        )
+        bound_validator_ids = _validate_runtime_ids(runtime_commit_validators, "commit validator")
         _ensure_exact_binding(descriptor.task_handlers, bound_task_ids, "task handlers")
-        _ensure_exact_binding(
-            descriptor.commit_validators, bound_validator_ids, "commit validators"
-        )
+        _ensure_exact_binding(descriptor.commit_validators, bound_validator_ids, "commit validators")
 
         task_handlers.update(runtime_task_handlers)
         commit_validators.update(runtime_commit_validators)

@@ -2,6 +2,20 @@
 root_packages =
     assurance_agent
     assurance_kernel
+    graph_engine
+    graph_engine_toy_a
+    graph_engine_toy_b
+
+[importlinter:contract:graph-engine-independent]
+name = graph engine must not import products or the old runtime
+type = forbidden
+source_modules =
+    graph_engine
+forbidden_modules =
+    assurance_agent
+    assurance_kernel
+    graph_engine_toy_a
+    graph_engine_toy_b
 
 [importlinter:contract:layers]
 name = commands depend on eval domain, never the reverse
