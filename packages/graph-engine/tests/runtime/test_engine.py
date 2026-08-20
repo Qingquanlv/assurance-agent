@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import threading
@@ -38,6 +39,7 @@ from graph_engine.runtime.engine import (
 from graph_engine.runtime.events import (
     EventEnvelope,
     GraphCompleted,
+    GraphFailed,
     GraphStarted,
     InterruptResumed,
     InvocationFinished,
@@ -50,7 +52,7 @@ from graph_engine.runtime.models import fold_events
 from graph_engine.runtime.planner import plan_next
 from graph_engine.runtime.scheduler import FakeClock
 from graph_engine.runtime.scheduler import Scheduler
-from graph_engine.runtime.workspace import SnapshotStore
+from graph_engine.runtime.workspace import SnapshotStore, WorkspaceViolation
 
 
 @dataclass(frozen=True)
@@ -732,16 +734,19 @@ def test_concurrent_open_reclaim_has_one_winner_and_one_engine_conflict(
         ),
         expected_next_seq=ledger.read_all()[-1].seq + 1,
     )
-    barrier = threading.Barrier(2)
+    reclaim_entered = threading.Event()
+    release_reclaim = threading.Event()
+    real_reclaim = Scheduler.reclaim_expired
 
-    def synchronize_reclaim(phase: str, events: object) -> None:
-        if phase == "before" and any(
-            getattr(event, "kind", None) == "task_attempt_failed"
-            for event in events  # type: ignore[union-attr]
-        ):
-            barrier.wait(timeout=5)
+    def synchronize_reclaim(
+        self: Scheduler,
+        leases: object = None,
+    ) -> tuple[str, ...]:
+        reclaim_entered.set()
+        assert release_reclaim.wait(timeout=5)
+        return real_reclaim(self, leases)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(ledger_runtime, "_validated_append_boundary", synchronize_reclaim)
+    monkeypatch.setattr(Scheduler, "reclaim_expired", synchronize_reclaim)
 
     def open_once() -> object:
         try:
@@ -753,7 +758,14 @@ def test_concurrent_open_reclaim_has_one_winner_and_one_engine_conflict(
             return error
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        outcomes = tuple(pool.map(lambda _index: open_once(), range(2)))
+        winner = pool.submit(open_once)
+        assert reclaim_entered.wait(timeout=5)
+        loser = pool.submit(open_once)
+        try:
+            loser_outcome = loser.result(timeout=5)
+        finally:
+            release_reclaim.set()
+        outcomes = (winner.result(timeout=5), loser_outcome)
 
     assert sum(isinstance(item, EngineConflictError) for item in outcomes) == 1
     assert sum(not isinstance(item, EngineError) for item in outcomes) == 1
@@ -1041,6 +1053,170 @@ def test_open_durably_syncs_linked_success_before_clearing_head_journal(
         == fold_events(Ledger(reopened.invocation_root / "ledger").read_all()).head_tree_id
     )
     assert not journal.exists()
+
+
+def test_open_cannot_recover_head_from_projection_stale_to_live_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler_entered = threading.Event()
+    release_handler = threading.Event()
+    opener_read_projection = threading.Event()
+    release_opener = threading.Event()
+    opener_done = threading.Event()
+    runner_outcome: list[object] = []
+    opener_outcome: list[object] = []
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        (context.workspace_root / "out.txt").write_bytes(b"committed")
+        handler_entered.set()
+        assert release_handler.wait(timeout=5)
+        return TaskOutcome.succeeded("done")
+
+    product = _nested_task_interrupt_product(handler)
+    root = tmp_path / "open-runner-race"
+    bootstrap = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
+    initial = bootstrap.start(product, entrypoint="main", invocation_id="race")
+    journal = initial.invocation_root / "workspace" / ".HEAD-transaction.json"
+    real_sync = Ledger.ensure_durable
+    real_clear = SnapshotStore._clear_head_transaction
+
+    def pause_after_opener_projection(self: Ledger) -> None:
+        if threading.current_thread().name == "opener":
+            opener_read_projection.set()
+            assert release_opener.wait(timeout=5)
+        real_sync(self)
+
+    def crash_runner_before_journal_clear(self: SnapshotStore, root_fd: int) -> None:
+        if threading.current_thread().name == "runner":
+            raise OSError("crash before runner clears HEAD journal")
+        real_clear(self, root_fd)
+
+    monkeypatch.setattr(Ledger, "ensure_durable", pause_after_opener_projection)
+    monkeypatch.setattr(
+        SnapshotStore,
+        "_clear_head_transaction",
+        crash_runner_before_journal_clear,
+    )
+
+    def run() -> None:
+        try:
+            runner_outcome.append(bootstrap.run_until_blocked(initial))
+        except BaseException as error:
+            runner_outcome.append(error)
+
+    def open_during_run() -> None:
+        try:
+            opener_outcome.append(
+                Engine(root, clock=FakeClock(10), host=_InProcessTestHost()).open("race", product)
+            )
+        except BaseException as error:
+            opener_outcome.append(error)
+        finally:
+            opener_done.set()
+
+    runner = threading.Thread(target=run, name="runner")
+    runner.start()
+    assert handler_entered.wait(timeout=5)
+    opener = threading.Thread(target=open_during_run, name="opener")
+    opener.start()
+    opener_read_projection.wait(timeout=1)
+    if not opener_read_projection.is_set():
+        assert opener_done.wait(timeout=5)
+    release_handler.set()
+    runner.join(timeout=5)
+    release_opener.set()
+    opener.join(timeout=5)
+
+    assert not runner.is_alive()
+    assert not opener.is_alive()
+    assert len(runner_outcome) == 1
+    assert len(opener_outcome) == 1
+    assert isinstance(opener_outcome[0], EngineConflictError)
+    assert journal.exists()
+
+    projection = fold_events(Ledger(initial.invocation_root / "ledger").read_all())
+    assert projection.head_tree_id is not None
+    reopened_engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
+    reopened = reopened_engine.open("race", product)
+    assert reopened.workspace.head_tree_id() == projection.head_tree_id
+    assert not journal.exists()
+
+
+def test_open_cannot_reclaim_expired_lease_from_active_claimed_runner(tmp_path: Path) -> None:
+    handler_entered = threading.Event()
+    release_handler = threading.Event()
+    runner_outcome: list[object] = []
+
+    async def handler(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        handler_entered.set()
+        assert release_handler.wait(timeout=5)
+        return TaskOutcome.succeeded("done")
+
+    clock = FakeClock(10)
+    product = _task_product(handler)
+    engine = Engine(tmp_path, clock=clock, host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id="active-expired")
+
+    def run() -> None:
+        try:
+            runner_outcome.append(engine.run_until_blocked(handle))
+        except BaseException as error:
+            runner_outcome.append(error)
+
+    runner = threading.Thread(target=run, name="active-runner")
+    runner.start()
+    assert handler_entered.wait(timeout=5)
+    clock.advance(31)
+    try:
+        with pytest.raises(EngineConflictError, match="runner|claim"):
+            Engine(tmp_path, clock=clock, host=_InProcessTestHost()).open(
+                "active-expired",
+                product,
+            )
+        assert not any(
+            envelope.event.kind == "task_attempt_failed"
+            for envelope in Ledger(handle.invocation_root / "ledger").read_all()
+        )
+    finally:
+        release_handler.set()
+        runner.join(timeout=5)
+
+    assert not runner.is_alive()
+    assert len(runner_outcome) == 1
+
+
+def test_runner_claim_rejects_directory_entry_replacement_after_lock(
+    tmp_path: Path,
+    resolved_interrupt_product: ResolvedProduct,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = Engine(tmp_path)
+    handle = engine.start(
+        resolved_interrupt_product,
+        entrypoint="main",
+        invocation_id="replaced-runner-claim",
+    )
+    ledger = Ledger(handle.invocation_root / "ledger")
+    before = ledger.read_all()
+    runner_claim = handle.invocation_root / ".engine-runner.lock"
+    real_flock = fcntl.flock
+    replaced = False
+
+    def replace_after_lock(descriptor: int, operation: int) -> None:
+        nonlocal replaced
+        real_flock(descriptor, operation)
+        if not replaced:
+            replaced = True
+            runner_claim.unlink()
+            runner_claim.write_bytes(b"replacement")
+
+    monkeypatch.setattr(fcntl, "flock", replace_after_lock)
+
+    with pytest.raises(EngineError, match="runner claim|stable"):
+        engine.run_until_blocked(handle)
+
+    assert ledger.read_all() == before
 
 
 def test_open_rejects_workspace_head_without_authoritative_head_advance(
@@ -1393,6 +1569,170 @@ def test_open_rejects_failed_child_without_compiled_failure_propagation(tmp_path
         )
 
 
+def test_open_rejects_activation_bound_failure_without_next_ready_activation(
+    tmp_path: Path,
+) -> None:
+    product = _resolved(
+        {
+            "name": "no-ready-at-bound",
+            "entrypoints": {"main": "root"},
+            "retry": {},
+            "timeout": {},
+            "graphs": {
+                "root": {
+                    "max_activations": 1,
+                    "start": "end",
+                    "nodes": {"end": {"kind": "end"}},
+                    "edges": [],
+                }
+            },
+        }
+    )
+    engine = Engine(tmp_path)
+    handle = engine.start(product, entrypoint="main", invocation_id="no-ready-at-bound")
+    assert engine.run_until_blocked(handle).status == "succeeded"
+    ledger_root = handle.invocation_root / "ledger"
+    reason = "max_activations_exceeded:root"
+    forged_events = tuple(
+        envelope.event
+        for envelope in Ledger(ledger_root).read_all()
+        if envelope.event.kind not in {"graph_completed", "invocation_finished"}
+    ) + (
+        GraphFailed(graph_instance_id="root", reason=reason),
+        InvocationFinished(
+            invocation_id="no-ready-at-bound",
+            status="failed",
+            terminal_reason=reason,
+        ),
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "failed"
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path).open("no-ready-at-bound", product)
+
+
+def test_open_rejects_task_failure_relabelled_as_activation_bound(tmp_path: Path) -> None:
+    async def fail(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.failed("invalid_input", "bad task")
+
+    product = _resolved(
+        {
+            "name": "task-failure-at-bound",
+            "entrypoints": {"main": "root"},
+            "retry": {"once": {"max_attempts": 1}},
+            "timeout": {"short": {"run_seconds": 5}},
+            "graphs": {
+                "root": {
+                    "max_activations": 1,
+                    "start": "work",
+                    "nodes": {
+                        "work": {
+                            "kind": "task",
+                            "capability": "test.empty.run",
+                            "retry": "once",
+                            "timeout": "short",
+                        }
+                    },
+                    "edges": [],
+                }
+            },
+        },
+        {"test.empty.run": cast(TaskHandler, fail)},
+    )
+    engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id="task-failure-at-bound")
+    assert engine.run_until_blocked(handle).status == "failed"
+    ledger_root = handle.invocation_root / "ledger"
+    reason = "max_activations_exceeded:root"
+    forged_events = tuple(
+        event.model_copy(update={"reason": reason})
+        if event.kind == "graph_failed"
+        else event.model_copy(update={"terminal_reason": reason})
+        if event.kind == "invocation_finished"
+        else event
+        for event in (envelope.event for envelope in Ledger(ledger_root).read_all())
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "failed"
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            "task-failure-at-bound",
+            product,
+        )
+
+
+def test_open_accepts_exact_planner_derived_activation_bound_failure(tmp_path: Path) -> None:
+    product = _resolved(
+        {
+            "name": "real-activation-bound",
+            "entrypoints": {"main": "root"},
+            "retry": {},
+            "timeout": {},
+            "graphs": {
+                "root": {
+                    "max_activations": 1,
+                    "start": "loop",
+                    "nodes": {"loop": {"kind": "gate", "expression": "true"}},
+                    "edges": [{"from": "loop", "to": "loop"}],
+                }
+            },
+        }
+    )
+    engine = Engine(tmp_path)
+    handle = engine.start(product, entrypoint="main", invocation_id="real-activation-bound")
+    failed = engine.run_until_blocked(handle)
+    assert failed.status == "failed"
+    assert failed.reason == "max_activations_exceeded:root"
+
+    reopened_engine = Engine(tmp_path)
+    reopened = reopened_engine.open("real-activation-bound", product)
+    replayed = reopened_engine.run_until_blocked(reopened)
+    assert replayed.status == "failed"
+    assert replayed.reason == "max_activations_exceeded:root"
+
+
+def test_open_rejects_activation_bound_failure_missing_deterministic_settlement(
+    tmp_path: Path,
+) -> None:
+    product = _resolved(
+        {
+            "name": "incomplete-activation-bound",
+            "entrypoints": {"main": "root"},
+            "retry": {},
+            "timeout": {},
+            "graphs": {
+                "root": {
+                    "max_activations": 1,
+                    "start": "loop",
+                    "nodes": {"loop": {"kind": "gate", "expression": "true"}},
+                    "edges": [{"from": "loop", "to": "loop"}],
+                }
+            },
+        }
+    )
+    engine = Engine(tmp_path)
+    handle = engine.start(
+        product,
+        entrypoint="main",
+        invocation_id="incomplete-activation-bound",
+    )
+    assert engine.run_until_blocked(handle).status == "failed"
+    ledger_root = handle.invocation_root / "ledger"
+    forged_events = tuple(
+        envelope.event
+        for envelope in Ledger(ledger_root).read_all()
+        if envelope.event.kind != "node_completed"
+        and not (envelope.event.kind == "token_offered" and envelope.event.source is not None)
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "failed"
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path).open("incomplete-activation-bound", product)
+
+
 def test_open_rejects_noncanonical_task_id_in_terminal_ledger(tmp_path: Path) -> None:
     async def handler(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
         return TaskOutcome.succeeded("done")
@@ -1671,6 +2011,72 @@ def test_repeated_open_close_does_not_grow_invocation_descriptors(
 
     assert len(os.listdir("/dev/fd")) <= baseline + 1
     engine.close()
+
+
+def test_workspace_store_remains_bound_after_handle_descriptor_is_reused(tmp_path: Path) -> None:
+    async def first_handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        (context.workspace_root / "out.txt").write_bytes(b"first")
+        return TaskOutcome.succeeded("first")
+
+    async def second_handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        (context.workspace_root / "out.txt").write_bytes(b"second")
+        return TaskOutcome.succeeded("second")
+
+    root = tmp_path / "workspace-fd-reuse"
+    first_product = _nested_task_interrupt_product(first_handler)
+    second_product = _nested_task_interrupt_product(second_handler)
+    engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
+    first = engine.start(first_product, entrypoint="main", invocation_id="first")
+    second = engine.start(second_product, entrypoint="main", invocation_id="second")
+    assert engine.run_until_blocked(first).status == "interrupted"
+    assert engine.run_until_blocked(second).status == "interrupted"
+    store = first.workspace
+    first_tree_id = store.head_tree_id()
+    second_tree_id = second.workspace.head_tree_id()
+    assert first_tree_id != second_tree_id
+
+    reused_descriptor = first._invocation_fd
+    first.close()
+    opened: list[int] = []
+    try:
+        for _index in range(32):
+            descriptor = os.open(second.invocation_root, os.O_RDONLY | os.O_DIRECTORY)
+            opened.append(descriptor)
+            if descriptor == reused_descriptor:
+                break
+        assert reused_descriptor in opened
+        assert store.head_tree_id() == first_tree_id
+    finally:
+        close = getattr(store, "close", None)
+        if close is not None:
+            close()
+        for descriptor in opened:
+            os.close(descriptor)
+
+
+def test_workspace_store_lifecycle_is_idempotent_and_does_not_grow_descriptors(
+    tmp_path: Path,
+    resolved_subgraph_product: ResolvedProduct,
+) -> None:
+    engine = Engine(tmp_path)
+    handle = engine.start(
+        resolved_subgraph_product,
+        entrypoint="main",
+        invocation_id="workspace-store-lifecycle",
+    )
+    assert engine.run_until_blocked(handle).status == "succeeded"
+    baseline = len(os.listdir("/dev/fd"))
+
+    for _index in range(50):
+        with handle.workspace as store:
+            assert store.head_tree_id()
+
+    assert len(os.listdir("/dev/fd")) <= baseline + 1
+    store = handle.workspace
+    store.close()
+    store.close()
+    with pytest.raises(WorkspaceViolation, match="closed"):
+        store.head_tree_id()
 
 
 def test_open_rejects_interrupt_metadata_that_differs_from_compiled_definition(

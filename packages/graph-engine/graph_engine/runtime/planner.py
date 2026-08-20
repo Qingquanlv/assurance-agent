@@ -566,7 +566,9 @@ def _validate_terminal_causal_proof(
                 and root is not None
                 and root.status == "failed"
                 and root.failure_reason == reason
-                and _failed_graph_propagation_matches(
+                and not failed_tasks
+                and _activation_bound_failure_matches(
+                    compiled,
                     projection,
                     graphs,
                     graph_instance_id,
@@ -635,6 +637,70 @@ def _failed_graph_propagation_matches(
         if parent is None:
             return False
         current = parent
+
+
+def _activation_bound_failure_matches(
+    compiled: CompiledWorkflow,
+    projection: InvocationProjection,
+    graphs: dict[str, GraphInstanceRecord],
+    cause_graph_instance_id: str,
+    reason: str,
+) -> bool:
+    if not _failed_graph_propagation_matches(
+        projection,
+        graphs,
+        cause_graph_instance_id,
+        reason,
+    ):
+        return False
+
+    reopened_graphs = dict(graphs)
+    reopened_activations = {activation.activation_id: activation for activation in projection.activations}
+    current = graphs[cause_graph_instance_id]
+    while True:
+        reopened_graphs[current.graph_instance_id] = current.model_copy(
+            update={"status": "running", "failure_reason": None}
+        )
+        if current.parent_activation_id is None or current.parent_graph_instance_id is None:
+            break
+        parent_activation = reopened_activations[current.parent_activation_id]
+        reopened_activations[parent_activation.activation_id] = parent_activation.model_copy(
+            update={
+                "status": "active",
+                "failure": None,
+                "structural_failure": False,
+            }
+        )
+        current = graphs[current.parent_graph_instance_id]
+
+    if any(graph.status == "failed" for graph in reopened_graphs.values()) or any(
+        activation.structural_failure for activation in reopened_activations.values()
+    ):
+        return False
+    predecessor = projection.model_copy(
+        update={
+            "status": "running",
+            "terminal_reason": None,
+            "graph_instances": tuple(
+                reopened_graphs[graph.graph_instance_id] for graph in projection.graph_instances
+            ),
+            "activations": tuple(
+                reopened_activations[activation.activation_id] for activation in projection.activations
+            ),
+        }
+    )
+    state = _PlannerState.from_projection(compiled, predecessor)
+    if _terminal_task_activations(state):
+        return False
+    _settle_existing_activations(state)
+    _finish_settled_graphs(state)
+    if state.events or state.terminal is not None:
+        return False
+    candidate = _next_ready_activation(state)
+    if candidate is None or candidate[0] != cause_graph_instance_id:
+        return False
+    graph = candidate[1]
+    return _activation_count(state, cause_graph_instance_id) >= graph.max_activations
 
 
 def _matches_consumption_contract(

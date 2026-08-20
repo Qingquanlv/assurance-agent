@@ -265,7 +265,9 @@ class Engine:
         self._assert_namespace_path_current()
         invocation_root = self._invocation_root(invocation_id)
         invocation_fd = self._open_invocation(invocation_id)
+        claim_fd: int | None = None
         try:
+            claim_fd = self._acquire_runner_claim(invocation_fd)
             ledger = Ledger.at(
                 invocation_fd,
                 "ledger",
@@ -328,6 +330,9 @@ class Engine:
         except BaseException:
             os.close(invocation_fd)
             raise
+        finally:
+            if claim_fd is not None:
+                os.close(claim_fd)
 
     def run_until_blocked(self, handle: InvocationHandle) -> RunResult:
         _product, _invocation_root, invocation_fd = self._validated_handle(handle)
@@ -428,6 +433,23 @@ class Engine:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise EngineConflictError("another runner holds the invocation claim") from error
+            locked = os.fstat(descriptor)
+            try:
+                current = os.stat(
+                    _RUNNER_LOCK,
+                    dir_fd=invocation_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as error:
+                raise EngineError("invocation runner claim lost its stable anchor") from error
+            if (
+                not stat.S_ISREG(locked.st_mode)
+                or locked.st_nlink != 1
+                or not stat.S_ISREG(current.st_mode)
+                or current.st_nlink != 1
+                or (locked.st_dev, locked.st_ino) != (current.st_dev, current.st_ino)
+            ):
+                raise EngineError("invocation runner claim lost its stable anchor")
             return descriptor
         except BaseException:
             os.close(descriptor)

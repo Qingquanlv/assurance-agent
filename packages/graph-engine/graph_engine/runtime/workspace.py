@@ -586,6 +586,7 @@ class SnapshotStore:
         _require_posix_primitives()
         self.root = Path(root).absolute()
         self._parent_fd = _parent_fd
+        self._closed = False
 
     @classmethod
     def at(cls, parent_fd: int, name: str, *, display_root: Path) -> SnapshotStore:
@@ -594,7 +595,35 @@ class SnapshotStore:
         root = Path(display_root)
         if root.name != name:
             raise ValueError("display root must end with the snapshot store name")
-        return cls(root, _parent_fd=parent_fd)
+        descriptor = os.dup(parent_fd)
+        try:
+            return cls(root, _parent_fd=descriptor)
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        descriptor = self._parent_fd
+        self._closed = True
+        self._parent_fd = None
+        if descriptor is not None:
+            os.close(descriptor)
+
+    def __enter__(self) -> SnapshotStore:
+        if self._closed:
+            raise WorkspaceViolation("snapshot store is closed")
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except BaseException:
+            pass
 
     @property
     def _lock_anchor_name(self) -> str:
@@ -792,6 +821,8 @@ class SnapshotStore:
 
     @contextmanager
     def _opened_layout(self, *, lock: bool = False) -> Iterator[tuple[int, int, int, int | None]]:
+        if self._closed:
+            raise WorkspaceViolation("snapshot store is closed")
         parent_fd = (
             os.dup(self._parent_fd)
             if self._parent_fd is not None
