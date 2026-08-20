@@ -85,6 +85,24 @@ class GraphInstanceRecord(ProjectionModel):
     def _validate_outcome(self) -> Self:
         if (self.failure_reason is not None) != (self.status == "failed"):
             raise ValueError("graph failure reason is required exactly for failed status")
+        parent = (
+            self.parent_graph_instance_id,
+            self.parent_node_id,
+            self.parent_activation_id,
+        )
+        if any(value is not None for value in parent) and any(value is None for value in parent):
+            raise ValueError("graph parent fields must be present together")
+        if self.parent_activation_id is not None:
+            expected = canonical_digest(
+                {
+                    "parent_activation_id": self.parent_activation_id,
+                    "graph_id": self.graph_id,
+                }
+            )
+            if self.graph_instance_id != expected:
+                raise ValueError("child graph instance id is not canonical for its parent")
+        elif self.graph_instance_id != self.graph_id:
+            raise ValueError("root graph instance id must equal its graph id")
         return self
 
 
@@ -149,7 +167,13 @@ class ActivationRecord(ProjectionModel):
     attempts: tuple[AttemptRecord, ...] = ()
     output: FrozenJSONValue = None
     failure: TaskFailure | None = None
+    interrupt_id: str | None = None
+    interrupt_reason: str | None = None
+    interrupt_actions: tuple[str, ...] = ()
+    interrupt_input: FrozenJSONValue = None
     interrupt_resumed: bool = False
+    interrupt_action: str | None = None
+    interrupt_payload: FrozenJSONValue = None
     structural_failure: bool = False
 
     @model_validator(mode="after")
@@ -158,6 +182,19 @@ class ActivationRecord(ProjectionModel):
             raise ValueError("activation failure is required exactly for failed status")
         if self.interrupt_resumed and self.attempts:
             raise ValueError("task activation cannot have interrupt resume history")
+        interrupt_metadata = (
+            self.interrupt_id,
+            self.interrupt_reason,
+            self.interrupt_actions or None,
+        )
+        if any(value is not None for value in interrupt_metadata) and any(
+            value is None for value in interrupt_metadata
+        ):
+            raise ValueError("interrupt activation metadata must be present together")
+        if self.interrupt_id is not None and self.attempts:
+            raise ValueError("task activation cannot have interrupt metadata")
+        if self.interrupt_resumed != (self.interrupt_action is not None):
+            raise ValueError("interrupt resume action is required exactly for resumed interrupts")
         if self.structural_failure and (self.status != "failed" or self.attempts):
             raise ValueError("structural failure requires a failed activation without attempts")
         return self
@@ -166,10 +203,10 @@ class ActivationRecord(ProjectionModel):
 class PendingInterrupt(ProjectionModel):
     interrupt_id: str
     activation_id: str
-    graph_instance_id: str | None = None
-    reason: str | None = None
-    actions: tuple[str, ...] = ()
-    input: FrozenJSONValue = None
+    graph_instance_id: str
+    reason: str
+    actions: tuple[str, ...]
+    input: FrozenJSONValue
     payload: FrozenJSONValue = None
 
 
@@ -300,10 +337,7 @@ class InvocationProjection(ProjectionModel):
             activation = activation_by_id.get(self.pending_interrupt.activation_id)
             if activation is None or activation.status != "interrupted":
                 raise ValueError("pending interrupt has a dangling activation")
-            if (
-                self.pending_interrupt.graph_instance_id is not None
-                and self.pending_interrupt.graph_instance_id != activation.graph_instance_id
-            ):
+            if self.pending_interrupt.graph_instance_id != activation.graph_instance_id:
                 raise ValueError("pending interrupt graph instance disagrees with activation")
         if self.status in {"failed", "stopped"}:
             if self.pending_interrupt is not None:
@@ -635,23 +669,25 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
                 _fail(envelope.seq, "node interrupted after task-attempt history")
             if projection.pending_interrupt is not None:
                 _fail(envelope.seq, "another interrupt is already pending")
-            if (
-                event.graph_instance_id is not None
-                and event.graph_instance_id != activation.graph_instance_id
-            ):
+            if event.graph_instance_id != activation.graph_instance_id:
                 _fail(envelope.seq, "interrupt graph instance disagrees with activation")
             projection = _replace_activation(
-                projection, activation.model_copy(update={"status": "interrupted"})
+                projection,
+                activation.model_copy(
+                    update={
+                        "status": "interrupted",
+                        "interrupt_id": event.interrupt_id,
+                        "interrupt_reason": event.reason,
+                        "interrupt_actions": event.actions,
+                        "interrupt_input": event.input,
+                    }
+                ),
             ).model_copy(
                 update={
                     "pending_interrupt": PendingInterrupt(
                         interrupt_id=event.interrupt_id,
                         activation_id=event.activation_id,
-                        graph_instance_id=(
-                            event.graph_instance_id
-                            if event.graph_instance_id is not None
-                            else activation.graph_instance_id
-                        ),
+                        graph_instance_id=event.graph_instance_id,
                         reason=event.reason,
                         actions=event.actions,
                         input=event.input,
@@ -682,13 +718,20 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
             pending = projection.pending_interrupt
             if pending is None or pending.interrupt_id != event.interrupt_id:
                 _fail(envelope.seq, "resume does not match the pending interrupt")
-            if pending.actions and event.action not in pending.actions:
+            if event.action not in pending.actions:
                 _fail(envelope.seq, "resume action is not allowed by the pending interrupt")
             activation = _activation(projection, pending.activation_id, envelope.seq)
             _ensure_graph_open_if_known(projection, activation.graph_instance_id, envelope.seq)
             projection = _replace_activation(
                 projection,
-                activation.model_copy(update={"status": "active", "interrupt_resumed": True}),
+                activation.model_copy(
+                    update={
+                        "status": "active",
+                        "interrupt_resumed": True,
+                        "interrupt_action": event.action,
+                        "interrupt_payload": event.payload,
+                    }
+                ),
             ).model_copy(update={"pending_interrupt": None})
         elif isinstance(event, GraphCompleted):
             graph = next(

@@ -34,7 +34,11 @@ from graph_engine.runtime.events import (
     TaskLeaseHeartbeat,
 )
 from graph_engine.runtime.frozen_json import thaw_json
-from graph_engine.runtime.ledger import Ledger
+from graph_engine.runtime.ledger import (
+    Ledger,
+    LedgerPublicationIndeterminate,
+    append_validated_batch,
+)
 from graph_engine.runtime.models import CommitResult, PlannedTask, ProjectionError, fold_events
 from graph_engine.runtime.workspace import (
     AttemptWorkspace,
@@ -50,10 +54,6 @@ class SchedulerStateError(GraphEngineError):
 
 class LeaseUnavailableError(SchedulerStateError):
     """Raised when a task no longer owns a live persisted lease."""
-
-
-class LedgerPublicationIndeterminate(SchedulerStateError):
-    """Raised when an append error cannot be reconciled with persisted ledger state."""
 
 
 class Clock(Protocol):
@@ -212,16 +212,17 @@ class Scheduler:
         if not selected:
             return ()
 
+        leases = tuple(self._start(task) for task in selected)
         attempt_ids = tuple(self._attempt_id(task, "run") for task in selected)
         attempt_workspaces = self._store.create_attempts(attempt_ids)
         work: list[tuple[PlannedTask, AttemptWorkspace, _LeaseState]] = []
         try:
-            for task, attempt_workspace in zip(selected, attempt_workspaces, strict=True):
-                try:
-                    lease = self._start(task)
-                except BaseException:
-                    attempt_workspace.discard()
-                    raise
+            for task, lease, attempt_workspace in zip(
+                selected,
+                leases,
+                attempt_workspaces,
+                strict=True,
+            ):
                 work.append((task, attempt_workspace, _LeaseState(self, lease)))
         except BaseException:
             for workspace in attempt_workspaces:
@@ -235,6 +236,35 @@ class Scheduler:
         for result in gathered:
             finalized.append(self._finalize(result))
         return tuple(finalized)
+
+    async def resume_running(self, tasks: Sequence[PlannedTask]) -> tuple[AttemptResult, ...]:
+        """Resume attempts whose start and deterministic lease are already authoritative."""
+        selected = select_wave(tasks, self._max_parallel)
+        if not selected:
+            return ()
+        envelopes = self._ledger.read_all()
+        running = self._persisted_running_leases(envelopes)
+        work: list[tuple[PlannedTask, AttemptWorkspace, _LeaseState]] = []
+        try:
+            for task in selected:
+                _validate_running_transition(task, envelopes)
+                lease = running.get((task.task_id, task.attempt))
+                if lease is None or lease.owner_id != self._owner_id:
+                    raise LeaseUnavailableError(
+                        "persisted running task is not owned by this deterministic scheduler"
+                    )
+                if lease.expires_at < self._now():
+                    raise LeaseUnavailableError("persisted running task lease expired")
+                workspace = self._store.reset_attempt(self._attempt_id(task, "run"))
+                work.append((task, workspace, _LeaseState(self, lease)))
+        except BaseException:
+            for _task, workspace, _lease in work:
+                workspace.discard()
+            raise
+        gathered = await asyncio.gather(
+            *(self._execute(task, workspace, lease_state) for task, workspace, lease_state in work)
+        )
+        return tuple(self._finalize(result) for result in gathered)
 
     def heartbeat(self, lease: Lease) -> Lease:
         guard = self._lease_guard(lease)
@@ -627,33 +657,24 @@ class Scheduler:
         existing = self._ledger.read_all()
         if expected_next_seq is None:
             expected_next_seq = _next_sequence(existing)
-        _validate_fold_append(materialized, expected_next_seq, existing)
-        try:
-            self._ledger.append_batch(materialized, expected_next_seq=expected_next_seq)
-        except BaseException:
-            try:
-                if _exact_batch_is_persisted(self._ledger, materialized, expected_next_seq):
-                    return
-            except BaseException as reconciliation_error:
-                raise LedgerPublicationIndeterminate(
-                    "ledger publication outcome is indeterminate"
-                ) from reconciliation_error
-            raise
+        append_validated_batch(
+            self._ledger,
+            materialized,
+            expected_next_seq=expected_next_seq,
+        )
 
     def _append_success(self, events: Sequence[RuntimeEvent], *, expected_next_seq: int) -> None:
         materialized = tuple(events)
-        _validate_fold_append(materialized, expected_next_seq, self._ledger.read_all())
         try:
-            self._ledger.append_batch(materialized, expected_next_seq=expected_next_seq)
-        except BaseException:
-            try:
-                if _exact_batch_is_persisted(self._ledger, materialized, expected_next_seq):
-                    return
-            except BaseException as reconciliation_error:
-                raise HeadPublicationIndeterminate(
-                    "success ledger publication outcome is indeterminate; candidate HEAD preserved"
-                ) from reconciliation_error
-            raise
+            append_validated_batch(
+                self._ledger,
+                materialized,
+                expected_next_seq=expected_next_seq,
+            )
+        except LedgerPublicationIndeterminate as error:
+            raise HeadPublicationIndeterminate(
+                "success ledger publication outcome is indeterminate; candidate HEAD preserved"
+            ) from error.__cause__
 
     def _now(self) -> float:
         value = self._clock.now()
@@ -681,34 +702,6 @@ def _exception_message(prefix: str, error: BaseException) -> str:
 
 def _next_sequence(envelopes: Sequence[EventEnvelope]) -> int:
     return envelopes[-1].seq + 1 if envelopes else 1
-
-
-def _validate_fold_append(
-    events: Sequence[RuntimeEvent],
-    expected_next_seq: int,
-    envelopes: Sequence[EventEnvelope],
-) -> None:
-    if _next_sequence(envelopes) != expected_next_seq:
-        return
-    fold_events(
-        tuple(envelopes)
-        + tuple(
-            EventEnvelope.from_event(expected_next_seq + offset, event) for offset, event in enumerate(events)
-        )
-    )
-
-
-def _exact_batch_is_persisted(
-    ledger: Ledger,
-    events: Sequence[RuntimeEvent],
-    expected_next_seq: int,
-) -> bool:
-    persisted = ledger.read_all()
-    expected = tuple(
-        EventEnvelope.from_event(expected_next_seq + offset, event) for offset, event in enumerate(events)
-    )
-    offset = expected_next_seq - 1
-    return persisted[offset : offset + len(expected)] == expected
 
 
 def _validate_start_transition(task: PlannedTask, envelopes: Sequence[EventEnvelope]) -> None:
@@ -754,6 +747,32 @@ def _validate_start_transition(task: PlannedTask, envelopes: Sequence[EventEnvel
             f"task retry requires a failed prior attempt: {task.activation_id}/{task.attempt}"
         )
     prior_failure = activation.attempts[-1].failure if activation.attempts else None
+    if task.prior_failure != prior_failure:
+        raise SchedulerStateError(f"task prior failure does not match projection: {task.activation_id}")
+
+
+def _validate_running_transition(task: PlannedTask, envelopes: Sequence[EventEnvelope]) -> None:
+    try:
+        projection = fold_events(tuple(envelopes))
+    except ProjectionError as error:
+        raise SchedulerStateError("persisted ledger cannot authorize task recovery") from error
+    if projection.status != "running" or projection.invocation_id != task.invocation_id:
+        raise SchedulerStateError(f"task invocation is not running: {task.invocation_id}")
+    activation = next(
+        (item for item in projection.activations if item.activation_id == task.activation_id),
+        None,
+    )
+    if (
+        activation is None
+        or activation.status != "active"
+        or activation.graph_instance_id != task.graph_instance_id
+        or activation.node_id != task.node_id
+        or not activation.attempts
+        or activation.attempts[-1].status != "running"
+        or activation.attempts[-1].attempt != task.attempt
+    ):
+        raise SchedulerStateError(f"task running attempt does not match: {task.activation_id}")
+    prior_failure = activation.attempts[-2].failure if len(activation.attempts) > 1 else None
     if task.prior_failure != prior_failure:
         raise SchedulerStateError(f"task prior failure does not match projection: {task.activation_id}")
 

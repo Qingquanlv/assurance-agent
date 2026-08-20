@@ -9,6 +9,7 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
+import graph_engine.runtime.ledger as ledger_runtime
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import TaskFailure
 from graph_engine.runtime.checkpoint import load_checkpoint, write_checkpoint
@@ -38,6 +39,17 @@ from graph_engine.runtime.models import (
     TokenRecord,
     fold_events,
 )
+
+
+def _interrupt_event() -> NodeInterrupted:
+    return NodeInterrupted(
+        activation_id="act-1",
+        interrupt_id="int-1",
+        graph_instance_id="root",
+        reason="review",
+        actions=("continue",),
+        input=None,
+    )
 
 
 def test_atomic_batches_have_contiguous_sequences(tmp_path: Path) -> None:
@@ -110,6 +122,62 @@ def test_append_rejects_stale_writer_without_changing_final_batch(tmp_path: Path
         )
 
     assert final.read_bytes() == original
+
+
+def test_validated_append_rejects_invalid_fold_before_publication(tmp_path: Path) -> None:
+    ledger = Ledger(tmp_path / "ledger")
+    ledger.append_batch(
+        (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+        expected_next_seq=1,
+    )
+    append = getattr(ledger_runtime, "append_validated_batch", None)
+    assert callable(append), "runtime ledger must provide the centralized append protocol"
+
+    with pytest.raises(ProjectionError):
+        append(
+            ledger,
+            (
+                InvocationStarted(
+                    invocation_id="inv-2",
+                    product_digest="b" * 64,
+                    entrypoint="main",
+                ),
+            ),
+            expected_next_seq=2,
+        )
+    assert len(ledger.read_all()) == 1
+
+
+def test_validated_append_reports_indeterminate_reconciliation_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger = Ledger(tmp_path / "ledger")
+    append = getattr(ledger_runtime, "append_validated_batch", None)
+    error_type = getattr(ledger_runtime, "LedgerPublicationIndeterminate", None)
+    assert callable(append) and isinstance(error_type, type)
+    original_append = ledger.append_batch
+    original_read = ledger.read_all
+    reads = 0
+
+    def publish_then_raise(events, expected_next_seq):  # type: ignore[no-untyped-def]
+        original_append(events, expected_next_seq)
+        raise OSError("append result unavailable")
+
+    def unreadable_reconciliation():  # type: ignore[no-untyped-def]
+        nonlocal reads
+        reads += 1
+        if reads > 1:
+            raise OSError("reconciliation unavailable")
+        return original_read()
+
+    monkeypatch.setattr(ledger, "append_batch", publish_then_raise)
+    monkeypatch.setattr(ledger, "read_all", unreadable_reconciliation)
+    with pytest.raises(error_type, match="indeterminate"):
+        append(
+            ledger,
+            (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+            expected_next_seq=1,
+        )
 
 
 def test_append_never_replaces_an_invalid_colliding_final_file(tmp_path: Path) -> None:
@@ -542,7 +610,7 @@ def test_attempt_and_node_transition_matrix(prior: str, action: str, allowed: bo
         ),
         "outcome": TaskAttemptSucceeded(activation_id="act-1", attempt=attempt, output=None),
         "complete": NodeCompleted(activation_id="act-1"),
-        "interrupt": NodeInterrupted(activation_id="act-1", interrupt_id="int-1"),
+        "interrupt": _interrupt_event(),
     }
 
     def operation() -> InvocationProjection:
@@ -558,8 +626,8 @@ def test_attempt_and_node_transition_matrix(prior: str, action: str, allowed: bo
 def test_succeeded_task_cannot_enter_interrupt_resume_lifecycle() -> None:
     events = _envelopes(
         *_attempt_history("succeeded"),
-        NodeInterrupted(activation_id="act-1", interrupt_id="int-1"),
-        InterruptResumed(interrupt_id="int-1"),
+        _interrupt_event(),
+        InterruptResumed(interrupt_id="int-1", action="continue", payload=None),
         NodeCompleted(activation_id="act-1"),
     )
     with pytest.raises(ProjectionError, match="task-attempt history"):
@@ -739,7 +807,14 @@ def test_projection_rejects_semantically_impossible_states() -> None:
             invocation_id="inv-1",
             product_digest="a" * 64,
             entrypoint="main",
-            pending_interrupt=PendingInterrupt(interrupt_id="int-1", activation_id="missing"),
+            pending_interrupt=PendingInterrupt(
+                interrupt_id="int-1",
+                activation_id="missing",
+                graph_instance_id="root",
+                reason="review",
+                actions=("continue",),
+                input=None,
+            ),
         )
     completed_graph = graph.model_copy(update={"status": "completed"})
     with pytest.raises(ValidationError, match="unsettled token"):

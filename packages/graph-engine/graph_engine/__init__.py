@@ -35,6 +35,7 @@ from graph_engine.runtime.engine import (  # noqa: E402
     Engine,
     EngineConflictError,
     EngineError,
+    EnginePublicationIndeterminate,
     InvocationHandle,
     RunResult,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "Engine",
     "EngineConflictError",
     "EngineError",
+    "EnginePublicationIndeterminate",
     "CandidateFile",
     "CandidateWriteSet",
     "CapabilityRegistry",

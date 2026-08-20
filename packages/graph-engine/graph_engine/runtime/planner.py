@@ -210,16 +210,73 @@ def plan_next(compiled: CompiledWorkflow, projection: InvocationProjection) -> P
     return state.result()
 
 
+def validate_projection(compiled: CompiledWorkflow, projection: InvocationProjection) -> None:
+    """Validate a folded projection against its exact compiled workflow."""
+    _validate_projection(compiled, projection)
+
+
+def plan_running_tasks(
+    compiled: CompiledWorkflow,
+    projection: InvocationProjection,
+) -> tuple[PlannedTask, ...]:
+    """Rebuild exact tasks for persisted running attempts without emitting events."""
+    _validate_projection(compiled, projection)
+    state = _PlannerState.from_projection(compiled, projection)
+    tasks: list[PlannedTask] = []
+    for activation in state.activations.values():
+        if not activation.attempts or activation.attempts[-1].status != "running":
+            continue
+        graph = state.graphs[activation.graph_instance_id]
+        node = compiled.graphs[graph.graph_id].nodes[activation.node_id]
+        if _behavior(node).execution != "task":
+            raise PlanningError("only task nodes can have running attempts")
+        before_running = activation.model_copy(update={"attempts": activation.attempts[:-1]})
+        tasks.append(_planned_task(state, node, before_running))
+    return tuple(sorted(tasks, key=lambda item: (item.topology_rank, item.declaration_index, item.task_id)))
+
+
 def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProjection) -> None:
     if projection.status == "not_started":
         raise PlanningError("invocation has not started")
     if projection.entrypoint not in compiled.entrypoints:
         raise PlanningError(f"unknown entrypoint {projection.entrypoint!r}")
+    entrypoint = projection.entrypoint
+    assert entrypoint is not None
 
     graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+    roots = tuple(item for item in projection.graph_instances if item.parent_graph_instance_id is None)
+    if not roots and projection.status == "running" and not projection.graph_instances:
+        pass
+    elif len(roots) != 1:
+        raise PlanningError("projection must contain exactly one root graph instance")
+    expected_root_graph_id = compiled.entrypoints[entrypoint]
+    if roots and roots[0].graph_id != expected_root_graph_id:
+        raise PlanningError("root graph does not match the invocation entrypoint")
+    if roots and roots[0].input is not None:
+        raise PlanningError("root graph input must be absent")
     for graph in projection.graph_instances:
         if graph.graph_id not in compiled.graphs:
             raise PlanningError(f"unknown graph {graph.graph_id!r}")
+        if graph.parent_activation_id is not None:
+            parent_activation = next(
+                (item for item in projection.activations if item.activation_id == graph.parent_activation_id),
+                None,
+            )
+            if parent_activation is None:
+                raise PlanningError("child graph has an unknown parent activation")
+            parent_record = graphs.get(parent_activation.graph_instance_id)
+            if parent_record is None:
+                raise PlanningError("child graph parent activation has an unknown graph")
+            parent_node = compiled.graphs[parent_record.graph_id].nodes.get(parent_activation.node_id)
+            if (
+                parent_node is None
+                or parent_node.definition.kind != "subgraph"
+                or parent_node.definition.graph != graph.graph_id
+                or parent_activation.graph_instance_id != graph.parent_graph_instance_id
+                or parent_activation.node_id != graph.parent_node_id
+                or thaw_json(graph.input) != thaw_json(parent_node.definition.input)
+            ):
+                raise PlanningError("child graph parent binding disagrees with compiled workflow")
 
     token_by_id = {token.token_id: token for token in projection.offered_tokens}
     for token in projection.offered_tokens:
@@ -236,24 +293,37 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
         graph = compiled.graphs[graph_record.graph_id]
         expected_id = _start_token_id(graph_record.graph_instance_id, graph.start)
         token_with_expected_id = token_by_id.get(expected_id)
-        if token_with_expected_id is not None and not _is_canonical_start_token(
-            token_with_expected_id, graph_record, graph
+        if token_with_expected_id is None or not _is_canonical_start_token(
+            token_with_expected_id,
+            graph_record,
+            graph,
         ):
             raise PlanningError(
-                f"graph instance {graph_record.graph_instance_id!r} has an invalid canonical start token"
+                f"graph instance {graph_record.graph_instance_id!r} lacks its canonical start token"
             )
         source_less = tuple(
             token
             for token in projection.offered_tokens
             if token.graph_instance_id == graph_record.graph_instance_id and token.source is None
         )
-        if not source_less:
-            continue
         if len(source_less) != 1 or not _is_canonical_start_token(source_less[0], graph_record, graph):
             raise PlanningError(
                 f"graph instance {graph_record.graph_instance_id!r} has an invalid canonical start token"
             )
+        if graph_record.status == "completed" and not any(
+            activation.graph_instance_id == graph_record.graph_instance_id
+            and activation.node_id in graph.nodes
+            and graph.nodes[activation.node_id].definition.kind == "end"
+            and activation.status == "completed"
+            and thaw_json(activation.output) == thaw_json(graph_record.output)
+            for activation in projection.activations
+        ):
+            raise PlanningError(
+                f"completed graph instance {graph_record.graph_instance_id!r} "
+                "lacks a matching completed end activation"
+            )
 
+    validation_state = _PlannerState.from_projection(compiled, projection)
     generations: dict[tuple[str, str], int] = {}
     for activation in projection.activations:
         graph_record = graphs.get(activation.graph_instance_id)
@@ -282,6 +352,47 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
         behavior = _behavior(node)
         if activation.attempts and behavior.execution != "task":
             raise PlanningError("only task nodes can contain attempt history")
+        if behavior.execution == "task":
+            if activation.structural_failure:
+                raise PlanningError("task activation cannot be marked as a structural failure")
+            if activation.status == "completed":
+                latest = activation.attempts[-1] if activation.attempts else None
+                if (
+                    latest is None
+                    or latest.status != "succeeded"
+                    or latest.committed_tree_id is None
+                    or thaw_json(activation.output) != thaw_json(latest.output)
+                ):
+                    raise PlanningError(
+                        "completed task requires a committed successful attempt with exact output"
+                    )
+            if any(
+                attempt.status == "succeeded" and attempt.committed_tree_id is None
+                for attempt in activation.attempts
+            ):
+                raise PlanningError("successful task attempt requires an atomic HEAD advance")
+        if activation.status == "completed" and behavior.execution == "structural":
+            if behavior.output_builder is None:
+                raise PlanningError(f"planner does not support structural node {activation.node_id!r}")
+            expected_output = behavior.output_builder(validation_state, node, activation)
+            if thaw_json(activation.output) != expected_output:
+                raise PlanningError(
+                    f"completed structural activation {activation.activation_id!r} has non-canonical output"
+                )
+        if activation.interrupt_id is not None:
+            expected_input = _activation_input(
+                validation_state,
+                node,
+                activation,
+            )
+            if (
+                behavior.execution != "interrupt"
+                or activation.interrupt_id != interrupt_id(activation.activation_id)
+                or activation.interrupt_reason != node.definition.reason
+                or activation.interrupt_actions != node.definition.actions
+                or thaw_json(activation.interrupt_input) != expected_input
+            ):
+                raise PlanningError("interrupt activation metadata disagrees with compiled workflow")
         if activation.status == "completed" and behavior.execution == "subgraph":
             graph_id = node.definition.graph
             assert graph_id is not None
@@ -299,7 +410,15 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
         if (
             activation.status == "completed"
             and behavior.execution == "interrupt"
-            and not activation.interrupt_resumed
+            and (
+                not activation.interrupt_resumed
+                or activation.interrupt_action not in node.definition.actions
+                or thaw_json(activation.output)
+                != {
+                    "action": activation.interrupt_action,
+                    "payload": thaw_json(activation.interrupt_payload),
+                }
+            )
         ):
             raise PlanningError(
                 "planner does not support node kind 'interrupt' without a matching resume event"
@@ -309,6 +428,31 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
             raise PlanningError(
                 f"activation {activation.activation_id!r} violates the compiled consumption contract"
             )
+
+    pending = projection.pending_interrupt
+    if pending is not None:
+        activation = next(
+            item for item in projection.activations if item.activation_id == pending.activation_id
+        )
+        graph_record = graphs[activation.graph_instance_id]
+        node = compiled.graphs[graph_record.graph_id].nodes[activation.node_id]
+        expected_input = cast(
+            JSONValue,
+            {
+                "config": thaw_json(node.definition.input),
+                "tokens": [thaw_json(token_by_id[token_id_].payload) for token_id_ in activation.token_ids],
+            },
+        )
+        if (
+            node.definition.kind != "interrupt"
+            or pending.interrupt_id != interrupt_id(activation.activation_id)
+            or pending.interrupt_id != activation.interrupt_id
+            or pending.graph_instance_id != activation.graph_instance_id
+            or pending.reason != node.definition.reason
+            or pending.actions != node.definition.actions
+            or thaw_json(pending.input) != expected_input
+        ):
+            raise PlanningError("pending interrupt metadata disagrees with compiled workflow")
 
 
 def _matches_consumption_contract(
@@ -475,7 +619,7 @@ def _finish_terminal_tasks(state: _PlannerState, terminal_activations: tuple[Act
         assert failure is not None
         state.events.append(NodeFailed(activation_id=activation.activation_id, failure=failure))
         state.activations[activation.activation_id] = activation.model_copy(
-            update={"status": "failed", "failure": failure, "structural_failure": True}
+            update={"status": "failed", "failure": failure}
         )
         graph_ids.add(activation.graph_instance_id)
         if first_failure is None:
@@ -1021,7 +1165,9 @@ __all__ = [
     "PlanningError",
     "activation_id",
     "plan_next",
+    "plan_running_tasks",
     "task_id",
     "interrupt_id",
     "subgraph_instance_id",
+    "validate_projection",
 ]

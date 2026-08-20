@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import cast
 
 import pytest
 
+from graph_engine.canonical import canonical_digest
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.graph.schema import parse_workflow
-from graph_engine.plugin_api import CapabilityRegistry, TaskFailure
+from graph_engine.plugin_api import CapabilityRegistry, TaskFailure, TaskHandler
 from graph_engine.runtime.events import (
     EventEnvelope,
     GraphStarted,
+    HeadAdvanced,
     InvocationStarted,
     NodeActivated,
     NodeCompleted,
@@ -17,6 +20,7 @@ from graph_engine.runtime.events import (
     TaskAttemptStarted,
     TaskAttemptStopped,
     TaskAttemptSucceeded,
+    TaskLeaseAcquired,
     TokenConsumed,
     TokenOffered,
 )
@@ -49,7 +53,10 @@ graphs:
     edges:
 {edges}
 """
-    registry = CapabilityRegistry(task_handlers={"test.tasks.run": object()}, commit_validators={})
+    registry = CapabilityRegistry(
+        task_handlers={"test.tasks.run": cast(TaskHandler, object())},
+        commit_validators={},
+    )
     return compile_workflow(parse_workflow(text), registry)  # type: ignore[arg-type]
 
 
@@ -75,7 +82,7 @@ def _invocation() -> InvocationStarted:
 
 
 def _root() -> GraphStarted:
-    return GraphStarted(graph_instance_id="root", graph_id="root", input={"request": 1})
+    return GraphStarted(graph_instance_id="root", graph_id="root")
 
 
 def _task_activation_events(
@@ -100,6 +107,8 @@ def _task_activation_events(
 def _completed_start_gate_events(compiled: CompiledWorkflow, node: str) -> tuple[object, ...]:
     token = _canonical_start_token(compiled)
     activation = activation_id("root", node, 0, (token.token_id,))
+    expression = compiled.graphs["root"].nodes[node].definition.expression
+    assert expression in {"true", "false"}
     return (
         token,
         TokenConsumed(token_id=token.token_id, graph_instance_id="root", node_id=node),
@@ -109,13 +118,25 @@ def _completed_start_gate_events(compiled: CompiledWorkflow, node: str) -> tuple
             node_id=node,
             token_ids=(token.token_id,),
         ),
-        NodeCompleted(activation_id=activation, output={"value": False}),
+        NodeCompleted(activation_id=activation, output={"value": expression == "true"}),
     )
 
 
 def _canonical_start_token(compiled: CompiledWorkflow) -> TokenOffered:
-    plan = plan_next(compiled, _projection(_invocation(), _root()))
-    return next(event for event in plan.events if event.kind == "token_offered" and event.source is None)
+    graph = compiled.graphs["root"]
+    return TokenOffered(
+        token_id=canonical_digest(
+            {
+                "graph_instance_id": "root",
+                "kind": "graph_start",
+                "target": graph.start,
+            }
+        ),
+        graph_instance_id="root",
+        source=None,
+        target=graph.start,
+        payload=None,
+    )
 
 
 def test_start_token_plans_the_first_task_with_canonical_input() -> None:
@@ -159,7 +180,7 @@ def test_planning_is_deterministic_and_does_not_mutate_projection() -> None:
     assert projection.model_dump_json() == before
 
 
-def test_unrelated_token_does_not_suppress_the_graph_start_token() -> None:
+def test_materialized_graph_requires_its_canonical_start_token() -> None:
     compiled = _compiled(
         f"{_task_node('seed')}\n      done: {{kind: end}}",
         "      - {from: seed, to: done}",
@@ -177,13 +198,8 @@ def test_unrelated_token_does_not_suppress_the_graph_start_token() -> None:
         ),
     )
 
-    plan = plan_next(compiled, projection)
-
-    assert [task.node_id for task in plan.tasks] == ["seed"]
-    assert any(
-        event.kind == "token_offered" and event.source is None and event.target == "seed"
-        for event in plan.events
-    )
+    with pytest.raises(PlanningError, match="canonical start token"):
+        plan_next(compiled, projection)
 
 
 def test_each_started_graph_instance_gets_its_own_start_token() -> None:
@@ -196,11 +212,13 @@ retry: {}
 timeout: {}
 graphs:
   root:
-    max_activations: 2
-    start: root_done
+    max_activations: 3
+    start: child_call
     nodes:
+      child_call: {kind: subgraph, graph: child}
       root_done: {kind: end}
-    edges: []
+    edges:
+      - {from: child_call, to: root_done}
   child:
     max_activations: 2
     start: child_done
@@ -211,17 +229,7 @@ graphs:
         ),
         CapabilityRegistry.empty(),
     )
-    events = (
-        _invocation(),
-        GraphStarted(graph_instance_id="root", graph_id="root"),
-        GraphStarted(
-            graph_instance_id="z-child",
-            graph_id="child",
-            parent_graph_instance_id="root",
-            parent_node_id="root_done",
-            input={"child": 1},
-        ),
-    )
+    events = (_invocation(),)
 
     plan = plan_next(compiled, _projection(*events))
 
@@ -230,11 +238,10 @@ graphs:
         for event in plan.events
         if event.kind == "token_offered" and event.source is None
     ]
-    assert start_tokens == [("root", "root_done"), ("z-child", "child_done")]
-    assert [event.graph_instance_id for event in plan.events if event.kind == "graph_completed"] == [
-        "z-child",
-        "root",
-    ]
+    assert [target for _instance, target in start_tokens] == ["child_call", "child_done"]
+    completed = [event.graph_instance_id for event in plan.events if event.kind == "graph_completed"]
+    assert completed[-1] == "root"
+    assert len(completed) == 2
     assert _projection_after(events, plan.events).status == "succeeded"
 
 
@@ -248,17 +255,21 @@ retry: {}
 timeout: {}
 graphs:
   root:
-    max_activations: 2
-    start: root_done
+    max_activations: 3
+    start: child_call
     nodes:
+      child_call: {kind: subgraph, graph: child}
       root_done: {kind: end}
-    edges: []
+    edges:
+      - {from: child_call, to: root_done}
   child:
-    max_activations: 2
-    start: child_done
+    max_activations: 3
+    start: grandchild_call
     nodes:
+      grandchild_call: {kind: subgraph, graph: grandchild}
       child_done: {kind: end}
-    edges: []
+    edges:
+      - {from: grandchild_call, to: child_done}
   grandchild:
     max_activations: 2
     start: grandchild_done
@@ -269,30 +280,13 @@ graphs:
         ),
         CapabilityRegistry.empty(),
     )
-    events = (
-        _invocation(),
-        GraphStarted(graph_instance_id="root", graph_id="root"),
-        GraphStarted(
-            graph_instance_id="z-child",
-            graph_id="child",
-            parent_graph_instance_id="root",
-            parent_node_id="root_done",
-        ),
-        GraphStarted(
-            graph_instance_id="zz-grandchild",
-            graph_id="grandchild",
-            parent_graph_instance_id="z-child",
-            parent_node_id="child_done",
-        ),
-    )
+    events = (_invocation(),)
 
     plan = plan_next(compiled, _projection(*events))
 
-    assert [event.graph_instance_id for event in plan.events if event.kind == "graph_completed"] == [
-        "zz-grandchild",
-        "z-child",
-        "root",
-    ]
+    completed = [event.graph_instance_id for event in plan.events if event.kind == "graph_completed"]
+    assert completed[-1] == "root"
+    assert len(completed) == 3
     assert plan.terminal == "succeeded"
     assert _projection_after(events, plan.events).status == "succeeded"
 
@@ -821,6 +815,7 @@ def test_disallowed_or_exhausted_failure_fails_node_graph_and_invocation(
     assert folded.status == "failed"
     assert folded.graph_instances[0].status == "failed"
     assert folded.activations[0].status == "failed"
+    assert not folded.activations[0].structural_failure
 
 
 def test_successful_task_completion_is_routed_structurally() -> None:
@@ -831,12 +826,29 @@ def test_successful_task_completion_is_routed_structurally() -> None:
     )
     start_token = _canonical_start_token(compiled)
     activation = activation_id("root", "work", 0, (start_token.token_id,))
+    identifier = task_id(activation)
     events = (
         _invocation(),
         _root(),
         *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
+        TaskLeaseAcquired(
+            task_id=identifier,
+            activation_id=activation,
+            attempt=1,
+            owner_id="worker",
+            acquired_at=1.0,
+            heartbeat_at=1.0,
+            expires_at=2.0,
+        ),
         TaskAttemptSucceeded(activation_id=activation, attempt=1, output={"result": 2}),
+        HeadAdvanced(
+            task_id=identifier,
+            activation_id=activation,
+            attempt=1,
+            previous_tree_id="a" * 64,
+            tree_id="b" * 64,
+        ),
     )
     projection = _projection(*events)
 
@@ -865,6 +877,7 @@ def test_completed_end_is_rechecked_after_later_task_settlement() -> None:
     end_activation = activation_id("root", "done", 0, ("end-token",))
     start_token = _canonical_start_token(compiled)
     work_activation = activation_id("root", "work", 0, (start_token.token_id,))
+    identifier = task_id(work_activation)
     assert end_activation < work_activation
     events = (
         _invocation(),
@@ -897,7 +910,23 @@ def test_completed_end_is_rechecked_after_later_task_settlement() -> None:
             attempt=1,
             lease_expires_at="2030-01-01T00:00:00Z",
         ),
+        TaskLeaseAcquired(
+            task_id=identifier,
+            activation_id=work_activation,
+            attempt=1,
+            owner_id="worker",
+            acquired_at=1.0,
+            heartbeat_at=1.0,
+            expires_at=2.0,
+        ),
         TaskAttemptSucceeded(activation_id=work_activation, attempt=1, output="ignored"),
+        HeadAdvanced(
+            task_id=identifier,
+            activation_id=work_activation,
+            attempt=1,
+            previous_tree_id="a" * 64,
+            tree_id="b" * 64,
+        ),
     )
 
     plan = plan_next(compiled, _projection(*events))
@@ -934,12 +963,14 @@ def test_projection_order_does_not_change_task_order() -> None:
 
 def test_illegal_projection_node_is_rejected_fail_closed() -> None:
     compiled = _compiled("      done: {kind: end}", "      []", start="done")
+    base = _projection(_invocation(), _root(), _canonical_start_token(compiled))
     projection = InvocationProjection(
         status="running",
         invocation_id="inv-1",
         product_digest="a" * 64,
         entrypoint="main",
-        graph_instances=(_projection(_invocation(), _root()).graph_instances[0],),
+        graph_instances=base.graph_instances,
+        offered_tokens=base.offered_tokens,
         activations=(
             ActivationRecord(activation_id="bad", graph_instance_id="root", node_id="missing", token_ids=()),
         ),

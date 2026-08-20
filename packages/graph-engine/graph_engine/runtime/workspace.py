@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Iterator
+from typing import Any, Iterator, cast
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
@@ -31,6 +31,7 @@ _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_
 _FILE_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 _LAYOUT = ".layout.json"
 _HEAD = "HEAD.json"
+_HEAD_TRANSACTION = ".HEAD-transaction.json"
 NamedValidator = tuple[str, CommitValidator]
 Identity = tuple[int, int]
 EntryState = tuple[int, int, int, int, int, int, int]
@@ -577,9 +578,19 @@ class SnapshotStore:
     detected mutation.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, _parent_fd: int | None = None) -> None:
         _require_posix_primitives()
         self.root = Path(root).absolute()
+        self._parent_fd = _parent_fd
+
+    @classmethod
+    def at(cls, parent_fd: int, name: str, *, display_root: Path) -> SnapshotStore:
+        if not name or "/" in name or name in {".", ".."}:
+            raise ValueError("snapshot store name must be one path component")
+        root = Path(display_root)
+        if root.name != name:
+            raise ValueError("display root must end with the snapshot store name")
+        return cls(root, _parent_fd=parent_fd)
 
     @property
     def _lock_anchor_name(self) -> str:
@@ -589,6 +600,22 @@ class SnapshotStore:
     def create(cls, root: Path, initial_files: Mapping[str, bytes]) -> SnapshotStore:
         store = cls(root)
         parent_fd = _open_absolute_directory(store.root.parent)
+        return store._create_at(parent_fd, initial_files)
+
+    @classmethod
+    def create_at(
+        cls,
+        parent_fd: int,
+        name: str,
+        initial_files: Mapping[str, bytes],
+        *,
+        display_root: Path,
+    ) -> SnapshotStore:
+        store = cls.at(parent_fd, name, display_root=display_root)
+        return store._create_at(os.dup(parent_fd), initial_files)
+
+    def _create_at(self, parent_fd: int, initial_files: Mapping[str, bytes]) -> SnapshotStore:
+        store = self
         staging_name = f".{store.root.name}.snapshot-init-{uuid.uuid4().hex}"
         staging_fd: int | None = None
         installed = False
@@ -761,7 +788,11 @@ class SnapshotStore:
 
     @contextmanager
     def _opened_layout(self, *, lock: bool = False) -> Iterator[tuple[int, int, int, int | None]]:
-        parent_fd = _open_absolute_directory(self.root.parent)
+        parent_fd = (
+            os.dup(self._parent_fd)
+            if self._parent_fd is not None
+            else _open_absolute_directory(self.root.parent)
+        )
         root_fd = trees_fd = attempts_fd = anchor_fd = -1
         try:
             anchor_fd, anchor_stat = _open_file_at(
@@ -781,7 +812,7 @@ class SnapshotStore:
                     "commit lock anchor",
                     immutable=True,
                 )
-            root_fd = _open_absolute_directory(self.root)
+            root_fd, _ = _open_directory_at(parent_fd, self.root.name, "snapshot store root")
             trees_fd, _ = _open_directory_at(root_fd, "trees", "trees directory")
             attempts_fd, _ = _open_directory_at(root_fd, "attempts", "attempts directory")
             layout_fd, layout_stat = _open_file_at(root_fd, _LAYOUT, _LAYOUT, immutable=True)
@@ -1021,6 +1052,110 @@ class SnapshotStore:
             except FileNotFoundError:
                 pass
 
+    def _begin_head_transaction(
+        self,
+        root_fd: int,
+        previous: bytes,
+        candidate_tree_id: str,
+    ) -> None:
+        if _entry_exists(root_fd, _HEAD_TRANSACTION):
+            raise WorkspaceViolation("unfinished HEAD transaction requires recovery")
+        previous_head = json.loads(previous)
+        payload: dict[str, JSONValue] = {
+            "version": 1,
+            "previous_head": previous_head,
+            "candidate_tree_id": candidate_tree_id,
+        }
+        document: dict[str, JSONValue] = {**payload, "digest": canonical_digest(payload)}
+        temporary = f".{_HEAD_TRANSACTION}-{uuid.uuid4().hex}.tmp"
+        self._write_temp(root_fd, temporary, canonical_json_bytes(document))
+        try:
+            os.replace(
+                temporary,
+                _HEAD_TRANSACTION,
+                src_dir_fd=root_fd,
+                dst_dir_fd=root_fd,
+            )
+            os.fsync(root_fd)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=root_fd)
+            except FileNotFoundError:
+                pass
+
+    def _clear_head_transaction(self, root_fd: int) -> None:
+        try:
+            os.unlink(_HEAD_TRANSACTION, dir_fd=root_fd)
+        except FileNotFoundError:
+            return
+        os.fsync(root_fd)
+
+    def recover_head_transaction(self, authoritative_tree_id: str | None) -> None:
+        """Resolve an interrupted HEAD/ledger publication from authoritative ledger state."""
+        with self._opened_layout(lock=True) as (root_fd, trees_fd, _attempts_fd, _lock_fd):
+            if not _entry_exists(root_fd, _HEAD_TRANSACTION):
+                return
+            descriptor, transaction_stat = _open_file_at(
+                root_fd,
+                _HEAD_TRANSACTION,
+                _HEAD_TRANSACTION,
+                immutable=False,
+            )
+            try:
+                raw = os.read(descriptor, 16384)
+                if os.read(descriptor, 1):
+                    raise WorkspaceViolation("HEAD transaction is too large")
+                transaction = json.loads(raw.decode("utf-8"))
+                _assert_open_file_stable(
+                    descriptor,
+                    root_fd,
+                    _HEAD_TRANSACTION,
+                    transaction_stat,
+                    "HEAD transaction",
+                    immutable=False,
+                )
+            except (UnicodeError, json.JSONDecodeError) as error:
+                raise WorkspaceViolation("HEAD transaction is invalid") from error
+            finally:
+                os.close(descriptor)
+            if not isinstance(transaction, dict) or set(transaction) != {
+                "version",
+                "previous_head",
+                "candidate_tree_id",
+                "digest",
+            }:
+                raise WorkspaceViolation("HEAD transaction document is invalid")
+            payload: dict[str, JSONValue] = {
+                "version": transaction["version"],
+                "previous_head": transaction["previous_head"],
+                "candidate_tree_id": transaction["candidate_tree_id"],
+            }
+            if transaction["version"] != 1 or transaction["digest"] != canonical_digest(payload):
+                raise WorkspaceViolation("HEAD transaction authentication failed")
+            if not isinstance(transaction["previous_head"], dict):
+                raise WorkspaceViolation("HEAD transaction previous head is invalid")
+            previous = cast(dict[str, Any], transaction["previous_head"])
+            previous_tree_id = previous.get("tree_id")
+            candidate_tree_id = _validate_tree_id(
+                transaction["candidate_tree_id"],
+                "transaction candidate tree id",
+            )
+            if not isinstance(previous_tree_id, str):
+                raise WorkspaceViolation("HEAD transaction previous tree is invalid")
+            previous_bytes = canonical_json_bytes(cast(JSONValue, previous))
+            if authoritative_tree_id == candidate_tree_id:
+                current, tree = self._head_tree(root_fd, trees_fd)
+                os.close(tree.descriptor)
+                if current["tree_id"] != candidate_tree_id:
+                    raise WorkspaceViolation("authoritative candidate HEAD is not installed")
+            else:
+                if authoritative_tree_id is not None and authoritative_tree_id != previous_tree_id:
+                    raise WorkspaceViolation("HEAD transaction disagrees with authoritative ledger")
+                self._restore_previous_head(root_fd, previous_bytes)
+                if not self._head_matches(root_fd, previous_bytes):
+                    raise WorkspaceViolation("HEAD transaction rollback was not durable")
+            self._clear_head_transaction(root_fd)
+
     def head_tree_id(self) -> str:
         with self._opened_layout() as (root_fd, trees_fd, _attempts_fd, _lock_fd):
             document, tree = self._head_tree(root_fd, trees_fd)
@@ -1150,6 +1285,12 @@ class SnapshotStore:
     def create_attempt(self, attempt_id: str) -> AttemptWorkspace:
         return self.create_attempts((attempt_id,))[0]
 
+    def reset_attempt(self, attempt_id: str) -> AttemptWorkspace:
+        """Recreate one deterministic attempt from authoritative HEAD after process loss."""
+        validated = _validate_attempt_id(attempt_id)
+        self._discard_attempt(validated)
+        return self.create_attempt(validated)
+
     def _seal_attempt(self, attempt_id: str, baseline_tree_id: str) -> CandidateWriteSet:
         with self._opened_layout(lock=True) as (_root_fd, trees_fd, attempts_fd, _lock_fd):
             source_fd, _ = _open_directory_at(attempts_fd, attempt_id, "attempt directory")
@@ -1266,13 +1407,32 @@ class SnapshotStore:
                     return CommitResult(committed=False, receipts=receipts)
                 authorize_publish()
                 previous = canonical_json_bytes(head_document)
-                self._publish_head(
-                    root_fd,
-                    trees_fd,
-                    candidate.candidate_tree_id,
-                    candidate_tree,
-                    previous,
-                )
+                try:
+                    self._begin_head_transaction(
+                        root_fd,
+                        previous,
+                        candidate.candidate_tree_id,
+                    )
+                except BaseException:
+                    try:
+                        self._clear_head_transaction(root_fd)
+                    except BaseException as cleanup_error:
+                        raise HeadPublicationIndeterminate(
+                            "HEAD transaction preparation outcome is indeterminate"
+                        ) from cleanup_error
+                    raise
+                try:
+                    self._publish_head(
+                        root_fd,
+                        trees_fd,
+                        candidate.candidate_tree_id,
+                        candidate_tree,
+                        previous,
+                    )
+                except BaseException:
+                    if self._head_matches(root_fd, previous):
+                        self._clear_head_transaction(root_fd)
+                    raise
                 published = self._head_bytes(candidate.candidate_tree_id, candidate_tree.identity)
                 try:
                     _finalization_boundary("candidate_published")
@@ -1289,6 +1449,7 @@ class SnapshotStore:
                         self._restore_previous_head(root_fd, previous)
                         if not self._head_matches(root_fd, previous):
                             raise WorkspaceViolation("conditional HEAD rollback was not durable")
+                        self._clear_head_transaction(root_fd)
                     except BaseException as rollback_error:
                         raise HeadPublicationIndeterminate(
                             "candidate success failed and conditional HEAD rollback is indeterminate"
@@ -1296,6 +1457,7 @@ class SnapshotStore:
                     raise FinalizationRolledBack(
                         "candidate success failed; exact candidate HEAD was rolled back"
                     ) from error
+                self._clear_head_transaction(root_fd)
                 return CommitResult(committed=True, receipts=receipts)
             finally:
                 os.close(baseline.descriptor)

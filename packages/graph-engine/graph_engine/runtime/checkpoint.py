@@ -33,6 +33,64 @@ def write_checkpoint(
     *,
     ledger_envelopes: Sequence[EventEnvelope],
 ) -> None:
+    document = _checkpoint_bytes(projection, last_seq, ledger_envelopes)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pending = path.parent / f".pending-{path.name}-{uuid4().hex}"
+    replaced = False
+    try:
+        with pending.open("xb") as stream:
+            stream.write(document)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(pending, path)
+        replaced = True
+        _fsync_directory(path.parent)
+    finally:
+        if not replaced:
+            pending.unlink(missing_ok=True)
+
+
+def write_checkpoint_at(
+    parent_fd: int,
+    name: str,
+    projection: InvocationProjection,
+    last_seq: int,
+    *,
+    ledger_envelopes: Sequence[EventEnvelope],
+) -> None:
+    document = _checkpoint_bytes(projection, last_seq, ledger_envelopes)
+    pending = f".pending-{name}-{uuid4().hex}"
+    descriptor = os.open(
+        pending,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+        dir_fd=parent_fd,
+    )
+    try:
+        try:
+            view = memoryview(document)
+            while view:
+                written = os.write(descriptor, view)
+                if written == 0:
+                    raise OSError("checkpoint write returned zero bytes")
+                view = view[written:]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(pending, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    finally:
+        try:
+            os.unlink(pending, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+
+
+def _checkpoint_bytes(
+    projection: InvocationProjection,
+    last_seq: int,
+    ledger_envelopes: Sequence[EventEnvelope],
+) -> bytes:
     if not isinstance(last_seq, int) or isinstance(last_seq, bool) or last_seq < 0:
         raise ValueError("last_seq must be a non-negative integer")
     envelopes = tuple(ledger_envelopes)
@@ -46,7 +104,6 @@ def write_checkpoint(
         raise ValueError("cannot checkpoint an invalid ledger prefix") from error
     if replayed != projection:
         raise ValueError("checkpoint projection does not match ledger prefix")
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = _checkpoint_payload(projection, last_seq, prefix_digest)
     document = cast(
         JSONValue,
@@ -57,26 +114,48 @@ def write_checkpoint(
             "digest": canonical_digest(payload),
         },
     )
-    pending = path.parent / f".pending-{path.name}-{uuid4().hex}"
-    replaced = False
-    try:
-        with pending.open("xb") as stream:
-            stream.write(canonical_json_bytes(document))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(pending, path)
-        replaced = True
-        _fsync_directory(path.parent)
-    finally:
-        if not replaced:
-            pending.unlink(missing_ok=True)
+    return canonical_json_bytes(document)
 
 
 def load_checkpoint(path: Path, *, ledger_envelopes: Sequence[EventEnvelope]) -> Checkpoint | None:
     try:
         raw = path.read_bytes()
+    except OSError:
+        return None
+    return _load_checkpoint_bytes(raw, ledger_envelopes)
+
+
+def load_checkpoint_at(
+    parent_fd: int,
+    name: str,
+    *,
+    ledger_envelopes: Sequence[EventEnvelope],
+) -> Checkpoint | None:
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        try:
+            chunks: list[bytes] = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+            raw = b"".join(chunks)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        return None
+    return _load_checkpoint_bytes(raw, ledger_envelopes)
+
+
+def _load_checkpoint_bytes(
+    raw: bytes,
+    ledger_envelopes: Sequence[EventEnvelope],
+) -> Checkpoint | None:
+    try:
         checkpoint = Checkpoint.model_validate_json(raw, strict=True)
-    except (OSError, UnicodeDecodeError, ValidationError, ValueError):
+    except (UnicodeDecodeError, ValidationError, ValueError):
         return None
     payload = _checkpoint_payload(
         checkpoint.projection,
@@ -130,4 +209,10 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-__all__ = ["Checkpoint", "load_checkpoint", "write_checkpoint"]
+__all__ = [
+    "Checkpoint",
+    "load_checkpoint",
+    "load_checkpoint_at",
+    "write_checkpoint",
+    "write_checkpoint_at",
+]

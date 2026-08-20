@@ -42,6 +42,28 @@ class GraphStarted(RuntimeEventModel):
     parent_activation_id: str | None = None
     input: FrozenJSONValue = None
 
+    @model_validator(mode="after")
+    def _validate_parent_binding(self) -> Self:
+        parent = (
+            self.parent_graph_instance_id,
+            self.parent_node_id,
+            self.parent_activation_id,
+        )
+        if any(value is not None for value in parent) and any(value is None for value in parent):
+            raise ValueError("graph parent fields must be present together")
+        if self.parent_activation_id is not None:
+            expected = canonical_digest(
+                {
+                    "parent_activation_id": self.parent_activation_id,
+                    "graph_id": self.graph_id,
+                }
+            )
+            if self.graph_instance_id != expected:
+                raise ValueError("child graph instance id is not canonical for its parent")
+        elif self.graph_instance_id != self.graph_id:
+            raise ValueError("root graph instance id must equal its graph id")
+        return self
+
 
 class TokenOffered(RuntimeEventModel):
     kind: Literal["token_offered"] = "token_offered"
@@ -154,18 +176,28 @@ class NodeInterrupted(RuntimeEventModel):
     kind: Literal["node_interrupted"] = "node_interrupted"
     activation_id: str
     interrupt_id: str
-    graph_instance_id: str | None = None
-    reason: str | None = None
-    actions: tuple[str, ...] = ()
-    input: FrozenJSONValue = None
+    graph_instance_id: str
+    reason: str
+    actions: tuple[str, ...]
+    input: FrozenJSONValue
     payload: FrozenJSONValue = None
+
+    @model_validator(mode="after")
+    def _validate_interrupt(self) -> Self:
+        if not self.reason:
+            raise ValueError("interrupt reason must not be empty")
+        if not self.actions or any(not action for action in self.actions):
+            raise ValueError("interrupt actions must be non-empty")
+        if len(set(self.actions)) != len(self.actions):
+            raise ValueError("interrupt actions must be unique")
+        return self
 
 
 class InterruptResumed(RuntimeEventModel):
     kind: Literal["interrupt_resumed"] = "interrupt_resumed"
     interrupt_id: str
-    action: str | None = None
-    payload: FrozenJSONValue = None
+    action: str
+    payload: FrozenJSONValue
 
 
 class GraphCompleted(RuntimeEventModel):
