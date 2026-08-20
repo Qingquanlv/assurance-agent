@@ -134,6 +134,8 @@ class EffectApplyResult(FrozenModel):
                 raise ValueError("failure is allowed only when effect application did not apply")
         elif self.receipt is not None or self.failure is None:
             raise ValueError("receipt and failure are mutually exclusive for effect application results")
+        elif self.status == "permanent" and self.failure.retryable:
+            raise ValueError("permanent effect failure must not be retryable")
         return self
 
     @classmethod
@@ -154,6 +156,8 @@ class EffectReconcileResult(FrozenModel):
         elif self.status == "permanently_failed":
             if self.receipt is not None or self.failure is None:
                 raise ValueError("receipt and failure are mutually exclusive for effect reconciliation results")
+            if self.failure.retryable:
+                raise ValueError("permanent effect failure must not be retryable")
         elif self.receipt is not None or self.failure is not None:
             raise ValueError("receipt and failure are allowed only for terminal effect reconciliation results")
         return self
