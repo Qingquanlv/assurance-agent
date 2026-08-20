@@ -822,6 +822,194 @@ def test_create_at_parent_close_failure_does_not_mask_prologue_failure(
         real_close(parent_fd)
 
 
+@pytest.mark.parametrize(
+    "cleanup_fault",
+    [
+        "entry_exists",
+        "remove_entry",
+        "root_fsync",
+        "parent_fsync",
+        "staging_close",
+        "parent_close",
+    ],
+)
+def test_create_at_rollback_cleanup_failure_preserves_original_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cleanup_fault: str,
+) -> None:
+    from graph_engine.runtime import workspace
+
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    baseline = len(os.listdir("/dev/fd"))
+    primary = RuntimeError(f"primary construction failure: {cleanup_fault}")
+    cleanup = OSError(f"injected rollback cleanup failure: {cleanup_fault}")
+    primary_raised = False
+    cleanup_injected = False
+    duplicate_calls = 0
+    internal_parent_fd: int | None = None
+    staging_fd: int | None = None
+    rollback_root_fd: int | None = None
+    cleanup_attempts: list[str] = []
+    retained: BaseException | None = None
+    real_dup = os.dup
+    real_close = os.close
+    real_fsync = os.fsync
+    real_entry_exists = workspace._entry_exists
+    real_remove_entry_at = workspace._remove_entry_at
+    real_open_directory_at = workspace._open_directory_at
+
+    def track_dup(descriptor: int) -> int:
+        nonlocal duplicate_calls, internal_parent_fd
+        duplicate_calls += 1
+        duplicated = real_dup(descriptor)
+        if duplicate_calls == 2:
+            internal_parent_fd = duplicated
+        return duplicated
+
+    def track_open_directory_at(
+        directory_fd: int,
+        name: str,
+        kind: str,
+    ) -> tuple[int, os.stat_result]:
+        nonlocal staging_fd, rollback_root_fd
+        opened = real_open_directory_at(directory_fd, name, kind)
+        if kind == "snapshot initialization staging":
+            staging_fd = opened[0]
+        elif kind == "removal directory" and name.startswith(".store.snapshot-init-"):
+            rollback_root_fd = opened[0]
+        return opened
+
+    def fail_construction(_initial_files: object) -> object:
+        nonlocal primary_raised
+        primary_raised = True
+        raise primary
+
+    def maybe_fail_entry_exists(directory_fd: int, name: str) -> bool:
+        nonlocal cleanup_injected
+        if primary_raised and name.startswith(".store.snapshot-init-"):
+            cleanup_attempts.append("entry_exists")
+            if cleanup_fault == "entry_exists" and not cleanup_injected:
+                cleanup_injected = True
+                raise cleanup
+        return real_entry_exists(directory_fd, name)
+
+    def maybe_fail_remove_entry_at(directory_fd: int, name: str) -> None:
+        nonlocal cleanup_injected
+        if primary_raised and name.startswith(".store.snapshot-init-"):
+            cleanup_attempts.append("remove_entry")
+            if cleanup_fault == "remove_entry" and not cleanup_injected:
+                cleanup_injected = True
+                raise cleanup
+        real_remove_entry_at(directory_fd, name)
+
+    def maybe_fail_fsync(descriptor: int) -> None:
+        nonlocal cleanup_injected
+        if primary_raised:
+            if descriptor == rollback_root_fd:
+                cleanup_attempts.append("root_fsync")
+                if cleanup_fault == "root_fsync" and not cleanup_injected:
+                    cleanup_injected = True
+                    raise cleanup
+            elif descriptor == internal_parent_fd:
+                cleanup_attempts.append("parent_fsync")
+                if cleanup_fault == "parent_fsync" and not cleanup_injected:
+                    cleanup_injected = True
+                    raise cleanup
+        real_fsync(descriptor)
+
+    def maybe_fail_close(descriptor: int) -> None:
+        nonlocal cleanup_injected
+        target = None
+        if primary_raised and descriptor == staging_fd:
+            target = "staging_close"
+        elif primary_raised and descriptor == internal_parent_fd:
+            target = "parent_close"
+        if target is not None:
+            cleanup_attempts.append(target)
+            if cleanup_fault == target and not cleanup_injected:
+                cleanup_injected = True
+                real_close(descriptor)
+                raise cleanup
+        real_close(descriptor)
+
+    monkeypatch.setattr(workspace.os, "dup", track_dup)
+    monkeypatch.setattr(workspace, "_open_directory_at", track_open_directory_at)
+    monkeypatch.setattr(workspace, "_mapping_tree", fail_construction)
+    monkeypatch.setattr(workspace, "_entry_exists", maybe_fail_entry_exists)
+    monkeypatch.setattr(workspace, "_remove_entry_at", maybe_fail_remove_entry_at)
+    monkeypatch.setattr(workspace.os, "fsync", maybe_fail_fsync)
+    monkeypatch.setattr(workspace.os, "close", maybe_fail_close)
+    try:
+        try:
+            SnapshotStore.create_at(
+                parent_fd,
+                "store",
+                {"seed.txt": b"seed"},
+                display_root=tmp_path / "store",
+            )
+        except BaseException as error:
+            retained = error
+        assert retained is primary
+        assert retained.__cause__ is None
+        assert cleanup_injected
+        assert cleanup_fault in cleanup_attempts
+        if cleanup_fault == "entry_exists":
+            assert "remove_entry" in cleanup_attempts
+        if cleanup_fault in {"entry_exists", "remove_entry", "root_fsync", "staging_close"}:
+            assert "parent_fsync" in cleanup_attempts
+        assert len(os.listdir("/dev/fd")) <= baseline + 1
+    finally:
+        retained = None
+        real_close(parent_fd)
+
+
+def test_create_at_parent_close_failure_without_primary_is_reported_and_leak_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graph_engine.runtime import workspace
+
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    baseline = len(os.listdir("/dev/fd"))
+    real_dup = os.dup
+    real_close = os.close
+    duplicate_calls = 0
+    internal_parent_fd: int | None = None
+    close_failure_injected = False
+
+    def record_internal_parent_dup(descriptor: int) -> int:
+        nonlocal duplicate_calls, internal_parent_fd
+        duplicate_calls += 1
+        duplicated = real_dup(descriptor)
+        if duplicate_calls == 2:
+            internal_parent_fd = duplicated
+        return duplicated
+
+    def fail_after_internal_parent_close(descriptor: int) -> None:
+        nonlocal close_failure_injected
+        real_close(descriptor)
+        if descriptor == internal_parent_fd and not close_failure_injected:
+            close_failure_injected = True
+            raise OSError("successful construction parent close failed")
+
+    monkeypatch.setattr(workspace.os, "dup", record_internal_parent_dup)
+    monkeypatch.setattr(workspace.os, "close", fail_after_internal_parent_close)
+    try:
+        with pytest.raises(OSError, match="successful construction parent close failed"):
+            SnapshotStore.create_at(
+                parent_fd,
+                "store",
+                {"seed.txt": b"seed"},
+                display_root=tmp_path / "store",
+            )
+        with SnapshotStore.at(parent_fd, "store", display_root=tmp_path / "store") as reopened:
+            assert reopened.read_head("seed.txt") == b"seed"
+        assert len(os.listdir("/dev/fd")) <= baseline + 1
+    finally:
+        real_close(parent_fd)
+
+
 def test_crash_incomplete_initialization_is_recoverable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

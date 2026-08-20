@@ -710,7 +710,17 @@ class SnapshotStore:
             os.fsync(parent_fd)
             return store
         except Exception:
-            if staging_name is not None and not installed and _entry_exists(parent_fd, staging_name):
+            remove_staging = staging_name is not None and not installed
+            if remove_staging:
+                assert staging_name is not None
+                try:
+                    remove_staging = _entry_exists(parent_fd, staging_name)
+                except BaseException:
+                    # The exact private name is ours and installation did not happen.
+                    # If existence cannot be determined, still attempt the safe rollback.
+                    remove_staging = True
+            if remove_staging:
+                assert staging_name is not None
                 if staging_fd is not None:
                     try:
                         os.close(staging_fd)
@@ -718,8 +728,14 @@ class SnapshotStore:
                         pass
                     else:
                         staging_fd = None
-                _remove_entry_at(parent_fd, staging_name)
-                os.fsync(parent_fd)
+                try:
+                    _remove_entry_at(parent_fd, staging_name)
+                except BaseException:
+                    pass
+                try:
+                    os.fsync(parent_fd)
+                except BaseException:
+                    pass
             raise
         finally:
             active_exception = sys.exception()
