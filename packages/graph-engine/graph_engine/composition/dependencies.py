@@ -8,6 +8,7 @@ from packaging.version import InvalidVersion, Version
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.errors import GraphEngineError
+from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import PluginDependency, PluginDescriptor
 
 
@@ -38,6 +39,7 @@ def _validate_exact_source_set(
     _validate_selected_descriptors(selected)
 
     required = tuple(required_plugin_ids)
+    _validate_required_plugin_ids(required)
     duplicate_required = _duplicates(required)
     if duplicate_required:
         raise DependencyConflict(f"required plugin IDs repeat: {', '.join(duplicate_required)}")
@@ -80,15 +82,28 @@ def _validate_exact_source_set(
 
 
 def _validate_selected_descriptors(selected: Mapping[str, PluginDescriptor]) -> None:
-    for source_id, descriptor in sorted(selected.items()):
+    source_ids = tuple(selected)
+    for source_id in source_ids:
         if not isinstance(source_id, str):
             raise DependencyConflict(f"invalid selected plugin source ID: {source_id!r}")
+    for source_id in sorted(source_ids):
+        _qualified_plugin_id(source_id, "selected plugin source ID")
+        descriptor = selected[source_id]
         if not isinstance(descriptor, PluginDescriptor):
             raise DependencyConflict(f"selected source {source_id!r} does not contain a plugin descriptor")
+        _qualified_plugin_id(descriptor.plugin_id, "plugin descriptor ID")
         if descriptor.plugin_id != source_id:
             raise DependencyConflict(
                 f"selected source {source_id!r} describes plugin {descriptor.plugin_id!r}"
             )
+
+
+def _validate_required_plugin_ids(required_plugin_ids: tuple[str, ...]) -> None:
+    for plugin_id in required_plugin_ids:
+        if not isinstance(plugin_id, str):
+            raise DependencyConflict(f"invalid required plugin ID: {plugin_id!r}")
+    for plugin_id in sorted(required_plugin_ids):
+        _qualified_plugin_id(plugin_id, "required plugin ID")
 
 
 def _validated_dependencies(
@@ -183,6 +198,13 @@ def _version(value: object, kind: str) -> Version:
     try:
         return Version(value)  # type: ignore[arg-type]
     except (InvalidVersion, TypeError) as error:
+        raise DependencyConflict(f"invalid {kind}: {value!r}") from error
+
+
+def _qualified_plugin_id(value: str, kind: str) -> str:
+    try:
+        return validate_qualified_id(value)
+    except IdentifierError as error:
         raise DependencyConflict(f"invalid {kind}: {value!r}") from error
 
 

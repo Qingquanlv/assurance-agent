@@ -126,6 +126,37 @@ def test_resolver_rejects_engine_api_mismatch() -> None:
         resolve_dependency_order(descriptors, ("toy.runtime",))
 
 
+def test_resolver_rejects_unqualified_selected_ids_for_all_input_permutations() -> None:
+    entries = (
+        ("toy.runtime", _descriptor("toy.runtime")),
+        ("not-qualified", _descriptor("not-qualified")),
+    )
+    errors: set[str] = set()
+
+    for source_order in permutations(entries):
+        for required_order in permutations(tuple(plugin_id for plugin_id, _descriptor_value in entries)):
+            with pytest.raises(DependencyConflict) as error:
+                resolve_dependency_order(dict(source_order), required_order)
+            errors.add(str(error.value))
+
+    assert errors == {"invalid selected plugin source ID: 'not-qualified'"}
+
+
+def test_resolver_rejects_unqualified_required_roots_for_all_input_permutations() -> None:
+    descriptors = {
+        "toy.alpha": _descriptor("toy.alpha"),
+        "toy.runtime": _descriptor("toy.runtime"),
+    }
+    errors: set[str] = set()
+
+    for required_order in permutations(("toy.runtime", "not-qualified", "toy.alpha")):
+        with pytest.raises(DependencyConflict) as error:
+            resolve_dependency_order(descriptors, required_order)
+        errors.add(str(error.value))
+
+    assert errors == {"invalid required plugin ID: 'not-qualified'"}
+
+
 def test_resolver_uses_canonical_order_for_all_input_permutations() -> None:
     entries = (
         ("toy.flow", _descriptor("toy.flow", requires=(("toy.runtime", ">=1"),))),
@@ -156,3 +187,36 @@ def test_resolver_uses_canonical_error_text_for_all_input_permutations() -> None
             errors.add(str(error.value))
 
     assert errors == {"plugin toy.flow requires toy.runtime>=1,<2, but selected toy.runtime==2.0.0"}
+
+
+def test_resolver_uses_canonical_cycle_error_for_all_input_permutations() -> None:
+    entries = (
+        ("toy.alpha", _descriptor("toy.alpha", requires=(("toy.beta", ">=1"),))),
+        ("toy.beta", _descriptor("toy.beta", requires=(("toy.gamma", ">=1"),))),
+        ("toy.gamma", _descriptor("toy.gamma", requires=(("toy.alpha", ">=1"),))),
+    )
+    errors: set[str] = set()
+
+    for source_order in permutations(entries):
+        for required_order in permutations(tuple(plugin_id for plugin_id, _descriptor_value in entries)):
+            with pytest.raises(DependencyConflict) as error:
+                resolve_dependency_order(dict(source_order), required_order)
+            errors.add(str(error.value))
+
+    assert errors == {"dependency cycle among: toy.alpha, toy.beta, toy.gamma"}
+
+
+def test_resolver_uses_canonical_missing_parent_error_for_all_input_permutations() -> None:
+    entries = (
+        ("toy.flow", _descriptor("toy.flow", requires=(("toy.runtime", ">=1"),))),
+        ("toy.report", _descriptor("toy.report", requires=(("toy.runtime", ">=1"),))),
+    )
+    errors: set[str] = set()
+
+    for source_order in permutations(entries):
+        for required_order in permutations(tuple(plugin_id for plugin_id, _descriptor_value in entries)):
+            with pytest.raises(DependencyConflict) as error:
+                resolve_dependency_order(dict(source_order), required_order)
+            errors.add(str(error.value))
+
+    assert errors == {"missing selected plugin source: toy.runtime (required by toy.flow, toy.report)"}
