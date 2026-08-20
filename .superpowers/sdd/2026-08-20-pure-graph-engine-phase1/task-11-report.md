@@ -151,10 +151,86 @@ whitespace gates; all passed.
   small.
 - `progress.md` was not modified.
 
+## Review correction — exhaustive replay event IDs
+
+The independent review found that the replay projection preserved only six
+singular ID attribute values. It omitted the child graph's
+`parent_graph_instance_id`, `parent_node_id`, and `parent_activation_id`, the
+`graph_id` itself, and the complete tuple-valued `NodeActivated.token_ids`.
+Because it also discarded field names, equal values in different ID roles were
+not distinguishable in the replay comparison.
+
+### RED
+
+Added a literal projection assertion containing a child `GraphStarted` and a
+two-token `NodeActivated`, then ran it against the original helper:
+
+```console
+uv run pytest packages/graph-engine/tests/integration/test_toy_b.py::test_event_id_projection_preserves_parent_and_complete_token_bindings -v
+# 1 failed: graph_started projected only graph_instance_id; parent bindings,
+# graph_id, node_id, and the complete token_ids tuple were absent.
+```
+
+### GREEN
+
+Replaced the attribute-presence search with an explicit exhaustive schema for
+all 19 runtime event kinds. Each projected event now contains its ledger
+sequence, kind, and ordered `(field_name, value)` pairs. Singular values,
+nullable parent IDs, and tuple-valued IDs retain their complete shape and field
+identity. Clock/timing fields and content digests remain excluded.
+
+Added a schema coverage test that derives every `_id` and `_ids` field from
+every model in the `RuntimeEvent` union and requires exact equality with the
+projection schema. A new event kind or ID-bearing field therefore fails loudly
+until the replay projection deliberately covers it.
+
+Focused GREEN:
+
+```console
+uv run pytest packages/graph-engine/tests/integration/test_toy_b.py::test_event_id_projection_preserves_parent_and_complete_token_bindings packages/graph-engine/tests/integration/test_toy_b.py::test_event_id_projection_covers_every_runtime_event_id_field -v
+# 2 passed in 0.13s.
+
+uv run pytest packages/graph-engine/tests/integration/test_toy_b.py -q
+# 4 passed in 0.89s.
+```
+
+### Correction gates
+
+```console
+uv sync --dev
+# Resolved 44 packages; audited 42 packages; exit 0.
+
+uv run pytest packages/graph-engine/tests/integration -v
+# 6 passed in 1.05s.
+
+uv run pytest packages/graph-engine/tests/runtime -q
+# 340 passed, 1 skipped in 4.71s.
+
+uv run pytest packages/graph-engine/tests -q
+# 558 passed, 1 skipped in 5.82s.
+
+uv run python -c "import sys; import graph_engine; import graph_engine_toy_a; import graph_engine_toy_b; ..."
+# Both products resolved, assurance_agent stayed absent, and registries were
+# disjoint; exit 0.
+
+uv run ruff check .
+# All checks passed.
+
+uv run pyright
+# 0 errors, 0 warnings, 0 informations.
+
+uv run ruff format --check examples/graph-engine-toy-b packages/graph-engine/tests/integration/test_toy_b.py
+# 4 files already formatted.
+
+git diff --check
+# exit 0.
+```
+
 ## Commits
 
 - `a445974` — `test(graph-engine): prove independent complex toy product`
 - `f46c43e` — `test(graph-engine): prove sibling subgraph write claim`
+- `f3867e5` — `test(graph-engine): compare complete replay event IDs`
 
 ## Concerns
 
