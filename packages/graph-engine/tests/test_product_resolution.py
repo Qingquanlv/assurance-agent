@@ -20,6 +20,7 @@ from graph_engine.product import (
     PluginRequirement,
     ProductManifest,
     ProductResolutionError,
+    load_plugin_entrypoint,
     load_product_entrypoint,
     resolve_product,
 )
@@ -385,9 +386,12 @@ class _EntryPoint:
     name: str
     value: object
     loaded_names: list[str]
+    load_error: Exception | None = None
 
     def load(self) -> object:
         self.loaded_names.append(self.name)
+        if self.load_error is not None:
+            raise self.load_error
         return self.value
 
 
@@ -439,6 +443,20 @@ def test_product_entrypoint_requires_callable_manifest(monkeypatch: pytest.Monke
         load_product_entrypoint("toy.product")
 
 
+def test_product_entrypoint_load_failure_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    failure = ImportError("missing trusted wheel dependency")
+    entry_point = _EntryPoint("toy.product", object(), [], load_error=failure)
+    monkeypatch.setattr("graph_engine.product.metadata.entry_points", lambda *, group: (entry_point,))
+
+    with pytest.raises(
+        ProductResolutionError,
+        match="cannot load product entry point toy.product",
+    ) as raised:
+        load_product_entrypoint("toy.product")
+
+    assert raised.value.__cause__ is failure
+
+
 def test_product_entrypoint_rejects_invalid_id_before_discovery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -448,3 +466,46 @@ def test_product_entrypoint_rejects_invalid_id_before_discovery(
     monkeypatch.setattr("graph_engine.product.metadata.entry_points", unexpected_discovery)
     with pytest.raises(ProductResolutionError, match="invalid product id"):
         load_product_entrypoint("toy")
+
+
+def test_plugin_entrypoint_loading_searches_only_plugin_group_and_loads_only_the_match(
+    monkeypatch: pytest.MonkeyPatch, plugin_one: _PluginProvider
+) -> None:
+    groups: list[str] = []
+    loaded_names: list[str] = []
+    selected = _EntryPoint("toy-a", plugin_one, loaded_names)
+    unselected = _EntryPoint("toy-b", object(), loaded_names)
+
+    def entry_points(*, group: str) -> tuple[_EntryPoint, ...]:
+        groups.append(group)
+        if group == "graph_engine.plugins":
+            return (unselected, selected)
+        raise AssertionError(f"unexpected entry-point group: {group}")
+
+    monkeypatch.setattr("graph_engine.product.metadata.entry_points", entry_points)
+
+    loaded = load_plugin_entrypoint("toy-a")
+
+    assert loaded is plugin_one
+    assert groups == ["graph_engine.plugins"]
+    assert loaded_names == ["toy-a"]
+
+
+def test_missing_plugin_entrypoint_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("graph_engine.product.metadata.entry_points", lambda *, group: ())
+    with pytest.raises(ProductResolutionError, match="no plugin entry point for toy-a"):
+        load_plugin_entrypoint("toy-a")
+
+
+def test_multiple_plugin_entrypoints_fail_without_loading(monkeypatch: pytest.MonkeyPatch) -> None:
+    loaded_names: list[str] = []
+    matches = (
+        _EntryPoint("toy-a", object(), loaded_names),
+        _EntryPoint("toy-a", object(), loaded_names),
+    )
+    monkeypatch.setattr("graph_engine.product.metadata.entry_points", lambda *, group: matches)
+
+    with pytest.raises(ProductResolutionError, match="multiple plugin entry points for toy-a"):
+        load_plugin_entrypoint("toy-a")
+
+    assert loaded_names == []

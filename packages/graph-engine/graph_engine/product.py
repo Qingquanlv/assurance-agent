@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import metadata
+import re
 from typing import Protocol, cast
 
 from pydantic import field_validator, model_validator
@@ -61,6 +62,9 @@ class ProductManifest(FrozenModel):
 
 class ProductProvider(Protocol):
     def manifest(self) -> ProductManifest: ...
+
+
+_ENTRYPOINT_NAME = re.compile(r"^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$|^[a-z][a-z0-9-]*-[a-z0-9-]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,26 +180,59 @@ def resolve_product(
     )
 
 
-def load_product_entrypoint(product_id: str) -> ProductProvider:
+def _load_entrypoint(
+    entrypoint_name: str,
+    *,
+    group: str,
+    kind: str,
+    required_methods: tuple[str, ...],
+) -> object:
     try:
-        validate_qualified_id(product_id)
-    except IdentifierError as error:
-        raise ProductResolutionError(f"invalid product id: {product_id!r}") from error
+        validate_qualified_id(entrypoint_name)
+    except IdentifierError:
+        if not _ENTRYPOINT_NAME.fullmatch(entrypoint_name):
+            raise ProductResolutionError(f"invalid {kind} id: {entrypoint_name!r}") from None
 
     matches = tuple(
         entry_point
-        for entry_point in metadata.entry_points(group="graph_engine.products")
-        if entry_point.name == product_id
+        for entry_point in metadata.entry_points(group=group)
+        if entry_point.name == entrypoint_name
     )
     if not matches:
-        raise ProductResolutionError(f"no product entry point for {product_id}")
+        raise ProductResolutionError(f"no {kind} entry point for {entrypoint_name}")
     if len(matches) > 1:
-        raise ProductResolutionError(f"multiple product entry points for {product_id}")
+        raise ProductResolutionError(f"multiple {kind} entry points for {entrypoint_name}")
 
-    loaded = next(iter(matches)).load()
-    if not callable(getattr(loaded, "manifest", None)):
-        raise ProductResolutionError(f"product entry point {product_id} does not provide callable manifest")
+    try:
+        loaded = next(iter(matches)).load()
+    except Exception as error:
+        raise ProductResolutionError(f"cannot load {kind} entry point {entrypoint_name}") from error
+    if any(not callable(getattr(loaded, method, None)) for method in required_methods):
+        methods = " and ".join(required_methods)
+        raise ProductResolutionError(
+            f"{kind} entry point {entrypoint_name} does not provide callable {methods}"
+        )
+    return loaded
+
+
+def load_product_entrypoint(entrypoint_name: str) -> ProductProvider:
+    loaded = _load_entrypoint(
+        entrypoint_name,
+        group="graph_engine.products",
+        kind="product",
+        required_methods=("manifest",),
+    )
     return cast(ProductProvider, loaded)
+
+
+def load_plugin_entrypoint(entrypoint_name: str) -> PluginProvider:
+    loaded = _load_entrypoint(
+        entrypoint_name,
+        group="graph_engine.plugins",
+        kind="plugin",
+        required_methods=("descriptor", "bind"),
+    )
+    return cast(PluginProvider, loaded)
 
 
 __all__ = [
@@ -204,6 +241,7 @@ __all__ = [
     "ProductProvider",
     "ProductResolutionError",
     "ResolvedProduct",
+    "load_plugin_entrypoint",
     "load_product_entrypoint",
     "resolve_product",
 ]

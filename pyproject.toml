@@ -29,6 +29,7 @@ dev = [
     "mutmut>=3.7.0",
     "aa-sample-product",
     "graph-engine",
+    "graph-engine-toy-a",
 ]
 
 [build-system]
@@ -61,9 +62,15 @@ pythonVersion = "3.11"
 typeCheckingMode = "standard"
 
 [tool.uv.workspace]
-members = ["packages/assurance-kernel", "packages/graph-engine", "examples/minimal-product"]
+members = [
+    "packages/assurance-kernel",
+    "packages/graph-engine",
+    "examples/minimal-product",
+    "examples/graph-engine-toy-a",
+]
 
 [tool.uv.sources]
 aa-sample-product = { workspace = true }
 assurance-kernel = { workspace = true }
 graph-engine = { workspace = true }
+graph-engine-toy-a = { workspace = true }

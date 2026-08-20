@@ -13,6 +13,7 @@ members = [
     "assurance-agent",
     "assurance-kernel",
     "graph-engine",
+    "graph-engine-toy-a",
 ]
 
 [[package]]
@@ -65,6 +66,7 @@ dependencies = [
 dev = [
     { name = "aa-sample-product" },
     { name = "graph-engine" },
+    { name = "graph-engine-toy-a" },
     { name = "import-linter" },
     { name = "mutmut" },
     { name = "pyright" },
@@ -86,6 +88,7 @@ requires-dist = [
 dev = [
     { name = "aa-sample-product", editable = "examples/minimal-product" },
     { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },
     { name = "import-linter", specifier = ">=2.0" },
     { name = "mutmut", specifier = ">=3.7.0" },
     { name = "pyright", specifier = ">=1.1.380" },
@@ -240,6 +243,17 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
+
+[[package]]
+name = "graph-engine-toy-a"
+version = "1.0.0"
+source = { editable = "examples/graph-engine-toy-a" }
+dependencies = [
+    { name = "graph-engine" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "graph-engine", editable = "packages/graph-engine" }]
 
 [[package]]
 name = "grimp"

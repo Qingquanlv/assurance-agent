@@ -28,6 +28,7 @@ from graph_engine.product import (  # noqa: E402
     ProductProvider,
     ProductResolutionError,
     ResolvedProduct,
+    load_plugin_entrypoint,
     load_product_entrypoint,
     resolve_product,
 )
@@ -73,6 +74,7 @@ __all__ = [
     "ValidationContext",
     "ValidationResult",
     "assemble_registry",
+    "load_plugin_entrypoint",
     "load_product_entrypoint",
     "resolve_product",
 ]
