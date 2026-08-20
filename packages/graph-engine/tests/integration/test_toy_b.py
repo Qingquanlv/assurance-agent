@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import cast, get_args
 
 import pytest
 
@@ -10,7 +10,13 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 from graph_engine.product import load_plugin_entrypoint, load_product_entrypoint, resolve_product
 from graph_engine.runtime.engine import Engine, EngineError, RunResult
-from graph_engine.runtime.events import EventEnvelope
+from graph_engine.runtime.events import (
+    EventEnvelope,
+    GraphStarted,
+    NodeActivated,
+    RuntimeEvent,
+    RuntimeEventModel,
+)
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import ActivationRecord
 
@@ -40,30 +46,137 @@ def _activation(result: RunResult, graph_instance_id: str, node_id: str) -> Acti
     )
 
 
-def _event_id_sequence(envelopes: tuple[EventEnvelope, ...]) -> tuple[tuple[object, ...], ...]:
-    identity_fields = (
-        "invocation_id",
+EventIDValue = str | tuple[str, ...] | None
+EventIDFields = tuple[tuple[str, EventIDValue], ...]
+EventIDSignature = tuple[int, str, EventIDFields]
+
+_ID_FIELDS_BY_EVENT_KIND: dict[str, tuple[str, ...]] = {
+    "invocation_started": ("invocation_id",),
+    "graph_started": (
         "graph_instance_id",
-        "token_id",
-        "activation_id",
-        "task_id",
-        "interrupt_id",
-    )
+        "graph_id",
+        "parent_graph_instance_id",
+        "parent_node_id",
+        "parent_activation_id",
+    ),
+    "token_offered": ("token_id", "graph_instance_id"),
+    "token_consumed": ("token_id", "graph_instance_id", "node_id"),
+    "node_activated": ("activation_id", "graph_instance_id", "node_id", "token_ids"),
+    "task_attempt_started": ("activation_id",),
+    "task_lease_acquired": ("task_id", "activation_id", "owner_id"),
+    "task_lease_heartbeat": ("task_id", "activation_id", "owner_id"),
+    "task_attempt_succeeded": ("activation_id",),
+    "task_attempt_failed": ("activation_id",),
+    "task_attempt_stopped": ("activation_id",),
+    "head_advanced": ("task_id", "activation_id", "previous_tree_id", "tree_id"),
+    "node_completed": ("activation_id",),
+    "node_failed": ("activation_id",),
+    "node_interrupted": ("activation_id", "interrupt_id", "graph_instance_id"),
+    "interrupt_resumed": ("interrupt_id",),
+    "graph_completed": ("graph_instance_id",),
+    "graph_failed": ("graph_instance_id",),
+    "invocation_finished": ("invocation_id",),
+}
+
+
+def _runtime_event_types() -> tuple[type[RuntimeEventModel], ...]:
+    event_union = get_args(RuntimeEvent)[0]
+    return cast(tuple[type[RuntimeEventModel], ...], get_args(event_union))
+
+
+def _runtime_event_id_schema() -> dict[str, tuple[str, ...]]:
+    schema: dict[str, tuple[str, ...]] = {}
+    for event_type in _runtime_event_types():
+        event_kind = cast(str, event_type.model_fields["kind"].default)
+        schema[event_kind] = tuple(
+            field_name for field_name in event_type.model_fields if field_name.endswith(("_id", "_ids"))
+        )
+    return schema
+
+
+def _event_id_fields(event: RuntimeEvent) -> EventIDFields:
+    try:
+        field_names = _ID_FIELDS_BY_EVENT_KIND[event.kind]
+    except KeyError as error:
+        raise AssertionError(f"event ID schema does not cover {event.kind!r}") from error
+    return tuple((field_name, cast(EventIDValue, getattr(event, field_name))) for field_name in field_names)
+
+
+def _event_id_sequence(envelopes: tuple[EventEnvelope, ...]) -> tuple[EventIDSignature, ...]:
     return tuple(
         (
             envelope.seq,
             envelope.event.kind,
-            *(getattr(envelope.event, field) for field in identity_fields if hasattr(envelope.event, field)),
+            _event_id_fields(envelope.event),
         )
         for envelope in envelopes
     )
+
+
+def test_event_id_projection_preserves_parent_and_complete_token_bindings() -> None:
+    parent_activation_id = "parent-activation"
+    child_graph_id = canonical_digest(
+        {
+            "parent_activation_id": parent_activation_id,
+            "graph_id": "child",
+        }
+    )
+    envelopes = (
+        EventEnvelope.from_event(
+            1,
+            GraphStarted(
+                graph_instance_id=child_graph_id,
+                graph_id="child",
+                parent_graph_instance_id="root",
+                parent_node_id="child-subgraph",
+                parent_activation_id=parent_activation_id,
+            ),
+        ),
+        EventEnvelope.from_event(
+            2,
+            NodeActivated(
+                activation_id="joined-activation",
+                graph_instance_id="root",
+                node_id="joined",
+                token_ids=("left-token", "child-token"),
+            ),
+        ),
+    )
+
+    assert _event_id_sequence(envelopes) == (
+        (
+            1,
+            "graph_started",
+            (
+                ("graph_instance_id", child_graph_id),
+                ("graph_id", "child"),
+                ("parent_graph_instance_id", "root"),
+                ("parent_node_id", "child-subgraph"),
+                ("parent_activation_id", parent_activation_id),
+            ),
+        ),
+        (
+            2,
+            "node_activated",
+            (
+                ("activation_id", "joined-activation"),
+                ("graph_instance_id", "root"),
+                ("node_id", "joined"),
+                ("token_ids", ("left-token", "child-token")),
+            ),
+        ),
+    )
+
+
+def test_event_id_projection_covers_every_runtime_event_id_field() -> None:
+    assert _ID_FIELDS_BY_EVENT_KIND == _runtime_event_id_schema()
 
 
 def _run_to_completion(
     root: Path,
     *,
     invocation_id: str,
-) -> tuple[str, tuple[tuple[object, ...], ...], str, JSONValue]:
+) -> tuple[str, tuple[EventIDSignature, ...], str, JSONValue]:
     product = load_product_entrypoint("toy-b")
     plugin = load_plugin_entrypoint("toy-b")
     resolved = resolve_product(product, {"toy.b": plugin})
