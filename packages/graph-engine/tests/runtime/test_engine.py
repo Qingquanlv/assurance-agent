@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 import graph_engine.runtime.engine as engine_runtime
 import graph_engine.runtime.ledger as ledger_runtime
+import graph_engine.runtime.workspace as workspace_runtime
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.graph.compiler import compile_workflow
 from graph_engine.graph.schema import WorkflowDef
@@ -35,25 +36,32 @@ from graph_engine.runtime.engine import (
     EngineConflictError,
     EngineError,
     EnginePublicationIndeterminate,
+    RunResult,
 )
 from graph_engine.runtime.events import (
     EventEnvelope,
     GraphCompleted,
     GraphFailed,
     GraphStarted,
+    HeadAdvanced,
     InterruptResumed,
     InvocationFinished,
+    NodeActivated,
+    NodeCompleted,
     NodeFailed,
     NodeInterrupted,
     RuntimeEvent,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
+    TaskAttemptSucceeded,
     TaskLeaseAcquired,
+    TokenConsumed,
+    TokenOffered,
 )
-from graph_engine.runtime.ledger import Ledger
+from graph_engine.runtime.ledger import Ledger, LedgerIntegrityError
 from graph_engine.runtime.models import fold_events
-from graph_engine.runtime.planner import plan_next, task_id
+from graph_engine.runtime.planner import activation_id, plan_next, task_id
 from graph_engine.runtime.scheduler import FakeClock
 from graph_engine.runtime.scheduler import Scheduler
 from graph_engine.runtime.workspace import SnapshotStore, WorkspaceViolation
@@ -98,17 +106,48 @@ def _resolved(
     return resolve_product(product, {"test.empty": _StaticPlugin(handlers or {})})
 
 
-def _rewrite_ledger(ledger_root: Path, events: tuple[object, ...]) -> None:
-    envelopes = tuple(
-        EventEnvelope.from_event(sequence, event)  # type: ignore[arg-type]
-        for sequence, event in enumerate(events, start=1)
+def _structural_product(
+    *,
+    name: str,
+    nodes: dict[str, object],
+    edges: list[dict[str, str]],
+    start: str,
+    maximum: int,
+) -> ResolvedProduct:
+    return _resolved(
+        {
+            "name": name,
+            "entrypoints": {"main": "root"},
+            "retry": {},
+            "timeout": {},
+            "graphs": {
+                "root": {
+                    "max_activations": maximum,
+                    "start": start,
+                    "nodes": nodes,
+                    "edges": edges,
+                }
+            },
+        }
     )
+
+
+def _rewrite_ledger(ledger_root: Path, events: tuple[object, ...]) -> None:
+    envelopes: list[JSONValue] = []
+    for sequence, raw_event in enumerate(events, start=1):
+        event = cast(RuntimeEvent, raw_event)
+        event_json = cast(JSONValue, event.model_dump(mode="json"))
+        envelopes.append(
+            {
+                "seq": sequence,
+                "event": event_json,
+                "event_sha256": canonical_digest({"seq": sequence, "event": event_json}),
+            }
+        )
     for batch in ledger_root.glob("[0-9]*.json"):
         batch.unlink()
     final = ledger_root / f"{1:010d}-{len(envelopes):010d}.json"
-    final.write_bytes(
-        canonical_json_bytes(cast(JSONValue, [envelope.model_dump(mode="json") for envelope in envelopes]))
-    )
+    final.write_bytes(canonical_json_bytes(envelopes))
 
 
 class _InProcessTestHost:
@@ -179,6 +218,39 @@ def _task_product(
             "retry": {"once": {"max_attempts": 1}},
             "timeout": {"short": {"run_seconds": 5}},
             "graphs": graphs,
+        },
+        {"test.empty.run": cast(TaskHandler, handler)},
+    )
+
+
+def _two_task_product(handler: Callable[..., Awaitable[TaskOutcome]]) -> ResolvedProduct:
+    task = {
+        "kind": "task",
+        "capability": "test.empty.run",
+        "retry": "once",
+        "timeout": "short",
+    }
+    return _resolved(
+        {
+            "name": "two-task-publication",
+            "entrypoints": {"main": "root"},
+            "retry": {"once": {"max_attempts": 1}},
+            "timeout": {"short": {"run_seconds": 5}},
+            "graphs": {
+                "root": {
+                    "max_activations": 3,
+                    "start": "first",
+                    "nodes": {
+                        "first": task,
+                        "second": task,
+                        "end": {"kind": "end"},
+                    },
+                    "edges": [
+                        {"from": "first", "to": "second"},
+                        {"from": "second", "to": "end"},
+                    ],
+                }
+            },
         },
         {"test.empty.run": cast(TaskHandler, handler)},
     )
@@ -1323,6 +1395,86 @@ def test_open_durably_syncs_linked_success_before_clearing_head_journal(
     assert not journal.exists()
 
 
+@pytest.mark.parametrize("cut", ["unlink", "directory_fsync"])
+def test_post_success_journal_clear_fault_stops_before_successor_and_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cut: Literal["unlink", "directory_fsync"],
+) -> None:
+    armed = False
+    executed: list[str] = []
+
+    async def handler(request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        nonlocal armed
+        executed.append(request.node_id)
+        if request.node_id == "first":
+            armed = True
+        return TaskOutcome.succeeded(request.node_id)
+
+    product = _two_task_product(handler)
+    invocation_id = f"post-success-clear-{cut}"
+    root = tmp_path / cut
+    engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id)
+    workspace_root = handle.invocation_root / "workspace"
+    journal = workspace_root / ".HEAD-transaction.json"
+    workspace_identity = workspace_root.stat()
+    real_unlink = workspace_runtime.os.unlink
+    real_fsync = workspace_runtime.os.fsync
+    journal_unlinked = False
+
+    def fault_unlink(path: object, *args: object, **kwargs: object) -> None:
+        nonlocal journal_unlinked
+        if armed and path == ".HEAD-transaction.json":
+            if cut == "unlink":
+                raise OSError("simulated journal unlink cut")
+            real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+            journal_unlinked = True
+            return
+        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    def fault_fsync(descriptor: int) -> None:
+        current = os.fstat(descriptor)
+        if (
+            armed
+            and cut == "directory_fsync"
+            and journal_unlinked
+            and (current.st_dev, current.st_ino) == (workspace_identity.st_dev, workspace_identity.st_ino)
+        ):
+            raise OSError("simulated journal directory fsync cut")
+        real_fsync(descriptor)
+
+    with monkeypatch.context() as faults:
+        faults.setattr(workspace_runtime.os, "unlink", fault_unlink)
+        faults.setattr(workspace_runtime.os, "fsync", fault_fsync)
+        with pytest.raises(EnginePublicationIndeterminate, match="publication is indeterminate"):
+            engine.run_until_blocked(handle)
+
+    events = tuple(envelope.event for envelope in Ledger(handle.invocation_root / "ledger").read_all())
+    first_activation = next(
+        activation
+        for activation in fold_events(Ledger(handle.invocation_root / "ledger").read_all()).activations
+        if activation.node_id == "first"
+    )
+    assert first_activation.attempts[-1].status == "succeeded"
+    assert first_activation.attempts[-1].committed_tree_id is not None
+    assert any(isinstance(event, TaskAttemptSucceeded) for event in events)
+    assert any(isinstance(event, HeadAdvanced) for event in events)
+    assert not any(isinstance(event, TaskAttemptFailed) for event in events)
+    assert executed == ["first"]
+    assert journal.exists()
+
+    handle.close()
+    engine.close()
+    with Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as reopened_engine:
+        with reopened_engine.open(invocation_id, product) as reopened:
+            assert not journal.exists()
+            result = reopened_engine.run_until_blocked(reopened)
+
+    assert result.status == "succeeded"
+    assert executed == ["first", "second"]
+
+
 def test_open_cannot_recover_head_from_projection_stale_to_live_runner(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1400,6 +1552,7 @@ def test_open_cannot_recover_head_from_projection_stale_to_live_runner(
     assert not opener.is_alive()
     assert len(runner_outcome) == 1
     assert len(opener_outcome) == 1
+    assert isinstance(runner_outcome[0], EnginePublicationIndeterminate)
     assert isinstance(opener_outcome[0], EngineConflictError)
     assert journal.exists()
 
@@ -1595,6 +1748,380 @@ def test_open_validates_terminal_projection_against_exact_compiled_workflow(tmp_
 
     with pytest.raises(EngineError, match="workflow|graph|entrypoint"):
         Engine(tmp_path).open("terminal-validation", adversarial)
+
+
+def test_open_rejects_self_digested_success_with_terminal_reason(tmp_path: Path) -> None:
+    product = _structural_product(
+        name="success-reason",
+        nodes={"end": {"kind": "end"}},
+        edges=[],
+        start="end",
+        maximum=1,
+    )
+    engine = Engine(tmp_path)
+    handle = engine.start(product, entrypoint="main", invocation_id="success-reason")
+    result = engine.run_until_blocked(handle)
+    assert (
+        RunResult(
+            status="succeeded",
+            projection=result.projection,
+        ).terminal_reason
+        is None
+    )
+    with pytest.raises(ValidationError, match="successful run"):
+        RunResult(
+            status="succeeded",
+            terminal_reason="forged-success-reason",
+            projection=result.projection,
+        )
+
+    ledger_root = handle.invocation_root / "ledger"
+    forged_events = tuple(
+        envelope.event.model_copy(update={"terminal_reason": "forged-success-reason"})
+        if isinstance(envelope.event, InvocationFinished)
+        else envelope.event
+        for envelope in Ledger(ledger_root).read_all()
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+
+    with pytest.raises(LedgerIntegrityError, match="successful invocation"):
+        Engine(tmp_path).open("success-reason", product)
+
+
+def test_open_rejects_terminal_history_with_omitted_fanout_branch(tmp_path: Path) -> None:
+    product = _structural_product(
+        name="omitted-fanout",
+        nodes={
+            "split": {"kind": "gate", "expression": "true"},
+            "left": {"kind": "end"},
+            "right": {"kind": "end"},
+        },
+        edges=[
+            {"from": "split", "to": "left"},
+            {"from": "split", "to": "right"},
+        ],
+        start="split",
+        maximum=3,
+    )
+    engine = Engine(tmp_path)
+    handle = engine.start(product, entrypoint="main", invocation_id="omitted-fanout")
+    assert engine.run_until_blocked(handle).status == "succeeded"
+    ledger_root = handle.invocation_root / "ledger"
+    events = tuple(envelope.event for envelope in Ledger(ledger_root).read_all())
+    left_token = next(event for event in events if isinstance(event, TokenOffered) and event.target == "left")
+    left_activation = next(
+        event for event in events if isinstance(event, NodeActivated) and event.node_id == "left"
+    )
+    forged_events = tuple(
+        event
+        for event in events
+        if not (
+            (isinstance(event, TokenOffered | TokenConsumed) and event.token_id == left_token.token_id)
+            or (
+                isinstance(event, NodeActivated | NodeCompleted)
+                and event.activation_id == left_activation.activation_id
+            )
+        )
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
+
+    with pytest.raises(EngineError, match="event history"):
+        Engine(tmp_path).open("omitted-fanout", product)
+
+
+@pytest.mark.parametrize("mutation", ["token_id", "payload"])
+def test_open_rejects_changed_canonical_edge_token(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    invocation_id = f"changed-edge-{mutation}"
+    product = _structural_product(
+        name=invocation_id,
+        nodes={
+            "split": {"kind": "gate", "expression": "true"},
+            "end": {"kind": "end"},
+        },
+        edges=[{"from": "split", "to": "end"}],
+        start="split",
+        maximum=2,
+    )
+    engine = Engine(tmp_path)
+    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id)
+    assert engine.run_until_blocked(handle).status == "succeeded"
+    ledger_root = handle.invocation_root / "ledger"
+    events = tuple(envelope.event for envelope in Ledger(ledger_root).read_all())
+    edge_token = next(
+        event for event in events if isinstance(event, TokenOffered) and event.source == "split"
+    )
+    end_activation = next(
+        event for event in events if isinstance(event, NodeActivated) and event.node_id == "end"
+    )
+    if mutation == "token_id":
+        forged_token_id = "forged-edge-token"
+        forged_activation_id = activation_id("root", "end", 0, (forged_token_id,))
+        forged_events = tuple(
+            event.model_copy(update={"token_id": forged_token_id})
+            if isinstance(event, TokenOffered | TokenConsumed) and event.token_id == edge_token.token_id
+            else event.model_copy(
+                update={
+                    "activation_id": forged_activation_id,
+                    "token_ids": (forged_token_id,),
+                }
+            )
+            if isinstance(event, NodeActivated) and event.activation_id == end_activation.activation_id
+            else event.model_copy(update={"activation_id": forged_activation_id})
+            if isinstance(event, NodeCompleted) and event.activation_id == end_activation.activation_id
+            else event
+            for event in events
+        )
+    else:
+        forged_output = {"forged": True}
+        forged_events = tuple(
+            event.model_copy(update={"payload": forged_output})
+            if isinstance(event, TokenOffered) and event.token_id == edge_token.token_id
+            else event.model_copy(update={"output": forged_output})
+            if (isinstance(event, NodeCompleted) and event.activation_id == end_activation.activation_id)
+            or isinstance(event, GraphCompleted)
+            else event
+            for event in events
+        )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
+
+    with pytest.raises(EngineError, match="event history"):
+        Engine(tmp_path).open(invocation_id, product)
+
+
+def test_open_rejects_token_from_false_condition(tmp_path: Path) -> None:
+    product = _structural_product(
+        name="false-condition-token",
+        nodes={
+            "split": {"kind": "gate", "expression": "true"},
+            "end": {"kind": "end"},
+            "forbidden": {"kind": "end"},
+        },
+        edges=[
+            {"from": "split", "to": "end", "condition": "output.value == true"},
+            {"from": "split", "to": "forbidden", "condition": "output.value == false"},
+        ],
+        start="split",
+        maximum=3,
+    )
+    engine = Engine(tmp_path)
+    handle = engine.start(product, entrypoint="main", invocation_id="false-condition-token")
+    assert engine.run_until_blocked(handle).status == "succeeded"
+    ledger_root = handle.invocation_root / "ledger"
+    events = tuple(envelope.event for envelope in Ledger(ledger_root).read_all())
+    source_activation = next(
+        event for event in events if isinstance(event, NodeActivated) and event.node_id == "split"
+    )
+    source_completion = next(
+        event
+        for event in events
+        if isinstance(event, NodeCompleted) and event.activation_id == source_activation.activation_id
+    )
+    false_token_id = canonical_digest(
+        {
+            "edge_index": 1,
+            "graph_instance_id": "root",
+            "kind": "edge",
+            "source": "split",
+            "source_activation_id": source_activation.activation_id,
+            "target": "forbidden",
+        }
+    )
+    false_activation_id = activation_id("root", "forbidden", 0, (false_token_id,))
+    forged_branch: tuple[RuntimeEvent, ...] = (
+        TokenOffered(
+            token_id=false_token_id,
+            graph_instance_id="root",
+            source="split",
+            target="forbidden",
+            payload=source_completion.output,
+        ),
+        TokenConsumed(token_id=false_token_id, graph_instance_id="root", node_id="forbidden"),
+        NodeActivated(
+            activation_id=false_activation_id,
+            graph_instance_id="root",
+            node_id="forbidden",
+            token_ids=(false_token_id,),
+        ),
+        NodeCompleted(activation_id=false_activation_id, output=source_completion.output),
+    )
+    completion_index = next(index for index, event in enumerate(events) if isinstance(event, GraphCompleted))
+    forged_events = (*events[:completion_index], *forged_branch, *events[completion_index:])
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
+
+    with pytest.raises(EngineError, match="event history"):
+        Engine(tmp_path).open("false-condition-token", product)
+
+
+def test_open_rejects_extra_duplicate_edge_token(tmp_path: Path) -> None:
+    product = _structural_product(
+        name="extra-edge-token",
+        nodes={
+            "split": {"kind": "gate", "expression": "true"},
+            "end": {"kind": "end"},
+        },
+        edges=[{"from": "split", "to": "end"}],
+        start="split",
+        maximum=3,
+    )
+    engine = Engine(tmp_path)
+    handle = engine.start(product, entrypoint="main", invocation_id="extra-edge-token")
+    assert engine.run_until_blocked(handle).status == "succeeded"
+    ledger_root = handle.invocation_root / "ledger"
+    events = tuple(envelope.event for envelope in Ledger(ledger_root).read_all())
+    edge_token = next(
+        event for event in events if isinstance(event, TokenOffered) and event.source == "split"
+    )
+    extra_token_id = "extra-edge-token"
+    extra_activation_id = activation_id("root", "end", 1, (extra_token_id,))
+    extra_events: tuple[RuntimeEvent, ...] = (
+        edge_token.model_copy(update={"token_id": extra_token_id}),
+        TokenConsumed(token_id=extra_token_id, graph_instance_id="root", node_id="end"),
+        NodeActivated(
+            activation_id=extra_activation_id,
+            graph_instance_id="root",
+            node_id="end",
+            token_ids=(extra_token_id,),
+        ),
+        NodeCompleted(activation_id=extra_activation_id, output=edge_token.payload),
+    )
+    completion_index = next(index for index, event in enumerate(events) if isinstance(event, GraphCompleted))
+    forged_events = (*events[:completion_index], *extra_events, *events[completion_index:])
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
+
+    with pytest.raises(EngineError, match="event history"):
+        Engine(tmp_path).open("extra-edge-token", product)
+
+
+def test_open_rejects_non_earliest_available_token_consumption(tmp_path: Path) -> None:
+    product = _structural_product(
+        name="non-earliest-token",
+        nodes={
+            "split": {"kind": "gate", "expression": "true"},
+            "left": {"kind": "gate", "expression": "true"},
+            "right": {"kind": "gate", "expression": "true"},
+            "work": {"kind": "gate", "expression": "true"},
+        },
+        edges=[
+            {"from": "split", "to": "left"},
+            {"from": "split", "to": "right"},
+            {"from": "left", "to": "work"},
+            {"from": "right", "to": "work"},
+        ],
+        start="split",
+        maximum=6,
+    )
+    engine = Engine(tmp_path)
+    handle = engine.start(product, entrypoint="main", invocation_id="non-earliest-token")
+    ledger_root = handle.invocation_root / "ledger"
+    initial = Ledger(ledger_root).read_all()
+    planned = plan_next(product.workflow, fold_events(initial))
+    consume_index = next(
+        index
+        for index, event in enumerate(planned.events)
+        if isinstance(event, TokenConsumed) and event.node_id == "work"
+    )
+    prefix = planned.events[:consume_index]
+    available = sorted(
+        (event for event in prefix if isinstance(event, TokenOffered) and event.target == "work"),
+        key=lambda event: event.token_id,
+    )
+    assert len(available) == 2
+    forged_token = available[1]
+    forged_activation_id = activation_id("root", "work", 0, (forged_token.token_id,))
+    forged_events = (
+        *(envelope.event for envelope in initial),
+        *prefix,
+        TokenConsumed(
+            token_id=forged_token.token_id,
+            graph_instance_id="root",
+            node_id="work",
+        ),
+        NodeActivated(
+            activation_id=forged_activation_id,
+            graph_instance_id="root",
+            node_id="work",
+            token_ids=(forged_token.token_id,),
+        ),
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "running"
+
+    with pytest.raises(EngineError, match="event history"):
+        Engine(tmp_path).open("non-earliest-token", product)
+
+
+def test_open_rejects_non_earliest_token_for_all_join_predecessor(tmp_path: Path) -> None:
+    product = _structural_product(
+        name="non-earliest-all-join",
+        nodes={
+            "split": {"kind": "gate", "expression": "true"},
+            "left": {"kind": "gate", "expression": "true"},
+            "right": {"kind": "gate", "expression": "true"},
+            "joined": {"kind": "join", "join": "all"},
+        },
+        edges=[
+            {"from": "split", "to": "left"},
+            {"from": "split", "to": "right"},
+            {"from": "left", "to": "joined"},
+            {"from": "left", "to": "joined"},
+            {"from": "right", "to": "joined"},
+        ],
+        start="split",
+        maximum=4,
+    )
+    engine = Engine(tmp_path)
+    handle = engine.start(product, entrypoint="main", invocation_id="non-earliest-all-join")
+    ledger_root = handle.invocation_root / "ledger"
+    initial = Ledger(ledger_root).read_all()
+    planned = plan_next(product.workflow, fold_events(initial))
+    consume_index = next(
+        index
+        for index, event in enumerate(planned.events)
+        if isinstance(event, TokenConsumed) and event.node_id == "joined"
+    )
+    prefix = planned.events[:consume_index]
+    left_tokens = sorted(
+        (
+            event
+            for event in prefix
+            if isinstance(event, TokenOffered) and event.target == "joined" and event.source == "left"
+        ),
+        key=lambda event: event.token_id,
+    )
+    right_token = next(
+        event
+        for event in prefix
+        if isinstance(event, TokenOffered) and event.target == "joined" and event.source == "right"
+    )
+    assert len(left_tokens) == 2
+    forged_token_ids = (left_tokens[1].token_id, right_token.token_id)
+    forged_activation_id = activation_id("root", "joined", 0, forged_token_ids)
+    forged_events = (
+        *(envelope.event for envelope in initial),
+        *prefix,
+        *(
+            TokenConsumed(token_id=token_id_, graph_instance_id="root", node_id="joined")
+            for token_id_ in forged_token_ids
+        ),
+        NodeActivated(
+            activation_id=forged_activation_id,
+            graph_instance_id="root",
+            node_id="joined",
+            token_ids=forged_token_ids,
+        ),
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "running"
+
+    with pytest.raises(EngineError, match="event history"):
+        Engine(tmp_path).open("non-earliest-all-join", product)
 
 
 def test_open_rejects_terminal_task_completed_without_committed_attempt(tmp_path: Path) -> None:
@@ -2154,26 +2681,28 @@ def test_open_rejects_activation_bound_with_forged_retryable_task_settlement(
         )
 
 
-@pytest.mark.parametrize("terminal_kind", ["failed", "stopped", "activation_bound"])
+@pytest.mark.parametrize("terminal_kind", ["failed", "stopped"])
 def test_open_accepts_exact_terminal_with_unsettled_retryable_sibling(
     tmp_path: Path,
-    terminal_kind: Literal["failed", "stopped", "activation_bound"],
+    terminal_kind: Literal["failed", "stopped"],
 ) -> None:
     invocation_id = f"exact-{terminal_kind}-with-retryable-sibling"
-    product, ledger_root, activations = _parallel_task_ledger(
-        tmp_path,
-        invocation_id,
-        activation_bound=terminal_kind == "activation_bound",
-    )
+    product, ledger_root, activations = _parallel_task_ledger(tmp_path, invocation_id)
     ledger = Ledger(ledger_root)
-    events: tuple[RuntimeEvent, ...] = _failed_attempt_events(
+    sibling_events = _failed_attempt_events(
         activations["sibling"],
         "transient",
     )
     if terminal_kind == "failed":
-        events = (*_failed_attempt_events(activations["cause"], "invalid_input"), *events)
-    elif terminal_kind == "stopped":
-        events = (*_stopped_attempt_events(activations["cause"]), *events)
+        cause_events = _failed_attempt_events(activations["cause"], "invalid_input")
+    else:
+        cause_events = _stopped_attempt_events(activations["cause"])
+    events: tuple[RuntimeEvent, ...] = (
+        *cause_events[:2],
+        *sibling_events[:2],
+        cause_events[2],
+        sibling_events[2],
+    )
     ledger.append_batch(  # type: ignore[arg-type]
         events,
         expected_next_seq=ledger.read_all()[-1].seq + 1,

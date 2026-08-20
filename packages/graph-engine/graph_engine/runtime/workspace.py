@@ -1162,8 +1162,48 @@ class SnapshotStore:
         try:
             os.unlink(_HEAD_TRANSACTION, dir_fd=root_fd)
         except FileNotFoundError:
-            return
+            pass
         os.fsync(root_fd)
+
+    def _finish_published_head_transaction(
+        self,
+        root_fd: int,
+        *,
+        previous: bytes,
+        candidate_tree_id: str,
+        published: bytes,
+    ) -> None:
+        try:
+            self._clear_head_transaction(root_fd)
+            return
+        except BaseException as clear_error:
+            if not self._head_matches(root_fd, published):
+                raise HeadPublicationIndeterminate(
+                    "authoritative success was published but candidate HEAD no longer matches; "
+                    "journal clear cannot be reconciled"
+                ) from clear_error
+        try:
+            self._clear_head_transaction(root_fd)
+        except BaseException as retry_error:
+            self._retain_head_transaction(root_fd, previous, candidate_tree_id)
+            raise HeadPublicationIndeterminate(
+                "authoritative success and candidate HEAD agree but journal clear is indeterminate"
+            ) from retry_error
+
+    def _retain_head_transaction(
+        self,
+        root_fd: int,
+        previous: bytes,
+        candidate_tree_id: str,
+    ) -> None:
+        if _entry_exists(root_fd, _HEAD_TRANSACTION):
+            return
+        try:
+            self._begin_head_transaction(root_fd, previous, candidate_tree_id)
+        except BaseException:
+            # The caller raises an explicit indeterminate-publication error either way.
+            # A best-effort recreation keeps the common post-unlink fsync cut recoverable.
+            pass
 
     def recover_head_transaction(self, authoritative_tree_id: str | None) -> None:
         """Resolve an interrupted HEAD/ledger publication from authoritative ledger state."""
@@ -1534,7 +1574,12 @@ class SnapshotStore:
                     raise FinalizationRolledBack(
                         "candidate success failed; exact candidate HEAD was rolled back"
                     ) from error
-                self._clear_head_transaction(root_fd)
+                self._finish_published_head_transaction(
+                    root_fd,
+                    previous=previous,
+                    candidate_tree_id=candidate.candidate_tree_id,
+                    published=published,
+                )
                 return CommitResult(committed=True, receipts=receipts)
             finally:
                 os.close(baseline.descriptor)

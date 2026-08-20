@@ -276,6 +276,8 @@ class InvocationProjection(ProjectionModel):
             raise ValueError("started projection requires complete invocation identity")
         if self.status == "running" and self.terminal_reason is not None:
             raise ValueError("running projection cannot have a terminal reason")
+        if self.status == "succeeded" and self.terminal_reason is not None:
+            raise ValueError("successful projection cannot have a terminal reason")
 
         _require_unique((item.graph_instance_id for item in self.graph_instances), "graph instance")
         _require_unique((item.token_id for item in self.offered_tokens), "token")
@@ -812,6 +814,8 @@ def fold_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
             if event.invocation_id != projection.invocation_id:
                 _fail(envelope.seq, "invocation_finished id does not match invocation_started")
             if event.status == "succeeded":
+                if event.terminal_reason is not None:
+                    _fail(envelope.seq, "successful invocation cannot have a terminal reason")
                 if not projection.graph_instances or any(
                     item.status != "completed" for item in projection.graph_instances
                 ):

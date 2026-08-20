@@ -201,6 +201,35 @@ def _validate_workflow(workflow: WorkflowDef, registry: CapabilityRegistry) -> N
             if node_id not in reachable:
                 raise CompileError(f"unreachable node {graph_id}/{node_id}")
 
+    _validate_subgraph_dependency_dag(workflow)
+
+
+def _validate_subgraph_dependency_dag(workflow: WorkflowDef) -> None:
+    graph_order = {graph_id: index for index, graph_id in enumerate(workflow.graphs)}
+    dependencies: dict[str, list[str]] = {graph_id: [] for graph_id in workflow.graphs}
+    for graph_id, graph in workflow.graphs.items():
+        seen: set[str] = set()
+        for node in graph.nodes.values():
+            target = node.graph
+            if target is None or target in seen:
+                continue
+            dependencies[graph_id].append(target)
+            seen.add(target)
+
+    cyclic_components = [
+        component
+        for component in _strongly_connected_components(dependencies)
+        if len(component) > 1 or any(graph_id in dependencies[graph_id] for graph_id in component)
+    ]
+    if not cyclic_components:
+        return
+    component = min(
+        cyclic_components,
+        key=lambda item: min(graph_order[graph_id] for graph_id in item),
+    )
+    ordered = sorted(component, key=graph_order.__getitem__)
+    raise CompileError(f"recursive subgraph dependency cycle: {', '.join(ordered)}")
+
 
 def _validate_node_references(
     workflow: WorkflowDef,

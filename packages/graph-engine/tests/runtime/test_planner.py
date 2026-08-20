@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 from typing import cast
 
 import pytest
+import yaml
 
 from graph_engine.canonical import canonical_digest
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
@@ -25,7 +27,13 @@ from graph_engine.runtime.events import (
     TokenOffered,
 )
 from graph_engine.runtime.models import ActivationRecord, InvocationProjection, fold_events
-from graph_engine.runtime.planner import PlanningError, activation_id, plan_next, task_id
+from graph_engine.runtime.planner import (
+    PlanningError,
+    activation_id,
+    plan_next,
+    task_id,
+    validate_event_history,
+)
 
 
 def _compiled(
@@ -36,6 +44,7 @@ def _compiled(
     maximum: int = 20,
     retry_on: str = "[]",
     max_attempts: int = 2,
+    extra_graphs: str = "",
 ) -> CompiledWorkflow:
     text = f"""
 name: planner-test
@@ -52,6 +61,7 @@ graphs:
 {nodes}
     edges:
 {edges}
+{extra_graphs}
 """
     registry = CapabilityRegistry(
         task_handlers={"test.tasks.run": cast(TaskHandler, object())},
@@ -458,13 +468,24 @@ def test_existing_end_activation_requires_canonical_token_id_order() -> None:
 
 
 @pytest.mark.parametrize(
-    "unsupported_node",
+    ("unsupported_node", "extra_graphs"),
     [
-        "{kind: subgraph, graph: root}",
-        "{kind: interrupt, reason: review, actions: [continue]}",
+        (
+            "{kind: subgraph, graph: child}",
+            """  child:
+    max_activations: 1
+    start: done
+    nodes:
+      done: {kind: end}
+    edges: []""",
+        ),
+        ("{kind: interrupt, reason: review, actions: [continue]}", ""),
     ],
 )
-def test_completed_unsupported_activation_is_rejected_fail_closed(unsupported_node: str) -> None:
+def test_completed_unsupported_activation_is_rejected_fail_closed(
+    unsupported_node: str,
+    extra_graphs: str,
+) -> None:
     compiled = _compiled(
         f"""      start: {{kind: gate, expression: 'false'}}
       blocked: {unsupported_node}
@@ -472,6 +493,7 @@ def test_completed_unsupported_activation_is_rejected_fail_closed(unsupported_no
         """      - {from: start, to: blocked, condition: 'false'}
       - {from: blocked, to: done}""",
         start="start",
+        extra_graphs=extra_graphs,
     )
     token = TokenOffered(
         token_id="blocked-input",
@@ -691,6 +713,134 @@ def test_cycle_is_bounded_before_creating_more_work() -> None:
     assert plan.reason == "max_activations_exceeded:root"
     assert [event.kind for event in plan.events[-2:]] == ["graph_failed", "invocation_finished"]
     assert _projection_after((_invocation(),), plan.events).status == "failed"
+
+
+def test_deep_acyclic_child_failure_propagates_without_python_recursion() -> None:
+    depth = sys.getrecursionlimit() + 50
+    graph_ids = [f"graph-{index:04d}" for index in range(depth)]
+    graphs: dict[str, object] = {}
+    for graph_id, child_id in zip(graph_ids[:-1], graph_ids[1:], strict=True):
+        graphs[graph_id] = {
+            "max_activations": 1,
+            "start": "call",
+            "nodes": {"call": {"kind": "subgraph", "graph": child_id}},
+            "edges": [],
+        }
+    graphs[graph_ids[-1]] = {
+        "max_activations": 1,
+        "start": "work",
+        "nodes": {
+            "work": {
+                "kind": "task",
+                "capability": "test.tasks.run",
+                "retry": "policy",
+                "timeout": "short",
+            }
+        },
+        "edges": [],
+    }
+    workflow = {
+        "name": "deep-failure",
+        "entrypoints": {"main": graph_ids[0]},
+        "retry": {"policy": {"max_attempts": 1, "retry_on": []}},
+        "timeout": {"short": {"run_seconds": 5}},
+        "graphs": graphs,
+    }
+    registry = CapabilityRegistry(
+        task_handlers={"test.tasks.run": cast(TaskHandler, object())},
+        commit_validators={},
+    )
+    compiled = compile_workflow(parse_workflow(yaml.safe_dump(workflow, sort_keys=False)), registry)
+    first = plan_next(compiled, _projection(_invocation()))
+    assert len(first.tasks) == 1
+    task = first.tasks[0]
+    failure = TaskFailure(kind="internal", message="deep child failed")
+    predecessor = _projection(
+        _invocation(),
+        *first.events,
+        TaskAttemptStarted(
+            activation_id=task.activation_id,
+            attempt=1,
+            lease_expires_at="2030-01-01T00:00:00Z",
+        ),
+        _task_lease(task.activation_id),
+        TaskAttemptFailed(
+            activation_id=task.activation_id,
+            attempt=1,
+            failure=failure,
+        ),
+    )
+
+    terminal = plan_next(compiled, predecessor)
+
+    assert terminal.terminal == "failed"
+    assert terminal.reason == "task_failed:work:internal"
+    assert terminal.events[-1].kind == "invocation_finished"
+
+
+def test_event_history_accepts_parallel_successes_before_deterministic_all_join() -> None:
+    compiled = _compiled(
+        f"""      split: {{kind: gate, expression: 'true'}}
+{_task_node("left")}
+{_task_node("right")}
+      joined: {{kind: join, join: all}}
+      done: {{kind: end}}""",
+        """      - {from: split, to: left}
+      - {from: split, to: right}
+      - {from: left, to: joined}
+      - {from: right, to: joined}
+      - {from: joined, to: done}""",
+        start="split",
+        maximum=5,
+    )
+    events: list[object] = [_invocation(), _root(), _canonical_start_token(compiled)]
+    initial = plan_next(compiled, _projection(*events))
+    assert len(initial.tasks) == 2
+    events.extend(initial.events)
+    for task in initial.tasks:
+        events.extend(
+            (
+                TaskAttemptStarted(
+                    activation_id=task.activation_id,
+                    attempt=1,
+                    lease_expires_at="2",
+                ),
+                _task_lease(task.activation_id),
+            )
+        )
+    previous_tree_id = "0" * 64
+    for index, task in enumerate(initial.tasks, start=1):
+        tree_id = str(index) * 64
+        events.extend(
+            (
+                TaskAttemptSucceeded(
+                    activation_id=task.activation_id,
+                    attempt=1,
+                    output={task.node_id: True},
+                ),
+                HeadAdvanced(
+                    task_id=task.task_id,
+                    activation_id=task.activation_id,
+                    attempt=1,
+                    previous_tree_id=previous_tree_id,
+                    tree_id=tree_id,
+                ),
+            )
+        )
+        previous_tree_id = tree_id
+    settled = plan_next(compiled, _projection(*events))
+    assert settled.terminal == "succeeded"
+    events.extend(settled.events)
+    envelopes = tuple(
+        EventEnvelope.from_event(index, event)  # type: ignore[arg-type]
+        for index, event in enumerate(events, start=1)
+    )
+    projection = fold_events(envelopes)
+
+    validate_event_history(compiled, envelopes, projection)
+
+    joined = next(activation for activation in projection.activations if activation.node_id == "joined")
+    assert len(joined.token_ids) == 2
 
 
 def test_stopped_task_terminates_without_outgoing_token() -> None:

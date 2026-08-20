@@ -8,9 +8,9 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
@@ -39,6 +39,7 @@ from graph_engine.runtime.planner import (
     _start_token_id,
     plan_next,
     plan_running_tasks,
+    validate_event_history,
     validate_projection,
 )
 from graph_engine.runtime.scheduler import (
@@ -122,6 +123,12 @@ class RunResult(BaseModel):
     terminal_reason: str | None = None
     actions: tuple[str, ...] = ()
     projection: InvocationProjection
+
+    @model_validator(mode="after")
+    def _validate_terminal_reason(self) -> Self:
+        if self.status == "succeeded" and self.terminal_reason is not None:
+            raise ValueError("successful run cannot have a terminal reason")
+        return self
 
     @property
     def reason(self) -> str | None:
@@ -238,6 +245,7 @@ class Engine:
             envelopes = ledger.read_all()
             projection = fold_events(envelopes)
             self._validate_workflow(product, projection)
+            self._validate_history(product, envelopes, projection)
             self._write_checkpoint(staging_fd, envelopes, projection)
             os.fsync(staging_fd)
             self._install_invocation(staging_name, invocation_id)
@@ -290,6 +298,7 @@ class Engine:
                     f"found {product.digest}"
                 )
             self._validate_workflow(product, projection)
+            self._validate_history(product, envelopes, projection)
             checkpoint = load_checkpoint_at(
                 invocation_fd,
                 "checkpoint.json",
@@ -326,6 +335,7 @@ class Engine:
                 envelopes = ledger.read_all()
                 projection = fold_events(envelopes)
                 self._validate_workflow(product, projection)
+                self._validate_history(product, envelopes, projection)
             self._write_checkpoint(invocation_fd, envelopes, projection)
             return InvocationHandle(
                 invocation_id,
@@ -612,6 +622,17 @@ class Engine:
             validate_projection(product.workflow, projection)
         except PlanningError as error:
             raise EngineError(f"invocation does not match resolved product workflow: {error}") from error
+
+    def _validate_history(
+        self,
+        product: ResolvedProduct,
+        envelopes: tuple[EventEnvelope, ...],
+        projection: InvocationProjection,
+    ) -> None:
+        try:
+            validate_event_history(product.workflow, envelopes, projection)
+        except PlanningError as error:
+            raise EngineError(f"invocation event history is invalid: {error}") from error
 
     def _validate_projection_identity(
         self, handle: InvocationHandle, projection: InvocationProjection

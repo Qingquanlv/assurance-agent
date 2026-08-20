@@ -373,6 +373,48 @@ def test_compile_rejects_unknown_subgraph(registry: CapabilityRegistry) -> None:
         compile_workflow(_parse_raw(raw), registry)
 
 
+def _subgraph_graph(target: str) -> dict[str, object]:
+    return {
+        "max_activations": 20,
+        "start": "call",
+        "nodes": {
+            "call": {"kind": "subgraph", "graph": target},
+            "done": {"kind": "end"},
+        },
+        "edges": [{"from": "call", "to": "done"}],
+    }
+
+
+def test_compile_rejects_self_recursive_subgraph_dependency(
+    registry: CapabilityRegistry,
+) -> None:
+    raw = _raw_valid()
+    raw["graphs"] = {"root": _subgraph_graph("root")}
+
+    with pytest.raises(CompileError, match=r"recursive subgraph dependency.*root"):
+        compile_workflow(_parse_raw(raw), registry)
+
+
+def test_compile_rejects_mutually_recursive_subgraph_dependency_deterministically(
+    registry: CapabilityRegistry,
+) -> None:
+    raw = _raw_valid()
+    raw["graphs"] = {
+        "root": _subgraph_graph("child"),
+        "child": _subgraph_graph("root"),
+    }
+
+    messages: list[str] = []
+    for candidate in (raw, deepcopy(raw)):
+        with pytest.raises(CompileError, match="recursive subgraph dependency") as caught:
+            compile_workflow(_parse_raw(candidate), registry)
+        messages.append(str(caught.value))
+
+    assert messages[0] == messages[1]
+    assert "root" in messages[0]
+    assert "child" in messages[0]
+
+
 def test_compile_rejects_unknown_validator(registry: CapabilityRegistry) -> None:
     raw = _raw_valid()
     raw["graphs"]["root"]["nodes"]["ping"]["validators"] = ["toy.one.missing"]  # type: ignore[index]

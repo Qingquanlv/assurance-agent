@@ -218,6 +218,12 @@ class InvocationFinished(RuntimeEventModel):
     status: Literal["succeeded", "failed", "stopped"]
     terminal_reason: str | None = None
 
+    @model_validator(mode="after")
+    def _validate_terminal_reason(self) -> Self:
+        if self.status == "succeeded" and self.terminal_reason is not None:
+            raise ValueError("successful invocation cannot have a terminal reason")
+        return self
+
 
 RuntimeEvent = Annotated[
     InvocationStarted

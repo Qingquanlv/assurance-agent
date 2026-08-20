@@ -10,15 +10,25 @@ from graph_engine.graph.compiler import CompiledGraph, CompiledNode, CompiledWor
 from graph_engine.graph.expressions import evaluate_expression
 from graph_engine.plugin_api import TaskFailure
 from graph_engine.runtime.events import (
+    EventEnvelope,
     GraphCompleted,
     GraphFailed,
     GraphStarted,
+    HeadAdvanced,
     InvocationFinished,
+    InvocationStarted,
+    InterruptResumed,
     NodeInterrupted,
     NodeActivated,
     NodeCompleted,
     NodeFailed,
     RuntimeEvent,
+    TaskAttemptFailed,
+    TaskAttemptStarted,
+    TaskAttemptStopped,
+    TaskAttemptSucceeded,
+    TaskLeaseAcquired,
+    TaskLeaseHeartbeat,
     TokenConsumed,
     TokenOffered,
 )
@@ -30,6 +40,7 @@ from graph_engine.runtime.models import (
     PlanResult,
     PlannedTask,
     TokenRecord,
+    fold_events,
 )
 
 
@@ -216,6 +227,154 @@ def plan_next(compiled: CompiledWorkflow, projection: InvocationProjection) -> P
 def validate_projection(compiled: CompiledWorkflow, projection: InvocationProjection) -> None:
     """Validate a folded projection against its exact compiled workflow."""
     _validate_projection(compiled, projection)
+
+
+def validate_event_history(
+    compiled: CompiledWorkflow,
+    envelopes: tuple[EventEnvelope, ...],
+    projection: InvocationProjection,
+) -> None:
+    """Replay a ledger and prove every compiled transition in causal event order."""
+    if len(envelopes) < 3 or not isinstance(envelopes[0].event, InvocationStarted):
+        raise PlanningError("event history lacks the canonical invocation bootstrap")
+    started = envelopes[0].event
+    if started.entrypoint not in compiled.entrypoints:
+        raise PlanningError(f"event history uses unknown entrypoint {started.entrypoint!r}")
+    root_graph_id = compiled.entrypoints[started.entrypoint]
+    root_graph = compiled.graphs[root_graph_id]
+    bootstrap: tuple[RuntimeEvent, ...] = (
+        started,
+        GraphStarted(graph_instance_id=root_graph_id, graph_id=root_graph_id),
+        TokenOffered(
+            token_id=_start_token_id(root_graph_id, root_graph.start),
+            graph_instance_id=root_graph_id,
+            source=None,
+            target=root_graph.start,
+            payload=None,
+        ),
+    )
+    _require_exact_history_events(envelopes, 0, bootstrap)
+
+    cursor = len(bootstrap)
+    prefix = envelopes[:cursor]
+    current = fold_events(prefix)
+    while cursor < len(envelopes):
+        _validate_projection(compiled, current)
+        planned = plan_next(compiled, current)
+        actual = envelopes[cursor].event
+        defer_planned = planned.events and _can_defer_planned_events(current, actual)
+        if planned.events and not defer_planned:
+            _require_exact_history_events(envelopes, cursor, planned.events)
+            cursor += len(planned.events)
+        else:
+            cursor += _validate_external_history_transition(
+                planned.tasks,
+                current,
+                envelopes,
+                cursor,
+            )
+        prefix = envelopes[:cursor]
+        current = fold_events(prefix)
+
+    _validate_projection(compiled, current)
+    if current.model_dump(mode="json") != projection.model_dump(mode="json"):
+        raise PlanningError("event history replay disagrees with the supplied projection")
+
+
+def _require_exact_history_events(
+    envelopes: tuple[EventEnvelope, ...],
+    cursor: int,
+    expected: tuple[RuntimeEvent, ...],
+) -> None:
+    available = len(envelopes) - cursor
+    for offset, expected_event in enumerate(expected[:available]):
+        actual = envelopes[cursor + offset].event
+        if actual.model_dump(mode="json") != expected_event.model_dump(mode="json"):
+            raise PlanningError(
+                f"event history diverges from compiled transition at sequence {cursor + offset + 1}"
+            )
+    if available < len(expected):
+        raise PlanningError("event history contains a partial compiled transition batch")
+
+
+def _validate_external_history_transition(
+    tasks: tuple[PlannedTask, ...],
+    projection: InvocationProjection,
+    envelopes: tuple[EventEnvelope, ...],
+    cursor: int,
+) -> int:
+    event = envelopes[cursor].event
+    if isinstance(event, TaskAttemptStarted):
+        matching = next(
+            (
+                task
+                for task in tasks
+                if task.activation_id == event.activation_id and task.attempt == event.attempt
+            ),
+            None,
+        )
+        if matching is None:
+            raise PlanningError("event history starts a task that was not deterministically planned")
+        if cursor + 1 >= len(envelopes):
+            raise PlanningError("event history contains a partial task-start publication")
+        acquired = envelopes[cursor + 1].event
+        if (
+            not isinstance(acquired, TaskLeaseAcquired)
+            or acquired.task_id != matching.task_id
+            or acquired.activation_id != event.activation_id
+            or acquired.attempt != event.attempt
+        ):
+            raise PlanningError("event history task start lacks its exact canonical lease")
+        return 2
+
+    if isinstance(event, TaskLeaseHeartbeat):
+        return 1
+
+    if isinstance(event, TaskAttemptSucceeded):
+        if cursor + 1 >= len(envelopes):
+            raise PlanningError("event history contains a partial task-success publication")
+        advanced = envelopes[cursor + 1].event
+        if (
+            not isinstance(advanced, HeadAdvanced)
+            or advanced.activation_id != event.activation_id
+            or advanced.attempt != event.attempt
+        ):
+            raise PlanningError("event history task success lacks its atomic HEAD advance")
+        return 2
+
+    if isinstance(event, TaskAttemptFailed | TaskAttemptStopped):
+        return 1
+
+    if isinstance(event, InterruptResumed):
+        pending = projection.pending_interrupt
+        if pending is None or cursor + 1 >= len(envelopes):
+            raise PlanningError("event history resumes no pending interrupt")
+        completed = envelopes[cursor + 1].event
+        expected_output: JSONValue = {"action": event.action, "payload": thaw_json(event.payload)}
+        if (
+            event.interrupt_id != pending.interrupt_id
+            or not isinstance(completed, NodeCompleted)
+            or completed.activation_id != pending.activation_id
+            or thaw_json(completed.output) != expected_output
+        ):
+            raise PlanningError("event history interrupt resume lacks its exact completion")
+        return 2
+
+    raise PlanningError(f"event history contains an unplanned {event.kind!r} event at sequence {cursor + 1}")
+
+
+def _can_defer_planned_events(
+    projection: InvocationProjection,
+    event: RuntimeEvent,
+) -> bool:
+    has_running_attempt = any(
+        activation.attempts and activation.attempts[-1].status == "running"
+        for activation in projection.activations
+    )
+    return has_running_attempt and isinstance(
+        event,
+        TaskLeaseHeartbeat | TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptStopped,
+    )
 
 
 def plan_running_tasks(
@@ -1435,18 +1594,20 @@ def _mark_graph_failed(state: _PlannerState, graph_instance_id: str, reason: str
 
 
 def _propagate_graph_failure(state: _PlannerState, graph_instance_id: str, reason: str) -> None:
-    record = state.graphs[graph_instance_id]
-    _mark_graph_failed(state, graph_instance_id, reason)
-    if record.parent_activation_id is None or record.parent_graph_instance_id is None:
-        return
-    parent_activation = state.activations[record.parent_activation_id]
-    if parent_activation.status == "active":
-        failure = TaskFailure(kind="internal", message=reason)
-        state.events.append(NodeFailed(activation_id=parent_activation.activation_id, failure=failure))
-        state.activations[parent_activation.activation_id] = parent_activation.model_copy(
-            update={"status": "failed", "failure": failure, "structural_failure": True}
-        )
-    _propagate_graph_failure(state, record.parent_graph_instance_id, reason)
+    current_graph_instance_id = graph_instance_id
+    while True:
+        record = state.graphs[current_graph_instance_id]
+        _mark_graph_failed(state, current_graph_instance_id, reason)
+        if record.parent_activation_id is None or record.parent_graph_instance_id is None:
+            return
+        parent_activation = state.activations[record.parent_activation_id]
+        if parent_activation.status == "active":
+            failure = TaskFailure(kind="internal", message=reason)
+            state.events.append(NodeFailed(activation_id=parent_activation.activation_id, failure=failure))
+            state.activations[parent_activation.activation_id] = parent_activation.model_copy(
+                update={"status": "failed", "failure": failure, "structural_failure": True}
+            )
+        current_graph_instance_id = record.parent_graph_instance_id
 
 
 _NODE_BEHAVIORS = {

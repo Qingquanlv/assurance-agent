@@ -273,6 +273,11 @@ def test_toy_b_recovers_then_interrupts_and_resumes(tmp_path: Path) -> None:
                     assert workspace.read_head("left.txt") == b"left\n"
                     assert workspace.read_head("child.txt") == b"child\n"
 
+            with engine.open("toy-b-1", resolved) as replayed_handle:
+                replayed = engine.run_until_blocked(replayed_handle)
+                assert replayed.status == "succeeded"
+                assert replayed.output == completed.output
+
 
 def test_toy_b_replay_is_deterministic_and_products_are_separate(tmp_path: Path) -> None:
     first = _run_to_completion(tmp_path / "first", invocation_id="toy-b-replay")

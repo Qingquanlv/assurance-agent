@@ -836,6 +836,79 @@ def test_success_failed_and_stopped_invocation_cleanup_semantics_are_explicit() 
     assert stopped.activations[0].status == "stopped"
 
 
+def test_success_terminal_reason_is_forbidden_by_event_fold_and_projection() -> None:
+    with pytest.raises(ValidationError, match="successful invocation"):
+        InvocationFinished(
+            invocation_id="inv-1",
+            status="succeeded",
+            terminal_reason="forged-success-reason",
+        )
+
+    forged = InvocationFinished.model_construct(
+        invocation_id="inv-1",
+        status="succeeded",
+        terminal_reason="forged-success-reason",
+    )
+    forged_json = forged.model_dump(mode="json")
+    forged_envelope = EventEnvelope.model_construct(
+        seq=4,
+        event=forged,
+        event_sha256=canonical_digest({"seq": 4, "event": forged_json}),
+    )
+    with pytest.raises(ProjectionError, match="successful invocation"):
+        fold_events(
+            (
+                *_envelopes(
+                    InvocationStarted(
+                        invocation_id="inv-1",
+                        product_digest="a" * 64,
+                        entrypoint="main",
+                    ),
+                    GraphStarted(graph_instance_id="root", graph_id="root"),
+                    GraphCompleted(graph_instance_id="root"),
+                ),
+                forged_envelope,
+            )
+        )
+
+    completed_graph = GraphInstanceRecord(
+        graph_instance_id="root",
+        graph_id="root",
+        parent_graph_instance_id=None,
+        parent_node_id=None,
+        status="completed",
+    )
+    with pytest.raises(ValidationError, match="successful projection"):
+        InvocationProjection(
+            status="succeeded",
+            invocation_id="inv-1",
+            product_digest="a" * 64,
+            entrypoint="main",
+            graph_instances=(completed_graph,),
+            terminal_reason="forged-success-reason",
+        )
+
+
+def test_success_without_terminal_reason_remains_valid() -> None:
+    event = InvocationFinished(invocation_id="inv-1", status="succeeded")
+    projection = fold_events(
+        _envelopes(
+            InvocationStarted(
+                invocation_id="inv-1",
+                product_digest="a" * 64,
+                entrypoint="main",
+            ),
+            GraphStarted(graph_instance_id="root", graph_id="root"),
+            GraphCompleted(graph_instance_id="root"),
+            event,
+        )
+    )
+
+    assert event.terminal_reason is None
+    assert projection.status == "succeeded"
+    assert projection.terminal_reason is None
+
+
 def test_folded_projection_json_is_deeply_immutable() -> None:
     projection = fold_events(
         _envelopes(
