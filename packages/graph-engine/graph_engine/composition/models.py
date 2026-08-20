@@ -30,6 +30,8 @@ class SourceIdentity:
     version: str | None = None
     entrypoint_group: str | None = None
     entrypoint_name: str | None = None
+    product_id: str | None = None
+    product_version: str | None = None
     plugin_id: str | None = None
     plugin_version: str | None = None
 
@@ -46,6 +48,7 @@ class SourceIdentity:
             self.entrypoint_group,
             self.entrypoint_name,
         )
+        product_coordinates = (self.product_id, self.product_version)
         plugin_coordinates = (self.plugin_id, self.plugin_version)
         if self.kind in {SourceKind.WHEEL_PRODUCT, SourceKind.WHEEL_PLUGIN}:
             if any(not isinstance(value, str) or not value for value in wheel_coordinates):
@@ -59,6 +62,22 @@ class SourceIdentity:
                 raise ValueError("wheel source identity requires complete wheel coordinates")
         elif any(value is not None for value in wheel_coordinates):
             raise ValueError("wheel coordinates are allowed only for wheel source identities")
+        if self.kind == SourceKind.PRODUCT_FILE:
+            if any(value is not None for value in product_coordinates):
+                if any(not isinstance(value, str) or not value for value in product_coordinates):
+                    raise ValueError("product source identity requires complete product coordinates")
+                try:
+                    validate_qualified_id(self.product_id or "")
+                except IdentifierError as error:
+                    raise ValueError("product source identity requires a qualified product id") from error
+                try:
+                    normalized_product_version = str(Version(self.product_version or ""))
+                except InvalidVersion as error:
+                    raise ValueError("product source identity requires a valid product version") from error
+                if normalized_product_version != self.product_version:
+                    raise ValueError("product source identity requires a normalized product version")
+        elif any(value is not None for value in product_coordinates):
+            raise ValueError("product coordinates are allowed only for product file source identities")
         if self.kind == SourceKind.CONFIG_TREE:
             if any(value is not None for value in plugin_coordinates):
                 if any(not isinstance(value, str) or not value for value in plugin_coordinates):
@@ -68,9 +87,11 @@ class SourceIdentity:
                 except IdentifierError as error:
                     raise ValueError("config source identity requires a qualified plugin id") from error
                 try:
-                    Version(self.plugin_version or "")
+                    normalized_plugin_version = str(Version(self.plugin_version or ""))
                 except InvalidVersion as error:
                     raise ValueError("config source identity requires a valid plugin version") from error
+                if normalized_plugin_version != self.plugin_version:
+                    raise ValueError("config source identity requires a normalized plugin version")
         elif any(value is not None for value in plugin_coordinates):
             raise ValueError("plugin coordinates are allowed only for config source identities")
 
@@ -144,6 +165,18 @@ def _file_digest_document(files: tuple[SourceFile, ...]) -> JSONValue:
 
 def _snapshot_digest(identity: SourceIdentity, files: tuple[SourceFile, ...]) -> str:
     file_document = _file_digest_document(files)
+    if identity.product_id is not None:
+        return canonical_digest(
+            {
+                "identity": {
+                    "kind": identity.kind.value,
+                    "root": str(identity.root),
+                    "product_id": identity.product_id,
+                    "product_version": identity.product_version,
+                },
+                "files": file_document,
+            }
+        )
     if identity.plugin_id is not None:
         return canonical_digest(
             {

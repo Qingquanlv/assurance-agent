@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, Self, cast
 
@@ -46,17 +47,16 @@ else:
 
 
 _PLUGIN_MANIFEST = "plugin.yaml"
-_SAFE_MEDIA_TYPES = frozenset(
-    {
-        "application/json",
-        "application/schema+json",
-        "application/vnd.graph-engine.workflow+yaml",
-        "application/yaml",
-        "text/markdown",
-        "text/plain",
-        "text/yaml",
-    }
-)
+_SAFE_MEDIA_SUFFIXES = {
+    "application/json": (".json",),
+    "application/schema+json": (".json",),
+    "application/vnd.graph-engine.workflow+yaml": (".yaml", ".yml"),
+    "application/yaml": (".yaml", ".yml"),
+    "text/markdown": (".md",),
+    "text/plain": (".txt",),
+    "text/yaml": (".yaml", ".yml"),
+}
+_SAFE_MEDIA_TYPES = frozenset(_SAFE_MEDIA_SUFFIXES)
 _YAML_MEDIA_TYPES = frozenset(
     {
         "application/vnd.graph-engine.workflow+yaml",
@@ -65,32 +65,6 @@ _YAML_MEDIA_TYPES = frozenset(
     }
 )
 _JSON_MEDIA_TYPES = frozenset({"application/json", "application/schema+json"})
-_EXECUTABLE_SUFFIXES = frozenset(
-    {
-        ".bat",
-        ".bash",
-        ".class",
-        ".cmd",
-        ".com",
-        ".dll",
-        ".dylib",
-        ".exe",
-        ".fish",
-        ".jar",
-        ".js",
-        ".mjs",
-        ".cjs",
-        ".ps1",
-        ".py",
-        ".pyc",
-        ".pyo",
-        ".sh",
-        ".so",
-        ".ts",
-        ".wasm",
-        ".zsh",
-    }
-)
 _EXECUTABLE_KEYS = frozenset(
     {
         "callable",
@@ -179,8 +153,6 @@ class DeclaredResourceFile(FrozenModel):
             raise ValueError(f"unsafe declared resource path: {value!r}") from error
         if canonical == _PLUGIN_MANIFEST:
             raise ValueError("plugin.yaml cannot declare itself as a resource")
-        if PurePosixPath(canonical).suffix.lower() in _EXECUTABLE_SUFFIXES:
-            raise ValueError(f"executable file type is not allowed: {canonical}")
         return canonical
 
     @field_validator("media_type")
@@ -195,6 +167,13 @@ class DeclaredResourceFile(FrozenModel):
         is_schema_media = self.media_type == "application/schema+json"
         if (self.kind == "schema") != is_schema_media:
             raise ValueError("schema files must use application/schema+json exclusively")
+        allowed_suffixes = _SAFE_MEDIA_SUFFIXES[self.media_type]
+        if not self.path.endswith(allowed_suffixes):
+            raise ValueError(
+                f"resource path {self.path!r} is not registered for media type "
+                f"{self.media_type!r}; executable file types and unknown suffixes "
+                "are not allowed"
+            )
         return self
 
 
@@ -272,9 +251,7 @@ class DeclarativePluginDocument(FrozenModel):
         for binding in self.bindings:
             missing = set(binding.resource_ids) - declared_resources
             if missing:
-                raise ValueError(
-                    f"binding references undeclared resource id: {min(missing)}"
-                )
+                raise ValueError(f"binding references undeclared resource id: {min(missing)}")
         return self
 
 
@@ -369,9 +346,7 @@ class DeclarativeProductDocument(FrozenModel):
             raise ValueError("product plugin requirements must be unique")
         unknown_configuration = set(self.configuration) - set(plugin_ids)
         if unknown_configuration:
-            raise ValueError(
-                f"configuration targets an unrequired plugin: {min(unknown_configuration)}"
-            )
+            raise ValueError(f"configuration targets an unrequired plugin: {min(unknown_configuration)}")
         if self.workflow is not None and self.workflow.entrypoints != self.entrypoints:
             raise ValueError("inline workflow entrypoints must equal product entrypoints")
         return self
@@ -443,12 +418,21 @@ def load_product_file(source: ProductFileSource) -> DeclarativeProduct:
         path = source.path.absolute()
         if path.suffix.lower() not in {".yaml", ".yml"}:
             raise ValueError("product file must be YAML data")
-        snapshot = capture_explicit_file(
+        captured = capture_explicit_file(
             path.parent,
             path.name,
             DeclaredTreePolicy.product_file(),
         )
-        manifest = _parse_product_document(_only_file(snapshot).content)
+        manifest = _parse_product_document(_only_file(captured).content)
+        snapshot = SourceSnapshot.from_identity(
+            SourceIdentity(
+                kind=SourceKind.PRODUCT_FILE,
+                root=captured.identity.root,
+                product_id=manifest.product_id,
+                product_version=manifest.product_version,
+            ),
+            captured.files,
+        )
         resolved_paths = tuple(
             (snapshot.identity.root / PurePosixPath(relative_path)).absolute()
             for relative_path in manifest.config_plugin_paths
@@ -465,9 +449,8 @@ def load_product_file(source: ProductFileSource) -> DeclarativeProduct:
 
 
 def _parse_plugin_document(content: bytes) -> DeclarativePluginDocument:
-    raw = _safe_yaml_mapping(content, "plugin.yaml")
     try:
-        _reject_executable_keys(raw, "plugin.yaml")
+        raw = _safe_yaml_mapping(content, "plugin.yaml")
         document = DeclarativePluginDocument.model_validate(raw)
         return cast(DeclarativePluginDocument, _freeze_nested_values(document))
     except (ValidationError, PluginContractError, ValueError) as error:
@@ -475,9 +458,8 @@ def _parse_plugin_document(content: bytes) -> DeclarativePluginDocument:
 
 
 def _parse_product_document(content: bytes) -> DeclarativeProductDocument:
-    raw = _safe_yaml_mapping(content, "product manifest")
     try:
-        _reject_executable_keys(raw, "product manifest")
+        raw = _safe_yaml_mapping(content, "product manifest")
         document = DeclarativeProductDocument.model_validate(raw)
         return cast(DeclarativeProductDocument, _freeze_nested_values(document))
     except (ValidationError, PluginContractError, ValueError) as error:
@@ -485,16 +467,56 @@ def _parse_product_document(content: bytes) -> DeclarativeProductDocument:
 
 
 def _safe_yaml_mapping(content: bytes, label: str) -> dict[str, Any]:
-    try:
-        node = yaml.compose(content, Loader=yaml.SafeLoader)
-        if node is not None:
-            _reject_duplicate_yaml_keys(node, set())
-        raw = yaml.safe_load(content)
-    except (UnicodeDecodeError, yaml.YAMLError) as error:
-        raise ValueError(f"{label} is not safe UTF-8 YAML") from error
+    raw = _strict_yaml_value(content, label)
     if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
         raise ValueError(f"{label} must be a string-keyed mapping")
     return cast(dict[str, Any], raw)
+
+
+def _strict_yaml_value(content: bytes, label: str) -> object:
+    text = _decode_utf8(content, label)
+    try:
+        node = yaml.compose(text, Loader=yaml.SafeLoader)
+        if node is not None:
+            _reject_duplicate_yaml_keys(node, set())
+            _reject_yaml_aliases(node, set(), label)
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError as error:
+        raise ValueError(f"{label} is not safe YAML") from error
+    _validate_json_value(raw, label)
+    _reject_executable_keys(raw, label)
+    return raw
+
+
+def _strict_json_value(content: bytes, label: str) -> object:
+    text = _decode_utf8(content, label)
+
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"{label} contains duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> NoReturn:
+        raise ValueError(f"{label} contains invalid JSON constant: {value}")
+
+    raw = json.loads(
+        text,
+        object_pairs_hook=reject_duplicates,
+        parse_constant=reject_constant,
+    )
+    _validate_json_value(raw, label)
+    _reject_executable_keys(raw, label)
+    return raw
+
+
+def _decode_utf8(content: bytes, label: str) -> str:
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label} is not UTF-8 text") from error
 
 
 def _reject_duplicate_yaml_keys(node: Node, seen: set[int]) -> None:
@@ -514,6 +536,51 @@ def _reject_duplicate_yaml_keys(node: Node, seen: set[int]) -> None:
     elif isinstance(node, SequenceNode):
         for child in node.value:
             _reject_duplicate_yaml_keys(child, seen)
+
+
+def _reject_yaml_aliases(node: Node, seen: set[int], label: str) -> None:
+    identity = id(node)
+    if identity in seen:
+        raise ValueError(f"{label} YAML aliases are not allowed")
+    seen.add(identity)
+    if isinstance(node, MappingNode):
+        for key, value in node.value:
+            _reject_yaml_aliases(key, seen, label)
+            _reject_yaml_aliases(value, seen, label)
+    elif isinstance(node, SequenceNode):
+        for child in node.value:
+            _reject_yaml_aliases(child, seen, label)
+
+
+def _validate_json_value(
+    value: object,
+    label: str,
+    seen: set[int] | None = None,
+) -> None:
+    seen = set() if seen is None else seen
+    if value is None or isinstance(value, (bool, int, str)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{label} contains a non-finite number")
+        return
+    if isinstance(value, dict):
+        if id(value) in seen:
+            raise ValueError(f"{label} contains aliases or cycles")
+        seen.add(id(value))
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{label} must use only string mapping keys")
+            _validate_json_value(child, label, seen)
+        return
+    if isinstance(value, list):
+        if id(value) in seen:
+            raise ValueError(f"{label} contains aliases or cycles")
+        seen.add(id(value))
+        for child in value:
+            _validate_json_value(child, label, seen)
+        return
+    raise ValueError(f"{label} contains a non-JSON data value")
 
 
 def _reject_executable_keys(
@@ -544,9 +611,7 @@ def _freeze_nested_values(value: object) -> object:
             object.__setattr__(value, field_name, _freeze_nested_values(field_value))
         return value
     if isinstance(value, dict):
-        return _FrozenDict(
-            (key, _freeze_nested_values(item)) for key, item in value.items()
-        )
+        return _FrozenDict((key, _freeze_nested_values(item)) for key, item in value.items())
     if isinstance(value, list):
         return _FrozenList(_freeze_nested_values(item) for item in value)
     if isinstance(value, tuple):
@@ -617,30 +682,17 @@ def _plugin_values(
 
 def _validate_resource_content(declared: DeclaredResourceFile, content: bytes) -> None:
     try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise DeclarativePluginRejected(
-            f"declarative resource is not UTF-8 text: {declared.path}"
-        ) from error
-    if declared.media_type in _JSON_MEDIA_TYPES:
-        try:
-            json.loads(
-                text,
-                parse_constant=lambda value: (_ for _ in ()).throw(
-                    ValueError(f"invalid JSON constant: {value}")
-                ),
-            )
-        except (json.JSONDecodeError, ValueError) as error:
-            raise DeclarativePluginRejected(
-                f"invalid JSON resource: {declared.path}"
-            ) from error
-    elif declared.media_type in _YAML_MEDIA_TYPES:
-        try:
-            yaml.safe_load(text)
-        except yaml.YAMLError as error:
-            raise DeclarativePluginRejected(
-                f"invalid safe YAML resource: {declared.path}"
-            ) from error
+        label = f"declarative resource {declared.path!r}"
+        if declared.media_type in _JSON_MEDIA_TYPES:
+            _strict_json_value(content, label)
+        elif declared.media_type in _YAML_MEDIA_TYPES:
+            parsed = _strict_yaml_value(content, label)
+            if declared.media_type == "application/vnd.graph-engine.workflow+yaml":
+                WorkflowDef.model_validate(parsed)
+        else:
+            _decode_utf8(content, label)
+    except (json.JSONDecodeError, ValidationError, ValueError, yaml.YAMLError) as error:
+        raise DeclarativePluginRejected(f"invalid declarative resource: {declared.path}") from error
 
 
 def _source_file(snapshot: SourceSnapshot, path: str) -> SourceFile:
@@ -665,10 +717,9 @@ def _qualified_id(value: str, kind: str) -> str:
 
 def _version(value: str, kind: str) -> str:
     try:
-        Version(value)
+        return str(Version(value))
     except InvalidVersion as error:
         raise ValueError(f"invalid {kind}: {value!r}") from error
-    return value
 
 
 def _specifier(value: str, kind: str) -> str:
@@ -681,10 +732,9 @@ def _specifier(value: str, kind: str) -> str:
 
 def _version_or_specifier(value: str, kind: str) -> str:
     try:
-        Version(value)
+        return str(Version(value))
     except InvalidVersion:
         return _specifier(value, kind)
-    return value
 
 
 __all__ = [

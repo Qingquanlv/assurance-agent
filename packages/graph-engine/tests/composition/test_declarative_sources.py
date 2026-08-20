@@ -12,7 +12,9 @@ from graph_engine.composition import (
     DeclarativePluginRejected,
     DeclarativeProductRejected,
     ProductFileSource,
+    SourceIdentity,
     SourceKind,
+    SourceSnapshot,
     load_config_tree,
     load_product_file,
 )
@@ -57,9 +59,7 @@ def _write_plugin_tree(
         "plugin_id": "toy.flow",
         "plugin_version": "1.2.3",
         "engine_api": ">=0.2,<0.3",
-        "dependencies": [
-            {"plugin_id": "toy.runtime", "version_specifier": ">=1,<2"}
-        ],
+        "dependencies": [{"plugin_id": "toy.runtime", "version_specifier": ">=1,<2"}],
         "files": files,
         "bindings": [
             {
@@ -83,8 +83,10 @@ def _write_plugin_tree(
         media_type = declared["media_type"]
         if media_type == "application/vnd.graph-engine.workflow+yaml":
             path.write_text(yaml.safe_dump(_workflow(), sort_keys=False), encoding="utf-8")
-        elif media_type == "application/schema+json":
+        elif media_type in {"application/json", "application/schema+json"}:
             path.write_text('{"type":"object"}\n', encoding="utf-8")
+        elif media_type in {"application/yaml", "text/yaml"}:
+            path.write_text("value: data\n", encoding="utf-8")
         else:
             path.write_text("role instructions\n", encoding="utf-8")
 
@@ -166,9 +168,7 @@ def test_config_plugin_loads_frozen_descriptor_and_contribution(tmp_path: Path) 
         {"template": "{{ __import__('os') }}"},
     ),
 )
-def test_config_plugin_rejects_executable_forms(
-    tmp_path: Path, payload: dict[str, object]
-) -> None:
+def test_config_plugin_rejects_executable_forms(tmp_path: Path, payload: dict[str, object]) -> None:
     _write_plugin_tree(tmp_path, extra=payload)
 
     with pytest.raises(DeclarativePluginRejected):
@@ -325,6 +325,114 @@ def test_config_plugin_rejects_unsafe_media_types(tmp_path: Path, media_type: st
         load_config_tree(ConfigTreePluginSource(path=tmp_path))
 
 
+@pytest.mark.parametrize(
+    ("media_type", "path", "content"),
+    (
+        ("application/json", "data.json", b'{"value":1,"value":2}\n'),
+        (
+            "application/json",
+            "data.json",
+            b'{"nested":[{"command":["sh","-c","bad"]}]}\n',
+        ),
+        ("application/json", "data.json", b'{"value":1e999}\n'),
+        ("application/schema+json", "schema.json", b'{"type":"object","type":"array"}\n'),
+        ("application/yaml", "data.yaml", b"value: 1\nvalue: 2\n"),
+        ("text/yaml", "data.yml", b"shared: &shared [one]\ncopy: *shared\n"),
+        ("application/yaml", "data.yaml", b"nested:\n- shell: echo bad\n"),
+        ("application/yaml", "data.yaml", b"value: .inf\n"),
+        (
+            "application/vnd.graph-engine.workflow+yaml",
+            "workflow.yaml",
+            b"name: bad\nentrypoints: {}\nretry: {}\ntimeout: {}\ngraphs: {}\nunknown: true\n",
+        ),
+    ),
+)
+def test_config_plugin_rejects_unsafe_structured_resource_payloads(
+    tmp_path: Path,
+    media_type: str,
+    path: str,
+    content: bytes,
+) -> None:
+    files = [
+        {
+            "kind": "schema" if media_type == "application/schema+json" else "resource",
+            "resource_id": "toy.flow.data",
+            "path": path,
+            "media_type": media_type,
+        }
+    ]
+    _write_plugin_tree(tmp_path, files=files)
+    (tmp_path / path).write_bytes(content)
+
+    with pytest.raises(DeclarativePluginRejected, match="resource"):
+        load_config_tree(ConfigTreePluginSource(path=tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("media_type", "path", "kind"),
+    (
+        ("application/json", "data.json", "resource"),
+        ("application/schema+json", "schema.json", "schema"),
+        ("application/vnd.graph-engine.workflow+yaml", "workflow.yml", "resource"),
+        ("application/yaml", "data.yaml", "resource"),
+        ("text/yaml", "data.yml", "resource"),
+        ("text/markdown", "role.md", "resource"),
+        ("text/plain", "prompt.txt", "resource"),
+    ),
+)
+def test_config_plugin_accepts_only_registered_path_media_pairs(
+    tmp_path: Path,
+    media_type: str,
+    path: str,
+    kind: str,
+) -> None:
+    files = [
+        {
+            "kind": kind,
+            "resource_id": "toy.flow.data",
+            "path": path,
+            "media_type": media_type,
+        }
+    ]
+    _write_plugin_tree(tmp_path, files=files)
+
+    loaded = load_config_tree(ConfigTreePluginSource(path=tmp_path))
+
+    assert loaded.document.files[0].path == path
+
+
+@pytest.mark.parametrize(
+    ("media_type", "path"),
+    (
+        ("text/plain", "handler.rb"),
+        ("text/plain", "plugin.pl"),
+        ("text/plain", "script.php"),
+        ("text/plain", "task.lua"),
+        ("text/plain", "prompt"),
+        ("text/markdown", "role.txt"),
+        ("application/json", "data.yaml"),
+        ("application/yaml", "data.json"),
+    ),
+)
+def test_config_plugin_rejects_unregistered_path_media_pairs(
+    tmp_path: Path,
+    media_type: str,
+    path: str,
+) -> None:
+    files = [
+        {
+            "kind": "resource",
+            "resource_id": "toy.flow.unsafe",
+            "path": path,
+            "media_type": media_type,
+        }
+    ]
+    _write_plugin_tree(tmp_path, files=files)
+
+    with pytest.raises(DeclarativePluginRejected, match="path.*media type"):
+        load_config_tree(ConfigTreePluginSource(path=tmp_path))
+
+
 @pytest.mark.parametrize("name", ("handler.py", "run.sh", "module.wasm", "script.js"))
 def test_config_plugin_rejects_executable_file_extensions(tmp_path: Path, name: str) -> None:
     files = [
@@ -382,12 +490,31 @@ def test_config_plugin_rejects_special_files_without_blocking(tmp_path: Path) ->
 def test_config_plugin_resource_change_changes_snapshot_digest(tmp_path: Path) -> None:
     _write_plugin_tree(tmp_path)
     first = load_config_tree(ConfigTreePluginSource(path=tmp_path))
-    (tmp_path / "workflow.yaml").write_text("name: changed\n", encoding="utf-8")
+    changed = _workflow()
+    changed["name"] = "changed"
+    (tmp_path / "workflow.yaml").write_text(
+        yaml.safe_dump(changed, sort_keys=False),
+        encoding="utf-8",
+    )
 
     second = load_config_tree(ConfigTreePluginSource(path=tmp_path))
 
     assert first.snapshot.digest != second.snapshot.digest
     assert first.contribution.resources[0].content != second.contribution.resources[0].content
+
+
+def test_config_plugin_normalizes_exact_version_across_loaded_values(tmp_path: Path) -> None:
+    _write_plugin_tree(tmp_path)
+    plugin_path = tmp_path / "plugin.yaml"
+    document = yaml.safe_load(plugin_path.read_text(encoding="utf-8"))
+    document["plugin_version"] = "01.002.0003"
+    plugin_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    loaded = load_config_tree(ConfigTreePluginSource(path=tmp_path))
+
+    assert loaded.document.plugin_version == "1.2.3"
+    assert loaded.descriptor.plugin_version == "1.2.3"
+    assert loaded.snapshot.identity.plugin_version == "1.2.3"
 
 
 @pytest.mark.parametrize(
@@ -399,9 +526,7 @@ def test_config_plugin_resource_change_changes_snapshot_digest(tmp_path: Path) -
         ("target_capability_id", "not-qualified"),
     ),
 )
-def test_config_plugin_rejects_invalid_qualified_ids(
-    tmp_path: Path, field: str, value: str
-) -> None:
+def test_config_plugin_rejects_invalid_qualified_ids(tmp_path: Path, field: str, value: str) -> None:
     bindings = {
         "toy.flow.greet": {
             "target": "toy.runtime.execute",
@@ -487,6 +612,71 @@ def test_product_file_accepts_one_explicit_workflow_resource_id(tmp_path: Path) 
     assert loaded.manifest.entrypoints == {"main": "root"}
 
 
+def test_product_file_normalizes_and_binds_complete_source_identity(tmp_path: Path) -> None:
+    product_path = tmp_path / "product.yaml"
+    _write_product_file(product_path)
+    document = yaml.safe_load(product_path.read_text(encoding="utf-8"))
+    document["product_version"] = "01.002.0000"
+    product_path.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+    loaded = load_product_file(ProductFileSource(path=product_path))
+    identity = loaded.snapshot.identity
+
+    assert loaded.manifest.product_version == "1.2.0"
+    assert identity.product_id == "toy.product"
+    assert identity.product_version == "1.2.0"
+    assert loaded.snapshot == SourceSnapshot.from_identity(identity, loaded.snapshot.files)
+    provisional = SourceSnapshot.from_files(
+        SourceKind.PRODUCT_FILE,
+        identity.root,
+        loaded.snapshot.files,
+    )
+    assert loaded.snapshot.digest != provisional.digest
+
+
+def test_equivalent_product_version_spellings_share_identity_but_not_raw_digest(
+    tmp_path: Path,
+) -> None:
+    product_path = tmp_path / "product.yaml"
+    _write_product_file(product_path)
+    first_document = yaml.safe_load(product_path.read_text(encoding="utf-8"))
+    first_document["product_version"] = "1.2.0"
+    product_path.write_text(yaml.safe_dump(first_document), encoding="utf-8")
+    first = load_product_file(ProductFileSource(path=product_path))
+    first_document["product_version"] = "01.002.0000"
+    product_path.write_text(yaml.safe_dump(first_document), encoding="utf-8")
+
+    second = load_product_file(ProductFileSource(path=product_path))
+
+    assert first.snapshot.identity == second.snapshot.identity
+    assert first.snapshot.digest != second.snapshot.digest
+
+
+def test_declarative_source_identity_requires_complete_normalized_coordinates(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="complete product coordinates"):
+        SourceIdentity(
+            kind=SourceKind.PRODUCT_FILE,
+            root=tmp_path.resolve(),
+            product_id="toy.product",
+        )
+    with pytest.raises(ValueError, match="normalized product version"):
+        SourceIdentity(
+            kind=SourceKind.PRODUCT_FILE,
+            root=tmp_path.resolve(),
+            product_id="toy.product",
+            product_version="01.002.0000",
+        )
+    with pytest.raises(ValueError, match="normalized plugin version"):
+        SourceIdentity(
+            kind=SourceKind.CONFIG_TREE,
+            root=tmp_path.resolve(),
+            plugin_id="toy.flow",
+            plugin_version="01.002.0003",
+        )
+
+
 def test_product_manifest_nested_configuration_and_workflow_are_immutable(
     tmp_path: Path,
 ) -> None:
@@ -537,9 +727,7 @@ def test_product_file_rejects_out_of_root_config_paths(tmp_path: Path, bad_path:
         {"template": "{{ bad() }}"},
     ),
 )
-def test_product_file_rejects_unknown_and_executable_fields(
-    tmp_path: Path, extra: dict[str, object]
-) -> None:
+def test_product_file_rejects_unknown_and_executable_fields(tmp_path: Path, extra: dict[str, object]) -> None:
     product_path = tmp_path / "product.yaml"
     _write_product_file(product_path, extra=extra)
 
