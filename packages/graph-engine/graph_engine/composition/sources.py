@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import _imp
 import base64
+from collections.abc import Mapping
 import configparser
 from contextlib import contextmanager
 import csv
@@ -34,10 +35,11 @@ from graph_engine.composition.import_plan import (
     ImportPlanSession,
     ImportProvenancePlan,
     ModuleImportPlan,
-    ModuleRole,
+    ModuleProvenance,
     active_import_provenance_plan,
     build_import_provenance_plan,
     extend_import_plan_with_quarantine,
+    extend_import_provenance_plan,
     rebind_import_provenance_plan,
 )
 from graph_engine.composition.source_fs import (
@@ -45,7 +47,15 @@ from graph_engine.composition.source_fs import (
     SourceSnapshotError,
     capture_declared_tree,
 )
-from graph_engine.plugin_api import FrozenModel, PluginDescriptor, PluginProvider, ProviderSource
+from graph_engine.plugin_api import (
+    FrozenModel,
+    PluginContribution,
+    PluginDescriptor,
+    PluginProvider,
+    ProviderSource,
+    RegistryPorts,
+    validate_contribution,
+)
 
 
 class WheelProductSource(FrozenModel):
@@ -187,26 +197,49 @@ class _ResolvedWheelSnapshot:
     declaration: WheelDeclaration
 
 
-@dataclass(frozen=True, slots=True)
-class _LoadedSnapshottedEntrypoint:
-    provider: WheelProvider
+@dataclass(slots=True, eq=False)
+class AuthenticatedProviderBinding:
+    """Exact provider object whose every live call runs inside source authentication."""
+
+    _provider: WheelProvider
     declaration: object
-    import_plan: ImportProvenancePlan
+    _source: WheelSource
+    _snapshot: SourceSnapshot
+    _entrypoint: metadata.EntryPoint
+    _metadata_provider: MetadataProvider
+    _cache: _AuthenticatedBindingCache
+    _cache_key: tuple[str, str, str, str]
+    _import_plan: ImportProvenancePlan
+
+    @property
+    def import_plan(self) -> ImportProvenancePlan:
+        return self._import_plan
+
+    def manifest(self) -> ProductManifest:
+        return cast(ProductManifest, _authenticated_provider_call(self, "manifest"))
+
+    def descriptor(self) -> PluginDescriptor:
+        return cast(PluginDescriptor, _authenticated_provider_call(self, "descriptor"))
+
+    def contribute(self, ports: RegistryPorts) -> PluginContribution:
+        return cast(
+            PluginContribution,
+            _authenticated_provider_call(self, "contribute", ports),
+        )
 
 
 @dataclass(slots=True)
 class _AuthenticatedBindingCache:
     """Platform-owned authority for modules imported after source authentication."""
 
-    bindings: dict[tuple[str, str, str, str], _LoadedSnapshottedEntrypoint] = field(default_factory=dict)
+    bindings: dict[tuple[str, str, str, str], AuthenticatedProviderBinding] = field(default_factory=dict)
     modules: dict[str, _AuthenticatedModule] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class _AuthenticatedModule:
     module: ModuleType
-    source_digests: set[str]
-    provenance_keys: set[tuple[object, ...]]
+    provenances: set[ModuleProvenance]
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,7 +251,6 @@ class _ParentPackageState:
 
 @dataclass(frozen=True, slots=True)
 class _ParentAttributeSnapshot:
-    candidate_module_names: tuple[str, ...]
     packages: tuple[_ParentPackageState, ...]
 
 
@@ -351,12 +383,15 @@ def load_snapshotted_entrypoint(
     snapshot: SourceSnapshot,
     metadata_provider: MetadataProvider = metadata,
 ) -> WheelProvider:
-    return _load_snapshotted_entrypoint_binding(
-        source,
-        snapshot,
-        metadata_provider,
-        _AuthenticatedBindingCache(),
-    ).provider
+    return cast(
+        WheelProvider,
+        _load_snapshotted_entrypoint_binding(
+            source,
+            snapshot,
+            metadata_provider,
+            _AuthenticatedBindingCache(),
+        ),
+    )
 
 
 def _load_snapshotted_entrypoint_binding(
@@ -364,7 +399,7 @@ def _load_snapshotted_entrypoint_binding(
     snapshot: SourceSnapshot,
     metadata_provider: MetadataProvider = metadata,
     binding_cache: _AuthenticatedBindingCache | None = None,
-) -> _LoadedSnapshottedEntrypoint:
+) -> AuthenticatedProviderBinding:
     cache = binding_cache or _AuthenticatedBindingCache()
     _validate_snapshot_matches_source(source, snapshot)
     resolved = _resolve_wheel_snapshot(source, metadata_provider)
@@ -379,45 +414,10 @@ def _load_snapshotted_entrypoint_binding(
     with _serialized_imports():
         cached = cache.bindings.get(cache_key)
         if cached is not None:
-            before_modules = dict(sys.modules)
-            import_plan = rebind_import_provenance_plan(
-                cached.import_plan,
-                before_modules,
-                _cached_module_authority(cache, snapshot.digest),
-            )
-            import_plan = extend_import_plan_with_quarantine(
-                import_plan,
-                resolved.declaration.source,
-                snapshot,
-                before_modules,
-                _fresh_module_authority(cache),
-            )
-            parent_attributes = _capture_parent_attributes(before_modules, import_plan)
-            try:
-                with ImportPlanSession(
-                    resolved.declaration.source,
-                    snapshot,
-                    before_modules,
-                ) as session:
-                    session.quarantine(import_plan)
-                    session.preload(
-                        import_plan,
-                        _cached_module_authority(cache, snapshot.digest),
-                    )
-                    session.validate(
-                        import_plan,
-                        _cached_module_authority(cache, snapshot.digest),
-                    )
-                    _validate_live_declaration(source, cached.provider, resolved.declaration)
-                    session.validate(
-                        import_plan,
-                        _cached_module_authority(cache, snapshot.digest),
-                    )
-                    session.restore_unconsumed_quarantine(import_plan)
-                return cached
-            except BaseException as primary_error:
-                _restore_import_transaction(before_modules, parent_attributes, primary_error)
-                raise
+            if cached.declaration != _static_declaration_value(resolved.declaration):
+                raise SourceSnapshotError("cached provider declaration changed")
+            _call_binding_declaration(cached)
+            return cached
 
         before_modules = dict(sys.modules)
         provider_source = resolved.declaration.source
@@ -427,17 +427,20 @@ def _load_snapshotted_entrypoint_binding(
             resolved.entrypoint,
             initial_modules=before_modules,
         )
+        import_plan = _extend_plan_with_cache_authority(
+            import_plan,
+            provider_source,
+            snapshot,
+            before_modules,
+            cache,
+        )
         import_plan = extend_import_plan_with_quarantine(
             import_plan,
             provider_source,
             snapshot,
             before_modules,
-            _fresh_module_authority(cache),
         )
-        parent_attributes = _capture_parent_attributes(
-            before_modules,
-            import_plan,
-        )
+        parent_attributes = _capture_parent_attributes(before_modules)
         try:
             with ImportPlanSession(provider_source, snapshot, before_modules) as session:
                 session.quarantine(import_plan)
@@ -446,73 +449,81 @@ def _load_snapshotted_entrypoint_binding(
                     loaded = resolved.entrypoint.load()
                 except Exception as error:
                     raise SourceSnapshotError("cannot load snapshotted entry point") from error
-                import_plan = build_import_provenance_plan(
+                import_plan = extend_import_provenance_plan(
+                    import_plan,
                     provider_source,
                     snapshot,
-                    resolved.entrypoint,
+                    session.post_quarantine_initial_modules,
                     provider_module=_provider_module_name(loaded),
-                    dependency_modules=session.recorded_module_names,
-                    quarantine_modules=_quarantine_module_names(import_plan),
-                    initial_modules=session.post_quarantine_initial_modules,
-                )
-                parent_attributes = replace(
-                    parent_attributes,
-                    candidate_module_names=tuple(
-                        entry.module_name for entry in import_plan.modules if entry.rollback
-                    ),
+                    dependency_provenances=session.recorded_provenances,
                 )
                 session.preload(import_plan, _fresh_module_authority(cache))
-                authenticated_modules = session.validate(
-                    import_plan,
-                    _fresh_module_authority(cache),
+                live_declaration = _invoke_provider_method(
+                    loaded,
+                    _declaration_method_name(source),
+                    _declaration_kind(source),
                 )
+                import_plan = extend_import_provenance_plan(
+                    import_plan,
+                    provider_source,
+                    snapshot,
+                    session.post_quarantine_initial_modules,
+                    dependency_provenances=session.recorded_provenances,
+                )
+                session.preload(import_plan, _fresh_module_authority(cache))
+                authenticated_modules = session.validate(import_plan, _fresh_module_authority(cache))
                 after_load = _resolve_wheel_snapshot(source, metadata_provider)
                 if after_load.snapshot != snapshot:
                     raise SourceSnapshotError("wheel source changed while loading its entry point")
-                declaration = _validate_live_declaration(source, loaded, resolved.declaration)
-                authenticated_modules = session.validate(
-                    import_plan,
-                    _fresh_module_authority(cache),
+                declaration = _validate_provider_result(
+                    source,
+                    resolved.declaration,
+                    _declaration_method_name(source),
+                    live_declaration,
                 )
                 session.restore_unconsumed_quarantine(import_plan)
-            binding = _LoadedSnapshottedEntrypoint(
-                cast(WheelProvider, loaded),
-                declaration,
-                active_import_provenance_plan(import_plan),
-            )
             _commit_authenticated_plan(cache, authenticated_modules)
+            binding = AuthenticatedProviderBinding(
+                _provider=cast(WheelProvider, loaded),
+                declaration=declaration,
+                _source=source,
+                _snapshot=snapshot,
+                _entrypoint=resolved.entrypoint,
+                _metadata_provider=metadata_provider,
+                _cache=cache,
+                _cache_key=cache_key,
+                _import_plan=active_import_provenance_plan(import_plan),
+            )
             cache.bindings[cache_key] = binding
             return binding
         except BaseException as primary_error:
-            _restore_import_transaction(before_modules, parent_attributes, primary_error)
+            _restore_import_transaction(
+                before_modules,
+                parent_attributes,
+                import_plan,
+                primary_error,
+            )
             raise
 
 
-def _quarantine_module_names(plan: ImportProvenancePlan) -> tuple[str, ...]:
-    return tuple(entry.module_name for entry in plan.modules if ModuleRole.QUARANTINE in entry.roles)
-
-
-def _validate_live_declaration(
-    source: WheelSource,
-    loaded: object,
-    static_declaration: WheelDeclaration,
+def _static_declaration_value(
+    declaration: WheelDeclaration,
 ) -> ProductManifest | PluginDescriptor:
-    if isinstance(source, WheelProductSource | EditableWheelProductSource):
-        manifest = _call_descriptor(loaded, "manifest", "product")
-        if not isinstance(manifest, ProductManifest):
-            raise SourceSnapshotError("loaded product provider returned an invalid manifest")
-        declaration = cast(WheelProductDeclaration, static_declaration)
-        if manifest != declaration.manifest:
-            raise SourceSnapshotError("loaded product manifest disagrees with static declaration")
-        return manifest
+    if isinstance(declaration, WheelProductDeclaration):
+        return declaration.manifest
+    return declaration.descriptor
 
-    descriptor = _call_descriptor(loaded, "descriptor", "plugin")
-    if not isinstance(descriptor, PluginDescriptor):
-        raise SourceSnapshotError("loaded plugin provider returned an invalid descriptor")
-    declaration = cast(WheelPluginDeclaration, static_declaration)
-    if descriptor != declaration.descriptor:
-        raise SourceSnapshotError("loaded plugin descriptor disagrees with static declaration")
-    return descriptor
+
+def _declaration_method_name(source: WheelSource) -> str:
+    if isinstance(source, WheelProductSource | EditableWheelProductSource):
+        return "manifest"
+    return "descriptor"
+
+
+def _declaration_kind(source: WheelSource) -> str:
+    if isinstance(source, WheelProductSource | EditableWheelProductSource):
+        return "product"
+    return "plugin"
 
 
 def _parse_wheel_declaration(
@@ -1048,53 +1059,81 @@ def _canonical_declared_paths(files: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _fresh_module_authority(cache: _AuthenticatedBindingCache):
-    def owns(entry: ModuleImportPlan, module: ModuleType) -> bool:
-        authenticated = cache.modules.get(entry.module_name)
+    def owns(item: ModuleImportPlan, module: ModuleType) -> bool:
+        authenticated = cache.modules.get(item.module_name)
         return (
             authenticated is not None
             and authenticated.module is module
-            and _module_provenance_key(entry) in authenticated.provenance_keys
+            and any(
+                provenance.authenticates_same_module(item.provenance)
+                for provenance in authenticated.provenances
+            )
         )
 
     return owns
 
 
 def _cached_module_authority(cache: _AuthenticatedBindingCache, source_digest: str):
-    def owns(entry: ModuleImportPlan, module: ModuleType) -> bool:
-        authenticated = cache.modules.get(entry.module_name)
+    def owns(item: ModuleImportPlan, module: ModuleType) -> bool:
+        authenticated = cache.modules.get(item.module_name)
         return (
             authenticated is not None
             and authenticated.module is module
-            and source_digest in authenticated.source_digests
-            and _module_provenance_key(entry) in authenticated.provenance_keys
+            and item.provenance.source_digest == source_digest
+            and item.provenance in authenticated.provenances
         )
 
     return owns
+
+
+def _extend_plan_with_cache_authority(
+    plan: ImportProvenancePlan,
+    source: ProviderSource,
+    snapshot: SourceSnapshot,
+    initial_modules: Mapping[str, ModuleType],
+    cache: _AuthenticatedBindingCache,
+) -> ImportProvenancePlan:
+    extended = plan
+    for module_name, authenticated in sorted(cache.modules.items()):
+        if initial_modules.get(module_name) is not authenticated.module:
+            continue
+        try:
+            candidate = extend_import_provenance_plan(
+                extended,
+                source,
+                snapshot,
+                initial_modules,
+                authorized_modules=(module_name,),
+            )
+        except SourceSnapshotError:
+            continue
+        if not _fresh_module_authority(cache)(candidate.module(module_name), authenticated.module):
+            continue
+        extended = candidate
+    return extended
 
 
 def _commit_authenticated_plan(
     cache: _AuthenticatedBindingCache,
     authenticated_modules: tuple[tuple[ModuleImportPlan, ModuleType], ...],
 ) -> None:
-    for entry, module in authenticated_modules:
-        if not entry.commit:
+    for item, module in authenticated_modules:
+        if not item.commit:
             continue
-        authenticated = cache.modules.get(entry.module_name)
+        authenticated = cache.modules.get(item.module_name)
         if authenticated is not None and authenticated.module is not module:
-            raise SourceSnapshotError(f"provider module changed before authority commit: {entry.module_name}")
-    for entry, module in authenticated_modules:
-        if not entry.commit:
+            raise SourceSnapshotError(f"provider module changed before authority commit: {item.module_name}")
+    for item, module in authenticated_modules:
+        if not item.commit:
             continue
-        authenticated = cache.modules.get(entry.module_name)
+        authenticated = cache.modules.get(item.module_name)
         if authenticated is None:
-            cache.modules[entry.module_name] = _AuthenticatedModule(
+            cache.modules[item.module_name] = _AuthenticatedModule(
                 module,
-                {entry.source_digest},
-                {_module_provenance_key(entry)},
+                {item.provenance},
             )
         elif authenticated.module is module:
-            authenticated.source_digests.add(entry.source_digest)
-            authenticated.provenance_keys.add(_module_provenance_key(entry))
+            authenticated.provenances.add(item.provenance)
         else:  # pragma: no cover - preflight and serialized import invariant.
             raise AssertionError("authenticated module changed after commit preflight")
 
@@ -1110,36 +1149,24 @@ def _restore_modules(before: dict[str, ModuleType]) -> None:
 
 def _capture_parent_attributes(
     before_modules: dict[str, ModuleType],
-    import_plan: ImportProvenancePlan,
 ) -> _ParentAttributeSnapshot:
     packages = tuple(
         _ParentPackageState(module_name, module, dict(module.__dict__))
         for module_name, module in sorted(before_modules.items())
         if isinstance(module, ModuleType) and getattr(module, "__path__", None) is not None
     )
-    return _ParentAttributeSnapshot(
-        candidate_module_names=tuple(entry.module_name for entry in import_plan.modules if entry.rollback),
-        packages=packages,
-    )
-
-
-def _module_provenance_key(entry: ModuleImportPlan) -> tuple[object, ...]:
-    return (
-        entry.classification.value,
-        str(entry.physical_origin) if entry.physical_origin is not None else None,
-        entry.physical_sha256,
-        tuple(str(location) for location in entry.namespace_locations),
-    )
+    return _ParentAttributeSnapshot(packages=packages)
 
 
 def _restore_import_transaction(
     before_modules: dict[str, ModuleType],
     parent_attributes: _ParentAttributeSnapshot,
+    import_plan: ImportProvenancePlan,
     primary_error: BaseException,
 ) -> None:
     rollback_errors: list[BaseException] = []
     current_modules = dict(sys.modules)
-    affected_module_names = set(parent_attributes.candidate_module_names)
+    affected_module_names = {item.module_name for item in import_plan.modules if item.rollback}
     for module_name in set(before_modules).union(current_modules):
         if before_modules.get(module_name) is not current_modules.get(module_name):
             affected_module_names.add(module_name)
@@ -1186,14 +1213,136 @@ def _provider_module_name(provider: object) -> str:
     return provider_module
 
 
-def _call_descriptor(loaded: object, method_name: str, kind: str) -> object:
+def _invoke_provider_method(
+    loaded: object,
+    method_name: str,
+    kind: str,
+    *args: object,
+) -> object:
     method = getattr(loaded, method_name, None)
     if not callable(method):
         raise SourceSnapshotError(f"loaded {kind} provider has no callable {method_name}")
     try:
-        return method()
+        return method(*args)
     except Exception as error:
         raise SourceSnapshotError(f"loaded {kind} provider {method_name} failed") from error
+
+
+def _validate_provider_result(
+    source: WheelSource,
+    static_declaration: WheelDeclaration,
+    method_name: str,
+    result: object,
+) -> ProductManifest | PluginDescriptor | PluginContribution:
+    if isinstance(source, WheelProductSource | EditableWheelProductSource):
+        if method_name != "manifest" or not isinstance(result, ProductManifest):
+            raise SourceSnapshotError("loaded product provider returned an invalid manifest")
+        declaration = cast(WheelProductDeclaration, static_declaration)
+        if result != declaration.manifest:
+            raise SourceSnapshotError("loaded product manifest disagrees with static declaration")
+        return result
+
+    declaration = cast(WheelPluginDeclaration, static_declaration)
+    if method_name == "descriptor":
+        if not isinstance(result, PluginDescriptor):
+            raise SourceSnapshotError("loaded plugin provider returned an invalid descriptor")
+        if result != declaration.descriptor:
+            raise SourceSnapshotError("loaded plugin descriptor disagrees with static declaration")
+        return result
+    if method_name == "contribute":
+        if type(result) is not PluginContribution:
+            raise SourceSnapshotError("loaded plugin provider returned an invalid contribution")
+        validate_contribution(declaration.descriptor, result)
+        return result
+    raise SourceSnapshotError(f"unsupported authenticated plugin provider call: {method_name}")
+
+
+def _call_binding_declaration(binding: AuthenticatedProviderBinding) -> object:
+    return _authenticated_provider_call(
+        binding,
+        _declaration_method_name(binding._source),
+    )
+
+
+def _authenticated_provider_call(
+    binding: AuthenticatedProviderBinding,
+    method_name: str,
+    *args: object,
+) -> object:
+    with _serialized_imports():
+        if binding._cache.bindings.get(binding._cache_key) is not binding:
+            raise SourceSnapshotError("provider binding is not owned by the current RegistryPlatform")
+        resolved = _resolve_wheel_snapshot(binding._source, binding._metadata_provider)
+        if resolved.snapshot != binding._snapshot:
+            raise SourceSnapshotError("wheel source changed before authenticated provider call")
+        before_modules = dict(sys.modules)
+        import_plan = rebind_import_provenance_plan(
+            binding._import_plan,
+            before_modules,
+            _cached_module_authority(binding._cache, binding._snapshot.digest),
+        )
+        import_plan = _extend_plan_with_cache_authority(
+            import_plan,
+            resolved.declaration.source,
+            binding._snapshot,
+            before_modules,
+            binding._cache,
+        )
+        import_plan = extend_import_plan_with_quarantine(
+            import_plan,
+            resolved.declaration.source,
+            binding._snapshot,
+            before_modules,
+        )
+        parent_attributes = _capture_parent_attributes(before_modules)
+        try:
+            with ImportPlanSession(
+                resolved.declaration.source,
+                binding._snapshot,
+                before_modules,
+            ) as session:
+                session.quarantine(import_plan)
+                session.preload(import_plan, _fresh_module_authority(binding._cache))
+                session.validate(import_plan, _fresh_module_authority(binding._cache))
+                result = _invoke_provider_method(
+                    binding._provider,
+                    method_name,
+                    _declaration_kind(binding._source),
+                    *args,
+                )
+                import_plan = extend_import_provenance_plan(
+                    import_plan,
+                    resolved.declaration.source,
+                    binding._snapshot,
+                    session.post_quarantine_initial_modules,
+                    dependency_provenances=session.recorded_provenances,
+                )
+                session.preload(import_plan, _fresh_module_authority(binding._cache))
+                authenticated_modules = session.validate(
+                    import_plan,
+                    _fresh_module_authority(binding._cache),
+                )
+                after_call = _resolve_wheel_snapshot(binding._source, binding._metadata_provider)
+                if after_call.snapshot != binding._snapshot:
+                    raise SourceSnapshotError("wheel source changed during authenticated provider call")
+                validated_result = _validate_provider_result(
+                    binding._source,
+                    resolved.declaration,
+                    method_name,
+                    result,
+                )
+                session.restore_unconsumed_quarantine(import_plan)
+            _commit_authenticated_plan(binding._cache, authenticated_modules)
+            binding._import_plan = active_import_provenance_plan(import_plan)
+            return validated_result
+        except BaseException as primary_error:
+            _restore_import_transaction(
+                before_modules,
+                parent_attributes,
+                import_plan,
+                primary_error,
+            )
+            raise
 
 
 __all__ = [

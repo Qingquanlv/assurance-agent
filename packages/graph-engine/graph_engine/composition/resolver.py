@@ -41,6 +41,7 @@ from graph_engine.composition.source_fs import (
     capture_explicit_file,
 )
 from graph_engine.composition.sources import (
+    AuthenticatedProviderBinding,
     EditableWheelProductSource,
     EditableWheelPluginSource,
     MetadataProvider,
@@ -123,7 +124,7 @@ class _CapturedSources:
 @dataclass(frozen=True, slots=True)
 class _LoadedPlugins:
     descriptors: Mapping[str, PluginDescriptor]
-    providers: Mapping[str, PluginProvider]
+    providers: Mapping[str, AuthenticatedProviderBinding]
     declarative: Mapping[str, DeclarativePlugin]
     captures: Mapping[str, _PluginCapture]
 
@@ -315,12 +316,11 @@ class RegistryPlatform:
             self._metadata_provider,
             self._binding_cache,
         )
-        provider = binding.provider
         if binding.declaration != manifest:
             raise ResolutionError("product provider manifest disagrees with static declaration")
-        if _call_product_manifest(provider) != manifest or _call_product_manifest(provider) != manifest:
+        if _call_product_manifest(binding) != manifest or _call_product_manifest(binding) != manifest:
             raise ResolutionError("product provider manifest drifted during resolution")
-        return provider
+        return binding
 
     def _declared_plugin_descriptors(
         self,
@@ -341,7 +341,7 @@ class RegistryPlatform:
         descriptors: Mapping[str, PluginDescriptor],
         dependency_order: tuple[str, ...],
     ) -> _LoadedPlugins:
-        providers: dict[str, PluginProvider] = {}
+        providers: dict[str, AuthenticatedProviderBinding] = {}
         declarative: dict[str, DeclarativePlugin] = {}
         by_id = {capture.plugin_id: capture for capture in captures}
         for plugin_id in dependency_order:
@@ -356,7 +356,6 @@ class RegistryPlatform:
                     self._metadata_provider,
                     self._binding_cache,
                 )
-                provider = cast(PluginProvider, binding.provider)
                 declared = binding.declaration
                 if not isinstance(declared, PluginDescriptor):
                     raise ResolutionError(f"plugin provider returned an invalid descriptor: {plugin_id}")
@@ -365,11 +364,11 @@ class RegistryPlatform:
                         f"plugin provider descriptor disagrees with static declaration: {plugin_id}"
                     )
                 if (
-                    _call_plugin_descriptor(provider, plugin_id) != declared
-                    or _call_plugin_descriptor(provider, plugin_id) != declared
+                    _call_plugin_descriptor(binding, plugin_id) != declared
+                    or _call_plugin_descriptor(binding, plugin_id) != declared
                 ):
                     raise ResolutionError(f"plugin provider descriptor drifted: {plugin_id}")
-                providers[plugin_id] = provider
+                providers[plugin_id] = binding
         return _LoadedPlugins(
             descriptors=dict(sorted(descriptors.items())),
             providers=dict(sorted(providers.items())),
@@ -427,14 +426,14 @@ class RegistryPlatform:
             if declarative is not None:
                 contribution = declarative.contribution
             else:
-                provider = loaded.providers[plugin_id]
-                if _call_plugin_descriptor(provider, plugin_id) != descriptor:
+                binding = loaded.providers[plugin_id]
+                if _call_plugin_descriptor(binding, plugin_id) != descriptor:
                     raise ResolutionError(f"plugin provider descriptor drifted: {plugin_id}")
                 try:
-                    contribution = provider.contribute(ports)
+                    contribution = binding.contribute(ports)
                 except Exception as error:
                     raise ResolutionError(f"plugin contribution failed: {plugin_id}") from error
-                if _call_plugin_descriptor(provider, plugin_id) != descriptor:
+                if _call_plugin_descriptor(binding, plugin_id) != descriptor:
                     raise ResolutionError(f"plugin provider descriptor drifted: {plugin_id}")
             if type(contribution) is not PluginContribution:
                 raise ResolutionError(f"plugin returned an unsupported contribution: {plugin_id}")

@@ -4,9 +4,11 @@ import base64
 import csv
 from dataclasses import replace
 import hashlib
+import importlib
 from importlib import metadata
 from pathlib import Path
 import sys
+from types import ModuleType
 from typing import cast
 
 import pytest
@@ -22,6 +24,7 @@ from graph_engine.composition import (
     ProductFileSource,
     ProductManifest,
     RegistryPlatform,
+    ResolutionError,
     ResolutionRequest,
     SourceKey,
     SourceRole,
@@ -132,6 +135,43 @@ class _DriftingProductProvider(_ProductProvider):
         return self._manifests[index]
 
 
+class _LazyContributionProvider(_PluginProvider):
+    def __init__(self, plugin_id: str, module_name: str) -> None:
+        super().__init__(plugin_id)
+        self.module_name = module_name
+        self.fail = False
+
+    def contribute(self, _ports: RegistryPorts) -> PluginContribution:
+        helper = importlib.import_module(self.module_name)
+        if self.fail:
+            raise RuntimeError("contribution failed after lazy import")
+        return PluginContribution(task_handlers={f"{self._descriptors[0].plugin_id}.greet": helper.handler})
+
+
+class _LazyDescriptorProvider(_PluginProvider):
+    def __init__(self, plugin_id: str, module_name: str) -> None:
+        super().__init__(plugin_id)
+        self.module_name = module_name
+        self.lazy = False
+
+    def descriptor(self) -> PluginDescriptor:
+        if self.lazy:
+            importlib.import_module(self.module_name)
+        return super().descriptor()
+
+
+class _LazyManifestProvider(_ProductProvider):
+    def __init__(self, manifest: ProductManifest, module_name: str) -> None:
+        super().__init__(manifest)
+        self.module_name = module_name
+        self.lazy = False
+
+    def manifest(self) -> ProductManifest:
+        if self.lazy:
+            importlib.import_module(self.module_name)
+        return super().manifest()
+
+
 class _MetadataProvider:
     def __init__(self, distributions: dict[str, metadata.Distribution]) -> None:
         self._distributions = distributions
@@ -204,6 +244,24 @@ def _manifest(
 def _record_hash(content: bytes) -> str:
     encoded = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
     return f"sha256={encoded}"
+
+
+def _add_distribution_file(
+    distribution: metadata.Distribution,
+    relative_path: str,
+    content: bytes,
+) -> Path:
+    root = Path(distribution.locate_file(""))
+    path = root / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    record_path = next(root.glob("*.dist-info/RECORD"))
+    with record_path.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.reader(stream))
+    rows.insert(-1, [relative_path, _record_hash(content), str(len(content))])
+    with record_path.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerows(rows)
+    return path
 
 
 def _manifest_declaration(manifest: ProductManifest) -> dict[str, object]:
@@ -514,7 +572,7 @@ def test_registry_platform_resolves_one_frozen_composition(
     assert composition.workflow.entrypoints == {"hello": "root"}
     assert composition.lock.digest == composition.lock_digest
     assert composition.registries.capabilities.task_handlers["toy.runtime.greet"]
-    assert composition.providers["toy.runtime"] is provider
+    assert composition.providers["toy.runtime"]._provider is provider
     assert tuple(composition.registries.sources.entries) == (
         SourceKey(SourceRole.ENGINE, "graph.engine"),
         SourceKey(SourceRole.PLUGIN, "toy.runtime"),
@@ -617,6 +675,177 @@ def test_registry_platform_resolves_one_frozen_composition(
             lock=forged_lock,
             digest=canonical_digest({"lock_digest": forged_lock.digest}),
         )
+
+
+def test_contribution_lazy_import_replaces_unowned_same_path_helper_and_binds_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _LazyContributionProvider("toy.runtime", "toy_runtime.helper")
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(_manifest()),
+        plugins={"toy.runtime": provider},
+    )
+    assert product_source is not None
+    distribution = platform._metadata_provider.distribution("toy-runtime")
+    helper_path = _add_distribution_file(
+        distribution,
+        "toy_runtime/helper.py",
+        (
+            b"from graph_engine.plugin_api import TaskOutcome\n"
+            b"class Handler:\n"
+            b"    async def execute(self, _request, _context):\n"
+            b"        return TaskOutcome.succeeded({'source': 'authenticated'})\n"
+            b"handler = Handler()\n"
+        ),
+    )
+    fake_handler = _Handler()
+    fake_helper = ModuleType("toy_runtime.helper")
+    fake_helper.__file__ = str(helper_path)
+    fake_helper.handler = fake_handler  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, fake_helper.__name__, fake_helper)
+
+    composition = platform.resolve(
+        ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],))
+    )
+
+    handler = composition.registries.capabilities.task_handlers["toy.runtime.greet"]
+    assert handler is not fake_handler
+    assert type(handler).__module__ == "toy_runtime.helper"
+    assert sys.modules["toy_runtime.helper"] is not fake_helper
+    authenticated = platform._binding_cache.modules["toy_runtime.helper"]
+    assert authenticated.module is sys.modules["toy_runtime.helper"]
+    binding = composition.providers["toy.runtime"]
+    assert any(
+        item.module_name == "toy_runtime.helper"
+        for item in binding.import_plan.modules  # type: ignore[union-attr]
+    )
+
+    repeated = platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],)))
+    assert repeated.providers["toy.runtime"] is binding
+
+
+def test_contribution_quarantines_loaded_leaf_when_its_parent_is_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "toy_runtime.round5_orphan.helper"
+    provider = _LazyContributionProvider("toy.runtime", module_name)
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(_manifest()),
+        plugins={"toy.runtime": provider},
+    )
+    assert product_source is not None
+    distribution = platform._metadata_provider.distribution("toy-runtime")
+    helper_path = _add_distribution_file(
+        distribution,
+        "toy_runtime/round5_orphan/helper.py",
+        (
+            b"from graph_engine.plugin_api import TaskOutcome\n"
+            b"class Handler:\n"
+            b"    async def execute(self, _request, _context):\n"
+            b"        return TaskOutcome.succeeded({'source': 'authenticated'})\n"
+            b"handler = Handler()\n"
+        ),
+    )
+    fake_handler = _Handler()
+    fake_helper = ModuleType(module_name)
+    fake_helper.__file__ = str(helper_path)
+    fake_helper.handler = fake_handler  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, module_name, fake_helper)
+    assert "toy_runtime.round5_orphan" not in sys.modules
+
+    composition = platform.resolve(
+        ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],))
+    )
+
+    handler = composition.registries.capabilities.task_handlers["toy.runtime.greet"]
+    assert handler is not fake_handler
+    assert type(handler).__module__ == module_name
+    assert sys.modules[module_name] is not fake_helper
+    assert platform._binding_cache.modules[module_name].module is sys.modules[module_name]
+
+
+def test_failed_contribution_lazy_import_rolls_back_before_corrected_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _LazyContributionProvider("toy.runtime", "toy_runtime.retry_helper")
+    provider.fail = True
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(_manifest()),
+        plugins={"toy.runtime": provider},
+    )
+    assert product_source is not None
+    distribution = platform._metadata_provider.distribution("toy-runtime")
+    _add_distribution_file(
+        distribution,
+        "toy_runtime/retry_helper.py",
+        (
+            b"from graph_engine.plugin_api import TaskOutcome\n"
+            b"class Handler:\n"
+            b"    async def execute(self, _request, _context):\n"
+            b"        return TaskOutcome.succeeded({'source': 'retry'})\n"
+            b"handler = Handler()\n"
+        ),
+    )
+    request = ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],))
+
+    with pytest.raises(ResolutionError, match="contribution failed"):
+        platform.resolve(request)
+    assert "toy_runtime.retry_helper" not in sys.modules
+    assert "toy_runtime.retry_helper" not in platform._binding_cache.modules
+
+    provider.fail = False
+    corrected = platform.resolve(request)
+
+    handler = corrected.registries.capabilities.task_handlers["toy.runtime.greet"]
+    assert type(handler).__module__ == "toy_runtime.retry_helper"
+    assert (
+        platform._binding_cache.modules["toy_runtime.retry_helper"].module
+        is sys.modules["toy_runtime.retry_helper"]
+    )
+
+
+def test_first_live_manifest_and_descriptor_may_lazy_import_authenticated_helpers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product = _LazyManifestProvider(_manifest(), "toy_product.manifest_helper")
+    plugin = _LazyDescriptorProvider("toy.runtime", "toy_runtime.descriptor_helper")
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=product,
+        plugins={"toy.runtime": plugin},
+    )
+    assert product_source is not None
+    _add_distribution_file(
+        platform._metadata_provider.distribution("toy-product"),
+        "toy_product/manifest_helper.py",
+        b"VALUE = 'manifest'\n",
+    )
+    _add_distribution_file(
+        platform._metadata_provider.distribution("toy-runtime"),
+        "toy_runtime/descriptor_helper.py",
+        b"VALUE = 'descriptor'\n",
+    )
+    product.lazy = True
+    plugin.lazy = True
+
+    composition = platform.resolve(
+        ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],))
+    )
+
+    assert composition.manifest.product_id == "toy.a"
+    assert "toy_product.manifest_helper" in platform._binding_cache.modules
+    assert "toy_runtime.descriptor_helper" in platform._binding_cache.modules
 
 
 def test_registry_platform_strictly_parses_mapping_requests(
@@ -738,8 +967,8 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
         )
     )
 
-    assert composition.product_provider is product
-    assert composition.providers[domain_id] is plugin
+    assert composition.product_provider._provider is product
+    assert composition.providers[domain_id]._provider is plugin
 
 
 def _write_mixed_product(path: Path) -> None:
@@ -932,7 +1161,7 @@ def test_resolution_rejects_drifted_provider_descriptor(
     provider._descriptors = (authenticated,)
     provider._descriptor_calls = 0
     corrected = platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],)))
-    assert corrected.providers["toy.runtime"] is provider
+    assert corrected.providers["toy.runtime"]._provider is provider
 
 
 def test_source_roles_disjoin_adversarial_product_and_plugin_ids(

@@ -1,3 +1,5 @@
+from dataclasses import replace
+import importlib
 from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 import sys
@@ -5,14 +7,19 @@ from types import ModuleType
 
 from importlib import metadata
 
+import pytest
+
 from graph_engine.composition.import_plan import (
     ImportPlanSession,
     ModuleImportPlan,
-    ModuleClassification,
     ModuleRole,
+    StandardLoader,
     build_import_provenance_plan,
+    extend_import_plan_with_quarantine,
+    extend_import_provenance_plan,
 )
 from graph_engine.composition.models import SourceFile, SourceIdentity, SourceKind, SourceSnapshot
+from graph_engine.composition.source_fs import SourceSnapshotError
 from graph_engine.plugin_api import ProviderSource
 
 
@@ -33,6 +40,7 @@ def _source(
 
 
 def _snapshot(root: Path, source: ProviderSource, files: dict[str, bytes]) -> SourceSnapshot:
+    _write_files(root, files)
     return SourceSnapshot.from_identity(
         SourceIdentity(
             kind=SourceKind.WHEEL_PLUGIN,
@@ -100,8 +108,104 @@ def test_plan_contains_only_the_current_entrypoint_lineage(tmp_path: Path) -> No
         "alpha_namespace.provider",
     )
     assert plan.modules[0].roles == (ModuleRole.ANCESTOR,)
-    assert plan.modules[0].classification is ModuleClassification.NAMESPACE
+    assert plan.modules[0].provenance.standard_loader is StandardLoader.NAMESPACE
     assert plan.modules[1].roles == (ModuleRole.ENTRYPOINT,)
+
+
+@pytest.mark.parametrize(
+    "provenance_change",
+    (
+        {"physical_sha256": "0" * 64},
+        {"standard_loader": StandardLoader.EXTENSION},
+        {"standard_is_package": True},
+    ),
+)
+def test_terminal_validation_consumes_the_frozen_plan_provenance(
+    tmp_path: Path,
+    provenance_change: dict[str, object],
+) -> None:
+    files = {"plan_terminal.py": b"provider = object()\n"}
+    _write_files(tmp_path, files)
+    source = _source(entrypoint_value="plan_terminal:provider")
+    snapshot = _snapshot(tmp_path, source, files)
+    entrypoint = _entrypoint(source)
+    initial = dict(sys.modules)
+    plan = build_import_provenance_plan(
+        source,
+        snapshot,
+        entrypoint,
+        initial_modules=initial,
+    )
+    item = plan.module("plan_terminal")
+    drifted_item = replace(
+        item,
+        provenance=replace(item.provenance, **provenance_change),
+    )
+
+    try:
+        with ImportPlanSession(source, snapshot, initial) as session:
+            session.preload(plan, _reject_unowned)
+            session.validate(plan, _reject_unowned)
+        imported = sys.modules["plan_terminal"]
+        drifted = replace(
+            plan,
+            modules=(replace(drifted_item, initial_module=imported),),
+        )
+        with ImportPlanSession(source, snapshot, dict(sys.modules)) as session:
+            with pytest.raises(SourceSnapshotError, match="planned.*provenance"):
+                session.validate(drifted, lambda _item, module: module is imported)
+    finally:
+        _remove_modules("plan_terminal")
+
+
+@pytest.mark.parametrize(
+    ("module_name", "selected_files", "shadow_path"),
+    (
+        (
+            "round5_shadow_regular",
+            {"round5_shadow_regular.py": b"VALUE = 'selected'\n"},
+            "round5_shadow_regular.py",
+        ),
+        (
+            "round5_shadow_namespace",
+            {"round5_shadow_namespace/owned.py": b"VALUE = 'selected'\n"},
+            "round5_shadow_namespace.py",
+        ),
+    ),
+)
+def test_source_owned_regular_and_namespace_shadows_never_fall_through_as_external(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+    selected_files: dict[str, bytes],
+    shadow_path: str,
+) -> None:
+    selected_root = tmp_path / "selected"
+    shadow_root = tmp_path / "shadow"
+    files = {"round5_entry.py": b"provider = object()\n", **selected_files}
+    source = _source(entrypoint_value="round5_entry:provider")
+    snapshot = _snapshot(selected_root, source, files)
+    shadow_file = shadow_root / shadow_path
+    shadow_file.parent.mkdir(parents=True, exist_ok=True)
+    shadow_file.write_bytes(b"VALUE = 'shadow'\n")
+    monkeypatch.syspath_prepend(str(selected_root))
+    monkeypatch.syspath_prepend(str(shadow_root))
+    initial = dict(sys.modules)
+    plan = build_import_provenance_plan(source, snapshot, _entrypoint(source), initial_modules=initial)
+    fake = ModuleType(module_name)
+    fake.__file__ = str(shadow_file)
+    preloaded = {**initial, module_name: fake}
+
+    with pytest.raises(SourceSnapshotError, match="authenticated source"):
+        extend_import_plan_with_quarantine(plan, source, snapshot, preloaded)
+
+    try:
+        with ImportPlanSession(source, snapshot, initial) as session:
+            session.preload(plan, _reject_unowned)
+            with pytest.raises(SourceSnapshotError, match="authenticated source"):
+                importlib.import_module(module_name)
+    finally:
+        _remove_modules("round5_entry", module_name)
 
 
 def test_plan_extends_with_provider_leaf_and_rejectable_initial_state(tmp_path: Path) -> None:
@@ -124,10 +228,16 @@ def test_plan_extends_with_provider_leaf_and_rejectable_initial_state(tmp_path: 
     preloaded = ModuleType("implementation_package.provider")
     sys.modules[preloaded.__name__] = preloaded
     try:
-        plan = build_import_provenance_plan(
+        phase_one = build_import_provenance_plan(
             source,
             snapshot,
             entrypoint,
+        )
+        plan = extend_import_provenance_plan(
+            phase_one,
+            source,
+            snapshot,
+            dict(sys.modules),
             provider_module="implementation_package.provider",
         )
     finally:
@@ -163,16 +273,22 @@ def test_plan_maps_editable_src_layout_from_authenticated_import_root(tmp_path: 
         group=source.entrypoint_group,
     )
 
-    plan = build_import_provenance_plan(
+    phase_one = build_import_provenance_plan(
         source,
         snapshot,
         entrypoint,
+    )
+    plan = extend_import_provenance_plan(
+        phase_one,
+        source,
+        snapshot,
+        dict(sys.modules),
         provider_module="acme.implementations.provider",
     )
 
     assert all(not entry.module_name.startswith("src.") for entry in plan.modules)
-    assert plan.module("acme").namespace_locations == (tmp_path / "src" / "acme",)
-    assert plan.module("acme.plugins.bridge").physical_origin == (
+    assert plan.module("acme").provenance.canonical_locations == (tmp_path / "src" / "acme",)
+    assert plan.module("acme.plugins.bridge").provenance.canonical_origin == (
         tmp_path / "src" / "acme" / "plugins" / "bridge.py"
     )
 
@@ -196,9 +312,9 @@ def test_plan_uses_one_initializer_predicate_for_extension_packages(tmp_path: Pa
 
     plan = build_import_provenance_plan(source, snapshot, entrypoint)
 
-    assert plan.module("provider_package").classification is ModuleClassification.EXTENSION
-    assert plan.module("provider_package.plugins").classification is ModuleClassification.NAMESPACE
-    assert plan.module("provider_package.plugins.impl").classification is ModuleClassification.REGULAR
+    assert plan.module("provider_package").provenance.standard_loader is StandardLoader.EXTENSION
+    assert plan.module("provider_package.plugins").provenance.standard_loader is StandardLoader.NAMESPACE
+    assert plan.module("provider_package.plugins.impl").provenance.standard_loader is StandardLoader.SOURCE
 
 
 def test_import_plan_loads_only_current_disjoint_entrypoint_in_both_orders(
@@ -277,12 +393,13 @@ def test_import_plan_rejects_same_path_preload_behind_regular_bridge(tmp_path: P
         with ImportPlanSession(source, snapshot, initial) as session:
             session.preload(phase_one, _reject_unowned)
             provider = entrypoint.load()
-            final = build_import_provenance_plan(
+            final = extend_import_provenance_plan(
+                phase_one,
                 source,
                 snapshot,
-                entrypoint,
+                initial,
                 provider_module=provider.__module__,
-                initial_modules=initial,
+                dependency_provenances=session.recorded_provenances,
             )
             try:
                 session.preload(final, _reject_unowned)
@@ -346,7 +463,7 @@ def test_editable_src_namespace_reexport_first_load_and_repeat_use_same_plan(
     authority: dict[str, tuple[ModuleType, str]] = {}
 
     def is_owned(entry: ModuleImportPlan, module: ModuleType) -> bool:
-        return authority.get(entry.module_name) == (module, entry.source_digest)
+        return authority.get(entry.module_name) == (module, entry.provenance.source_digest)
 
     try:
         initial = dict(sys.modules)
@@ -359,23 +476,32 @@ def test_editable_src_namespace_reexport_first_load_and_repeat_use_same_plan(
         with ImportPlanSession(source, snapshot, initial) as session:
             session.preload(phase_one, is_owned)
             provider = entrypoint.load()
-            final = build_import_provenance_plan(
+            final = extend_import_provenance_plan(
+                phase_one,
                 source,
                 snapshot,
-                entrypoint,
+                initial,
                 provider_module=provider.__module__,
-                initial_modules=initial,
+                dependency_provenances=session.recorded_provenances,
             )
             session.preload(final, is_owned)
             validated = session.validate(final, is_owned)
-        authority.update((entry.module_name, (module, entry.source_digest)) for entry, module in validated)
+        authority.update(
+            (entry.module_name, (module, entry.provenance.source_digest)) for entry, module in validated
+        )
 
-        repeated = build_import_provenance_plan(
+        repeated_phase = build_import_provenance_plan(
             source,
             snapshot,
             entrypoint,
-            provider_module=provider.__module__,
             initial_modules=dict(sys.modules),
+        )
+        repeated = extend_import_provenance_plan(
+            repeated_phase,
+            source,
+            snapshot,
+            dict(sys.modules),
+            provider_module=provider.__module__,
         )
         with ImportPlanSession(source, snapshot, dict(sys.modules)) as session:
             session.preload(repeated, is_owned)

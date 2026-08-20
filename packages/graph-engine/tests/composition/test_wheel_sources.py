@@ -390,7 +390,9 @@ def _namespace_distribution(
     plugin_ids = ("namespace.runtime", "namespace.sibling")
     module_names = ("provider", "sibling")
     sources: list[_WheelPluginSource] = []
-    files: list[Path] = []
+    shared_module = package / "shared.py"
+    shared_module.write_text("VALUE = 'authenticated sibling dependency'\n", encoding="utf-8")
+    files: list[Path] = [shared_module]
     for plugin_id, module_name in zip(plugin_ids, module_names, strict=True):
         declaration_path = f"round3_namespace/plugins/{module_name}-declaration.json"
         entrypoint_value = f"round3_namespace.plugins.{module_name}:provider"
@@ -413,11 +415,22 @@ def _namespace_distribution(
             commit_validators=(),
         )
         module_path = package / f"{module_name}.py"
+        eager_shared_import = (
+            "from round3_namespace.plugins import shared\n" if module_name == "provider" else ""
+        )
+        lazy_shared_import = (
+            "        from round3_namespace.plugins import shared\n"
+            "        assert shared.VALUE == 'authenticated sibling dependency'\n"
+            if module_name == "sibling"
+            else ""
+        )
         module_path.write_text(
             "from graph_engine.plugin_api import PluginContribution, PluginDescriptor\n"
+            f"{eager_shared_import}"
             f"_DESCRIPTOR = PluginDescriptor.model_validate({descriptor.model_dump(mode='python')!r})\n"
             "class Provider:\n"
             "    def descriptor(self):\n"
+            f"{lazy_shared_import}"
             "        return _DESCRIPTOR\n"
             "    def contribute(self, _ports):\n"
             "        return PluginContribution.empty()\n"
@@ -468,6 +481,114 @@ def _namespace_distribution(
         sources[1],
         root,
     )
+
+
+def _split_namespace_distributions(
+    tmp_path: Path,
+) -> tuple[
+    dict[str, metadata.Distribution],
+    dict[str, _WheelPluginSource],
+    dict[str, Path],
+]:
+    distributions: dict[str, metadata.Distribution] = {}
+    sources: dict[str, _WheelPluginSource] = {}
+    roots: dict[str, Path] = {}
+    for suffix in ("a", "b"):
+        distribution_name = f"split-runtime-{suffix}"
+        plugin_id = f"split.runtime.{suffix}"
+        root = tmp_path / suffix
+        roots[suffix] = root
+        package = root / "split_namespace"
+        package.mkdir(parents=True)
+        declaration_path = f"split_namespace/{suffix}-declaration.json"
+        entrypoint_value = f"split_namespace.provider_{suffix}:provider"
+        source_expectation = ProviderSource(
+            distribution=distribution_name,
+            version="1.2.3",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name=plugin_id,
+            entrypoint_value=entrypoint_value,
+            declaration_path=declaration_path,
+            import_roots=("",),
+        )
+        descriptor = PluginDescriptor(
+            schema_version="1",
+            source=source_expectation,
+            plugin_id=plugin_id,
+            plugin_version="1.2.3",
+            engine_api="1.0",
+            task_handlers=(),
+            commit_validators=(),
+        )
+        module_path = package / f"provider_{suffix}.py"
+        lazy_import = (
+            "        from split_namespace.external import VALUE\n        assert VALUE == 'external portion'\n"
+            if suffix == "a"
+            else ""
+        )
+        module_path.write_text(
+            "from graph_engine.plugin_api import PluginContribution, PluginDescriptor\n"
+            f"_DESCRIPTOR = PluginDescriptor.model_validate({descriptor.model_dump(mode='python')!r})\n"
+            "class Provider:\n"
+            "    def descriptor(self):\n"
+            f"{lazy_import}"
+            "        return _DESCRIPTOR\n"
+            "    def contribute(self, _ports):\n"
+            "        return PluginContribution.empty()\n"
+            "provider = Provider()\n",
+            encoding="utf-8",
+        )
+        extra_files: tuple[Path, ...] = ()
+        if suffix == "b":
+            external = package / "external.py"
+            external.write_text("VALUE = 'external portion'\n", encoding="utf-8")
+            extra_files = (external,)
+        declaration = root / declaration_path
+        declaration.write_bytes(
+            canonical_json_bytes(
+                {
+                    "schema_version": "1",
+                    "kind": "plugin",
+                    "source": source_expectation.model_dump(mode="json"),
+                    "descriptor": descriptor.model_dump(mode="json"),
+                }
+            )
+        )
+        dist_info = root / f"split_runtime_{suffix}-1.2.3.dist-info"
+        dist_info.mkdir()
+        metadata_path = dist_info / "METADATA"
+        metadata_path.write_text(
+            f"Metadata-Version: 2.1\nName: {distribution_name}\nVersion: 1.2.3\n",
+            encoding="utf-8",
+        )
+        entrypoints_path = dist_info / "entry_points.txt"
+        entrypoints_path.write_text(
+            f"[graph_engine.plugins]\n{plugin_id} = {entrypoint_value}\n",
+            encoding="utf-8",
+        )
+        _write_record(
+            root,
+            dist_info,
+            tuple(
+                path.relative_to(root).as_posix()
+                for path in (module_path, *extra_files, declaration, metadata_path, entrypoints_path)
+            ),
+        )
+        distributions[distribution_name] = metadata.Distribution.at(dist_info)
+        sources[suffix] = _WheelPluginSource(
+            distribution=distribution_name,
+            entrypoint_name=plugin_id,
+            declaration_path=declaration_path,
+        )
+    return distributions, sources, roots
+
+
+class _DistributionMap:
+    def __init__(self, distributions: dict[str, metadata.Distribution]) -> None:
+        self._distributions = distributions
+
+    def distribution(self, name: str) -> metadata.Distribution:
+        return self._distributions[name]
 
 
 def _rollback_distribution(
@@ -1289,7 +1410,8 @@ def test_editable_src_namespace_reexport_loads_and_repeats_through_public_bindin
             binding_cache=cache,
         )
 
-        assert repeated.provider is first.provider is provider
+        assert repeated is first
+        assert repeated._provider is provider
         assert snapshot.identity.import_roots == ("src",)
         assert "src.editable_namespace" not in sys.modules
     finally:
@@ -1541,9 +1663,11 @@ def test_binding_quarantines_same_source_helper_before_entrypoint_import(
         authenticated_helper = sys.modules["toy_plugin.helper"]
         assert authenticated_helper is not fake_helper
         assert authenticated_helper.VALUE == "authenticated"  # type: ignore[attr-defined]
-        assert binding.provider is provider
+        assert binding._provider is provider
         assert cache.modules["toy_plugin.helper"].module is authenticated_helper
-        assert cache.modules["toy_plugin.helper"].source_digests == {snapshot.digest}
+        assert {
+            provenance.source_digest for provenance in cache.modules["toy_plugin.helper"].provenances
+        } == {snapshot.digest}
     finally:
         for module_name in tuple(sys.modules):
             if module_name == "toy_plugin" or module_name.startswith("toy_plugin."):
@@ -1577,8 +1701,14 @@ def test_platform_loads_and_repeats_a_real_pep420_namespace_provider(
             binding_cache=cache,
         )
 
-        assert repeated.provider is first.provider
-        assert sibling.provider.descriptor().plugin_id == "namespace.sibling"
+        assert repeated is first
+        assert sibling.descriptor().plugin_id == "namespace.sibling"
+        shared_item = sibling.import_plan.module("round3_namespace.plugins.shared")
+        assert {role.value for role in shared_item.roles} == {"authorized"}
+        assert (
+            cache.modules["round3_namespace.plugins.shared"].module
+            is sys.modules["round3_namespace.plugins.shared"]
+        )
         for module_name in ("round3_namespace", "round3_namespace.plugins"):
             namespace = sys.modules[module_name]
             assert getattr(namespace, "__file__", None) is None
@@ -1587,6 +1717,52 @@ def test_platform_loads_and_repeats_a_real_pep420_namespace_provider(
     finally:
         for module_name in tuple(sys.modules):
             if module_name == "round3_namespace" or module_name.startswith("round3_namespace."):
+                sys.modules.pop(module_name, None)
+
+
+@pytest.mark.parametrize("binding_order", (("a", "b"), ("b", "a")))
+def test_split_distribution_namespace_keeps_external_standard_portion_without_source_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding_order: tuple[str, str],
+) -> None:
+    distributions, sources, roots = _split_namespace_distributions(tmp_path)
+    metadata_provider = _DistributionMap(distributions)
+    for suffix in reversed(binding_order):
+        monkeypatch.syspath_prepend(str(roots[suffix]))
+    snapshots = {
+        suffix: snapshot_wheel_source(source, metadata_provider) for suffix, source in sources.items()
+    }
+    cache = wheel_sources._AuthenticatedBindingCache()
+
+    try:
+        bindings = {
+            suffix: wheel_sources._load_snapshotted_entrypoint_binding(
+                sources[suffix],
+                snapshots[suffix],
+                metadata_provider,
+                cache,
+            )
+            for suffix in binding_order
+        }
+        repeated = wheel_sources._load_snapshotted_entrypoint_binding(
+            sources[binding_order[0]],
+            snapshots[binding_order[0]],
+            metadata_provider,
+            cache,
+        )
+
+        assert repeated is bindings[binding_order[0]]
+        namespace = sys.modules["split_namespace"]
+        assert set(Path(path) for path in namespace.__path__) == {
+            roots["a"] / "split_namespace",
+            roots["b"] / "split_namespace",
+        }
+        assert "split_namespace.external" in sys.modules
+        assert "split_namespace.external" not in cache.modules
+    finally:
+        for module_name in tuple(sys.modules):
+            if module_name == "split_namespace" or module_name.startswith("split_namespace."):
                 sys.modules.pop(module_name, None)
 
 
@@ -1731,7 +1907,7 @@ def test_failed_import_restores_existing_parent_child_attribute(
         )
         assert parent.child is sys.modules["round3_rollback_pkg.child"]  # type: ignore[attr-defined]
         assert parent.child is not stale  # type: ignore[attr-defined]
-        assert corrected.provider is parent.child.provider  # type: ignore[attr-defined]
+        assert corrected._provider is parent.child.provider  # type: ignore[attr-defined]
         assert nested_parent.leaf is sys.modules["round3_rollback_pkg.nested.leaf"]  # type: ignore[attr-defined]
     finally:
         sys.modules.pop(control.__name__, None)
