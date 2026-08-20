@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -216,6 +219,60 @@ def test_declared_tree_rejects_path_swap_during_component_open(
             ("plugin.yaml",),
             DeclaredTreePolicy.config_tree(),
         )
+
+
+def test_declared_tree_rejects_regular_to_fifo_swap_without_blocking(tmp_path: Path) -> None:
+    script = textwrap.dedent(
+        """
+        import os
+        import signal
+        import sys
+        from pathlib import Path
+
+        import graph_engine.composition.source_fs as source_fs
+        from graph_engine.composition import (
+            DeclaredTreePolicy,
+            SourceSnapshotError,
+            capture_declared_tree,
+        )
+
+        root = Path(sys.argv[1])
+        path = root / "plugin.yaml"
+        path.write_text("original\\n", encoding="utf-8")
+        swapped = False
+
+        def swap(phase: str, relative_path: str | None) -> None:
+            global swapped
+            if phase != "before_component_open" or relative_path != "plugin.yaml" or swapped:
+                return
+            swapped = True
+            path.unlink()
+            os.mkfifo(path)
+
+        source_fs._snapshot_boundary = swap
+        signal.alarm(1)
+        try:
+            capture_declared_tree(
+                root,
+                ("plugin.yaml",),
+                DeclaredTreePolicy.config_tree(),
+            )
+        except SourceSnapshotError:
+            signal.alarm(0)
+            raise SystemExit(0)
+        raise SystemExit(2)
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_declared_tree_rejects_byte_mutation_after_first_stat(

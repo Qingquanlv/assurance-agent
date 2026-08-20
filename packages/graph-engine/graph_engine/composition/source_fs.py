@@ -18,8 +18,9 @@ from graph_engine.errors import GraphEngineError
 
 _READ_BUFFER_SIZE = 1024 * 1024
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW
-_FILE_READ_FLAGS = os.O_RDONLY | _NOFOLLOW
+_FILE_READ_FLAGS = os.O_RDONLY | _NOFOLLOW | _NONBLOCK
 _EXECUTABLE_BITS = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
 _EntryState: TypeAlias = tuple[int, int, int, int, int, int, int]
 
@@ -348,6 +349,7 @@ def _validate_directory_entry_name(name: str) -> None:
 def _require_descriptor_relative_posix() -> None:
     if (
         _NOFOLLOW == 0
+        or _NONBLOCK == 0
         or os.open not in os.supports_dir_fd
         or os.stat not in os.supports_dir_fd
         or os.stat not in os.supports_follow_symlinks
