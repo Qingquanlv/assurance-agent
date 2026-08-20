@@ -23,6 +23,10 @@ class SourceKind(str, Enum):
 class SourceIdentity:
     kind: SourceKind
     root: Path
+    distribution: str | None = None
+    version: str | None = None
+    entrypoint_group: str | None = None
+    entrypoint_name: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SourceKind):
@@ -31,6 +35,25 @@ class SourceIdentity:
             raise TypeError("source identity root must be a Path")
         if not self.root.is_absolute():
             raise ValueError("source identity root must be absolute")
+        wheel_coordinates = (
+            self.distribution,
+            self.version,
+            self.entrypoint_group,
+            self.entrypoint_name,
+        )
+        if self.kind in {
+            SourceKind.WHEEL_PRODUCT,
+            SourceKind.WHEEL_PLUGIN,
+            SourceKind.EDITABLE_PLUGIN,
+        }:
+            # Task 2's low-level editable tree capture temporarily has no wheel
+            # coordinates; Task 3 rewraps its authenticated files before exposure.
+            if any(value is not None for value in wheel_coordinates) and any(
+                not isinstance(value, str) or not value for value in wheel_coordinates
+            ):
+                raise ValueError("wheel source identity requires complete wheel coordinates")
+        elif any(value is not None for value in wheel_coordinates):
+            raise ValueError("wheel coordinates are allowed only for wheel source identities")
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +92,7 @@ class SourceSnapshot:
         paths = tuple(item.path for item in self.files)
         if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
             raise ValueError("source snapshot files must have unique canonical path order")
-        expected = canonical_digest(_file_digest_document(self.files))
+        expected = _snapshot_digest(self.identity, self.files)
         if self.digest != expected:
             raise ValueError("source snapshot digest does not authenticate its files")
 
@@ -80,16 +103,40 @@ class SourceSnapshot:
         root: Path,
         files: tuple[SourceFile, ...],
     ) -> SourceSnapshot:
+        return cls.from_identity(SourceIdentity(kind=kind, root=root), files)
+
+    @classmethod
+    def from_identity(
+        cls,
+        identity: SourceIdentity,
+        files: tuple[SourceFile, ...],
+    ) -> SourceSnapshot:
         frozen_files = tuple(sorted(files, key=lambda item: item.path))
         return cls(
-            identity=SourceIdentity(kind=kind, root=root),
+            identity=identity,
             files=frozen_files,
-            digest=canonical_digest(_file_digest_document(frozen_files)),
+            digest=_snapshot_digest(identity, frozen_files),
         )
 
 
 def _file_digest_document(files: tuple[SourceFile, ...]) -> JSONValue:
     return [{"path": item.path, "sha256": item.sha256} for item in files]
+
+
+def _snapshot_digest(identity: SourceIdentity, files: tuple[SourceFile, ...]) -> str:
+    file_document = _file_digest_document(files)
+    if identity.distribution is None:
+        return canonical_digest(file_document)
+    identity_document: dict[str, JSONValue] = {
+        "kind": identity.kind.value,
+        "distribution": identity.distribution,
+        "version": identity.version,
+        "entrypoint_group": identity.entrypoint_group,
+        "entrypoint_name": identity.entrypoint_name,
+    }
+    if identity.kind == SourceKind.EDITABLE_PLUGIN:
+        identity_document["root"] = str(identity.root)
+    return canonical_digest({"identity": identity_document, "files": file_document})
 
 
 def _validate_canonical_relative_path(value: str) -> str:
