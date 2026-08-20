@@ -645,7 +645,11 @@ class SnapshotStore:
         display_root: Path,
     ) -> SnapshotStore:
         store = cls.at(parent_fd, name, display_root=display_root)
-        return store._create_at(os.dup(parent_fd), initial_files)
+        try:
+            return store._create_at(os.dup(parent_fd), initial_files)
+        except BaseException:
+            store.close()
+            raise
 
     def _create_at(self, parent_fd: int, initial_files: Mapping[str, bytes]) -> SnapshotStore:
         store = self

@@ -676,6 +676,77 @@ def test_ordinary_initialization_failure_removes_exact_new_root(tmp_path: Path) 
     assert recovered.read_head("ok.txt") == b"ok"
 
 
+def test_create_at_closes_owned_descriptor_when_internal_creation_fails_with_retained_tracebacks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graph_engine.runtime import workspace
+
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    failures: list[BaseException] = []
+    baseline = len(os.listdir("/dev/fd"))
+
+    def fail_inside_create(_initial_files: object) -> object:
+        raise RuntimeError("fail inside snapshot creation")
+
+    monkeypatch.setattr(workspace, "_mapping_tree", fail_inside_create)
+    try:
+        for _index in range(24):
+            try:
+                SnapshotStore.create_at(
+                    parent_fd,
+                    "store",
+                    {"seed.txt": b"seed"},
+                    display_root=tmp_path / "store",
+                )
+            except RuntimeError as error:
+                failures.append(error)
+        assert len(failures) == 24
+        assert len(os.listdir("/dev/fd")) <= baseline + 1
+    finally:
+        failures.clear()
+        os.close(parent_fd)
+
+
+def test_create_at_closes_owned_descriptor_when_parent_dup_fails_with_retained_tracebacks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graph_engine.runtime import workspace
+
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    failures: list[BaseException] = []
+    baseline = len(os.listdir("/dev/fd"))
+    real_dup = os.dup
+    duplicate_calls = 0
+
+    def fail_argument_preparation(descriptor: int) -> int:
+        nonlocal duplicate_calls
+        duplicate_calls += 1
+        if duplicate_calls % 2 == 0:
+            raise OSError("fail while preparing _create_at parent descriptor")
+        return real_dup(descriptor)
+
+    monkeypatch.setattr(workspace.os, "dup", fail_argument_preparation)
+    try:
+        for _index in range(24):
+            try:
+                SnapshotStore.create_at(
+                    parent_fd,
+                    "store",
+                    {"seed.txt": b"seed"},
+                    display_root=tmp_path / "store",
+                )
+            except OSError as error:
+                failures.append(error)
+        assert len(failures) == 24
+        assert duplicate_calls == 48
+        assert len(os.listdir("/dev/fd")) <= baseline + 1
+    finally:
+        failures.clear()
+        os.close(parent_fd)
+
+
 def test_crash_incomplete_initialization_is_recoverable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

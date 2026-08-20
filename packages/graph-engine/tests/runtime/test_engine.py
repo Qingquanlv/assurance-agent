@@ -43,7 +43,9 @@ from graph_engine.runtime.events import (
     GraphStarted,
     InterruptResumed,
     InvocationFinished,
+    NodeFailed,
     NodeInterrupted,
+    RuntimeEvent,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
@@ -51,7 +53,7 @@ from graph_engine.runtime.events import (
 )
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import fold_events
-from graph_engine.runtime.planner import plan_next
+from graph_engine.runtime.planner import plan_next, task_id
 from graph_engine.runtime.scheduler import FakeClock
 from graph_engine.runtime.scheduler import Scheduler
 from graph_engine.runtime.workspace import SnapshotStore, WorkspaceViolation
@@ -293,6 +295,143 @@ def _forge_unrelated_failed_sibling(
     _rewrite_ledger(handle.invocation_root / "ledger", forged_events)
     assert fold_events(ledger.read_all()).status == terminal_status
     return product, invocation_id
+
+
+def _parallel_task_product(*, activation_bound: bool = False) -> ResolvedProduct:
+    async def unused(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.succeeded("unused")
+
+    nodes: dict[str, object] = {
+        "split": {"kind": "gate", "expression": "true"},
+        "sibling": {
+            "kind": "task",
+            "capability": "test.empty.run",
+            "retry": "twice",
+            "timeout": "short",
+        },
+    }
+    edges = [{"from": "split", "to": "sibling"}]
+    if activation_bound:
+        nodes["loop"] = {"kind": "gate", "expression": "true"}
+        edges.extend(
+            (
+                {"from": "split", "to": "loop"},
+                {"from": "loop", "to": "loop"},
+            )
+        )
+    else:
+        nodes["cause"] = {
+            "kind": "task",
+            "capability": "test.empty.run",
+            "retry": "twice",
+            "timeout": "short",
+        }
+        edges.append({"from": "split", "to": "cause"})
+    return _resolved(
+        {
+            "name": "parallel-task-settlement",
+            "entrypoints": {"main": "root"},
+            "retry": {"twice": {"max_attempts": 2, "retry_on": ["transient"]}},
+            "timeout": {"short": {"run_seconds": 5}},
+            "graphs": {
+                "root": {
+                    "max_activations": 3,
+                    "start": "split",
+                    "nodes": nodes,
+                    "edges": edges,
+                }
+            },
+        },
+        {"test.empty.run": cast(TaskHandler, unused)},
+    )
+
+
+def _parallel_task_ledger(
+    root: Path,
+    invocation_id: str,
+    *,
+    activation_bound: bool = False,
+) -> tuple[ResolvedProduct, Path, dict[str, str]]:
+    product = _parallel_task_product(activation_bound=activation_bound)
+    with Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as engine:
+        with engine.start(product, entrypoint="main", invocation_id=invocation_id) as handle:
+            ledger_root = handle.invocation_root / "ledger"
+            ledger = Ledger(ledger_root)
+            initial = ledger.read_all()
+            structural = plan_next(product.workflow, fold_events(initial))
+            structural_events = structural.events
+            if activation_bound:
+                structural_events = tuple(
+                    event
+                    for event in structural_events
+                    if event.kind not in {"graph_failed", "invocation_finished"}
+                )
+            else:
+                assert structural.terminal is None
+            ledger.append_batch(
+                structural_events,
+                expected_next_seq=initial[-1].seq + 1,
+            )
+            projection = fold_events(ledger.read_all())
+            activations = {
+                activation.node_id: activation.activation_id
+                for activation in projection.activations
+                if activation.node_id in {"cause", "sibling"}
+            }
+    return product, ledger_root, activations
+
+
+def _failed_attempt_events(
+    activation_id_: str,
+    failure_kind: Literal["invalid_input", "transient"],
+) -> tuple[RuntimeEvent, ...]:
+    failure = TaskOutcome.failed(failure_kind, f"{failure_kind} failure").failure
+    assert failure is not None
+    return (
+        TaskAttemptStarted(
+            activation_id=activation_id_,
+            attempt=1,
+            lease_expires_at="40",
+        ),
+        TaskLeaseAcquired(
+            task_id=task_id(activation_id_),
+            activation_id=activation_id_,
+            attempt=1,
+            owner_id=f"owner-{activation_id_}",
+            acquired_at=10,
+            heartbeat_at=10,
+            expires_at=40,
+        ),
+        TaskAttemptFailed(
+            activation_id=activation_id_,
+            attempt=1,
+            failure=failure,
+        ),
+    )
+
+
+def _stopped_attempt_events(activation_id_: str) -> tuple[RuntimeEvent, ...]:
+    return (
+        TaskAttemptStarted(
+            activation_id=activation_id_,
+            attempt=1,
+            lease_expires_at="40",
+        ),
+        TaskLeaseAcquired(
+            task_id=task_id(activation_id_),
+            activation_id=activation_id_,
+            attempt=1,
+            owner_id=f"owner-{activation_id_}",
+            acquired_at=10,
+            heartbeat_at=10,
+            expires_at=40,
+        ),
+        TaskAttemptStopped(
+            activation_id=activation_id_,
+            attempt=1,
+            reason="operator_stop",
+        ),
+    )
 
 
 def _nested_task_interrupt_product(
@@ -1702,6 +1841,259 @@ def test_open_rejects_stop_with_unrelated_failed_sibling(tmp_path: Path) -> None
             invocation_id,
             product,
         )
+
+
+def test_open_rejects_task_failure_with_omitted_exhausted_sibling_settlement(
+    tmp_path: Path,
+) -> None:
+    product, ledger_root, activations = _parallel_task_ledger(
+        tmp_path,
+        "omitted-exhausted-settlement",
+    )
+    ledger = Ledger(ledger_root)
+    outcomes = (
+        *_failed_attempt_events(activations["cause"], "invalid_input"),
+        *_failed_attempt_events(activations["sibling"], "invalid_input"),
+    )
+    ledger.append_batch(  # type: ignore[arg-type]
+        outcomes,
+        expected_next_seq=ledger.read_all()[-1].seq + 1,
+    )
+    terminal = plan_next(product.workflow, fold_events(ledger.read_all()))
+    assert terminal.terminal == "failed"
+    failed_activation_ids = tuple(
+        event.activation_id for event in terminal.events if isinstance(event, NodeFailed)
+    )
+    assert len(failed_activation_ids) == 2
+    omitted_activation_id = failed_activation_ids[-1]
+    forged_terminal = tuple(
+        event
+        for event in terminal.events
+        if not (isinstance(event, NodeFailed) and event.activation_id == omitted_activation_id)
+    )
+    _rewrite_ledger(
+        ledger_root,
+        tuple(envelope.event for envelope in ledger.read_all()) + forged_terminal,
+    )
+    projection = fold_events(Ledger(ledger_root).read_all())
+    omitted = next(
+        activation
+        for activation in projection.activations
+        if activation.activation_id == omitted_activation_id
+    )
+    assert projection.status == "failed"
+    assert omitted.status == "active"
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            "omitted-exhausted-settlement",
+            product,
+        )
+
+
+@pytest.mark.parametrize("terminal_kind", ["failed", "stopped"])
+def test_open_rejects_terminal_task_without_canonical_lease_binding(
+    tmp_path: Path,
+    terminal_kind: Literal["failed", "stopped"],
+) -> None:
+    invocation_id = f"missing-terminal-lease-{terminal_kind}"
+    product, ledger_root, activations = _parallel_task_ledger(tmp_path, invocation_id)
+    ledger = Ledger(ledger_root)
+    attempt_events = (
+        _failed_attempt_events(activations["cause"], "invalid_input")
+        if terminal_kind == "failed"
+        else _stopped_attempt_events(activations["cause"])
+    )
+    ledger.append_batch(
+        tuple(event for event in attempt_events if not isinstance(event, TaskLeaseAcquired)),
+        expected_next_seq=ledger.read_all()[-1].seq + 1,
+    )
+    terminal = plan_next(product.workflow, fold_events(ledger.read_all()))
+    assert terminal.terminal == terminal_kind
+    ledger.append_batch(
+        terminal.events,
+        expected_next_seq=ledger.read_all()[-1].seq + 1,
+    )
+    assert fold_events(ledger.read_all()).status == terminal_kind
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            invocation_id,
+            product,
+        )
+
+
+def test_open_rejects_task_failure_with_forged_retryable_sibling_settlement(
+    tmp_path: Path,
+) -> None:
+    product, ledger_root, activations = _parallel_task_ledger(
+        tmp_path,
+        "forged-retryable-task-failure",
+    )
+    ledger = Ledger(ledger_root)
+    sibling_events = _failed_attempt_events(activations["sibling"], "transient")
+    ledger.append_batch(  # type: ignore[arg-type]
+        (
+            *_failed_attempt_events(activations["cause"], "invalid_input"),
+            *sibling_events,
+        ),
+        expected_next_seq=ledger.read_all()[-1].seq + 1,
+    )
+    terminal = plan_next(product.workflow, fold_events(ledger.read_all()))
+    assert terminal.terminal == "failed"
+    sibling_failure = sibling_events[-1]
+    assert isinstance(sibling_failure, TaskAttemptFailed)
+    _rewrite_ledger(
+        ledger_root,
+        tuple(envelope.event for envelope in ledger.read_all())
+        + (
+            NodeFailed(
+                activation_id=activations["sibling"],
+                failure=sibling_failure.failure,
+            ),
+            *terminal.events,
+        ),
+    )
+    projection = fold_events(Ledger(ledger_root).read_all())
+    assert projection.status == "failed"
+    assert any(
+        activation.activation_id == activations["sibling"] and activation.status == "failed"
+        for activation in projection.activations
+    )
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            "forged-retryable-task-failure",
+            product,
+        )
+
+
+def test_open_rejects_stop_with_forged_retryable_sibling_settlement(tmp_path: Path) -> None:
+    product, ledger_root, activations = _parallel_task_ledger(
+        tmp_path,
+        "forged-retryable-stop",
+    )
+    ledger = Ledger(ledger_root)
+    sibling_events = _failed_attempt_events(activations["sibling"], "transient")
+    ledger.append_batch(  # type: ignore[arg-type]
+        (*_stopped_attempt_events(activations["cause"]), *sibling_events),
+        expected_next_seq=ledger.read_all()[-1].seq + 1,
+    )
+    terminal = plan_next(product.workflow, fold_events(ledger.read_all()))
+    assert terminal.terminal == "stopped"
+    sibling_failure = sibling_events[-1]
+    assert isinstance(sibling_failure, TaskAttemptFailed)
+    _rewrite_ledger(
+        ledger_root,
+        tuple(envelope.event for envelope in ledger.read_all())
+        + (
+            NodeFailed(
+                activation_id=activations["sibling"],
+                failure=sibling_failure.failure,
+            ),
+            *terminal.events,
+        ),
+    )
+    assert fold_events(Ledger(ledger_root).read_all()).status == "stopped"
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            "forged-retryable-stop",
+            product,
+        )
+
+
+def test_open_rejects_activation_bound_with_forged_retryable_task_settlement(
+    tmp_path: Path,
+) -> None:
+    product, ledger_root, activations = _parallel_task_ledger(
+        tmp_path,
+        "forged-retryable-activation-bound",
+        activation_bound=True,
+    )
+    ledger = Ledger(ledger_root)
+    sibling_events = _failed_attempt_events(activations["sibling"], "transient")
+    ledger.append_batch(  # type: ignore[arg-type]
+        sibling_events,
+        expected_next_seq=ledger.read_all()[-1].seq + 1,
+    )
+    sibling_failure = sibling_events[-1]
+    assert isinstance(sibling_failure, TaskAttemptFailed)
+    reason = "max_activations_exceeded:root"
+    _rewrite_ledger(
+        ledger_root,
+        tuple(envelope.event for envelope in ledger.read_all())
+        + (
+            NodeFailed(
+                activation_id=activations["sibling"],
+                failure=sibling_failure.failure,
+            ),
+            GraphFailed(graph_instance_id="root", reason=reason),
+            InvocationFinished(
+                invocation_id="forged-retryable-activation-bound",
+                status="failed",
+                terminal_reason=reason,
+            ),
+        ),
+    )
+    assert fold_events(Ledger(ledger_root).read_all()).status == "failed"
+
+    with pytest.raises(EngineError, match="causal proof"):
+        Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
+            "forged-retryable-activation-bound",
+            product,
+        )
+
+
+@pytest.mark.parametrize("terminal_kind", ["failed", "stopped", "activation_bound"])
+def test_open_accepts_exact_terminal_with_unsettled_retryable_sibling(
+    tmp_path: Path,
+    terminal_kind: Literal["failed", "stopped", "activation_bound"],
+) -> None:
+    invocation_id = f"exact-{terminal_kind}-with-retryable-sibling"
+    product, ledger_root, activations = _parallel_task_ledger(
+        tmp_path,
+        invocation_id,
+        activation_bound=terminal_kind == "activation_bound",
+    )
+    ledger = Ledger(ledger_root)
+    events: tuple[RuntimeEvent, ...] = _failed_attempt_events(
+        activations["sibling"],
+        "transient",
+    )
+    if terminal_kind == "failed":
+        events = (*_failed_attempt_events(activations["cause"], "invalid_input"), *events)
+    elif terminal_kind == "stopped":
+        events = (*_stopped_attempt_events(activations["cause"]), *events)
+    ledger.append_batch(  # type: ignore[arg-type]
+        events,
+        expected_next_seq=ledger.read_all()[-1].seq + 1,
+    )
+    terminal = plan_next(product.workflow, fold_events(ledger.read_all()))
+    expected_status = "failed" if terminal_kind != "stopped" else "stopped"
+    assert terminal.terminal == expected_status
+    assert not any(
+        isinstance(event, NodeFailed) and event.activation_id == activations["sibling"]
+        for event in terminal.events
+    )
+    ledger.append_batch(
+        terminal.events,
+        expected_next_seq=ledger.read_all()[-1].seq + 1,
+    )
+
+    with Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()) as engine:
+        with engine.open(invocation_id, product) as handle:
+            result = engine.run_until_blocked(handle)
+    sibling = next(
+        activation
+        for activation in result.projection.activations
+        if activation.activation_id == activations["sibling"]
+    )
+    assert result.status == expected_status
+    assert sibling.status == "active"
+    assert sibling.attempts[-1].status == "failed"
+    assert sibling.attempts[-1].failure is not None
+    assert sibling.attempts[-1].failure.kind == "transient"
 
 
 def test_open_rejects_activation_bound_failure_without_next_ready_activation(

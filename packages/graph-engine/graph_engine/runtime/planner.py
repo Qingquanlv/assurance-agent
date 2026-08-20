@@ -489,25 +489,18 @@ def _validate_terminal_causal_proof(
 
     roots = tuple(graph for graph in projection.graph_instances if graph.parent_graph_instance_id is None)
     root = roots[0] if len(roots) == 1 else None
+    task_terminal, terminal_tasks, task_settlement_matches = _task_terminal_settlement(
+        compiled,
+        projection,
+        graphs,
+    )
     if projection.status == "stopped":
-        stopped: list[ActivationRecord] = []
-        for activation in projection.activations:
-            graph_record = graphs[activation.graph_instance_id]
-            node = compiled.graphs[graph_record.graph_id].nodes[activation.node_id]
-            latest = activation.attempts[-1] if activation.attempts else None
-            if (
-                node.definition.kind == "task"
-                and activation.status == "stopped"
-                and latest is not None
-                and latest.status == "stopped"
-                and latest.lease_task_id == task_id(activation.activation_id)
-            ):
-                stopped.append(activation)
-        stopped.sort(key=lambda item: item.activation_id)
-        expected_reason = stopped[0].attempts[-1].stop_reason if stopped else None
-        cause_graph_id = stopped[0].graph_instance_id if stopped else None
+        expected_reason = terminal_tasks[0].attempts[-1].stop_reason if terminal_tasks else None
+        cause_graph_id = terminal_tasks[0].graph_instance_id if terminal_tasks else None
         if (
-            expected_reason is None
+            task_terminal != "stopped"
+            or not task_settlement_matches
+            or expected_reason is None
             or cause_graph_id is None
             or projection.terminal_reason != expected_reason
             or not _stopped_graph_propagation_matches(
@@ -526,26 +519,7 @@ def _validate_terminal_causal_proof(
             raise PlanningError("stopped invocation lacks exact compiled causal proof")
         return
 
-    failed_tasks: list[ActivationRecord] = []
-    for activation in projection.activations:
-        graph_record = graphs[activation.graph_instance_id]
-        node = compiled.graphs[graph_record.graph_id].nodes[activation.node_id]
-        latest = activation.attempts[-1] if activation.attempts else None
-        if (
-            node.definition.kind != "task"
-            or activation.status != "failed"
-            or latest is None
-            or latest.status != "failed"
-            or latest.failure is None
-            or latest.lease_task_id != task_id(activation.activation_id)
-        ):
-            continue
-        retry_name = node.definition.retry
-        assert retry_name is not None
-        policy = compiled.retry[retry_name]
-        if latest.failure.kind not in policy.retry_on or latest.attempt >= policy.max_attempts:
-            failed_tasks.append(activation)
-    failed_tasks.sort(key=lambda item: item.activation_id)
+    failed_tasks = terminal_tasks if task_terminal == "failed" else ()
     expected_reason = None
     if failed_tasks:
         first = failed_tasks[0]
@@ -553,7 +527,8 @@ def _validate_terminal_causal_proof(
         assert failure is not None
         expected_reason = f"task_failed:{first.node_id}:{failure.kind}"
     task_cause = (
-        expected_reason is not None
+        task_settlement_matches
+        and expected_reason is not None
         and projection.terminal_reason == expected_reason
         and root is not None
         and root.status == "failed"
@@ -592,7 +567,8 @@ def _validate_terminal_causal_proof(
                 and root is not None
                 and root.status == "failed"
                 and root.failure_reason == reason
-                and not failed_tasks
+                and task_terminal is None
+                and task_settlement_matches
                 and _activation_bound_failure_matches(
                     compiled,
                     projection,
@@ -603,6 +579,52 @@ def _validate_terminal_causal_proof(
             )
     if not task_cause and not activation_bound_cause:
         raise PlanningError("failed invocation lacks exact compiled causal proof")
+
+
+def _task_terminal_settlement(
+    compiled: CompiledWorkflow,
+    projection: InvocationProjection,
+    graphs: dict[str, GraphInstanceRecord],
+) -> tuple[Literal["failed", "stopped"] | None, tuple[ActivationRecord, ...], bool]:
+    actual_settled: set[str] = set()
+    predecessor_activations: dict[str, ActivationRecord] = {}
+    for activation in projection.activations:
+        graph_record = graphs[activation.graph_instance_id]
+        node = compiled.graphs[graph_record.graph_id].nodes[activation.node_id]
+        if (
+            node.definition.kind == "task"
+            and activation.status == "failed"
+            and not activation.structural_failure
+        ):
+            actual_settled.add(activation.activation_id)
+            activation = activation.model_copy(
+                update={
+                    "status": "active",
+                    "failure": None,
+                    "structural_failure": False,
+                }
+            )
+        predecessor_activations[activation.activation_id] = activation
+
+    predecessor = projection.model_copy(
+        update={
+            "activations": tuple(
+                predecessor_activations[activation.activation_id] for activation in projection.activations
+            )
+        }
+    )
+    terminal = _terminal_task_activations(_PlannerState.from_projection(compiled, predecessor))
+    canonical_leases = all(
+        activation.attempts and activation.attempts[-1].lease_task_id == task_id(activation.activation_id)
+        for activation in terminal
+    )
+    stopped = tuple(activation for activation in terminal if activation.status == "stopped")
+    if stopped:
+        return "stopped", stopped, canonical_leases and not actual_settled
+    if terminal:
+        expected_settled = {activation.activation_id for activation in terminal}
+        return "failed", terminal, canonical_leases and actual_settled == expected_settled
+    return None, (), not actual_settled
 
 
 def _stopped_graph_propagation_matches(
