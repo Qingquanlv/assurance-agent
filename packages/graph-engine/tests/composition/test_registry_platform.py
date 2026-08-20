@@ -18,6 +18,7 @@ from graph_engine.composition import (
     ConfigTreePluginSource,
     FrozenComposition,
     InvocationLock,
+    LockedProduct,
     PluginRequirement,
     ProductFileSource,
     ProductManifest,
@@ -350,6 +351,7 @@ def _platform(
             version="1.0.0",
             entrypoint_group="graph_engine.products",
             entrypoint_name=initial_manifest.product_id,
+            entrypoint_value="toy_product:provider",
             declaration_path=declaration_path,
         )
         product._manifest = initial_manifest.model_copy(update={"source": source_expectation})
@@ -388,6 +390,7 @@ def _platform(
             version="1.0.0",
             entrypoint_group="graph_engine.plugins",
             entrypoint_name=plugin_id,
+            entrypoint_value=f"{distribution_name.replace('-', '_')}:provider",
             declaration_path=declaration_path,
         )
         provider._descriptors = tuple(
@@ -572,6 +575,47 @@ def test_registry_platform_resolves_one_frozen_composition(
             digest=canonical_digest({"lock_digest": drifted_lock.digest}),
         )
 
+    forged_manifest_document = composition.lock.product.model_dump(mode="json")["manifest"]
+    assert isinstance(forged_manifest_document, dict)
+    forged_manifest_document["plugins"] = [{"plugin_id": "toy.runtime", "version_specifier": "==9.9.9"}]
+    forged_manifest = composition.manifest.model_copy(
+        update={"plugins": (PluginRequirement(plugin_id="toy.runtime", version_specifier="==9.9.9"),)}
+    )
+    forged_product = LockedProduct(
+        product_id=composition.lock.product.product_id,
+        product_version=composition.lock.product.product_version,
+        manifest=forged_manifest_document,
+        manifest_digest=canonical_digest(forged_manifest_document),
+        source=composition.lock.product.source,
+    )
+    with pytest.raises(ValueError, match="dependency declarations"):
+        InvocationLock.create(
+            engine_api=composition.lock.engine_api,
+            engine=composition.lock.engine,
+            engine_digest=composition.lock.engine_digest,
+            product=forged_product,
+            plugins=composition.lock.plugins,
+            dependency_order=composition.lock.dependency_order,
+            registry_projections=composition.lock.registry_projections,
+            registry_digests=composition.lock.registry_digests,
+            configuration=composition.lock.configuration,
+            configuration_digest=composition.lock.configuration_digest,
+            capability_bindings=composition.lock.capability_bindings,
+            capability_bindings_digest=composition.lock.capability_bindings_digest,
+            compiled_workflow=composition.lock.compiled_workflow,
+            compiled_workflow_digest=composition.lock.compiled_workflow_digest,
+        )
+
+    forged_lock = composition.lock.model_copy()
+    object.__setattr__(forged_lock, "product", forged_product)
+    with pytest.raises(ValueError, match="dependency declarations"):
+        replace(
+            composition,
+            manifest=forged_manifest,
+            lock=forged_lock,
+            digest=canonical_digest({"lock_digest": forged_lock.digest}),
+        )
+
 
 def test_registry_platform_strictly_parses_mapping_requests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -635,6 +679,7 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
         version="1.0.0",
         entrypoint_group="graph_engine.products",
         entrypoint_name=domain_id,
+        entrypoint_value="toy_combined.product:provider",
         declaration_path=product_path,
     )
     plugin_source_expectation = ProviderSource(
@@ -642,6 +687,7 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
         version="1.0.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name=domain_id,
+        entrypoint_value="toy_combined.plugin:provider",
         declaration_path=plugin_path,
     )
     product._manifest = product._manifest.model_copy(update={"source": product_source_expectation})

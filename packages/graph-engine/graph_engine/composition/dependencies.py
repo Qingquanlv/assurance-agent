@@ -7,6 +7,7 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from graph_engine import ENGINE_API_VERSION
+from graph_engine.composition.models import PluginRequirement
 from graph_engine.errors import GraphEngineError
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import PluginDependency, PluginDescriptor
@@ -18,7 +19,7 @@ class DependencyConflict(GraphEngineError):
 
 def resolve_dependency_order(
     descriptors: Mapping[str, PluginDescriptor],
-    required_plugin_ids: tuple[str, ...],
+    requirements: tuple[PluginRequirement, ...],
 ) -> tuple[str, ...]:
     """Validate an already-selected source set and return its canonical dependency order.
 
@@ -26,9 +27,43 @@ def resolve_dependency_order(
     This function never discovers sources or chooses versions.
     """
 
+    required_plugin_ids = _validate_product_requirements(requirements, descriptors)
     selected = _validate_exact_source_set(descriptors, required_plugin_ids)
     _validate_selected_versions(selected)
     return _canonical_topological_order(selected)
+
+
+def _validate_product_requirements(
+    requirements: tuple[PluginRequirement, ...],
+    descriptors: Mapping[str, PluginDescriptor],
+) -> tuple[str, ...]:
+    if not isinstance(requirements, tuple):
+        raise DependencyConflict("product plugin requirements must be an immutable tuple")
+    required_plugin_ids: list[str] = []
+    for requirement in requirements:
+        if not isinstance(requirement, PluginRequirement):
+            raise DependencyConflict("product contains an invalid plugin requirement")
+        required_plugin_ids.append(requirement.plugin_id)
+        descriptor = descriptors.get(requirement.plugin_id)
+        if descriptor is None:
+            continue
+        try:
+            constraint = SpecifierSet(requirement.version_specifier)
+        except (InvalidSpecifier, TypeError) as error:
+            raise DependencyConflict(
+                f"invalid product dependency version constraint for {requirement.plugin_id}: "
+                f"{requirement.version_specifier!r}"
+            ) from error
+        selected_version = _version(
+            descriptor.plugin_version,
+            f"selected plugin version for {requirement.plugin_id}",
+        )
+        if selected_version not in constraint:
+            raise DependencyConflict(
+                f"product requires {requirement.plugin_id}{requirement.version_specifier}, "
+                f"but selected {requirement.plugin_id}=={selected_version}"
+            )
+    return tuple(required_plugin_ids)
 
 
 def _validate_exact_source_set(

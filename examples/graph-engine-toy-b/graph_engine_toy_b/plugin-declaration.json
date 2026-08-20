@@ -10,6 +10,7 @@
       "distribution": "graph-engine-toy-b",
       "entrypoint_group": "graph_engine.plugins",
       "entrypoint_name": "toy-b",
+      "entrypoint_value": "graph_engine_toy_b.plugin:ToyBPlugin",
       "version": "1.0.0"
     },
     "task_handlers": ["toy.b.seed", "toy.b.left", "toy.b.child", "toy.b.combine"]
@@ -21,6 +22,7 @@
     "distribution": "graph-engine-toy-b",
     "entrypoint_group": "graph_engine.plugins",
     "entrypoint_name": "toy-b",
+    "entrypoint_value": "graph_engine_toy_b.plugin:ToyBPlugin",
     "version": "1.0.0"
   }
 }

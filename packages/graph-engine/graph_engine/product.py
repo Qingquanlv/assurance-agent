@@ -157,6 +157,11 @@ def _assemble_selected_contributions(
                     version=descriptor.plugin_version,
                     entrypoint_group="graph_engine.plugins",
                     entrypoint_name=descriptor.plugin_id,
+                    entrypoint_value=(
+                        descriptor.source.entrypoint_value
+                        if descriptor.source is not None
+                        else f"{descriptor.plugin_id.replace('.', '_')}:provider"
+                    ),
                     declaration_path=f"{descriptor.plugin_id.replace('.', '_')}/plugin-declaration.json",
                     plugin_id=descriptor.plugin_id,
                     plugin_version=descriptor.plugin_version,

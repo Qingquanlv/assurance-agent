@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import _imp
 import base64
 import configparser
+from contextlib import contextmanager
 import csv
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from email.parser import BytesParser
 from email.policy import compat32
 import hashlib
@@ -13,8 +15,9 @@ import os
 from pathlib import Path
 import stat
 import sys
+from threading import RLock
 from types import ModuleType
-from typing import Literal, NoReturn, Protocol, TypeAlias, cast
+from typing import Iterator, Literal, NoReturn, Protocol, TypeAlias, cast
 
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
@@ -180,6 +183,33 @@ class _LoadedSnapshottedEntrypoint:
     declaration: object
 
 
+@dataclass(slots=True)
+class _AuthenticatedBindingCache:
+    """Platform-owned authority for modules imported after source authentication."""
+
+    bindings: dict[tuple[str, str, str, str], _LoadedSnapshottedEntrypoint] = field(default_factory=dict)
+    modules: dict[str, _AuthenticatedModule] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class _AuthenticatedModule:
+    module: ModuleType
+    source_digests: set[str]
+
+
+_MODULE_IMPORT_LOCK = RLock()
+
+
+@contextmanager
+def _serialized_imports() -> Iterator[None]:
+    with _MODULE_IMPORT_LOCK:
+        _imp.acquire_lock()
+        try:
+            yield
+        finally:
+            _imp.release_lock()
+
+
 class _EntryPointConfigParser(configparser.ConfigParser):
     def optionxform(self, optionstr: str) -> str:
         return optionstr
@@ -222,6 +252,7 @@ def _resolve_wheel_snapshot(
             version=version,
             entrypoint_group=entrypoint.group,
             entrypoint_name=entrypoint.name,
+            entrypoint_value=entrypoint.value,
             declaration_path=source.declaration_path,
         )
         provisional = SourceSnapshot.from_identity(identity, tree.files)
@@ -247,6 +278,7 @@ def _resolve_wheel_snapshot(
         version=version,
         entrypoint_group=entrypoint.group,
         entrypoint_name=entrypoint.name,
+        entrypoint_value=entrypoint.value,
         declaration_path=source.declaration_path,
     )
     provisional = SourceSnapshot.from_identity(identity, files)
@@ -282,44 +314,86 @@ def load_snapshotted_entrypoint(
     snapshot: SourceSnapshot,
     metadata_provider: MetadataProvider = metadata,
 ) -> WheelProvider:
-    return _load_snapshotted_entrypoint_binding(source, snapshot, metadata_provider).provider
+    return _load_snapshotted_entrypoint_binding(
+        source,
+        snapshot,
+        metadata_provider,
+        _AuthenticatedBindingCache(),
+    ).provider
 
 
 def _load_snapshotted_entrypoint_binding(
     source: WheelSource,
     snapshot: SourceSnapshot,
     metadata_provider: MetadataProvider = metadata,
+    binding_cache: _AuthenticatedBindingCache | None = None,
 ) -> _LoadedSnapshottedEntrypoint:
+    cache = binding_cache or _AuthenticatedBindingCache()
     _validate_snapshot_matches_source(source, snapshot)
     resolved = _resolve_wheel_snapshot(source, metadata_provider)
     if resolved.snapshot != snapshot:
         raise SourceSnapshotError("wheel source changed after snapshot")
-    _validate_preloaded_entrypoint_modules(resolved.entrypoint, snapshot)
-    try:
-        loaded = resolved.entrypoint.load()
-    except Exception as error:
-        raise SourceSnapshotError("cannot load snapshotted entry point") from error
-    _verify_loaded_provider_provenance(loaded, resolved.entrypoint, snapshot)
-    after_load = _resolve_wheel_snapshot(source, metadata_provider)
-    if after_load.snapshot != snapshot:
-        raise SourceSnapshotError("wheel source changed while loading its entry point")
+    cache_key = (
+        snapshot.digest,
+        resolved.entrypoint.group,
+        resolved.entrypoint.name,
+        resolved.entrypoint.value,
+    )
+    with _serialized_imports():
+        cached = cache.bindings.get(cache_key)
+        if cached is not None:
+            _validate_preloaded_entrypoint_modules(resolved.entrypoint, snapshot, cache)
+            _validate_cached_provider_modules(
+                cache,
+                cached.provider,
+                resolved.entrypoint,
+                snapshot,
+            )
+            _validate_live_declaration(source, cached.provider, resolved.declaration)
+            return cached
 
+        _validate_preloaded_entrypoint_modules(resolved.entrypoint, snapshot, cache)
+        before_modules = dict(sys.modules)
+        try:
+            try:
+                loaded = resolved.entrypoint.load()
+            except Exception as error:
+                raise SourceSnapshotError("cannot load snapshotted entry point") from error
+            _verify_loaded_provider_provenance(loaded, resolved.entrypoint, snapshot)
+            after_load = _resolve_wheel_snapshot(source, metadata_provider)
+            if after_load.snapshot != snapshot:
+                raise SourceSnapshotError("wheel source changed while loading its entry point")
+            declaration = _validate_live_declaration(source, loaded, resolved.declaration)
+            binding = _LoadedSnapshottedEntrypoint(cast(WheelProvider, loaded), declaration)
+            _register_authenticated_modules(cache, loaded, resolved.entrypoint, snapshot)
+            cache.bindings[cache_key] = binding
+            return binding
+        except BaseException:
+            _restore_modules(before_modules)
+            raise
+
+
+def _validate_live_declaration(
+    source: WheelSource,
+    loaded: object,
+    static_declaration: WheelDeclaration,
+) -> ProductManifest | PluginDescriptor:
     if isinstance(source, WheelProductSource | EditableWheelProductSource):
         manifest = _call_descriptor(loaded, "manifest", "product")
         if not isinstance(manifest, ProductManifest):
             raise SourceSnapshotError("loaded product provider returned an invalid manifest")
-        declaration = cast(WheelProductDeclaration, resolved.declaration)
+        declaration = cast(WheelProductDeclaration, static_declaration)
         if manifest != declaration.manifest:
             raise SourceSnapshotError("loaded product manifest disagrees with static declaration")
-        return _LoadedSnapshottedEntrypoint(cast(WheelProductProvider, loaded), manifest)
+        return manifest
 
     descriptor = _call_descriptor(loaded, "descriptor", "plugin")
     if not isinstance(descriptor, PluginDescriptor):
         raise SourceSnapshotError("loaded plugin provider returned an invalid descriptor")
-    declaration = cast(WheelPluginDeclaration, resolved.declaration)
+    declaration = cast(WheelPluginDeclaration, static_declaration)
     if descriptor != declaration.descriptor:
         raise SourceSnapshotError("loaded plugin descriptor disagrees with static declaration")
-    return _LoadedSnapshottedEntrypoint(cast(PluginProvider, loaded), descriptor)
+    return descriptor
 
 
 def _parse_wheel_declaration(
@@ -346,6 +420,7 @@ def _parse_wheel_declaration(
         version=version,
         entrypoint_group=source.entrypoint_group,
         entrypoint_name=source.entrypoint_name,
+        entrypoint_value=snapshot.identity.entrypoint_value or "",
         declaration_path=source.declaration_path,
     )
     declaration_type: type[WheelProductDeclaration] | type[WheelPluginDeclaration]
@@ -847,12 +922,82 @@ def _canonical_declared_paths(files: tuple[str, ...]) -> tuple[str, ...]:
 def _validate_preloaded_entrypoint_modules(
     entrypoint: metadata.EntryPoint,
     snapshot: SourceSnapshot,
+    cache: _AuthenticatedBindingCache,
 ) -> None:
     parts = entrypoint.module.split(".")
     module_names = tuple(".".join(parts[:index]) for index in range(1, len(parts) + 1))
     for module_name in module_names:
-        if module_name in sys.modules:
-            _verify_snapshotted_module(module_name, snapshot)
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        authenticated = cache.modules.get(module_name)
+        if not isinstance(module, ModuleType) or authenticated is None or authenticated.module is not module:
+            raise SourceSnapshotError(
+                f"preloaded entry point module is not platform-authenticated: {module_name}"
+            )
+        if module_name == entrypoint.module and snapshot.digest not in authenticated.source_digests:
+            raise SourceSnapshotError(
+                f"preloaded entry point module has a different authenticated source: {module_name}"
+            )
+        _verify_snapshotted_module(module_name, snapshot)
+
+
+def _register_authenticated_modules(
+    cache: _AuthenticatedBindingCache,
+    provider: object,
+    entrypoint: metadata.EntryPoint,
+    snapshot: SourceSnapshot,
+) -> None:
+    provider_module = _provider_module_name(provider)
+    module_names: list[str] = []
+    for leaf_name in (entrypoint.module, provider_module):
+        parts = leaf_name.split(".")
+        module_names.extend(".".join(parts[:index]) for index in range(1, len(parts) + 1))
+    authenticated_modules: list[tuple[str, ModuleType]] = []
+    for module_name in dict.fromkeys(module_names):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        _verify_snapshotted_module(module_name, snapshot)
+        if not isinstance(module, ModuleType):  # pragma: no cover - verified above.
+            raise SourceSnapshotError(f"loaded provider module is unavailable: {module_name}")
+        authenticated_modules.append((module_name, module))
+
+    for module_name, module in authenticated_modules:
+        authenticated = cache.modules.get(module_name)
+        if authenticated is None or authenticated.module is not module:
+            cache.modules[module_name] = _AuthenticatedModule(module, {snapshot.digest})
+        else:
+            authenticated.source_digests.add(snapshot.digest)
+
+
+def _validate_cached_provider_modules(
+    cache: _AuthenticatedBindingCache,
+    provider: object,
+    entrypoint: metadata.EntryPoint,
+    snapshot: SourceSnapshot,
+) -> None:
+    provider_module = _provider_module_name(provider)
+    for module_name in dict.fromkeys((entrypoint.module, provider_module)):
+        module = sys.modules.get(module_name)
+        authenticated = cache.modules.get(module_name)
+        if (
+            not isinstance(module, ModuleType)
+            or authenticated is None
+            or authenticated.module is not module
+            or snapshot.digest not in authenticated.source_digests
+        ):
+            raise SourceSnapshotError(f"cached provider module is not platform-authenticated: {module_name}")
+        _verify_snapshotted_module(module_name, snapshot)
+
+
+def _restore_modules(before: dict[str, ModuleType]) -> None:
+    for module_name in tuple(sys.modules):
+        if module_name not in before:
+            del sys.modules[module_name]
+    for module_name, module in before.items():
+        if sys.modules.get(module_name) is not module:
+            sys.modules[module_name] = module
 
 
 def _verify_loaded_provider_provenance(
@@ -860,13 +1005,18 @@ def _verify_loaded_provider_provenance(
     entrypoint: metadata.EntryPoint,
     snapshot: SourceSnapshot,
 ) -> None:
+    provider_module = _provider_module_name(provider)
+    for module_name in dict.fromkeys((entrypoint.module, provider_module)):
+        _verify_snapshotted_module(module_name, snapshot)
+
+
+def _provider_module_name(provider: object) -> str:
     provider_module = (
         provider.__name__ if isinstance(provider, ModuleType) else getattr(provider, "__module__", None)
     )
     if not isinstance(provider_module, str) or not provider_module:
         raise SourceSnapshotError("loaded provider has no verifiable module origin")
-    for module_name in dict.fromkeys((entrypoint.module, provider_module)):
-        _verify_snapshotted_module(module_name, snapshot)
+    return provider_module
 
 
 def _verify_snapshotted_module(module_name: str, snapshot: SourceSnapshot) -> None:

@@ -13,6 +13,7 @@
       "distribution": "graph-engine-toy-b",
       "entrypoint_group": "graph_engine.products",
       "entrypoint_name": "toy-b",
+      "entrypoint_value": "graph_engine_toy_b.product:ToyBProduct",
       "version": "1.0.0"
     },
     "workflow": {
@@ -94,6 +95,7 @@
     "distribution": "graph-engine-toy-b",
     "entrypoint_group": "graph_engine.products",
     "entrypoint_name": "toy-b",
+    "entrypoint_value": "graph_engine_toy_b.product:ToyBProduct",
     "version": "1.0.0"
   }
 }

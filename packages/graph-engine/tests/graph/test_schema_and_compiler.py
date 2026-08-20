@@ -77,6 +77,7 @@ def registry() -> CapabilityRegistry:
             version="1.0.0",
             entrypoint_group="graph_engine.plugins",
             entrypoint_name="toy.one",
+            entrypoint_value="toy_one:provider",
             declaration_path="toy_one/plugin-declaration.json",
             plugin_id="toy.one",
             plugin_version="1.0.0",

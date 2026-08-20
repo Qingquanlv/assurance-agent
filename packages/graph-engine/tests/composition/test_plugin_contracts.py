@@ -50,6 +50,7 @@ def test_plugin_descriptor_authenticates_its_static_source_expectation() -> None
         version="1.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="toy.runtime",
+        entrypoint_value="toy_runtime.plugin:provider",
         declaration_path="toy_runtime/plugin-declaration.json",
     )
     descriptor = PluginDescriptor(
@@ -65,6 +66,7 @@ def test_plugin_descriptor_authenticates_its_static_source_expectation() -> None
 
     assert descriptor.source.distribution == "toy-runtime"
     assert descriptor.source.version == "1.0"
+    assert descriptor.source.entrypoint_value == "toy_runtime.plugin:provider"
     with pytest.raises(ValidationError, match="source version must equal plugin version"):
         PluginDescriptor.model_validate(
             {

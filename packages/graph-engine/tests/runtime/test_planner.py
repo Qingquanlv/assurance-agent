@@ -57,6 +57,7 @@ def _registry() -> CapabilityRegistry:
             version="1.0.0",
             entrypoint_group="graph_engine.plugins",
             entrypoint_name="test.tasks",
+            entrypoint_value="test_tasks:provider",
             declaration_path="test_tasks/plugin-declaration.json",
             plugin_id="test.tasks",
             plugin_version="1.0.0",

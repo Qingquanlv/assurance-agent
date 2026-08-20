@@ -21,7 +21,7 @@ from graph_engine.composition.declarative import (
     load_config_tree,
     load_product_file,
 )
-from graph_engine.composition.dependencies import DependencyConflict, resolve_dependency_order
+from graph_engine.composition.dependencies import resolve_dependency_order
 from graph_engine.composition.lock import build_invocation_lock
 from graph_engine.composition.models import (
     FrozenComposition,
@@ -48,6 +48,7 @@ from graph_engine.composition.sources import (
     WheelPluginDeclaration,
     WheelProductDeclaration,
     WheelProductSource,
+    _AuthenticatedBindingCache,
     _load_snapshotted_entrypoint_binding,
     _resolve_wheel_snapshot,
     _snapshot_installed_engine_distribution,
@@ -136,6 +137,7 @@ class RegistryPlatform:
         metadata_provider: MetadataProvider = metadata,
     ) -> None:
         self._metadata_provider = metadata_provider
+        self._binding_cache = _AuthenticatedBindingCache()
 
     def resolve(self, request: ResolutionRequest) -> FrozenComposition:
         # 1. Strictly parse the request and the data-only product source.
@@ -152,8 +154,7 @@ class RegistryPlatform:
         # 4. Validate the complete exact dependency closure and canonical topology
         # before importing any wheel provider code.
         descriptors = self._declared_plugin_descriptors(captured.plugins)
-        _validate_product_requirements(manifest, descriptors)
-        dependency_order = resolve_dependency_order(descriptors, manifest.required_plugin_ids)
+        dependency_order = resolve_dependency_order(descriptors, manifest.plugins)
 
         # 5-6. Load only providers selected by the already-validated topology and
         # require their live declarations to equal the authenticated static data.
@@ -312,6 +313,7 @@ class RegistryPlatform:
             seed.source,
             snapshot,
             self._metadata_provider,
+            self._binding_cache,
         )
         provider = binding.provider
         if binding.declaration != manifest:
@@ -352,6 +354,7 @@ class RegistryPlatform:
                     capture.source,
                     capture.snapshot,
                     self._metadata_provider,
+                    self._binding_cache,
                 )
                 provider = cast(PluginProvider, binding.provider)
                 declared = binding.declaration
@@ -636,6 +639,7 @@ def _provider_source_from_identity(identity: SourceIdentity) -> ProviderSource:
             identity.version,
             identity.entrypoint_group,
             identity.entrypoint_name,
+            identity.entrypoint_value,
             identity.declaration_path,
         )
     ):
@@ -648,26 +652,9 @@ def _provider_source_from_identity(identity: SourceIdentity) -> ProviderSource:
             identity.entrypoint_group,
         ),
         entrypoint_name=cast(str, identity.entrypoint_name),
+        entrypoint_value=cast(str, identity.entrypoint_value),
         declaration_path=cast(str, identity.declaration_path),
     )
-
-
-def _validate_product_requirements(
-    manifest: ProductManifest,
-    descriptors: Mapping[str, PluginDescriptor],
-) -> None:
-    for requirement in manifest.plugins:
-        descriptor = descriptors.get(requirement.plugin_id)
-        if descriptor is None:  # The exact-source validator reports the canonical missing-source error.
-            continue
-        selected_version = Version(descriptor.plugin_version)
-        constraint = SpecifierSet(requirement.version_specifier)
-        if selected_version not in constraint:
-            raise DependencyConflict(
-                f"product {manifest.product_id} requires "
-                f"{requirement.plugin_id}{requirement.version_specifier}, but selected "
-                f"{requirement.plugin_id}=={selected_version}"
-            )
 
 
 def _validate_engine_api(requirement: str, owner: str) -> None:

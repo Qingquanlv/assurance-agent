@@ -73,6 +73,7 @@ class SourceIdentity:
     version: str | None = None
     entrypoint_group: str | None = None
     entrypoint_name: str | None = None
+    entrypoint_value: str | None = None
     declaration_path: str | None = None
     product_id: str | None = None
     product_version: str | None = None
@@ -92,6 +93,7 @@ class SourceIdentity:
             self.version,
             self.entrypoint_group,
             self.entrypoint_name,
+            self.entrypoint_value,
             self.declaration_path,
         )
         product_coordinates = (self.product_id, self.product_version)
@@ -120,7 +122,12 @@ class SourceIdentity:
                 raise ValueError("engine source identity requires complete installation coordinates")
             if any(
                 value is not None
-                for value in (self.entrypoint_group, self.entrypoint_name, self.declaration_path)
+                for value in (
+                    self.entrypoint_group,
+                    self.entrypoint_name,
+                    self.entrypoint_value,
+                    self.declaration_path,
+                )
             ):
                 raise ValueError("engine source identity does not accept entrypoint coordinates")
         elif any(value is not None for value in wheel_coordinates):
@@ -1076,6 +1083,7 @@ def _snapshot_digest(identity: SourceIdentity, files: tuple[SourceFile, ...]) ->
         "version": identity.version,
         "entrypoint_group": identity.entrypoint_group,
         "entrypoint_name": identity.entrypoint_name,
+        "entrypoint_value": identity.entrypoint_value,
         "declaration_path": identity.declaration_path,
     }
     if identity.product_id is not None:

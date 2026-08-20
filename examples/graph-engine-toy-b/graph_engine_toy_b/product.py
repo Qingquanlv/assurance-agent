@@ -16,6 +16,7 @@ class ToyBProduct:
                 version="1.0.0",
                 entrypoint_group="graph_engine.products",
                 entrypoint_name="toy-b",
+                entrypoint_value="graph_engine_toy_b.product:ToyBProduct",
                 declaration_path="graph_engine_toy_b/product-declaration.json",
             ),
             product_id="toy.b",

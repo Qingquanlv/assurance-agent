@@ -56,6 +56,7 @@ class ToyBPlugin:
                 version="1.0.0",
                 entrypoint_group="graph_engine.plugins",
                 entrypoint_name="toy-b",
+                entrypoint_value="graph_engine_toy_b.plugin:ToyBPlugin",
                 declaration_path="graph_engine_toy_b/plugin-declaration.json",
             ),
             plugin_id="toy.b",

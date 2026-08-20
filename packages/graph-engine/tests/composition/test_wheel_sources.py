@@ -17,8 +17,10 @@ from graph_engine.canonical import canonical_json_bytes
 from graph_engine.composition import (
     EditableWheelProductSource as _EditableWheelProductSource,
     EditableWheelPluginSource as _EditableWheelPluginSource,
+    SourceFile,
     SourceIdentity,
     SourceKind,
+    SourceSnapshot,
     SourceSnapshotError,
     WheelPluginSource as _WheelPluginSource,
     WheelProductSource as _WheelProductSource,
@@ -39,6 +41,7 @@ class _PluginProvider:
                 version=version,
                 entrypoint_group="graph_engine.plugins",
                 entrypoint_name="toy.runtime",
+                entrypoint_value="toy_plugin:provider",
                 declaration_path="toy_plugin/plugin-declaration.json",
             ),
             plugin_id=plugin_id,
@@ -64,6 +67,7 @@ class _ProductProvider:
                 version="1.2.3",
                 entrypoint_group="graph_engine.products",
                 entrypoint_name="toy.product",
+                entrypoint_value="toy_plugin:provider",
                 declaration_path="toy_plugin/product-declaration.json",
             ),
             product_id="toy.product",
@@ -112,6 +116,7 @@ def EditableWheelPluginSource(**values: object) -> _EditableWheelPluginSource:
         version="1.2.3",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name=str(values["entrypoint_name"]),
+        entrypoint_value="toy_plugin:provider",
         declaration_path=declaration_path,
     )
     descriptor = PluginDescriptor(
@@ -147,6 +152,7 @@ def EditableWheelProductSource(**values: object) -> _EditableWheelProductSource:
         version="1.2.3",
         entrypoint_group="graph_engine.products",
         entrypoint_name=str(values["entrypoint_name"]),
+        entrypoint_value="toy_plugin:provider",
         declaration_path=declaration_path,
     )
     workflow = WorkflowDef.model_validate(
@@ -242,19 +248,20 @@ def _installed_distribution(
     package_init = package / "__init__.py"
     package_init.write_text("provider = object()\n", encoding="utf-8")
 
-    plugin_name = next(
+    plugin_name, plugin_value = next(
         (
-            entrypoint_name
-            for group, entrypoint_name, _value in entrypoints
+            (entrypoint_name, value)
+            for group, entrypoint_name, value in entrypoints
             if group == "graph_engine.plugins"
         ),
-        "toy.runtime",
+        ("toy.runtime", "toy_plugin:provider"),
     )
     plugin_source = ProviderSource(
         distribution=name,
         version=version,
         entrypoint_group="graph_engine.plugins",
         entrypoint_name=plugin_name,
+        entrypoint_value=plugin_value,
         declaration_path="toy_plugin/plugin-declaration.json",
     )
     plugin_descriptor = PluginDescriptor(
@@ -278,19 +285,20 @@ def _installed_distribution(
         )
     )
 
-    product_name = next(
+    product_name, product_value = next(
         (
-            entrypoint_name
-            for group, entrypoint_name, _value in entrypoints
+            (entrypoint_name, value)
+            for group, entrypoint_name, value in entrypoints
             if group == "graph_engine.products"
         ),
-        "toy.product",
+        ("toy.product", "toy_plugin:provider"),
     )
     product_source = ProviderSource(
         distribution=name,
         version=version,
         entrypoint_group="graph_engine.products",
         entrypoint_name=product_name,
+        entrypoint_value=product_value,
         declaration_path="toy_plugin/product-declaration.json",
     )
     workflow = WorkflowDef.model_validate(
@@ -406,6 +414,7 @@ def test_wheel_snapshot_binds_distribution_and_entrypoint(
     assert snapshot.identity.version == "1.2.3"
     assert snapshot.identity.entrypoint_group == "graph_engine.plugins"
     assert snapshot.identity.entrypoint_name == "toy.runtime"
+    assert snapshot.identity.entrypoint_value == "toy_plugin:provider"
     assert snapshot.digest == snapshot_wheel_source(source).digest
     assert {item.path for item in snapshot.files} == {
         "toy_plugin/__init__.py",
@@ -955,6 +964,32 @@ def test_editable_product_snapshot_captures_explicit_static_declaration(
     )
 
 
+def test_editable_snapshot_rejects_entrypoint_target_drift_before_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path / "installed")
+    _select_distribution(monkeypatch, distribution)
+    root = tmp_path / "editable"
+    root.mkdir()
+    (root / "toy_plugin.py").write_bytes(b"provider = object()\n")
+    (root / "other_plugin.py").write_bytes(b"provider = object()\n")
+    source = EditableWheelPluginSource(
+        distribution="toy-runtime",
+        entrypoint_name="toy.runtime",
+        source_root=root,
+        source_files=("toy_plugin.py", "other_plugin.py"),
+    )
+    snapshot_wheel_source(source)
+    entrypoints_path = Path(distribution.locate_file("toy_runtime-1.2.3.dist-info/entry_points.txt"))
+    entrypoints_path.write_text(
+        "[graph_engine.plugins]\ntoy.runtime = other_plugin:provider\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SourceSnapshotError, match="source|entry point"):
+        snapshot_wheel_source(source)
+
+
 def test_editable_load_rejects_a_different_explicit_file_tuple(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1000,7 +1035,7 @@ def test_load_rejects_same_name_version_distribution_at_a_different_root(
         lambda entrypoint: loaded.append(entrypoint.name) or _PluginProvider(),
     )
 
-    with pytest.raises(SourceSnapshotError, match="changed after snapshot"):
+    with pytest.raises(SourceSnapshotError, match="changed after snapshot|declaration source"):
         load_snapshotted_entrypoint(source, snapshot)
     assert loaded == []
 
@@ -1031,7 +1066,7 @@ def test_load_rejects_post_snapshot_installed_byte_mutation(
         lambda entrypoint: loaded.append(entrypoint.name) or _PluginProvider(),
     )
 
-    with pytest.raises(SourceSnapshotError, match="changed after snapshot"):
+    with pytest.raises(SourceSnapshotError, match="changed after snapshot|declaration source"):
         load_snapshotted_entrypoint(source, snapshot)
     assert loaded == []
 
@@ -1065,7 +1100,7 @@ def test_load_rejects_post_snapshot_entrypoint_target_switch(
         lambda entrypoint: loaded.append(entrypoint.value) or _PluginProvider(),
     )
 
-    with pytest.raises(SourceSnapshotError, match="changed after snapshot"):
+    with pytest.raises(SourceSnapshotError, match="changed after snapshot|declaration source"):
         load_snapshotted_entrypoint(source, snapshot)
     assert loaded == []
 
@@ -1085,9 +1120,139 @@ def test_load_rejects_preloaded_target_module_shadow(tmp_path: Path, monkeypatch
         lambda entrypoint: loaded.append(entrypoint.name) or _PluginProvider(),
     )
 
-    with pytest.raises(SourceSnapshotError, match="outside the authenticated root"):
+    with pytest.raises(SourceSnapshotError, match="platform-authenticated"):
         load_snapshotted_entrypoint(source, snapshot)
     assert loaded == []
+
+
+def test_load_rejects_arbitrary_preloaded_module_at_authenticated_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    snapshot = snapshot_wheel_source(source)
+    provider = _PluginProvider()
+    provider.__module__ = "toy_plugin"
+    shadow = ModuleType("toy_plugin")
+    shadow.__file__ = str(distribution.locate_file("toy_plugin/__init__.py"))
+    shadow.provider = provider  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "toy_plugin", shadow)
+
+    with pytest.raises(SourceSnapshotError, match="platform-authenticated"):
+        load_snapshotted_entrypoint(source, snapshot)
+
+
+def test_load_rejects_preload_executed_from_changed_then_restored_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    snapshot = snapshot_wheel_source(source)
+    module_path = Path(distribution.locate_file("toy_plugin/__init__.py"))
+    original = module_path.read_bytes()
+    provider = _PluginProvider()
+    provider.__module__ = "toy_plugin"
+    stale = ModuleType("toy_plugin")
+    stale.__file__ = str(module_path)
+    stale.injected = provider  # type: ignore[attr-defined]
+    changed = b"provider = injected\n"
+    module_path.write_bytes(changed)
+    exec(compile(changed, str(module_path), "exec"), stale.__dict__)
+    module_path.write_bytes(original)
+    monkeypatch.setitem(sys.modules, "toy_plugin", stale)
+
+    with pytest.raises(SourceSnapshotError, match="platform-authenticated"):
+        load_snapshotted_entrypoint(source, snapshot)
+
+
+def test_platform_cache_rejects_owned_module_from_a_different_source_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    first_snapshot = snapshot_wheel_source(source)
+    provider = _PluginProvider()
+    loaded: list[str] = []
+    _mock_authenticated_load(monkeypatch, distribution, provider, loaded)
+    cache = wheel_sources._AuthenticatedBindingCache()
+    wheel_sources._load_snapshotted_entrypoint_binding(
+        source,
+        first_snapshot,
+        binding_cache=cache,
+    )
+
+    root = Path(distribution.locate_file(""))
+    package_path = Path(distribution.locate_file("toy_plugin/__init__.py"))
+    package_path.write_bytes(package_path.read_bytes() + b"# authenticated drift\n")
+    _write_record(
+        root,
+        Path(distribution.locate_file("toy_runtime-1.2.3.dist-info")),
+        (
+            "toy_plugin/__init__.py",
+            "toy_runtime-1.2.3.dist-info/METADATA",
+            "toy_runtime-1.2.3.dist-info/entry_points.txt",
+        ),
+    )
+    second_snapshot = snapshot_wheel_source(source)
+    assert second_snapshot.digest != first_snapshot.digest
+
+    with pytest.raises(SourceSnapshotError, match="different authenticated source"):
+        wheel_sources._load_snapshotted_entrypoint_binding(
+            source,
+            second_snapshot,
+            binding_cache=cache,
+        )
+    assert loaded == ["toy.runtime"]
+
+
+def test_failed_module_set_validation_commits_no_cache_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "toy_plugin"
+    package.mkdir()
+    parent_path = package / "__init__.py"
+    child_path = package / "child.py"
+    parent_path.write_bytes(b"parent\n")
+    child_path.write_bytes(b"child\n")
+    snapshot = SourceSnapshot.from_identity(
+        SourceIdentity(
+            kind=SourceKind.WHEEL_PLUGIN,
+            root=tmp_path.resolve(),
+            distribution="toy-runtime",
+            version="1.2.3",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name="toy.runtime",
+            entrypoint_value="toy_plugin.child:provider",
+            declaration_path="toy_plugin/plugin-declaration.json",
+            plugin_id="toy.runtime",
+            plugin_version="1.2.3",
+        ),
+        (
+            SourceFile.from_bytes("toy_plugin/__init__.py", parent_path.read_bytes()),
+            SourceFile.from_bytes("toy_plugin/child.py", child_path.read_bytes()),
+        ),
+    )
+    parent = ModuleType("toy_plugin")
+    parent.__file__ = str(parent_path)
+    child = ModuleType("toy_plugin.child")
+    child.__file__ = str(tmp_path / "foreign" / "child.py")
+    monkeypatch.setitem(sys.modules, "toy_plugin", parent)
+    monkeypatch.setitem(sys.modules, "toy_plugin.child", child)
+    provider = _PluginProvider()
+    provider.__module__ = "toy_plugin.child"
+    entrypoint = metadata.EntryPoint(
+        name="toy.runtime",
+        value="toy_plugin.child:provider",
+        group="graph_engine.plugins",
+    )
+    cache = wheel_sources._AuthenticatedBindingCache()
+
+    with pytest.raises(SourceSnapshotError, match="authenticated (root|snapshot)"):
+        wheel_sources._register_authenticated_modules(cache, provider, entrypoint, snapshot)
+    assert cache.modules == {}
 
 
 def test_load_rejects_provider_module_from_foreign_root(

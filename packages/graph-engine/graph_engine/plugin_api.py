@@ -391,6 +391,7 @@ class ProviderSource(FrozenModel):
     version: str
     entrypoint_group: Literal["graph_engine.products", "graph_engine.plugins"]
     entrypoint_name: str
+    entrypoint_value: str
     declaration_path: str
 
     @field_validator("distribution")
@@ -411,11 +412,11 @@ class ProviderSource(FrozenModel):
         except (InvalidVersion, TypeError) as error:
             raise ValueError(f"invalid provider source version: {value!r}") from error
 
-    @field_validator("entrypoint_name")
+    @field_validator("entrypoint_name", "entrypoint_value")
     @classmethod
-    def _validate_entrypoint_name(cls, value: str) -> str:
+    def _validate_entrypoint_coordinate(cls, value: str) -> str:
         if not isinstance(value, str) or not value.strip():
-            raise ValueError("provider entrypoint name must be non-empty text")
+            raise ValueError("provider entrypoint coordinate must be non-empty text")
         return value
 
     @field_validator("declaration_path")

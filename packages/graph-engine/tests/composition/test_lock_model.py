@@ -36,6 +36,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
         version="1.0.0",
         entrypoint_group="graph_engine.products",
         entrypoint_name="toy.a",
+        entrypoint_value="toy_a.product:provider",
         declaration_path="toy_a/product-declaration.json",
     )
     manifest_items = [
@@ -59,6 +60,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
             "version": "1.0.0",
             "entrypoint_group": "graph_engine.products",
             "entrypoint_name": "toy.a",
+            "entrypoint_value": "toy_a.product:provider",
             "declaration_path": "toy_a/product-declaration.json",
         },
         digest=_A,
@@ -71,6 +73,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
             "version": "2.0.0",
             "entrypoint_group": "graph_engine.plugins",
             "entrypoint_name": "toy.runtime",
+            "entrypoint_value": "toy_runtime.plugin:provider",
             "declaration_path": "toy_runtime/plugin-declaration.json",
         },
         digest=_C,
@@ -100,6 +103,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
             version="2.0.0",
             entrypoint_group="graph_engine.plugins",
             entrypoint_name="toy.runtime",
+            entrypoint_value="toy_runtime.plugin:provider",
             declaration_path="toy_runtime/plugin-declaration.json",
         ),
         plugin_id="toy.runtime",
@@ -328,6 +332,7 @@ def _locked_plugin(
         version=version,
         entrypoint_group="graph_engine.plugins",
         entrypoint_name=plugin_id,
+        entrypoint_value=f"{plugin_id.replace('.', '_')}.plugin:provider",
         declaration_path=declaration_path,
     )
     descriptor = PluginDescriptor(
@@ -420,6 +425,17 @@ def test_invocation_lock_rejects_cycle_version_mismatch_and_noncanonical_order()
         )
 
 
+def test_invocation_lock_recomputes_product_root_version_constraints() -> None:
+    lock = _lock()
+    forged_product = _product_with_requirements(
+        lock.product,
+        [{"plugin_id": "toy.runtime", "version_specifier": "==9.9.9"}],
+    )
+
+    with pytest.raises(ValidationError, match="dependency declarations"):
+        _recreate_lock(lock, product=forged_product)
+
+
 def test_locked_plugin_authenticates_id_and_version_against_source_identity() -> None:
     source = LockedSource(
         kind="wheel_plugin",
@@ -428,6 +444,8 @@ def test_locked_plugin_authenticates_id_and_version_against_source_identity() ->
             "version": "2.0.0",
             "entrypoint_group": "graph_engine.plugins",
             "entrypoint_name": "toy.runtime",
+            "entrypoint_value": "toy_runtime.plugin:provider",
+            "declaration_path": "toy_runtime/plugin-declaration.json",
         },
         digest=_A,
         files=(),
@@ -439,6 +457,7 @@ def test_locked_plugin_authenticates_id_and_version_against_source_identity() ->
             version="2.0.0",
             entrypoint_group="graph_engine.plugins",
             entrypoint_name="toy.runtime",
+            entrypoint_value="toy_runtime.plugin:provider",
             declaration_path="toy_runtime/plugin-declaration.json",
         ),
         plugin_id="toy.runtime",

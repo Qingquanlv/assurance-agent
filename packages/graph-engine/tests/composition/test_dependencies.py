@@ -4,7 +4,9 @@ from itertools import permutations
 
 import pytest
 
-from graph_engine.composition import DependencyConflict, resolve_dependency_order
+from graph_engine.composition import DependencyConflict
+from graph_engine.composition import resolve_dependency_order as _resolve_dependency_order
+from graph_engine.composition.models import PluginRequirement
 from graph_engine.plugin_api import PluginDependency, PluginDescriptor
 
 
@@ -34,6 +36,17 @@ def _with_unvalidated_version(descriptor: PluginDescriptor, version: str) -> Plu
     return descriptor
 
 
+def resolve_dependency_order(
+    descriptors: dict[str, PluginDescriptor],
+    required_plugin_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    requirements = tuple(
+        PluginRequirement.model_construct(plugin_id=plugin_id, version_specifier=">=0")
+        for plugin_id in required_plugin_ids
+    )
+    return _resolve_dependency_order(descriptors, requirements)
+
+
 def test_resolver_validates_selected_versions_without_choosing() -> None:
     descriptors = {
         "toy.flow": _descriptor("toy.flow", "2.0.0", requires=(("toy.runtime", ">=1,<2"),)),
@@ -54,6 +67,16 @@ def test_resolver_rejects_incompatible_explicit_version() -> None:
 
     with pytest.raises(DependencyConflict, match=r"toy.runtime==2.1.0"):
         resolve_dependency_order(descriptors, tuple(descriptors))
+
+
+def test_resolver_rejects_incompatible_product_root_version() -> None:
+    descriptor = _descriptor("toy.runtime", "1.0.0")
+
+    with pytest.raises(DependencyConflict, match=r"toy.runtime==1.0.0"):
+        _resolve_dependency_order(
+            {"toy.runtime": descriptor},
+            (PluginRequirement(plugin_id="toy.runtime", version_specifier="==9.9.9"),),
+        )
 
 
 def test_resolver_rejects_missing_explicit_dependency_source() -> None:

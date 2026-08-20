@@ -45,6 +45,7 @@ def _validate_provider_source_identity(
         "version": source.version,
         "entrypoint_group": source.entrypoint_group,
         "entrypoint_name": source.entrypoint_name,
+        "entrypoint_value": source.entrypoint_value,
         "declaration_path": source.declaration_path,
     }
     if any(identity.get(name) != value for name, value in expected.items()):
@@ -335,7 +336,7 @@ class InvocationLock(FrozenModel):
             manifest = ProductManifest.model_validate(thaw_json(self.product.manifest))
             expected_order = resolve_dependency_order(
                 {plugin.plugin_id: plugin.descriptor for plugin in self.plugins},
-                manifest.required_plugin_ids,
+                manifest.plugins,
             )
         except (ValueError, TypeError, DependencyConflict) as error:
             raise ValueError("invocation lock dependency declarations are invalid") from error
@@ -624,7 +625,7 @@ def authenticate_composition_lock(
         if locked_dependencies != expected_dependencies:
             raise ValueError(f"invocation lock dependencies disagree with composition: {plugin_id}")
     try:
-        expected_order = resolve_dependency_order(descriptor_by_id, manifest.required_plugin_ids)
+        expected_order = resolve_dependency_order(descriptor_by_id, manifest.plugins)
     except DependencyConflict as error:
         raise ValueError("composition dependency declarations are invalid") from error
     if lock.dependency_order != expected_order:
@@ -677,6 +678,7 @@ def _source_identity_projection(identity: SourceIdentity) -> dict[str, JSONValue
         "version",
         "entrypoint_group",
         "entrypoint_name",
+        "entrypoint_value",
         "product_id",
         "product_version",
         "plugin_id",
