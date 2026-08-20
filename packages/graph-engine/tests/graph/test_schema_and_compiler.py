@@ -12,11 +12,19 @@ from pydantic import ValidationError
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.composition import (
     CapabilityRegistry,
+    ExecutableBindingMode,
+    ExecutableKind,
+    ExecutableModuleProvenance,
+    ExecutableProvenance,
     SourceIdentity,
+    SourceKey,
     SourceKind,
+    SourceRole,
     SourceSnapshot,
-    build_registries,
 )
+from graph_engine.composition.models import AuthenticatedContribution
+from graph_engine.composition.provenance import StandardLoader
+from graph_engine.composition.registries import _build_registries
 from graph_engine.errors import GraphEngineError
 from graph_engine.graph.compiler import CompiledNode, CompiledWorkflow, CompileError, compile_workflow
 from graph_engine.graph.expressions import ExpressionError, evaluate_expression
@@ -85,7 +93,39 @@ def registry() -> CapabilityRegistry:
         ),
         (),
     )
-    return build_registries((source,), (contribution,), ("toy.one",)).capabilities
+    source_key = SourceKey(SourceRole.PLUGIN, "toy.one")
+
+    def proof(kind: ExecutableKind, registry_id: str) -> ExecutableProvenance:
+        return ExecutableProvenance.create(
+            kind=kind,
+            registry_id=registry_id,
+            owner_id="toy.one",
+            source_key=source_key,
+            source_digest=source.digest,
+            module=ExecutableModuleProvenance(
+                module_name="toy_one.implementation",
+                standard_loader=StandardLoader.SOURCE,
+                standard_is_package=False,
+                relative_origin="implementation.py",
+                authenticated_locations=(),
+                physical_sha256="0" * 64,
+                source_digest=source.digest,
+            ),
+            callable_path=f"toy_one.implementation:Handler.{kind.slot}",
+            binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
+        )
+
+    authenticated = AuthenticatedContribution(
+        owner_id="toy.one",
+        source_key=source_key,
+        source_digest=source.digest,
+        contribution=contribution,
+        executables=(
+            proof(ExecutableKind.COMMIT_VALIDATOR, "toy.one.clean"),
+            proof(ExecutableKind.TASK_HANDLER, "toy.one.ping"),
+        ),
+    )
+    return _build_registries((source,), (authenticated,), ("toy.one",)).capabilities
 
 
 VALID = """

@@ -16,7 +16,13 @@ import yaml
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.composition import (
+    CapabilityRegistry,
+    CommitValidatorEntry,
     ConfigTreePluginSource,
+    ExecutableBindingMode,
+    ExecutableKind,
+    ExecutableModuleProvenance,
+    ExecutableProvenance,
     FrozenComposition,
     InvocationLock,
     LockedProduct,
@@ -24,15 +30,18 @@ from graph_engine.composition import (
     ProductFileSource,
     ProductManifest,
     RegistryPlatform,
+    RegistrySet,
     ResolutionError,
     ResolutionRequest,
     SourceKey,
     SourceRole,
+    TaskHandlerEntry,
     WheelPluginSource,
     WheelProductSource,
 )
 from graph_engine.composition.dependencies import DependencyConflict
-from graph_engine.composition.lock import _locked_source
+from graph_engine.composition.lock import _locked_source, build_invocation_lock
+from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import RegistryConflict
 from graph_engine.composition.resolver import _capture_editable_engine_snapshot
 from graph_engine.composition.sources import _snapshot_installed_engine_distribution
@@ -41,6 +50,7 @@ from graph_engine.frozen_json import thaw_json
 from graph_engine.graph.compiler import CompileError
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
+    CandidateWriteSet,
     EffectApplyResult,
     EffectIntent,
     EffectPolicy,
@@ -55,6 +65,8 @@ from graph_engine.plugin_api import (
     TaskContext,
     TaskOutcome,
     TaskRequest,
+    ValidationContext,
+    ValidationResult,
 )
 
 
@@ -69,6 +81,15 @@ class _EffectHandler:
 
     async def reconcile(self, _intent: EffectIntent, _key: str) -> EffectReconcileResult:
         return EffectReconcileResult.applied({"ok": True})
+
+
+class _Validator:
+    def validate(
+        self,
+        _candidate: CandidateWriteSet,
+        _context: ValidationContext,
+    ) -> ValidationResult:
+        return ValidationResult(accepted=True)
 
 
 class _PluginProvider:
@@ -95,9 +116,8 @@ class _PluginProvider:
             ),
         )
         self._descriptor_calls = 0
-        self._contribution = contribution or PluginContribution(
-            task_handlers={f"{plugin_id}.greet": _Handler()}
-        )
+        self._contribution = contribution
+        self._implementation_module: str | None = None
 
     def descriptor(self) -> PluginDescriptor:
         index = min(self._descriptor_calls, len(self._descriptors) - 1)
@@ -105,7 +125,26 @@ class _PluginProvider:
         return self._descriptors[index]
 
     def contribute(self, _ports: RegistryPorts) -> PluginContribution:
-        return self._contribution
+        if self._implementation_module is None:
+            raise AssertionError("test provider lacks an authenticated implementation module")
+        implementation = importlib.import_module(self._implementation_module)
+        if self._contribution is not None:
+            return PluginContribution(
+                task_handlers={key: implementation.handler for key in self._contribution.task_handlers},
+                commit_validators={
+                    key: implementation.validator for key in self._contribution.commit_validators
+                },
+                schemas=self._contribution.schemas,
+                resources=self._contribution.resources,
+                effects=tuple(
+                    replace(registration, handler=implementation.effect_handler)
+                    for registration in self._contribution.effects
+                ),
+                bindings=self._contribution.bindings,
+            )
+        return PluginContribution(
+            task_handlers={f"{self._descriptors[0].plugin_id}.greet": implementation.handler}
+        )
 
 
 class _ProductProvider:
@@ -172,6 +211,53 @@ class _LazyManifestProvider(_ProductProvider):
         return super().manifest()
 
 
+class _ImportedExecutableProvider(_PluginProvider):
+    def __init__(
+        self,
+        descriptor: PluginDescriptor,
+        module_name: str,
+        executable_kind: str,
+    ) -> None:
+        super().__init__(descriptor.plugin_id, descriptors=(descriptor,))
+        self.module_name = module_name
+        self.executable_kind = executable_kind
+
+    def contribute(self, _ports: RegistryPorts) -> PluginContribution:
+        implementation = importlib.import_module(self.module_name)
+        plugin_id = self._descriptors[0].plugin_id
+        if self.executable_kind == "task_handler":
+            return PluginContribution(task_handlers={f"{plugin_id}.greet": implementation.handler})
+        if self.executable_kind == "commit_validator":
+            return PluginContribution(commit_validators={f"{plugin_id}.validate": implementation.validator})
+        return PluginContribution(
+            schemas=(
+                SchemaContribution(
+                    f"{plugin_id}.intent",
+                    "application/schema+json",
+                    b'{"type":"object"}',
+                ),
+                SchemaContribution(
+                    f"{plugin_id}.receipt",
+                    "application/schema+json",
+                    b'{"type":"object"}',
+                ),
+            ),
+            effects=(
+                EffectRegistration(
+                    kind=f"{plugin_id}.audit",
+                    intent_schema_id=f"{plugin_id}.intent",
+                    receipt_schema_id=f"{plugin_id}.receipt",
+                    handler=implementation.effect_handler,
+                    policy=EffectPolicy(
+                        max_attempts=1,
+                        timeout_seconds=1,
+                        backoff_seconds=0,
+                    ),
+                ),
+            ),
+        )
+
+
 class _MetadataProvider:
     def __init__(self, distributions: dict[str, metadata.Distribution]) -> None:
         self._distributions = distributions
@@ -214,6 +300,25 @@ def _workflow(
                         "done": {"kind": "end"},
                     },
                     "edges": [{"from": "greet", "to": "done"}],
+                }
+            },
+        }
+    )
+
+
+def _passive_workflow() -> WorkflowDef:
+    return WorkflowDef.model_validate(
+        {
+            "name": "passive",
+            "entrypoints": {"hello": "root"},
+            "retry": {},
+            "timeout": {},
+            "graphs": {
+                "root": {
+                    "max_activations": 1,
+                    "start": "done",
+                    "nodes": {"done": {"kind": "end"}},
+                    "edges": [],
                 }
             },
         }
@@ -264,6 +369,23 @@ def _add_distribution_file(
     return path
 
 
+def _replace_distribution_file(
+    distribution: metadata.Distribution,
+    relative_path: str,
+    content: bytes,
+) -> None:
+    root = Path(distribution.locate_file(""))
+    (root / relative_path).write_bytes(content)
+    record_path = next(root.glob("*.dist-info/RECORD"))
+    with record_path.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.reader(stream))
+    matches = [index for index, row in enumerate(rows) if row and row[0] == relative_path]
+    assert len(matches) == 1
+    rows[matches[0]] = [relative_path, _record_hash(content), str(len(content))]
+    with record_path.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerows(rows)
+
+
 def _manifest_declaration(manifest: ProductManifest) -> dict[str, object]:
     document = manifest.model_dump(mode="json")
     if manifest.workflow is not None:
@@ -285,7 +407,27 @@ def _distribution(
     package = site / package_name
     package.mkdir(parents=True)
     module_path = package / "__init__.py"
-    module_path.write_text("provider = object()\n", encoding="utf-8")
+    module_path.write_text(
+        "from graph_engine.plugin_api import (\n"
+        "    EffectApplyResult, EffectReconcileResult, TaskOutcome, ValidationResult,\n"
+        ")\n"
+        "class Handler:\n"
+        "    async def execute(self, _request, _context):\n"
+        "        return TaskOutcome.succeeded({'ok': True})\n"
+        "class Validator:\n"
+        "    def validate(self, _candidate, _context):\n"
+        "        return ValidationResult(accepted=True)\n"
+        "class EffectHandler:\n"
+        "    async def apply(self, _intent, _key):\n"
+        "        return EffectApplyResult.applied({'ok': True})\n"
+        "    async def reconcile(self, _intent, _key):\n"
+        "        return EffectReconcileResult.applied({'ok': True})\n"
+        "handler = Handler()\n"
+        "validator = Validator()\n"
+        "effect_handler = EffectHandler()\n"
+        "provider = object()\n",
+        encoding="utf-8",
+    )
     declaration_file: Path | None = None
     if declaration_path is not None and declaration is not None:
         declaration_file = site / declaration_path
@@ -335,6 +477,15 @@ def _combined_distribution(
     }
     for path in paths.values():
         path.write_text("provider = object()\n", encoding="utf-8")
+    paths["toy_combined.plugin"].write_text(
+        "from graph_engine.plugin_api import TaskOutcome\n"
+        "class Handler:\n"
+        "    async def execute(self, _request, _context):\n"
+        "        return TaskOutcome.succeeded({'ok': True})\n"
+        "handler = Handler()\n"
+        "provider = object()\n",
+        encoding="utf-8",
+    )
     product_declaration = package / "product-declaration.json"
     product_declaration.write_bytes(
         canonical_json_bytes(
@@ -475,6 +626,7 @@ def _platform(
             },
         )
         distributions[distribution_name] = distribution
+        provider._implementation_module = source_expectation.entrypoint_value.partition(":")[0]
         load_values[("graph_engine.plugins", plugin_id)] = (provider, module_path)
         plugin_sources[plugin_id] = WheelPluginSource(
             distribution=distribution_name,
@@ -677,6 +829,100 @@ def test_registry_platform_resolves_one_frozen_composition(
         )
 
 
+def test_public_frozen_composition_rejects_self_consistent_unowned_executable_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(_manifest()),
+        plugins={"toy.runtime": _PluginProvider("toy.runtime")},
+    )
+    assert product_source is not None
+    distribution = platform._metadata_provider.distribution("toy-runtime")
+    helper_name = "toy_runtime.forged_helper"
+    helper_content = (
+        b"from graph_engine.plugin_api import TaskOutcome\n"
+        b"class Handler:\n"
+        b"    async def execute(self, _request, _context):\n"
+        b"        return TaskOutcome.succeeded({'forged': True})\n"
+        b"handler = Handler()\n"
+    )
+    _add_distribution_file(distribution, "toy_runtime/forged_helper.py", helper_content)
+    composition = platform.resolve(
+        ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],))
+    )
+    monkeypatch.syspath_prepend(str(distribution.locate_file("")))
+    forged_module = importlib.import_module(helper_name)
+    plugin_source = composition.registries.sources.entries[
+        SourceKey(SourceRole.PLUGIN, "toy.runtime")
+    ].snapshot
+    forged_provenance = ExecutableProvenance.create(
+        kind=ExecutableKind.TASK_HANDLER,
+        registry_id="toy.runtime.greet",
+        owner_id="toy.runtime",
+        source_key=SourceKey(SourceRole.PLUGIN, "toy.runtime"),
+        source_digest=plugin_source.digest,
+        module=ExecutableModuleProvenance(
+            module_name=helper_name,
+            standard_loader=StandardLoader.SOURCE,
+            standard_is_package=False,
+            relative_origin="toy_runtime/forged_helper.py",
+            authenticated_locations=(),
+            physical_sha256=hashlib.sha256(helper_content).hexdigest(),
+            source_digest=plugin_source.digest,
+        ),
+        callable_path="toy_runtime.forged_helper:Handler.execute",
+        binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
+    )
+    forged_entry = TaskHandlerEntry(
+        capability_id="toy.runtime.greet",
+        owner_id="toy.runtime",
+        handler=forged_module.handler,
+        provenance=forged_provenance,
+    )
+    forged_registries = RegistrySet(
+        sources=composition.registries.sources,
+        capabilities=CapabilityRegistry(
+            entries={"toy.runtime.greet": forged_entry},
+            task_handlers={"toy.runtime.greet": forged_module.handler},
+            commit_validators={},
+            bindings={},
+        ),
+        schemas=composition.registries.schemas,
+        resources=composition.registries.resources,
+        effects=composition.registries.effects,
+    )
+    forged_lock = build_invocation_lock(
+        manifest=composition.manifest,
+        product_snapshot=forged_registries.sources.entries[
+            SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
+        ].snapshot,
+        descriptors={descriptor.plugin_id: descriptor for descriptor in composition.descriptors},
+        dependency_order=composition.lock.dependency_order,
+        registries=forged_registries,
+        configuration=composition.configuration,
+        workflow=composition.workflow,
+        engine_snapshot=forged_registries.sources.entries[
+            SourceKey(SourceRole.ENGINE, "graph.engine")
+        ].snapshot,
+    )
+
+    with pytest.raises(ValueError, match="provenance is not currently authenticated"):
+        FrozenComposition.freeze(
+            composition.manifest,
+            forged_registries,
+            composition.workflow,
+            forged_lock,
+            descriptors=composition.descriptors,
+            configuration=composition.configuration,
+            providers=composition.providers,
+            product_provider=composition.product_provider,
+            declarative_sources=composition.declarative_sources,
+        )
+
+
 def test_contribution_lazy_import_replaces_unowned_same_path_helper_and_binds_handler(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -727,6 +973,48 @@ def test_contribution_lazy_import_replaces_unowned_same_path_helper_and_binds_ha
     assert repeated.providers["toy.runtime"] is binding
 
 
+def test_same_source_executable_helper_drift_changes_snapshot_and_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _LazyContributionProvider("toy.runtime", "toy_runtime.drift_helper")
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(_manifest()),
+        plugins={"toy.runtime": provider},
+    )
+    assert product_source is not None
+    distribution = platform._metadata_provider.distribution("toy-runtime")
+    relative_path = "toy_runtime/drift_helper.py"
+
+    def implementation(marker: str) -> bytes:
+        return (
+            b"from graph_engine.plugin_api import TaskOutcome\n"
+            b"class Handler:\n"
+            b"    async def execute(self, _request, _context):\n"
+            + f"        return TaskOutcome.succeeded({{'marker': {marker!r}}})\n".encode()
+            + b"handler = Handler()\n"
+        )
+
+    _add_distribution_file(distribution, relative_path, implementation("first"))
+    request = ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],))
+    first = platform.resolve(request)
+    first_source_digest = first.registries.sources.entries[
+        SourceKey(SourceRole.PLUGIN, "toy.runtime")
+    ].snapshot.digest
+
+    _replace_distribution_file(distribution, relative_path, implementation("second"))
+    second = platform.resolve(request)
+    second_source_digest = second.registries.sources.entries[
+        SourceKey(SourceRole.PLUGIN, "toy.runtime")
+    ].snapshot.digest
+
+    assert second_source_digest != first_source_digest
+    assert second.lock.canonical_bytes != first.lock.canonical_bytes
+    assert second.lock.digest != first.lock.digest
+
+
 def test_contribution_quarantines_loaded_leaf_when_its_parent_is_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -768,6 +1056,420 @@ def test_contribution_quarantines_loaded_leaf_when_its_parent_is_absent(
     assert type(handler).__module__ == module_name
     assert sys.modules[module_name] is not fake_helper
     assert platform._binding_cache.modules[module_name].module is sys.modules[module_name]
+
+
+@pytest.mark.parametrize(
+    "executable_kind",
+    ("task_handler", "commit_validator", "effect"),
+)
+def test_external_reexported_executable_is_rejected_and_corrected_retry_is_clean(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    executable_kind: str,
+) -> None:
+    plugin_id = "toy.runtime"
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id=plugin_id,
+        plugin_version="1.0.0",
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=(f"{plugin_id}.greet",) if executable_kind == "task_handler" else (),
+        commit_validators=((f"{plugin_id}.validate",) if executable_kind == "commit_validator" else ()),
+        schemas=((f"{plugin_id}.intent", f"{plugin_id}.receipt") if executable_kind == "effect" else ()),
+        effects=(f"{plugin_id}.audit",) if executable_kind == "effect" else (),
+    )
+    external_name = f"round5_external_{executable_kind}"
+    selected_name = f"toy_runtime.round5_selected_{executable_kind}"
+    provider = _ImportedExecutableProvider(descriptor, external_name, executable_kind)
+    workflow = _workflow() if executable_kind == "task_handler" else _passive_workflow()
+    platform, plugins, product_source = _platform(
+        tmp_path / "wheels",
+        monkeypatch,
+        product=_ProductProvider(_manifest(workflow=workflow)),
+        plugins={plugin_id: provider},
+    )
+    assert product_source is not None
+    implementation = (
+        b"from graph_engine.plugin_api import (\n"
+        b"    EffectApplyResult, EffectReconcileResult, TaskOutcome, ValidationResult,\n"
+        b")\n"
+        b"class Handler:\n"
+        b"    async def execute(self, _request, _context):\n"
+        b"        return TaskOutcome.succeeded({'source': 'implementation'})\n"
+        b"class Validator:\n"
+        b"    def validate(self, _candidate, _context):\n"
+        b"        return ValidationResult(accepted=True)\n"
+        b"class EffectHandler:\n"
+        b"    async def apply(self, _intent, _key):\n"
+        b"        return EffectApplyResult.applied({'source': 'implementation'})\n"
+        b"    async def reconcile(self, _intent, _key):\n"
+        b"        return EffectReconcileResult.applied({'source': 'implementation'})\n"
+        b"Handler.__module__ = 'toy_runtime'\n"
+        b"Validator.__module__ = 'toy_runtime'\n"
+        b"EffectHandler.__module__ = 'toy_runtime'\n"
+        b"handler = Handler()\n"
+        b"validator = Validator()\n"
+        b"effect_handler = EffectHandler()\n"
+    )
+    external_root = tmp_path / "external"
+    external_root.mkdir()
+    (external_root / f"{external_name}.py").write_bytes(implementation)
+    monkeypatch.syspath_prepend(str(external_root))
+    _add_distribution_file(
+        platform._metadata_provider.distribution("toy-runtime"),
+        selected_name.replace(".", "/") + ".py",
+        implementation,
+    )
+    request = ResolutionRequest(product=product_source, plugins=(plugins[plugin_id],))
+
+    with pytest.raises(ResolutionError, match="contribution failed"):
+        platform.resolve(request)
+    assert external_name not in sys.modules
+    assert external_name not in platform._binding_cache.modules
+
+    provider.module_name = selected_name
+    corrected = platform.resolve(request)
+
+    assert corrected.providers[plugin_id] is not None
+    assert selected_name in platform._binding_cache.modules
+
+
+@pytest.mark.parametrize(
+    "executable_kind",
+    ("task_handler", "commit_validator", "effect_apply", "effect_reconcile"),
+)
+def test_frozen_composition_rejects_same_module_executable_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    executable_kind: str,
+) -> None:
+    descriptor_kind = "effect" if executable_kind.startswith("effect_") else executable_kind
+    plugin_id = "toy.runtime"
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id=plugin_id,
+        plugin_version="1.0.0",
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=(f"{plugin_id}.greet",) if descriptor_kind == "task_handler" else (),
+        commit_validators=(f"{plugin_id}.validate",) if descriptor_kind == "commit_validator" else (),
+        schemas=(f"{plugin_id}.intent", f"{plugin_id}.receipt") if descriptor_kind == "effect" else (),
+        effects=(f"{plugin_id}.audit",) if descriptor_kind == "effect" else (),
+    )
+    module_name = f"toy_runtime.same_module_{executable_kind}"
+    provider = _ImportedExecutableProvider(descriptor, module_name, descriptor_kind)
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(
+            _manifest(workflow=_workflow() if descriptor_kind == "task_handler" else _passive_workflow())
+        ),
+        plugins={plugin_id: provider},
+    )
+    assert product_source is not None
+    _add_distribution_file(
+        platform._metadata_provider.distribution("toy-runtime"),
+        module_name.replace(".", "/") + ".py",
+        (
+            b"from graph_engine.plugin_api import (\n"
+            b"    EffectApplyResult, EffectReconcileResult, TaskOutcome, ValidationResult,\n"
+            b")\n"
+            b"class Handler:\n"
+            b"    async def execute(self, _request, _context):\n"
+            b"        return TaskOutcome.succeeded({'handler': 'original'})\n"
+            b"class AlternateHandler:\n"
+            b"    async def execute(self, _request, _context):\n"
+            b"        return TaskOutcome.succeeded({'handler': 'alternate'})\n"
+            b"class Validator:\n"
+            b"    def validate(self, _candidate, _context):\n"
+            b"        return ValidationResult(accepted=True)\n"
+            b"class AlternateValidator:\n"
+            b"    def validate(self, _candidate, _context):\n"
+            b"        return ValidationResult(accepted=True)\n"
+            b"class EffectHandler:\n"
+            b"    async def apply(self, _intent, _key):\n"
+            b"        return EffectApplyResult.applied({'effect': 'original'})\n"
+            b"    async def reconcile(self, _intent, _key):\n"
+            b"        return EffectReconcileResult.applied({'effect': 'original'})\n"
+            b"class AlternateEffectHandler:\n"
+            b"    async def apply(self, _intent, _key):\n"
+            b"        return EffectApplyResult.applied({'effect': 'alternate'})\n"
+            b"    async def reconcile(self, _intent, _key):\n"
+            b"        return EffectReconcileResult.applied({'effect': 'alternate'})\n"
+            b"handler = Handler()\n"
+            b"alternate_handler = AlternateHandler()\n"
+            b"validator = Validator()\n"
+            b"alternate_validator = AlternateValidator()\n"
+            b"effect_handler = EffectHandler()\n"
+            b"alternate_effect_handler = AlternateEffectHandler()\n"
+        ),
+    )
+    composition = platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins[plugin_id],)))
+    implementation = sys.modules[module_name]
+    registries = composition.registries
+    if executable_kind == "task_handler":
+        entry = registries.capabilities.entries[f"{plugin_id}.greet"]
+        assert isinstance(entry, TaskHandlerEntry)
+        forged = replace(entry, handler=implementation.alternate_handler)
+        capabilities = CapabilityRegistry(
+            entries={forged.capability_id: forged},
+            task_handlers={forged.capability_id: forged.handler},
+            commit_validators={},
+            bindings={},
+        )
+        registries = replace(registries, capabilities=capabilities)
+    elif executable_kind == "commit_validator":
+        entry = registries.capabilities.entries[f"{plugin_id}.validate"]
+        assert isinstance(entry, CommitValidatorEntry)
+        forged = replace(entry, validator=implementation.alternate_validator)
+        capabilities = CapabilityRegistry(
+            entries={forged.capability_id: forged},
+            task_handlers={},
+            commit_validators={forged.capability_id: forged.validator},
+            bindings={},
+        )
+        registries = replace(registries, capabilities=capabilities)
+    else:
+        effect = registries.effects.entries[f"{plugin_id}.audit"]
+        method_name = "apply" if executable_kind == "effect_apply" else "reconcile"
+        setattr(
+            effect.handler,
+            method_name,
+            getattr(implementation.alternate_effect_handler, method_name),
+        )
+
+    with pytest.raises(ValueError, match="provenance is not currently authenticated"):
+        FrozenComposition.freeze(
+            composition.manifest,
+            registries,
+            composition.workflow,
+            composition.lock,
+            descriptors=composition.descriptors,
+            configuration=composition.configuration,
+            providers=composition.providers,
+            product_provider=composition.product_provider,
+            declarative_sources=composition.declarative_sources,
+        )
+
+
+def test_dynamic_executable_descriptor_is_rejected_before_registry_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id="toy.runtime",
+        plugin_version="1.0.0",
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=("toy.runtime.greet",),
+        commit_validators=(),
+    )
+    module_name = "toy_runtime.dynamic_descriptor"
+    provider = _ImportedExecutableProvider(descriptor, module_name, "task_handler")
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(_manifest()),
+        plugins={"toy.runtime": provider},
+    )
+    assert product_source is not None
+    _add_distribution_file(
+        platform._metadata_provider.distribution("toy-runtime"),
+        "toy_runtime/dynamic_descriptor.py",
+        (
+            b"from graph_engine.plugin_api import TaskOutcome\n"
+            b"class RealHandler:\n"
+            b"    async def execute(self, _request, _context):\n"
+            b"        return TaskOutcome.succeeded({'ok': True})\n"
+            b"real_handler = RealHandler()\n"
+            b"class DynamicHandler:\n"
+            b"    def __getattribute__(self, name):\n"
+            b"        if name == 'execute':\n"
+            b"            return real_handler.execute\n"
+            b"        return object.__getattribute__(self, name)\n"
+            b"handler = DynamicHandler()\n"
+        ),
+    )
+
+    with pytest.raises(ResolutionError, match="contribution failed"):
+        platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],)))
+
+
+@pytest.mark.parametrize(
+    ("executable_kind", "slot"),
+    (
+        ("task_handler", "execute"),
+        ("commit_validator", "validate"),
+        ("effect", "apply"),
+        ("effect", "reconcile"),
+    ),
+)
+def test_stateful_attribute_dispatch_cannot_switch_an_authenticated_callable_at_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    executable_kind: str,
+    slot: str,
+) -> None:
+    plugin_id = "toy.runtime"
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id=plugin_id,
+        plugin_version="1.0.0",
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=(f"{plugin_id}.greet",) if executable_kind == "task_handler" else (),
+        commit_validators=(f"{plugin_id}.validate",) if executable_kind == "commit_validator" else (),
+        schemas=(f"{plugin_id}.intent", f"{plugin_id}.receipt") if executable_kind == "effect" else (),
+        effects=(f"{plugin_id}.audit",) if executable_kind == "effect" else (),
+    )
+    external_name = f"round5_stateful_external_{slot}"
+    module_name = f"toy_runtime.stateful_dispatch_{slot}"
+    provider = _ImportedExecutableProvider(descriptor, module_name, executable_kind)
+    platform, plugins, product_source = _platform(
+        tmp_path / "wheels",
+        monkeypatch,
+        product=_ProductProvider(
+            _manifest(workflow=_workflow() if executable_kind == "task_handler" else _passive_workflow())
+        ),
+        plugins={plugin_id: provider},
+    )
+    assert product_source is not None
+    external_root = tmp_path / "external"
+    external_root.mkdir()
+    (external_root / f"{external_name}.py").write_bytes(
+        (
+            b"async def execute(_request, _context):\n    return None\n"
+            b"def validate(_candidate, _context):\n    return None\n"
+            b"async def apply(_intent, _key):\n    return None\n"
+            b"async def reconcile(_intent, _key):\n    return None\n"
+        )
+    )
+    monkeypatch.syspath_prepend(str(external_root))
+    _add_distribution_file(
+        platform._metadata_provider.distribution("toy-runtime"),
+        module_name.replace(".", "/") + ".py",
+        (
+            f"import {external_name} as external\n"
+            "from graph_engine.plugin_api import (\n"
+            "    EffectApplyResult, EffectReconcileResult, TaskOutcome, ValidationResult,\n"
+            ")\n"
+            "class Handler:\n"
+            "    armed = False\n"
+            "    def __getattribute__(self, name):\n"
+            "        if name == 'execute' and object.__getattribute__(self, 'armed'):\n"
+            "            return external.execute\n"
+            "        return object.__getattribute__(self, name)\n"
+            "    async def execute(self, _request, _context):\n"
+            "        return TaskOutcome.succeeded({'source': 'authenticated'})\n"
+            "class Validator:\n"
+            "    armed = False\n"
+            "    def __getattribute__(self, name):\n"
+            "        if name == 'validate' and object.__getattribute__(self, 'armed'):\n"
+            "            return external.validate\n"
+            "        return object.__getattribute__(self, name)\n"
+            "    def validate(self, _candidate, _context):\n"
+            "        return ValidationResult(accepted=True)\n"
+            "class EffectHandler:\n"
+            "    armed = False\n"
+            "    armed_slot = ''\n"
+            "    def __getattribute__(self, name):\n"
+            "        if (\n"
+            "            name in {'apply', 'reconcile'}\n"
+            "            and object.__getattribute__(self, 'armed')\n"
+            "            and name == object.__getattribute__(self, 'armed_slot')\n"
+            "        ):\n"
+            "            return getattr(external, name)\n"
+            "        return object.__getattribute__(self, name)\n"
+            "    async def apply(self, _intent, _key):\n"
+            "        return EffectApplyResult.applied({'source': 'authenticated'})\n"
+            "    async def reconcile(self, _intent, _key):\n"
+            "        return EffectReconcileResult.applied({'source': 'authenticated'})\n"
+            "handler = Handler()\n"
+            "validator = Validator()\n"
+            "effect_handler = EffectHandler()\n"
+        ).encode(),
+    )
+
+    with pytest.raises(ResolutionError, match="contribution failed"):
+        composition = platform.resolve(
+            ResolutionRequest(product=product_source, plugins=(plugins[plugin_id],))
+        )
+        if executable_kind == "task_handler":
+            executable = composition.registries.capabilities.task_handlers[f"{plugin_id}.greet"]
+        elif executable_kind == "commit_validator":
+            executable = composition.registries.capabilities.commit_validators[f"{plugin_id}.validate"]
+        else:
+            executable = composition.registries.effects.entries[f"{plugin_id}.audit"].handler
+            executable.armed_slot = slot
+        executable.armed = True
+        runtime_callable = getattr(executable, slot)
+        assert runtime_callable.__globals__ is sys.modules[external_name].__dict__
+        raise AssertionError("stateful dispatch escaped authenticated callable membership")
+
+
+def test_module_subclass_dispatch_cannot_switch_an_authenticated_callable_at_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "toy.runtime"
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id=plugin_id,
+        plugin_version="1.0.0",
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=(f"{plugin_id}.greet",),
+        commit_validators=(),
+    )
+    external_name = "round5_stateful_external_module"
+    module_name = "toy_runtime.stateful_module_dispatch"
+    provider = _ImportedExecutableProvider(descriptor, module_name, "task_handler")
+    platform, plugins, product_source = _platform(
+        tmp_path / "wheels",
+        monkeypatch,
+        product=_ProductProvider(_manifest()),
+        plugins={plugin_id: provider},
+    )
+    assert product_source is not None
+    external_root = tmp_path / "external"
+    external_root.mkdir()
+    (external_root / f"{external_name}.py").write_bytes(
+        b"async def execute(_request, _context):\n    return None\n"
+    )
+    monkeypatch.syspath_prepend(str(external_root))
+    _add_distribution_file(
+        platform._metadata_provider.distribution("toy-runtime"),
+        module_name.replace(".", "/") + ".py",
+        (
+            f"import {external_name} as external\n"
+            "import sys\n"
+            "from types import ModuleType\n"
+            "from graph_engine.plugin_api import TaskOutcome\n"
+            "async def execute(_request, _context):\n"
+            "    return TaskOutcome.succeeded({'source': 'authenticated'})\n"
+            "class StatefulModule(ModuleType):\n"
+            "    def __getattribute__(self, name):\n"
+            "        if name == 'execute' and ModuleType.__getattribute__(self, 'armed'):\n"
+            "            return external.execute\n"
+            "        return ModuleType.__getattribute__(self, name)\n"
+            "current = sys.modules[__name__]\n"
+            "current.__class__ = StatefulModule\n"
+            "current.armed = False\n"
+            "current.handler = current\n"
+        ).encode(),
+    )
+
+    with pytest.raises(ResolutionError, match="contribution failed"):
+        composition = platform.resolve(
+            ResolutionRequest(product=product_source, plugins=(plugins[plugin_id],))
+        )
+        executable = composition.registries.capabilities.task_handlers[f"{plugin_id}.greet"]
+        executable.armed = True
+        runtime_callable = executable.execute
+        assert runtime_callable.__globals__ is sys.modules[external_name].__dict__
+        raise AssertionError("module-subclass dispatch escaped authenticated callable membership")
 
 
 def test_failed_contribution_lazy_import_rolls_back_before_corrected_retry(
@@ -928,6 +1630,7 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
         descriptor.model_copy(update={"source": plugin_source_expectation})
         for descriptor in plugin._descriptors
     )
+    plugin._implementation_module = "toy_combined.plugin"
     distribution, paths = _combined_distribution(
         tmp_path,
         product_id=domain_id,
@@ -1478,11 +2181,11 @@ def test_registry_digests_cover_complete_registered_schema_resource_and_effect_v
         "toy.runtime.intent",
         "toy.runtime.receipt",
     }
+    effect_entry = composition.registries.effects.entries["toy.runtime.audit"]
     assert effect_projection == [
         {
-            "implementation_digest": composition.registries.sources.entries[
-                SourceKey(SourceRole.PLUGIN, "toy.runtime")
-            ].snapshot.digest,
+            "apply_implementation": effect_entry.apply_provenance.projection(),
+            "apply_implementation_digest": effect_entry.apply_provenance.digest,
             "intent_schema_id": "toy.runtime.intent",
             "kind": "toy.runtime.audit",
             "owner_id": "toy.runtime",
@@ -1492,6 +2195,8 @@ def test_registry_digests_cover_complete_registered_schema_resource_and_effect_v
                 "timeout_seconds": 1.5,
             },
             "receipt_schema_id": "toy.runtime.receipt",
+            "reconcile_implementation": effect_entry.reconcile_provenance.projection(),
+            "reconcile_implementation_digest": effect_entry.reconcile_provenance.digest,
         }
     ]
     assert cast(object, composition.registries.effects.entries["toy.runtime.audit"].handler) is not None

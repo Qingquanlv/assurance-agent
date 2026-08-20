@@ -118,6 +118,7 @@ def test_plan_contains_only_the_current_entrypoint_lineage(tmp_path: Path) -> No
         {"physical_sha256": "0" * 64},
         {"standard_loader": StandardLoader.EXTENSION},
         {"standard_is_package": True},
+        {"source_digest": "f" * 64},
     ),
 )
 def test_terminal_validation_consumes_the_frozen_plan_provenance(
@@ -156,6 +157,49 @@ def test_terminal_validation_consumes_the_frozen_plan_provenance(
                 session.validate(drifted, lambda _item, module: module is imported)
     finally:
         _remove_modules("plan_terminal")
+
+
+def test_terminal_rejects_authenticated_namespace_location_outside_selected_import_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_root = tmp_path / "selected"
+    external_root = tmp_path / "external"
+    files = {"round5_locations/entry.py": b"provider = object()\n"}
+    source = _source(entrypoint_value="round5_locations.entry:provider")
+    snapshot = _snapshot(selected_root, source, files)
+    external_namespace = external_root / "round5_locations"
+    external_namespace.mkdir(parents=True)
+    (external_namespace / "external.py").write_bytes(b"VALUE = 'external'\n")
+    monkeypatch.syspath_prepend(str(selected_root))
+    monkeypatch.syspath_prepend(str(external_root))
+    initial = dict(sys.modules)
+    plan = build_import_provenance_plan(source, snapshot, _entrypoint(source), initial_modules=initial)
+
+    try:
+        with ImportPlanSession(source, snapshot, initial) as session:
+            session.preload(plan, _reject_unowned)
+            session.validate(plan, _reject_unowned)
+        namespace = sys.modules["round5_locations"]
+        forged_modules = tuple(
+            replace(
+                item,
+                provenance=replace(
+                    item.provenance,
+                    authenticated_locations=(external_namespace.resolve(),),
+                ),
+                initial_module=namespace,
+            )
+            if item.module_name == "round5_locations"
+            else replace(item, initial_module=sys.modules[item.module_name])
+            for item in plan.modules
+        )
+        forged = replace(plan, modules=forged_modules)
+        with ImportPlanSession(source, snapshot, dict(sys.modules)) as session:
+            with pytest.raises(SourceSnapshotError, match="authenticated.*import root"):
+                session.validate(forged, lambda _item, _module: True)
+    finally:
+        _remove_modules("round5_locations")
 
 
 @pytest.mark.parametrize(

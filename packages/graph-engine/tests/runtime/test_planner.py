@@ -10,11 +10,19 @@ import yaml
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition import (
     CapabilityRegistry,
+    ExecutableBindingMode,
+    ExecutableKind,
+    ExecutableModuleProvenance,
+    ExecutableProvenance,
     SourceIdentity,
+    SourceKey,
     SourceKind,
+    SourceRole,
     SourceSnapshot,
-    build_registries,
 )
+from graph_engine.composition.models import AuthenticatedContribution
+from graph_engine.composition.provenance import StandardLoader
+from graph_engine.composition.registries import _build_registries
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.graph.schema import parse_workflow
 from graph_engine.plugin_api import PluginContribution, TaskFailure
@@ -66,7 +74,33 @@ def _registry() -> CapabilityRegistry:
         (),
     )
     contribution = PluginContribution(task_handlers={"test.tasks.run": _PlaceholderHandler()})
-    return build_registries((source,), (contribution,), ("test.tasks",)).capabilities
+    source_key = SourceKey(SourceRole.PLUGIN, "test.tasks")
+    provenance = ExecutableProvenance.create(
+        kind=ExecutableKind.TASK_HANDLER,
+        registry_id="test.tasks.run",
+        owner_id="test.tasks",
+        source_key=source_key,
+        source_digest=source.digest,
+        module=ExecutableModuleProvenance(
+            module_name="test_tasks.implementation",
+            standard_loader=StandardLoader.SOURCE,
+            standard_is_package=False,
+            relative_origin="implementation.py",
+            authenticated_locations=(),
+            physical_sha256="0" * 64,
+            source_digest=source.digest,
+        ),
+        callable_path="test_tasks.implementation:Handler.execute",
+        binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
+    )
+    authenticated = AuthenticatedContribution(
+        owner_id="test.tasks",
+        source_key=source_key,
+        source_digest=source.digest,
+        contribution=contribution,
+        executables=(provenance,),
+    )
+    return _build_registries((source,), (authenticated,), ("test.tasks",)).capabilities
 
 
 def _compiled(

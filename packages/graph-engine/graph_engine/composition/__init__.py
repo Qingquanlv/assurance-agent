@@ -26,6 +26,10 @@ from graph_engine.composition.models import (
     CommitValidatorEntry,
     EffectEntry,
     EffectRegistry,
+    ExecutableBindingMode,
+    ExecutableKind,
+    ExecutableModuleProvenance,
+    ExecutableProvenance,
     FrozenComposition,
     PluginRequirement,
     ProductManifest,
@@ -44,7 +48,7 @@ from graph_engine.composition.models import (
     SourceSnapshot,
     TaskHandlerEntry,
 )
-from graph_engine.composition.registries import RegistryConflict, build_registries
+from graph_engine.composition.registries import RegistryConflict
 from graph_engine.composition.resolver import (
     PluginSource,
     ProductSource,
@@ -84,6 +88,10 @@ __all__ = [
     "EditableWheelProductSource",
     "EffectEntry",
     "EffectRegistry",
+    "ExecutableBindingMode",
+    "ExecutableKind",
+    "ExecutableModuleProvenance",
+    "ExecutableProvenance",
     "FrozenComposition",
     "InvocationLock",
     "LockedDependency",
@@ -120,7 +128,6 @@ __all__ = [
     "WheelPluginSource",
     "WheelProductSource",
     "TaskHandlerEntry",
-    "build_registries",
     "capture_declared_tree",
     "capture_explicit_file",
     "load_snapshotted_entrypoint",

@@ -12,11 +12,19 @@ import graph_engine.runtime.workspace as workspace_runtime
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.composition import (
     CapabilityRegistry,
+    ExecutableBindingMode,
+    ExecutableKind,
+    ExecutableModuleProvenance,
+    ExecutableProvenance,
     SourceIdentity,
+    SourceKey,
     SourceKind,
+    SourceRole,
     SourceSnapshot,
-    build_registries,
 )
+from graph_engine.composition.models import AuthenticatedContribution
+from graph_engine.composition.provenance import StandardLoader
+from graph_engine.composition.registries import _build_registries
 from graph_engine.plugin_api import (
     CandidateWriteSet,
     PluginContribution,
@@ -102,7 +110,63 @@ def _registry(
         sources.append(_source("test.validators"))
         contributions.append(PluginContribution(commit_validators=validators))
         order.append("test.validators")
-    return build_registries(tuple(sources), tuple(contributions), tuple(order)).capabilities
+    authenticated: list[AuthenticatedContribution] = []
+    for source, contribution, owner_id in zip(sources, contributions, order, strict=True):
+        source_key = SourceKey(SourceRole.PLUGIN, owner_id)
+        proofs = [
+            *(
+                ExecutableProvenance.create(
+                    kind=ExecutableKind.TASK_HANDLER,
+                    registry_id=registry_id,
+                    owner_id=owner_id,
+                    source_key=source_key,
+                    source_digest=source.digest,
+                    module=ExecutableModuleProvenance(
+                        module_name=f"{owner_id.replace('.', '_')}.implementation",
+                        standard_loader=StandardLoader.SOURCE,
+                        standard_is_package=False,
+                        relative_origin="implementation.py",
+                        authenticated_locations=(),
+                        physical_sha256="0" * 64,
+                        source_digest=source.digest,
+                    ),
+                    callable_path=f"{owner_id}.implementation:Handler.execute",
+                    binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
+                )
+                for registry_id in contribution.task_handlers
+            ),
+            *(
+                ExecutableProvenance.create(
+                    kind=ExecutableKind.COMMIT_VALIDATOR,
+                    registry_id=registry_id,
+                    owner_id=owner_id,
+                    source_key=source_key,
+                    source_digest=source.digest,
+                    module=ExecutableModuleProvenance(
+                        module_name=f"{owner_id.replace('.', '_')}.implementation",
+                        standard_loader=StandardLoader.SOURCE,
+                        standard_is_package=False,
+                        relative_origin="implementation.py",
+                        authenticated_locations=(),
+                        physical_sha256="0" * 64,
+                        source_digest=source.digest,
+                    ),
+                    callable_path=f"{owner_id}.implementation:Validator.validate",
+                    binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
+                )
+                for registry_id in contribution.commit_validators
+            ),
+        ]
+        authenticated.append(
+            AuthenticatedContribution(
+                owner_id=owner_id,
+                source_key=source_key,
+                source_digest=source.digest,
+                contribution=contribution,
+                executables=tuple(sorted(proofs, key=lambda item: (item.registry_id, item.kind.value))),
+            )
+        )
+    return _build_registries(tuple(sources), tuple(authenticated), tuple(order)).capabilities
 
 
 class _InProcessTestHost:

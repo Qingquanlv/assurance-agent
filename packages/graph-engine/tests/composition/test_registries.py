@@ -12,6 +12,10 @@ from graph_engine.composition import (
     CapabilityRegistry,
     CommitValidatorEntry,
     EffectRegistry,
+    ExecutableBindingMode,
+    ExecutableKind,
+    ExecutableModuleProvenance,
+    ExecutableProvenance,
     RegistryConflict,
     RegistrySet,
     ResourceRegistry,
@@ -25,8 +29,10 @@ from graph_engine.composition import (
     SourceRegistry,
     SourceSnapshot,
     TaskHandlerEntry,
-    build_registries,
 )
+from graph_engine.composition.models import AuthenticatedContribution
+from graph_engine.composition.provenance import StandardLoader
+from graph_engine.composition.registries import _build_registries as _build_authenticated_registries
 from graph_engine.plugin_api import (
     CapabilityBindingContribution,
     CandidateWriteSet,
@@ -102,6 +108,94 @@ def _source(plugin_id: str, *, kind: SourceKind = SourceKind.CONFIG_TREE) -> Sou
             plugin_version="1.0.0",
         )
     return SourceSnapshot.from_identity(identity, ())
+
+
+def _source_key(snapshot: SourceSnapshot) -> SourceKey:
+    role = SourceRole.CONFIG if snapshot.identity.kind is SourceKind.CONFIG_TREE else SourceRole.PLUGIN
+    owner_id = snapshot.identity.plugin_id
+    assert owner_id is not None
+    return SourceKey(role, owner_id)
+
+
+def _proof(
+    snapshot: SourceSnapshot,
+    kind: ExecutableKind,
+    registry_id: str,
+) -> ExecutableProvenance:
+    source_key = _source_key(snapshot)
+    return ExecutableProvenance.create(
+        kind=kind,
+        registry_id=registry_id,
+        owner_id=source_key.owner_id,
+        source_key=source_key,
+        source_digest=snapshot.digest,
+        module=ExecutableModuleProvenance(
+            module_name=f"{source_key.owner_id.replace('.', '_')}.implementation",
+            standard_loader=StandardLoader.SOURCE,
+            standard_is_package=False,
+            relative_origin="implementation.py",
+            authenticated_locations=(),
+            physical_sha256="0" * 64,
+            source_digest=snapshot.digest,
+        ),
+        callable_path="implementation:Handler.slot",
+        binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
+    )
+
+
+def _authenticated(
+    snapshot: SourceSnapshot,
+    contribution: PluginContribution,
+) -> AuthenticatedContribution:
+    source_key = _source_key(snapshot)
+    if source_key.role is SourceRole.CONFIG and (
+        contribution.task_handlers or contribution.commit_validators or contribution.effects
+    ):
+        raise RegistryConflict("config source cannot contribute executable")
+    proofs = [
+        *(
+            _proof(snapshot, ExecutableKind.TASK_HANDLER, registry_id)
+            for registry_id in contribution.task_handlers
+        ),
+        *(
+            _proof(snapshot, ExecutableKind.COMMIT_VALIDATOR, registry_id)
+            for registry_id in contribution.commit_validators
+        ),
+        *(
+            _proof(snapshot, kind, registration.kind)
+            for registration in contribution.effects
+            for kind in (ExecutableKind.EFFECT_APPLY, ExecutableKind.EFFECT_RECONCILE)
+        ),
+    ]
+    return AuthenticatedContribution(
+        owner_id=source_key.owner_id,
+        source_key=source_key,
+        source_digest=snapshot.digest,
+        contribution=contribution,
+        executables=tuple(sorted(proofs, key=lambda item: (item.registry_id, item.kind.value))),
+    )
+
+
+def build_registries(
+    sources: tuple[SourceSnapshot, ...],
+    contributions: tuple[PluginContribution, ...],
+    dependency_order: tuple[str, ...],
+) -> RegistrySet:
+    by_owner = {_source_key(snapshot).owner_id: snapshot for snapshot in sources}
+    if set(by_owner) != set(dependency_order):
+        return _build_authenticated_registries(sources, (), dependency_order)
+    if len(contributions) != len(dependency_order):
+        return _build_authenticated_registries(sources, (), dependency_order)
+    try:
+        authenticated = tuple(
+            _authenticated(by_owner[owner_id], contribution)
+            for owner_id, contribution in zip(dependency_order, contributions, strict=True)
+        )
+    except ValueError as error:
+        if "config contribution" in str(error):
+            raise RegistryConflict("config source cannot contribute executable") from error
+        raise
+    return _build_authenticated_registries(sources, authenticated, dependency_order)
 
 
 def _runtime_contribution(handler: _Handler | None = None) -> PluginContribution:
@@ -189,8 +283,19 @@ def test_registry_builder_freezes_all_five_views() -> None:
 def test_public_registry_views_reject_inconsistent_entry_mappings() -> None:
     handler = _Handler()
     validator = _Validator()
-    handler_entry = TaskHandlerEntry("toy.runtime.execute", "toy.runtime", handler)
-    validator_entry = CommitValidatorEntry("toy.runtime.validate", "toy.runtime", validator)
+    source = _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN)
+    handler_entry = TaskHandlerEntry(
+        "toy.runtime.execute",
+        "toy.runtime",
+        handler,
+        _proof(source, ExecutableKind.TASK_HANDLER, "toy.runtime.execute"),
+    )
+    validator_entry = CommitValidatorEntry(
+        "toy.runtime.validate",
+        "toy.runtime",
+        validator,
+        _proof(source, ExecutableKind.COMMIT_VALIDATOR, "toy.runtime.validate"),
+    )
 
     with pytest.raises(ValueError, match="task handler view disagrees"):
         CapabilityRegistry(
@@ -203,7 +308,6 @@ def test_public_registry_views_reject_inconsistent_entry_mappings() -> None:
             bindings={},
         )
 
-    source = _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN)
     with pytest.raises(ValueError, match="source registry key disagrees"):
         SourceRegistry(
             {
@@ -245,6 +349,11 @@ def test_public_registry_rejects_value_equal_unselected_binding_projection() -> 
 
 
 def test_public_binding_entry_rejects_untrusted_handler() -> None:
+    provenance = _proof(
+        _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),
+        ExecutableKind.TASK_HANDLER,
+        "toy.runtime.execute",
+    )
     with pytest.raises(TypeError, match="engine-derived"):
         CapabilityBindingEntry(
             capability_id="toy.flow.run",
@@ -253,6 +362,7 @@ def test_public_binding_entry_rejects_untrusted_handler() -> None:
             data={"steps": ["one", "two"]},
             resource_ids=("toy.flow.prompt",),
             handler=_Handler(),
+            target_provenance=provenance,
         )
 
 
@@ -282,7 +392,29 @@ def test_registry_set_rejects_executable_owner_that_is_not_a_plugin_source() -> 
         (),
     )
     handler = _Handler()
-    handler_entry = TaskHandlerEntry("toy.product.execute", "toy.product", handler)
+    handler_entry = TaskHandlerEntry(
+        "toy.product.execute",
+        "toy.product",
+        handler,
+        ExecutableProvenance.create(
+            kind=ExecutableKind.TASK_HANDLER,
+            registry_id="toy.product.execute",
+            owner_id="toy.product",
+            source_key=SourceKey(SourceRole.PLUGIN, "toy.product"),
+            source_digest=product_snapshot.digest,
+            module=ExecutableModuleProvenance(
+                module_name="toy_product.implementation",
+                standard_loader=StandardLoader.SOURCE,
+                standard_is_package=False,
+                relative_origin="implementation.py",
+                authenticated_locations=(),
+                physical_sha256="0" * 64,
+                source_digest=product_snapshot.digest,
+            ),
+            callable_path="implementation:Handler.execute",
+            binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
+        ),
+    )
 
     with pytest.raises(ValueError, match="owner is not a plugin source"):
         RegistrySet(

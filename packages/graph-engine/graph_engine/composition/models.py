@@ -17,12 +17,14 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
+from graph_engine.composition.provenance import StandardLoader
 from graph_engine.plugin_api import (
     CommitValidator,
     DurableEffectHandler,
     EffectPolicy,
     FrozenModel,
     PluginDescriptor,
+    PluginContribution,
     ProviderSource,
     TaskContext,
     TaskHandler,
@@ -273,16 +275,240 @@ class SourceEntry:
             )
 
 
+class ExecutableKind(str, Enum):
+    TASK_HANDLER = "task_handler"
+    COMMIT_VALIDATOR = "commit_validator"
+    EFFECT_APPLY = "effect_apply"
+    EFFECT_RECONCILE = "effect_reconcile"
+
+    @property
+    def slot(self) -> str:
+        return {
+            ExecutableKind.TASK_HANDLER: "execute",
+            ExecutableKind.COMMIT_VALIDATOR: "validate",
+            ExecutableKind.EFFECT_APPLY: "apply",
+            ExecutableKind.EFFECT_RECONCILE: "reconcile",
+        }[self]
+
+
+class ExecutableBindingMode(str, Enum):
+    INSTANCE_METHOD = "instance_method"
+    CLASS_METHOD = "class_method"
+    STATIC_METHOD = "static_method"
+    MODULE_FUNCTION = "module_function"
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutableModuleProvenance:
+    """Stable, source-relative projection of the defining module's import proof."""
+
+    module_name: str
+    standard_loader: StandardLoader
+    standard_is_package: bool
+    relative_origin: str
+    authenticated_locations: tuple[str, ...]
+    physical_sha256: str
+    source_digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.module_name, str) or not self.module_name:
+            raise TypeError("executable module name must be non-empty text")
+        if not isinstance(self.standard_loader, StandardLoader):
+            raise TypeError("executable module loader must be a StandardLoader")
+        _validate_canonical_relative_path(self.relative_origin)
+        locations = tuple(self.authenticated_locations)
+        for location in locations:
+            _validate_canonical_relative_path(location)
+        if locations != tuple(sorted(set(locations))):
+            raise ValueError("executable module locations must have unique canonical order")
+        object.__setattr__(self, "authenticated_locations", locations)
+        _validate_sha256(self.physical_sha256, "executable physical digest")
+        _validate_sha256(self.source_digest, "executable source digest")
+
+    def projection(self) -> JSONValue:
+        return {
+            "module_name": self.module_name,
+            "standard_loader": self.standard_loader.value,
+            "standard_is_package": self.standard_is_package,
+            "relative_origin": self.relative_origin,
+            "authenticated_locations": list(self.authenticated_locations),
+            "physical_sha256": self.physical_sha256,
+            "source_digest": self.source_digest,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutableProvenance:
+    kind: ExecutableKind
+    registry_id: str
+    owner_id: str
+    source_key: SourceKey
+    source_digest: str
+    module: ExecutableModuleProvenance
+    module_digest: str
+    slot: str
+    callable_path: str
+    binding_mode: ExecutableBindingMode
+    digest: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, ExecutableKind):
+            raise TypeError("executable provenance kind must be an ExecutableKind")
+        _validate_owned_registry_id(self.registry_id, self.owner_id, "executable")
+        if self.source_key != SourceKey(SourceRole.PLUGIN, self.owner_id):
+            raise ValueError("executable provenance must name its owning selected plugin source")
+        if self.module.source_digest != self.source_digest:
+            raise ValueError("executable module provenance disagrees with its source digest")
+        if self.module_digest != canonical_digest(self.module.projection()):
+            raise ValueError("executable module digest does not authenticate its provenance")
+        if self.slot != self.kind.slot:
+            raise ValueError("executable slot disagrees with its kind")
+        if not isinstance(self.callable_path, str) or not self.callable_path:
+            raise ValueError("executable callable path must be non-empty text")
+        if not isinstance(self.binding_mode, ExecutableBindingMode):
+            raise TypeError("executable binding mode must be an ExecutableBindingMode")
+        _validate_sha256(self.source_digest, "executable source digest")
+        expected = canonical_digest(self.projection(include_digest=False))
+        if self.digest != expected:
+            raise ValueError("executable provenance digest does not authenticate its projection")
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        kind: ExecutableKind,
+        registry_id: str,
+        owner_id: str,
+        source_key: SourceKey,
+        source_digest: str,
+        module: ExecutableModuleProvenance,
+        callable_path: str,
+        binding_mode: ExecutableBindingMode,
+    ) -> ExecutableProvenance:
+        module_digest = canonical_digest(module.projection())
+        projection: JSONValue = {
+            "kind": kind.value,
+            "registry_id": registry_id,
+            "owner_id": owner_id,
+            "source_key": {"role": source_key.role.value, "owner_id": source_key.owner_id},
+            "source_digest": source_digest,
+            "module": module.projection(),
+            "module_digest": module_digest,
+            "slot": kind.slot,
+            "callable_path": callable_path,
+            "binding_mode": binding_mode.value,
+        }
+        return cls(
+            kind=kind,
+            registry_id=registry_id,
+            owner_id=owner_id,
+            source_key=source_key,
+            source_digest=source_digest,
+            module=module,
+            module_digest=module_digest,
+            slot=kind.slot,
+            callable_path=callable_path,
+            binding_mode=binding_mode,
+            digest=canonical_digest(projection),
+        )
+
+    def projection(self, *, include_digest: bool = True) -> JSONValue:
+        projection: dict[str, JSONValue] = {
+            "kind": self.kind.value,
+            "registry_id": self.registry_id,
+            "owner_id": self.owner_id,
+            "source_key": {
+                "role": self.source_key.role.value,
+                "owner_id": self.source_key.owner_id,
+            },
+            "source_digest": self.source_digest,
+            "module": self.module.projection(),
+            "module_digest": self.module_digest,
+            "slot": self.slot,
+            "callable_path": self.callable_path,
+            "binding_mode": self.binding_mode.value,
+        }
+        if include_digest:
+            projection["digest"] = self.digest
+        return projection
+
+
+@dataclass(frozen=True, slots=True)
+class AuthenticatedContribution:
+    """Frozen contribution paired with exact executable implementation proofs."""
+
+    owner_id: str
+    source_key: SourceKey
+    source_digest: str
+    contribution: PluginContribution
+    executables: tuple[ExecutableProvenance, ...]
+
+    def __post_init__(self) -> None:
+        _validate_registry_id(self.owner_id, "authenticated contribution owner id")
+        if self.source_key.owner_id != self.owner_id or self.source_key.role not in {
+            SourceRole.PLUGIN,
+            SourceRole.CONFIG,
+        }:
+            raise ValueError("authenticated contribution source key disagrees with its owner")
+        _validate_sha256(self.source_digest, "authenticated contribution source digest")
+        if type(self.contribution) is not PluginContribution:
+            raise TypeError("authenticated contribution requires an exact PluginContribution")
+        values = tuple(self.executables)
+        if any(not isinstance(item, ExecutableProvenance) for item in values):
+            raise TypeError("authenticated contribution executable proofs are closed")
+        keys = tuple((item.kind, item.registry_id) for item in values)
+        if keys != tuple(sorted(keys, key=lambda item: (item[1], item[0].value))):
+            raise ValueError("authenticated executable proofs require canonical order")
+        if len(keys) != len(set(keys)):
+            raise ValueError("authenticated executable proofs must be unique")
+        expected = {
+            *((ExecutableKind.TASK_HANDLER, entry_id) for entry_id in self.contribution.task_handlers),
+            *(
+                (ExecutableKind.COMMIT_VALIDATOR, entry_id)
+                for entry_id in self.contribution.commit_validators
+            ),
+            *((ExecutableKind.EFFECT_APPLY, entry.kind) for entry in self.contribution.effects),
+            *((ExecutableKind.EFFECT_RECONCILE, entry.kind) for entry in self.contribution.effects),
+        }
+        if set(keys) != expected:
+            raise ValueError("authenticated executable proofs are incomplete or contain extras")
+        for item in values:
+            if (
+                item.owner_id != self.owner_id
+                or item.source_key != self.source_key
+                or item.source_digest != self.source_digest
+            ):
+                raise ValueError("authenticated executable proof disagrees with contribution source")
+        if self.source_key.role is SourceRole.CONFIG and values:
+            raise ValueError("config contribution cannot retain executable provenance")
+        object.__setattr__(self, "executables", values)
+
+    def executable(self, kind: ExecutableKind, registry_id: str) -> ExecutableProvenance:
+        try:
+            return next(
+                item for item in self.executables if item.kind is kind and item.registry_id == registry_id
+            )
+        except StopIteration as error:  # pragma: no cover - constructor proves completeness.
+            raise KeyError((kind, registry_id)) from error
+
+
 @dataclass(frozen=True, slots=True)
 class TaskHandlerEntry:
     capability_id: str
     owner_id: str
     handler: TaskHandler
+    provenance: ExecutableProvenance
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.capability_id, self.owner_id, "task handler")
         if not callable(getattr(self.handler, "execute", None)):
             raise TypeError("task handler entry must provide execute")
+        _validate_entry_provenance(
+            self.provenance,
+            ExecutableKind.TASK_HANDLER,
+            self.capability_id,
+            self.owner_id,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,11 +516,18 @@ class CommitValidatorEntry:
     capability_id: str
     owner_id: str
     validator: CommitValidator
+    provenance: ExecutableProvenance
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.capability_id, self.owner_id, "commit validator")
         if not callable(getattr(self.validator, "validate", None)):
             raise TypeError("commit validator entry must provide validate")
+        _validate_entry_provenance(
+            self.provenance,
+            ExecutableKind.COMMIT_VALIDATOR,
+            self.capability_id,
+            self.owner_id,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,6 +567,7 @@ class CapabilityBindingEntry:
     data: object
     resource_ids: tuple[str, ...]
     handler: TaskHandler
+    target_provenance: ExecutableProvenance
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.capability_id, self.owner_id, "binding")
@@ -358,6 +592,12 @@ class CapabilityBindingEntry:
             or self.handler.resource_ids != resource_ids
         ):
             raise ValueError("bound adapter disagrees with binding entry")
+        _validate_entry_provenance(
+            self.target_provenance,
+            ExecutableKind.TASK_HANDLER,
+            self.target_capability_id,
+            self.target_provenance.owner_id,
+        )
 
     @classmethod
     def _from_target(
@@ -369,6 +609,7 @@ class CapabilityBindingEntry:
         data: object,
         resource_ids: tuple[str, ...],
         target: TaskHandler,
+        target_provenance: ExecutableProvenance,
     ) -> CapabilityBindingEntry:
         handler = _BoundTaskHandler(
             alias_id=capability_id,
@@ -384,6 +625,7 @@ class CapabilityBindingEntry:
             data=handler.data,
             resource_ids=handler.resource_ids,
             handler=handler,
+            target_provenance=target_provenance,
         )
 
 
@@ -491,6 +733,8 @@ class EffectEntry:
     receipt_schema_id: str
     handler: DurableEffectHandler
     policy: EffectPolicy
+    apply_provenance: ExecutableProvenance
+    reconcile_provenance: ExecutableProvenance
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.kind, self.owner_id, "effect")
@@ -502,6 +746,34 @@ class EffectEntry:
             raise TypeError("effect entry handler must provide apply and reconcile")
         if not isinstance(self.policy, EffectPolicy):
             raise TypeError("effect entry policy must be an EffectPolicy")
+        _validate_entry_provenance(
+            self.apply_provenance,
+            ExecutableKind.EFFECT_APPLY,
+            self.kind,
+            self.owner_id,
+        )
+        _validate_entry_provenance(
+            self.reconcile_provenance,
+            ExecutableKind.EFFECT_RECONCILE,
+            self.kind,
+            self.owner_id,
+        )
+
+
+def _validate_entry_provenance(
+    provenance: ExecutableProvenance,
+    kind: ExecutableKind,
+    registry_id: str,
+    owner_id: str,
+) -> None:
+    if not isinstance(provenance, ExecutableProvenance):
+        raise TypeError("executable registry entry requires typed implementation provenance")
+    if (
+        provenance.kind is not kind
+        or provenance.registry_id != registry_id
+        or provenance.owner_id != owner_id
+    ):
+        raise ValueError("executable provenance disagrees with its registry entry")
 
 
 def _validate_registry_id(value: object, kind: str) -> str:
@@ -564,6 +836,18 @@ def _validate_content_digest(content: bytes, sha256: object, kind: str) -> None:
         raise TypeError(f"{kind} sha256 must be text")
     if hashlib.sha256(content).hexdigest() != sha256:
         raise ValueError(f"{kind} digest does not authenticate its content")
+
+
+def _validate_sha256(value: object, kind: str) -> str:
+    if not isinstance(value, str) or len(value) != 64:
+        raise ValueError(f"{kind} must be a lowercase SHA-256 hex digest")
+    try:
+        parsed = bytes.fromhex(value)
+    except ValueError as error:
+        raise ValueError(f"{kind} must be a lowercase SHA-256 hex digest") from error
+    if len(parsed) != 32 or value != value.lower():
+        raise ValueError(f"{kind} must be a lowercase SHA-256 hex digest")
+    return value
 
 
 def _immutable_mapping(values: Mapping[str, _Entry]) -> Mapping[str, _Entry]:
@@ -766,7 +1050,24 @@ class RegistrySet:
                 TaskHandlerEntry | CommitValidatorEntry | EffectEntry,
             ):
                 raise ValueError(f"config source cannot own executable registry entry: {entry.owner_id}")
+            provenances: tuple[ExecutableProvenance, ...]
+            if isinstance(entry, TaskHandlerEntry | CommitValidatorEntry):
+                provenances = (entry.provenance,)
+            elif isinstance(entry, EffectEntry):
+                provenances = (entry.apply_provenance, entry.reconcile_provenance)
+            else:
+                provenances = ()
+            for provenance in provenances:
+                selected = self.sources.entries.get(provenance.source_key)
+                if selected is None or selected.snapshot.digest != provenance.source_digest:
+                    raise ValueError(
+                        "executable provenance disagrees with the selected plugin source: "
+                        f"{provenance.registry_id}"
+                    )
         for binding in self.capabilities.bindings.values():
+            target = self.capabilities.entries.get(binding.target_capability_id)
+            if not isinstance(target, TaskHandlerEntry) or binding.target_provenance != target.provenance:
+                raise ValueError("binding target provenance disagrees with target capability")
             for resource_id in binding.resource_ids:
                 if resource_id not in self.resources.entries:
                     raise ValueError(f"binding resource is not registered: {resource_id}")
@@ -930,6 +1231,7 @@ class FrozenComposition:
 
     def __post_init__(self) -> None:
         from graph_engine.composition.lock import InvocationLock, authenticate_composition_lock
+        from graph_engine.composition.sources import AuthenticatedProviderBinding
         from graph_engine.graph.compiler import CompiledWorkflow
 
         if not isinstance(self.manifest, ProductManifest):
@@ -996,6 +1298,39 @@ class FrozenComposition:
             source = self.registries.sources.entries.get(SourceKey(role, plugin_id))
             if source is None or source.snapshot.digest != locked_plugins[plugin_id].source.digest:
                 raise ValueError("composition plugin source disagrees with invocation lock")
+
+        executable_entries = (
+            *(
+                (entry.owner_id, entry.handler, entry.provenance)
+                for entry in self.registries.capabilities.entries.values()
+                if isinstance(entry, TaskHandlerEntry)
+            ),
+            *(
+                (entry.owner_id, entry.validator, entry.provenance)
+                for entry in self.registries.capabilities.entries.values()
+                if isinstance(entry, CommitValidatorEntry)
+            ),
+            *(
+                (entry.owner_id, entry.handler, entry.apply_provenance)
+                for entry in self.registries.effects.entries.values()
+            ),
+            *(
+                (entry.owner_id, entry.handler, entry.reconcile_provenance)
+                for entry in self.registries.effects.entries.values()
+            ),
+        )
+        for owner_id, executable, provenance in executable_entries:
+            provider = providers.get(owner_id)
+            if not isinstance(provider, AuthenticatedProviderBinding):
+                raise ValueError(
+                    f"executable registry owner lacks an authenticated provider binding: {owner_id}"
+                )
+            try:
+                provider.authenticate_executable(executable, provenance)
+            except Exception as error:
+                raise ValueError(
+                    f"executable registry provenance is not currently authenticated: {provenance.registry_id}"
+                ) from error
 
     @classmethod
     def freeze(

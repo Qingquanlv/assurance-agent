@@ -6,11 +6,13 @@ import hashlib
 from types import MappingProxyType
 
 from graph_engine.composition.models import (
+    AuthenticatedContribution,
     CapabilityBindingEntry,
     CapabilityRegistry,
     CommitValidatorEntry,
     EffectEntry,
     EffectRegistry,
+    ExecutableKind,
     RegistrySet,
     ResourceEntry,
     ResourceRegistry,
@@ -49,11 +51,12 @@ class _OwnedContribution:
     owner_id: str
     source: SourceEntry
     contribution: PluginContribution
+    authenticated: AuthenticatedContribution
 
 
-def build_registries(
+def _build_registries(
     sources: tuple[SourceSnapshot, ...],
-    contributions: tuple[PluginContribution, ...],
+    contributions: tuple[AuthenticatedContribution, ...],
     dependency_order: tuple[str, ...],
 ) -> RegistrySet:
     """Build the five closed, canonical, immutable registry views."""
@@ -143,7 +146,7 @@ def _plugin_source_id(snapshot: SourceSnapshot) -> str | None:
 
 
 def _pair_contributions(
-    contributions: tuple[PluginContribution, ...],
+    contributions: tuple[AuthenticatedContribution, ...],
     dependency_order: tuple[str, ...],
     plugin_sources: Mapping[str, SourceEntry],
 ) -> tuple[_OwnedContribution, ...]:
@@ -153,10 +156,17 @@ def _pair_contributions(
             f"contribution count {len(frozen)} does not match dependency order count {len(dependency_order)}"
         )
     owned: list[_OwnedContribution] = []
-    for owner_id, contribution in zip(dependency_order, frozen, strict=True):
-        if type(contribution) is not PluginContribution:
-            raise RegistryConflict("unsupported contribution type; registry kinds are closed")
-        owned.append(_OwnedContribution(owner_id, plugin_sources[owner_id], contribution))
+    for owner_id, authenticated in zip(dependency_order, frozen, strict=True):
+        if not isinstance(authenticated, AuthenticatedContribution):
+            raise RegistryConflict("registry builder accepts only authenticated contributions")
+        source = plugin_sources[owner_id]
+        if (
+            authenticated.owner_id != owner_id
+            or authenticated.source_key != source.source_key
+            or authenticated.source_digest != source.snapshot.digest
+        ):
+            raise RegistryConflict(f"authenticated contribution source disagrees: {owner_id}")
+        owned.append(_OwnedContribution(owner_id, source, authenticated.contribution, authenticated))
     return tuple(owned)
 
 
@@ -219,6 +229,7 @@ def _build_capability_registry(
 ) -> CapabilityRegistry:
     entries: dict[str, TaskHandlerEntry | CommitValidatorEntry | CapabilityBindingEntry] = {}
     task_handlers: dict[str, TaskHandler] = {}
+    task_handler_entries: dict[str, TaskHandlerEntry] = {}
     validators: dict[str, CommitValidator] = {}
     binding_contributions: dict[str, tuple[str, CapabilityBindingContribution]] = {}
     reservations: dict[str, str] = {}
@@ -229,15 +240,26 @@ def _build_capability_registry(
             _reserve_capability(reservations, capability_id, "task handler")
             if not callable(getattr(handler, "execute", None)):
                 raise RegistryConflict(f"task handler has no execute method: {capability_id}")
-            entry = TaskHandlerEntry(capability_id, owned.owner_id, handler)
+            entry = TaskHandlerEntry(
+                capability_id,
+                owned.owner_id,
+                handler,
+                owned.authenticated.executable(ExecutableKind.TASK_HANDLER, capability_id),
+            )
             entries[capability_id] = entry
             task_handlers[capability_id] = handler
+            task_handler_entries[capability_id] = entry
         for capability_id, validator in owned.contribution.commit_validators.items():
             _owned_id(capability_id, owned.owner_id, "commit validator")
             _reserve_capability(reservations, capability_id, "commit validator")
             if not callable(getattr(validator, "validate", None)):
                 raise RegistryConflict(f"commit validator has no validate method: {capability_id}")
-            entry = CommitValidatorEntry(capability_id, owned.owner_id, validator)
+            entry = CommitValidatorEntry(
+                capability_id,
+                owned.owner_id,
+                validator,
+                owned.authenticated.executable(ExecutableKind.COMMIT_VALIDATOR, capability_id),
+            )
             entries[capability_id] = entry
             validators[capability_id] = validator
         for binding in owned.contribution.bindings:
@@ -254,7 +276,8 @@ def _build_capability_registry(
     for capability_id in sorted(binding_contributions):
         owner_id, binding = binding_contributions[capability_id]
         target = task_handlers.get(binding.target_capability_id)
-        if target is None:
+        target_entry = task_handler_entries.get(binding.target_capability_id)
+        if target is None or target_entry is None:
             raise RegistryConflict(
                 f"unknown target capability for binding {capability_id}: {binding.target_capability_id}"
             )
@@ -265,6 +288,7 @@ def _build_capability_registry(
             data=_freeze_binding_data(binding.data),
             resource_ids=tuple(binding.resource_ids),
             target=target,
+            target_provenance=target_entry.provenance,
         )
         entries[capability_id] = entry
         bindings[capability_id] = entry
@@ -349,6 +373,14 @@ def _build_effect_registry(
                 receipt_schema_id=registration.receipt_schema_id,
                 handler=registration.handler,
                 policy=registration.policy,
+                apply_provenance=owned.authenticated.executable(
+                    ExecutableKind.EFFECT_APPLY,
+                    registration.kind,
+                ),
+                reconcile_provenance=owned.authenticated.executable(
+                    ExecutableKind.EFFECT_RECONCILE,
+                    registration.kind,
+                ),
             )
     return EffectRegistry(entries)
 
@@ -411,4 +443,4 @@ def _duplicates(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(sorted({value for value in values if values.count(value) > 1}))
 
 
-__all__ = ["RegistryConflict", "build_registries"]
+__all__ = ["RegistryConflict"]

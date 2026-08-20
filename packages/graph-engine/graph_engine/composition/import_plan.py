@@ -21,6 +21,7 @@ from types import ModuleType
 from typing import Any, cast
 
 from graph_engine.composition.models import SourceSnapshot
+from graph_engine.composition.provenance import ModuleProvenance, StandardLoader
 from graph_engine.composition.source_fs import SourceSnapshotError
 from graph_engine.plugin_api import ProviderSource
 
@@ -32,35 +33,6 @@ class ModuleRole(str, Enum):
     ENTRYPOINT = "entrypoint"
     PROVIDER = "provider"
     QUARANTINE = "quarantine"
-
-
-class StandardLoader(str, Enum):
-    SOURCE = "source"
-    NAMESPACE = "namespace"
-    EXTENSION = "extension"
-
-
-@dataclass(frozen=True, slots=True)
-class ModuleProvenance:
-    """One canonical source/import proof consumed throughout a binding lifetime."""
-
-    standard_loader: StandardLoader
-    standard_is_package: bool
-    canonical_origin: Path | None
-    canonical_locations: tuple[Path, ...]
-    authenticated_locations: tuple[Path, ...]
-    physical_sha256: str | None
-    source_digest: str
-
-    def authenticates_same_module(self, other: ModuleProvenance) -> bool:
-        """Compare physical standard-import authority across selected source identities."""
-        return (
-            self.standard_loader is other.standard_loader
-            and self.standard_is_package == other.standard_is_package
-            and self.canonical_origin == other.canonical_origin
-            and self.canonical_locations == other.canonical_locations
-            and self.physical_sha256 == other.physical_sha256
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +62,14 @@ class ImportProvenancePlan:
 
 ModuleAuthority = Callable[[ModuleImportPlan, ModuleType], bool]
 _MISSING = object()
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 class _ModuleOutsideAuthenticatedSource(SourceSnapshotError):
@@ -265,6 +245,23 @@ class ImportPlanSession(AbstractContextManager["ImportPlanSession"]):
             or plan.entrypoint_value != self._source.entrypoint_value
         ):
             raise SourceSnapshotError("import plan disagrees with authenticated provider source")
+        selected_roots = tuple(
+            (self._snapshot.identity.root / import_root).resolve()
+            for import_root in self._source.import_roots
+        )
+        for item in plan.modules:
+            provenance = item.provenance
+            if provenance.source_digest != plan.source_digest:
+                raise SourceSnapshotError(
+                    f"planned module provenance has a different source digest: {item.module_name}"
+                )
+            if any(
+                not any(_is_relative_to(location, root) for root in selected_roots)
+                for location in provenance.authenticated_locations
+            ):
+                raise SourceSnapshotError(
+                    f"authenticated module location is outside the selected import roots: {item.module_name}"
+                )
 
 
 def build_import_provenance_plan(

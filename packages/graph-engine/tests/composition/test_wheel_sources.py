@@ -1960,6 +1960,53 @@ def test_import_rollback_failure_is_typed_and_preserves_the_primary_error(
                 sys.modules.pop(module_name, None)
 
 
+def test_module_rollback_restores_a_stored_none_sentinel() -> None:
+    module_name = "round5_none_sentinel"
+    sys.modules[module_name] = None
+    before = dict(sys.modules)
+    del sys.modules[module_name]
+    try:
+        wheel_sources._restore_modules(before)  # type: ignore[arg-type]
+        assert module_name in sys.modules
+        assert sys.modules[module_name] is None
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+def test_import_transaction_none_sentinel_restores_parent_child_attribute() -> None:
+    parent_name = "round5_none_parent"
+    child_name = f"{parent_name}.child"
+    parent = ModuleType(parent_name)
+    parent.__path__ = []  # type: ignore[attr-defined]
+    prior_child_attribute = object()
+    parent.child = prior_child_attribute  # type: ignore[attr-defined]
+    sys.modules[parent_name] = parent
+    sys.modules[child_name] = None  # type: ignore[assignment]
+    before = dict(sys.modules)
+    attributes = wheel_sources._capture_parent_attributes(before)
+    sys.modules.pop(child_name)
+    parent.child = ModuleType(child_name)  # type: ignore[attr-defined]
+    plan = wheel_sources.ImportProvenancePlan(
+        source_digest="0" * 64,
+        entrypoint_value="round5_none_parent:provider",
+        modules=(),
+    )
+
+    try:
+        wheel_sources._restore_import_transaction(
+            before,
+            attributes,
+            plan,
+            RuntimeError("primary"),
+        )
+        assert child_name in sys.modules
+        assert sys.modules[child_name] is None
+        assert parent.child is prior_child_attribute  # type: ignore[attr-defined]
+    finally:
+        sys.modules.pop(child_name, None)
+        sys.modules.pop(parent_name, None)
+
+
 def test_platform_cache_rejects_owned_module_from_a_different_source_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

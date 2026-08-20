@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import metadata
-from pathlib import Path
 import re
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol, cast
 
 from packaging.specifiers import SpecifierSet
@@ -14,6 +14,7 @@ from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.models import PluginRequirement, ProductManifest
 from graph_engine.errors import GraphEngineError
+from graph_engine.frozen_json import freeze_json
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
@@ -21,6 +22,10 @@ from graph_engine.plugin_api import (
     PluginDescriptor,
     PluginProvider,
     RegistryPorts,
+    TaskContext,
+    TaskHandler,
+    TaskOutcome,
+    TaskRequest,
     validate_contribution,
 )
 
@@ -58,6 +63,31 @@ class _SelectedPluginProvider:
 
     def contribute(self, ports: RegistryPorts) -> PluginContribution:
         return self.provider.contribute(ports)
+
+
+@dataclass(frozen=True, slots=True)
+class _LegacyBoundTaskHandler:
+    alias_id: str
+    target_capability_id: str
+    data: object
+    resource_ids: tuple[str, ...]
+    target: TaskHandler
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        bound = request.model_copy(
+            update={
+                "target_capability_id": self.target_capability_id,
+                "binding_data": self.data,
+                "resource_ids": self.resource_ids,
+            }
+        )
+        return await self.target.execute(bound, context)
+
+
+@dataclass(frozen=True, slots=True)
+class _LegacyCapabilityView:
+    task_handlers: Mapping[str, TaskHandler]
+    commit_validators: Mapping[str, object]
 
 
 def _select_plugin(
@@ -135,42 +165,41 @@ def _assemble_selected_contributions(
 ) -> CapabilityRegistry:
     """Temporary Phase 1 product bridge; Task 8 removes this resolver."""
 
-    from graph_engine.composition.models import SourceIdentity, SourceKind, SourceSnapshot
-    from graph_engine.composition.registries import build_registries
-
     ports = RegistryPorts(ENGINE_API_VERSION)
-    contributions = []
-    sources = []
-    order = []
+    task_handlers: dict[str, TaskHandler] = {}
+    commit_validators: dict[str, object] = {}
+    pending_bindings = []
     for item in selected:
         descriptor = item.selected_descriptor
         contribution = item.contribute(ports)
         validate_contribution(descriptor, contribution)
-        contributions.append(contribution)
-        order.append(descriptor.plugin_id)
-        sources.append(
-            SourceSnapshot.from_identity(
-                SourceIdentity(
-                    kind=SourceKind.WHEEL_PLUGIN,
-                    root=Path(f"/phase-one/{descriptor.plugin_id}"),
-                    distribution=descriptor.plugin_id.replace(".", "-"),
-                    version=descriptor.plugin_version,
-                    entrypoint_group="graph_engine.plugins",
-                    entrypoint_name=descriptor.plugin_id,
-                    entrypoint_value=(
-                        descriptor.source.entrypoint_value
-                        if descriptor.source is not None
-                        else f"{descriptor.plugin_id.replace('.', '_')}:provider"
-                    ),
-                    declaration_path=f"{descriptor.plugin_id.replace('.', '_')}/plugin-declaration.json",
-                    import_roots=(descriptor.source.import_roots if descriptor.source is not None else ("",)),
-                    plugin_id=descriptor.plugin_id,
-                    plugin_version=descriptor.plugin_version,
-                ),
-                (),
-            )
+        for capability_id, handler in contribution.task_handlers.items():
+            if capability_id in task_handlers or capability_id in commit_validators:
+                raise ProductResolutionError(f"duplicate legacy capability id: {capability_id}")
+            task_handlers[capability_id] = handler
+        for capability_id, validator in contribution.commit_validators.items():
+            if capability_id in task_handlers or capability_id in commit_validators:
+                raise ProductResolutionError(f"duplicate legacy capability id: {capability_id}")
+            commit_validators[capability_id] = validator
+        pending_bindings.extend(contribution.bindings)
+    for binding in pending_bindings:
+        if binding.capability_id in task_handlers or binding.capability_id in commit_validators:
+            raise ProductResolutionError(f"duplicate legacy capability id: {binding.capability_id}")
+        target = task_handlers.get(binding.target_capability_id)
+        if target is None:
+            raise ProductResolutionError(f"unknown legacy binding target: {binding.target_capability_id}")
+        task_handlers[binding.capability_id] = _LegacyBoundTaskHandler(
+            alias_id=binding.capability_id,
+            target_capability_id=binding.target_capability_id,
+            data=freeze_json(binding.data),
+            resource_ids=tuple(binding.resource_ids),
+            target=target,
         )
-    return build_registries(tuple(sources), tuple(contributions), tuple(order)).capabilities
+    legacy = _LegacyCapabilityView(
+        task_handlers=MappingProxyType(dict(sorted(task_handlers.items()))),
+        commit_validators=MappingProxyType(dict(sorted(commit_validators.items()))),
+    )
+    return cast("CapabilityRegistry", legacy)
 
 
 def resolve_product(

@@ -480,11 +480,6 @@ def build_invocation_lock(
 
 
 def compute_registry_projections(registries: RegistrySet) -> RegistryProjections:
-    source_digest_by_owner = {
-        source_key.owner_id: entry.snapshot.digest
-        for source_key, entry in registries.sources.entries.items()
-        if source_key.role in {SourceRole.PLUGIN, SourceRole.CONFIG}
-    }
     sources: list[JSONValue] = []
     for source_key, entry in registries.sources.entries.items():
         source = _locked_source(entry.snapshot)
@@ -508,12 +503,15 @@ def compute_registry_projections(registries: RegistrySet) -> RegistryProjections
         base: dict[str, JSONValue] = {
             "capability_id": capability_id,
             "owner_id": entry.owner_id,
-            "implementation_digest": source_digest_by_owner[entry.owner_id],
         }
         if isinstance(entry, TaskHandlerEntry):
             base["kind"] = "task_handler"
+            base["implementation"] = entry.provenance.projection()
+            base["implementation_digest"] = entry.provenance.digest
         elif isinstance(entry, CommitValidatorEntry):
             base["kind"] = "commit_validator"
+            base["implementation"] = entry.provenance.projection()
+            base["implementation_digest"] = entry.provenance.digest
         elif isinstance(entry, CapabilityBindingEntry):
             base.update(
                 {
@@ -521,6 +519,8 @@ def compute_registry_projections(registries: RegistrySet) -> RegistryProjections
                     "target_capability_id": entry.target_capability_id,
                     "data": cast(JSONValue, thaw_json(entry.data)),
                     "resource_ids": list(entry.resource_ids),
+                    "target_implementation": entry.target_provenance.projection(),
+                    "implementation_digest": entry.target_provenance.digest,
                 }
             )
         else:  # pragma: no cover - capability registry is a closed authenticated union.
@@ -552,7 +552,10 @@ def compute_registry_projections(registries: RegistrySet) -> RegistryProjections
             "owner_id": entry.owner_id,
             "intent_schema_id": entry.intent_schema_id,
             "receipt_schema_id": entry.receipt_schema_id,
-            "implementation_digest": source_digest_by_owner[entry.owner_id],
+            "apply_implementation": entry.apply_provenance.projection(),
+            "apply_implementation_digest": entry.apply_provenance.digest,
+            "reconcile_implementation": entry.reconcile_provenance.projection(),
+            "reconcile_implementation_digest": entry.reconcile_provenance.digest,
             "policy": {
                 "max_attempts": entry.policy.max_attempts,
                 "timeout_seconds": entry.policy.timeout_seconds,

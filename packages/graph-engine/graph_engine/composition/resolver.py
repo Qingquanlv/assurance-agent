@@ -6,7 +6,7 @@ from importlib import metadata
 import os
 from pathlib import Path
 import tomllib
-from typing import Annotated, Literal, TypeAlias, cast
+from typing import Annotated, Literal, Protocol, TypeAlias, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
@@ -24,6 +24,7 @@ from graph_engine.composition.declarative import (
 from graph_engine.composition.dependencies import resolve_dependency_order
 from graph_engine.composition.lock import build_invocation_lock
 from graph_engine.composition.models import (
+    AuthenticatedContribution,
     FrozenComposition,
     PluginRequirement,
     ProductManifest,
@@ -31,9 +32,11 @@ from graph_engine.composition.models import (
     SourceFile,
     SourceIdentity,
     SourceKind,
+    SourceKey,
+    SourceRole,
     SourceSnapshot,
 )
-from graph_engine.composition.registries import build_registries
+from graph_engine.composition.registries import _build_registries
 from graph_engine.composition.source_fs import (
     DeclaredTreePolicy,
     SourceSnapshotError,
@@ -60,9 +63,7 @@ from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.graph.schema import parse_workflow
 from graph_engine.plugin_api import (
     FrozenModel,
-    PluginContribution,
     PluginDescriptor,
-    PluginProvider,
     ProviderSource,
     RegistryPorts,
     validate_contribution,
@@ -129,6 +130,10 @@ class _LoadedPlugins:
     captures: Mapping[str, _PluginCapture]
 
 
+class _DescriptorProvider(Protocol):
+    def descriptor(self) -> PluginDescriptor: ...
+
+
 class RegistryPlatform:
     """Resolve one explicit request into a closed, immutable composition."""
 
@@ -170,7 +175,7 @@ class RegistryPlatform:
         contributions = self._load_contributions(loaded, dependency_order)
 
         # 9-10. Build exactly five registries; builders close aliases and references.
-        registries = build_registries(
+        registries = _build_registries(
             sources=(
                 captured.engine,
                 captured.product,
@@ -417,27 +422,35 @@ class RegistryPlatform:
         self,
         loaded: _LoadedPlugins,
         dependency_order: tuple[str, ...],
-    ) -> tuple[PluginContribution, ...]:
+    ) -> tuple[AuthenticatedContribution, ...]:
         ports = RegistryPorts(ENGINE_API_VERSION)
-        contributions: list[PluginContribution] = []
+        contributions: list[AuthenticatedContribution] = []
         for plugin_id in dependency_order:
             descriptor = loaded.descriptors[plugin_id]
             declarative = loaded.declarative.get(plugin_id)
             if declarative is not None:
-                contribution = declarative.contribution
+                raw_contribution = declarative.contribution
+                snapshot = loaded.captures[plugin_id].snapshot
+                contribution = AuthenticatedContribution(
+                    owner_id=plugin_id,
+                    source_key=SourceKey(SourceRole.CONFIG, plugin_id),
+                    source_digest=snapshot.digest,
+                    contribution=raw_contribution,
+                    executables=(),
+                )
             else:
                 binding = loaded.providers[plugin_id]
                 if _call_plugin_descriptor(binding, plugin_id) != descriptor:
                     raise ResolutionError(f"plugin provider descriptor drifted: {plugin_id}")
                 try:
-                    contribution = binding.contribute(ports)
+                    contribution = binding.authenticated_contribute(ports)
                 except Exception as error:
                     raise ResolutionError(f"plugin contribution failed: {plugin_id}") from error
                 if _call_plugin_descriptor(binding, plugin_id) != descriptor:
                     raise ResolutionError(f"plugin provider descriptor drifted: {plugin_id}")
-            if type(contribution) is not PluginContribution:
+            if not isinstance(contribution, AuthenticatedContribution):
                 raise ResolutionError(f"plugin returned an unsupported contribution: {plugin_id}")
-            validate_contribution(descriptor, contribution)
+            validate_contribution(descriptor, contribution.contribution)
             contributions.append(contribution)
         return tuple(contributions)
 
@@ -685,7 +698,7 @@ def _call_product_manifest(provider: object) -> object:
         raise ResolutionError("product provider manifest failed") from error
 
 
-def _call_plugin_descriptor(provider: PluginProvider, plugin_id: str) -> PluginDescriptor:
+def _call_plugin_descriptor(provider: _DescriptorProvider, plugin_id: str) -> PluginDescriptor:
     try:
         descriptor = provider.descriptor()
     except Exception as error:
