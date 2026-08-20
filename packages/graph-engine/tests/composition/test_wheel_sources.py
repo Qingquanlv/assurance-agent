@@ -4,13 +4,17 @@ import base64
 import csv
 import hashlib
 from importlib import metadata
+import os
 from pathlib import Path
+import sys
+from types import ModuleType
 
 import pytest
 
 import graph_engine.composition.sources as wheel_sources
 from graph_engine.composition import (
     EditableWheelPluginSource,
+    SourceIdentity,
     SourceKind,
     SourceSnapshotError,
     WheelPluginSource,
@@ -84,6 +88,20 @@ def _write_record(root: Path, dist_info: Path, relative_paths: tuple[str, ...]) 
         writer.writerow((record_path.relative_to(root).as_posix(), "", ""))
 
 
+def _record_path(distribution: metadata.Distribution) -> Path:
+    return Path(distribution.locate_file("toy_runtime-1.2.3.dist-info/RECORD"))
+
+
+def _record_rows(distribution: metadata.Distribution) -> list[list[str]]:
+    with _record_path(distribution).open(encoding="utf-8", newline="") as stream:
+        return list(csv.reader(stream))
+
+
+def _replace_record_rows(distribution: metadata.Distribution, rows: list[list[str]]) -> None:
+    with _record_path(distribution).open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerows(rows)
+
+
 def _installed_distribution(
     tmp_path: Path,
     *,
@@ -133,6 +151,24 @@ def _select_distribution(monkeypatch: pytest.MonkeyPatch, distribution: metadata
     monkeypatch.setattr(metadata, "distribution", lambda _name: distribution)
 
 
+def _mock_authenticated_load(
+    monkeypatch: pytest.MonkeyPatch,
+    distribution: metadata.Distribution,
+    provider: object,
+    loaded: list[str] | None = None,
+) -> None:
+    def load(entrypoint: metadata.EntryPoint) -> object:
+        if loaded is not None:
+            loaded.append(entrypoint.name)
+        module = ModuleType(entrypoint.module)
+        module.__file__ = str(distribution.locate_file("toy_plugin/__init__.py"))
+        monkeypatch.setitem(sys.modules, entrypoint.module, module)
+        monkeypatch.setattr(provider, "__module__", entrypoint.module, raising=False)
+        return provider
+
+    monkeypatch.setattr(metadata.EntryPoint, "load", load)
+
+
 def test_wheel_snapshot_binds_distribution_and_entrypoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -158,6 +194,23 @@ def test_wheel_snapshot_binds_distribution_and_entrypoint(
         "Toy_Runtime-1.2.3.dist-info/RECORD",
         "Toy_Runtime-1.2.3.dist-info/entry_points.txt",
     }
+
+
+@pytest.mark.parametrize("kind", (SourceKind.WHEEL_PRODUCT, SourceKind.WHEEL_PLUGIN))
+def test_installed_wheel_identity_requires_complete_coordinates(tmp_path: Path, kind: SourceKind) -> None:
+    with pytest.raises(ValueError, match="complete wheel coordinates"):
+        SourceIdentity(kind=kind, root=tmp_path.resolve())
+
+
+def test_editable_identity_allows_only_the_coordinate_free_transition(tmp_path: Path) -> None:
+    transitional = SourceIdentity(kind=SourceKind.EDITABLE_PLUGIN, root=tmp_path.resolve())
+    assert transitional.distribution is None
+    with pytest.raises(ValueError, match="complete wheel coordinates"):
+        SourceIdentity(
+            kind=SourceKind.EDITABLE_PLUGIN,
+            root=tmp_path.resolve(),
+            distribution="toy-runtime",
+        )
 
 
 def test_installed_snapshot_hashes_actual_bytes_and_record_identity(
@@ -293,6 +346,177 @@ def test_installed_snapshot_rejects_selected_byte_mutation_during_read_without_l
     assert loaded == []
 
 
+@pytest.mark.parametrize("fault", ("unsafe", "duplicate", "malformed"))
+def test_installed_snapshot_rejects_invalid_record_without_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    record_path = _record_path(distribution)
+    if fault == "malformed":
+        record_path.write_text("only,two-columns\n", encoding="utf-8")
+    else:
+        rows = _record_rows(distribution)
+        rows.append(["../escape.py", "", ""] if fault == "unsafe" else list(rows[0]))
+        _replace_record_rows(distribution, rows)
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        metadata.EntryPoint,
+        "load",
+        lambda entrypoint: loaded.append(entrypoint.name),
+    )
+
+    with pytest.raises(SourceSnapshotError, match="unsafe RECORD path|duplicate RECORD path|malformed"):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+    assert loaded == []
+
+
+def test_installed_snapshot_rejects_record_listed_fifo_without_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    package_path = Path(distribution.locate_file("toy_plugin/__init__.py"))
+    package_path.unlink()
+    os.mkfifo(package_path)
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        metadata.EntryPoint,
+        "load",
+        lambda entrypoint: loaded.append(entrypoint.name),
+    )
+
+    with pytest.raises(SourceSnapshotError, match="changed while opening"):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+    assert loaded == []
+
+
+def test_installed_snapshot_rejects_disappearance_before_open_without_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    package_path = Path(distribution.locate_file("toy_plugin/__init__.py"))
+    loaded: list[str] = []
+    removed = False
+
+    def remove(phase: str, relative_path: str | None) -> None:
+        nonlocal removed
+        if phase == "before_component_open" and relative_path == "toy_plugin/__init__.py" and not removed:
+            removed = True
+            package_path.unlink()
+
+    monkeypatch.setattr(wheel_sources, "_snapshot_boundary", remove)
+    monkeypatch.setattr(
+        metadata.EntryPoint,
+        "load",
+        lambda entrypoint: loaded.append(entrypoint.name),
+    )
+
+    with pytest.raises(SourceSnapshotError, match="regular no-follow"):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+    assert loaded == []
+
+
+def test_installed_snapshot_rejects_directory_replacement_without_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    root = Path(distribution.locate_file(""))
+    package = root / "toy_plugin"
+    original_package = root / "toy_plugin-original"
+    real_open = os.open
+    replaced = False
+    loaded: list[str] = []
+
+    def replace_then_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal replaced
+        if path == "toy_plugin" and flags & getattr(os, "O_DIRECTORY", 0) and not replaced:
+            replaced = True
+            package.rename(original_package)
+            package.mkdir()
+            (package / "__init__.py").write_bytes((original_package / "__init__.py").read_bytes())
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(wheel_sources.os, "open", replace_then_open)
+    monkeypatch.setattr(
+        metadata.EntryPoint,
+        "load",
+        lambda entrypoint: loaded.append(entrypoint.name),
+    )
+
+    with pytest.raises(SourceSnapshotError, match="directory changed while opening"):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+    assert loaded == []
+
+
+def test_installed_snapshot_rejects_root_replacement_without_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    root = Path(distribution.locate_file(""))
+    original_root = root.with_name("site-original")
+    loaded: list[str] = []
+    replaced = False
+
+    def replace_root(phase: str, _relative_path: str | None) -> None:
+        nonlocal replaced
+        if phase != "after_rescan" or replaced:
+            return
+        replaced = True
+        root.rename(original_root)
+        root.mkdir()
+
+    monkeypatch.setattr(wheel_sources, "_snapshot_boundary", replace_root)
+    monkeypatch.setattr(
+        metadata.EntryPoint,
+        "load",
+        lambda entrypoint: loaded.append(entrypoint.name),
+    )
+
+    with pytest.raises(SourceSnapshotError, match="root changed while it was captured"):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+    assert loaded == []
+
+
+def test_installed_snapshot_rejects_record_mutation_during_rescan_without_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    record_path = _record_path(distribution)
+    loaded: list[str] = []
+    mutated = False
+
+    def mutate_record(phase: str, _relative_path: str | None) -> None:
+        nonlocal mutated
+        if phase != "before_rescan" or mutated:
+            return
+        mutated = True
+        record_path.write_bytes(record_path.read_bytes() + b"\n")
+
+    monkeypatch.setattr(wheel_sources, "_snapshot_boundary", mutate_record)
+    monkeypatch.setattr(
+        metadata.EntryPoint,
+        "load",
+        lambda entrypoint: loaded.append(entrypoint.name),
+    )
+
+    with pytest.raises(SourceSnapshotError, match="changed while it was captured"):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+    assert loaded == []
+
+
 @pytest.mark.parametrize(
     "entrypoints",
     (
@@ -330,6 +554,95 @@ def test_wheel_snapshot_rejects_distribution_returned_for_a_different_name(
         snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
 
 
+@pytest.mark.parametrize("omitted_name", ("METADATA", "entry_points.txt"))
+def test_installed_snapshot_requires_identity_metadata_in_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    omitted_name: str,
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    rows = [row for row in _record_rows(distribution) if not row[0].endswith(f"/{omitted_name}")]
+    _replace_record_rows(distribution, rows)
+
+    with pytest.raises(SourceSnapshotError, match="authenticated metadata"):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+
+
+def test_installed_snapshot_rejects_frozen_entrypoint_target_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    root = Path(distribution.locate_file(""))
+    dist_info = Path(distribution.locate_file("toy_runtime-1.2.3.dist-info"))
+    entrypoints_path = dist_info / "entry_points.txt"
+    changed = False
+
+    def switch_target(phase: str, relative_path: str | None) -> None:
+        nonlocal changed
+        if phase != "before_component_open" or not relative_path or not relative_path.endswith("/RECORD"):
+            return
+        if changed:
+            return
+        changed = True
+        entrypoints_path.write_text(
+            "[graph_engine.plugins]\ntoy.runtime = toy_plugin:other\n",
+            encoding="utf-8",
+        )
+        _write_record(
+            root,
+            dist_info,
+            (
+                "toy_plugin/__init__.py",
+                "toy_runtime-1.2.3.dist-info/METADATA",
+                "toy_runtime-1.2.3.dist-info/entry_points.txt",
+            ),
+        )
+
+    monkeypatch.setattr(wheel_sources, "_snapshot_boundary", switch_target)
+
+    with pytest.raises(SourceSnapshotError, match="entry point metadata"):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+
+
+def test_installed_snapshot_rejects_frozen_metadata_identity_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    root = Path(distribution.locate_file(""))
+    dist_info = Path(distribution.locate_file("toy_runtime-1.2.3.dist-info"))
+    metadata_path = dist_info / "METADATA"
+    changed = False
+
+    def switch_version(phase: str, relative_path: str | None) -> None:
+        nonlocal changed
+        if phase != "before_component_open" or not relative_path or not relative_path.endswith("/RECORD"):
+            return
+        if changed:
+            return
+        changed = True
+        metadata_path.write_text(
+            "Metadata-Version: 2.1\nName: toy-runtime\nVersion: 9.9.9\n",
+            encoding="utf-8",
+        )
+        _write_record(
+            root,
+            dist_info,
+            (
+                "toy_plugin/__init__.py",
+                "toy_runtime-1.2.3.dist-info/METADATA",
+                "toy_runtime-1.2.3.dist-info/entry_points.txt",
+            ),
+        )
+
+    monkeypatch.setattr(wheel_sources, "_snapshot_boundary", switch_version)
+
+    with pytest.raises(SourceSnapshotError, match="METADATA disagrees"):
+        snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
+
+
 def test_editable_snapshot_captures_exact_closed_tree_and_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -360,6 +673,169 @@ def test_editable_snapshot_captures_exact_closed_tree_and_mutation(
         snapshot_wheel_source(source)
 
 
+def test_editable_load_rejects_a_different_explicit_file_tuple(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path / "installed")
+    _select_distribution(monkeypatch, distribution)
+    root = tmp_path / "editable"
+    root.mkdir()
+    (root / "a.py").write_bytes(b"A = 1\n")
+    (root / "b.py").write_bytes(b"B = 1\n")
+    snapshotted_source = EditableWheelPluginSource(
+        distribution="toy-runtime",
+        entrypoint_name="toy.runtime",
+        source_root=root,
+        source_files=("a.py", "b.py"),
+    )
+    requested_source = snapshotted_source.model_copy(update={"source_files": ("a.py",)})
+    snapshot = snapshot_wheel_source(snapshotted_source)
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        metadata.EntryPoint,
+        "load",
+        lambda entrypoint: loaded.append(entrypoint.name) or _PluginProvider(),
+    )
+
+    with pytest.raises(SourceSnapshotError, match="file tuple"):
+        load_snapshotted_entrypoint(requested_source, snapshot)
+    assert loaded == []
+
+
+def test_load_rejects_same_name_version_distribution_at_a_different_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshotted_distribution = _installed_distribution(tmp_path / "snapshotted")
+    replacement_distribution = _installed_distribution(tmp_path / "replacement")
+    selected = iter((snapshotted_distribution, replacement_distribution))
+    monkeypatch.setattr(metadata, "distribution", lambda _name: next(selected))
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    snapshot = snapshot_wheel_source(source)
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        metadata.EntryPoint,
+        "load",
+        lambda entrypoint: loaded.append(entrypoint.name) or _PluginProvider(),
+    )
+
+    with pytest.raises(SourceSnapshotError, match="changed after snapshot"):
+        load_snapshotted_entrypoint(source, snapshot)
+    assert loaded == []
+
+
+def test_load_rejects_post_snapshot_installed_byte_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    snapshot = snapshot_wheel_source(source)
+    root = Path(distribution.locate_file(""))
+    dist_info = Path(distribution.locate_file("toy_runtime-1.2.3.dist-info"))
+    Path(distribution.locate_file("toy_plugin/__init__.py")).write_bytes(b"changed after snapshot\n")
+    _write_record(
+        root,
+        dist_info,
+        (
+            "toy_plugin/__init__.py",
+            "toy_runtime-1.2.3.dist-info/METADATA",
+            "toy_runtime-1.2.3.dist-info/entry_points.txt",
+        ),
+    )
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        metadata.EntryPoint,
+        "load",
+        lambda entrypoint: loaded.append(entrypoint.name) or _PluginProvider(),
+    )
+
+    with pytest.raises(SourceSnapshotError, match="changed after snapshot"):
+        load_snapshotted_entrypoint(source, snapshot)
+    assert loaded == []
+
+
+def test_load_rejects_post_snapshot_entrypoint_target_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    snapshot = snapshot_wheel_source(source)
+    root = Path(distribution.locate_file(""))
+    dist_info = Path(distribution.locate_file("toy_runtime-1.2.3.dist-info"))
+    (dist_info / "entry_points.txt").write_text(
+        "[graph_engine.plugins]\ntoy.runtime = toy_plugin:other\n",
+        encoding="utf-8",
+    )
+    _write_record(
+        root,
+        dist_info,
+        (
+            "toy_plugin/__init__.py",
+            "toy_runtime-1.2.3.dist-info/METADATA",
+            "toy_runtime-1.2.3.dist-info/entry_points.txt",
+        ),
+    )
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        metadata.EntryPoint,
+        "load",
+        lambda entrypoint: loaded.append(entrypoint.value) or _PluginProvider(),
+    )
+
+    with pytest.raises(SourceSnapshotError, match="changed after snapshot"):
+        load_snapshotted_entrypoint(source, snapshot)
+    assert loaded == []
+
+
+def test_load_rejects_preloaded_target_module_shadow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    snapshot = snapshot_wheel_source(source)
+    shadow = ModuleType("toy_plugin")
+    shadow.__file__ = str(tmp_path / "shadow" / "toy_plugin.py")
+    monkeypatch.setitem(sys.modules, "toy_plugin", shadow)
+    loaded: list[str] = []
+    monkeypatch.setattr(
+        metadata.EntryPoint,
+        "load",
+        lambda entrypoint: loaded.append(entrypoint.name) or _PluginProvider(),
+    )
+
+    with pytest.raises(SourceSnapshotError, match="already loaded"):
+        load_snapshotted_entrypoint(source, snapshot)
+    assert loaded == []
+
+
+def test_load_rejects_provider_module_from_foreign_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    snapshot = snapshot_wheel_source(source)
+    foreign = tmp_path / "foreign" / "toy_plugin.py"
+    foreign.parent.mkdir()
+    foreign.write_bytes(b"foreign provider\n")
+    loaded: list[str] = []
+    provider = _PluginProvider()
+    provider.__module__ = "toy_plugin"
+
+    def load(entrypoint: metadata.EntryPoint) -> object:
+        loaded.append(entrypoint.name)
+        module = ModuleType("toy_plugin")
+        module.__file__ = str(foreign)
+        monkeypatch.setitem(sys.modules, "toy_plugin", module)
+        return provider
+
+    monkeypatch.setattr(metadata.EntryPoint, "load", load)
+
+    with pytest.raises(SourceSnapshotError, match="authenticated root"):
+        load_snapshotted_entrypoint(source, snapshot)
+    assert loaded == ["toy.runtime"]
+
+
 def test_provider_load_occurs_only_after_successful_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -368,11 +844,8 @@ def test_provider_load_occurs_only_after_successful_snapshot(
     source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
     loaded: list[str] = []
 
-    def load(entrypoint: metadata.EntryPoint) -> object:
-        loaded.append(entrypoint.name)
-        return _PluginProvider()
-
-    monkeypatch.setattr(metadata.EntryPoint, "load", load)
+    provider_value = _PluginProvider()
+    _mock_authenticated_load(monkeypatch, distribution, provider_value, loaded)
     Path(distribution.locate_file("toy_plugin/__init__.py")).write_bytes(b"corrupt\n")
     with pytest.raises(SourceSnapshotError, match="RECORD hash mismatch"):
         snapshot_wheel_source(source)
@@ -412,10 +885,10 @@ def test_loaded_plugin_descriptor_must_match_snapshotted_identity(
     _select_distribution(monkeypatch, distribution)
     source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
     snapshot = snapshot_wheel_source(source)
-    monkeypatch.setattr(
-        metadata.EntryPoint,
-        "load",
-        lambda _entrypoint: _PluginProvider(plugin_id=plugin_id, version=version),
+    _mock_authenticated_load(
+        monkeypatch,
+        distribution,
+        _PluginProvider(plugin_id=plugin_id, version=version),
     )
 
     with pytest.raises(SourceSnapshotError, match=message):
@@ -444,7 +917,7 @@ def test_loads_product_provider_from_its_exact_snapshotted_entrypoint(
     _select_distribution(monkeypatch, distribution)
     source = WheelProductSource(distribution="toy-product", entrypoint_name="toy.product")
     snapshot = snapshot_wheel_source(source)
-    monkeypatch.setattr(metadata.EntryPoint, "load", lambda _entrypoint: _ProductProvider())
+    _mock_authenticated_load(monkeypatch, distribution, _ProductProvider())
 
     provider = load_snapshotted_entrypoint(source, snapshot)
 

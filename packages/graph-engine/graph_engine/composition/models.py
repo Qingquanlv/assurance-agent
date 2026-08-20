@@ -41,11 +41,10 @@ class SourceIdentity:
             self.entrypoint_group,
             self.entrypoint_name,
         )
-        if self.kind in {
-            SourceKind.WHEEL_PRODUCT,
-            SourceKind.WHEEL_PLUGIN,
-            SourceKind.EDITABLE_PLUGIN,
-        }:
+        if self.kind in {SourceKind.WHEEL_PRODUCT, SourceKind.WHEEL_PLUGIN}:
+            if any(not isinstance(value, str) or not value for value in wheel_coordinates):
+                raise ValueError("wheel source identity requires complete wheel coordinates")
+        elif self.kind == SourceKind.EDITABLE_PLUGIN:
             # Task 2's low-level editable tree capture temporarily has no wheel
             # coordinates; Task 3 rewraps its authenticated files before exposure.
             if any(value is not None for value in wheel_coordinates) and any(

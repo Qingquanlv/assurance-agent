@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import base64
+import configparser
 import csv
+from dataclasses import dataclass
+from email.parser import BytesParser
+from email.policy import compat32
 import hashlib
 from importlib import metadata
 import os
 from pathlib import Path
 import stat
+import sys
+from types import ModuleType
 from typing import Literal, TypeAlias, cast
 
 from packaging.utils import canonicalize_name
@@ -70,7 +76,22 @@ _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW
 _FILE_FLAGS = os.O_RDONLY | _NOFOLLOW | _NONBLOCK
 
 
+@dataclass(frozen=True, slots=True)
+class _ResolvedWheelSnapshot:
+    snapshot: SourceSnapshot
+    entrypoint: metadata.EntryPoint
+
+
+class _EntryPointConfigParser(configparser.ConfigParser):
+    def optionxform(self, optionstr: str) -> str:
+        return optionstr
+
+
 def snapshot_wheel_source(source: WheelSource) -> SourceSnapshot:
+    return _resolve_wheel_snapshot(source).snapshot
+
+
+def _resolve_wheel_snapshot(source: WheelSource) -> _ResolvedWheelSnapshot:
     distribution = _selected_distribution(source)
     entrypoint = _selected_entrypoint(distribution, source)
     version = _normalized_version(distribution.version, "distribution version")
@@ -89,9 +110,17 @@ def snapshot_wheel_source(source: WheelSource) -> SourceSnapshot:
             entrypoint_group=entrypoint.group,
             entrypoint_name=entrypoint.name,
         )
-        return SourceSnapshot.from_identity(identity, tree.files)
+        return _ResolvedWheelSnapshot(
+            snapshot=SourceSnapshot.from_identity(identity, tree.files),
+            entrypoint=entrypoint,
+        )
 
-    root, files = _capture_installed_distribution(distribution)
+    root, files = _capture_installed_distribution(
+        distribution,
+        source,
+        entrypoint,
+        version,
+    )
     identity = SourceIdentity(
         kind=kind,
         root=root,
@@ -100,20 +129,26 @@ def snapshot_wheel_source(source: WheelSource) -> SourceSnapshot:
         entrypoint_group=entrypoint.group,
         entrypoint_name=entrypoint.name,
     )
-    return SourceSnapshot.from_identity(identity, files)
+    return _ResolvedWheelSnapshot(
+        snapshot=SourceSnapshot.from_identity(identity, files),
+        entrypoint=entrypoint,
+    )
 
 
 def load_snapshotted_entrypoint(source: WheelSource, snapshot: SourceSnapshot) -> WheelProvider:
     _validate_snapshot_matches_source(source, snapshot)
-    distribution = _selected_distribution(source)
-    entrypoint = _selected_entrypoint(distribution, source)
-    version = _normalized_version(distribution.version, "distribution version")
-    if version != snapshot.identity.version:
-        raise SourceSnapshotError("installed distribution version changed after snapshot")
+    resolved = _resolve_wheel_snapshot(source)
+    if resolved.snapshot != snapshot:
+        raise SourceSnapshotError("wheel source changed after snapshot")
+    _reject_preloaded_entrypoint_modules(resolved.entrypoint)
     try:
-        loaded = entrypoint.load()
+        loaded = resolved.entrypoint.load()
     except Exception as error:
         raise SourceSnapshotError("cannot load snapshotted entry point") from error
+    _verify_loaded_provider_provenance(loaded, resolved.entrypoint, snapshot)
+    after_load = _resolve_wheel_snapshot(source)
+    if after_load.snapshot != snapshot:
+        raise SourceSnapshotError("wheel source changed while loading its entry point")
 
     if isinstance(source, WheelProductSource):
         manifest = cast(ProductManifest, _call_descriptor(loaded, "manifest", "product"))
@@ -177,6 +212,9 @@ def _selected_entrypoint(
 
 def _capture_installed_distribution(
     distribution: metadata.Distribution,
+    source: WheelProductSource | WheelPluginSource,
+    entrypoint: metadata.EntryPoint,
+    version: str,
 ) -> tuple[Path, tuple[SourceFile, ...]]:
     root = Path(str(distribution.locate_file("")))
     record_relative = _record_relative_path(distribution, root)
@@ -218,6 +256,13 @@ def _capture_installed_distribution(
         rescanned_record, rescanned_state = _read_stable_installed_file(root_fd, record_relative)
         if rescanned_state != record_state or rescanned_record.content != record_file.content:
             raise SourceSnapshotError("installed distribution RECORD changed while it was captured")
+        _validate_frozen_installed_metadata(
+            files,
+            record_relative,
+            source,
+            entrypoint,
+            version,
+        )
         _snapshot_boundary("after_rescan", None)
         resolved_root = _resolve_stable_root(root, root_fd)
         return resolved_root, tuple(files)
@@ -435,6 +480,50 @@ def _parse_record(record_bytes: bytes) -> tuple[tuple[str, str | None, int | Non
     return tuple(parsed)
 
 
+def _validate_frozen_installed_metadata(
+    files: list[SourceFile],
+    record_relative: str,
+    source: WheelProductSource | WheelPluginSource,
+    entrypoint: metadata.EntryPoint,
+    version: str,
+) -> None:
+    dist_info = record_relative.rsplit("/", 1)[0]
+    required = {
+        f"{dist_info}/METADATA": "METADATA",
+        f"{dist_info}/entry_points.txt": "entry_points.txt",
+    }
+    captured = {source_file.path: source_file.content for source_file in files}
+    if not required.keys() <= captured.keys():
+        raise SourceSnapshotError("installed distribution authenticated metadata is incomplete")
+
+    try:
+        message = BytesParser(policy=compat32).parsebytes(captured[f"{dist_info}/METADATA"])
+        frozen_name = message["Name"]
+        frozen_version = message["Version"]
+    except Exception as error:
+        raise SourceSnapshotError("installed distribution METADATA is malformed") from error
+    if (
+        not frozen_name
+        or canonicalize_name(frozen_name) != source.distribution
+        or not frozen_version
+        or _normalized_version(frozen_version, "frozen distribution version") != version
+    ):
+        raise SourceSnapshotError("installed distribution METADATA disagrees with source identity")
+
+    parser = _EntryPointConfigParser(interpolation=None, delimiters=("=",), strict=True)
+    try:
+        parser.read_string(captured[f"{dist_info}/entry_points.txt"].decode("utf-8"))
+        matches = tuple(
+            value.strip()
+            for name, value in parser.items(source.entrypoint_group)
+            if name.strip() == source.entrypoint_name
+        )
+    except (UnicodeDecodeError, configparser.Error, KeyError) as error:
+        raise SourceSnapshotError("installed distribution entry point metadata is malformed") from error
+    if matches != (entrypoint.value,):
+        raise SourceSnapshotError("installed distribution entry point metadata disagrees with selection")
+
+
 def _validate_record_hash(relative_path: str, content: bytes, declared_hash: str) -> None:
     try:
         algorithm, encoded = declared_hash.split("=", 1)
@@ -462,6 +551,80 @@ def _validate_snapshot_matches_source(source: WheelSource, snapshot: SourceSnaps
         raise SourceSnapshotError("snapshot identity does not match requested wheel source")
     if isinstance(source, EditableWheelPluginSource) and identity.root != source.source_root.resolve():
         raise SourceSnapshotError("snapshot root does not match requested editable source")
+    if isinstance(source, EditableWheelPluginSource):
+        declared_paths = _canonical_declared_paths(source.source_files)
+        snapshot_paths = tuple(source_file.path for source_file in snapshot.files)
+        if declared_paths != snapshot_paths:
+            raise SourceSnapshotError("snapshot file tuple does not match requested editable source")
+
+
+def _canonical_declared_paths(files: tuple[str, ...]) -> tuple[str, ...]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for path in files:
+        try:
+            canonical = SourceFile.from_bytes(path, b"").path
+        except (TypeError, ValueError) as error:
+            raise SourceSnapshotError(f"unsafe declared source path: {path!r}") from error
+        if canonical in seen:
+            raise SourceSnapshotError(f"duplicate declared source path: {canonical!r}")
+        seen.add(canonical)
+        paths.append(canonical)
+    return tuple(sorted(paths))
+
+
+def _reject_preloaded_entrypoint_modules(entrypoint: metadata.EntryPoint) -> None:
+    parts = entrypoint.module.split(".")
+    module_names = tuple(".".join(parts[:index]) for index in range(1, len(parts) + 1))
+    loaded = tuple(module_name for module_name in module_names if module_name in sys.modules)
+    if loaded:
+        raise SourceSnapshotError(f"entry point module is already loaded: {loaded[0]}")
+
+
+def _verify_loaded_provider_provenance(
+    provider: object,
+    entrypoint: metadata.EntryPoint,
+    snapshot: SourceSnapshot,
+) -> None:
+    provider_module = (
+        provider.__name__ if isinstance(provider, ModuleType) else getattr(provider, "__module__", None)
+    )
+    if not isinstance(provider_module, str) or not provider_module:
+        raise SourceSnapshotError("loaded provider has no verifiable module origin")
+    for module_name in dict.fromkeys((entrypoint.module, provider_module)):
+        _verify_snapshotted_module(module_name, snapshot)
+
+
+def _verify_snapshotted_module(module_name: str, snapshot: SourceSnapshot) -> None:
+    module = sys.modules.get(module_name)
+    if not isinstance(module, ModuleType):
+        raise SourceSnapshotError(f"loaded provider module is unavailable: {module_name}")
+    origin = getattr(module, "__file__", None)
+    if not isinstance(origin, str) or not origin:
+        raise SourceSnapshotError(f"loaded provider module has no file origin: {module_name}")
+
+    root = snapshot.identity.root
+    try:
+        relative_path = Path(origin).absolute().relative_to(root).as_posix()
+    except ValueError as error:
+        raise SourceSnapshotError(
+            f"loaded provider module is outside the authenticated root: {module_name}"
+        ) from error
+    expected = next(
+        (source_file for source_file in snapshot.files if source_file.path == relative_path), None
+    )
+    if expected is None:
+        raise SourceSnapshotError(
+            f"loaded provider module is not present in the authenticated snapshot: {module_name}"
+        )
+
+    root_fd = _open_physical_root(root)
+    try:
+        current, _state = _read_stable_installed_file(root_fd, relative_path)
+    finally:
+        os.close(root_fd)
+    if current.sha256 != expected.sha256:
+        raise SourceSnapshotError(f"loaded provider module hash changed: {module_name}")
 
 
 def _call_descriptor(loaded: object, method_name: str, kind: str) -> object:
