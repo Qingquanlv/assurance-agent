@@ -7,7 +7,6 @@ import hashlib
 from importlib import metadata
 from pathlib import Path
 import sys
-from types import ModuleType
 from typing import cast
 
 import pytest
@@ -340,6 +339,10 @@ def _platform(
     plugins: dict[str, _PluginProvider] | None = None,
     load_log: list[tuple[str, str]] | None = None,
 ) -> tuple[RegistryPlatform, dict[str, WheelPluginSource], WheelProductSource | None]:
+    module_roots = {"toy_product", *(plugin_id.replace(".", "_") for plugin_id in (plugins or {}))}
+    for module_name in tuple(sys.modules):
+        if any(module_name == root or module_name.startswith(f"{root}.") for root in module_roots):
+            sys.modules.pop(module_name, None)
     distributions: dict[str, metadata.Distribution] = {}
     load_values: dict[tuple[str, str], tuple[object, Path]] = {}
     product_source: WheelProductSource | None = None
@@ -353,6 +356,7 @@ def _platform(
             entrypoint_name=initial_manifest.product_id,
             entrypoint_value="toy_product:provider",
             declaration_path=declaration_path,
+            import_roots=("",),
         )
         product._manifest = initial_manifest.model_copy(update={"source": source_expectation})
         if isinstance(product, _DriftingProductProvider):
@@ -392,6 +396,7 @@ def _platform(
             entrypoint_name=plugin_id,
             entrypoint_value=f"{distribution_name.replace('-', '_')}:provider",
             declaration_path=declaration_path,
+            import_roots=("",),
         )
         provider._descriptors = tuple(
             descriptor.model_copy(update={"source": source_expectation})
@@ -422,10 +427,7 @@ def _platform(
     def load(entrypoint: metadata.EntryPoint) -> object:
         if load_log is not None:
             load_log.append((entrypoint.group, entrypoint.name))
-        provider, module_path = load_values[(entrypoint.group, entrypoint.name)]
-        module = ModuleType(entrypoint.module)
-        module.__file__ = str(module_path)
-        monkeypatch.setitem(sys.modules, entrypoint.module, module)
+        provider, _module_path = load_values[(entrypoint.group, entrypoint.name)]
         monkeypatch.setattr(provider, "__module__", entrypoint.module, raising=False)
         return provider
 
@@ -681,6 +683,7 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
         entrypoint_name=domain_id,
         entrypoint_value="toy_combined.product:provider",
         declaration_path=product_path,
+        import_roots=("",),
     )
     plugin_source_expectation = ProviderSource(
         distribution="toy-combined",
@@ -689,6 +692,7 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
         entrypoint_name=domain_id,
         entrypoint_value="toy_combined.plugin:provider",
         declaration_path=plugin_path,
+        import_roots=("",),
     )
     product._manifest = product._manifest.model_copy(update={"source": product_source_expectation})
     plugin._descriptors = tuple(
@@ -710,9 +714,6 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
 
     def load(entrypoint: metadata.EntryPoint) -> object:
         assert sys.modules["toy_combined"].__file__ == str(paths["toy_combined"])
-        module = ModuleType(entrypoint.module)
-        module.__file__ = str(paths[entrypoint.module])
-        monkeypatch.setitem(sys.modules, entrypoint.module, module)
         provider = providers[(entrypoint.group, entrypoint.name)]
         monkeypatch.setattr(provider, "__module__", entrypoint.module, raising=False)
         return provider

@@ -52,6 +52,7 @@ def test_plugin_descriptor_authenticates_its_static_source_expectation() -> None
         entrypoint_name="toy.runtime",
         entrypoint_value="toy_runtime.plugin:provider",
         declaration_path="toy_runtime/plugin-declaration.json",
+        import_roots=("",),
     )
     descriptor = PluginDescriptor(
         schema_version="1",
@@ -76,6 +77,25 @@ def test_plugin_descriptor_authenticates_its_static_source_expectation() -> None
         )
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ProviderSource.model_validate({**source.model_dump(mode="json"), "inferred": True})
+
+
+def test_provider_source_authenticates_canonical_import_roots() -> None:
+    source = ProviderSource(
+        distribution="toy-runtime",
+        version="1.0.0",
+        entrypoint_group="graph_engine.plugins",
+        entrypoint_name="toy.runtime",
+        entrypoint_value="toy_runtime.plugin:provider",
+        declaration_path="toy_runtime/plugin-declaration.json",
+        import_roots=("", "src"),
+    )
+
+    assert source.import_roots == ("", "src")
+    for invalid in (("src", ""), ("src", "src"), ("/src",), ("./src",), ("src\\pkg",)):
+        with pytest.raises(ValidationError, match="import root"):
+            source.model_copy(update={"import_roots": invalid}).__class__.model_validate(
+                {**source.model_dump(mode="json"), "import_roots": invalid}
+            )
 
 
 class _EffectHandler:

@@ -59,6 +59,7 @@ def _registry() -> CapabilityRegistry:
             entrypoint_name="test.tasks",
             entrypoint_value="test_tasks:provider",
             declaration_path="test_tasks/plugin-declaration.json",
+            import_roots=("",),
             plugin_id="test.tasks",
             plugin_version="1.0.0",
         ),

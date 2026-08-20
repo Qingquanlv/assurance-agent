@@ -9,8 +9,7 @@ from dataclasses import dataclass, field, replace
 from email.parser import BytesParser
 from email.policy import compat32
 import hashlib
-from importlib import import_module, metadata
-from importlib.machinery import EXTENSION_SUFFIXES, ModuleSpec, NamespaceLoader, PathFinder
+from importlib import metadata
 import json
 import os
 from pathlib import Path
@@ -30,6 +29,16 @@ from graph_engine.composition.models import (
     SourceIdentity,
     SourceKind,
     SourceSnapshot,
+)
+from graph_engine.composition.import_plan import (
+    ImportPlanSession,
+    ImportProvenancePlan,
+    ModuleImportPlan,
+    ModuleRole,
+    active_import_provenance_plan,
+    build_import_provenance_plan,
+    extend_import_plan_with_quarantine,
+    rebind_import_provenance_plan,
 )
 from graph_engine.composition.source_fs import (
     DeclaredTreePolicy,
@@ -182,6 +191,7 @@ class _ResolvedWheelSnapshot:
 class _LoadedSnapshottedEntrypoint:
     provider: WheelProvider
     declaration: object
+    import_plan: ImportProvenancePlan
 
 
 @dataclass(slots=True)
@@ -196,6 +206,7 @@ class _AuthenticatedBindingCache:
 class _AuthenticatedModule:
     module: ModuleType
     source_digests: set[str]
+    provenance_keys: set[tuple[object, ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +270,12 @@ def _resolve_wheel_snapshot(
             source.source_files,
             policy,
         )
+        declaration = _parse_wheel_declaration(
+            source,
+            tree.files,
+            entrypoint.value,
+            version,
+        )
         identity = SourceIdentity(
             kind=kind,
             root=tree.identity.root,
@@ -268,9 +285,8 @@ def _resolve_wheel_snapshot(
             entrypoint_name=entrypoint.name,
             entrypoint_value=entrypoint.value,
             declaration_path=source.declaration_path,
+            import_roots=declaration.source.import_roots,
         )
-        provisional = SourceSnapshot.from_identity(identity, tree.files)
-        declaration = _parse_wheel_declaration(source, provisional, version)
         identity = _identity_with_declaration(identity, declaration)
         snapshot = SourceSnapshot.from_identity(identity, tree.files)
         return _ResolvedWheelSnapshot(
@@ -285,6 +301,12 @@ def _resolve_wheel_snapshot(
         entrypoint,
         version,
     )
+    declaration = _parse_wheel_declaration(
+        source,
+        files,
+        entrypoint.value,
+        version,
+    )
     identity = SourceIdentity(
         kind=kind,
         root=root,
@@ -294,9 +316,8 @@ def _resolve_wheel_snapshot(
         entrypoint_name=entrypoint.name,
         entrypoint_value=entrypoint.value,
         declaration_path=source.declaration_path,
+        import_roots=declaration.source.import_roots,
     )
-    provisional = SourceSnapshot.from_identity(identity, files)
-    declaration = _parse_wheel_declaration(source, provisional, version)
     identity = _identity_with_declaration(identity, declaration)
     snapshot = SourceSnapshot.from_identity(identity, files)
     return _ResolvedWheelSnapshot(
@@ -313,11 +334,13 @@ def _identity_with_declaration(
     if isinstance(declaration, WheelProductDeclaration):
         return replace(
             identity,
+            import_roots=declaration.source.import_roots,
             product_id=declaration.manifest.product_id,
             product_version=declaration.manifest.product_version,
         )
     return replace(
         identity,
+        import_roots=declaration.source.import_roots,
         plugin_id=declaration.descriptor.plugin_id,
         plugin_version=declaration.descriptor.plugin_version,
     )
@@ -356,51 +379,117 @@ def _load_snapshotted_entrypoint_binding(
     with _serialized_imports():
         cached = cache.bindings.get(cache_key)
         if cached is not None:
-            _validate_preloaded_entrypoint_modules(resolved.entrypoint, snapshot, cache)
-            _validate_cached_provider_modules(
-                cache,
-                cached.provider,
-                resolved.entrypoint,
-                snapshot,
+            before_modules = dict(sys.modules)
+            import_plan = rebind_import_provenance_plan(
+                cached.import_plan,
+                before_modules,
+                _cached_module_authority(cache, snapshot.digest),
             )
-            _validate_live_declaration(source, cached.provider, resolved.declaration)
-            return cached
+            import_plan = extend_import_plan_with_quarantine(
+                import_plan,
+                resolved.declaration.source,
+                snapshot,
+                before_modules,
+                _fresh_module_authority(cache),
+            )
+            parent_attributes = _capture_parent_attributes(before_modules, import_plan)
+            try:
+                with ImportPlanSession(
+                    resolved.declaration.source,
+                    snapshot,
+                    before_modules,
+                ) as session:
+                    session.quarantine(import_plan)
+                    session.preload(
+                        import_plan,
+                        _cached_module_authority(cache, snapshot.digest),
+                    )
+                    session.validate(
+                        import_plan,
+                        _cached_module_authority(cache, snapshot.digest),
+                    )
+                    _validate_live_declaration(source, cached.provider, resolved.declaration)
+                    session.validate(
+                        import_plan,
+                        _cached_module_authority(cache, snapshot.digest),
+                    )
+                    session.restore_unconsumed_quarantine(import_plan)
+                return cached
+            except BaseException as primary_error:
+                _restore_import_transaction(before_modules, parent_attributes, primary_error)
+                raise
 
-        _validate_preloaded_entrypoint_modules(resolved.entrypoint, snapshot, cache)
         before_modules = dict(sys.modules)
-        parent_attributes = _capture_parent_attributes(
-            before_modules,
+        provider_source = resolved.declaration.source
+        import_plan = build_import_provenance_plan(
+            provider_source,
             snapshot,
             resolved.entrypoint,
+            initial_modules=before_modules,
+        )
+        import_plan = extend_import_plan_with_quarantine(
+            import_plan,
+            provider_source,
+            snapshot,
+            before_modules,
+            _fresh_module_authority(cache),
+        )
+        parent_attributes = _capture_parent_attributes(
+            before_modules,
+            import_plan,
         )
         try:
-            authenticated_parents = _load_authenticated_entrypoint_parents(
-                resolved.entrypoint,
-                snapshot,
-                cache,
+            with ImportPlanSession(provider_source, snapshot, before_modules) as session:
+                session.quarantine(import_plan)
+                session.preload(import_plan, _fresh_module_authority(cache))
+                try:
+                    loaded = resolved.entrypoint.load()
+                except Exception as error:
+                    raise SourceSnapshotError("cannot load snapshotted entry point") from error
+                import_plan = build_import_provenance_plan(
+                    provider_source,
+                    snapshot,
+                    resolved.entrypoint,
+                    provider_module=_provider_module_name(loaded),
+                    dependency_modules=session.recorded_module_names,
+                    quarantine_modules=_quarantine_module_names(import_plan),
+                    initial_modules=session.post_quarantine_initial_modules,
+                )
+                parent_attributes = replace(
+                    parent_attributes,
+                    candidate_module_names=tuple(
+                        entry.module_name for entry in import_plan.modules if entry.rollback
+                    ),
+                )
+                session.preload(import_plan, _fresh_module_authority(cache))
+                authenticated_modules = session.validate(
+                    import_plan,
+                    _fresh_module_authority(cache),
+                )
+                after_load = _resolve_wheel_snapshot(source, metadata_provider)
+                if after_load.snapshot != snapshot:
+                    raise SourceSnapshotError("wheel source changed while loading its entry point")
+                declaration = _validate_live_declaration(source, loaded, resolved.declaration)
+                authenticated_modules = session.validate(
+                    import_plan,
+                    _fresh_module_authority(cache),
+                )
+                session.restore_unconsumed_quarantine(import_plan)
+            binding = _LoadedSnapshottedEntrypoint(
+                cast(WheelProvider, loaded),
+                declaration,
+                active_import_provenance_plan(import_plan),
             )
-            try:
-                loaded = resolved.entrypoint.load()
-            except Exception as error:
-                raise SourceSnapshotError("cannot load snapshotted entry point") from error
-            _verify_loaded_provider_provenance(loaded, resolved.entrypoint, snapshot)
-            after_load = _resolve_wheel_snapshot(source, metadata_provider)
-            if after_load.snapshot != snapshot:
-                raise SourceSnapshotError("wheel source changed while loading its entry point")
-            declaration = _validate_live_declaration(source, loaded, resolved.declaration)
-            binding = _LoadedSnapshottedEntrypoint(cast(WheelProvider, loaded), declaration)
-            _register_authenticated_modules(
-                cache,
-                loaded,
-                resolved.entrypoint,
-                snapshot,
-                authenticated_parents,
-            )
+            _commit_authenticated_plan(cache, authenticated_modules)
             cache.bindings[cache_key] = binding
             return binding
         except BaseException as primary_error:
             _restore_import_transaction(before_modules, parent_attributes, primary_error)
             raise
+
+
+def _quarantine_module_names(plan: ImportProvenancePlan) -> tuple[str, ...]:
+    return tuple(entry.module_name for entry in plan.modules if ModuleRole.QUARANTINE in entry.roles)
 
 
 def _validate_live_declaration(
@@ -428,11 +517,12 @@ def _validate_live_declaration(
 
 def _parse_wheel_declaration(
     source: WheelSource,
-    snapshot: SourceSnapshot,
+    files: tuple[SourceFile, ...],
+    entrypoint_value: str,
     version: str,
 ) -> WheelDeclaration:
     declaration_file = next(
-        (source_file for source_file in snapshot.files if source_file.path == source.declaration_path),
+        (source_file for source_file in files if source_file.path == source.declaration_path),
         None,
     )
     if declaration_file is None:
@@ -445,14 +535,6 @@ def _parse_wheel_declaration(
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise SourceSnapshotError("wheel declaration must be strict JSON") from error
-    expected_source = ProviderSource(
-        distribution=source.distribution,
-        version=version,
-        entrypoint_group=source.entrypoint_group,
-        entrypoint_name=source.entrypoint_name,
-        entrypoint_value=snapshot.identity.entrypoint_value or "",
-        declaration_path=source.declaration_path,
-    )
     declaration_type: type[WheelProductDeclaration] | type[WheelPluginDeclaration]
     declaration_type = (
         WheelProductDeclaration
@@ -463,7 +545,23 @@ def _parse_wheel_declaration(
         declaration = declaration_type.model_validate(document)
     except ValidationError as error:
         raise SourceSnapshotError("wheel declaration violates its frozen schema") from error
-    if declaration.source != expected_source:
+    expected_coordinates = (
+        source.distribution,
+        version,
+        source.entrypoint_group,
+        source.entrypoint_name,
+        entrypoint_value,
+        source.declaration_path,
+    )
+    actual_coordinates = (
+        declaration.source.distribution,
+        declaration.source.version,
+        declaration.source.entrypoint_group,
+        declaration.source.entrypoint_name,
+        declaration.source.entrypoint_value,
+        declaration.source.declaration_path,
+    )
+    if actual_coordinates != expected_coordinates:
         raise SourceSnapshotError("wheel declaration source disagrees with selected source")
     return declaration
 
@@ -949,218 +1047,56 @@ def _canonical_declared_paths(files: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(sorted(paths))
 
 
-def _validate_preloaded_entrypoint_modules(
-    entrypoint: metadata.EntryPoint,
-    snapshot: SourceSnapshot,
+def _fresh_module_authority(cache: _AuthenticatedBindingCache):
+    def owns(entry: ModuleImportPlan, module: ModuleType) -> bool:
+        authenticated = cache.modules.get(entry.module_name)
+        return (
+            authenticated is not None
+            and authenticated.module is module
+            and _module_provenance_key(entry) in authenticated.provenance_keys
+        )
+
+    return owns
+
+
+def _cached_module_authority(cache: _AuthenticatedBindingCache, source_digest: str):
+    def owns(entry: ModuleImportPlan, module: ModuleType) -> bool:
+        authenticated = cache.modules.get(entry.module_name)
+        return (
+            authenticated is not None
+            and authenticated.module is module
+            and source_digest in authenticated.source_digests
+            and _module_provenance_key(entry) in authenticated.provenance_keys
+        )
+
+    return owns
+
+
+def _commit_authenticated_plan(
     cache: _AuthenticatedBindingCache,
+    authenticated_modules: tuple[tuple[ModuleImportPlan, ModuleType], ...],
 ) -> None:
-    parts = entrypoint.module.split(".")
-    module_names = tuple(".".join(parts[:index]) for index in range(1, len(parts) + 1))
-    for module_name in module_names:
-        module = sys.modules.get(module_name)
-        if module is None:
+    for entry, module in authenticated_modules:
+        if not entry.commit:
             continue
-        authenticated = cache.modules.get(module_name)
-        if not isinstance(module, ModuleType) or authenticated is None or authenticated.module is not module:
-            raise SourceSnapshotError(
-                f"preloaded entry point module is not platform-authenticated: {module_name}"
-            )
-        if module_name == entrypoint.module and snapshot.digest not in authenticated.source_digests:
-            raise SourceSnapshotError(
-                f"preloaded entry point module has a different authenticated source: {module_name}"
-            )
-        _verify_snapshotted_module(
-            module_name,
-            snapshot,
-            allow_namespace_parent=module_name != entrypoint.module,
-        )
-
-
-def _register_authenticated_modules(
-    cache: _AuthenticatedBindingCache,
-    provider: object,
-    entrypoint: metadata.EntryPoint,
-    snapshot: SourceSnapshot,
-    authenticated_parents: dict[str, ModuleType],
-) -> None:
-    provider_module = _provider_module_name(provider)
-    leaf_modules = {entrypoint.module, provider_module}
-    module_names: list[str] = []
-    for leaf_name in (entrypoint.module, provider_module):
-        parts = leaf_name.split(".")
-        module_names.extend(".".join(parts[:index]) for index in range(1, len(parts) + 1))
-    authenticated_modules: list[tuple[str, ModuleType]] = []
-    for module_name in dict.fromkeys(module_names):
-        module = sys.modules.get(module_name)
-        if module is None:
+        authenticated = cache.modules.get(entry.module_name)
+        if authenticated is not None and authenticated.module is not module:
+            raise SourceSnapshotError(f"provider module changed before authority commit: {entry.module_name}")
+    for entry, module in authenticated_modules:
+        if not entry.commit:
             continue
-        expected_parent = authenticated_parents.get(module_name)
-        if expected_parent is not None and module is not expected_parent:
-            raise SourceSnapshotError(
-                f"loaded entry point parent is not platform-authenticated: {module_name}"
+        authenticated = cache.modules.get(entry.module_name)
+        if authenticated is None:
+            cache.modules[entry.module_name] = _AuthenticatedModule(
+                module,
+                {entry.source_digest},
+                {_module_provenance_key(entry)},
             )
-        if (
-            module_name not in leaf_modules
-            and expected_parent is None
-            and not getattr(module, "__file__", None)
-        ):
-            raise SourceSnapshotError(f"loaded namespace parent is not platform-authenticated: {module_name}")
-        _verify_snapshotted_module(
-            module_name,
-            snapshot,
-            allow_namespace_parent=module_name not in leaf_modules,
-        )
-        if not isinstance(module, ModuleType):  # pragma: no cover - verified above.
-            raise SourceSnapshotError(f"loaded provider module is unavailable: {module_name}")
-        authenticated_modules.append((module_name, module))
-
-    for module_name, module in authenticated_modules:
-        authenticated = cache.modules.get(module_name)
-        if authenticated is None or authenticated.module is not module:
-            cache.modules[module_name] = _AuthenticatedModule(module, {snapshot.digest})
-        else:
-            authenticated.source_digests.add(snapshot.digest)
-
-
-def _load_authenticated_entrypoint_parents(
-    entrypoint: metadata.EntryPoint,
-    snapshot: SourceSnapshot,
-    cache: _AuthenticatedBindingCache,
-) -> dict[str, ModuleType]:
-    parts = entrypoint.module.split(".")
-    entrypoint_parent_names = {".".join(parts[:index]) for index in range(1, len(parts))}
-    namespace_ancestry = _snapshotted_namespace_ancestry(snapshot)
-    parent_names = entrypoint_parent_names.union(namespace_ancestry)
-    authenticated: dict[str, ModuleType] = {}
-    initial_modules = dict(sys.modules)
-    for parent_name in sorted(parent_names, key=lambda name: (name.count("."), name)):
-        module = sys.modules.get(parent_name)
-        if module is None:
-            if parent_name not in entrypoint_parent_names and not _is_importable_snapshotted_package(
-                parent_name,
-                *namespace_ancestry[parent_name],
-            ):
-                continue
-            try:
-                module = import_module(parent_name)
-            except Exception as error:
-                raise SourceSnapshotError(
-                    f"cannot import snapshotted entry point parent: {parent_name}"
-                ) from error
-        elif parent_name not in authenticated and parent_name in initial_modules:
-            owned = cache.modules.get(parent_name)
-            if initial_modules[parent_name] is not module or owned is None or owned.module is not module:
-                raise SourceSnapshotError(
-                    f"preloaded entry point module is not platform-authenticated: {parent_name}"
-                )
-        if not isinstance(module, ModuleType):
-            raise SourceSnapshotError(
-                f"loaded entry point parent is not platform-authenticated: {parent_name}"
-            )
-        _verify_snapshotted_module(
-            parent_name,
-            snapshot,
-            allow_namespace_parent=True,
-        )
-        authenticated[parent_name] = module
-    return authenticated
-
-
-def _snapshotted_namespace_ancestry(
-    snapshot: SourceSnapshot,
-) -> dict[str, tuple[tuple[Path, ...], tuple[Path, ...]]]:
-    source_paths = {source_file.path for source_file in snapshot.files}
-    package_directories: set[tuple[str, ...]] = set()
-    for source_file in snapshot.files:
-        parts = source_file.path.split("/")
-        filename = parts[-1]
-        if not filename.endswith(".py") and not any(
-            filename.endswith(suffix) for suffix in EXTENSION_SUFFIXES
-        ):
-            continue
-        for length in range(1, len(parts)):
-            package_parts = parts[:length]
-            if not all(part.isidentifier() for part in package_parts):
-                break
-            package_directories.add(tuple(package_parts))
-    initializer_paths = {
-        directory: tuple(
-            snapshot.identity.root / source_path
-            for source_path in sorted(source_paths)
-            if source_path.rpartition("/")[0] == "/".join(directory)
-            and _is_package_initializer(source_path.rpartition("/")[2])
-        )
-        for directory in package_directories
-    }
-    namespace_directories = {
-        directory for directory, initializers in initializer_paths.items() if not initializers
-    }
-    required_directories = {
-        directory[:length] for directory in namespace_directories for length in range(1, len(directory) + 1)
-    }
-    return {
-        ".".join(directory): (
-            (snapshot.identity.root.joinpath(*directory),),
-            initializer_paths[directory],
-        )
-        for directory in sorted(required_directories)
-    }
-
-
-def _is_importable_snapshotted_package(
-    module_name: str,
-    expected_locations: tuple[Path, ...],
-    expected_initializers: tuple[Path, ...],
-) -> bool:
-    parent_name, _separator, _child_name = module_name.rpartition(".")
-    if parent_name:
-        parent = sys.modules.get(parent_name)
-        search_path = getattr(parent, "__path__", None)
-        if not isinstance(parent, ModuleType) or search_path is None:
-            return False
-    else:
-        search_path = None
-    spec = PathFinder.find_spec(module_name, search_path)
-    if spec is None or spec.submodule_search_locations is None:
-        return False
-    try:
-        expected = {location.resolve(strict=True) for location in expected_locations}
-        if not expected_initializers:
-            if spec.origin is not None or spec.loader is not None:
-                return False
-            actual = {Path(location).resolve(strict=True) for location in spec.submodule_search_locations}
-        else:
-            if not isinstance(spec.origin, str) or spec.loader is None:
-                return False
-            actual = {Path(spec.origin).resolve(strict=True)}
-            expected = {initializer.resolve(strict=True) for initializer in expected_initializers}
-    except (OSError, TypeError, ValueError):
-        return False
-    return bool(actual.intersection(expected))
-
-
-def _is_package_initializer(filename: str) -> bool:
-    return filename == "__init__.py" or any(filename == f"__init__{suffix}" for suffix in EXTENSION_SUFFIXES)
-
-
-def _validate_cached_provider_modules(
-    cache: _AuthenticatedBindingCache,
-    provider: object,
-    entrypoint: metadata.EntryPoint,
-    snapshot: SourceSnapshot,
-) -> None:
-    provider_module = _provider_module_name(provider)
-    for module_name in dict.fromkeys((entrypoint.module, provider_module)):
-        module = sys.modules.get(module_name)
-        authenticated = cache.modules.get(module_name)
-        if (
-            not isinstance(module, ModuleType)
-            or authenticated is None
-            or authenticated.module is not module
-            or snapshot.digest not in authenticated.source_digests
-        ):
-            raise SourceSnapshotError(f"cached provider module is not platform-authenticated: {module_name}")
-        _verify_snapshotted_module(module_name, snapshot)
+        elif authenticated.module is module:
+            authenticated.source_digests.add(entry.source_digest)
+            authenticated.provenance_keys.add(_module_provenance_key(entry))
+        else:  # pragma: no cover - preflight and serialized import invariant.
+            raise AssertionError("authenticated module changed after commit preflight")
 
 
 def _restore_modules(before: dict[str, ModuleType]) -> None:
@@ -1174,8 +1110,7 @@ def _restore_modules(before: dict[str, ModuleType]) -> None:
 
 def _capture_parent_attributes(
     before_modules: dict[str, ModuleType],
-    snapshot: SourceSnapshot,
-    entrypoint: metadata.EntryPoint,
+    import_plan: ImportProvenancePlan,
 ) -> _ParentAttributeSnapshot:
     packages = tuple(
         _ParentPackageState(module_name, module, dict(module.__dict__))
@@ -1183,37 +1118,18 @@ def _capture_parent_attributes(
         if isinstance(module, ModuleType) and getattr(module, "__path__", None) is not None
     )
     return _ParentAttributeSnapshot(
-        candidate_module_names=_candidate_module_names(snapshot, entrypoint),
+        candidate_module_names=tuple(entry.module_name for entry in import_plan.modules if entry.rollback),
         packages=packages,
     )
 
 
-def _candidate_module_names(
-    snapshot: SourceSnapshot,
-    entrypoint: metadata.EntryPoint,
-) -> tuple[str, ...]:
-    candidates = {entrypoint.module}
-    for source_file in snapshot.files:
-        parts = source_file.path.split("/")
-        filename = parts[-1]
-        if filename.endswith(".py"):
-            leaf = filename[:-3]
-        else:
-            extension_suffix = next(
-                (suffix for suffix in EXTENSION_SUFFIXES if filename.endswith(suffix)),
-                None,
-            )
-            if extension_suffix is None:
-                continue
-            leaf = filename[: -len(extension_suffix)]
-        if not leaf:
-            continue
-        module_parts = parts[:-1] if leaf == "__init__" else [*parts[:-1], leaf]
-        for start in range(len(module_parts)):
-            suffix = module_parts[start:]
-            if suffix and all(part.isidentifier() for part in suffix):
-                candidates.add(".".join(suffix))
-    return tuple(sorted(candidates))
+def _module_provenance_key(entry: ModuleImportPlan) -> tuple[object, ...]:
+    return (
+        entry.classification.value,
+        str(entry.physical_origin) if entry.physical_origin is not None else None,
+        entry.physical_sha256,
+        tuple(str(location) for location in entry.namespace_locations),
+    )
 
 
 def _restore_import_transaction(
@@ -1261,16 +1177,6 @@ def _restore_import_transaction(
         raise indeterminate from primary_error
 
 
-def _verify_loaded_provider_provenance(
-    provider: object,
-    entrypoint: metadata.EntryPoint,
-    snapshot: SourceSnapshot,
-) -> None:
-    provider_module = _provider_module_name(provider)
-    for module_name in dict.fromkeys((entrypoint.module, provider_module)):
-        _verify_snapshotted_module(module_name, snapshot)
-
-
 def _provider_module_name(provider: object) -> str:
     provider_module = (
         provider.__name__ if isinstance(provider, ModuleType) else getattr(provider, "__module__", None)
@@ -1278,81 +1184,6 @@ def _provider_module_name(provider: object) -> str:
     if not isinstance(provider_module, str) or not provider_module:
         raise SourceSnapshotError("loaded provider has no verifiable module origin")
     return provider_module
-
-
-def _verify_snapshotted_module(
-    module_name: str,
-    snapshot: SourceSnapshot,
-    *,
-    allow_namespace_parent: bool = False,
-) -> None:
-    module = sys.modules.get(module_name)
-    if not isinstance(module, ModuleType):
-        raise SourceSnapshotError(f"loaded provider module is unavailable: {module_name}")
-    origin = getattr(module, "__file__", None)
-    if not isinstance(origin, str) or not origin:
-        if allow_namespace_parent:
-            _verify_namespace_parent(module_name, module, snapshot)
-            return
-        raise SourceSnapshotError(f"loaded provider module has no file origin: {module_name}")
-
-    root = snapshot.identity.root
-    try:
-        relative_path = Path(origin).absolute().relative_to(root).as_posix()
-    except ValueError as error:
-        raise SourceSnapshotError(
-            f"loaded provider module is outside the authenticated root: {module_name}"
-        ) from error
-    expected = next(
-        (source_file for source_file in snapshot.files if source_file.path == relative_path), None
-    )
-    if expected is None:
-        raise SourceSnapshotError(
-            f"loaded provider module is not present in the authenticated snapshot: {module_name}"
-        )
-
-    root_fd = _open_physical_root(root)
-    try:
-        current, _state = _read_stable_installed_file(root_fd, relative_path)
-    finally:
-        os.close(root_fd)
-    if current.sha256 != expected.sha256:
-        raise SourceSnapshotError(f"loaded provider module hash changed: {module_name}")
-
-
-def _verify_namespace_parent(
-    module_name: str,
-    module: ModuleType,
-    snapshot: SourceSnapshot,
-) -> None:
-    spec = getattr(module, "__spec__", None)
-    if (
-        not isinstance(spec, ModuleSpec)
-        or module.__name__ != module_name
-        or spec.name != module_name
-        or spec.origin is not None
-        or not isinstance(spec.loader, NamespaceLoader)
-        or getattr(module, "__loader__", None) is not spec.loader
-        or spec.submodule_search_locations is None
-        or getattr(module, "__path__", None) is not spec.submodule_search_locations
-        or getattr(module, "__package__", None) != module_name
-    ):
-        raise SourceSnapshotError(f"loaded namespace parent has a nonstandard spec: {module_name}")
-    expected_directory = snapshot.identity.root.joinpath(*module_name.split("."))
-    try:
-        expected_directory = expected_directory.resolve(strict=True)
-        locations = tuple(Path(location).resolve(strict=True) for location in spec.submodule_search_locations)
-    except (OSError, TypeError, ValueError) as error:
-        raise SourceSnapshotError(
-            f"loaded namespace parent has invalid search locations: {module_name}"
-        ) from error
-    if not expected_directory.is_dir() or expected_directory not in locations:
-        raise SourceSnapshotError(
-            f"loaded namespace parent lacks its authenticated search location: {module_name}"
-        )
-    init_path = f"{module_name.replace('.', '/')}/__init__.py"
-    if any(source_file.path == init_path for source_file in snapshot.files):
-        raise SourceSnapshotError(f"loaded namespace parent unexpectedly has executable code: {module_name}")
 
 
 def _call_descriptor(loaded: object, method_name: str, kind: str) -> object:

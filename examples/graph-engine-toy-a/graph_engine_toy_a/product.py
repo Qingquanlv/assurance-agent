@@ -18,6 +18,7 @@ class ToyAProduct:
                 entrypoint_name="toy-a",
                 entrypoint_value="graph_engine_toy_a.product:ToyAProduct",
                 declaration_path="graph_engine_toy_a/product-declaration.json",
+                import_roots=("",),
             ),
             product_id="toy.a",
             product_version="1.0.0",

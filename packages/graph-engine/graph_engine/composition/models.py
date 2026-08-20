@@ -28,6 +28,7 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
     TaskRequest,
+    validate_provider_import_roots,
 )
 
 if TYPE_CHECKING:
@@ -75,6 +76,7 @@ class SourceIdentity:
     entrypoint_name: str | None = None
     entrypoint_value: str | None = None
     declaration_path: str | None = None
+    import_roots: tuple[str, ...] | None = None
     product_id: str | None = None
     product_version: str | None = None
     plugin_id: str | None = None
@@ -132,6 +134,25 @@ class SourceIdentity:
                 raise ValueError("engine source identity does not accept entrypoint coordinates")
         elif any(value is not None for value in wheel_coordinates):
             raise ValueError("wheel coordinates are allowed only for wheel source identities")
+        wheel_kinds = {
+            SourceKind.WHEEL_PRODUCT,
+            SourceKind.WHEEL_PLUGIN,
+            SourceKind.EDITABLE_PRODUCT,
+            SourceKind.EDITABLE_PLUGIN,
+        }
+        complete_wheel_identity = self.kind in {
+            SourceKind.WHEEL_PRODUCT,
+            SourceKind.WHEEL_PLUGIN,
+        } or (
+            self.kind in {SourceKind.EDITABLE_PRODUCT, SourceKind.EDITABLE_PLUGIN}
+            and any(value is not None for value in wheel_coordinates)
+        )
+        if complete_wheel_identity and not self.import_roots:
+            raise ValueError("wheel source identity requires authenticated import roots")
+        if self.kind not in wheel_kinds and self.import_roots is not None:
+            raise ValueError("import roots are allowed only for wheel source identities")
+        if self.import_roots is not None:
+            validate_provider_import_roots(self.import_roots)
         if self.kind != SourceKind.ENGINE and self.engine_installation is not None:
             raise ValueError("engine installation is allowed only for engine source identities")
         if self.kind in {
@@ -1086,6 +1107,8 @@ def _snapshot_digest(identity: SourceIdentity, files: tuple[SourceFile, ...]) ->
         "entrypoint_value": identity.entrypoint_value,
         "declaration_path": identity.declaration_path,
     }
+    if identity.import_roots is not None:
+        identity_document["import_roots"] = list(identity.import_roots)
     if identity.product_id is not None:
         identity_document["product_id"] = identity.product_id
         identity_document["product_version"] = identity.product_version

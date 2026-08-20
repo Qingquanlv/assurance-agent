@@ -82,6 +82,7 @@ def _source(plugin_id: str) -> SourceSnapshot:
             entrypoint_name=plugin_id,
             entrypoint_value=f"{plugin_id.replace('.', '_')}:provider",
             declaration_path=f"{plugin_id.replace('.', '_')}/plugin-declaration.json",
+            import_roots=("",),
             plugin_id=plugin_id,
             plugin_version="1.0.0",
         ),

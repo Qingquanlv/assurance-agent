@@ -11,6 +11,7 @@
       "entrypoint_group": "graph_engine.plugins",
       "entrypoint_name": "toy-a",
       "entrypoint_value": "graph_engine_toy_a.plugin:ToyAPlugin",
+      "import_roots": [""],
       "version": "1.0.0"
     },
     "task_handlers": ["toy.a.greet"]
@@ -23,6 +24,7 @@
     "entrypoint_group": "graph_engine.plugins",
     "entrypoint_name": "toy-a",
     "entrypoint_value": "graph_engine_toy_a.plugin:ToyAPlugin",
+    "import_roots": [""],
     "version": "1.0.0"
   }
 }

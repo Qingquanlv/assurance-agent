@@ -632,16 +632,19 @@ def _validate_descriptor_source_identity(
 
 
 def _provider_source_from_identity(identity: SourceIdentity) -> ProviderSource:
-    if any(
-        value is None
-        for value in (
-            identity.distribution,
-            identity.version,
-            identity.entrypoint_group,
-            identity.entrypoint_name,
-            identity.entrypoint_value,
-            identity.declaration_path,
+    if (
+        any(
+            value is None
+            for value in (
+                identity.distribution,
+                identity.version,
+                identity.entrypoint_group,
+                identity.entrypoint_name,
+                identity.entrypoint_value,
+                identity.declaration_path,
+            )
         )
+        or not identity.import_roots
     ):
         raise ResolutionError("wheel source identity is incomplete")
     return ProviderSource(
@@ -654,6 +657,7 @@ def _provider_source_from_identity(identity: SourceIdentity) -> ProviderSource:
         entrypoint_name=cast(str, identity.entrypoint_name),
         entrypoint_value=cast(str, identity.entrypoint_value),
         declaration_path=cast(str, identity.declaration_path),
+        import_roots=identity.import_roots,
     )
 
 

@@ -47,6 +47,7 @@ def _validate_provider_source_identity(
         "entrypoint_name": source.entrypoint_name,
         "entrypoint_value": source.entrypoint_value,
         "declaration_path": source.declaration_path,
+        "import_roots": list(source.import_roots),
     }
     if any(identity.get(name) != value for name, value in expected.items()):
         raise ValueError(f"locked {kind} declaration disagrees with its source identity")
@@ -688,6 +689,8 @@ def _source_identity_projection(identity: SourceIdentity) -> dict[str, JSONValue
         value = getattr(identity, field_name)
         if value is not None:
             projection[field_name] = value
+    if identity.import_roots is not None:
+        projection["import_roots"] = list(identity.import_roots)
     if identity.engine_installation is not None:
         projection["installation"] = identity.engine_installation
     return projection

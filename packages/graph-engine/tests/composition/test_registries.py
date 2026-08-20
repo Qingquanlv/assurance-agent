@@ -97,6 +97,7 @@ def _source(plugin_id: str, *, kind: SourceKind = SourceKind.CONFIG_TREE) -> Sou
             entrypoint_name=plugin_id,
             entrypoint_value=f"{plugin_id.replace('.', '_')}:provider",
             declaration_path=f"{plugin_id.replace('.', '_')}/plugin-declaration.json",
+            import_roots=("",),
             plugin_id=plugin_id,
             plugin_version="1.0.0",
         )
@@ -274,6 +275,7 @@ def test_registry_set_rejects_executable_owner_that_is_not_a_plugin_source() -> 
             entrypoint_name="toy.product",
             entrypoint_value="toy_product:provider",
             declaration_path="toy_product/product-declaration.json",
+            import_roots=("",),
             product_id="toy.product",
             product_version="1.0.0",
         ),

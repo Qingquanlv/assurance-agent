@@ -393,6 +393,7 @@ class ProviderSource(FrozenModel):
     entrypoint_name: str
     entrypoint_value: str
     declaration_path: str
+    import_roots: tuple[str, ...]
 
     @field_validator("distribution")
     @classmethod
@@ -432,6 +433,30 @@ class ProviderSource(FrozenModel):
         ):
             raise ValueError("declaration path must be a canonical relative POSIX path")
         return value
+
+    @field_validator("import_roots")
+    @classmethod
+    def _validate_import_roots(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return validate_provider_import_roots(value)
+
+
+def validate_provider_import_roots(value: tuple[str, ...]) -> tuple[str, ...]:
+    if not value:
+        raise ValueError("provider import roots must be a non-empty tuple")
+    for import_root in value:
+        if not isinstance(import_root, str) or "\\" in import_root:
+            raise ValueError("provider import root must be a canonical relative POSIX path")
+        if import_root:
+            path = PurePosixPath(import_root)
+            if (
+                path.is_absolute()
+                or path.as_posix() != import_root
+                or any(part in ("", ".", "..") for part in path.parts)
+            ):
+                raise ValueError("provider import root must be a canonical relative POSIX path")
+    if tuple(sorted(value)) != value or len(value) != len(set(value)):
+        raise ValueError("provider import roots must have unique canonical order")
+    return value
 
 
 class PluginDescriptor(FrozenModel):

@@ -38,6 +38,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
         entrypoint_name="toy.a",
         entrypoint_value="toy_a.product:provider",
         declaration_path="toy_a/product-declaration.json",
+        import_roots=("",),
     )
     manifest_items = [
         ("schema_version", "1"),
@@ -62,6 +63,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
             "entrypoint_name": "toy.a",
             "entrypoint_value": "toy_a.product:provider",
             "declaration_path": "toy_a/product-declaration.json",
+            "import_roots": [""],
         },
         digest=_A,
         files=(LockedSourceFile(path="toy_a/product.py", sha256=_B),),
@@ -75,6 +77,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
             "entrypoint_name": "toy.runtime",
             "entrypoint_value": "toy_runtime.plugin:provider",
             "declaration_path": "toy_runtime/plugin-declaration.json",
+            "import_roots": [""],
         },
         digest=_C,
         files=(LockedSourceFile(path="toy_runtime/plugin.py", sha256=_D),),
@@ -105,6 +108,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
             entrypoint_name="toy.runtime",
             entrypoint_value="toy_runtime.plugin:provider",
             declaration_path="toy_runtime/plugin-declaration.json",
+            import_roots=("",),
         ),
         plugin_id="toy.runtime",
         plugin_version="2.0.0",
@@ -334,6 +338,7 @@ def _locked_plugin(
         entrypoint_name=plugin_id,
         entrypoint_value=f"{plugin_id.replace('.', '_')}.plugin:provider",
         declaration_path=declaration_path,
+        import_roots=("",),
     )
     descriptor = PluginDescriptor(
         schema_version="1",
@@ -446,6 +451,7 @@ def test_locked_plugin_authenticates_id_and_version_against_source_identity() ->
             "entrypoint_name": "toy.runtime",
             "entrypoint_value": "toy_runtime.plugin:provider",
             "declaration_path": "toy_runtime/plugin-declaration.json",
+            "import_roots": [""],
         },
         digest=_A,
         files=(),
@@ -459,6 +465,7 @@ def test_locked_plugin_authenticates_id_and_version_against_source_identity() ->
             entrypoint_name="toy.runtime",
             entrypoint_value="toy_runtime.plugin:provider",
             declaration_path="toy_runtime/plugin-declaration.json",
+            import_roots=("",),
         ),
         plugin_id="toy.runtime",
         plugin_version="2.0.0",

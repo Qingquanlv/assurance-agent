@@ -163,6 +163,7 @@ def _assemble_selected_contributions(
                         else f"{descriptor.plugin_id.replace('.', '_')}:provider"
                     ),
                     declaration_path=f"{descriptor.plugin_id.replace('.', '_')}/plugin-declaration.json",
+                    import_roots=(descriptor.source.import_roots if descriptor.source is not None else ("",)),
                     plugin_id=descriptor.plugin_id,
                     plugin_version=descriptor.plugin_version,
                 ),
