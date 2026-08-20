@@ -706,11 +706,10 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
         ("graph_engine.products", domain_id): product,
         ("graph_engine.plugins", domain_id): plugin,
     }
+    monkeypatch.syspath_prepend(str(paths["toy_combined"].parents[1]))
 
     def load(entrypoint: metadata.EntryPoint) -> object:
-        parent = ModuleType("toy_combined")
-        parent.__file__ = str(paths["toy_combined"])
-        monkeypatch.setitem(sys.modules, "toy_combined", parent)
+        assert sys.modules["toy_combined"].__file__ == str(paths["toy_combined"])
         module = ModuleType(entrypoint.module)
         module.__file__ = str(paths[entrypoint.module])
         monkeypatch.setitem(sys.modules, entrypoint.module, module)

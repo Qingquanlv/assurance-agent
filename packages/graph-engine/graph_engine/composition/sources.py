@@ -9,7 +9,8 @@ from dataclasses import dataclass, field, replace
 from email.parser import BytesParser
 from email.policy import compat32
 import hashlib
-from importlib import metadata
+from importlib import import_module, metadata
+from importlib.machinery import EXTENSION_SUFFIXES, ModuleSpec, NamespaceLoader, PathFinder
 import json
 import os
 from pathlib import Path
@@ -197,6 +198,19 @@ class _AuthenticatedModule:
     source_digests: set[str]
 
 
+@dataclass(frozen=True, slots=True)
+class _ParentPackageState:
+    parent_name: str
+    parent: ModuleType
+    attributes: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _ParentAttributeSnapshot:
+    candidate_module_names: tuple[str, ...]
+    packages: tuple[_ParentPackageState, ...]
+
+
 _MODULE_IMPORT_LOCK = RLock()
 
 
@@ -354,7 +368,17 @@ def _load_snapshotted_entrypoint_binding(
 
         _validate_preloaded_entrypoint_modules(resolved.entrypoint, snapshot, cache)
         before_modules = dict(sys.modules)
+        parent_attributes = _capture_parent_attributes(
+            before_modules,
+            snapshot,
+            resolved.entrypoint,
+        )
         try:
+            authenticated_parents = _load_authenticated_entrypoint_parents(
+                resolved.entrypoint,
+                snapshot,
+                cache,
+            )
             try:
                 loaded = resolved.entrypoint.load()
             except Exception as error:
@@ -365,11 +389,17 @@ def _load_snapshotted_entrypoint_binding(
                 raise SourceSnapshotError("wheel source changed while loading its entry point")
             declaration = _validate_live_declaration(source, loaded, resolved.declaration)
             binding = _LoadedSnapshottedEntrypoint(cast(WheelProvider, loaded), declaration)
-            _register_authenticated_modules(cache, loaded, resolved.entrypoint, snapshot)
+            _register_authenticated_modules(
+                cache,
+                loaded,
+                resolved.entrypoint,
+                snapshot,
+                authenticated_parents,
+            )
             cache.bindings[cache_key] = binding
             return binding
-        except BaseException:
-            _restore_modules(before_modules)
+        except BaseException as primary_error:
+            _restore_import_transaction(before_modules, parent_attributes, primary_error)
             raise
 
 
@@ -939,7 +969,11 @@ def _validate_preloaded_entrypoint_modules(
             raise SourceSnapshotError(
                 f"preloaded entry point module has a different authenticated source: {module_name}"
             )
-        _verify_snapshotted_module(module_name, snapshot)
+        _verify_snapshotted_module(
+            module_name,
+            snapshot,
+            allow_namespace_parent=module_name != entrypoint.module,
+        )
 
 
 def _register_authenticated_modules(
@@ -947,8 +981,10 @@ def _register_authenticated_modules(
     provider: object,
     entrypoint: metadata.EntryPoint,
     snapshot: SourceSnapshot,
+    authenticated_parents: dict[str, ModuleType],
 ) -> None:
     provider_module = _provider_module_name(provider)
+    leaf_modules = {entrypoint.module, provider_module}
     module_names: list[str] = []
     for leaf_name in (entrypoint.module, provider_module):
         parts = leaf_name.split(".")
@@ -958,7 +994,22 @@ def _register_authenticated_modules(
         module = sys.modules.get(module_name)
         if module is None:
             continue
-        _verify_snapshotted_module(module_name, snapshot)
+        expected_parent = authenticated_parents.get(module_name)
+        if expected_parent is not None and module is not expected_parent:
+            raise SourceSnapshotError(
+                f"loaded entry point parent is not platform-authenticated: {module_name}"
+            )
+        if (
+            module_name not in leaf_modules
+            and expected_parent is None
+            and not getattr(module, "__file__", None)
+        ):
+            raise SourceSnapshotError(f"loaded namespace parent is not platform-authenticated: {module_name}")
+        _verify_snapshotted_module(
+            module_name,
+            snapshot,
+            allow_namespace_parent=module_name not in leaf_modules,
+        )
         if not isinstance(module, ModuleType):  # pragma: no cover - verified above.
             raise SourceSnapshotError(f"loaded provider module is unavailable: {module_name}")
         authenticated_modules.append((module_name, module))
@@ -969,6 +1020,127 @@ def _register_authenticated_modules(
             cache.modules[module_name] = _AuthenticatedModule(module, {snapshot.digest})
         else:
             authenticated.source_digests.add(snapshot.digest)
+
+
+def _load_authenticated_entrypoint_parents(
+    entrypoint: metadata.EntryPoint,
+    snapshot: SourceSnapshot,
+    cache: _AuthenticatedBindingCache,
+) -> dict[str, ModuleType]:
+    parts = entrypoint.module.split(".")
+    entrypoint_parent_names = {".".join(parts[:index]) for index in range(1, len(parts))}
+    namespace_ancestry = _snapshotted_namespace_ancestry(snapshot)
+    parent_names = entrypoint_parent_names.union(namespace_ancestry)
+    authenticated: dict[str, ModuleType] = {}
+    initial_modules = dict(sys.modules)
+    for parent_name in sorted(parent_names, key=lambda name: (name.count("."), name)):
+        module = sys.modules.get(parent_name)
+        if module is None:
+            if parent_name not in entrypoint_parent_names and not _is_importable_snapshotted_package(
+                parent_name,
+                *namespace_ancestry[parent_name],
+            ):
+                continue
+            try:
+                module = import_module(parent_name)
+            except Exception as error:
+                raise SourceSnapshotError(
+                    f"cannot import snapshotted entry point parent: {parent_name}"
+                ) from error
+        elif parent_name not in authenticated and parent_name in initial_modules:
+            owned = cache.modules.get(parent_name)
+            if initial_modules[parent_name] is not module or owned is None or owned.module is not module:
+                raise SourceSnapshotError(
+                    f"preloaded entry point module is not platform-authenticated: {parent_name}"
+                )
+        if not isinstance(module, ModuleType):
+            raise SourceSnapshotError(
+                f"loaded entry point parent is not platform-authenticated: {parent_name}"
+            )
+        _verify_snapshotted_module(
+            parent_name,
+            snapshot,
+            allow_namespace_parent=True,
+        )
+        authenticated[parent_name] = module
+    return authenticated
+
+
+def _snapshotted_namespace_ancestry(
+    snapshot: SourceSnapshot,
+) -> dict[str, tuple[tuple[Path, ...], tuple[Path, ...]]]:
+    source_paths = {source_file.path for source_file in snapshot.files}
+    package_directories: set[tuple[str, ...]] = set()
+    for source_file in snapshot.files:
+        parts = source_file.path.split("/")
+        filename = parts[-1]
+        if not filename.endswith(".py") and not any(
+            filename.endswith(suffix) for suffix in EXTENSION_SUFFIXES
+        ):
+            continue
+        for length in range(1, len(parts)):
+            package_parts = parts[:length]
+            if not all(part.isidentifier() for part in package_parts):
+                break
+            package_directories.add(tuple(package_parts))
+    initializer_paths = {
+        directory: tuple(
+            snapshot.identity.root / source_path
+            for source_path in sorted(source_paths)
+            if source_path.rpartition("/")[0] == "/".join(directory)
+            and _is_package_initializer(source_path.rpartition("/")[2])
+        )
+        for directory in package_directories
+    }
+    namespace_directories = {
+        directory for directory, initializers in initializer_paths.items() if not initializers
+    }
+    required_directories = {
+        directory[:length] for directory in namespace_directories for length in range(1, len(directory) + 1)
+    }
+    return {
+        ".".join(directory): (
+            (snapshot.identity.root.joinpath(*directory),),
+            initializer_paths[directory],
+        )
+        for directory in sorted(required_directories)
+    }
+
+
+def _is_importable_snapshotted_package(
+    module_name: str,
+    expected_locations: tuple[Path, ...],
+    expected_initializers: tuple[Path, ...],
+) -> bool:
+    parent_name, _separator, _child_name = module_name.rpartition(".")
+    if parent_name:
+        parent = sys.modules.get(parent_name)
+        search_path = getattr(parent, "__path__", None)
+        if not isinstance(parent, ModuleType) or search_path is None:
+            return False
+    else:
+        search_path = None
+    spec = PathFinder.find_spec(module_name, search_path)
+    if spec is None or spec.submodule_search_locations is None:
+        return False
+    try:
+        expected = {location.resolve(strict=True) for location in expected_locations}
+        if not expected_initializers:
+            if spec.origin is not None or spec.loader is not None:
+                return False
+            actual = {Path(location).resolve(strict=True) for location in spec.submodule_search_locations}
+        else:
+            if not isinstance(spec.origin, str) or spec.loader is None:
+                return False
+            actual = {Path(spec.origin).resolve(strict=True)}
+            expected = {initializer.resolve(strict=True) for initializer in expected_initializers}
+    except (OSError, TypeError, ValueError):
+        return False
+    return bool(actual.intersection(expected))
+
+
+def _is_package_initializer(filename: str) -> bool:
+    return filename == "__init__.py" or any(filename == f"__init__{suffix}" for suffix in EXTENSION_SUFFIXES)
 
 
 def _validate_cached_provider_modules(
@@ -1000,6 +1172,95 @@ def _restore_modules(before: dict[str, ModuleType]) -> None:
             sys.modules[module_name] = module
 
 
+def _capture_parent_attributes(
+    before_modules: dict[str, ModuleType],
+    snapshot: SourceSnapshot,
+    entrypoint: metadata.EntryPoint,
+) -> _ParentAttributeSnapshot:
+    packages = tuple(
+        _ParentPackageState(module_name, module, dict(module.__dict__))
+        for module_name, module in sorted(before_modules.items())
+        if isinstance(module, ModuleType) and getattr(module, "__path__", None) is not None
+    )
+    return _ParentAttributeSnapshot(
+        candidate_module_names=_candidate_module_names(snapshot, entrypoint),
+        packages=packages,
+    )
+
+
+def _candidate_module_names(
+    snapshot: SourceSnapshot,
+    entrypoint: metadata.EntryPoint,
+) -> tuple[str, ...]:
+    candidates = {entrypoint.module}
+    for source_file in snapshot.files:
+        parts = source_file.path.split("/")
+        filename = parts[-1]
+        if filename.endswith(".py"):
+            leaf = filename[:-3]
+        else:
+            extension_suffix = next(
+                (suffix for suffix in EXTENSION_SUFFIXES if filename.endswith(suffix)),
+                None,
+            )
+            if extension_suffix is None:
+                continue
+            leaf = filename[: -len(extension_suffix)]
+        if not leaf:
+            continue
+        module_parts = parts[:-1] if leaf == "__init__" else [*parts[:-1], leaf]
+        for start in range(len(module_parts)):
+            suffix = module_parts[start:]
+            if suffix and all(part.isidentifier() for part in suffix):
+                candidates.add(".".join(suffix))
+    return tuple(sorted(candidates))
+
+
+def _restore_import_transaction(
+    before_modules: dict[str, ModuleType],
+    parent_attributes: _ParentAttributeSnapshot,
+    primary_error: BaseException,
+) -> None:
+    rollback_errors: list[BaseException] = []
+    current_modules = dict(sys.modules)
+    affected_module_names = set(parent_attributes.candidate_module_names)
+    for module_name in set(before_modules).union(current_modules):
+        if before_modules.get(module_name) is not current_modules.get(module_name):
+            affected_module_names.add(module_name)
+    try:
+        _restore_modules(before_modules)
+    except BaseException as error:  # pragma: no cover - process-global mapping failure.
+        rollback_errors.append(error)
+    package_by_name = {state.parent_name: state for state in parent_attributes.packages}
+    affected_attributes: set[tuple[str, str]] = set()
+    for module_name in affected_module_names:
+        parts = module_name.split(".")
+        for index in range(1, len(parts)):
+            affected_attributes.add((".".join(parts[:index]), parts[index]))
+    for parent_name, child_name in sorted(
+        affected_attributes,
+        key=lambda item: (-item[0].count("."), item[0], item[1]),
+    ):
+        state = package_by_name.get(parent_name)
+        if state is None:
+            continue
+        try:
+            if child_name in state.attributes:
+                state.parent.__dict__[child_name] = state.attributes[child_name]
+            else:
+                state.parent.__dict__.pop(child_name, None)
+        except BaseException as error:  # pragma: no cover - native module dictionary failure.
+            rollback_errors.append(error)
+    if rollback_errors:
+        indeterminate = SourceSnapshotError("provider import transaction rollback is indeterminate")
+        indeterminate.add_note(
+            f"primary provider import failure: {type(primary_error).__name__}: {primary_error}"
+        )
+        for rollback_error in rollback_errors:
+            indeterminate.add_note(f"rollback failure: {type(rollback_error).__name__}: {rollback_error}")
+        raise indeterminate from primary_error
+
+
 def _verify_loaded_provider_provenance(
     provider: object,
     entrypoint: metadata.EntryPoint,
@@ -1019,12 +1280,20 @@ def _provider_module_name(provider: object) -> str:
     return provider_module
 
 
-def _verify_snapshotted_module(module_name: str, snapshot: SourceSnapshot) -> None:
+def _verify_snapshotted_module(
+    module_name: str,
+    snapshot: SourceSnapshot,
+    *,
+    allow_namespace_parent: bool = False,
+) -> None:
     module = sys.modules.get(module_name)
     if not isinstance(module, ModuleType):
         raise SourceSnapshotError(f"loaded provider module is unavailable: {module_name}")
     origin = getattr(module, "__file__", None)
     if not isinstance(origin, str) or not origin:
+        if allow_namespace_parent:
+            _verify_namespace_parent(module_name, module, snapshot)
+            return
         raise SourceSnapshotError(f"loaded provider module has no file origin: {module_name}")
 
     root = snapshot.identity.root
@@ -1049,6 +1318,41 @@ def _verify_snapshotted_module(module_name: str, snapshot: SourceSnapshot) -> No
         os.close(root_fd)
     if current.sha256 != expected.sha256:
         raise SourceSnapshotError(f"loaded provider module hash changed: {module_name}")
+
+
+def _verify_namespace_parent(
+    module_name: str,
+    module: ModuleType,
+    snapshot: SourceSnapshot,
+) -> None:
+    spec = getattr(module, "__spec__", None)
+    if (
+        not isinstance(spec, ModuleSpec)
+        or module.__name__ != module_name
+        or spec.name != module_name
+        or spec.origin is not None
+        or not isinstance(spec.loader, NamespaceLoader)
+        or getattr(module, "__loader__", None) is not spec.loader
+        or spec.submodule_search_locations is None
+        or getattr(module, "__path__", None) is not spec.submodule_search_locations
+        or getattr(module, "__package__", None) != module_name
+    ):
+        raise SourceSnapshotError(f"loaded namespace parent has a nonstandard spec: {module_name}")
+    expected_directory = snapshot.identity.root.joinpath(*module_name.split("."))
+    try:
+        expected_directory = expected_directory.resolve(strict=True)
+        locations = tuple(Path(location).resolve(strict=True) for location in spec.submodule_search_locations)
+    except (OSError, TypeError, ValueError) as error:
+        raise SourceSnapshotError(
+            f"loaded namespace parent has invalid search locations: {module_name}"
+        ) from error
+    if not expected_directory.is_dir() or expected_directory not in locations:
+        raise SourceSnapshotError(
+            f"loaded namespace parent lacks its authenticated search location: {module_name}"
+        )
+    init_path = f"{module_name.replace('.', '/')}/__init__.py"
+    if any(source_file.path == init_path for source_file in snapshot.files):
+        raise SourceSnapshotError(f"loaded namespace parent unexpectedly has executable code: {module_name}")
 
 
 def _call_descriptor(loaded: object, method_name: str, kind: str) -> object:

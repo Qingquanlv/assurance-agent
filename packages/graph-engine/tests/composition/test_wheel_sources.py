@@ -3,6 +3,8 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import importlib
+from importlib.machinery import ModuleSpec, NamespaceLoader, PathFinder
 from importlib import metadata
 import json
 import os
@@ -372,6 +374,223 @@ def _installed_distribution(
         ),
     )
     return metadata.Distribution.at(dist_info)
+
+
+def _namespace_distribution(
+    tmp_path: Path,
+) -> tuple[metadata.Distribution, _WheelPluginSource, _WheelPluginSource, Path]:
+    root = tmp_path / "site"
+    package = root / "round3_namespace" / "plugins"
+    package.mkdir(parents=True)
+    plugin_ids = ("namespace.runtime", "namespace.sibling")
+    module_names = ("provider", "sibling")
+    sources: list[_WheelPluginSource] = []
+    files: list[Path] = []
+    for plugin_id, module_name in zip(plugin_ids, module_names, strict=True):
+        declaration_path = f"round3_namespace/plugins/{module_name}-declaration.json"
+        entrypoint_value = f"round3_namespace.plugins.{module_name}:provider"
+        source_expectation = ProviderSource(
+            distribution="namespace-runtime",
+            version="1.2.3",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name=plugin_id,
+            entrypoint_value=entrypoint_value,
+            declaration_path=declaration_path,
+        )
+        descriptor = PluginDescriptor(
+            schema_version="1",
+            source=source_expectation,
+            plugin_id=plugin_id,
+            plugin_version="1.2.3",
+            engine_api="1.0",
+            task_handlers=(),
+            commit_validators=(),
+        )
+        module_path = package / f"{module_name}.py"
+        module_path.write_text(
+            "from graph_engine.plugin_api import PluginContribution, PluginDescriptor\n"
+            f"_DESCRIPTOR = PluginDescriptor.model_validate({descriptor.model_dump(mode='python')!r})\n"
+            "class Provider:\n"
+            "    def descriptor(self):\n"
+            "        return _DESCRIPTOR\n"
+            "    def contribute(self, _ports):\n"
+            "        return PluginContribution.empty()\n"
+            "provider = Provider()\n",
+            encoding="utf-8",
+        )
+        declaration = root / declaration_path
+        declaration.write_bytes(
+            canonical_json_bytes(
+                {
+                    "schema_version": "1",
+                    "kind": "plugin",
+                    "source": source_expectation.model_dump(mode="json"),
+                    "descriptor": descriptor.model_dump(mode="json"),
+                }
+            )
+        )
+        files.extend((module_path, declaration))
+        sources.append(
+            _WheelPluginSource(
+                distribution="namespace-runtime",
+                entrypoint_name=plugin_id,
+                declaration_path=declaration_path,
+            )
+        )
+    dist_info = root / "namespace_runtime-1.2.3.dist-info"
+    dist_info.mkdir()
+    metadata_path = dist_info / "METADATA"
+    metadata_path.write_text(
+        "Metadata-Version: 2.1\nName: namespace-runtime\nVersion: 1.2.3\n",
+        encoding="utf-8",
+    )
+    entrypoints_path = dist_info / "entry_points.txt"
+    entrypoints_path.write_text(
+        "[graph_engine.plugins]\n"
+        "namespace.runtime = round3_namespace.plugins.provider:provider\n"
+        "namespace.sibling = round3_namespace.plugins.sibling:provider\n",
+        encoding="utf-8",
+    )
+    _write_record(
+        root,
+        dist_info,
+        tuple(path.relative_to(root).as_posix() for path in (*files, metadata_path, entrypoints_path)),
+    )
+    return (
+        metadata.Distribution.at(dist_info),
+        sources[0],
+        sources[1],
+        root,
+    )
+
+
+def _rollback_distribution(
+    tmp_path: Path,
+) -> tuple[metadata.Distribution, _WheelPluginSource, _WheelPluginSource, Path]:
+    root = tmp_path / "site"
+    package = root / "round3_rollback_pkg"
+    package.mkdir(parents=True)
+    package_init = package / "__init__.py"
+    package_init.write_bytes(b"PACKAGE = 'authenticated'\n")
+    nested_package = package / "nested"
+    nested_package.mkdir()
+    nested_init = nested_package / "__init__.py"
+    nested_init.write_bytes(b"NESTED = 'authenticated'\n")
+    nested_leaf = nested_package / "leaf.py"
+    nested_leaf.write_bytes(b"VALUE = 'authenticated'\n")
+    sources: dict[str, ProviderSource] = {}
+    descriptors: dict[str, PluginDescriptor] = {}
+    declaration_paths = {
+        "rollback.sibling": "round3_rollback_pkg/sibling-declaration.json",
+        "rollback.child": "round3_rollback_pkg/child-declaration.json",
+    }
+    entrypoint_values = {
+        "rollback.sibling": "round3_rollback_pkg.sibling:provider",
+        "rollback.child": "round3_rollback_pkg.child:provider",
+    }
+    for plugin_id in ("rollback.sibling", "rollback.child"):
+        sources[plugin_id] = ProviderSource(
+            distribution="rollback-runtime",
+            version="1.2.3",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name=plugin_id,
+            entrypoint_value=entrypoint_values[plugin_id],
+            declaration_path=declaration_paths[plugin_id],
+        )
+        descriptors[plugin_id] = PluginDescriptor(
+            schema_version="1",
+            source=sources[plugin_id],
+            plugin_id=plugin_id,
+            plugin_version="1.2.3",
+            engine_api="1.0",
+            task_handlers=(),
+            commit_validators=(),
+        )
+        declaration = root / declaration_paths[plugin_id]
+        declaration.write_bytes(
+            canonical_json_bytes(
+                {
+                    "schema_version": "1",
+                    "kind": "plugin",
+                    "source": sources[plugin_id].model_dump(mode="json"),
+                    "descriptor": descriptors[plugin_id].model_dump(mode="json"),
+                }
+            )
+        )
+
+    sibling_module = package / "sibling.py"
+    sibling_module.write_text(
+        "import round3_rollback_pkg.nested\n"
+        "from graph_engine.plugin_api import PluginContribution, PluginDescriptor\n"
+        f"_DESCRIPTOR = PluginDescriptor.model_validate({descriptors['rollback.sibling'].model_dump(mode='python')!r})\n"
+        "class Provider:\n"
+        "    def descriptor(self):\n"
+        "        return _DESCRIPTOR\n"
+        "    def contribute(self, _ports):\n"
+        "        return PluginContribution.empty()\n"
+        "provider = Provider()\n",
+        encoding="utf-8",
+    )
+    child_module = package / "child.py"
+    child_module.write_text(
+        "import sys\n"
+        "import round3_import_control as _control\n"
+        "import round3_rollback_pkg.nested.leaf\n"
+        "from graph_engine.plugin_api import PluginContribution, PluginDescriptor\n"
+        f"_CORRECT = PluginDescriptor.model_validate({descriptors['rollback.child'].model_dump(mode='python')!r})\n"
+        "_DRIFTED = _CORRECT.model_copy(update={'engine_api': '>=2'})\n"
+        "_control.seen.append(sys.modules[__name__])\n"
+        "class Provider:\n"
+        "    def descriptor(self):\n"
+        "        return _CORRECT if _control.correct else _DRIFTED\n"
+        "    def contribute(self, _ports):\n"
+        "        return PluginContribution.empty()\n"
+        "provider = Provider()\n",
+        encoding="utf-8",
+    )
+    dist_info = root / "rollback_runtime-1.2.3.dist-info"
+    dist_info.mkdir()
+    metadata_path = dist_info / "METADATA"
+    metadata_path.write_text(
+        "Metadata-Version: 2.1\nName: rollback-runtime\nVersion: 1.2.3\n",
+        encoding="utf-8",
+    )
+    entrypoints_path = dist_info / "entry_points.txt"
+    entrypoints_path.write_text(
+        "[graph_engine.plugins]\n"
+        "rollback.sibling = round3_rollback_pkg.sibling:provider\n"
+        "rollback.child = round3_rollback_pkg.child:provider\n",
+        encoding="utf-8",
+    )
+    files = (
+        package_init,
+        nested_init,
+        nested_leaf,
+        sibling_module,
+        child_module,
+        *(root / path for path in declaration_paths.values()),
+        metadata_path,
+        entrypoints_path,
+    )
+    _write_record(
+        root,
+        dist_info,
+        tuple(path.relative_to(root).as_posix() for path in files),
+    )
+    return (
+        metadata.Distribution.at(dist_info),
+        _WheelPluginSource(
+            distribution="rollback-runtime",
+            entrypoint_name="rollback.sibling",
+            declaration_path=declaration_paths["rollback.sibling"],
+        ),
+        _WheelPluginSource(
+            distribution="rollback-runtime",
+            entrypoint_name="rollback.child",
+            declaration_path=declaration_paths["rollback.child"],
+        ),
+        root,
+    )
 
 
 def _select_distribution(monkeypatch: pytest.MonkeyPatch, distribution: metadata.Distribution) -> None:
@@ -1167,6 +1386,240 @@ def test_load_rejects_preload_executed_from_changed_then_restored_bytes(
         load_snapshotted_entrypoint(source, snapshot)
 
 
+def test_platform_loads_and_repeats_a_real_pep420_namespace_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution, source, sibling_source, root = _namespace_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    monkeypatch.syspath_prepend(str(root))
+    snapshot = snapshot_wheel_source(source)
+    sibling_snapshot = snapshot_wheel_source(sibling_source)
+    cache = wheel_sources._AuthenticatedBindingCache()
+
+    try:
+        first = wheel_sources._load_snapshotted_entrypoint_binding(
+            source,
+            snapshot,
+            binding_cache=cache,
+        )
+        sibling = wheel_sources._load_snapshotted_entrypoint_binding(
+            sibling_source,
+            sibling_snapshot,
+            binding_cache=cache,
+        )
+        repeated = wheel_sources._load_snapshotted_entrypoint_binding(
+            source,
+            snapshot,
+            binding_cache=cache,
+        )
+
+        assert repeated.provider is first.provider
+        assert sibling.provider.descriptor().plugin_id == "namespace.sibling"
+        for module_name in ("round3_namespace", "round3_namespace.plugins"):
+            namespace = sys.modules[module_name]
+            assert namespace.__file__ is None
+            assert namespace.__spec__ is not None
+            assert isinstance(namespace.__spec__.loader, NamespaceLoader)
+    finally:
+        for module_name in tuple(sys.modules):
+            if module_name == "round3_namespace" or module_name.startswith("round3_namespace."):
+                sys.modules.pop(module_name, None)
+
+
+def test_unowned_real_pep420_namespace_parent_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution, source, _sibling_source, root = _namespace_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    monkeypatch.syspath_prepend(str(root))
+    snapshot = snapshot_wheel_source(source)
+
+    try:
+        namespace = importlib.import_module("round3_namespace")
+        assert namespace.__file__ is None
+        with pytest.raises(SourceSnapshotError, match="platform-authenticated"):
+            load_snapshotted_entrypoint(source, snapshot)
+    finally:
+        for module_name in tuple(sys.modules):
+            if module_name == "round3_namespace" or module_name.startswith("round3_namespace."):
+                sys.modules.pop(module_name, None)
+
+
+def test_load_created_fake_namespace_parent_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution, source, _sibling_source, root = _namespace_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    monkeypatch.syspath_prepend(str(root))
+    snapshot = snapshot_wheel_source(source)
+    declaration = json.loads(
+        next(
+            source_file.content
+            for source_file in snapshot.files
+            if source_file.path == source.declaration_path
+        )
+    )
+    descriptor = PluginDescriptor.model_validate(declaration["descriptor"])
+
+    class Provider:
+        __module__ = "round3_namespace.plugins.provider"
+
+        def descriptor(self) -> PluginDescriptor:
+            return descriptor
+
+    provider = Provider()
+    loaded: list[object] = []
+
+    def synthetic_namespace(name: str, directory: Path) -> ModuleType:
+        loader = NamespaceLoader(name, [str(directory)], PathFinder)
+        spec = ModuleSpec(name, loader, origin=None, is_package=True)
+        locations = [str(directory)]
+        spec.submodule_search_locations = locations
+        module = ModuleType(name)
+        module.__spec__ = spec
+        module.__loader__ = loader
+        module.__path__ = locations
+        module.__package__ = name
+        return module
+
+    def load(_entrypoint: metadata.EntryPoint) -> object:
+        loaded.append(provider)
+        top = synthetic_namespace("round3_namespace", distribution.locate_file("round3_namespace"))
+        sys.modules[top.__name__] = top
+        nested = synthetic_namespace(
+            "round3_namespace.plugins",
+            distribution.locate_file("round3_namespace/plugins"),
+        )
+        leaf = ModuleType("round3_namespace.plugins.provider")
+        leaf.__file__ = str(distribution.locate_file("round3_namespace/plugins/provider.py"))
+        sys.modules[nested.__name__] = nested
+        sys.modules[leaf.__name__] = leaf
+        return provider
+
+    monkeypatch.setattr(metadata.EntryPoint, "load", load)
+    cache = wheel_sources._AuthenticatedBindingCache()
+
+    with pytest.raises(SourceSnapshotError, match="platform-authenticated"):
+        wheel_sources._load_snapshotted_entrypoint_binding(
+            source,
+            snapshot,
+            binding_cache=cache,
+        )
+    assert cache.modules == {}
+    assert loaded == [provider]
+    assert "round3_namespace" not in sys.modules
+
+
+@pytest.mark.parametrize("prior_child", ("missing", "present"))
+def test_failed_import_restores_existing_parent_child_attribute(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prior_child: str,
+) -> None:
+    distribution, sibling_source, child_source, root = _rollback_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    monkeypatch.syspath_prepend(str(root))
+    sibling_snapshot = snapshot_wheel_source(sibling_source)
+    child_snapshot = snapshot_wheel_source(child_source)
+    cache = wheel_sources._AuthenticatedBindingCache()
+    control = ModuleType("round3_import_control")
+    control.correct = False  # type: ignore[attr-defined]
+    control.seen = []  # type: ignore[attr-defined]
+    sys.modules[control.__name__] = control
+
+    try:
+        wheel_sources._load_snapshotted_entrypoint_binding(
+            sibling_source,
+            sibling_snapshot,
+            binding_cache=cache,
+        )
+        parent = sys.modules["round3_rollback_pkg"]
+        nested_parent = sys.modules["round3_rollback_pkg.nested"]
+        sentinel = object()
+        if prior_child == "present":
+            parent.child = sentinel  # type: ignore[attr-defined]
+            nested_parent.leaf = sentinel  # type: ignore[attr-defined]
+        else:
+            parent.__dict__.pop("child", None)
+            nested_parent.__dict__.pop("leaf", None)
+
+        with pytest.raises(SourceSnapshotError, match="static declaration"):
+            wheel_sources._load_snapshotted_entrypoint_binding(
+                child_source,
+                child_snapshot,
+                binding_cache=cache,
+            )
+        stale = control.seen[-1]  # type: ignore[attr-defined]
+        assert "round3_rollback_pkg.child" not in sys.modules
+        assert "round3_rollback_pkg.nested.leaf" not in sys.modules
+        if prior_child == "present":
+            assert parent.child is sentinel  # type: ignore[attr-defined]
+            assert nested_parent.leaf is sentinel  # type: ignore[attr-defined]
+        else:
+            assert "child" not in parent.__dict__
+            assert "leaf" not in nested_parent.__dict__
+
+        control.correct = True  # type: ignore[attr-defined]
+        corrected = wheel_sources._load_snapshotted_entrypoint_binding(
+            child_source,
+            child_snapshot,
+            binding_cache=cache,
+        )
+        assert parent.child is sys.modules["round3_rollback_pkg.child"]  # type: ignore[attr-defined]
+        assert parent.child is not stale  # type: ignore[attr-defined]
+        assert corrected.provider is parent.child.provider  # type: ignore[attr-defined]
+        assert nested_parent.leaf is sys.modules["round3_rollback_pkg.nested.leaf"]  # type: ignore[attr-defined]
+    finally:
+        sys.modules.pop(control.__name__, None)
+        for module_name in tuple(sys.modules):
+            if module_name == "round3_rollback_pkg" or module_name.startswith("round3_rollback_pkg."):
+                sys.modules.pop(module_name, None)
+
+
+def test_import_rollback_failure_is_typed_and_preserves_the_primary_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    distribution, sibling_source, child_source, root = _rollback_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    monkeypatch.syspath_prepend(str(root))
+    cache = wheel_sources._AuthenticatedBindingCache()
+    control = ModuleType("round3_import_control")
+    control.correct = False  # type: ignore[attr-defined]
+    control.seen = []  # type: ignore[attr-defined]
+    sys.modules[control.__name__] = control
+
+    try:
+        wheel_sources._load_snapshotted_entrypoint_binding(
+            sibling_source,
+            snapshot_wheel_source(sibling_source),
+            binding_cache=cache,
+        )
+
+        def fail_module_restore(_before: dict[str, ModuleType]) -> None:
+            raise RuntimeError("simulated sys.modules rollback failure")
+
+        monkeypatch.setattr(wheel_sources, "_restore_modules", fail_module_restore)
+        with pytest.raises(SourceSnapshotError, match="rollback is indeterminate") as caught:
+            wheel_sources._load_snapshotted_entrypoint_binding(
+                child_source,
+                snapshot_wheel_source(child_source),
+                binding_cache=cache,
+            )
+
+        assert isinstance(caught.value.__cause__, SourceSnapshotError)
+        assert "static declaration" in str(caught.value.__cause__)
+        assert any(
+            "simulated sys.modules rollback failure" in note
+            for note in getattr(caught.value, "__notes__", ())
+        )
+    finally:
+        sys.modules.pop(control.__name__, None)
+        for module_name in tuple(sys.modules):
+            if module_name == "round3_rollback_pkg" or module_name.startswith("round3_rollback_pkg."):
+                sys.modules.pop(module_name, None)
+
+
 def test_platform_cache_rejects_owned_module_from_a_different_source_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1251,8 +1704,188 @@ def test_failed_module_set_validation_commits_no_cache_authority(
     cache = wheel_sources._AuthenticatedBindingCache()
 
     with pytest.raises(SourceSnapshotError, match="authenticated (root|snapshot)"):
-        wheel_sources._register_authenticated_modules(cache, provider, entrypoint, snapshot)
+        wheel_sources._register_authenticated_modules(
+            cache,
+            provider,
+            entrypoint,
+            snapshot,
+            {"toy_plugin": parent},
+        )
     assert cache.modules == {}
+
+
+def test_registration_rejects_unpinned_provider_only_namespace_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace_root = tmp_path / "provider_namespace"
+    implementation_root = namespace_root / "plugins"
+    implementation_root.mkdir(parents=True)
+    bridge_path = namespace_root / "bridge.py"
+    implementation_path = implementation_root / "impl.py"
+    bridge_path.write_bytes(b"provider = object()\n")
+    implementation_path.write_bytes(b"provider = object()\n")
+    snapshot = SourceSnapshot.from_identity(
+        SourceIdentity(
+            kind=SourceKind.WHEEL_PLUGIN,
+            root=tmp_path.resolve(),
+            distribution="provider-namespace",
+            version="1.2.3",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name="provider.namespace",
+            entrypoint_value="provider_namespace.bridge:provider",
+            declaration_path="provider_namespace/plugin-declaration.json",
+            plugin_id="provider.namespace",
+            plugin_version="1.2.3",
+        ),
+        (
+            SourceFile.from_bytes("provider_namespace/bridge.py", bridge_path.read_bytes()),
+            SourceFile.from_bytes(
+                "provider_namespace/plugins/impl.py",
+                implementation_path.read_bytes(),
+            ),
+        ),
+    )
+
+    def synthetic_namespace(name: str, directory: Path) -> ModuleType:
+        loader = NamespaceLoader(name, [str(directory)], PathFinder)
+        spec = ModuleSpec(name, loader, origin=None, is_package=True)
+        locations = [str(directory)]
+        spec.submodule_search_locations = locations
+        module = ModuleType(name)
+        module.__spec__ = spec
+        module.__loader__ = loader
+        module.__path__ = locations
+        module.__package__ = name
+        return module
+
+    top = synthetic_namespace("provider_namespace", namespace_root)
+    monkeypatch.setitem(sys.modules, top.__name__, top)
+    provider_parent = synthetic_namespace("provider_namespace.plugins", implementation_root)
+    bridge = ModuleType("provider_namespace.bridge")
+    bridge.__file__ = str(bridge_path)
+    implementation = ModuleType("provider_namespace.plugins.impl")
+    implementation.__file__ = str(implementation_path)
+    monkeypatch.setitem(sys.modules, provider_parent.__name__, provider_parent)
+    monkeypatch.setitem(sys.modules, bridge.__name__, bridge)
+    monkeypatch.setitem(sys.modules, implementation.__name__, implementation)
+    provider = _PluginProvider("provider.namespace")
+    provider.__module__ = implementation.__name__
+    entrypoint = metadata.EntryPoint(
+        name="provider.namespace",
+        value="provider_namespace.bridge:provider",
+        group="graph_engine.plugins",
+    )
+    cache = wheel_sources._AuthenticatedBindingCache()
+
+    with pytest.raises(SourceSnapshotError, match="namespace parent is not platform-authenticated"):
+        wheel_sources._register_authenticated_modules(
+            cache,
+            provider,
+            entrypoint,
+            snapshot,
+            {top.__name__: top},
+        )
+    assert cache.modules == {}
+
+
+def test_parent_preload_authenticates_provider_namespace_under_regular_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge_root = tmp_path / "bridge_namespace"
+    provider_root = tmp_path / "provider_package"
+    provider_namespace = provider_root / "plugins"
+    bridge_root.mkdir()
+    provider_namespace.mkdir(parents=True)
+    files = {
+        "bridge_namespace/entry.py": b"provider = object()\n",
+        "provider_package/__init__.py": b"import provider_package.plugins\n",
+        "provider_package/plugins/impl.py": b"provider = object()\n",
+    }
+    for relative_path, content in files.items():
+        (tmp_path / relative_path).write_bytes(content)
+    snapshot = SourceSnapshot.from_identity(
+        SourceIdentity(
+            kind=SourceKind.WHEEL_PLUGIN,
+            root=tmp_path.resolve(),
+            distribution="provider-package",
+            version="1.2.3",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name="provider.package",
+            entrypoint_value="bridge_namespace.entry:provider",
+            declaration_path="bridge_namespace/plugin-declaration.json",
+            plugin_id="provider.package",
+            plugin_version="1.2.3",
+        ),
+        tuple(SourceFile.from_bytes(relative_path, content) for relative_path, content in files.items()),
+    )
+    entrypoint = metadata.EntryPoint(
+        name="provider.package",
+        value="bridge_namespace.entry:provider",
+        group="graph_engine.plugins",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    try:
+        authenticated = wheel_sources._load_authenticated_entrypoint_parents(
+            entrypoint,
+            snapshot,
+            wheel_sources._AuthenticatedBindingCache(),
+        )
+
+        assert set(authenticated) == {
+            "bridge_namespace",
+            "provider_package",
+            "provider_package.plugins",
+        }
+        assert authenticated["provider_package"].__file__ == str(provider_root / "__init__.py")
+        assert isinstance(
+            authenticated["provider_package.plugins"].__spec__.loader,
+            NamespaceLoader,
+        )
+    finally:
+        for module_name in tuple(sys.modules):
+            if module_name in {"bridge_namespace", "provider_package"} or module_name.startswith(
+                ("bridge_namespace.", "provider_package.")
+            ):
+                sys.modules.pop(module_name, None)
+
+
+def test_namespace_ancestry_recognizes_extension_package_initializer(tmp_path: Path) -> None:
+    initializer_path = f"provider_package/__init__{wheel_sources.EXTENSION_SUFFIXES[0]}"
+    snapshot = SourceSnapshot.from_identity(
+        SourceIdentity(
+            kind=SourceKind.WHEEL_PLUGIN,
+            root=tmp_path.resolve(),
+            distribution="provider-package",
+            version="1.2.3",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name="provider.package",
+            entrypoint_value="bridge_namespace.entry:provider",
+            declaration_path="bridge_namespace/plugin-declaration.json",
+            plugin_id="provider.package",
+            plugin_version="1.2.3",
+        ),
+        (
+            SourceFile.from_bytes(initializer_path, b"extension package initializer"),
+            SourceFile.from_bytes(
+                "provider_package/plugins/impl.py",
+                b"provider = object()\n",
+            ),
+        ),
+    )
+
+    ancestry = wheel_sources._snapshotted_namespace_ancestry(snapshot)
+
+    assert ancestry["provider_package"] == (
+        (tmp_path / "provider_package",),
+        (tmp_path / initializer_path,),
+    )
+    assert ancestry["provider_package.plugins"] == (
+        (tmp_path / "provider_package" / "plugins",),
+        (),
+    )
 
 
 def test_load_rejects_provider_module_from_foreign_root(
