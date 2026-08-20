@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PurePosixPath
 
+from packaging.version import InvalidVersion, Version
+
 from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.identifiers import IdentifierError, validate_qualified_id
 
 
 class SourceKind(str, Enum):
@@ -27,6 +30,8 @@ class SourceIdentity:
     version: str | None = None
     entrypoint_group: str | None = None
     entrypoint_name: str | None = None
+    plugin_id: str | None = None
+    plugin_version: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, SourceKind):
@@ -41,6 +46,7 @@ class SourceIdentity:
             self.entrypoint_group,
             self.entrypoint_name,
         )
+        plugin_coordinates = (self.plugin_id, self.plugin_version)
         if self.kind in {SourceKind.WHEEL_PRODUCT, SourceKind.WHEEL_PLUGIN}:
             if any(not isinstance(value, str) or not value for value in wheel_coordinates):
                 raise ValueError("wheel source identity requires complete wheel coordinates")
@@ -53,6 +59,20 @@ class SourceIdentity:
                 raise ValueError("wheel source identity requires complete wheel coordinates")
         elif any(value is not None for value in wheel_coordinates):
             raise ValueError("wheel coordinates are allowed only for wheel source identities")
+        if self.kind == SourceKind.CONFIG_TREE:
+            if any(value is not None for value in plugin_coordinates):
+                if any(not isinstance(value, str) or not value for value in plugin_coordinates):
+                    raise ValueError("config source identity requires complete plugin coordinates")
+                try:
+                    validate_qualified_id(self.plugin_id or "")
+                except IdentifierError as error:
+                    raise ValueError("config source identity requires a qualified plugin id") from error
+                try:
+                    Version(self.plugin_version or "")
+                except InvalidVersion as error:
+                    raise ValueError("config source identity requires a valid plugin version") from error
+        elif any(value is not None for value in plugin_coordinates):
+            raise ValueError("plugin coordinates are allowed only for config source identities")
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +144,18 @@ def _file_digest_document(files: tuple[SourceFile, ...]) -> JSONValue:
 
 def _snapshot_digest(identity: SourceIdentity, files: tuple[SourceFile, ...]) -> str:
     file_document = _file_digest_document(files)
+    if identity.plugin_id is not None:
+        return canonical_digest(
+            {
+                "identity": {
+                    "kind": identity.kind.value,
+                    "root": str(identity.root),
+                    "plugin_id": identity.plugin_id,
+                    "plugin_version": identity.plugin_version,
+                },
+                "files": file_document,
+            }
+        )
     if identity.distribution is None:
         return canonical_digest(file_document)
     identity_document: dict[str, JSONValue] = {

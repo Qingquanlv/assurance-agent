@@ -18,6 +18,7 @@ from graph_engine.composition import (
     SourceSnapshot,
     SourceSnapshotError,
     capture_declared_tree,
+    capture_explicit_file,
 )
 
 
@@ -61,6 +62,19 @@ def test_declared_tree_returns_frozen_bytes_and_models(tmp_path: Path) -> None:
         snapshot.digest = "0" * 64  # type: ignore[misc]
     with pytest.raises(AttributeError):
         snapshot.files[0].content = b"changed"  # type: ignore[misc]
+
+
+def test_explicit_file_capture_rejects_unrescanned_directory_chains(tmp_path: Path) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "product.yaml").write_text("product_id: toy.product\n", encoding="utf-8")
+
+    with pytest.raises(SourceSnapshotError, match="one path segment"):
+        capture_explicit_file(
+            tmp_path,
+            "nested/product.yaml",
+            DeclaredTreePolicy.product_file(),
+        )
 
 
 def test_source_models_reject_mutable_file_lists_and_unsafe_paths(tmp_path: Path) -> None:

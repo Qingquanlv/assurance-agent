@@ -39,11 +39,15 @@ class DeclaredTreePolicy:
 
     @property
     def require_single_link(self) -> bool:
-        return self.kind in {SourceKind.CONFIG_TREE, SourceKind.EDITABLE_PLUGIN}
+        return self.kind in {
+            SourceKind.CONFIG_TREE,
+            SourceKind.EDITABLE_PLUGIN,
+            SourceKind.PRODUCT_FILE,
+        }
 
     @property
     def reject_executable_files(self) -> bool:
-        return self.kind == SourceKind.CONFIG_TREE
+        return self.kind in {SourceKind.CONFIG_TREE, SourceKind.PRODUCT_FILE}
 
     @classmethod
     def config_tree(cls) -> DeclaredTreePolicy:
@@ -52,6 +56,10 @@ class DeclaredTreePolicy:
     @classmethod
     def editable(cls) -> DeclaredTreePolicy:
         return cls(kind=SourceKind.EDITABLE_PLUGIN)
+
+    @classmethod
+    def product_file(cls) -> DeclaredTreePolicy:
+        return cls(kind=SourceKind.PRODUCT_FILE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +93,25 @@ def capture_declared_tree(
             raise SourceSnapshotError("source tree changed while it was captured")
         resolved_root = _resolve_stable_root(root, root_fd)
         return SourceSnapshot.from_files(policy.kind, resolved_root, captured)
+    finally:
+        _close_descriptors_preserving_primary((root_fd,), sys.exception())
+
+
+def capture_explicit_file(
+    root: Path,
+    file: str,
+    policy: DeclaredTreePolicy,
+) -> SourceSnapshot:
+    """Capture one named source file without discovering or claiming its siblings."""
+
+    root_fd = _open_physical_directory(root)
+    try:
+        normalized = _validate_closed_file_list((file,))
+        if "/" in normalized[0]:
+            raise SourceSnapshotError("explicit file capture requires one path segment")
+        captured = _read_stable_file_at(root_fd, normalized[0], policy)
+        resolved_root = _resolve_stable_root(root, root_fd)
+        return SourceSnapshot.from_files(policy.kind, resolved_root, (captured,))
     finally:
         _close_descriptors_preserving_primary((root_fd,), sys.exception())
 
@@ -386,4 +413,5 @@ __all__ = [
     "DeclaredTreePolicy",
     "SourceSnapshotError",
     "capture_declared_tree",
+    "capture_explicit_file",
 ]
