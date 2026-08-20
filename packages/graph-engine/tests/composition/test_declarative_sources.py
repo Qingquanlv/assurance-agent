@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 import os
 from pathlib import Path
 import stat
@@ -208,15 +209,20 @@ def test_config_plugin_binding_data_is_recursively_immutable(tmp_path: Path) -> 
         },
     )
     loaded = load_config_tree(ConfigTreePluginSource(path=tmp_path))
-    data = loaded.contribution.bindings[0].data
-    assert isinstance(data, dict)
+    binding = loaded.contribution.bindings[0]
+    data = binding.data
+    assert isinstance(data, Mapping)
+    assert not isinstance(data, dict)
     skills = data["skills"]
-    assert isinstance(skills, list)
+    assert isinstance(skills, tuple)
 
-    with pytest.raises(TypeError, match="frozen"):
-        data["other"] = True
-    with pytest.raises(TypeError, match="frozen"):
-        skills.append("toy.flow.other-skill")
+    with pytest.raises(TypeError):
+        data["other"] = True  # type: ignore[index]
+    with pytest.raises(TypeError):
+        dict.__setitem__(data, "other", True)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        list.append(skills, "toy.flow.other-skill")  # type: ignore[arg-type]
+    assert binding.model_dump(mode="json")["data"] == {"skills": ["toy.flow.greeting-skill"]}
 
 
 def test_config_plugin_rejects_unknown_nested_keys(tmp_path: Path) -> None:

@@ -234,11 +234,12 @@ def _build_capability_registry(
     task_handlers: dict[str, TaskHandler] = {}
     validators: dict[str, CommitValidator] = {}
     binding_contributions: dict[str, tuple[str, CapabilityBindingContribution]] = {}
+    reservations: dict[str, str] = {}
 
     for owned in contributions:
         for capability_id, handler in owned.contribution.task_handlers.items():
             _owned_id(capability_id, owned.owner_id, "task handler")
-            _ensure_unused_capability(entries, capability_id, "task handler")
+            _reserve_capability(reservations, capability_id, "task handler")
             if not callable(getattr(handler, "execute", None)):
                 raise RegistryConflict(f"task handler has no execute method: {capability_id}")
             entry = TaskHandlerEntry(capability_id, owned.owner_id, handler)
@@ -246,7 +247,7 @@ def _build_capability_registry(
             task_handlers[capability_id] = handler
         for capability_id, validator in owned.contribution.commit_validators.items():
             _owned_id(capability_id, owned.owner_id, "commit validator")
-            _ensure_unused_capability(entries, capability_id, "commit validator")
+            _reserve_capability(reservations, capability_id, "commit validator")
             if not callable(getattr(validator, "validate", None)):
                 raise RegistryConflict(f"commit validator has no validate method: {capability_id}")
             entry = CommitValidatorEntry(capability_id, owned.owner_id, validator)
@@ -256,9 +257,7 @@ def _build_capability_registry(
             if not isinstance(binding, CapabilityBindingContribution):
                 raise RegistryConflict(f"plugin {owned.owner_id} contributed an invalid binding entry")
             _owned_id(binding.capability_id, owned.owner_id, "binding")
-            _ensure_unused_capability(entries, binding.capability_id, "binding")
-            if binding.capability_id in binding_contributions:
-                raise RegistryConflict(f"duplicate binding id: {binding.capability_id}")
+            _reserve_capability(reservations, binding.capability_id, "binding")
             if len(set(binding.resource_ids)) != len(binding.resource_ids):
                 raise RegistryConflict(f"duplicate binding resource id: {binding.capability_id}")
             binding_contributions[binding.capability_id] = (owned.owner_id, binding)
@@ -292,10 +291,14 @@ def _build_capability_registry(
     )
 
 
-def _ensure_unused_capability(entries: Mapping[str, object], capability_id: str, kind: str) -> None:
-    if capability_id in entries:
-        previous = type(entries[capability_id]).__name__
-        raise RegistryConflict(f"cross-kind registry id: {capability_id} is both {previous} and {kind}")
+def _reserve_capability(reservations: dict[str, str], capability_id: str, kind: str) -> None:
+    previous = reservations.get(capability_id)
+    if previous is None:
+        reservations[capability_id] = kind
+        return
+    if previous == kind:
+        raise RegistryConflict(f"duplicate {kind} id: {capability_id}")
+    raise RegistryConflict(f"cross-kind registry id: {capability_id} is both {previous} and {kind}")
 
 
 def _reject_alias_cycles(

@@ -20,7 +20,7 @@ from pydantic import (
 )
 
 from graph_engine.errors import GraphEngineError
-from graph_engine.frozen_json import FrozenJSONContainerValue, freeze_json, thaw_json
+from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 
 if TYPE_CHECKING:
@@ -328,7 +328,7 @@ class ResourceContribution:
 class CapabilityBindingContribution(FrozenModel):
     capability_id: str
     target_capability_id: str
-    data: FrozenJSONContainerValue = None
+    data: FrozenJSONValue = None
     resource_ids: tuple[str, ...] = ()
 
     @field_validator("capability_id", "target_capability_id")

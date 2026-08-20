@@ -523,8 +523,7 @@ class CapabilityRegistry:
 
         _validate_object_view(task_handlers, expected_handlers, "task handler")
         _validate_object_view(commit_validators, expected_validators, "commit validator")
-        if bindings != expected_bindings:
-            raise ValueError("binding view disagrees with capability entries")
+        _validate_object_view(bindings, expected_bindings, "binding")
         for binding in expected_bindings.values():
             target = entries.get(binding.target_capability_id)
             if not isinstance(target, TaskHandlerEntry):

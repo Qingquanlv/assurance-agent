@@ -201,6 +201,36 @@ def test_public_registry_views_reject_inconsistent_entry_mappings() -> None:
         SourceRegistry({"toy.other": SourceEntry("toy.runtime", source)})
 
 
+def test_public_registry_rejects_value_equal_unselected_binding_projection() -> None:
+    target = _Handler()
+    sources = (
+        _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),
+        _source("toy.flow"),
+    )
+    contributions = (
+        _runtime_contribution(target),
+        _binding_contribution(
+            "toy.flow.run",
+            "toy.runtime.execute",
+            data={"steps": ["one", "two"]},
+        ),
+    )
+    first = build_registries(sources, contributions, ("toy.runtime", "toy.flow"))
+    second = build_registries(sources, contributions, ("toy.runtime", "toy.flow"))
+    selected = first.capabilities
+    unselected_binding = second.capabilities.bindings["toy.flow.run"]
+
+    assert selected.bindings["toy.flow.run"] == unselected_binding
+    assert selected.bindings["toy.flow.run"] is not unselected_binding
+    with pytest.raises(ValueError, match="binding view disagrees"):
+        CapabilityRegistry(
+            entries=selected.entries,
+            task_handlers=selected.task_handlers,
+            commit_validators=selected.commit_validators,
+            bindings={"toy.flow.run": unselected_binding},
+        )
+
+
 def test_public_binding_entry_rejects_untrusted_handler() -> None:
     with pytest.raises(TypeError, match="engine-derived"):
         CapabilityBindingEntry(
@@ -350,6 +380,48 @@ def test_registry_rejects_duplicate_ids_within_one_kind() -> None:
             (_source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),),
             (duplicate,),
             ("toy.runtime",),
+        )
+
+
+@pytest.mark.parametrize("direct_kind", ["task handler", "commit validator"])
+@pytest.mark.parametrize(
+    "dependency_order",
+    [
+        ("toy.flow", "toy.flow.runtime"),
+        ("toy.flow.runtime", "toy.flow"),
+    ],
+)
+def test_binding_collision_with_direct_capability_is_order_independent(
+    direct_kind: str,
+    dependency_order: tuple[str, str],
+) -> None:
+    shared_id = "toy.flow.runtime.shared"
+    direct = (
+        PluginContribution(
+            task_handlers={
+                "toy.flow.runtime.target": _Handler(),
+                shared_id: _Handler(),
+            }
+        )
+        if direct_kind == "task handler"
+        else PluginContribution(
+            task_handlers={"toy.flow.runtime.target": _Handler()},
+            commit_validators={shared_id: _Validator()},
+        )
+    )
+    contributions = {
+        "toy.flow": _binding_contribution(
+            shared_id,
+            "toy.flow.runtime.target",
+        ),
+        "toy.flow.runtime": direct,
+    }
+
+    with pytest.raises(RegistryConflict, match=f"cross-kind registry id: {shared_id}"):
+        build_registries(
+            sources=tuple(_source(plugin_id, kind=SourceKind.WHEEL_PLUGIN) for plugin_id in dependency_order),
+            contributions=tuple(contributions[plugin_id] for plugin_id in dependency_order),
+            dependency_order=dependency_order,
         )
 
 

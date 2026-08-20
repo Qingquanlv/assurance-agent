@@ -104,9 +104,14 @@ def test_plugin_binding_contribution_deep_freezes_data() -> None:
         )
     )
 
-    assert contribution.bindings[0].data == {"steps": ["one", "two"]}
+    binding = contribution.bindings[0]
+    assert binding.data == {"steps": ("one", "two")}
+    steps = binding.data["steps"]  # type: ignore[index]
     with pytest.raises(TypeError):
-        contribution.bindings[0].data["steps"] = ()  # type: ignore[index]
+        dict.__setitem__(binding.data, "other", True)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        list.append(steps, "three")  # type: ignore[arg-type]
+    assert binding.model_dump(mode="json")["data"] == {"steps": ["one", "two"]}
 
 
 def test_plugin_provider_exposes_only_the_phase_two_execution_methods() -> None:
