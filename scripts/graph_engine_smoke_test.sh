@@ -29,7 +29,13 @@ test -f "$engine_wheel"
 test -f "$toy_a_wheel"
 test -f "$toy_b_wheel"
 
-python3 - "$engine_wheel" "$toy_a_wheel" "$toy_b_wheel" <<'PY'
+uv run \
+  --offline \
+  --no-project \
+  --python 3.11 \
+  --managed-python \
+  --no-python-downloads \
+  python - "$engine_wheel" "$toy_a_wheel" "$toy_b_wheel" <<'PY'
 from __future__ import annotations
 
 import json
