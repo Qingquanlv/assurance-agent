@@ -11,6 +11,7 @@ resolution-markers = [
 members = [
     "aa-sample-product",
     "agent-runtime-contracts",
+    "agent-runtime-opencode",
     "assurance-agent",
     "assurance-kernel",
     "graph-engine",
@@ -41,6 +42,25 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "pydantic", specifier = ">=2.7" },
+]
+
+[[package]]
+name = "agent-runtime-opencode"
+version = "0.1.0"
+source = { editable = "packages/agent-runtime-opencode" }
+dependencies = [
+    { name = "agent-runtime-contracts" },
+    { name = "graph-engine" },
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
+    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
 
@@ -84,6 +104,7 @@ dependencies = [
 dev = [
     { name = "aa-sample-product" },
     { name = "agent-runtime-contracts" },
+    { name = "agent-runtime-opencode" },
     { name = "graph-engine" },
     { name = "graph-engine-toy-a" },
     { name = "graph-engine-toy-b" },
@@ -109,6 +130,7 @@ requires-dist = [
 dev = [
     { name = "aa-sample-product", editable = "examples/minimal-product" },
     { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
+    { name = "agent-runtime-opencode", editable = "packages/agent-runtime-opencode" },
     { name = "graph-engine", editable = "packages/graph-engine" },
     { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },
     { name = "graph-engine-toy-b", editable = "examples/graph-engine-toy-b" },
