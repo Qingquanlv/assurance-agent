@@ -20,7 +20,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
-from graph_engine.runtime.engine import Engine
+from graph_engine.runtime.engine import Engine, EngineConflictError
 from graph_engine.runtime.host_protocol import TaskHostCallResult
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import fold_events
@@ -405,3 +405,144 @@ async def _assert_no_blind_retry(tmp_path: Path, mode: str) -> None:
         fixture.handle.close()
         fixture.engine.close()
         _RecoveryFixture._restore()  # type: ignore[attr-defined]
+
+
+_NON_ADOPTED = (
+    ("terminal", "promote_same_attempt"),
+    ("absent", "finalize_failure_then_retry_policy"),
+    ("indeterminate", "block"),
+)
+
+
+@pytest.mark.parametrize("status, expected", _NON_ADOPTED)
+def test_expired_non_adopted_recovery_does_not_conflict_on_resume(
+    tmp_path: Path,
+    status: str,
+    expected: str,
+) -> None:
+    fixture = asyncio.run(_crashed_recoverable_attempt(status, tmp_path, expired=True))  # type: ignore[arg-type]
+    try:
+        result = asyncio.run(fixture.handle.recover())
+        assert fixture.observed_decision(result) == expected
+        assert "task_lease_adopted" not in fixture.calls.order
+        assert "task_attempt_started" not in fixture.calls.order
+        try:
+            run_result = fixture.engine.run_until_blocked(fixture.handle)
+        except EngineConflictError as error:
+            raise AssertionError("expired non-adopted recovery must not look like a rival runner") from error
+        assert run_result.status == "interrupted"
+        assert run_result.terminal_reason == "activity_recovery"
+        after = fold_events(fixture.ledger.read_all())
+        attempt = after.activations[-1].attempts[-1]
+        assert attempt.attempt == fixture.attempt_before == 1
+        assert attempt.status == "running"
+        assert attempt.activity is not None
+        started = [item for item in fixture.ledger.read_all() if item.event.kind == "task_attempt_started"]
+        assert len(started) == 1
+        assert "task_attempt_failed" not in [item.event.kind for item in fixture.ledger.read_all()]
+    finally:
+        fixture.handle.close()
+        fixture.engine.close()
+        _RecoveryFixture._restore()  # type: ignore[attr-defined]
+
+
+def test_open_after_recovery_defers_compiled_events(tmp_path: Path) -> None:
+    asyncio.run(_assert_open_after_recovery_defers_compiled_events(tmp_path))
+
+
+async def _assert_open_after_recovery_defers_compiled_events(tmp_path: Path) -> None:
+    helpers = _load_engine_helpers()
+    try:
+        product = helpers._parallel_task_product()
+        in_process_host_cls = helpers._InProcessTestHost
+        function_handler_cls = helpers._FunctionHandler
+    finally:
+        for name, value in helpers._restored_builtins.items():
+            if value is None:
+                if hasattr(builtins, name):
+                    delattr(builtins, name)
+            else:
+                setattr(builtins, name, value)
+
+    async def succeed(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.succeeded({"ok": True})
+
+    calls = CallLog()
+    host = _RecordingHost(status="running", calls=calls)
+    start_clock = FakeClock(10.0)
+    engine = Engine(tmp_path, clock=start_clock, host=host)
+    handle = engine.start(product, entrypoint="main", invocation_id="adopt-defer")
+    ledger = Ledger(handle.invocation_root / "ledger")
+    envelopes = ledger.read_all()
+    structural = plan_next(product.workflow, fold_events(envelopes))
+    ledger.append_batch(structural.events, expected_next_seq=envelopes[-1].seq + 1)
+    tasks = plan_next(product.workflow, fold_events(ledger.read_all())).tasks
+    recoverable = next(task for task in tasks if task.node_id == "cause")
+    sibling = next(task for task in tasks if task.node_id == "sibling")
+    owner_id = canonical_digest(
+        {
+            "invocation_id": "adopt-defer",
+            "lock_digest": product.lock_digest,
+            "role": "engine-scheduler",
+        }
+    )
+    with handle.workspace as store:
+        recover_scheduler = Scheduler(
+            _DirectRegistry({recoverable.capability_id: _RecoverableHandler()}),
+            store,
+            ledger,
+            host,
+            owner_id=owner_id,
+            clock=start_clock,
+            lease_seconds=10.0,
+            lock_digest=product.lock_digest,
+            composition_digest=product.digest,
+            entrypoint="main",
+        )
+        recover_scheduler.start_recoverable(recoverable)
+        sibling_scheduler = Scheduler(
+            _DirectRegistry({sibling.capability_id: function_handler_cls(succeed)}),
+            store,
+            ledger,
+            in_process_host_cls(),
+            owner_id=owner_id,
+            clock=start_clock,
+            lease_seconds=10.0,
+            lock_digest=product.lock_digest,
+            composition_digest=product.digest,
+            entrypoint="main",
+        )
+        finalized = await sibling_scheduler.run_wave((sibling,))
+        assert len(finalized) == 1
+        assert finalized[0].outcome.status == "succeeded"
+
+    due = plan_next(product.workflow, fold_events(ledger.read_all()))
+    assert due.events
+    assert any(
+        event.kind == "node_completed" and getattr(event, "activation_id", None) == sibling.activation_id
+        for event in due.events
+    )
+    assert all(event.kind != "task_lease_adopted" for event in due.events)
+
+    try:
+        result = await handle.recover()
+        decisions = getattr(result, "decisions", ())
+        assert len(decisions) == 1
+        assert decisions[0].decision == "adopt_same_attempt"
+        envelopes = ledger.read_all()
+        kinds = [item.event.kind for item in envelopes]
+        assert "task_lease_adopted" in kinds
+        assert not any(
+            item.event.kind == "node_completed"
+            and getattr(item.event, "activation_id", None) == sibling.activation_id
+            for item in envelopes
+        )
+        handle.close()
+        engine.close()
+        reopened_engine = Engine(tmp_path, clock=FakeClock(11.0), host=host)
+        reopened = reopened_engine.open("adopt-defer", product)
+        reopened.close()
+        reopened_engine.close()
+    finally:
+        handle.close()
+        engine.close()

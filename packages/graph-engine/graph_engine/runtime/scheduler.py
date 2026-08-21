@@ -492,6 +492,11 @@ class Scheduler:
         try:
             for task in selected:
                 _validate_running_transition(task, envelopes)
+                if (
+                    self._task_has_live_activity(task)
+                    and (task.task_id, task.attempt) not in self._same_attempt_execute
+                ):
+                    continue
                 lease = running.get((task.task_id, task.attempt))
                 if lease is None or lease.owner_id != self._owner_id:
                     raise LeaseUnavailableError(
@@ -500,8 +505,6 @@ class Scheduler:
                 if lease.expires_at < self._now():
                     raise LeaseUnavailableError("persisted running task lease expired")
                 if self._task_has_live_activity(task):
-                    if (task.task_id, task.attempt) not in self._same_attempt_execute:
-                        continue
                     activity = self._live_activity(task)
                     if activity is None:
                         raise TaskActivityRecoveryUnsupported(

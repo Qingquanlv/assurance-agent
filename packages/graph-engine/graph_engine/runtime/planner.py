@@ -447,6 +447,11 @@ def _can_defer_planned_events(
     return has_running_attempt and isinstance(
         event,
         TaskLeaseHeartbeat
+        | TaskLeaseAdopted
+        | TaskActivityBound
+        | TaskActivityDispatchStarted
+        | TaskActivityCancelRequested
+        | TaskActivityTerminalObserved
         | TaskAttemptSucceeded
         | TaskAttemptFailed
         | TaskAttemptStopped
