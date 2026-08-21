@@ -32,6 +32,7 @@ dev = [
     "graph-engine",
     "graph-engine-toy-a",
     "graph-engine-toy-b",
+    "agent-runtime-contracts",
 ]
 
 [build-system]
@@ -47,7 +48,7 @@ artifacts = ["assurance_agent/_resources/**"]
 exclude = ["scripts", "/scripts/**"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "packages/graph-engine/tests"]
+testpaths = ["tests", "packages/graph-engine/tests", "packages/agent-runtime-contracts/tests"]
 # Sibling packages under tests/unit/workflow/{issues,improvements}/ share basenames
 # (test_review.py, …); importlib avoids prepend-mode module collisions.
 addopts = ["--import-mode=importlib"]
@@ -58,7 +59,7 @@ target-version = "py311"
 extend-exclude = ["benchmark/vue-fastapi-admin", ".worktrees", ".history"]
 
 [tool.pyright]
-include = ["assurance_agent", "packages/assurance-kernel/assurance_kernel", "packages/graph-engine/graph_engine", "tests", "benchmark/specialty"]
+include = ["assurance_agent", "packages/assurance-kernel/assurance_kernel", "packages/graph-engine/graph_engine", "packages/agent-runtime-contracts/agent_runtime_contracts", "tests", "benchmark/specialty"]
 extraPaths = [".", "packages/assurance-kernel"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
@@ -67,6 +68,7 @@ typeCheckingMode = "standard"
 members = [
     "packages/assurance-kernel",
     "packages/graph-engine",
+    "packages/agent-runtime-contracts",
     "examples/minimal-product",
     "examples/graph-engine-toy-a",
     "examples/graph-engine-toy-b",
@@ -78,3 +80,4 @@ assurance-kernel = { workspace = true }
 graph-engine = { workspace = true }
 graph-engine-toy-a = { workspace = true }
 graph-engine-toy-b = { workspace = true }
+agent-runtime-contracts = { workspace = true }

@@ -10,6 +10,7 @@ resolution-markers = [
 [manifest]
 members = [
     "aa-sample-product",
+    "agent-runtime-contracts",
     "assurance-agent",
     "assurance-kernel",
     "graph-engine",
@@ -27,6 +28,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "assurance-kernel", editable = "packages/assurance-kernel" }]
+
+[[package]]
+name = "agent-runtime-contracts"
+version = "0.1.0"
+source = { editable = "packages/agent-runtime-contracts" }
+dependencies = [
+    { name = "graph-engine" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "pydantic", specifier = ">=2.7" },
+]
 
 [[package]]
 name = "annotated-types"
@@ -67,6 +83,7 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "aa-sample-product" },
+    { name = "agent-runtime-contracts" },
     { name = "graph-engine" },
     { name = "graph-engine-toy-a" },
     { name = "graph-engine-toy-b" },
@@ -91,6 +108,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "aa-sample-product", editable = "examples/minimal-product" },
+    { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
     { name = "graph-engine", editable = "packages/graph-engine" },
     { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },
     { name = "graph-engine-toy-b", editable = "examples/graph-engine-toy-b" },

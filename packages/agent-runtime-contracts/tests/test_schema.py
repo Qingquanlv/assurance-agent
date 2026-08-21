@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from agent_runtime_contracts import AgentRunResult, ResultContract
+from agent_runtime_contracts.schema import (
+    bound_redacted_diagnostics,
+    canonical_digest,
+    canonical_json_bytes,
+    validate_structured_result,
+)
+
+
+_STRICT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["status", "artifact"],
+    "properties": {
+        "status": {"type": "string", "const": "ok"},
+        "artifact": {"type": "string"},
+    },
+}
+
+
+def test_canonical_encoding_is_stable_and_sorted() -> None:
+    value = {"b": 2, "a": [1, {"z": True, "y": None}]}
+    expected = b'{"a":[1,{"y":null,"z":true}],"b":2}'
+    assert canonical_json_bytes(value) == expected
+    assert canonical_digest(value) == canonical_digest({"a": [1, {"y": None, "z": True}], "b": 2})
+    assert canonical_json_bytes(value) == canonical_json_bytes({"a": [1, {"y": None, "z": True}], "b": 2})
+
+
+def test_validate_structured_result_accepts_exact_strict_schema() -> None:
+    schema_digest = canonical_digest(_STRICT_SCHEMA)
+    payload = {"status": "ok", "artifact": "result.json"}
+    assert (
+        validate_structured_result(
+            payload,
+            schema=_STRICT_SCHEMA,
+            schema_digest=schema_digest,
+        )
+        == payload
+    )
+
+
+def test_validate_structured_result_rejects_extra_properties_and_bad_digest() -> None:
+    schema_digest = canonical_digest(_STRICT_SCHEMA)
+    with pytest.raises(ValueError, match="additional"):
+        validate_structured_result(
+            {"status": "ok", "artifact": "result.json", "tokens": 3},
+            schema=_STRICT_SCHEMA,
+            schema_digest=schema_digest,
+        )
+    with pytest.raises(ValueError, match="digest"):
+        validate_structured_result(
+            {"status": "ok", "artifact": "result.json"},
+            schema=_STRICT_SCHEMA,
+            schema_digest="0" * 64,
+        )
+
+
+def test_validate_structured_result_rejects_non_strict_or_open_schema() -> None:
+    open_schema = {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {"status": {"type": "string"}},
+    }
+    with pytest.raises(ValueError, match="strict"):
+        validate_structured_result(
+            {"status": "ok"},
+            schema=open_schema,
+            schema_digest=canonical_digest(open_schema),
+        )
+    with pytest.raises(ValueError, match="unsupported"):
+        validate_structured_result(
+            {"status": "ok"},
+            schema={"$ref": "#/definitions/result"},
+            schema_digest=canonical_digest({"$ref": "#/definitions/result"}),
+        )
+
+
+def test_result_contract_digest_must_match_schema() -> None:
+    contract = ResultContract(
+        schema_id="fixture.result.v1",
+        schema_digest=canonical_digest(_STRICT_SCHEMA),
+        extraction_mode="structured",
+    )
+    assert contract.schema_digest == canonical_digest(_STRICT_SCHEMA)
+    with pytest.raises(ValidationError):
+        ResultContract(
+            schema_id="fixture.result.v1",
+            schema_digest="not-a-digest",
+            extraction_mode="structured",
+        )
+
+
+def test_agent_run_result_requires_schema_valid_structured_output() -> None:
+    structured = {"status": "ok", "artifact": "result.json"}
+    result = AgentRunResult.model_validate(
+        {
+            "structured_result": structured,
+            "result_digest": canonical_digest(structured),
+            "evidence_digest": "2" * 64,
+            "adapter_id": "agent-runtime-fixture",
+            "adapter_version": "1.0.0",
+        }
+    )
+    assert (
+        validate_structured_result(
+            result.structured_result,
+            schema=_STRICT_SCHEMA,
+            schema_digest=canonical_digest(_STRICT_SCHEMA),
+        )
+        == structured
+    )
+    with pytest.raises(ValueError, match="additional"):
+        validate_structured_result(
+            {**structured, "cost": 1.5},
+            schema=_STRICT_SCHEMA,
+            schema_digest=canonical_digest(_STRICT_SCHEMA),
+        )
+
+
+def test_bound_redacted_diagnostics_redact_before_limiting() -> None:
+    messages = bound_redacted_diagnostics(
+        (
+            "cookie=secret; Authorization: Bearer sk-secret-canary",
+            "x" * 512,
+        )
+    )
+    assert "sk-secret-canary" not in messages[0]
+    assert "[redacted]" in messages[0]
+    assert len(messages[1]) <= 240
+    with pytest.raises(ValueError, match="bound"):
+        bound_redacted_diagnostics(tuple(f"note-{index}" for index in range(17)))
