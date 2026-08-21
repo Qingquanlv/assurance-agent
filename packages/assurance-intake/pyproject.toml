@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "Assurance intake capability wheel"
 requires-python = ">=3.11,<4.0"
 dependencies = [
+    "agent-runtime-contracts",
     "graph-engine",
     "pydantic>=2.7",
+    "pyyaml>=6.0",
 ]
 
 [project.entry-points."graph_engine.plugins"]
@@ -19,4 +21,5 @@ build-backend = "hatchling.build"
 packages = ["assurance_intake"]
 
 [tool.uv.sources]
+agent-runtime-contracts = { workspace = true }
 graph-engine = { workspace = true }

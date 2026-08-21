@@ -2324,15 +2324,15 @@ items:
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.skill.aa-case-design.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-intake/tests/test_agent_skills.py::test_case_design_prepare_is_canonical_and_provider_neutral
 - kind: skill
   legacy_id: aa-case-reviewer
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.skill.aa-case-reviewer.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-intake/tests/test_agent_skills.py::test_case_review_finalize_rejects_nonexistent_leaf
 - kind: skill
   legacy_id: aa-coverage-repair
   disposition: migrate
@@ -2387,8 +2387,8 @@ items:
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.skill.aa-explore.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-intake/tests/test_agent_skills.py::test_explore_finalize_returns_artifact_digests
 - kind: skill
   legacy_id: aa-fact-baseline
   disposition: migrate
@@ -2443,8 +2443,8 @@ items:
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.skill.aa-intake.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-intake/tests/test_agent_skills.py::test_case_design_prepare_is_canonical_and_provider_neutral
 - kind: skill
   legacy_id: aa-issue-analyzer
   disposition: migrate
@@ -2548,22 +2548,22 @@ items:
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.persona.doc-author.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-intake/tests/test_agent_skills.py::test_prepare_instruction_order_is_skill_persona_business
 - kind: persona
   legacy_id: aa-explorer
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.persona.explorer.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-intake/tests/test_agent_skills.py::test_explore_finalize_returns_artifact_digests
 - kind: persona
   legacy_id: aa-intake-host
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.persona.intake-host.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-intake/tests/test_agent_skills.py::test_case_design_prepare_is_canonical_and_provider_neutral
 - kind: persona
   legacy_id: aa-reporter
   disposition: migrate
@@ -3338,16 +3338,16 @@ items:
   legacy_id: assurance_agent/_resources/skills/aa-case-design/case-delta-reviewer-prompt.md
   disposition: migrate
   owner: assurance.intake
-  new_id: null
-  status: planned
-  verification: null
+  new_id: assurance.intake.skill.aa-case-design.case-delta-reviewer-prompt.v1
+  status: verified
+  verification: packages/assurance-intake/tests/test_plugin.py::test_intake_plugin_conforms
 - kind: resource
   legacy_id: assurance_agent/_resources/skills/aa-case-design/visual-companion.md
   disposition: migrate
   owner: assurance.intake
-  new_id: null
-  status: planned
-  verification: null
+  new_id: assurance.intake.skill.aa-case-design.visual-companion.v1
+  status: verified
+  verification: packages/assurance-intake/tests/test_plugin.py::test_intake_plugin_conforms
 - kind: resource
   legacy_id: assurance_agent/_resources/skills/aa-dashboard/scripts/case-center.html
   disposition: migrate

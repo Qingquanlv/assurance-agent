@@ -1,0 +1,1 @@
+{"additionalProperties":true,"properties":{"required_capabilities":{"items":{"minLength":1,"type":"string"},"type":"array"},"status":{"minLength":1,"type":"string"}},"type":"object"}

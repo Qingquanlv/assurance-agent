@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+import hashlib
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any, cast
+
+import pytest
+
+from agent_runtime_contracts import AgentRunRequest, AgentRunResult
+from agent_runtime_contracts.schema import canonical_digest
+from graph_engine.canonical import JSONValue
+from graph_engine.plugin_api import TaskFailure, TaskHandler, TaskOutcome
+from tests.phase4.agent_harness import FakeAgentAdapter
+from tests.phase4.conformance import execute_task
+
+from assurance_intake.operations import (
+    CaseDesignPrepareHandler,
+    CaseReviewFinalizeHandler,
+    ExploreFinalizeHandler,
+)
+
+_SHA = "a" * 64
+VALID_LEAFS = ("auth.session.create", "entities.item.create")
+BINDING: dict[str, JSONValue] = {
+    "execution": {
+        "provider_model": "test-model",
+        "worker_profile": "worker",
+        "permission_profile_digest": _SHA,
+        "limits": {"max_seconds": 5},
+    },
+    "request_policy_digest": _SHA,
+    "request_config_digest": _SHA,
+}
+CASE_INPUT: dict[str, JSONValue] = {
+    "change_id": "CH-DEMO-001",
+    "capability_leafs": list(VALID_LEAFS),
+    "artifact_paths": ["qa/changes/CH-DEMO-001/explore/advisory.json"],
+}
+
+
+async def run_prepare(
+    handler: TaskHandler,
+    payload: JSONValue,
+    binding: JSONValue,
+    workspace: Path,
+) -> Any:
+    return await execute_task(handler, payload, workspace, binding_data=binding)
+
+
+async def run_finalize(handler: TaskHandler, result: AgentRunResult, workspace: Path) -> TaskOutcome:
+    executed = await execute_task(
+        handler,
+        {
+            "agent_result": result.model_dump(mode="json"),
+            "capability_leafs": list(VALID_LEAFS),
+            "artifact_paths": [],
+        },
+        workspace,
+    )
+    return executed.outcome
+
+
+def fake_agent_result(structured_result: JSONValue) -> AgentRunResult:
+    return AgentRunResult(
+        structured_result=structured_result,
+        result_digest=canonical_digest(structured_result),
+        evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
+        adapter_id="test.fake",
+        adapter_version="1.0.0",
+    )
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_is_canonical_and_provider_neutral(tmp_path: Path) -> None:
+    first = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    second = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    assert AgentRunRequest.model_validate(first.output).canonical_bytes() == (
+        AgentRunRequest.model_validate(second.output).canonical_bytes()
+    )
+
+
+@pytest.mark.asyncio
+async def test_case_review_finalize_rejects_nonexistent_leaf(tmp_path: Path) -> None:
+    result = fake_agent_result({"status": "pass", "required_capabilities": ["entities.fake"]})
+    outcome = await run_finalize(CaseReviewFinalizeHandler(), result, tmp_path)
+    assert outcome.failure == TaskFailure(
+        kind="invalid_output",
+        message="case review references unknown capability leaf: entities.fake",
+        retryable=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Path) -> None:
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+    request = AgentRunRequest.model_validate(prepared.output)
+    assert len(request.instructions) == 3
+    skill, persona, business = request.instructions
+    assert skill.media_type == "text/plain"
+    assert persona.media_type == "text/plain"
+    assert business.media_type == "application/json"
+    assert "Capability-owned case-design skill" in (skill.text_content or "")
+    assert "Document-author persona" in (persona.text_content or "")
+    payload = cast(Mapping[str, object], business.json_content)
+    leafs = payload["capability_leafs"]
+    assert payload["change_id"] == "CH-DEMO-001"
+    assert isinstance(leafs, list | tuple)
+    assert tuple(leafs) == VALID_LEAFS
+    encoded = request.canonical_bytes().decode("utf-8").lower()
+    assert "opencode" not in encoded
+    assert "cursor" not in encoded
+    assert request.execution.provider_model == "test-model"
+
+
+@pytest.mark.asyncio
+async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -> None:
+    binding = {
+        **BINDING,
+        "execution": {
+            **BINDING["execution"],  # type: ignore[arg-type]
+            "provider_model": "primary,fallback",
+        },
+    }
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, binding, tmp_path)
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert prepared.failure.kind == "invalid_input"
+    assert prepared.failure.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_finalize_rejects_malformed_input(tmp_path: Path) -> None:
+    executed = await execute_task(CaseReviewFinalizeHandler(), {"agent_result": {}}, tmp_path)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_input"
+    assert executed.failure.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None:
+    relative = "qa/changes/CH-DEMO-001/explore/advisory.json"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    payload = b'{"ok":true}'
+    path.write_bytes(payload)
+    result = fake_agent_result({"output_files": [relative]})
+    executed = await execute_task(
+        ExploreFinalizeHandler(),
+        {
+            "agent_result": result.model_dump(mode="json"),
+            "capability_leafs": list(VALID_LEAFS),
+            "artifact_paths": [relative],
+        },
+        tmp_path,
+    )
+    assert executed.status == "succeeded"
+    assert executed.output == {
+        "artifacts": [{"path": relative, "digest": hashlib.sha256(payload).hexdigest()}]
+    }
