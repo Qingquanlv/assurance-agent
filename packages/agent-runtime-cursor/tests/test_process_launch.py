@@ -206,6 +206,40 @@ async def test_launch_keeps_secrets_out_of_argv_and_fingerprint(tmp_path: Path) 
     assert launch.argv[3:5] == ("--output-format", "stream-json")
 
 
+async def test_launch_identity_binds_attempt_workspace(tmp_path: Path) -> None:
+    first_root = tmp_path / "ws-a"
+    second_root = tmp_path / "ws-b"
+    first_root.mkdir()
+    second_root.mkdir()
+    config = _config(tmp_path)
+    first_host = FakeConfinedProcessHost()
+    second_host = FakeConfinedProcessHost()
+    first_handler = CursorHandler(config, first_host)
+    second_handler = CursorHandler(config, second_host)
+    await first_handler.execute(_request(), _context(first_root))
+    await second_handler.execute(_request(), _context(second_root))
+    first = first_host.launches[0]
+    second = second_host.launches[0]
+    policy_only = canonical_digest({"cwd_policy": "attempt-workspace"})
+    assert first.cwd == first_root.resolve()
+    assert second.cwd == second_root.resolve()
+    assert first.workspace_identity_digest != policy_only
+    assert second.workspace_identity_digest != policy_only
+    assert first.workspace_identity_digest != second.workspace_identity_digest
+    assert first.request_digest == second.request_digest
+    assert first_handler.dispatch_fingerprint["request_digest"] == first.request_digest
+    assert first_handler.dispatch_fingerprint["workspace_identity_digest"] == (
+        first.workspace_identity_digest
+    )
+    assert second_handler.dispatch_fingerprint["workspace_identity_digest"] == (
+        second.workspace_identity_digest
+    )
+    assert (
+        first_handler.dispatch_fingerprint["workspace_identity_digest"]
+        != second_handler.dispatch_fingerprint["workspace_identity_digest"]
+    )
+
+
 async def test_launch_rejects_digest_mismatch_before_spawn(tmp_path: Path) -> None:
     host = FakeConfinedProcessHost()
     config = _config(tmp_path, executable_digest="e" * 64)

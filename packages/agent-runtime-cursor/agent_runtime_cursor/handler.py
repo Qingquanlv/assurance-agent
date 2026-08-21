@@ -34,7 +34,12 @@ class CursorHandler:
         launch = build_launch_request(config, agent_run, context, executable)
         identity = host.preflight(launch)
         authenticate_confinement(identity, expected_version=config.expected_version)
-        fingerprint = cursor_dispatch_fingerprint(config, launch.argv)
+        fingerprint = cursor_dispatch_fingerprint(
+            config,
+            launch.argv,
+            request_digest=launch.request_digest,
+            workspace_identity_digest=launch.workspace_identity_digest,
+        )
         reject_credentials_in_digest_input(fingerprint)
         self.dispatch_fingerprint = fingerprint
         await host.spawn(launch)

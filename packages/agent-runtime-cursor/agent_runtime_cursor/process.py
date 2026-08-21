@@ -122,15 +122,26 @@ def argv_policy_document(argv: tuple[str, ...], environment_names: tuple[str, ..
     }
 
 
+def workspace_identity_digest_for(context: TaskContext) -> str:
+    if context.activity is not None:
+        return canonical_digest(context.activity.snapshot.workspace_identity.model_dump(mode="json"))
+    return canonical_digest({"cwd": str(context.workspace_root.resolve())})
+
+
 def cursor_dispatch_fingerprint(
     config: CursorAdapterConfig,
     argv: tuple[str, ...],
+    *,
+    request_digest: str,
+    workspace_identity_digest: str,
 ) -> dict[str, object]:
     fingerprint: dict[str, object] = {
         "protocol_profile": PROTOCOL_PROFILE,
         "executable_digest": config.executable_digest,
         "executable_version_digest": canonical_digest(config.expected_version),
         "argv_policy_digest": canonical_digest(argv_policy_document(argv, config.environment_names)),
+        "request_digest": request_digest,
+        "workspace_identity_digest": workspace_identity_digest,
     }
     reject_credentials_in_digest_input(fingerprint)
     return fingerprint
@@ -164,6 +175,8 @@ def build_launch_request(
     if any(part == "--resume" or part.startswith("--resume=") for part in argv):
         raise ValueError("argv must not include resume selection")
     policy = argv_policy_document(argv, config.environment_names)
+    request_digest = canonical_digest(agent_run.model_dump(mode="json"))
+    workspace_digest = workspace_identity_digest_for(context)
     return ProcessLaunchRequest(
         argv=argv,
         cwd=context.workspace_root.resolve(),
@@ -171,7 +184,7 @@ def build_launch_request(
         stdin=canonical_json_bytes(agent_run.model_dump(mode="json")),
         shell=False,
         executable_version_digest=canonical_digest(config.expected_version),
-        request_digest=canonical_digest(agent_run.model_dump(mode="json")),
+        request_digest=request_digest,
         argv_policy_digest=canonical_digest(policy),
-        workspace_identity_digest=canonical_digest({"cwd_policy": "attempt-workspace"}),
+        workspace_identity_digest=workspace_digest,
     )
