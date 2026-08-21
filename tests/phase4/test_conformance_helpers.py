@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.composition import ProductFileSource, load_product_file
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import (
@@ -100,6 +100,45 @@ class _NonCanonicalSchemaProvider:
         )
 
 
+class _MixedKindSchemaAndPersonaProvider:
+    """Prefix-correct Phase 4 schema + persona IDs; each kind is already sorted."""
+
+    _SCHEMA_ID = "assurance.intake.schema.case.v1"
+    _PERSONA_ID = "assurance.intake.persona.intake-host.v1"
+
+    def descriptor(self) -> PluginDescriptor:
+        return PluginDescriptor(
+            schema_version="1",
+            source=None,
+            plugin_id="assurance.intake",
+            plugin_version="0.1.0",
+            engine_api=ENGINE_API_VERSION,
+            task_handlers=(),
+            commit_validators=(),
+            schemas=(self._SCHEMA_ID,),
+            resources=(self._PERSONA_ID,),
+        )
+
+    def contribute(self, ports: RegistryPorts) -> PluginContribution:
+        assert ports.engine_api == ENGINE_API_VERSION
+        return PluginContribution(
+            schemas=(
+                SchemaContribution(
+                    schema_id=self._SCHEMA_ID,
+                    media_type="application/schema+json",
+                    content=canonical_json_bytes({"type": "object"}),
+                ),
+            ),
+            resources=(
+                ResourceContribution(
+                    resource_id=self._PERSONA_ID,
+                    media_type="text/plain",
+                    content=b"intake host",
+                ),
+            ),
+        )
+
+
 class _EchoHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         (context.workspace_root / "echo.txt").write_bytes(b"echo\n")
@@ -182,6 +221,17 @@ def test_plugin_conformance_rejects_non_canonical_schema_bytes() -> None:
             _NonCanonicalSchemaProvider(),
             PluginExpectation(plugin_id="test.bad", dependencies=(), id_prefix="test.bad."),
         )
+
+
+def test_plugin_conformance_accepts_mixed_kind_schema_and_persona() -> None:
+    assert_plugin_conforms(
+        _MixedKindSchemaAndPersonaProvider(),
+        PluginExpectation(
+            plugin_id="assurance.intake",
+            dependencies=(),
+            id_prefix="assurance.intake.",
+        ),
+    )
 
 
 @pytest.mark.asyncio

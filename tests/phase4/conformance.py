@@ -82,10 +82,12 @@ def assert_plugin_conforms(provider: PluginProvider, expected: PluginExpectation
         raise AssertionError(f"descriptor/contribution mismatch: {error}") from error
     assert descriptor.plugin_id == expected.plugin_id
     assert tuple(item.plugin_id for item in descriptor.dependencies) == expected.dependencies
-    ids = _all_contribution_ids(contribution)
+    groups = _contribution_id_groups(contribution)
+    ids = tuple(item for group in groups for item in group)
     assert ids
     assert all(item.startswith(expected.id_prefix) for item in ids)
-    assert tuple(sorted(ids)) == tuple(ids)
+    for group in groups:
+        assert tuple(sorted(group)) == tuple(group)
     _assert_canonical_resource_and_schema_bytes(contribution)
 
 
@@ -148,14 +150,14 @@ async def assert_effect_idempotent(
     assert _receipt_bytes(reconciled.receipt) == _receipt_bytes(first.receipt)
 
 
-def _all_contribution_ids(contribution: PluginContribution) -> tuple[str, ...]:
+def _contribution_id_groups(contribution: PluginContribution) -> tuple[tuple[str, ...], ...]:
     return (
-        tuple(contribution.task_handlers)
-        + tuple(contribution.commit_validators)
-        + tuple(entry.schema_id for entry in contribution.schemas)
-        + tuple(entry.resource_id for entry in contribution.resources)
-        + tuple(entry.kind for entry in contribution.effects)
-        + tuple(entry.capability_id for entry in contribution.bindings)
+        tuple(contribution.task_handlers),
+        tuple(contribution.commit_validators),
+        tuple(entry.schema_id for entry in contribution.schemas),
+        tuple(entry.resource_id for entry in contribution.resources),
+        tuple(entry.kind for entry in contribution.effects),
+        tuple(entry.capability_id for entry in contribution.bindings),
     )
 
 
