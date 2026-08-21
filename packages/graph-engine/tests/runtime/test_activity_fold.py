@@ -20,7 +20,9 @@ from graph_engine.runtime.events import (
     TaskActivityTerminalObserved,
     TaskAttemptFailed,
     TaskAttemptStarted,
+    TaskAttemptStopped,
     TaskAttemptSucceeded,
+    TaskCommitPrepared,
     TaskLeaseAcquired,
     TaskLeaseAdopted,
     TokenConsumed,
@@ -63,6 +65,10 @@ def _success_outcome() -> TaskOutcome:
 
 def _failed_outcome() -> TaskOutcome:
     return TaskOutcome.failed("transient", "provider closed")
+
+
+def _stopped_outcome() -> TaskOutcome:
+    return TaskOutcome.stopped("operator-stop")
 
 
 def _envelopes(*events: object) -> tuple[EventEnvelope, ...]:
@@ -162,6 +168,31 @@ def _failed_attempt() -> TaskAttemptFailed:
     failure = _failed_outcome().failure
     assert failure is not None
     return TaskAttemptFailed(activation_id="a1", attempt=1, failure=failure)
+
+
+def _stopped_terminal(*, proof: str | None = None) -> TaskActivityTerminalObserved:
+    outcome = _stopped_outcome()
+    return TaskActivityTerminalObserved(
+        activity_id="activity-1",
+        outcome=outcome,
+        outcome_digest=_digest(outcome.model_dump(mode="json")),
+        terminal_proof_digest=proof,
+    )
+
+
+def _stopped_attempt() -> TaskAttemptStopped:
+    return TaskAttemptStopped(activation_id="a1", attempt=1, reason="commit rejected")
+
+
+def _commit(*, tree_id: str = _CANDIDATE) -> TaskCommitPrepared:
+    return TaskCommitPrepared(
+        task_id="task-1",
+        activation_id="a1",
+        attempt=1,
+        output={"answer": 42},
+        previous_tree_id=_BASELINE,
+        tree_id=tree_id,
+    )
 
 
 def _head(*, tree_id: str = _CANDIDATE) -> HeadAdvanced:
@@ -413,6 +444,94 @@ def test_fold_allows_retry_after_failed_terminal_activity() -> None:
     assert attempts[1].attempt == 2
     assert attempts[1].activity is None
     assert attempts[1].status == "running"
+
+
+def test_fold_allows_attempt_failure_after_succeeded_terminal() -> None:
+    projection = fold_events(
+        _envelopes(
+            *_running_prefix(),
+            _prepared(),
+            _dispatch(),
+            _bound(),
+            _success_terminal(),
+            _failed_attempt(),
+        )
+    )
+    attempt = projection.activations[-1].attempts[-1]
+    activity = attempt.activity
+    assert attempt.status == "failed"
+    assert attempt.failure == _failed_outcome().failure
+    assert activity is not None
+    assert activity.state == "terminal_observed"
+    assert activity.terminal is not None
+    assert activity.terminal.status == "succeeded"
+    assert activity.candidate_tree_id == _CANDIDATE
+    assert activity.write_set_digest == _WRITE_SET
+    assert attempt.prepared_commit is None
+    assert attempt.committed_tree_id is None
+
+
+def test_fold_allows_attempt_stop_after_succeeded_terminal() -> None:
+    projection = fold_events(
+        _envelopes(
+            *_running_prefix(),
+            _prepared(),
+            _dispatch(),
+            _bound(),
+            _success_terminal(),
+            _stopped_attempt(),
+        )
+    )
+    attempt = projection.activations[-1].attempts[-1]
+    activity = attempt.activity
+    assert attempt.status == "stopped"
+    assert attempt.stop_reason == "commit rejected"
+    assert activity is not None
+    assert activity.terminal is not None
+    assert activity.terminal.status == "succeeded"
+    assert activity.candidate_tree_id == _CANDIDATE
+
+
+@pytest.mark.parametrize("terminal", ["failed", "stopped"])
+def test_fold_rejects_commit_after_non_success_terminal(terminal: str) -> None:
+    observed = _failed_terminal() if terminal == "failed" else _stopped_terminal()
+    with pytest.raises(ProjectionError, match="failed terminal activity cannot have a candidate"):
+        fold_events(_envelopes(*_running_prefix(), _prepared(), _dispatch(), _bound(), observed, _commit()))
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        (_prepared(),),
+        (_prepared(), _dispatch()),
+        (_prepared(), _dispatch(), _bound()),
+    ],
+)
+def test_fold_rejects_commit_while_recoverable_activity_is_live(prefix: tuple[object, ...]) -> None:
+    with pytest.raises(ProjectionError, match="commit prepared before a succeeded terminal activity"):
+        fold_events(_envelopes(*_running_prefix(), *prefix, _commit()))
+
+
+def test_fold_allows_commit_after_succeeded_terminal() -> None:
+    projection = fold_events(
+        _envelopes(
+            *_running_prefix(),
+            _prepared(),
+            _dispatch(),
+            _bound(),
+            _success_terminal(),
+            _commit(),
+        )
+    )
+    attempt = projection.activations[-1].attempts[-1]
+    activity = attempt.activity
+    assert attempt.status == "effect_pending"
+    assert attempt.prepared_commit is not None
+    assert attempt.prepared_commit.tree_id == _CANDIDATE
+    assert activity is not None
+    assert activity.terminal is not None
+    assert activity.terminal.status == "succeeded"
+    assert activity.candidate_tree_id == _CANDIDATE
 
 
 def test_partitioned_fold_matches_one_shot_activity_fold() -> None:

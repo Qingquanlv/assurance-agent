@@ -46,6 +46,9 @@ from graph_engine.runtime.events import (
     InvocationStarted,
     NodeActivated,
     NodeCompleted,
+    TaskActivityBound,
+    TaskActivityDispatchStarted,
+    TaskActivityPrepared,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
@@ -1664,3 +1667,58 @@ def test_planner_rejects_new_attempt_behind_live_or_indeterminate_activity(state
 
     with pytest.raises(PlanningError, match="live or indeterminate"):
         plan_next(compiled, blocked)
+
+
+def test_planner_does_not_plan_behind_fold_legal_bound_running_activity() -> None:
+    compiled = _compiled(
+        f"{_task_node('work')}\n      done: {{kind: end}}",
+        "      - {from: work, to: done}",
+        start="work",
+        retry_on="[transient, timeout]",
+        max_attempts=3,
+    )
+    start_token = _canonical_start_token(compiled)
+    activation = activation_id("root", "work", 0, (start_token.token_id,))
+    identity = AttemptWorkspaceIdentity(
+        attempt_directory_id="attempt-1",
+        baseline_tree_id="a" * 64,
+        attempt_identity_digest="b" * 64,
+    )
+    fingerprint = {"endpoint": "https://127.0.0.1:1", "executable": "runner"}
+    reference = {"id": "ext-1"}
+    projection = _projection(
+        _invocation(),
+        _root(),
+        *_task_activation_events(compiled),
+        TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
+        _task_lease(activation),
+        TaskActivityPrepared(
+            activity_id="activity-1",
+            task_id=task_id(activation),
+            activation_id=activation,
+            attempt=1,
+            request_digest="0" * 64,
+            workspace_identity=identity,
+        ),
+        TaskActivityDispatchStarted(
+            activity_id="activity-1",
+            ordinal=1,
+            dispatch_fingerprint=fingerprint,
+            dispatch_fingerprint_digest=canonical_digest(fingerprint),
+        ),
+        TaskActivityBound(
+            activity_id="activity-1",
+            reference=reference,
+            reference_digest=canonical_digest(reference),
+        ),
+    )
+    attempt = projection.activations[0].attempts[0]
+    assert attempt.status == "running"
+    assert attempt.activity is not None
+    assert attempt.activity.state == "bound"
+
+    plan = plan_next(compiled, projection)
+
+    assert plan.tasks == ()
+    assert all(event.kind != "node_failed" for event in plan.events)
+    assert plan.terminal is None

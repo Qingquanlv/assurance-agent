@@ -1025,6 +1025,7 @@ def _fold_task_commit_prepared(
         _fail(seq, "commit prepared without a matching active attempt")
     if attempt.lease_task_id is not None and attempt.lease_task_id != event.task_id:
         _fail(seq, "prepared commit does not match the active attempt")
+    _require_activity_commit_prepared(attempt, seq)
     if projection.head_tree_id is not None and projection.head_tree_id != event.previous_tree_id:
         _fail(seq, "prepared commit previous tree does not match projection")
     prepared = PreparedTaskCommit(
@@ -1217,6 +1218,8 @@ def _require_activity_attempt_outcome(
             _fail(seq, "task success output disagrees with the observed terminal activity")
         _require_success_candidate_match(attempt, seq)
         return
+    if terminal.status == "succeeded":
+        return
     if activity.candidate_tree_id is not None or activity.write_set_digest is not None:
         _fail(seq, "failed terminal activity cannot have a candidate")
     if isinstance(event, TaskAttemptFailed):
@@ -1225,6 +1228,18 @@ def _require_activity_attempt_outcome(
         return
     if terminal.status != "stopped" or event.reason != terminal.stop_reason:
         _fail(seq, "task stop disagrees with the observed terminal activity")
+
+
+def _require_activity_commit_prepared(attempt: AttemptRecord, seq: int) -> None:
+    activity = attempt.activity
+    if activity is None:
+        return
+    terminal = activity.terminal if activity.state == "terminal_observed" else None
+    if terminal is not None and terminal.status == "succeeded":
+        return
+    if terminal is not None:
+        _fail(seq, "failed terminal activity cannot have a candidate")
+    _fail(seq, "commit prepared before a succeeded terminal activity")
 
 
 def _require_activity_head_candidate(attempt: AttemptRecord, tree_id: str, seq: int) -> None:
