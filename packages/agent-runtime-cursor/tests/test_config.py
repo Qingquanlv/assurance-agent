@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from agent_runtime_contracts.schema import canonical_json_bytes
 from agent_runtime_cursor.config import CursorAdapterConfig
 from agent_runtime_cursor.plugin import CursorPlugin
+from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import PluginDescriptor, RegistryPorts, validate_contribution
 
 
@@ -103,7 +104,7 @@ def test_cursor_config_rejects_shell_relative_unknowns_and_unbounded_values(
 def test_plugin_registers_only_execute_capability_and_request_result_schemas() -> None:
     plugin = CursorPlugin()
     descriptor = plugin.descriptor()
-    contribution = plugin.contribute(RegistryPorts(engine_api="1.0"))
+    contribution = plugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
     validate_contribution(descriptor, contribution)
     declaration = json.loads((_PACKAGE_ROOT / "plugin-declaration.json").read_text(encoding="utf-8"))
     assert declaration["kind"] == "plugin"

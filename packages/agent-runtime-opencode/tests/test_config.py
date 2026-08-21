@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from agent_runtime_opencode.config import OpenCodeAdapterConfig, endpoint_origin
 from agent_runtime_opencode.plugin import OpenCodePlugin
 from agent_runtime_opencode.protocol import canonical_json_text
+from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import PluginDescriptor, RegistryPorts, validate_contribution
 
 
@@ -112,7 +113,7 @@ def test_opencode_config_rejects_credentials_defaults_unknowns_and_unbounded_val
 def test_plugin_registers_only_execute_capability_and_request_result_schemas() -> None:
     plugin = OpenCodePlugin()
     descriptor = plugin.descriptor()
-    contribution = plugin.contribute(RegistryPorts(engine_api="1.0"))
+    contribution = plugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
     validate_contribution(descriptor, contribution)
     declaration = json.loads((_PACKAGE_ROOT / "plugin-declaration.json").read_text(encoding="utf-8"))
     assert declaration["kind"] == "plugin"

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -20,6 +20,7 @@ _STRICT_FROZEN = ConfigDict(frozen=True, extra="forbid", strict=True, allow_inf_
 class Checkpoint(BaseModel):
     model_config = _STRICT_FROZEN
 
+    schema_version: Literal["2"]
     last_seq: int = Field(ge=0)
     ledger_prefix_sha256: str = Field(pattern=_SHA256_PATTERN)
     projection: InvocationProjection
@@ -108,6 +109,7 @@ def _checkpoint_bytes(
     document = cast(
         JSONValue,
         {
+            "schema_version": "2",
             "last_seq": last_seq,
             "ledger_prefix_sha256": prefix_digest,
             "projection": projection.model_dump(mode="json"),
@@ -186,6 +188,7 @@ def _checkpoint_payload(
     return cast(
         JSONValue,
         {
+            "schema_version": "2",
             "last_seq": last_seq,
             "ledger_prefix_sha256": ledger_prefix_sha256,
             "projection": projection.model_dump(mode="json"),

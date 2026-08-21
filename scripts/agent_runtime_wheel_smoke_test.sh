@@ -110,7 +110,7 @@ import sys
 import agent_runtime_contracts
 import graph_engine
 
-assert graph_engine.ENGINE_API_VERSION == "1.0"
+assert graph_engine.ENGINE_API_VERSION == "2.0"
 for package in (
     "agent_runtime_opencode",
     "agent_runtime_cursor",

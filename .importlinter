@@ -5,6 +5,10 @@ root_packages =
     graph_engine
     graph_engine_toy_a
     graph_engine_toy_b
+    agent_runtime_contracts
+    agent_runtime_opencode
+    agent_runtime_cursor
+    agent_runtime_fixture
 
 [importlinter:contract:graph-engine-independent]
 name = graph engine must not import products or the old runtime
@@ -16,6 +20,7 @@ forbidden_modules =
     assurance_kernel
     graph_engine_toy_a
     graph_engine_toy_b
+    agent_runtime_fixture
 
 [importlinter:contract:layers]
 name = commands depend on eval domain, never the reverse
@@ -141,3 +146,53 @@ layers =
     assurance_kernel.artifacts
     assurance_kernel.config
     assurance_kernel.resources
+
+[importlinter:contract:graph-engine-provider-neutral]
+name = graph engine must not import agent contracts or runtime adapters
+type = forbidden
+source_modules =
+    graph_engine
+forbidden_modules =
+    agent_runtime_contracts
+    agent_runtime_opencode
+    agent_runtime_cursor
+
+[importlinter:contract:adapter-independence]
+name = runtime adapters are independent
+type = independence
+modules =
+    agent_runtime_opencode
+    agent_runtime_cursor
+
+[importlinter:contract:runtime-adapters-no-old-runtime]
+name = new adapters must not import Assurance runtimes
+type = forbidden
+source_modules =
+    agent_runtime_opencode
+    agent_runtime_cursor
+forbidden_modules =
+    assurance_agent
+    assurance_kernel
+
+[importlinter:contract:contracts-wheel-independence]
+name = contracts must not import adapters, fixture, or Assurance
+type = forbidden
+source_modules =
+    agent_runtime_contracts
+forbidden_modules =
+    agent_runtime_opencode
+    agent_runtime_cursor
+    agent_runtime_fixture
+    assurance_agent
+    assurance_kernel
+
+[importlinter:contract:fixture-downward-only]
+name = fixture may import graph engine and contracts only
+type = forbidden
+source_modules =
+    agent_runtime_fixture
+forbidden_modules =
+    agent_runtime_opencode
+    agent_runtime_cursor
+    assurance_agent
+    assurance_kernel

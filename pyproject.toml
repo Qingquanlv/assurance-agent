@@ -65,7 +65,7 @@ target-version = "py311"
 extend-exclude = ["benchmark/vue-fastapi-admin", ".worktrees", ".history"]
 
 [tool.pyright]
-include = ["assurance_agent", "packages/assurance-kernel/assurance_kernel", "packages/graph-engine/graph_engine", "packages/agent-runtime-contracts/agent_runtime_contracts", "packages/agent-runtime-opencode/agent_runtime_opencode", "packages/agent-runtime-cursor/agent_runtime_cursor", "examples/agent-runtime-fixture/agent_runtime_fixture", "tests", "benchmark/specialty"]
+include = ["assurance_agent", "packages/assurance-kernel/assurance_kernel", "packages/graph-engine/graph_engine", "packages/agent-runtime-contracts/agent_runtime_contracts", "packages/agent-runtime-opencode/agent_runtime_opencode", "packages/agent-runtime-cursor/agent_runtime_cursor", "examples/agent-runtime-fixture/agent_runtime_fixture", "tests", "benchmark/specialty", "benchmark/agent-runtime-phase3"]
 extraPaths = [".", "packages/assurance-kernel"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"

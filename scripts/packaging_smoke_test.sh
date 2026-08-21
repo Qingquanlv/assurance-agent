@@ -65,6 +65,44 @@ grep -qi product "$WORK_DIR/bare-compile.out"
 uv venv --python 3.11 "$WORK_DIR/venv-b"
 uv pip install --quiet --python "$WORK_DIR/venv-b/bin/python" --find-links "$WORK_DIR/dist" "$AGENT_WHL"
 
+# Installing assurance-agent must not install or import Phase 3 adapter/fixture wheels.
+python3 - "$AGENT_WHL" <<'PY'
+import sys
+import zipfile
+from email.parser import BytesParser
+
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+    metadata = BytesParser().parsebytes(archive.read(metadata_name))
+requirements = [
+    value.lower().replace("_", "-")
+    for value in metadata.get_all("Requires-Dist", [])
+]
+forbidden = ("agent-runtime-opencode", "agent-runtime-cursor", "agent-runtime-fixture")
+assert not any(item.startswith(forbidden) for item in requirements), requirements
+PY
+"$WORK_DIR/venv-b/bin/python" - <<'PY'
+import importlib.util
+import sys
+from importlib import metadata
+
+for package in (
+    "agent_runtime_opencode",
+    "agent_runtime_cursor",
+    "agent_runtime_fixture",
+):
+    assert importlib.util.find_spec(package) is None, package
+    assert package not in sys.modules, package
+
+installed = {dist.metadata["Name"].replace("_", "-").lower() for dist in metadata.distributions()}
+for name in (
+    "agent-runtime-opencode",
+    "agent-runtime-cursor",
+    "agent-runtime-fixture",
+):
+    assert name not in installed, name
+PY
+
 mkdir "$WORK_DIR/project"
 cd "$WORK_DIR/project"
 

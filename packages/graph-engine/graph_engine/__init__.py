@@ -1,4 +1,4 @@
-ENGINE_API_VERSION = "1.0"
+ENGINE_API_VERSION = "2.0"
 
 from graph_engine.plugin_api import (  # noqa: E402
     AttemptWorkspaceIdentity,

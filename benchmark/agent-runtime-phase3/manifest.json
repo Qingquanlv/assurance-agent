@@ -1,0 +1,74 @@
+{
+  "schema_version": "1",
+  "fixture": {
+    "distribution": "agent-runtime-fixture",
+    "version": "1.0.0",
+    "source_root": "examples/agent-runtime-fixture",
+    "source_digest": "2e57c0238c8191843933340a3de59e7522b39a1eaf405032bb1f33b05bc252d1",
+    "wheel_name": "agent_runtime_fixture-1.0.0-py3-none-any.whl",
+    "wheel_sha256": "820c1059f0ca50780949900d36a15e9966d1da42ab5879177e0b99fdb1562d67"
+  },
+  "graph": {
+    "entrypoint": "run",
+    "graph_id": "root",
+    "node_id": "run",
+    "capability": "fixture.binding.run",
+    "composition_manifests": {
+      "opencode": "examples/agent-runtime-fixture/manifests/opencode.json",
+      "cursor": "examples/agent-runtime-fixture/manifests/cursor.json"
+    }
+  },
+  "canonical_request": {
+    "digest": "05f48e44df6defbf5fb077afebd17519c0d5ffbc54d9bea93c9901100c026d7f",
+    "canonical_bytes": "{\"execution\":{\"limits\":{\"max_seconds\":120},\"permission_profile_digest\":\"70751fb8b22ad8d5b91adf52d61748e1c165ecac1a30775d57a3266c456be893\",\"provider_model\":\"provider_default\",\"worker_profile\":\"fixture-v1\"},\"instructions\":[{\"digest\":\"69fd61870ef2d182ac40e1ab96826984ad6966489511a7cc8a66a323b59677ef\",\"json_content\":null,\"media_type\":\"text/plain\",\"text_content\":\"Write result.json with status \\\"ok\\\" and artifact \\\"result.json\\\".\\n\"}],\"request_config_digest\":\"65d4e5652b580f524b734bb1441bc5bdb1ca3e9bd797b691ac5f3e048cc66d03\",\"request_policy_digest\":\"9296f9d1f826b868095d7afe9bad0ec93c48694650f793552febb4a1b7781652\",\"result_contract\":{\"extraction_mode\":\"structured\",\"schema_digest\":\"56e341c9d4dd6ccaac2bc2038dad7539ff03d3895c3d66d02b24172d4ba9141e\",\"schema_id\":\"fixture.result.v1\"},\"schema_version\":\"1\"}"
+  },
+  "workspace": {
+    "initial_tree_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "write_set": ["result.json"]
+  },
+  "result_schema": {
+    "schema_id": "fixture.result.v1",
+    "digest": "56e341c9d4dd6ccaac2bc2038dad7539ff03d3895c3d66d02b24172d4ba9141e"
+  },
+  "expected_output": {
+    "path": "result.json",
+    "content": {"artifact": "result.json", "status": "ok"},
+    "digest": "86f85b3898c11dad47aba8ee2bf20e913ed08dccde985a1c6c5b3fefc66d6c79"
+  },
+  "adapters": {
+    "opencode": {
+      "adapter_id": "runtime.opencode.execute",
+      "source_root": "packages/agent-runtime-opencode/agent_runtime_opencode",
+      "source_digest": "d2cee676fd6ca906692be505e07f172da8bae1a5096e4c4aa57c8ba85445424c",
+      "adapter_version": "0.1.0",
+      "protocol_profile": "opencode-http-v1",
+      "prompt_admission": "caller-message-id-v1",
+      "prompt_idempotency": "conflict-on-body-drift",
+      "endpoint": "http://127.0.0.1:4096",
+      "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003",
+      "external_tool_version": "1.18.4",
+      "secret_handle": "opencode.token",
+      "secret_env": "OPENCODE_PHASE3_TOKEN"
+    },
+    "cursor": {
+      "adapter_id": "runtime.cursor.execute",
+      "source_root": "packages/agent-runtime-cursor/agent_runtime_cursor",
+      "source_digest": "22d65265309ac9d9ca587eeb8aadd9153e5c80de55bdba761c629ab3851e431c",
+      "adapter_version": "0.1.0",
+      "protocol_profile": "confined_process",
+      "executable": "/Users/lvqingquan/.local/share/cursor-agent/versions/2026.08.11-e8db854/cursor-agent",
+      "executable_digest": "eed61c5224668c9236334c4c68936a16aecc37374b592f59e31eb50433817831",
+      "external_tool_version": "2026.08.11-e8db854",
+      "environment_names": ["PATH", "CURSOR_API_KEY"],
+      "secret_handle": "cursor.api-key",
+      "secret_env": "CURSOR_API_KEY"
+    }
+  },
+  "success": {
+    "status": "succeeded",
+    "terminal_event": "task_activity_terminal_observed",
+    "no_duplicate_create": true,
+    "no_duplicate_prompt": true,
+    "replay_without_provider": true
+  }
+}

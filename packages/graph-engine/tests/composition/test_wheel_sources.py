@@ -27,6 +27,7 @@ from graph_engine.composition import (
     load_snapshotted_entrypoint,
     snapshot_wheel_source,
 )
+from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import PluginContribution, PluginDescriptor, ProviderSource
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.composition import PluginRequirement, ProductManifest
@@ -410,7 +411,7 @@ def _namespace_distribution(
             source=source_expectation,
             plugin_id=plugin_id,
             plugin_version="1.2.3",
-            engine_api="1.0",
+            engine_api=ENGINE_API_VERSION,
             task_handlers=(),
             commit_validators=(),
         )
@@ -516,7 +517,7 @@ def _split_namespace_distributions(
             source=source_expectation,
             plugin_id=plugin_id,
             plugin_version="1.2.3",
-            engine_api="1.0",
+            engine_api=ENGINE_API_VERSION,
             task_handlers=(),
             commit_validators=(),
         )
@@ -630,7 +631,7 @@ def _rollback_distribution(
             source=sources[plugin_id],
             plugin_id=plugin_id,
             plugin_version="1.2.3",
-            engine_api="1.0",
+            engine_api=ENGINE_API_VERSION,
             task_handlers=(),
             commit_validators=(),
         )

@@ -8,7 +8,7 @@ from graph_engine.identifiers import IdentifierError, validate_qualified_id
 
 
 def test_public_engine_api_version_is_explicit() -> None:
-    assert ENGINE_API_VERSION == "1.0"
+    assert ENGINE_API_VERSION == "2.0"
 
 
 def test_canonical_json_is_order_independent() -> None:

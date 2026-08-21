@@ -14,7 +14,7 @@ def _descriptor(
     plugin_id: str,
     version: str = "1.0.0",
     *,
-    engine_api: str = ">=1,<2",
+    engine_api: str = ">=2,<3",
     requires: tuple[tuple[str, str], ...] = (),
 ) -> PluginDescriptor:
     return PluginDescriptor(
@@ -144,10 +144,10 @@ def test_resolver_rejects_duplicate_dependency_declaration() -> None:
 
 def test_resolver_rejects_engine_api_mismatch() -> None:
     descriptors = {
-        "toy.runtime": _descriptor("toy.runtime", engine_api=">=2,<3"),
+        "toy.runtime": _descriptor("toy.runtime", engine_api=">=1,<2"),
     }
 
-    with pytest.raises(DependencyConflict, match=r"requires engine API.*engine is 1.0"):
+    with pytest.raises(DependencyConflict, match=r"requires engine API.*engine is 2.0"):
         resolve_dependency_order(descriptors, ("toy.runtime",))
 
 

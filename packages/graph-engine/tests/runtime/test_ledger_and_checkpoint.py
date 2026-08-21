@@ -528,6 +528,26 @@ def test_fold_records_attempt_history() -> None:
     assert projection.activations[0].attempts[0].status == "succeeded"
 
 
+def test_checkpoint_document_requires_schema_version_2(tmp_path: Path) -> None:
+    envelopes = _envelopes(InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"))
+    projection = fold_events(envelopes)
+    path = tmp_path / "checkpoint.json"
+    write_checkpoint(path, projection, last_seq=1, ledger_envelopes=envelopes)
+    loaded = load_checkpoint(path, ledger_envelopes=envelopes)
+    assert loaded is not None
+    assert loaded.schema_version == "2"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["schema_version"] == "2"
+
+    missing = dict(document)
+    missing.pop("schema_version")
+    path.write_text(json.dumps(missing), encoding="utf-8")
+    assert load_checkpoint(path, ledger_envelopes=envelopes) is None
+
+    path.write_text(json.dumps({**document, "schema_version": "1"}), encoding="utf-8")
+    assert load_checkpoint(path, ledger_envelopes=envelopes) is None
+
+
 def test_checkpoint_round_trip_and_corruption_fallback(tmp_path: Path) -> None:
     envelopes = _envelopes(InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"))
     projection = fold_events(envelopes)

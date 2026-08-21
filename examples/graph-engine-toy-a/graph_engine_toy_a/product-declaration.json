@@ -2,7 +2,7 @@
   "kind": "product",
   "manifest": {
     "configuration": {},
-    "engine_api": "1.0",
+    "engine_api": "2.0",
     "entrypoints": {"hello": "root"},
     "plugins": [{"plugin_id": "toy.a", "version_specifier": "==1.0.0"}],
     "product_id": "toy.a",

@@ -4,7 +4,7 @@
     "commit_validators": [],
     "dependencies": [],
     "effects": [],
-    "engine_api": "1.0",
+    "engine_api": "2.0",
     "plugin_id": "runtime.cursor",
     "plugin_version": "0.1.0",
     "resources": [],
