@@ -34,6 +34,7 @@ dev = [
     "graph-engine-toy-b",
     "agent-runtime-contracts",
     "agent-runtime-opencode",
+    "agent-runtime-cursor",
 ]
 
 [build-system]
@@ -49,7 +50,7 @@ artifacts = ["assurance_agent/_resources/**"]
 exclude = ["scripts", "/scripts/**"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "packages/graph-engine/tests", "packages/agent-runtime-contracts/tests", "packages/agent-runtime-opencode/tests"]
+testpaths = ["tests", "packages/graph-engine/tests", "packages/agent-runtime-contracts/tests", "packages/agent-runtime-opencode/tests", "packages/agent-runtime-cursor/tests"]
 # Sibling packages under tests/unit/workflow/{issues,improvements}/ share basenames
 # (test_review.py, …); importlib avoids prepend-mode module collisions.
 addopts = ["--import-mode=importlib"]
@@ -60,7 +61,7 @@ target-version = "py311"
 extend-exclude = ["benchmark/vue-fastapi-admin", ".worktrees", ".history"]
 
 [tool.pyright]
-include = ["assurance_agent", "packages/assurance-kernel/assurance_kernel", "packages/graph-engine/graph_engine", "packages/agent-runtime-contracts/agent_runtime_contracts", "packages/agent-runtime-opencode/agent_runtime_opencode", "tests", "benchmark/specialty"]
+include = ["assurance_agent", "packages/assurance-kernel/assurance_kernel", "packages/graph-engine/graph_engine", "packages/agent-runtime-contracts/agent_runtime_contracts", "packages/agent-runtime-opencode/agent_runtime_opencode", "packages/agent-runtime-cursor/agent_runtime_cursor", "tests", "benchmark/specialty"]
 extraPaths = [".", "packages/assurance-kernel"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
@@ -71,6 +72,7 @@ members = [
     "packages/graph-engine",
     "packages/agent-runtime-contracts",
     "packages/agent-runtime-opencode",
+    "packages/agent-runtime-cursor",
     "examples/minimal-product",
     "examples/graph-engine-toy-a",
     "examples/graph-engine-toy-b",
@@ -84,3 +86,4 @@ graph-engine-toy-a = { workspace = true }
 graph-engine-toy-b = { workspace = true }
 agent-runtime-contracts = { workspace = true }
 agent-runtime-opencode = { workspace = true }
+agent-runtime-cursor = { workspace = true }
