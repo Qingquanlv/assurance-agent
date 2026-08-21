@@ -2338,15 +2338,15 @@ items:
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-api-plan.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-api-plan-reviewer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-api-plan-reviewer.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
   legacy_id: aa-archive
   disposition: migrate
@@ -2401,15 +2401,15 @@ items:
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-e2e-plan.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-e2e-plan-reviewer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-e2e-plan-reviewer.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
   legacy_id: aa-execute
   disposition: migrate
@@ -2450,15 +2450,15 @@ items:
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-fuzz-plan.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-fuzz-plan-reviewer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-fuzz-plan-reviewer.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
   legacy_id: aa-improvement-reviewer
   disposition: migrate
@@ -2506,15 +2506,15 @@ items:
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-performance-plan.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-performance-plan-reviewer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-performance-plan-reviewer.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
   legacy_id: aa-report-generator
   disposition: migrate
@@ -2611,15 +2611,15 @@ items:
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.persona.reviewer.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_plan_review.py::test_plan_review_prepare_uses_reviewer_persona
 - kind: persona
   legacy_id: aa-test-author
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.persona.test-author.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_planning.py::test_plan_prepare_instruction_order_is_skill_persona_cases_constraints
 - kind: validator
   legacy_id: archive_integrity/v1
   disposition: migrate

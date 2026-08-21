@@ -5,9 +5,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pathlib import PurePosixPath
+
+from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator, model_validator
 
 from assurance_generation.contracts.families import KNOWN_PLAN_CHECK_IDS, PLAN_CHECK_IDS, LayerName
+from assurance_intake.contracts import NonEmptyStr, RiskTier
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -130,3 +133,95 @@ class PlanCheckDocument(BaseModel):
             status=status,
             checks=ordered,
         )
+
+
+def canonical_relative_path(path: str) -> str:
+    posix = PurePosixPath(path)
+    if (
+        posix.is_absolute()
+        or "\\" in path
+        or posix.as_posix() != path
+        or any(part in {"", ".", ".."} for part in posix.parts)
+    ):
+        raise ValueError(f"path must be canonical and relative: {path}")
+    return path
+
+
+class PlanCoverageRow(BaseModel):
+    model_config = _FROZEN
+
+    case_id: NonEmptyStr
+    operation: NonEmptyStr
+    risk: RiskTier
+    required_capabilities: tuple[NonEmptyStr, ...]
+
+
+class FuzzStrategyV1(BaseModel):
+    model_config = _FROZEN
+
+    endpoint: NonEmptyStr
+    property_name: NonEmptyStr
+
+
+class PerformanceScenarioV1(BaseModel):
+    model_config = _FROZEN
+
+    scenario_id: NonEmptyStr
+    capability: NonEmptyStr
+    endpoint: NonEmptyStr
+    p95_ms: float
+    error_rate_max: float
+
+
+class PlanResultV1(BaseModel):
+    """Typed four-family plan result consumed by review, codegen, and validators."""
+
+    model_config = _FROZEN
+
+    schema_version: Literal["1"]
+    family: LayerName
+    change_id: NonEmptyStr
+    case_ids: tuple[NonEmptyStr, ...]
+    required_capabilities: tuple[NonEmptyStr, ...]
+    coverage: tuple[PlanCoverageRow, ...]
+    output_files: tuple[NonEmptyStr, ...]
+    fuzz_strategy: FuzzStrategyV1 | None = None
+    performance_scenarios: tuple[PerformanceScenarioV1, ...] = ()
+
+    @field_validator("output_files")
+    @classmethod
+    def _output_files(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(canonical_relative_path(item) for item in value)
+
+    @model_validator(mode="after")
+    def _validate_plan_result(self, info: ValidationInfo) -> PlanResultV1:
+        context = info.context or {}
+        leafs = context.get("capability_leafs")
+        if not isinstance(leafs, frozenset) or any(not isinstance(item, str) for item in leafs):
+            raise ValueError("capability_leafs context must be a frozenset of declared typed leaves")
+        ids = tuple(sorted(set(self.case_ids)))
+        if self.case_ids != ids:
+            raise ValueError("case_ids must be sorted and unique")
+        if not self.coverage:
+            raise ValueError("plan coverage must include operation and risk partitions")
+        covered = tuple(row.case_id for row in self.coverage)
+        if covered != self.case_ids:
+            raise ValueError("coverage must include every case_id exactly once in case_ids order")
+        for key in self.required_capabilities:
+            if key not in leafs:
+                raise ValueError(f"unknown capability leaf: {key}")
+        for row in self.coverage:
+            for key in row.required_capabilities:
+                if key not in leafs:
+                    raise ValueError(f"unknown capability leaf: {key}")
+        if self.family == "fuzz":
+            if self.fuzz_strategy is None:
+                raise ValueError("fuzz plan requires endpoint/property strategy")
+        elif self.fuzz_strategy is not None:
+            raise ValueError("fuzz_strategy is only valid for fuzz plans")
+        if self.family == "performance":
+            if not self.performance_scenarios:
+                raise ValueError("performance plan requires scenario identity and numeric thresholds")
+        elif self.performance_scenarios:
+            raise ValueError("performance_scenarios is only valid for performance plans")
+        return self

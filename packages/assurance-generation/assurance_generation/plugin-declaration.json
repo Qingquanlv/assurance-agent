@@ -1,7 +1,13 @@
 {
   "descriptor": {
     "bindings": [],
-    "commit_validators": [],
+    "commit_validators": [
+      "assurance.generation.validator.api-plan.v1",
+      "assurance.generation.validator.e2e-plan.v1",
+      "assurance.generation.validator.fuzz-plan.v1",
+      "assurance.generation.validator.performance-plan.v1",
+      "assurance.generation.validator.plan-mechanical.v1"
+    ],
     "dependencies": [
       {
         "plugin_id": "assurance.intake",
@@ -12,7 +18,20 @@
     "engine_api": "2.0",
     "plugin_id": "assurance.generation",
     "plugin_version": "0.1.0",
-    "resources": [],
+    "resources": [
+      "assurance.generation.persona.reviewer.v1",
+      "assurance.generation.persona.test-author.v1",
+      "assurance.generation.result.plan-review.v1",
+      "assurance.generation.result.plan.v1",
+      "assurance.generation.skill.aa-api-plan-reviewer.v1",
+      "assurance.generation.skill.aa-api-plan.v1",
+      "assurance.generation.skill.aa-e2e-plan-reviewer.v1",
+      "assurance.generation.skill.aa-e2e-plan.v1",
+      "assurance.generation.skill.aa-fuzz-plan-reviewer.v1",
+      "assurance.generation.skill.aa-fuzz-plan.v1",
+      "assurance.generation.skill.aa-performance-plan-reviewer.v1",
+      "assurance.generation.skill.aa-performance-plan.v1"
+    ],
     "schema_version": "1",
     "schemas": [
       "assurance.generation.schema.codegen-mapping.v1",
@@ -32,7 +51,24 @@
       ],
       "version": "0.1.0"
     },
-    "task_handlers": []
+    "task_handlers": [
+      "assurance.generation.api.plan-review.finalize",
+      "assurance.generation.api.plan-review.prepare",
+      "assurance.generation.api.plan.finalize",
+      "assurance.generation.api.plan.prepare",
+      "assurance.generation.e2e.plan-review.finalize",
+      "assurance.generation.e2e.plan-review.prepare",
+      "assurance.generation.e2e.plan.finalize",
+      "assurance.generation.e2e.plan.prepare",
+      "assurance.generation.fuzz.plan-review.finalize",
+      "assurance.generation.fuzz.plan-review.prepare",
+      "assurance.generation.fuzz.plan.finalize",
+      "assurance.generation.fuzz.plan.prepare",
+      "assurance.generation.performance.plan-review.finalize",
+      "assurance.generation.performance.plan-review.prepare",
+      "assurance.generation.performance.plan.finalize",
+      "assurance.generation.performance.plan.prepare"
+    ]
   },
   "kind": "plugin",
   "schema_version": "1",

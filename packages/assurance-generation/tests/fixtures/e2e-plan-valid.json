@@ -1,0 +1,28 @@
+{
+  "schema_version": "1",
+  "family": "e2e",
+  "change_id": "CH-DEMO-001",
+  "case_ids": [
+    "TC_E2E_001"
+  ],
+  "required_capabilities": [
+    "entities.item.create"
+  ],
+  "coverage": [
+    {
+      "case_id": "TC_E2E_001",
+      "operation": "create",
+      "risk": "high",
+      "required_capabilities": [
+        "entities.item.create"
+      ]
+    }
+  ],
+  "output_files": [
+    "qa/changes/CH-DEMO-001/plans/e2e-plan.md",
+    "qa/changes/CH-DEMO-001/plans/e2e-test-data-plan.md",
+    "qa/changes/CH-DEMO-001/plans/e2e-codegen-plan.md",
+    "qa/changes/CH-DEMO-001/plans/e2e-codegen-mapping.json",
+    "qa/changes/CH-DEMO-001/plans/m4-review-summary.md"
+  ]
+}

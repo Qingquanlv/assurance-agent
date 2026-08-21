@@ -8,7 +8,14 @@ import pytest
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.plugin_api import PluginDependency, PluginDescriptor, ProviderSource
 
-from assurance_generation.plugin import GENERATION_SCHEMA_IDS, GENERATION_SOURCE, GenerationPlugin
+from assurance_generation.plugin import (
+    GENERATION_HANDLER_IDS,
+    GENERATION_RESOURCE_IDS,
+    GENERATION_SCHEMA_IDS,
+    GENERATION_SOURCE,
+    GENERATION_VALIDATOR_IDS,
+    GenerationPlugin,
+)
 from assurance_generation.resource_loader import resource_bytes
 from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
 
@@ -52,9 +59,12 @@ def test_generation_source_identity() -> None:
     assert GenerationPlugin.descriptor().engine_api == ENGINE_API_VERSION
     assert GenerationPlugin.descriptor().schemas == GENERATION_SCHEMA_IDS
     assert tuple(GENERATION_SCHEMA_IDS) == tuple(sorted(GENERATION_SCHEMA_IDS))
-    assert GenerationPlugin.descriptor().task_handlers == ()
-    assert GenerationPlugin.descriptor().commit_validators == ()
-    assert GenerationPlugin.descriptor().resources == ()
+    assert GenerationPlugin.descriptor().task_handlers == GENERATION_HANDLER_IDS
+    assert GenerationPlugin.descriptor().commit_validators == GENERATION_VALIDATOR_IDS
+    assert GenerationPlugin.descriptor().resources == GENERATION_RESOURCE_IDS
+    assert tuple(GENERATION_HANDLER_IDS) == tuple(sorted(GENERATION_HANDLER_IDS))
+    assert tuple(GENERATION_VALIDATOR_IDS) == tuple(sorted(GENERATION_VALIDATOR_IDS))
+    assert tuple(GENERATION_RESOURCE_IDS) == tuple(sorted(GENERATION_RESOURCE_IDS))
     assert GenerationPlugin.descriptor().effects == ()
     assert GenerationPlugin.descriptor().bindings == ()
 

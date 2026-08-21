@@ -26,6 +26,7 @@ from assurance_generation.contracts.plans import (
     Finding,
     LayerApplicability,
     PlanCheckDocument,
+    PlanResultV1,
 )
 from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring, ReviewFinding
 
@@ -51,6 +52,7 @@ __all__ = [
     "PerformanceGeneratedFilesV1",
     "PlanCheckDocument",
     "PlanCheckId",
+    "PlanResultV1",
     "PlanReview",
     "PlanReviewAuthoring",
     "ReviewFinding",
