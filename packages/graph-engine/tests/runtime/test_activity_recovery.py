@@ -687,21 +687,32 @@ async def _assert_cancel_terminal_does_not_adopt(tmp_path: Path) -> None:
         )
         scheduler.start_recoverable(task)
         await scheduler.cancel_activity(task, reason="operator-stop")
+    kinds_after_cancel = [item.event.kind for item in ledger.read_all()]
+    assert "task_activity_terminal_observed" in kinds_after_cancel
+    assert "task_attempt_stopped" in kinds_after_cancel
+    assert "task_lease_adopted" not in kinds_after_cancel
     handle.close()
     engine.close()
     original_open, original_append = _install_call_recording(calls)
+    reopened_engine = None
+    reopened = None
     try:
         reopened_engine = Engine(tmp_path, clock=FakeClock(11.0), host=host)
         reopened = reopened_engine.open("cancel-term", product)
         calls.order.clear()
         result = await reopened.recover()
         decisions = getattr(result, "decisions", ())
-        assert len(decisions) == 1
-        assert decisions[0].decision == "promote_same_attempt"
+        assert decisions == ()
         assert "task_lease_adopted" not in calls.order
         kinds = [item.event.kind for item in ledger.read_all()]
         assert "task_lease_adopted" not in kinds
+        attempt = fold_events(ledger.read_all()).activations[-1].attempts[-1]
+        assert attempt.status == "stopped"
+        assert attempt.activity is not None
+        assert attempt.activity.state == "terminal_observed"
     finally:
-        reopened.close()
-        reopened_engine.close()
+        if reopened is not None:
+            reopened.close()
+        if reopened_engine is not None:
+            reopened_engine.close()
         _restore_call_recording(original_open, original_append)

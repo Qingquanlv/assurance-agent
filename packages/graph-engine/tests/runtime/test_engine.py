@@ -49,7 +49,14 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
-from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostExecuteCall
+from graph_engine.runtime.activity import LedgerTaskActivityPort
+from graph_engine.runtime.host_protocol import (
+    TaskHostCallIdentity,
+    TaskHostCallResult,
+    TaskHostExecuteCall,
+    TaskHostTerminalReceipt,
+)
+from graph_engine.runtime.host_receipts import TerminalReceiptStore, prove_call_quiescent
 from graph_engine.runtime.engine import (
     Engine,
     EngineConflictError,
@@ -241,6 +248,15 @@ def _resolved(
         "        self._delegate = delegate\n"
         "    async def execute(self, request, context):\n"
         "        return await self._delegate.execute(request, context)\n"
+        "class _DelegatingRecoverableHandler:\n"
+        "    def __init__(self, delegate):\n"
+        "        self._delegate = delegate\n"
+        "    async def execute(self, request, context):\n"
+        "        return await self._delegate.execute(request, context)\n"
+        "    async def reconcile(self, request, context, activity):\n"
+        "        return await self._delegate.reconcile(request, context, activity)\n"
+        "    async def cancel(self, request, context, activity):\n"
+        "        return await self._delegate.cancel(request, context, activity)\n"
         "class _DelegatingEffect:\n"
         "    def __init__(self, delegate):\n"
         "        self._delegate = delegate\n"
@@ -276,7 +292,14 @@ def _resolved(
         "                for kind, handler in _effect_callbacks.items()\n"
         "            )\n"
         "        return PluginContribution(\n"
-        "            task_handlers={key: _DelegatingHandler(value) for key, value in _callbacks.items()},\n"
+        "            task_handlers={\n"
+        "                key: (\n"
+        "                    _DelegatingRecoverableHandler(value)\n"
+        "                    if hasattr(value, 'reconcile') and hasattr(value, 'cancel')\n"
+        "                    else _DelegatingHandler(value)\n"
+        "                )\n"
+        "                for key, value in _callbacks.items()\n"
+        "            },\n"
         "            schemas=schemas,\n"
         "            effects=effects,\n"
         "        )\n",
@@ -404,6 +427,113 @@ class _InProcessTestHost:
         return TaskHostCallResult(operation="execute", outcome=outcome)
 
 
+class _ReceiptInstallingTestHost:
+    """Test host that installs an authenticated terminal receipt after execute."""
+
+    _FINGERPRINT = {"endpoint": "https://127.0.0.1:1", "profile": "test"}
+    _REFERENCE = {"id": "ext-1"}
+
+    def __init__(self) -> None:
+        self._handlers: Mapping[str, TaskHandler] = {}
+        self._store: object | None = None
+        self._receipts: TerminalReceiptStore | None = None
+        self._ledger: Ledger | None = None
+
+    def bind_ledger(self, ledger: Ledger) -> None:
+        self._ledger = ledger
+
+    def bind_invocation_runtime(
+        self,
+        *,
+        handlers: Mapping[str, TaskHandler],
+        store: object,
+        receipts: TerminalReceiptStore | None = None,
+    ) -> None:
+        self._handlers = handlers
+        self._store = store
+        if receipts is not None:
+            self._receipts = receipts
+
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        assert self._store is not None
+        handler = self._handlers[call.request.capability_id]
+        workspace_root = Path(self._store.root) / "attempts" / call.attempt_root.attempt_directory_id  # type: ignore[attr-defined]
+        port = None
+        if call.activity_rpc.activity_id is not None and self._ledger is not None:
+            port = LedgerTaskActivityPort(ledger=self._ledger, identity=call.activity_rpc)
+            port.mark_dispatch_started(cast(JSONValue, self._FINGERPRINT))
+            port.bind(cast(JSONValue, self._REFERENCE))
+        outcome = await handler.execute(
+            call.request,
+            TaskContext(
+                workspace_root=workspace_root,
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=call.request.invocation,
+                activity=port,
+            ),
+        )
+        if port is not None:
+            self._install_receipt(call.identity, port.snapshot, outcome)
+        return TaskHostCallResult(operation="execute", outcome=outcome)
+
+    async def reconcile(self, call: object) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="reconcile",
+            reconcile_result=TaskActivityReconcileResult(
+                status="indeterminate",
+                reason="receipt-installing test host does not reconcile",
+            ),
+        )
+
+    async def cancel(self, call: object) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="cancel",
+            cancel_result=TaskActivityCancelResult(
+                status="indeterminate",
+                reason="receipt-installing test host does not cancel",
+            ),
+        )
+
+    def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[TaskHostTerminalReceipt, ...]:
+        if self._receipts is None:
+            return ()
+        return self._receipts.authenticate(identity)
+
+    def _install_receipt(
+        self,
+        identity: TaskHostCallIdentity,
+        activity: TaskActivitySnapshot,
+        outcome: TaskOutcome,
+    ) -> None:
+        if self._receipts is None or identity.activity_id is None:
+            return
+        sink = self._receipts.sink_for(identity)
+        sink.install(
+            TaskHostTerminalReceipt(
+                host_implementation_digest=identity.host_implementation_digest,
+                wire_schema_version=identity.wire_schema_version,
+                invocation_id=identity.invocation_id,
+                task_id=identity.task_id,
+                activation_id=identity.activation_id,
+                attempt=identity.attempt,
+                activity_id=identity.activity_id,
+                operation=identity.operation,
+                request_digest=activity.request_digest,
+                workspace_identity_digest=activity.workspace_identity.attempt_identity_digest,
+                dispatch_fingerprint_digest=activity.dispatch_fingerprint_digest,
+                reference_digest=activity.reference_digest,
+                outcome=outcome,
+                outcome_digest=canonical_digest(outcome.model_dump(mode="json")),
+                terminal_proof_digest=None,
+                quiescence_proof_digest=prove_call_quiescent(),
+                host_call_id=sink.host_call_id,
+            )
+        )
+
+
 class _RecordingEffectHandler:
     def __init__(
         self,
@@ -483,6 +613,58 @@ def _task_product(
         {"test.empty.run": _FunctionHandler(handler)},
         effect_handlers=effect_handlers,
         effect_policy=effect_policy,
+    )
+
+
+class _SucceedingRecoverableHandler:
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        del request, context
+        return TaskOutcome.succeeded({"ok": True})
+
+    async def reconcile(
+        self,
+        request: TaskRequest,
+        context: TaskContext,
+        activity: TaskActivitySnapshot,
+    ) -> TaskActivityReconcileResult:
+        del request, context, activity
+        return TaskActivityReconcileResult(status="not_dispatched")
+
+    async def cancel(
+        self,
+        request: TaskRequest,
+        context: TaskContext,
+        activity: TaskActivitySnapshot,
+    ) -> TaskActivityCancelResult:
+        del request, context, activity
+        return TaskActivityCancelResult(status="acknowledged")
+
+
+def _recoverable_task_product(handler: TaskHandler) -> FrozenComposition:
+    return _resolved(
+        {
+            "name": "task-test",
+            "entrypoints": {"main": "root"},
+            "retry": {"once": {"max_attempts": 1}},
+            "timeout": {"short": {"run_seconds": 5}},
+            "graphs": {
+                "root": {
+                    "max_activations": 2,
+                    "start": "work",
+                    "nodes": {
+                        "work": {
+                            "kind": "task",
+                            "capability": "test.empty.run",
+                            "retry": "once",
+                            "timeout": "short",
+                        },
+                        "end": {"kind": "end"},
+                    },
+                    "edges": [{"from": "work", "to": "end"}],
+                }
+            },
+        },
+        {"test.empty.run": handler},
     )
 
 
@@ -1642,6 +1824,22 @@ def test_open_does_not_reclaim_expired_recoverable_activity(tmp_path: Path) -> N
     finally:
         reopened.close()
         reopened_engine.close()
+
+
+def test_run_until_blocked_publishes_task_attempt_succeeded_for_recoverable_success(
+    tmp_path: Path,
+) -> None:
+    product = _recoverable_task_product(_SucceedingRecoverableHandler())
+    host = _ReceiptInstallingTestHost()
+    engine = Engine(tmp_path, clock=FakeClock(10.0), host=host)
+    handle = engine.start(product, entrypoint="main", invocation_id="recoverable-success")
+    host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
+    result = engine.run_until_blocked(handle)
+    kinds = [item.event.kind for item in Ledger(handle.invocation_root / "ledger").read_all()]
+    assert result.status == "succeeded"
+    assert "task_activity_terminal_observed" in kinds
+    assert "task_attempt_succeeded" in kinds
+    assert kinds.index("task_activity_terminal_observed") < kinds.index("task_attempt_succeeded")
 
 
 def test_concurrent_open_reclaim_has_one_winner_and_one_engine_conflict(

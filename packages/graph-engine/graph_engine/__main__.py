@@ -20,10 +20,12 @@ from graph_engine.composition import (
 )
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
+    RecoverableTaskHandler,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
     TaskContext,
     TaskHandler,
+    TaskOutcome,
 )
 from graph_engine.runtime.engine import Engine, RunResult
 from graph_engine.runtime.host_protocol import (
@@ -59,12 +61,41 @@ class _TrustedWheelPluginHost:
         handlers: Mapping[str, TaskHandler],
         store: object,
     ) -> None:
+        if any(isinstance(handler, RecoverableTaskHandler) for handler in handlers.values()):
+            raise GraphEngineError("CLI wheel host refuses recoverable handlers")
         self._handlers = handlers
         self._store = store
+
+    def _refuse_recoverable(self, handler: TaskHandler, operation: str) -> TaskHostCallResult | None:
+        if not isinstance(handler, RecoverableTaskHandler):
+            return None
+        if operation == "execute":
+            return TaskHostCallResult(
+                operation="execute",
+                outcome=TaskOutcome.failed("internal", "CLI wheel host refuses recoverable handlers"),
+            )
+        if operation == "reconcile":
+            return TaskHostCallResult(
+                operation="reconcile",
+                reconcile_result=TaskActivityReconcileResult(
+                    status="indeterminate",
+                    reason="CLI wheel host refuses recoverable handlers",
+                ),
+            )
+        return TaskHostCallResult(
+            operation="cancel",
+            cancel_result=TaskActivityCancelResult(
+                status="indeterminate",
+                reason="CLI wheel host refuses recoverable handlers",
+            ),
+        )
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
         assert self._store is not None
         handler = self._handlers[call.request.capability_id]
+        refused = self._refuse_recoverable(handler, "execute")
+        if refused is not None:
+            return refused
         workspace_root = Path(self._store.root) / "attempts" / call.attempt_root.attempt_directory_id  # type: ignore[attr-defined]
         outcome = await handler.execute(
             call.request,
@@ -78,7 +109,11 @@ class _TrustedWheelPluginHost:
         return TaskHostCallResult(operation="execute", outcome=outcome)
 
     async def reconcile(self, call: TaskHostReconcileCall) -> TaskHostCallResult:
-        del call
+        handler = self._handlers.get(call.request.capability_id)
+        if handler is not None:
+            refused = self._refuse_recoverable(handler, "reconcile")
+            if refused is not None:
+                return refused
         return TaskHostCallResult(
             operation="reconcile",
             reconcile_result=TaskActivityReconcileResult(
@@ -88,7 +123,11 @@ class _TrustedWheelPluginHost:
         )
 
     async def cancel(self, call: TaskHostCancelCall) -> TaskHostCallResult:
-        del call
+        handler = self._handlers.get(call.request.capability_id)
+        if handler is not None:
+            refused = self._refuse_recoverable(handler, "cancel")
+            if refused is not None:
+                return refused
         return TaskHostCallResult(
             operation="cancel",
             cancel_result=TaskActivityCancelResult(

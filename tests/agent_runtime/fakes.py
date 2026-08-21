@@ -25,7 +25,7 @@ from agent_runtime_cursor import CursorAdapterConfig, CursorHandler
 from agent_runtime_cursor.handler import CursorDispatchIncomplete
 from agent_runtime_opencode import OpenCodeAdapterConfig, OpenCodeHandler
 from agent_runtime_opencode.discovery import OpenCodeDispatchIncomplete
-from graph_engine import ENGINE_API_VERSION, CandidateWriteSet, Engine
+from graph_engine import ENGINE_API_VERSION, Engine
 from graph_engine.canonical import canonical_digest as engine_digest
 from graph_engine.composition import (
     EditableWheelPluginSource,
@@ -675,32 +675,6 @@ class _AdapterHarness:
         self._drives += 1
         return await scenario.scheduler.recover_activity(scenario.task)
 
-    def _finalize_recoverable_if_needed(self, scenario: _Scenario, result: AttemptResult | None) -> None:
-        kinds = self._event_kinds(scenario.ledger)
-        if "task_attempt_succeeded" in kinds:
-            return
-        activity = self._activity(scenario.ledger)
-        if (
-            activity is None
-            or activity.state != "terminal_observed"
-            or activity.terminal is None
-            or activity.terminal.status != "succeeded"
-            or activity.candidate_tree_id is None
-        ):
-            raise AssertionError("success cut did not observe a succeeded terminal activity")
-        if result is None:
-            raise AssertionError("success cut missing AttemptResult for graph finalization")
-        candidate = CandidateWriteSet(
-            baseline_tree_id=activity.workspace_identity.baseline_tree_id,
-            candidate_tree_id=activity.candidate_tree_id,
-            files=(),
-        )
-        scenario.scheduler._finalize(  # noqa: SLF001
-            result.model_copy(update={"candidate": candidate, "outcome": activity.terminal})
-        )
-        if "task_attempt_succeeded" not in self._event_kinds(scenario.ledger):
-            raise AssertionError("graph finalization did not publish task_attempt_succeeded")
-
     def _drain_planner(self, scenario: _Scenario) -> None:
         while True:
             envelopes = scenario.ledger.read_all()
@@ -716,8 +690,7 @@ class _AdapterHarness:
             )
 
     async def _complete_success(self, scenario: _Scenario) -> None:
-        wave = await self._drive_wave(scenario, allow_incomplete=False)
-        self._finalize_recoverable_if_needed(scenario, wave)
+        await self._drive_wave(scenario, allow_incomplete=False)
         self._drain_planner(scenario)
         projection = fold_events(scenario.ledger.read_all())
         if projection.status != "succeeded":

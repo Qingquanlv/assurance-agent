@@ -75,6 +75,7 @@ from graph_engine.runtime.ledger import (
 )
 from graph_engine.runtime.models import (
     ActivityRecoveryDecision,
+    AttemptRecord,
     CommitResult,
     InvocationProjection,
     PlannedTask,
@@ -386,6 +387,7 @@ class Scheduler:
 
         if activity.state == "terminal_observed":
             self._cleanup_receipt_after_terminal(task, activity)
+            self._finalize_observed_if_running(task, activity)
             return self._recovery_decision(task, activity, "promote_same_attempt", "terminal")
 
         receipts = self._collect_terminal_receipts(task, activity)
@@ -431,6 +433,7 @@ class Scheduler:
             raise SchedulerStateError(f"task activity does not match: {task.activation_id}")
         if activity.state == "terminal_observed":
             self._cleanup_receipt_after_terminal(task, activity)
+            self._finalize_observed_if_running(task, activity)
             return self._recovery_decision(task, activity, "promote_same_attempt", "terminal")
         if not activity.cancel_requested:
             self._append(
@@ -565,10 +568,7 @@ class Scheduler:
                 for task, workspace, lease_state, activity_id in work
             )
         )
-        return tuple(
-            result if self._handler_is_recoverable(result.task) else self._finalize(result)
-            for result in gathered
-        )
+        return tuple(self._finalize_wave_result(result) for result in gathered)
 
     async def resume_running(self, tasks: Sequence[PlannedTask]) -> tuple[AttemptResult, ...]:
         """Resume attempts whose start and deterministic lease are already authoritative."""
@@ -625,10 +625,7 @@ class Scheduler:
                 for task, workspace, lease_state, activity_id in work
             )
         )
-        return tuple(
-            result if activity_id is not None else self._finalize(result)
-            for result, (_task, _workspace, _lease, activity_id) in zip(gathered, work, strict=True)
-        )
+        return tuple(self._finalize_wave_result(result) for result in gathered)
 
     def heartbeat(self, lease: Lease) -> Lease:
         guard = self._lease_guard(lease)
@@ -1317,12 +1314,14 @@ class Scheduler:
             return self._blocked_recovery(task, activity, status="indeterminate")
         if activity.state == "terminal_observed":
             self._cleanup_receipt_after_terminal(task, activity)
+            self._finalize_observed_if_running(task, activity)
             return self._recovery_decision(task, activity, "promote_same_attempt", "terminal")
         candidate_tree_id: str | None = None
         digest: str | None = None
+        sealed_candidate: CandidateWriteSet | None = None
         if receipt.outcome.status == "succeeded":
             try:
-                candidate = self._store.seal_authenticated_candidate(
+                sealed_candidate = self._store.seal_authenticated_candidate(
                     activity.workspace_identity,
                     task.resources,
                     self._named_validators(task),
@@ -1330,8 +1329,8 @@ class Scheduler:
                 )
             except Exception:
                 return self._blocked_recovery(task, activity, status="indeterminate")
-            candidate_tree_id = candidate.candidate_tree_id
-            digest = write_set_digest(candidate)
+            candidate_tree_id = sealed_candidate.candidate_tree_id
+            digest = write_set_digest(sealed_candidate)
             _promotion_cut("after_candidate_seal")
         event = TaskActivityTerminalObserved(
             activity_id=activity.activity_id,
@@ -1358,6 +1357,7 @@ class Scheduler:
         if observed is None:
             return self._blocked_recovery(task, activity, status="indeterminate")
         self._delete_promoted_receipt(task, receipt, event)
+        self._finalize_observed_if_running(task, observed, candidate=sealed_candidate)
         return self._recovery_decision(task, observed, "promote_same_attempt", "terminal")
 
     def _delete_promoted_receipt(
@@ -1522,9 +1522,16 @@ class Scheduler:
         return self._recovery_decision(task, activity, decision, reconciled.status)
 
     def _task_has_live_activity(self, task: PlannedTask) -> bool:
-        return self._live_activity(task) is not None
+        record = self._latest_attempt_record(task)
+        return record is not None and record.activity is not None and record.status == "running"
 
     def _live_activity(self, task: PlannedTask) -> TaskActivitySnapshot | None:
+        record = self._latest_attempt_record(task)
+        if record is None:
+            return None
+        return record.activity
+
+    def _latest_attempt_record(self, task: PlannedTask) -> AttemptRecord | None:
         try:
             projection = fold_events(self._ledger.read_all())
         except ProjectionError:
@@ -1535,7 +1542,69 @@ class Scheduler:
         )
         if activation is None or not activation.attempts or activation.attempts[-1].attempt != task.attempt:
             return None
-        return activation.attempts[-1].activity
+        return activation.attempts[-1]
+
+    def _attempt_is_running(self, task: PlannedTask) -> bool:
+        record = self._latest_attempt_record(task)
+        return record is not None and record.status == "running"
+
+    def _candidate_from_observed(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+    ) -> CandidateWriteSet | None:
+        if activity.terminal is None or activity.terminal.status != "succeeded":
+            return None
+        try:
+            return self._store.seal_authenticated_candidate(
+                activity.workspace_identity,
+                task.resources,
+                self._named_validators(task),
+                self._validation_context(task),
+            )
+        except Exception:
+            return None
+
+    def _finalize_observed_if_running(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        *,
+        candidate: CandidateWriteSet | None = None,
+    ) -> AttemptResult | None:
+        if activity.state != "terminal_observed" or activity.terminal is None:
+            return None
+        if not self._attempt_is_running(task):
+            return None
+        lease = self._persisted_running_leases().get((task.task_id, task.attempt))
+        if lease is None:
+            return None
+        sealed = candidate
+        if activity.terminal.status == "succeeded" and sealed is None:
+            sealed = self._candidate_from_observed(task, activity)
+        return self._finalize(
+            AttemptResult(
+                task=task,
+                outcome=activity.terminal,
+                lease=lease,
+                candidate=sealed,
+            )
+        )
+
+    def _finalize_wave_result(self, result: AttemptResult) -> AttemptResult:
+        if not self._handler_is_recoverable(result.task):
+            return self._finalize(result)
+        activity = self._live_activity(result.task)
+        if activity is None or activity.state != "terminal_observed" or activity.terminal is None:
+            return result
+        if not self._attempt_is_running(result.task):
+            return result
+        candidate = result.candidate
+        if activity.terminal.status == "succeeded" and candidate is None:
+            candidate = self._candidate_from_observed(result.task, activity)
+        return self._finalize(
+            result.model_copy(update={"outcome": activity.terminal, "candidate": candidate})
+        )
 
     def _handler_is_recoverable(self, task: PlannedTask) -> bool:
         handler = self._registry.task_handlers.get(task.capability_id)
@@ -1802,7 +1871,8 @@ def _lease_has_live_activity(projection: InvocationProjection, lease: Lease) -> 
     )
     if activation is None or not activation.attempts or activation.attempts[-1].attempt != lease.attempt:
         return False
-    return activation.attempts[-1].activity is not None
+    attempt = activation.attempts[-1]
+    return attempt.activity is not None and attempt.status in {"running", "effect_pending"}
 
 
 def _replace_with_lease_failure(result: AttemptResult, message: str) -> AttemptResult:
