@@ -54,6 +54,9 @@ testpaths = ["tests", "packages/graph-engine/tests", "packages/agent-runtime-con
 # Sibling packages under tests/unit/workflow/{issues,improvements}/ share basenames
 # (test_review.py, …); importlib avoids prepend-mode module collisions.
 addopts = ["--import-mode=importlib"]
+markers = [
+    "asyncio: async test executed by the local tests/agent_runtime hook",
+]
 
 [tool.ruff]
 line-length = 110
