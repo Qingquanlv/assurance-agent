@@ -1,0 +1,50 @@
+{
+  "descriptor": {
+    "bindings": [],
+    "commit_validators": [],
+    "dependencies": [
+      {
+        "plugin_id": "assurance.intake",
+        "version_specifier": "==0.1.0"
+      }
+    ],
+    "effects": [],
+    "engine_api": "2.0",
+    "plugin_id": "assurance.generation",
+    "plugin_version": "0.1.0",
+    "resources": [],
+    "schema_version": "1",
+    "schemas": [
+      "assurance.generation.schema.codegen-mapping.v1",
+      "assurance.generation.schema.discovery-campaign.v1",
+      "assurance.generation.schema.generated-files.v1",
+      "assurance.generation.schema.plan-check.v1",
+      "assurance.generation.schema.plan-review.v1"
+    ],
+    "source": {
+      "declaration_path": "assurance_generation/plugin-declaration.json",
+      "distribution": "assurance-generation",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "generation",
+      "entrypoint_value": "assurance_generation.plugin:GenerationPlugin",
+      "import_roots": [
+        ""
+      ],
+      "version": "0.1.0"
+    },
+    "task_handlers": []
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "assurance_generation/plugin-declaration.json",
+    "distribution": "assurance-generation",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "generation",
+    "entrypoint_value": "assurance_generation.plugin:GenerationPlugin",
+    "import_roots": [
+      ""
+    ],
+    "version": "0.1.0"
+  }
+}

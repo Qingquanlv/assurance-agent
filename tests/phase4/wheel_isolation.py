@@ -103,6 +103,7 @@ from graph_engine.plugin_api import PluginDescriptor, validate_contribution
 
 package, entry_point, declaration_path = sys.argv[1], sys.argv[2], sys.argv[3]
 local_names = {canonicalize_name(name) for name in sys.argv[4].split(",") if name}
+allowed_entry_points = [name for name in sys.argv[5].split(",") if name]
 
 for module_name in ("assurance_agent", "assurance_kernel"):
     if util.find_spec(module_name) is not None:
@@ -130,8 +131,10 @@ for dist in metadata.distributions():
 
 eps = metadata.entry_points(group="graph_engine.plugins")
 names = sorted(ep.name for ep in eps)
-if names != [entry_point]:
-    raise SystemExit(f"entry points {names!r} != {[entry_point]!r}")
+if names != allowed_entry_points:
+    raise SystemExit(f"entry points {names!r} != {allowed_entry_points!r}")
+if entry_point not in names:
+    raise SystemExit(f"missing expected entry point: {entry_point!r}")
 provider_cls = next(ep for ep in eps if ep.name == entry_point).load()
 provider = provider_cls() if isinstance(provider_cls, type) else provider_cls
 descriptor = provider.descriptor()
@@ -264,6 +267,9 @@ def _install_wheels(wheelhouse: Path, python: Path, distributions: Sequence[str]
 def _run_probe(python: Path, spec: PackageSpec, distributions: Sequence[str]) -> None:
     probe = python.parent.parent / "probe.py"
     probe.write_text(_PROBE_SOURCE, encoding="utf-8")
+    allowed_entry_points = tuple(
+        sorted(ALLOWED_PACKAGES[name].entry_point for name in distributions if name in ALLOWED_PACKAGES)
+    )
     _run(
         [
             str(python),
@@ -272,6 +278,7 @@ def _run_probe(python: Path, spec: PackageSpec, distributions: Sequence[str]) ->
             spec.entry_point,
             spec.declaration_path,
             ",".join(distributions),
+            ",".join(allowed_entry_points),
         ]
     )
 

@@ -3,6 +3,7 @@ root_packages =
     assurance_agent
     assurance_kernel
     assurance_intake
+    assurance_generation
     graph_engine
     graph_engine_toy_a
     graph_engine_toy_b
@@ -19,6 +20,26 @@ source_modules =
 forbidden_modules =
     assurance_agent
     assurance_kernel
+
+[importlinter:contract:generation-no-legacy]
+name = generation must not import legacy Assurance packages
+type = forbidden
+source_modules =
+    assurance_generation
+forbidden_modules =
+    assurance_agent
+    assurance_kernel
+
+[importlinter:contract:generation-intake-contracts-only]
+name = generation may import only intake contracts
+type = forbidden
+source_modules =
+    assurance_generation
+forbidden_modules =
+    assurance_intake.plugin
+    assurance_intake.operations
+    assurance_intake.validators
+    assurance_intake.resource_loader
 
 [importlinter:contract:graph-engine-independent]
 name = graph engine must not import products or the old runtime

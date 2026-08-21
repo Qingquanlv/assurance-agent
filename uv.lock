@@ -15,6 +15,7 @@ members = [
     "agent-runtime-fixture",
     "agent-runtime-opencode",
     "assurance-agent",
+    "assurance-generation",
     "assurance-intake",
     "assurance-kernel",
     "graph-engine",
@@ -142,6 +143,7 @@ dev = [
     { name = "agent-runtime-cursor" },
     { name = "agent-runtime-fixture" },
     { name = "agent-runtime-opencode" },
+    { name = "assurance-generation" },
     { name = "assurance-intake" },
     { name = "graph-engine" },
     { name = "graph-engine-toy-a" },
@@ -171,6 +173,7 @@ dev = [
     { name = "agent-runtime-cursor", editable = "packages/agent-runtime-cursor" },
     { name = "agent-runtime-fixture", editable = "examples/agent-runtime-fixture" },
     { name = "agent-runtime-opencode", editable = "packages/agent-runtime-opencode" },
+    { name = "assurance-generation", editable = "packages/assurance-generation" },
     { name = "assurance-intake", editable = "packages/assurance-intake" },
     { name = "graph-engine", editable = "packages/graph-engine" },
     { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },
@@ -180,6 +183,25 @@ dev = [
     { name = "pyright", specifier = ">=1.1.380" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.5" },
+]
+
+[[package]]
+name = "assurance-generation"
+version = "0.1.0"
+source = { editable = "packages/assurance-generation" }
+dependencies = [
+    { name = "agent-runtime-contracts" },
+    { name = "assurance-intake" },
+    { name = "graph-engine" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
+    { name = "assurance-intake", editable = "packages/assurance-intake" },
+    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "pydantic", specifier = ">=2.7" },
 ]
 
 [[package]]

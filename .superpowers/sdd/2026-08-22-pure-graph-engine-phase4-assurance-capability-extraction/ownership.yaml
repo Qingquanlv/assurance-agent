@@ -1766,6 +1766,41 @@ items:
   new_id: assurance.intake.schema.qa-change.v1
   status: verified
   verification: packages/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
+- kind: schema
+  legacy_id: assurance.generation.schema.codegen-mapping.v1
+  disposition: migrate
+  owner: assurance.generation
+  new_id: assurance.generation.schema.codegen-mapping.v1
+  status: verified
+  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+- kind: schema
+  legacy_id: assurance.generation.schema.discovery-campaign.v1
+  disposition: migrate
+  owner: assurance.generation
+  new_id: assurance.generation.schema.discovery-campaign.v1
+  status: verified
+  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+- kind: schema
+  legacy_id: assurance.generation.schema.generated-files.v1
+  disposition: migrate
+  owner: assurance.generation
+  new_id: assurance.generation.schema.generated-files.v1
+  status: verified
+  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+- kind: schema
+  legacy_id: assurance.generation.schema.plan-check.v1
+  disposition: migrate
+  owner: assurance.generation
+  new_id: assurance.generation.schema.plan-check.v1
+  status: verified
+  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+- kind: schema
+  legacy_id: assurance.generation.schema.plan-review.v1
+  disposition: migrate
+  owner: assurance.generation
+  new_id: assurance.generation.schema.plan-review.v1
+  status: verified
+  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
 - kind: operation
   legacy_id: operation:aggregate-nightly-metrics
   disposition: migrate
