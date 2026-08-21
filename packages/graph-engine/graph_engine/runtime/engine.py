@@ -16,7 +16,11 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition import FrozenComposition
 from graph_engine.errors import GraphEngineError
-from graph_engine.plugin_api import TaskHandler, TaskOutcome, TaskRequest
+from graph_engine.plugin_api import (
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
+    TaskOutcome,
+)
 from graph_engine.runtime.checkpoint import load_checkpoint_at, write_checkpoint_at
 from graph_engine.runtime.effects import (
     EffectExecutor,
@@ -58,12 +62,20 @@ from graph_engine.runtime.planner import (
     validate_event_history,
     validate_projection,
 )
+from graph_engine.runtime.host_protocol import (
+    TaskExecutionHost,
+    TaskHostCallIdentity,
+    TaskHostCallResult,
+    TaskHostCancelCall,
+    TaskHostExecuteCall,
+    TaskHostReconcileCall,
+    TaskHostTerminalReceipt,
+)
 from graph_engine.runtime.scheduler import (
     Clock,
     LeaseUnavailableError,
     Scheduler,
     SystemClock,
-    TaskExecutionHost,
 )
 from graph_engine.runtime.workspace import (
     FinalizationRolledBack,
@@ -153,16 +165,36 @@ class RunResult(BaseModel):
 
 
 class _UnavailableTaskHost:
-    async def execute(
-        self,
-        handler: TaskHandler,
-        request: TaskRequest,
-        *,
-        workspace_root: Path,
-        heartbeat: Callable[[], None],
-    ) -> TaskOutcome:
-        del handler, request, workspace_root, heartbeat
-        return TaskOutcome.failed("internal", "task execution host is not configured")
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="execute",
+            outcome=TaskOutcome.failed("internal", "task execution host is not configured"),
+        )
+
+    async def reconcile(self, call: TaskHostReconcileCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="reconcile",
+            reconcile_result=TaskActivityReconcileResult(
+                status="indeterminate",
+                reason="task execution host is not configured",
+            ),
+        )
+
+    async def cancel(self, call: TaskHostCancelCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="cancel",
+            cancel_result=TaskActivityCancelResult(
+                status="indeterminate",
+                reason="task execution host is not configured",
+            ),
+        )
+
+    def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[TaskHostTerminalReceipt, ...]:
+        del identity
+        return ()
 
 
 class Engine:

@@ -5,7 +5,7 @@ from importlib import metadata
 import json
 from pathlib import Path
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Mapping, Sequence
 from typing import cast
 
 from graph_engine.canonical import JSONValue, canonical_digest
@@ -19,8 +19,21 @@ from graph_engine.composition import (
     WheelProductSource,
 )
 from graph_engine.errors import GraphEngineError
-from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
+from graph_engine.plugin_api import (
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
+    TaskContext,
+    TaskHandler,
+)
 from graph_engine.runtime.engine import Engine, RunResult
+from graph_engine.runtime.host_protocol import (
+    TaskHostCallIdentity,
+    TaskHostCallResult,
+    TaskHostCancelCall,
+    TaskHostExecuteCall,
+    TaskHostReconcileCall,
+    TaskHostTerminalReceipt,
+)
 from graph_engine.runtime.ledger import Ledger
 
 
@@ -36,23 +49,57 @@ class _TrustedWheelPluginHost:
     is supplied.
     """
 
-    async def execute(
+    def __init__(self) -> None:
+        self._handlers: Mapping[str, TaskHandler] = {}
+        self._store: object | None = None
+
+    def bind_invocation_runtime(
         self,
-        handler: TaskHandler,
-        request: TaskRequest,
         *,
-        workspace_root: Path,
-        heartbeat: Callable[[], None],
-    ) -> TaskOutcome:
-        return await handler.execute(
-            request,
+        handlers: Mapping[str, TaskHandler],
+        store: object,
+    ) -> None:
+        self._handlers = handlers
+        self._store = store
+
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        assert self._store is not None
+        handler = self._handlers[call.request.capability_id]
+        workspace_root = Path(self._store.root) / "attempts" / call.attempt_root.attempt_directory_id  # type: ignore[attr-defined]
+        outcome = await handler.execute(
+            call.request,
             TaskContext(
                 workspace_root=workspace_root,
-                heartbeat=heartbeat,
+                heartbeat=lambda: None,
                 cancel_requested=lambda: False,
-                invocation=request.invocation,
+                invocation=call.request.invocation,
             ),
         )
+        return TaskHostCallResult(operation="execute", outcome=outcome)
+
+    async def reconcile(self, call: TaskHostReconcileCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="reconcile",
+            reconcile_result=TaskActivityReconcileResult(
+                status="indeterminate",
+                reason="CLI wheel host does not reconcile",
+            ),
+        )
+
+    async def cancel(self, call: TaskHostCancelCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="cancel",
+            cancel_result=TaskActivityCancelResult(
+                status="indeterminate",
+                reason="CLI wheel host does not cancel",
+            ),
+        )
+
+    def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[TaskHostTerminalReceipt, ...]:
+        del identity
+        return ()
 
 
 def _selected_entrypoint(

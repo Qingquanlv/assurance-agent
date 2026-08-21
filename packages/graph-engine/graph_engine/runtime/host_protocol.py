@@ -6,6 +6,10 @@ from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import Field, field_validator, model_validator
 
+from graph_engine.composition.lock import (
+    TASK_HOST_IMPLEMENTATION_ID,
+    TASK_HOST_WIRE_SCHEMA_VERSION,
+)
 from graph_engine.errors import GraphEngineError
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
@@ -21,8 +25,6 @@ from graph_engine.plugin_api import (
 
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
-TASK_HOST_IMPLEMENTATION_ID = "graph.engine.task-host"
-TASK_HOST_WIRE_SCHEMA_VERSION: Literal["1"] = "1"
 ATTEMPT_ROOT_CAPABILITY_ID: Literal["graph.engine.attempt-root"] = "graph.engine.attempt-root"
 HostOperation = Literal["execute", "reconcile", "cancel"]
 

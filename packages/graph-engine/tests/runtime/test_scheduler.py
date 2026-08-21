@@ -29,6 +29,7 @@ from graph_engine.composition.models import (
     EffectRegistry,
     ExecutableAuthority,
     SchemaRegistry,
+    _BoundTaskHandler,
 )
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
@@ -39,6 +40,7 @@ from graph_engine.plugin_api import (
     EffectPolicy,
     EffectReconcileResult,
     EffectRegistration,
+    InvocationMetadata,
     PluginContribution,
     PluginDescriptor,
     ResourceClaims,
@@ -67,6 +69,11 @@ from graph_engine.runtime.events import (
 )
 from graph_engine.runtime.ledger import Ledger, LedgerConflictError
 from graph_engine.runtime.models import PlannedTask, ProjectionError, fold_events
+from graph_engine.runtime.host_protocol import (
+    TaskHostCallIdentity,
+    TaskHostCallResult,
+    TaskHostExecuteCall,
+)
 from graph_engine.runtime.scheduler import (
     FakeClock,
     LedgerPublicationIndeterminate,
@@ -356,25 +363,45 @@ class _InProcessTestHost:
 
     def __init__(self) -> None:
         self.workspace_roots: list[Path] = []
+        self._handlers: Mapping[str, TaskHandler] = {}
+        self._store: SnapshotStore | None = None
 
-    async def execute(
+    def bind_invocation_runtime(
         self,
-        handler: TaskHandler,
-        request: TaskRequest,
         *,
-        workspace_root: Path,
-        heartbeat: Callable[[], None],
-    ) -> TaskOutcome:
+        handlers: Mapping[str, TaskHandler],
+        store: SnapshotStore,
+    ) -> None:
+        self._handlers = handlers
+        self._store = store
+
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        assert self._store is not None
+        handler = self._handlers[call.request.capability_id]
+        workspace_root = self._store.root / "attempts" / call.attempt_root.attempt_directory_id
         self.workspace_roots.append(workspace_root)
-        return await handler.execute(
-            request,
+        outcome = await handler.execute(
+            call.request,
             TaskContext(
                 workspace_root=workspace_root,
-                heartbeat=heartbeat,
+                heartbeat=lambda: None,
                 cancel_requested=lambda: False,
-                invocation=request.invocation,
+                invocation=call.request.invocation,
             ),
         )
+        return TaskHostCallResult(operation="execute", outcome=outcome)
+
+    async def reconcile(self, call: object) -> TaskHostCallResult:
+        del call
+        raise AssertionError("reconcile must stay unwired")
+
+    async def cancel(self, call: object) -> TaskHostCallResult:
+        del call
+        raise AssertionError("cancel must stay unwired")
+
+    def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[()]:
+        del identity
+        return ()
 
 
 def _task(
@@ -591,6 +618,105 @@ def test_scheduler_projects_exact_binding_resources_and_invocation_metadata(tmp_
     assert request.invocation.composition_digest == _COMPOSITION_DIGEST
     assert request.invocation.entrypoint == "main"
     assert request.resources == ResourceClaims(reads=("out",))
+
+
+def test_scheduler_execute_crosses_frozen_host_call_values(tmp_path: Path) -> None:
+    captured: list[object] = []
+
+    class _CallHost:
+        async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+            captured.append(call)
+            return TaskHostCallResult(operation="execute", outcome=TaskOutcome.succeeded())
+
+        async def reconcile(self, call: object) -> TaskHostCallResult:
+            del call
+            raise AssertionError("reconcile must stay unwired")
+
+        async def cancel(self, call: object) -> TaskHostCallResult:
+            del call
+            raise AssertionError("cancel must stay unwired")
+
+        def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[()]:
+            del identity
+            return ()
+
+    async def handler(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        raise AssertionError("scheduler must not invoke the handler directly")
+
+    task = _task("work")
+    scheduler, _store, _ledger = _scheduler(
+        tmp_path,
+        {task.capability_id: handler},
+        host=_CallHost(),  # type: ignore[arg-type]
+    )
+    results = asyncio.run(scheduler.run_wave((task,)))
+
+    assert len(captured) == 1
+    call = captured[0]
+    assert isinstance(call, TaskHostExecuteCall)
+    assert call.identity.operation == "execute"
+    assert call.request.capability_id == task.capability_id
+    assert call.attempt_root.capability_id == "graph.engine.attempt-root"
+    assert "/" not in call.attempt_root.attempt_directory_id
+    assert results[0].outcome.status == "succeeded"
+
+
+def test_bound_handler_cannot_mint_unsorted_ids_or_digestless_claims_after_scheduler_projection() -> None:
+    captured: list[TaskRequest] = []
+    unsorted = ("toy.flow.prompt-b", "toy.flow.prompt-a")
+    sorted_ids = ("toy.flow.prompt-a", "toy.flow.prompt-b")
+    digests = {
+        "toy.flow.prompt-a": "a" * 64,
+        "toy.flow.prompt-b": "b" * 64,
+    }
+
+    class _Target:
+        async def execute(self, request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+            captured.append(request)
+            return TaskOutcome.succeeded()
+
+    handler = _BoundTaskHandler(
+        alias_id="toy.flow.run",
+        target_capability_id="toy.runtime.execute",
+        data={"profile": "fixture"},
+        resource_ids=unsorted,
+        target=_Target(),
+    )
+    projected = TaskRequest(
+        invocation_id="inv-1",
+        task_id="task-1",
+        graph_instance_id="graph-1",
+        node_id="run",
+        capability_id="toy.flow.run",
+        target_capability_id="toy.runtime.execute",
+        binding_data={"profile": "fixture"},
+        resource_ids=sorted_ids,
+        resource_digests=digests,
+        invocation=InvocationMetadata(
+            invocation_id="inv-1",
+            lock_digest=_LOCK_DIGEST,
+            composition_digest=_COMPOSITION_DIGEST,
+            entrypoint="main",
+        ),
+        attempt=1,
+        input={"prompt": "go"},
+    )
+
+    asyncio.run(
+        handler.execute(
+            projected,
+            TaskContext(
+                workspace_root=Path("/workspace"),
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=projected.invocation,
+            ),
+        )
+    )
+
+    bound = captured[0]
+    assert bound.resource_ids == sorted_ids
+    assert bound.resource_digests == digests
 
 
 def _install_head_document(store: SnapshotStore, tree_id: str) -> None:

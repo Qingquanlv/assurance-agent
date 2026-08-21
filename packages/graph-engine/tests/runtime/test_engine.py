@@ -46,6 +46,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
+from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostExecuteCall
 from graph_engine.runtime.engine import (
     Engine,
     EngineConflictError,
@@ -371,23 +372,33 @@ def _rewrite_ledger(ledger_root: Path, events: tuple[object, ...]) -> None:
 class _InProcessTestHost:
     """Deliberately unconfined test double; never a production host."""
 
-    async def execute(
+    def __init__(self) -> None:
+        self._handlers: Mapping[str, TaskHandler] = {}
+        self._store: object | None = None
+
+    def bind_invocation_runtime(
         self,
-        handler: TaskHandler,
-        request: TaskRequest,
         *,
-        workspace_root: Path,
-        heartbeat: Callable[[], None],
-    ) -> TaskOutcome:
-        return await handler.execute(
-            request,
+        handlers: Mapping[str, TaskHandler],
+        store: object,
+    ) -> None:
+        self._handlers = handlers
+        self._store = store
+
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        assert self._store is not None
+        handler = self._handlers[call.request.capability_id]
+        workspace_root = Path(self._store.root) / "attempts" / call.attempt_root.attempt_directory_id  # type: ignore[attr-defined]
+        outcome = await handler.execute(
+            call.request,
             TaskContext(
                 workspace_root=workspace_root,
-                heartbeat=heartbeat,
+                heartbeat=lambda: None,
                 cancel_requested=lambda: False,
-                invocation=request.invocation,
+                invocation=call.request.invocation,
             ),
         )
+        return TaskHostCallResult(operation="execute", outcome=outcome)
 
 
 class _RecordingEffectHandler:
@@ -1635,30 +1646,40 @@ def test_concurrent_reopeners_execute_one_live_persisted_attempt_exclusively(
         return TaskOutcome.succeeded("once")
 
     class BlockingHost:
-        async def execute(
+        def __init__(self) -> None:
+            self._handlers: Mapping[str, TaskHandler] = {}
+            self._store: object | None = None
+
+        def bind_invocation_runtime(
             self,
-            handler: TaskHandler,
-            request: TaskRequest,
             *,
-            workspace_root: Path,
-            heartbeat: Callable[[], None],
-        ) -> TaskOutcome:
+            handlers: Mapping[str, TaskHandler],
+            store: object,
+        ) -> None:
+            self._handlers = handlers
+            self._store = store
+
+        async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
             nonlocal calls
+            assert self._store is not None
             with calls_lock:
                 calls += 1
                 current = calls
             if current == 1:
                 entered.set()
                 assert release.wait(timeout=5)
-            return await handler.execute(
-                request,
+            handler = self._handlers[call.request.capability_id]
+            workspace_root = Path(self._store.root) / "attempts" / call.attempt_root.attempt_directory_id  # type: ignore[attr-defined]
+            outcome = await handler.execute(
+                call.request,
                 TaskContext(
                     workspace_root=workspace_root,
-                    heartbeat=heartbeat,
+                    heartbeat=lambda: None,
                     cancel_requested=lambda: False,
-                    invocation=request.invocation,
+                    invocation=call.request.invocation,
                 ),
             )
+            return TaskHostCallResult(operation="execute", outcome=outcome)
 
     product = _task_product(task_handler)
     root = tmp_path / "exclusive-recovery"

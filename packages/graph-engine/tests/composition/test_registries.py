@@ -562,6 +562,8 @@ def test_binding_adapter_preserves_alias_target_frozen_data_and_resource_ids() -
         graph_instance_id="graph-1",
         node_id="run",
         capability_id="toy.flow.run",
+        resource_ids=("toy.flow.prompt",),
+        resource_digests={"toy.flow.prompt": hashlib.sha256(b"hello").hexdigest()},
         invocation=_TEST_INVOCATION,
         attempt=1,
         input={"name": "Ada"},

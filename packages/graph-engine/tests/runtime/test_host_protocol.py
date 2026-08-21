@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from pathlib import Path
 
 import pytest
@@ -285,3 +286,14 @@ def test_activity_port_protocol_exposes_snapshot_dispatch_and_bind() -> None:
     assert hasattr(TaskActivityPort, "mark_dispatch_started")
     assert hasattr(TaskActivityPort, "bind")
     assert getattr(TaskActivityPort, "snapshot", None) is not None
+
+
+def test_runtime_exports_frozen_host_protocol_not_phase2_execute() -> None:
+    import graph_engine.runtime as runtime
+    from graph_engine.runtime.host_protocol import TaskExecutionHost as FrozenHost
+
+    assert runtime.TaskExecutionHost is FrozenHost
+    parameters = tuple(inspect.signature(runtime.TaskExecutionHost.execute).parameters)
+    assert "call" in parameters
+    assert "handler" not in parameters
+    assert "workspace_root" not in parameters

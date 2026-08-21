@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Mapping
 import importlib
 from pathlib import Path
 import shutil
@@ -15,8 +15,9 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
+from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome
 from graph_engine.runtime.engine import Engine
+from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostExecuteCall
 
 
 def _toy_a_composition(
@@ -75,27 +76,38 @@ class _InProcessTestHost:
     def __init__(self, *, fail_first_greet: bool = False) -> None:
         self.executions = 0
         self._fail_first_greet = fail_first_greet
+        self._handlers: Mapping[str, TaskHandler] = {}
+        self._store: object | None = None
 
-    async def execute(
+    def bind_invocation_runtime(
         self,
-        handler: TaskHandler,
-        request: TaskRequest,
         *,
-        workspace_root: Path,
-        heartbeat: Callable[[], None],
-    ) -> TaskOutcome:
+        handlers: Mapping[str, TaskHandler],
+        store: object,
+    ) -> None:
+        self._handlers = handlers
+        self._store = store
+
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        assert self._store is not None
         self.executions += 1
         if self._fail_first_greet and self.executions == 1:
-            return TaskOutcome.failed("transient", "retry the toy greeting")
-        return await handler.execute(
-            request,
+            return TaskHostCallResult(
+                operation="execute",
+                outcome=TaskOutcome.failed("transient", "retry the toy greeting"),
+            )
+        handler = self._handlers[call.request.capability_id]
+        workspace_root = Path(self._store.root) / "attempts" / call.attempt_root.attempt_directory_id  # type: ignore[attr-defined]
+        outcome = await handler.execute(
+            call.request,
             TaskContext(
                 workspace_root=workspace_root,
-                heartbeat=heartbeat,
+                heartbeat=lambda: None,
                 cancel_requested=lambda: False,
-                invocation=request.invocation,
+                invocation=call.request.invocation,
             ),
         )
+        return TaskHostCallResult(operation="execute", outcome=outcome)
 
 
 def test_toy_a_runs_without_assurance_packages(

@@ -5,12 +5,12 @@ import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.composition.models import EffectRegistry, SchemaRegistry
 from graph_engine.errors import GraphEngineError
 from graph_engine.identifiers import canonical_id
@@ -25,6 +25,14 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
     ValidationContext,
+)
+from graph_engine.runtime.host_protocol import (
+    AttemptRootDescriptor,
+    TaskActivityRpcIdentity,
+    TaskExecutionHost,
+    TaskHostCallIdentity,
+    TaskHostCallResult,
+    TaskHostExecuteCall,
 )
 from graph_engine.runtime.events import (
     EffectIntentCommitted,
@@ -68,24 +76,6 @@ class LeaseUnavailableError(SchedulerStateError):
 
 class Clock(Protocol):
     def now(self) -> float: ...
-
-
-class TaskExecutionHost(Protocol):
-    """Trusted boundary that capability-confines task execution.
-
-    A production implementation must expose only ``workspace_root`` to task code,
-    denying the engine-owned store, tree, sibling-attempt, and lock namespaces.
-    Calling a handler directly in the engine process does not satisfy this contract.
-    """
-
-    async def execute(
-        self,
-        handler: TaskHandler,
-        request: TaskRequest,
-        *,
-        workspace_root: Path,
-        heartbeat: Callable[[], None],
-    ) -> TaskOutcome: ...
 
 
 class _CapabilityRegistryView(Protocol):
@@ -242,6 +232,9 @@ class Scheduler:
         self._effects = effects if effects is not None else EffectRegistry({})
         self._schemas = schemas if schemas is not None else SchemaRegistry({})
         self._resources = resources
+        bind_runtime = getattr(host, "bind_invocation_runtime", None)
+        if callable(bind_runtime):
+            bind_runtime(handlers=registry.task_handlers, store=store)
 
     async def run_wave(self, tasks: Sequence[PlannedTask]) -> tuple[AttemptResult, ...]:
         selected = select_wave(tasks, self._max_parallel)
@@ -393,8 +386,7 @@ class Scheduler:
         lease_state: _LeaseState,
     ) -> AttemptResult:
         try:
-            handler = self._registry.task_handlers.get(task.capability_id)
-            if handler is None:
+            if self._registry.task_handlers.get(task.capability_id) is None:
                 return AttemptResult(
                     task=task,
                     outcome=TaskOutcome.failed("internal", f"missing task handler: {task.capability_id}"),
@@ -404,18 +396,25 @@ class Scheduler:
 
             try:
                 async with asyncio.timeout(task.timeout_seconds):
-                    outcome = await self._host.execute(
-                        handler,
-                        request,
-                        workspace_root=workspace.root,
-                        heartbeat=lease_state.heartbeat,
-                    )
+                    result = await self._host.execute(self._host_execute_call(task, request, workspace))
             except TimeoutError:
                 outcome = TaskOutcome.failed("timeout", "task handler exceeded its run timeout")
             except asyncio.CancelledError as error:
                 outcome = TaskOutcome.failed("internal", _exception_message("task handler raised", error))
             except Exception as error:
                 outcome = TaskOutcome.failed("internal", _exception_message("task handler raised", error))
+            else:
+                if (
+                    not isinstance(result, TaskHostCallResult)
+                    or result.operation != "execute"
+                    or result.outcome is None
+                ):
+                    outcome = TaskOutcome.failed(
+                        "internal",
+                        f"task host returned {type(result).__name__}, expected execute TaskHostCallResult",
+                    )
+                else:
+                    outcome = result.outcome
             if not isinstance(outcome, TaskOutcome):
                 outcome = TaskOutcome.failed(
                     "internal",
@@ -783,6 +782,50 @@ class Scheduler:
             prior_failure=task.prior_failure,
         )
 
+    def _host_execute_call(
+        self,
+        task: PlannedTask,
+        request: TaskRequest,
+        workspace: AttemptWorkspace,
+    ) -> TaskHostExecuteCall:
+        binding = getattr(self._registry, "bindings", {}).get(task.capability_id)
+        capability_id = binding.target_capability_id if binding is not None else task.capability_id
+        host_lock = pinned_execution_host_lock()
+        return TaskHostExecuteCall(
+            identity=TaskHostCallIdentity(
+                invocation_id=task.invocation_id,
+                task_id=task.task_id,
+                activation_id=task.activation_id,
+                attempt=task.attempt,
+                activity_id=None,
+                operation="execute",
+                host_implementation_id=host_lock.implementation_id,
+                host_implementation_digest=host_lock.implementation_digest,
+                wire_schema_version=host_lock.wire_schema_version,
+            ),
+            capability_id=capability_id,
+            capability_entrypoint=self._capability_entrypoint(capability_id),
+            request=request,
+            attempt_root=AttemptRootDescriptor(attempt_directory_id=workspace.attempt_id),
+            activity_rpc=TaskActivityRpcIdentity(
+                invocation_id=task.invocation_id,
+                task_id=task.task_id,
+                activation_id=task.activation_id,
+                attempt=task.attempt,
+                activity_id=None,
+            ),
+            authorized_secret_handles=(),
+        )
+
+    def _capability_entrypoint(self, capability_id: str) -> str:
+        entries = getattr(self._registry, "entries", {})
+        entry = entries.get(capability_id)
+        provenance = getattr(entry, "provenance", None) or getattr(entry, "target_provenance", None)
+        callable_path = getattr(provenance, "callable_path", None)
+        if isinstance(callable_path, str) and callable_path:
+            return callable_path
+        return capability_id
+
     def _lease_guard(self, lease: Lease) -> _LeaseGuard:
         envelopes = self._ledger.read_all()
         running = self._persisted_running_leases(envelopes).get((lease.task_id, lease.attempt))
@@ -1010,6 +1053,5 @@ __all__ = [
     "Scheduler",
     "SchedulerStateError",
     "SystemClock",
-    "TaskExecutionHost",
     "select_wave",
 ]

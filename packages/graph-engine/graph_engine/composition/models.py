@@ -694,11 +694,20 @@ class _BoundTaskHandler:
             raise ValueError(
                 f"bound handler for {self.alias_id} received request for {request.capability_id}"
             )
+        expected_ids = tuple(sorted(self.resource_ids))
+        if request.resource_ids != expected_ids:
+            raise ValueError(
+                f"bound handler resource ids disagree with scheduler projection: {self.alias_id}"
+            )
+        digests = thaw_json(request.resource_digests)
+        if not isinstance(digests, dict) or set(digests) != set(expected_ids):
+            raise ValueError(
+                f"bound handler resource digests disagree with scheduler projection: {self.alias_id}"
+            )
         bound = request.model_copy(
             update={
                 "target_capability_id": self.target_capability_id,
                 "binding_data": self.data,
-                "resource_ids": self.resource_ids,
             }
         )
         return await self.target.execute(bound, context)

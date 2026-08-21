@@ -90,6 +90,7 @@ from graph_engine.runtime.models import (
 from graph_engine.runtime.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
+    TaskExecutionHost,
     TaskHostCancelCall,
     TaskHostCallIdentity,
     TaskHostCallResult,
@@ -109,7 +110,6 @@ from graph_engine.runtime.scheduler import (
     Scheduler,
     SchedulerStateError,
     SystemClock,
-    TaskExecutionHost,
     select_wave,
 )
 
