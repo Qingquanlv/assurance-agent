@@ -39,7 +39,6 @@ from agent_runtime_opencode.discovery import (
 from agent_runtime_opencode.observation import (
     classify_admission,
     classify_provider_state,
-    outcome_for_terminal,
     parse_sse_frames,
     prompt_admission_body,
     reduce_sse_frames,
@@ -49,6 +48,7 @@ from agent_runtime_opencode.protocol import (
     OpenCodeHttpClient,
     canonical_json_text,
 )
+from agent_runtime_opencode.reducer import reduce_terminal
 
 
 class OpenCodeHandler:
@@ -131,7 +131,10 @@ class OpenCodeHandler:
                     reason=bound.reason or "bound reference is not authentic",
                 )
             reference, record = bound
-            observed = await self._observe_bound(client, request, context, reference, record)
+            canaries = (secret.decode("utf-8"),)
+            observed = await self._observe_bound(
+                client, request, context, reference, record, canaries=canaries
+            )
             if observed.status == "terminal":
                 if observed.outcome is None:
                     return TaskActivityCancelResult(
@@ -145,7 +148,7 @@ class OpenCodeHandler:
                     reason=observed.reason or "provider observation is indeterminate",
                 )
             await client.abort(reference.session_id or "")
-            raced = await self._observe_bound(client, request, context, reference, record)
+            raced = await self._observe_bound(client, request, context, reference, record, canaries=canaries)
             if raced.status == "terminal":
                 if raced.outcome is None:
                     return TaskActivityCancelResult(
@@ -182,13 +185,16 @@ class OpenCodeHandler:
                 raise ValueError(mismatch)
             return TaskActivityReconcileResult(status="indeterminate", reason=mismatch)
         secret = context.secrets.resolve(config.secret_handle)
+        canaries = (secret.decode("utf-8"),)
         client = OpenCodeHttpClient(config, secret=secret)
         try:
             context.heartbeat()
             fingerprint = await self._observe_fingerprint(client, secret)
             expected = self._expected_reference_fields(request, snapshot, fingerprint)
             if snapshot.reference is not None:
-                return await self._reconcile_bound(client, request, context, snapshot, expected)
+                return await self._reconcile_bound(
+                    client, request, context, snapshot, expected, canaries=canaries
+                )
             if snapshot.state == "prepared" and not allow_create:
                 return await self._reconcile_prepared(client, port, request, snapshot, fingerprint, expected)
             was_prepared = snapshot.state == "prepared"
@@ -290,6 +296,8 @@ class OpenCodeHandler:
         context: TaskContext,
         snapshot: TaskActivitySnapshot,
         expected: dict[str, str],
+        *,
+        canaries: tuple[str, ...],
     ) -> TaskActivityReconcileResult:
         bound = await self._load_bound_session(client, snapshot, expected)
         if isinstance(bound, TaskActivityReconcileResult):
@@ -298,7 +306,7 @@ class OpenCodeHandler:
         admitted = await self._admit_prompt(client, request, reference)
         if admitted is not None:
             return admitted
-        return await self._observe_bound(client, request, context, reference, record)
+        return await self._observe_bound(client, request, context, reference, record, canaries=canaries)
 
     async def _load_bound_session(
         self,
@@ -401,8 +409,9 @@ class OpenCodeHandler:
         context: TaskContext,
         reference: OpenCodeActivityReference,
         record: dict[str, Any],
+        *,
+        canaries: tuple[str, ...],
     ) -> TaskActivityReconcileResult:
-        del request
         session_id = reference.session_id
         if not session_id:
             return TaskActivityReconcileResult(
@@ -437,12 +446,24 @@ class OpenCodeHandler:
                     )
         except httpx.TimeoutException:
             pass
+        except (httpx.TransportError, json.JSONDecodeError, ValueError) as error:
+            return TaskActivityReconcileResult(
+                status="indeterminate",
+                reason=str(error) or "provider observation is indeterminate",
+            )
         context.heartbeat()
-        status_map = await client.get_status()
-        session = await client.get_session(session_id)
-        if not isinstance(session, dict):
-            session = record
-        messages = await client.list_messages(session_id)
+        try:
+            status_map = await client.get_status()
+            session = await client.get_session(session_id)
+            if not isinstance(session, dict):
+                session = record
+            messages = await client.list_messages(session_id)
+            diff = await client.get_session_diff(session_id)
+        except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
+            return TaskActivityReconcileResult(
+                status="indeterminate",
+                reason=str(error) or "provider observation is indeterminate",
+            )
         kind = classify_provider_state(
             session_id=session_id,
             status_map=status_map,
@@ -452,10 +473,19 @@ class OpenCodeHandler:
         dumped = thaw_json(reference.model_dump(mode="json"))
         if kind == "running":
             return TaskActivityReconcileResult(status="running", reference=dumped)
+        agent_run = agent_run_from_request(request)
         return TaskActivityReconcileResult(
             status="terminal",
             reference=dumped,
-            outcome=outcome_for_terminal(kind),
+            outcome=reduce_terminal(
+                kind=kind,
+                session=session,
+                messages=messages,
+                agent_run=agent_run,
+                request=request,
+                diff=diff,
+                canaries=canaries,
+            ),
         )
 
     def _bind_match(

@@ -130,6 +130,18 @@ class OpenCodeHttpClient:
             return payload
         raise ValueError("abort response must be a JSON object or true")
 
+    async def get_session_diff(self, session_id: str) -> dict[str, Any] | list[Any] | None:
+        path = f"/session/{_path_segment(session_id, 'session id')}/diff"
+        try:
+            payload = await self._json("GET", path)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                return None
+            raise
+        if not isinstance(payload, dict | list):
+            raise ValueError("diff shape must be a JSON object or array")
+        return payload
+
     async def _json(
         self,
         method: str,

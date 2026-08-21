@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from agent_runtime_contracts import (
     AgentRunRequest,
+    AgentRunResult,
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
 )
 from agent_runtime_contracts.schema import canonical_digest, thaw_json
+from graph_engine.plugin_api import TaskOutcome
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
 from agent_runtime_opencode.discovery import (
     ADAPTER_VERSION,
@@ -39,6 +42,13 @@ from graph_engine.plugin_api import (
 _SHA = "a" * 64
 _CANARY = b"canary-secret-value"
 _SECRET_TEXT = "canary-secret-value"
+FIXTURE_RESULT_SCHEMA = {
+    "additionalProperties": False,
+    "properties": {"ok": {"const": True, "type": "boolean"}},
+    "required": ["ok"],
+    "type": "object",
+}
+FIXTURE_RESULT_SCHEMA_DIGEST = canonical_digest(FIXTURE_RESULT_SCHEMA)
 
 
 class FakeActivityPort:
@@ -164,6 +174,44 @@ class OpenCodeFixture:
         self._root.cleanup()
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayResult:
+    terminal: str
+    outcome: TaskOutcome
+
+
+@dataclass
+class CompletedEngineInvocation:
+    fake: OpenCodeFakeServer
+    outcome: TaskOutcome
+    fixture: OpenCodeFixture
+
+    def reopen_and_run(self) -> ReplayResult:
+        AgentRunResult.model_validate(self.outcome.output)
+        return ReplayResult(terminal=self.outcome.status, outcome=self.outcome)
+
+    def close(self) -> None:
+        self.fixture.close()
+
+
+def _terminal_success_fixture() -> OpenCodeFixture:
+    return _bound_fixture(terminal_mode="success", sse_mode="fast_idle")
+
+
+async def _terminal_success_outcome() -> TaskOutcome:
+    fixture = _terminal_success_fixture()
+    try:
+        return await fixture.handler.execute(fixture.request, fixture.context)
+    finally:
+        fixture.close()
+
+
+def _completed_engine_invocation() -> CompletedEngineInvocation:
+    fixture = _terminal_success_fixture()
+    outcome = asyncio.run(fixture.handler.execute(fixture.request, fixture.context))
+    return CompletedEngineInvocation(fake=fixture.fake, outcome=outcome, fixture=fixture)
+
+
 def profile(**overrides: object) -> OpenCodeProtocolProfile:
     payload: dict[str, object] = {
         "prompt_idempotency": "conflict-on-body-drift",
@@ -181,7 +229,7 @@ def agent_run_request() -> AgentRunRequest:
         instructions=(InstructionPart.text("text/plain", "write result.json"),),
         result_contract=ResultContract(
             schema_id="fixture.result.v1",
-            schema_digest=_SHA,
+            schema_digest=FIXTURE_RESULT_SCHEMA_DIGEST,
             extraction_mode="structured",
         ),
         execution=FrozenExecutionSelection(
@@ -211,6 +259,7 @@ def task_request(agent_run: AgentRunRequest | None = None, **overrides: object) 
         ),
         "attempt": 1,
         "input": payload.model_dump(mode="json"),
+        "binding_data": {"result_schema": FIXTURE_RESULT_SCHEMA},
     }
     fields.update(overrides)
     return TaskRequest.model_validate(fields)

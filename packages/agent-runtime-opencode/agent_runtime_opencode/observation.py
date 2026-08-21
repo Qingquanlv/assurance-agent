@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent_runtime_contracts import AgentRunRequest
 from agent_runtime_contracts.schema import canonical_digest, thaw_json
-from graph_engine.plugin_api import FrozenModel, TaskOutcome
+from graph_engine.plugin_api import FrozenModel
 from agent_runtime_opencode.protocol import canonical_json_text
 
 
@@ -215,7 +215,7 @@ def classify_provider_state(
 ) -> ProviderTerminal:
     error_kind = _terminal_error_kind(session, messages)
     idle = _idle_from_status_map(status_map, session_id)
-    has_result = _has_complete_structured_result(messages)
+    has_result = structured_result_from_messages(messages) is not None
     open_tools = _has_open_tool_work(messages)
     if error_kind == "canceled":
         return "canceled"
@@ -226,28 +226,7 @@ def classify_provider_state(
     return "running"
 
 
-def outcome_for_terminal(kind: ProviderTerminal) -> TaskOutcome:
-    if kind == "succeeded":
-        return TaskOutcome.succeeded({"completed": True})
-    if kind == "canceled":
-        return TaskOutcome.stopped("provider canceled")
-    return TaskOutcome.failed("external_effect", "provider error", retryable=False)
-
-
-def _is_identity_bearing_name(name: str | None) -> bool:
-    return name in _IDENTITY_BEARING_TYPES
-
-
-def _idle_from_status_map(status_map: object, session_id: str) -> bool:
-    if not isinstance(status_map, dict):
-        return False
-    record = status_map.get(session_id)
-    if not isinstance(record, dict):
-        return False
-    return record.get("type") == "idle"
-
-
-def _has_complete_structured_result(messages: Sequence[object]) -> bool:
+def structured_result_from_messages(messages: Sequence[object]) -> dict[str, Any] | None:
     final: dict[str, object] | None = None
     for message in messages:
         if not isinstance(message, dict):
@@ -261,10 +240,10 @@ def _has_complete_structured_result(messages: Sequence[object]) -> bool:
             continue
         final = message
     if final is None:
-        return False
+        return None
     parts = final.get("parts")
     if not isinstance(parts, list):
-        return False
+        return None
     for part in parts:
         if not isinstance(part, dict) or part.get("type") != "text":
             continue
@@ -276,8 +255,45 @@ def _has_complete_structured_result(messages: Sequence[object]) -> bool:
         except json.JSONDecodeError:
             continue
         if isinstance(parsed, dict):
-            return True
-    return False
+            return parsed
+    return None
+
+
+def provider_error_message(
+    session: Mapping[str, object],
+    messages: Sequence[object],
+) -> str:
+    error = session.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message:
+            return message
+    for record in messages:
+        if not isinstance(record, dict):
+            continue
+        info = record.get("info")
+        if not isinstance(info, dict):
+            continue
+        payload = info.get("error")
+        if not isinstance(payload, dict):
+            continue
+        message = payload.get("message")
+        if isinstance(message, str) and message:
+            return message
+    return "provider error"
+
+
+def _is_identity_bearing_name(name: str | None) -> bool:
+    return name in _IDENTITY_BEARING_TYPES
+
+
+def _idle_from_status_map(status_map: object, session_id: str) -> bool:
+    if not isinstance(status_map, dict):
+        return False
+    record = status_map.get(session_id)
+    if not isinstance(record, dict):
+        return False
+    return record.get("type") == "idle"
 
 
 def _has_open_tool_work(messages: Sequence[object]) -> bool:

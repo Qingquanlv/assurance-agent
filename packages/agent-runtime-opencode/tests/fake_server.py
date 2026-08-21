@@ -104,6 +104,11 @@ class OpenCodeFakeServer:
         self.sse_mode: SseMode = "heartbeat"
         self.omit_status = False
         self.sse_silent_seconds = 2.0
+        self.structured_result: object = {"ok": True}
+        self.error_message = "provider failed"
+        self.diff_payload: object | None = None
+        self.path_faults: dict[str, str] = {}
+        self._reject_all = False
         self._created_ids: list[str] = []
         self._sessions: dict[str, dict[str, object]] = {}
         self._messages: dict[str, dict[str, dict[str, object]]] = {}
@@ -159,6 +164,14 @@ class OpenCodeFakeServer:
         self._server.shutdown()
         self._server.server_close()
         self._thread.join(timeout=2)
+
+    def reject_all_requests(self) -> None:
+        with self._lock:
+            self._reject_all = True
+
+    def fault_on(self, path: str, fault: str) -> None:
+        with self._lock:
+            self.path_faults[path] = fault
 
     def accepted_message_count(self, message_id: str) -> int:
         with self._lock:
@@ -217,7 +230,23 @@ class OpenCodeFakeServer:
             handler.close_connection = True
             handler.connection.close()
             return
+        with self._lock:
+            reject_all = self._reject_all
+            path_fault = self.path_faults.get(path)
+        if reject_all:
+            self._record(handler.command, path, body)
+            self._disconnect(handler)
+            return
         self._record(handler.command, path, body)
+        if path_fault == "malformed_response":
+            self._write_raw(handler, 200, b"{")
+            return
+        if path_fault == "oversized_response":
+            self._write_raw(handler, 200, b"x" * 70_000)
+            return
+        if path_fault == "disconnect":
+            self._disconnect(handler)
+            return
         if self.cut == "after_provider_mutation":
             self._mutated = True
             handler.close_connection = True
@@ -345,6 +374,12 @@ class OpenCodeFakeServer:
         if parts[-1] == "abort" and handler.command == "POST":
             self._handle_abort(handler, session_id)
             return
+        if parts[-1] == "diff" and handler.command == "GET":
+            if self.diff_payload is None:
+                self._write_json(handler, 404, {"error": "not found"})
+                return
+            self._write_json(handler, 200, self.diff_payload)
+            return
         if "message" in parts and handler.command == "GET":
             self._handle_messages(handler, session_id, parts)
             return
@@ -452,7 +487,7 @@ class OpenCodeFakeServer:
                     "info": {
                         "id": "msg_terminal_error",
                         "role": "assistant",
-                        "error": {"name": "ProviderError", "message": "provider failed"},
+                        "error": {"name": "ProviderError", "message": self.error_message},
                     },
                     "parts": [],
                 }
@@ -468,12 +503,21 @@ class OpenCodeFakeServer:
                     "parts": [],
                 }
             ]
-        parts: list[dict[str, object]] = [{"type": "text", "text": '{"ok": true}'}]
+        parts: list[dict[str, object]] = [
+            {"type": "reasoning", "text": "internal chain-of-thought"},
+            {"type": "text", "text": json.dumps(self.structured_result)},
+        ]
         if mode == "open_tools":
             parts.append({"type": "tool", "state": {"status": "running"}})
         return [
             {
-                "info": {"id": "msg_terminal_result", "role": "assistant"},
+                "info": {
+                    "id": "msg_terminal_result",
+                    "role": "assistant",
+                    "cost": 1.25,
+                    "token_count": 9,
+                    "model_history": ["hidden"],
+                },
                 "parts": parts,
             }
         ]
@@ -491,7 +535,7 @@ class OpenCodeFakeServer:
     def _session_view(self, session: dict[str, object]) -> dict[str, object]:
         view = dict(session)
         if self.terminal_mode == "error":
-            view["error"] = {"name": "ProviderError", "message": "provider failed"}
+            view["error"] = {"name": "ProviderError", "message": self.error_message}
         if self.terminal_mode == "canceled":
             view["aborted"] = True
         return view
