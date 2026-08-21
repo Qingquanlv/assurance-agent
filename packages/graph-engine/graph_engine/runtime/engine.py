@@ -18,6 +18,12 @@ from graph_engine.composition import FrozenComposition
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import TaskHandler, TaskOutcome, TaskRequest
 from graph_engine.runtime.checkpoint import load_checkpoint_at, write_checkpoint_at
+from graph_engine.runtime.effects import (
+    EffectExecutor,
+    EffectPublicationIndeterminate,
+    EffectStateError,
+    needs_settlement,
+)
 from graph_engine.runtime.events import (
     EventEnvelope,
     GraphStarted,
@@ -732,6 +738,18 @@ class Engine:
             store,
             ledger,
         )
+        executor = EffectExecutor(
+            composition.registries.effects,
+            composition.registries.schemas,
+            ledger,
+            transition_guard=lambda: self._authenticate_transition_identity(
+                handle.invocation_id,
+                composition,
+                handle._entrypoint,
+                invocation_fd,
+                ledger,
+            ),
+        )
 
         while True:
             envelopes = ledger.read_all()
@@ -752,6 +770,29 @@ class Engine:
                 raise EnginePublicationIndeterminate(
                     "lease reclamation publication is indeterminate"
                 ) from error
+
+            if needs_settlement(projection):
+                try:
+                    settlement = asyncio.run(executor.settle_next(projection))
+                except LedgerConflictError as error:
+                    raise EngineConflictError("another runner advanced the invocation") from error
+                except (LedgerPublicationIndeterminate, EffectPublicationIndeterminate) as error:
+                    raise EnginePublicationIndeterminate("effect publication is indeterminate") from error
+                except EffectStateError as error:
+                    raise EngineError(str(error)) from error
+                if settlement.progressed:
+                    continue
+                if settlement.pending:
+                    refreshed = fold_events(ledger.read_all())
+                    self._validate_workflow(composition, refreshed)
+                    self._write_checkpoint(invocation_fd, ledger.read_all(), refreshed)
+                    return RunResult(
+                        status="interrupted",
+                        terminal_reason="effect_pending",
+                        actions=(),
+                        projection=refreshed,
+                    )
+                raise EngineError("effect settlement made no progress")
 
             running_tasks = plan_running_tasks(composition.workflow, projection)
             if running_tasks:

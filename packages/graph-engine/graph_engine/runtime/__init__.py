@@ -1,4 +1,11 @@
 from graph_engine.runtime.checkpoint import Checkpoint, load_checkpoint, write_checkpoint
+from graph_engine.runtime.effects import (
+    EffectExecutor,
+    EffectPublicationIndeterminate,
+    EffectSettlement,
+    EffectStateError,
+    needs_settlement,
+)
 from graph_engine.runtime.engine import (
     Engine,
     EngineConflictError,
@@ -90,9 +97,13 @@ __all__ = [
     "Clock",
     "EventEnvelope",
     "EffectApplyStarted",
+    "EffectExecutor",
     "EffectIntentCommitted",
+    "EffectPublicationIndeterminate",
     "EffectReceiptRecorded",
     "EffectRecord",
+    "EffectSettlement",
+    "EffectStateError",
     "Engine",
     "EngineConflictError",
     "EngineError",
@@ -151,6 +162,7 @@ __all__ = [
     "authenticate_invocation_lock",
     "fold_events",
     "install_invocation_lock_at",
+    "needs_settlement",
     "load_checkpoint",
     "plan_next",
     "read_invocation_lock_at",

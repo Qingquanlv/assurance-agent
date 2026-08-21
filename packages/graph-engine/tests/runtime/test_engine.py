@@ -34,10 +34,14 @@ from graph_engine.composition import (
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import (
+    EffectApplyResult,
+    EffectPolicy,
+    EffectReconcileResult,
     PluginDescriptor,
     ProviderSource,
     ResourceClaims,
     TaskContext,
+    TaskFailure,
     TaskHandler,
     TaskOutcome,
     TaskRequest,
@@ -105,15 +109,33 @@ class _MetadataProvider:
 _CALLBACK_REGISTRY_NAME = "_graph_engine_runtime_test_callbacks"
 _CALLBACKS: dict[str, Mapping[str, TaskHandler]] = {}
 setattr(builtins, _CALLBACK_REGISTRY_NAME, _CALLBACKS)
+_EFFECT_CALLBACK_REGISTRY_NAME = "_graph_engine_runtime_test_effect_callbacks"
+_EFFECT_CALLBACKS: dict[str, Mapping[str, object]] = {}
+setattr(builtins, _EFFECT_CALLBACK_REGISTRY_NAME, _EFFECT_CALLBACKS)
+_EFFECT_POLICY_REGISTRY_NAME = "_graph_engine_runtime_test_effect_policies"
+_EFFECT_POLICIES: dict[str, EffectPolicy] = {}
+setattr(builtins, _EFFECT_POLICY_REGISTRY_NAME, _EFFECT_POLICIES)
+_ENGINE_INTENT_SCHEMA = (
+    b'{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"],"additionalProperties":false}'
+)
+_ENGINE_RECEIPT_SCHEMA = (
+    b'{"type":"object","properties":{"remote_id":{"type":"string"}},"required":["remote_id"],'
+    b'"additionalProperties":false}'
+)
 
 
 def _resolved(
-    workflow: dict[str, object], handlers: Mapping[str, TaskHandler] | None = None
+    workflow: dict[str, object],
+    handlers: Mapping[str, TaskHandler] | None = None,
+    *,
+    effect_handlers: Mapping[str, object] | None = None,
+    effect_policy: EffectPolicy | None = None,
 ) -> FrozenComposition:
     """Resolve an authenticated editable test distribution through the public platform."""
 
     parsed_workflow = WorkflowDef.model_validate(workflow)
     selected_handlers = dict(handlers or {})
+    selected_effects = dict(effect_handlers or {})
     identity = uuid.uuid4().hex
     distribution_name = f"graph-engine-runtime-test-{identity}"
     package_name = f"graph_engine_runtime_test_{identity}"
@@ -162,6 +184,8 @@ def _resolved(
         engine_api=ENGINE_API_VERSION,
         task_handlers=tuple(sorted(selected_handlers)),
         commit_validators=(),
+        schemas=("test.empty.intent", "test.empty.receipt") if selected_effects else (),
+        effects=tuple(sorted(selected_effects)),
     )
     manifest_document = manifest.model_dump(mode="json")
     manifest_document["workflow"] = parsed_workflow.model_dump(mode="json", exclude_defaults=True)
@@ -187,19 +211,39 @@ def _resolved(
     )
     callback_key = f"runtime-{identity}"
     _CALLBACKS[callback_key] = selected_handlers
+    _EFFECT_CALLBACKS[callback_key] = selected_effects
+    _EFFECT_POLICIES[callback_key] = effect_policy or EffectPolicy(
+        max_attempts=3,
+        timeout_seconds=30,
+        backoff_seconds=0,
+    )
     manifest_json = json.dumps(manifest_document, sort_keys=True)
     descriptor_json = json.dumps(descriptor.model_dump(mode="json"), sort_keys=True)
     (package_root / "provider.py").write_text(
         "import builtins\n"
         "import json\n"
         "from graph_engine.composition import ProductManifest\n"
-        "from graph_engine.plugin_api import PluginContribution, PluginDescriptor\n"
+        "from graph_engine.plugin_api import (\n"
+        "    EffectRegistration,\n"
+        "    PluginContribution,\n"
+        "    PluginDescriptor,\n"
+        "    SchemaContribution,\n"
+        ")\n"
         f"_callbacks = getattr(builtins, {_CALLBACK_REGISTRY_NAME!r})[{callback_key!r}]\n"
+        f"_effect_callbacks = getattr(builtins, {_EFFECT_CALLBACK_REGISTRY_NAME!r}).get({callback_key!r}, {{}})\n"
+        f"_effect_policy = getattr(builtins, {_EFFECT_POLICY_REGISTRY_NAME!r})[{callback_key!r}]\n"
         "class _DelegatingHandler:\n"
         "    def __init__(self, delegate):\n"
         "        self._delegate = delegate\n"
         "    async def execute(self, request, context):\n"
         "        return await self._delegate.execute(request, context)\n"
+        "class _DelegatingEffect:\n"
+        "    def __init__(self, delegate):\n"
+        "        self._delegate = delegate\n"
+        "    async def apply(self, intent, key):\n"
+        "        return await self._delegate.apply(intent, key)\n"
+        "    async def reconcile(self, intent, key):\n"
+        "        return await self._delegate.reconcile(intent, key)\n"
         "class RuntimeProduct:\n"
         "    @staticmethod\n"
         "    def manifest():\n"
@@ -210,9 +254,28 @@ def _resolved(
         f"        return PluginDescriptor.model_validate(json.loads({descriptor_json!r}))\n"
         "    @staticmethod\n"
         "    def contribute(_ports):\n"
-        "        return PluginContribution(task_handlers={\n"
-        "            key: _DelegatingHandler(value) for key, value in _callbacks.items()\n"
-        "        })\n",
+        "        schemas = ()\n"
+        "        effects = ()\n"
+        "        if _effect_callbacks:\n"
+        "            schemas = (\n"
+        f"                SchemaContribution('test.empty.intent', 'application/schema+json', {_ENGINE_INTENT_SCHEMA!r}),\n"
+        f"                SchemaContribution('test.empty.receipt', 'application/schema+json', {_ENGINE_RECEIPT_SCHEMA!r}),\n"
+        "            )\n"
+        "            effects = tuple(\n"
+        "                EffectRegistration(\n"
+        "                    kind=kind,\n"
+        "                    intent_schema_id='test.empty.intent',\n"
+        "                    receipt_schema_id='test.empty.receipt',\n"
+        "                    handler=_DelegatingEffect(handler),\n"
+        "                    policy=_effect_policy,\n"
+        "                )\n"
+        "                for kind, handler in _effect_callbacks.items()\n"
+        "            )\n"
+        "        return PluginContribution(\n"
+        "            task_handlers={key: _DelegatingHandler(value) for key, value in _callbacks.items()},\n"
+        "            schemas=schemas,\n"
+        "            effects=effects,\n"
+        "        )\n",
         encoding="utf-8",
     )
     source_files = tuple(
@@ -322,10 +385,34 @@ class _InProcessTestHost:
         )
 
 
+class _RecordingEffectHandler:
+    def __init__(
+        self,
+        *,
+        apply_result: EffectApplyResult,
+        reconcile_result: EffectReconcileResult | None = None,
+    ) -> None:
+        self.apply_calls = 0
+        self.reconcile_calls = 0
+        self._apply_result = apply_result
+        self._reconcile_result = reconcile_result
+
+    async def apply(self, _intent: object, _key: str) -> EffectApplyResult:
+        self.apply_calls += 1
+        return self._apply_result
+
+    async def reconcile(self, _intent: object, _key: str) -> EffectReconcileResult:
+        self.reconcile_calls += 1
+        assert self._reconcile_result is not None
+        return self._reconcile_result
+
+
 def _task_product(
     handler: Callable[..., Awaitable[TaskOutcome]],
     *,
     nested: bool = False,
+    effect_handlers: Mapping[str, object] | None = None,
+    effect_policy: EffectPolicy | None = None,
 ) -> FrozenComposition:
     root_start = "child" if nested else "work"
     root_nodes: dict[str, object]
@@ -375,6 +462,8 @@ def _task_product(
             "graphs": graphs,
         },
         {"test.empty.run": _FunctionHandler(handler)},
+        effect_handlers=effect_handlers,
+        effect_policy=effect_policy,
     )
 
 
@@ -1122,6 +1211,98 @@ def test_explicit_host_runs_task_and_terminal_invocation_reopens(tmp_path: Path)
         .workspace.head_tree_id()
         == reopened.workspace.head_tree_id()
     )
+
+
+def test_engine_settles_effects_before_task_and_node_success(tmp_path: Path) -> None:
+    effect = _RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
+    calls = 0
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        nonlocal calls
+        calls += 1
+        return TaskOutcome.succeeded(
+            {"ran": True},
+            effects=(context.effect("test.empty.audit", {"n": 1}),),
+        )
+
+    product = _task_product(handler, effect_handlers={"test.empty.audit": effect})
+    engine = Engine(tmp_path, clock=FakeClock(10.0), host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id="effectful")
+    result = engine.run_until_blocked(handle)
+
+    assert result.status == "succeeded"
+    assert result.output == {"ran": True}
+    assert calls == 1
+    assert effect.apply_calls == 1
+    kinds = [envelope.event.kind for envelope in Ledger(handle.invocation_root / "ledger").read_all()]
+    assert kinds.index("effect_receipt_recorded") < kinds.index("task_attempt_succeeded")
+    assert kinds.index("task_attempt_succeeded") < kinds.index("node_completed")
+
+
+def test_engine_returns_generic_effect_pending_result(tmp_path: Path) -> None:
+    effect = _RecordingEffectHandler(
+        apply_result=EffectApplyResult(
+            status="transient",
+            failure=TaskFailure(kind="transient", message="busy"),
+        ),
+        reconcile_result=EffectReconcileResult(status="pending"),
+    )
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.succeeded(
+            {"ran": True},
+            effects=(context.effect("test.empty.audit", {"n": 1}),),
+        )
+
+    product = _task_product(handler, effect_handlers={"test.empty.audit": effect})
+    engine = Engine(tmp_path, clock=FakeClock(10.0), host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id="effect-pending")
+    result = engine.run_until_blocked(handle)
+
+    assert result.status == "interrupted"
+    assert result.terminal_reason == "effect_pending"
+    assert result.actions == ()
+    kinds = [envelope.event.kind for envelope in Ledger(handle.invocation_root / "ledger").read_all()]
+    assert "task_attempt_succeeded" not in kinds
+    assert effect.apply_calls == 1
+    assert effect.reconcile_calls == 1
+
+
+def test_engine_permanent_effect_failure_does_not_rerun_handler_or_roll_back_head(
+    tmp_path: Path,
+) -> None:
+    effect = _RecordingEffectHandler(
+        apply_result=EffectApplyResult(
+            status="permanent",
+            failure=TaskFailure(kind="external_effect", message="denied", retryable=False),
+        )
+    )
+    calls = 0
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        nonlocal calls
+        calls += 1
+        return TaskOutcome.succeeded(
+            {"ran": True},
+            effects=(context.effect("test.empty.audit", {"n": 1}),),
+        )
+
+    product = _task_product(handler, effect_handlers={"test.empty.audit": effect})
+    engine = Engine(tmp_path, clock=FakeClock(10.0), host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id="effect-permanent")
+    result = engine.run_until_blocked(handle)
+
+    assert result.status == "failed"
+    assert calls == 1
+    ledger = Ledger(handle.invocation_root / "ledger")
+    kinds = [envelope.event.kind for envelope in ledger.read_all()]
+    assert kinds.count("head_advanced") == 1
+    assert "task_attempt_succeeded" not in kinds
+    advanced = next(
+        envelope.event for envelope in ledger.read_all() if envelope.event.kind == "head_advanced"
+    )
+    assert handle.workspace.head_tree_id() == advanced.tree_id
+    assert fold_events(ledger.read_all()).head_tree_id == advanced.tree_id
 
 
 def test_open_applies_heartbeat_heavy_history_linearly(
