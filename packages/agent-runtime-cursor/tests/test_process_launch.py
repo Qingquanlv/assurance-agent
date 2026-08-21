@@ -15,12 +15,14 @@ from agent_runtime_contracts import (
 from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes
 from agent_runtime_cursor.config import CursorAdapterConfig
 from agent_runtime_cursor.handler import CursorHandler
-from fake_process_host import FakeConfinedProcessHost  # pyright: ignore[reportMissingImports]
+from fake_process_host import FakeActivityPort, FakeConfinedProcessHost  # pyright: ignore[reportMissingImports]
 from graph_engine import TaskActivityProtocolViolation
 from graph_engine.plugin_api import (
+    AttemptWorkspaceIdentity,
     InvocationMetadata,
     SecretHandleUnauthorized,
     SecretPort,
+    TaskActivitySnapshot,
     TaskContext,
     TaskRequest,
 )
@@ -31,6 +33,12 @@ _SHA = "a" * 64
 _CANARY = b"canary-secret-value"
 _SECRET_TEXT = "canary-secret-value"
 _CURSOR_BIN_NAME = "cursor"
+_RESULT_SCHEMA = {
+    "additionalProperties": False,
+    "properties": {"ok": {"const": True, "type": "boolean"}},
+    "required": ["ok"],
+    "type": "object",
+}
 
 
 def _write_cursor_bin(root: Path, content: bytes = b"cursor-binary") -> str:
@@ -66,7 +74,7 @@ def _agent_run(**overrides: object) -> AgentRunRequest:
         "instructions": (InstructionPart.text("text/plain", "write result.json"),),
         "result_contract": ResultContract(
             schema_id="fixture.result.v1",
-            schema_digest=_SHA,
+            schema_digest=canonical_digest(_RESULT_SCHEMA),
             extraction_mode="structured",
         ),
         "execution": FrozenExecutionSelection(
@@ -100,6 +108,7 @@ def _request(tmp_path: Path | None = None, **overrides: object) -> TaskRequest:
         ),
         "attempt": 1,
         "input": agent_run.model_dump(mode="json"),
+        "binding_data": {"result_schema": _RESULT_SCHEMA},
     }
     payload.update(overrides)
     return TaskRequest.model_validate(payload)
@@ -116,13 +125,22 @@ class _ExactSecretPort:
             raise SecretHandleUnauthorized(f"unauthorized secret handle: {handle}") from error
 
 
+def _workspace_identity(root: Path) -> AttemptWorkspaceIdentity:
+    return AttemptWorkspaceIdentity(
+        attempt_directory_id=root.name,
+        baseline_tree_id="c" * 64,
+        attempt_identity_digest="d" * 64,
+    )
+
+
 def _context(
     tmp_path: Path | None = None,
     *,
     secrets: SecretPort | None = None,
 ) -> TaskContext:
+    root = (tmp_path or Path(".")).resolve()
     return TaskContext(
-        workspace_root=(tmp_path or Path(".")).resolve(),
+        workspace_root=root,
         heartbeat=lambda: None,
         cancel_requested=lambda: False,
         invocation=InvocationMetadata(
@@ -130,6 +148,14 @@ def _context(
             lock_digest=_SHA,
             composition_digest="b" * 64,
             entrypoint="runtime.cursor.execute",
+        ),
+        activity=FakeActivityPort(
+            TaskActivitySnapshot(
+                activity_id="activity-1",
+                request_digest="e" * 64,
+                workspace_identity=_workspace_identity(root),
+                state="prepared",
+            )
         ),
         secrets=secrets if secrets is not None else _ExactSecretPort({"cursor.api-key": _CANARY}),
     )

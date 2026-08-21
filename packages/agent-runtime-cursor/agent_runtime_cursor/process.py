@@ -75,12 +75,24 @@ class ConfinedProcess:
     receipt: CursorProcessReceipt
 
 
+@dataclass(frozen=True, slots=True)
+class HostTerminalResult:
+    exit_code: int
+    stdout: bytes
+    stderr: bytes
+    elapsed_seconds: float
+
+
 class ConfinedProcessHost(Protocol):
     def preflight(self, request: ProcessLaunchRequest) -> ConfinementIdentity: ...
+
+    def authenticate(self, receipt: CursorProcessReceipt) -> None: ...
 
     async def spawn(self, request: ProcessLaunchRequest) -> ConfinedProcess: ...
 
     async def observe(self, receipt: CursorProcessReceipt) -> ProcessObservation: ...
+
+    async def wait(self, receipt: CursorProcessReceipt) -> HostTerminalResult: ...
 
     async def terminate(self, receipt: CursorProcessReceipt, policy: CancelPolicy) -> None: ...
 
