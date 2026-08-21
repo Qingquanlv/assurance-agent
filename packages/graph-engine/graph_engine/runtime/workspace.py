@@ -1505,6 +1505,29 @@ class SnapshotStore:
                 raise WorkspaceViolation(reason or "commit validator rejected the candidate")
         return candidate
 
+    def open_recorded_candidate(
+        self,
+        identity: AttemptWorkspaceIdentity,
+        candidate_tree_id: str,
+    ) -> CandidateWriteSet:
+        """Open the exact recorded candidate tree without resealing the attempt directory."""
+
+        validated = _validate_tree_id(candidate_tree_id, "candidate tree id")
+        with self._opened_layout() as (_root_fd, trees_fd, _attempts_fd, _lock_fd):
+            baseline = self._open_tree(trees_fd, identity.baseline_tree_id)
+            try:
+                recorded = self._open_tree(trees_fd, validated)
+                try:
+                    return CandidateWriteSet(
+                        baseline_tree_id=identity.baseline_tree_id,
+                        candidate_tree_id=validated,
+                        files=_diff_manifests(baseline.manifest, recorded.manifest),
+                    )
+                finally:
+                    os.close(recorded.descriptor)
+            finally:
+                os.close(baseline.descriptor)
+
     def _create_attempt(self, attempt_directory_id: str) -> AttemptWorkspace:
         validated = _validate_attempt_id(attempt_directory_id)
         with self._opened_layout(lock=True) as (_root_fd, trees_fd, attempts_fd, _lock_fd):

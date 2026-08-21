@@ -810,13 +810,13 @@ class Scheduler:
             if activity_id is None:
                 workspace.discard()
 
-    def _finalize(self, result: AttemptResult) -> AttemptResult:
+    def _finalize(self, result: AttemptResult, *, allow_expired_lease: bool = False) -> AttemptResult:
         task = result.task
         guard = self._lease_guard(result.lease)
         if not _same_lease_owner(guard.running, result.lease):
             return _replace_with_lease_failure(result, "task lease is no longer the persisted running lease")
         assert guard.running is not None
-        if guard.running.expires_at < self._now():
+        if not allow_expired_lease and guard.running.expires_at < self._now():
             expired = _replace_with_lease_failure(result, "persisted task lease expired")
             assert expired.outcome.failure is not None
             self._append(
@@ -900,10 +900,10 @@ class Scheduler:
 
             def authorize_publish() -> None:
                 self._guard_transition()
-                self._require_live_lease(result.lease)
+                self._require_live_lease(result.lease, allow_expired=allow_expired_lease)
 
             def publish_prepared(_previous_tree_id: str, _tree_id: str) -> None:
-                live = self._require_live_lease(result.lease)
+                live = self._require_live_lease(result.lease, allow_expired=allow_expired_lease)
                 self._append_prepared(events, expected_next_seq=live.expected_next_seq)
 
             commit = self._store.finalize_candidate(
@@ -1553,17 +1553,21 @@ class Scheduler:
         task: PlannedTask,
         activity: TaskActivitySnapshot,
     ) -> CandidateWriteSet | None:
+        del task
         if activity.terminal is None or activity.terminal.status != "succeeded":
             return None
+        if activity.candidate_tree_id is None or activity.write_set_digest is None:
+            return None
         try:
-            return self._store.seal_authenticated_candidate(
+            candidate = self._store.open_recorded_candidate(
                 activity.workspace_identity,
-                task.resources,
-                self._named_validators(task),
-                self._validation_context(task),
+                activity.candidate_tree_id,
             )
         except Exception:
             return None
+        if write_set_digest(candidate) != activity.write_set_digest:
+            return None
+        return candidate
 
     def _finalize_observed_if_running(
         self,
@@ -1588,7 +1592,8 @@ class Scheduler:
                 outcome=activity.terminal,
                 lease=lease,
                 candidate=sealed,
-            )
+            ),
+            allow_expired_lease=True,
         )
 
     def _finalize_wave_result(self, result: AttemptResult) -> AttemptResult:
@@ -1624,12 +1629,12 @@ class Scheduler:
         running = self._persisted_running_leases(envelopes).get((lease.task_id, lease.attempt))
         return _LeaseGuard(expected_next_seq=_next_sequence(envelopes), running=running)
 
-    def _require_live_lease(self, lease: Lease) -> _LeaseGuard:
+    def _require_live_lease(self, lease: Lease, *, allow_expired: bool = False) -> _LeaseGuard:
         guard = self._lease_guard(lease)
         if not _same_lease_owner(guard.running, lease):
             raise LeaseUnavailableError("task no longer owns the persisted running lease")
         assert guard.running is not None
-        if guard.running.expires_at < self._now():
+        if not allow_expired and guard.running.expires_at < self._now():
             raise LeaseUnavailableError("persisted task lease expired")
         return guard
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import builtins
 import fcntl
 import importlib
@@ -20,6 +21,7 @@ from pydantic import ValidationError
 
 import graph_engine.runtime.engine as engine_runtime
 import graph_engine.runtime.ledger as ledger_runtime
+import graph_engine.runtime.scheduler as scheduler_runtime
 import graph_engine.runtime.workspace as workspace_runtime
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.composition import (
@@ -88,7 +90,7 @@ from graph_engine.runtime.events import (
 )
 from graph_engine.runtime.ledger import Ledger, LedgerIntegrityError
 from graph_engine.runtime.invocation_lock import InvocationDrift
-from graph_engine.runtime.models import fold_events
+from graph_engine.runtime.models import ProjectionError, fold_events
 from graph_engine.runtime.planner import activation_id, plan_next, task_id
 from graph_engine.runtime.scheduler import FakeClock
 from graph_engine.runtime.scheduler import Scheduler
@@ -638,6 +640,51 @@ class _SucceedingRecoverableHandler:
     ) -> TaskActivityCancelResult:
         del request, context, activity
         return TaskActivityCancelResult(status="acknowledged")
+
+
+class _FixedOutcomeRecoverableHandler(_SucceedingRecoverableHandler):
+    def __init__(self, outcome: TaskOutcome) -> None:
+        self._outcome = outcome
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        del request, context
+        return self._outcome
+
+
+class _PromotionCutCrash(RuntimeError):
+    pass
+
+
+def _leave_unfinalized_terminal_observed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    handler: TaskHandler,
+    invocation_id: str,
+) -> FrozenComposition:
+    product = _recoverable_task_product(handler)
+    host = _ReceiptInstallingTestHost()
+    engine = Engine(tmp_path, clock=FakeClock(10.0), host=host)
+    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id)
+    try:
+        host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
+
+        def crash(name: str) -> None:
+            if name == "before_receipt_cleanup":
+                raise _PromotionCutCrash(name)
+
+        monkeypatch.setattr(scheduler_runtime, "_promotion_cut", crash)
+        with pytest.raises(_PromotionCutCrash, match="before_receipt_cleanup"):
+            engine.run_until_blocked(handle)
+        kinds = [item.event.kind for item in Ledger(handle.invocation_root / "ledger").read_all()]
+        assert "task_activity_terminal_observed" in kinds
+        assert "task_attempt_succeeded" not in kinds
+        assert "task_attempt_failed" not in kinds
+        assert "task_attempt_stopped" not in kinds
+    finally:
+        monkeypatch.setattr(scheduler_runtime, "_promotion_cut", lambda _name: None)
+        handle.close()
+        engine.close()
+    return product
 
 
 def _recoverable_task_product(handler: TaskHandler) -> FrozenComposition:
@@ -1840,6 +1887,82 @@ def test_run_until_blocked_publishes_task_attempt_succeeded_for_recoverable_succ
     assert "task_activity_terminal_observed" in kinds
     assert "task_attempt_succeeded" in kinds
     assert kinds.index("task_activity_terminal_observed") < kinds.index("task_attempt_succeeded")
+
+
+def test_recover_publishes_task_attempt_succeeded_for_expired_succeeded_terminal_observed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product = _leave_unfinalized_terminal_observed(
+        tmp_path,
+        monkeypatch,
+        _SucceedingRecoverableHandler(),
+        "expired-observed-success",
+    )
+    host = _ReceiptInstallingTestHost()
+    engine = Engine(tmp_path, clock=FakeClock(41.0), host=host)
+    handle = engine.open("expired-observed-success", product)
+    try:
+        host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
+        asyncio.run(handle.recover())
+        kinds = [item.event.kind for item in Ledger(handle.invocation_root / "ledger").read_all()]
+        attempt = (
+            fold_events(Ledger(handle.invocation_root / "ledger").read_all()).activations[-1].attempts[-1]
+        )
+        assert "task_attempt_succeeded" in kinds
+        assert "task_attempt_failed" not in kinds
+        assert attempt.status == "succeeded"
+        result = engine.run_until_blocked(handle)
+        assert result.status == "succeeded"
+    finally:
+        handle.close()
+        engine.close()
+
+
+@pytest.mark.parametrize("mode", ["failed", "stopped"])
+def test_recover_publishes_matching_outcome_for_expired_failed_or_stopped_terminal_observed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    if mode == "failed":
+        outcome = TaskOutcome.failed("transient", "provider failed")
+        expected_kind = "task_attempt_failed"
+        unexpected_kind = "task_attempt_stopped"
+    else:
+        outcome = TaskOutcome.stopped("operator-stop")
+        expected_kind = "task_attempt_stopped"
+        unexpected_kind = "task_attempt_failed"
+    product = _leave_unfinalized_terminal_observed(
+        tmp_path,
+        monkeypatch,
+        _FixedOutcomeRecoverableHandler(outcome),
+        f"expired-observed-{mode}",
+    )
+    host = _ReceiptInstallingTestHost()
+    engine = Engine(tmp_path, clock=FakeClock(41.0), host=host)
+    handle = engine.open(f"expired-observed-{mode}", product)
+    try:
+        host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
+        try:
+            asyncio.run(handle.recover())
+        except ProjectionError as error:
+            raise AssertionError("expired observed failed/stopped must not fold-reject") from error
+        kinds = [item.event.kind for item in Ledger(handle.invocation_root / "ledger").read_all()]
+        attempt = (
+            fold_events(Ledger(handle.invocation_root / "ledger").read_all()).activations[-1].attempts[-1]
+        )
+        assert expected_kind in kinds
+        assert unexpected_kind not in kinds
+        assert "task_attempt_succeeded" not in kinds
+        assert attempt.status == mode
+        try:
+            engine.run_until_blocked(handle)
+        except ProjectionError as error:
+            raise AssertionError("expired observed failed/stopped must not fold-reject") from error
+    finally:
+        handle.close()
+        engine.close()
 
 
 def test_concurrent_open_reclaim_has_one_winner_and_one_engine_conflict(
