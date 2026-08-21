@@ -34,6 +34,7 @@ from graph_engine.composition.models import (
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
 from graph_engine.plugin_api import (
+    AttemptWorkspaceIdentity,
     CandidateWriteSet,
     EffectApplyResult,
     EffectIntent,
@@ -60,6 +61,7 @@ from graph_engine.runtime.events import (
     HeadAdvanced,
     InvocationStarted,
     NodeActivated,
+    TaskActivityPrepared,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptSucceeded,
@@ -70,6 +72,7 @@ from graph_engine.runtime.events import (
 from graph_engine.runtime.ledger import Ledger, LedgerConflictError
 from graph_engine.runtime.models import PlannedTask, ProjectionError, fold_events
 from graph_engine.runtime.host_protocol import (
+    TaskActivityRpcIdentity,
     TaskHostCallIdentity,
     TaskHostCallResult,
     TaskHostExecuteCall,
@@ -2389,3 +2392,61 @@ def test_prepared_publication_never_overwrites_newer_head(tmp_path: Path) -> Non
         not isinstance(event, TaskCommitPrepared) or event.activation_id != task.activation_id
         for event in events
     )
+
+
+def test_scheduler_binds_identity_narrow_activity_port(tmp_path: Path) -> None:
+    task = _planned_task()
+
+    async def handler(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.succeeded()
+
+    scheduler, store, ledger = _scheduler(tmp_path, {task.capability_id: handler})
+    next_seq = ledger.read_all()[-1].seq + 1
+    ledger.append_batch(
+        (
+            TaskAttemptStarted(
+                activation_id=task.activation_id,
+                attempt=1,
+                lease_expires_at="110",
+            ),
+            TaskLeaseAcquired(
+                task_id=task.task_id,
+                activation_id=task.activation_id,
+                attempt=1,
+                owner_id="worker-1",
+                acquired_at=100.0,
+                heartbeat_at=100.0,
+                expires_at=110.0,
+            ),
+            TaskActivityPrepared(
+                activity_id="activity-1",
+                task_id=task.task_id,
+                activation_id=task.activation_id,
+                attempt=1,
+                request_digest="0" * 64,
+                workspace_identity=AttemptWorkspaceIdentity(
+                    attempt_directory_id="attempt-1",
+                    baseline_tree_id=store.head_tree_id(),
+                    attempt_identity_digest="b" * 64,
+                ),
+            ),
+        ),
+        expected_next_seq=next_seq,
+    )
+    port = scheduler.task_activity_port(
+        TaskActivityRpcIdentity(
+            invocation_id=task.invocation_id,
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=1,
+            activity_id="activity-1",
+        )
+    )
+    first = port.mark_dispatch_started({"endpoint": "https://localhost", "profile": "v1"})
+    before = ledger.read_bytes()
+    second = port.mark_dispatch_started({"endpoint": "https://localhost", "profile": "v1"})
+    assert second == first
+    assert ledger.read_bytes() == before
+    public = {name for name in dir(port) if not name.startswith("_")}
+    assert "append" not in public
+    assert "ledger" not in public

@@ -26,6 +26,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
     ValidationContext,
 )
+from graph_engine.runtime.activity import LedgerTaskActivityPort
 from graph_engine.runtime.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
@@ -235,6 +236,16 @@ class Scheduler:
         bind_runtime = getattr(host, "bind_invocation_runtime", None)
         if callable(bind_runtime):
             bind_runtime(handlers=registry.task_handlers, store=store)
+
+    def task_activity_port(self, identity: TaskActivityRpcIdentity) -> LedgerTaskActivityPort:
+        """Return a CAS port bound to one activity identity on this invocation ledger."""
+        if identity.activity_id is None:
+            raise SchedulerStateError("activity port requires an activity id")
+        return LedgerTaskActivityPort(
+            ledger=self._ledger,
+            identity=identity,
+            transition_guard=self._guard_transition,
+        )
 
     async def run_wave(self, tasks: Sequence[PlannedTask]) -> tuple[AttemptResult, ...]:
         selected = select_wave(tasks, self._max_parallel)

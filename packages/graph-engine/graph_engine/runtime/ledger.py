@@ -147,6 +147,20 @@ class Ledger:
         finally:
             os.close(root_fd)
 
+    def read_bytes(self) -> bytes:
+        """Return concatenated raw bytes of authenticated final batches."""
+        try:
+            root_fd = self._open_root(create=False)
+        except FileNotFoundError:
+            return b""
+        try:
+            self._read_all_fd(root_fd)
+            names = [name for name in os.listdir(root_fd) if _FINAL_BATCH.fullmatch(name) is not None]
+            names.sort()
+            return b"".join(_read_raw_at(root_fd, name) for name in names)
+        finally:
+            os.close(root_fd)
+
     def read_bootstrap(self) -> tuple[EventEnvelope, ...]:
         """Read and authenticate only the unique sequence-one batch."""
         try:
@@ -306,7 +320,7 @@ def append_validated_batch(
     return published
 
 
-def _read_batch_at(root_fd: int, name: str) -> tuple[EventEnvelope, ...]:
+def _read_raw_at(root_fd: int, name: str) -> bytes:
     descriptor: int | None = None
     try:
         descriptor = os.open(name, _FILE_READ_FLAGS, dir_fd=root_fd)
@@ -320,13 +334,22 @@ def _read_batch_at(root_fd: int, name: str) -> tuple[EventEnvelope, ...]:
         chunks: list[bytes] = []
         while chunk := os.read(descriptor, 1024 * 1024):
             chunks.append(chunk)
-        raw = b"".join(chunks)
-        decoded = json.loads(raw)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return b"".join(chunks)
+    except OSError as error:
         raise LedgerIntegrityError(f"malformed JSON in final batch {name}") from error
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def _read_batch_at(root_fd: int, name: str) -> tuple[EventEnvelope, ...]:
+    try:
+        raw = _read_raw_at(root_fd, name)
+        decoded = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, LedgerIntegrityError) as error:
+        if isinstance(error, LedgerIntegrityError):
+            raise
+        raise LedgerIntegrityError(f"malformed JSON in final batch {name}") from error
     if not isinstance(decoded, list):
         raise LedgerIntegrityError(f"final batch {name} must contain a JSON array")
     if not decoded:

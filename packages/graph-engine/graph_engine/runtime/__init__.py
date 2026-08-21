@@ -1,5 +1,6 @@
 from graph_engine.runtime.activity import (
     AttemptWorkspaceLost,
+    LedgerTaskActivityPort,
     TaskActivityConflict,
     TaskActivityIndeterminate,
     TaskActivityProtocolViolation,
@@ -155,6 +156,7 @@ __all__ = [
     "LedgerPublicationIndeterminate",
     "Lease",
     "LeaseUnavailableError",
+    "LedgerTaskActivityPort",
     "MAX_SEQUENCE",
     "NodeActivated",
     "NodeCompleted",
