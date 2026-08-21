@@ -34,6 +34,7 @@ from graph_engine.runtime.activity import (
     LedgerTaskActivityPort,
     TaskActivityRecoveryUnsupported,
     recovery_decision_for_status,
+    write_set_digest,
 )
 from graph_engine.runtime.host_protocol import (
     AttemptRootDescriptor,
@@ -47,12 +48,15 @@ from graph_engine.runtime.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
 )
+from graph_engine.runtime.host_receipts import TerminalReceiptError, TerminalReceiptStore
 from graph_engine.runtime.events import (
     EffectIntentCommitted,
     EventEnvelope,
     HeadAdvanced,
     RuntimeEvent,
+    TaskActivityCancelRequested,
     TaskActivityPrepared,
+    TaskActivityTerminalObserved,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
@@ -89,6 +93,11 @@ from graph_engine.runtime.workspace import (
 
 _match_json_schema = match_json_schema
 _validate_json_schema = validate_json_schema
+_PROMOTING_TERMINAL = False
+
+
+def _promotion_cut(name: str) -> None:
+    del name
 
 
 class SchedulerStateError(GraphEngineError):
@@ -235,11 +244,15 @@ class Scheduler:
         effects: EffectRegistry | None = None,
         schemas: SchemaRegistry | None = None,
         resources: object | None = None,
+        receipts: TerminalReceiptStore | None = None,
+        cancel_timeout_seconds: float = 5.0,
     ) -> None:
         if not owner_id:
             raise ValueError("owner_id must not be empty")
         if not math.isfinite(lease_seconds) or lease_seconds <= 0:
             raise ValueError("lease_seconds must be finite and positive")
+        if not math.isfinite(cancel_timeout_seconds) or cancel_timeout_seconds <= 0:
+            raise ValueError("cancel_timeout_seconds must be finite and positive")
         if not isinstance(max_parallel, int) or isinstance(max_parallel, bool) or max_parallel < 1:
             raise ValueError("max_parallel must be a positive integer")
         self._registry = registry
@@ -257,10 +270,15 @@ class Scheduler:
         self._effects = effects if effects is not None else EffectRegistry({})
         self._schemas = schemas if schemas is not None else SchemaRegistry({})
         self._resources = resources
+        self._receipts = receipts
+        self._cancel_timeout_seconds = cancel_timeout_seconds
         self._same_attempt_execute: set[tuple[str, int]] = set()
         bind_runtime = getattr(host, "bind_invocation_runtime", None)
         if callable(bind_runtime):
-            bind_runtime(handlers=registry.task_handlers, store=store)
+            try:
+                bind_runtime(handlers=registry.task_handlers, store=store, receipts=receipts)
+            except TypeError:
+                bind_runtime(handlers=registry.task_handlers, store=store)
 
     def task_activity_port(self, identity: TaskActivityRpcIdentity) -> LedgerTaskActivityPort:
         """Return a CAS port bound to one activity identity on this invocation ledger."""
@@ -367,18 +385,24 @@ class Scheduler:
             return self._blocked_recovery(task, activity, status="indeterminate")
 
         if activity.state == "terminal_observed":
+            self._cleanup_receipt_after_terminal(task, activity)
             return self._recovery_decision(task, activity, "promote_same_attempt", "terminal")
 
         receipts = self._collect_terminal_receipts(task, activity)
         if receipts is None:
             return self._blocked_recovery(task, activity, status="indeterminate")
         if len(receipts) == 1:
-            return self._recovery_decision(task, activity, "promote_same_attempt", "terminal")
+            return self._promote_receipt(task, activity, receipts[0])
 
         if activity.cancel_requested:
             cancel_status = await self._recover_cancel(task, activity, workspace)
             if cancel_status == "block":
                 return self._blocked_recovery(task, activity, status="indeterminate")
+            if cancel_status == "promote":
+                receipts = self._collect_terminal_receipts(task, activity)
+                if receipts is None or len(receipts) != 1:
+                    return self._blocked_recovery(task, activity, status="indeterminate")
+                return self._promote_receipt(task, activity, receipts[0])
 
         reconciled = await self._recover_reconcile(task, activity, workspace)
         if reconciled is None:
@@ -389,6 +413,81 @@ class Scheduler:
             return self._blocked_recovery(task, activity, status="indeterminate")
         activity = bound
 
+        receipts = self._collect_terminal_receipts(task, activity)
+        if receipts is None:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        if len(receipts) == 1:
+            return self._promote_receipt(task, activity, receipts[0])
+
+        decision = recovery_decision_for_status(reconciled.status)
+        if decision in {"execute_same_attempt", "adopt_same_attempt"}:
+            self._adopt_recovered_lease(task, activity, reconciled)
+            if decision == "execute_same_attempt":
+                self._same_attempt_execute.add((task.task_id, task.attempt))
+        return self._recovery_decision(task, activity, decision, reconciled.status)
+
+    async def cancel_activity(self, task: PlannedTask, *, reason: str) -> ActivityRecoveryDecision:
+        """Request cancel, then map host acknowledgement without treating signals as terminal."""
+
+        if not reason:
+            raise ValueError("cancel reason must not be empty")
+        activity = self._live_activity(task)
+        if activity is None:
+            raise SchedulerStateError(f"task activity does not match: {task.activation_id}")
+        if activity.state == "terminal_observed":
+            self._cleanup_receipt_after_terminal(task, activity)
+            return self._recovery_decision(task, activity, "promote_same_attempt", "terminal")
+        if not activity.cancel_requested:
+            self._append(
+                (
+                    TaskActivityCancelRequested(
+                        activity_id=activity.activity_id,
+                        reason=reason,
+                        requested_at=self._now(),
+                    ),
+                )
+            )
+            refreshed = self._live_activity(task)
+            if refreshed is None:
+                raise SchedulerStateError(f"task activity does not match: {task.activation_id}")
+            activity = refreshed
+        try:
+            workspace = self._store.open_attempt(activity.workspace_identity)
+        except Exception:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        try:
+            async with asyncio.timeout(self._cancel_timeout_seconds):
+                result = await self._host.cancel(self._host_cancel_call(task, activity, workspace))
+        except TimeoutError:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        except Exception:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        if (
+            not isinstance(result, TaskHostCallResult)
+            or result.operation != "cancel"
+            or result.cancel_result is None
+        ):
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        status = result.cancel_result.status
+        if status == "indeterminate":
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        if status == "terminal":
+            receipts = self._collect_terminal_receipts(task, activity)
+            if receipts is None or len(receipts) != 1:
+                return self._blocked_recovery(task, activity, status="indeterminate")
+            return self._promote_receipt(task, activity, receipts[0])
+        reconciled = await self._recover_reconcile(task, activity, workspace)
+        if reconciled is None:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        bound = self._bind_reconcile_reference(task, activity, reconciled)
+        if bound is None:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        activity = bound
+        receipts = self._collect_terminal_receipts(task, activity)
+        if receipts is None:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        if len(receipts) == 1:
+            return self._promote_receipt(task, activity, receipts[0])
         decision = recovery_decision_for_status(reconciled.status)
         if decision in {"execute_same_attempt", "adopt_same_attempt"}:
             self._adopt_recovered_lease(task, activity, reconciled)
@@ -653,10 +752,23 @@ class Scheduler:
                         self._host_execute_call(task, request, workspace, activity_id=activity_id)
                     )
             except TimeoutError:
+                if activity_id is not None:
+                    await self.cancel_activity(task, reason="timeout")
+                    activity = self._live_activity(task)
+                    outcome = (
+                        activity.terminal
+                        if activity is not None and activity.terminal is not None
+                        else TaskOutcome.failed("timeout", "task handler exceeded its run timeout")
+                    )
+                    return AttemptResult(task=task, outcome=outcome, lease=lease_state.current)
                 outcome = TaskOutcome.failed("timeout", "task handler exceeded its run timeout")
             except asyncio.CancelledError as error:
+                if activity_id is not None:
+                    raise
                 outcome = TaskOutcome.failed("internal", _exception_message("task handler raised", error))
             except Exception as error:
+                if activity_id is not None:
+                    raise
                 outcome = TaskOutcome.failed("internal", _exception_message("task handler raised", error))
             else:
                 if (
@@ -675,6 +787,20 @@ class Scheduler:
                     "internal",
                     f"task handler returned {type(outcome).__name__}, expected TaskOutcome",
                 )
+            if activity_id is not None:
+                activity = self._live_activity(task)
+                if activity is not None:
+                    receipts = self._collect_terminal_receipts(task, activity)
+                    if receipts is None:
+                        return AttemptResult(task=task, outcome=outcome, lease=lease_state.current)
+                    if len(receipts) == 1:
+                        self._promote_receipt(task, activity, receipts[0])
+                        return AttemptResult(
+                            task=task,
+                            outcome=receipts[0].outcome,
+                            lease=lease_state.current,
+                        )
+                return AttemptResult(task=task, outcome=outcome, lease=lease_state.current)
             if outcome.status != "succeeded":
                 return AttemptResult(task=task, outcome=outcome, lease=lease_state.current)
             try:
@@ -1147,15 +1273,20 @@ class Scheduler:
     ) -> tuple[TaskHostTerminalReceipt, ...] | None:
         collected: list[TaskHostTerminalReceipt] = []
         for operation in ("execute", "reconcile", "cancel"):
+            identity = self._host_call_identity(task, activity.activity_id, operation)
             try:
-                found = self._host.read_terminal_receipts(
-                    self._host_call_identity(task, activity.activity_id, operation)
-                )
+                if self._receipts is not None:
+                    found = self._receipts.authenticate(identity)
+                else:
+                    found = self._host.read_terminal_receipts(identity)
             except Exception:
                 return None
             if not isinstance(found, tuple):
                 return None
-            collected.extend(found)
+            for item in found:
+                if not isinstance(item, TaskHostTerminalReceipt):
+                    return None
+                collected.append(item)
         if len(collected) > 1:
             return None
         return tuple(collected)
@@ -1176,9 +1307,122 @@ class Scheduler:
             or result.cancel_result is None
         ):
             return "block"
-        if result.cancel_result.status == "indeterminate":
-            return "block"
-        return "continue"
+        status = result.cancel_result.status
+        if status == "terminal":
+            return "promote"
+        if status == "acknowledged":
+            return "continue"
+        return "block"
+
+    def _promote_receipt(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        receipt: TaskHostTerminalReceipt,
+    ) -> ActivityRecoveryDecision:
+        if not _receipt_matches_activity(receipt, task, activity):
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        if activity.state == "terminal_observed":
+            self._cleanup_receipt_after_terminal(task, activity)
+            return self._recovery_decision(task, activity, "promote_same_attempt", "terminal")
+        candidate_tree_id: str | None = None
+        digest: str | None = None
+        if receipt.outcome.status == "succeeded":
+            try:
+                candidate = self._store.seal_authenticated_candidate(
+                    activity.workspace_identity,
+                    task.resources,
+                    self._named_validators(task),
+                    self._validation_context(task),
+                )
+            except Exception:
+                return self._blocked_recovery(task, activity, status="indeterminate")
+            candidate_tree_id = candidate.candidate_tree_id
+            digest = write_set_digest(candidate)
+            _promotion_cut("after_candidate_seal")
+        event = TaskActivityTerminalObserved(
+            activity_id=activity.activity_id,
+            outcome=receipt.outcome,
+            outcome_digest=receipt.outcome_digest,
+            terminal_proof_digest=receipt.terminal_proof_digest,
+            candidate_tree_id=candidate_tree_id,
+            write_set_digest=digest,
+        )
+        global _PROMOTING_TERMINAL
+        _PROMOTING_TERMINAL = True
+        try:
+            self._append((event,))
+        finally:
+            _PROMOTING_TERMINAL = False
+        try:
+            self._ledger.ensure_durable()
+        except Exception:
+            observed = self._live_activity(task)
+            if observed is None or observed.state != "terminal_observed":
+                return self._blocked_recovery(task, activity, status="indeterminate")
+        _promotion_cut("before_receipt_cleanup")
+        observed = self._live_activity(task)
+        if observed is None:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        self._delete_promoted_receipt(task, receipt, event)
+        return self._recovery_decision(task, observed, "promote_same_attempt", "terminal")
+
+    def _delete_promoted_receipt(
+        self,
+        task: PlannedTask,
+        receipt: TaskHostTerminalReceipt,
+        terminal: TaskActivityTerminalObserved,
+    ) -> None:
+        if self._receipts is None:
+            return
+        identity = self._host_call_identity(task, receipt.activity_id, receipt.operation)
+        try:
+            self._receipts.delete_authenticated(identity, receipt, terminal)
+        except TerminalReceiptError:
+            return
+
+    def _cleanup_receipt_after_terminal(self, task: PlannedTask, activity: TaskActivitySnapshot) -> None:
+        if (
+            self._receipts is None
+            or activity.terminal is None
+            or activity.outcome_digest is None
+            or activity.state != "terminal_observed"
+        ):
+            return
+        terminal = TaskActivityTerminalObserved(
+            activity_id=activity.activity_id,
+            outcome=activity.terminal,
+            outcome_digest=activity.outcome_digest,
+            terminal_proof_digest=activity.terminal_proof_digest,
+            candidate_tree_id=activity.candidate_tree_id,
+            write_set_digest=activity.write_set_digest,
+        )
+        for operation in ("execute", "reconcile", "cancel"):
+            identity = self._host_call_identity(task, activity.activity_id, operation)
+            try:
+                found = self._receipts.authenticate(identity)
+            except TerminalReceiptError:
+                continue
+            if len(found) != 1:
+                continue
+            try:
+                self._receipts.delete_authenticated(identity, found[0], terminal)
+            except TerminalReceiptError:
+                continue
+
+    def _named_validators(self, task: PlannedTask) -> tuple[tuple[str, CommitValidator], ...]:
+        return tuple(
+            (validator_id, self._registry.commit_validators[validator_id]) for validator_id in task.validators
+        )
+
+    def _validation_context(self, task: PlannedTask) -> ValidationContext:
+        return ValidationContext(
+            invocation_id=task.invocation_id,
+            task_id=task.task_id,
+            graph_instance_id=task.graph_instance_id,
+            node_id=task.node_id,
+            resources=task.resources,
+        )
 
     async def _recover_reconcile(
         self,
@@ -1521,6 +1765,26 @@ def _validate_running_transition(task: PlannedTask, envelopes: Sequence[EventEnv
     prior_failure = activation.attempts[-2].failure if len(activation.attempts) > 1 else None
     if task.prior_failure != prior_failure:
         raise SchedulerStateError(f"task prior failure does not match projection: {task.activation_id}")
+
+
+def _receipt_matches_activity(
+    receipt: TaskHostTerminalReceipt,
+    task: PlannedTask,
+    activity: TaskActivitySnapshot,
+) -> bool:
+    return (
+        receipt.invocation_id == task.invocation_id
+        and receipt.task_id == task.task_id
+        and receipt.activation_id == task.activation_id
+        and receipt.attempt == task.attempt
+        and receipt.activity_id == activity.activity_id
+        and receipt.request_digest == activity.request_digest
+        and receipt.workspace_identity_digest == activity.workspace_identity.attempt_identity_digest
+        and receipt.dispatch_fingerprint_digest == activity.dispatch_fingerprint_digest
+        and receipt.reference_digest == activity.reference_digest
+        and receipt.outcome_digest
+        == canonical_digest(cast(JSONValue, receipt.outcome.model_dump(mode="json")))
+    )
 
 
 def _lease_has_live_activity(projection: InvocationProjection, lease: Lease) -> bool:

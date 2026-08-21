@@ -21,7 +21,8 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 from graph_engine.runtime.engine import Engine, EngineConflictError
-from graph_engine.runtime.host_protocol import TaskHostCallResult
+from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostTerminalReceipt
+from graph_engine.runtime.host_receipts import TerminalReceiptStore, prove_call_quiescent
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import fold_events
 from graph_engine.runtime.planner import plan_next
@@ -83,15 +84,19 @@ class _RecordingHost:
         self.calls = calls if calls is not None else CallLog()
         self._handlers: dict[str, TaskHandler] = {}
         self._store: SnapshotStore | None = None
+        self._receipts: TerminalReceiptStore | None = None
 
     def bind_invocation_runtime(
         self,
         *,
         handlers: dict[str, TaskHandler],
         store: SnapshotStore,
+        receipts: object | None = None,
     ) -> None:
         self._handlers = handlers
         self._store = store
+        if receipts is not None:
+            self._receipts = receipts
 
     async def execute(self, call: object) -> TaskHostCallResult:
         del call
@@ -546,3 +551,149 @@ async def _assert_open_after_recovery_defers_compiled_events(tmp_path: Path) -> 
     finally:
         handle.close()
         engine.close()
+
+
+def test_checkpoints_and_effects_cannot_authorize_activity(tmp_path: Path) -> None:
+    asyncio.run(_assert_checkpoints_and_effects_cannot_authorize(tmp_path))
+
+
+async def _assert_checkpoints_and_effects_cannot_authorize(tmp_path: Path) -> None:
+    fixture = await _crashed_recoverable_attempt("running", tmp_path, expired=False)
+    try:
+        first = await fixture.handle.recover()
+        first_decision = fixture.observed_decision(first)
+        first_calls = list(fixture.calls.order)
+        checkpoint = fixture.handle.invocation_root / "checkpoint.json"
+        if checkpoint.exists():
+            checkpoint.unlink()
+        second = await fixture.handle.recover()
+        assert fixture.observed_decision(second) == first_decision
+        extra = fixture.calls.order[len(first_calls) :]
+        assert "task_attempt_started" not in extra
+        from graph_engine.runtime.events import EffectIntentCommitted
+        from graph_engine.runtime.ledger import append_validated_batch
+        from graph_engine.runtime.models import ProjectionError
+
+        with pytest.raises((ProjectionError, ValueError, TypeError)):
+            append_validated_batch(
+                fixture.ledger,
+                (
+                    EffectIntentCommitted(
+                        effect_id="effect-activity",
+                        activation_id=fold_events(fixture.ledger.read_all()).activations[-1].activation_id,
+                        attempt=1,
+                        index=0,
+                        effect_kind="test.empty.intent",
+                        payload={"create": True, "bind": True, "cancel": True, "terminal": True},
+                        idempotency_key="0" * 64,
+                    ),
+                ),
+                expected_next_seq=fixture.ledger.read_all()[-1].seq + 1,
+            )
+    finally:
+        fixture.handle.close()
+        fixture.engine.close()
+        _RecoveryFixture._restore()  # type: ignore[attr-defined]
+
+
+class _TerminalCancelHost(_RecordingHost):
+    async def cancel(self, call: object) -> TaskHostCallResult:
+        self.calls.order.append("cancel")
+        identity = getattr(call, "identity")
+        activity = getattr(call, "activity")
+        outcome = TaskOutcome.stopped("provider-canceled")
+        assert self._receipts is not None
+        sink = self._receipts.sink_for(identity)
+        sink.install(
+            TaskHostTerminalReceipt(
+                host_implementation_digest=identity.host_implementation_digest,
+                wire_schema_version=identity.wire_schema_version,
+                invocation_id=identity.invocation_id,
+                task_id=identity.task_id,
+                activation_id=identity.activation_id,
+                attempt=identity.attempt,
+                activity_id=identity.activity_id,
+                operation="cancel",
+                request_digest=activity.request_digest,
+                workspace_identity_digest=activity.workspace_identity.attempt_identity_digest,
+                dispatch_fingerprint_digest=activity.dispatch_fingerprint_digest,
+                reference_digest=activity.reference_digest,
+                outcome=outcome,
+                outcome_digest=canonical_digest(outcome.model_dump(mode="json")),
+                terminal_proof_digest=None,
+                quiescence_proof_digest=prove_call_quiescent(),
+                host_call_id=sink.host_call_id,
+            )
+        )
+        return TaskHostCallResult(
+            operation="cancel",
+            cancel_result=TaskActivityCancelResult(
+                status="terminal",
+                outcome=outcome,
+            ),
+        )
+
+
+def test_cancel_terminal_does_not_fall_through_to_running_adoption(tmp_path: Path) -> None:
+    asyncio.run(_assert_cancel_terminal_does_not_adopt(tmp_path))
+
+
+async def _assert_cancel_terminal_does_not_adopt(tmp_path: Path) -> None:
+    async def unused(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        raise AssertionError("disposable handler must not execute")
+
+    product = _task_product(unused)
+    calls = CallLog()
+    host = _TerminalCancelHost(status="running", calls=calls)
+    start_clock = FakeClock(10.0)
+    engine = Engine(tmp_path, clock=start_clock, host=host)
+    handle = engine.start(product, entrypoint="main", invocation_id="cancel-term")
+    ledger = Ledger(handle.invocation_root / "ledger")
+    envelopes = ledger.read_all()
+    plan = plan_next(product.workflow, fold_events(envelopes))
+    if plan.events:
+        ledger.append_batch(plan.events, expected_next_seq=envelopes[-1].seq + 1)
+    task = plan_next(product.workflow, fold_events(ledger.read_all())).tasks[0]
+    owner_id = canonical_digest(
+        {
+            "invocation_id": "cancel-term",
+            "lock_digest": product.lock_digest,
+            "role": "engine-scheduler",
+        }
+    )
+    with handle.workspace as store:
+        receipts = TerminalReceiptStore.open_or_create(handle.invocation_root / "receipts")
+        host._receipts = receipts
+        scheduler = Scheduler(
+            _DirectRegistry({"test.empty.run": _RecoverableHandler()}),
+            store,
+            ledger,
+            host,
+            owner_id=owner_id,
+            clock=start_clock,
+            lease_seconds=10.0,
+            lock_digest=product.lock_digest,
+            composition_digest=product.digest,
+            entrypoint="main",
+            receipts=receipts,
+        )
+        scheduler.start_recoverable(task)
+        await scheduler.cancel_activity(task, reason="operator-stop")
+    handle.close()
+    engine.close()
+    original_open, original_append = _install_call_recording(calls)
+    try:
+        reopened_engine = Engine(tmp_path, clock=FakeClock(11.0), host=host)
+        reopened = reopened_engine.open("cancel-term", product)
+        calls.order.clear()
+        result = await reopened.recover()
+        decisions = getattr(result, "decisions", ())
+        assert len(decisions) == 1
+        assert decisions[0].decision == "promote_same_attempt"
+        assert "task_lease_adopted" not in calls.order
+        kinds = [item.event.kind for item in ledger.read_all()]
+        assert "task_lease_adopted" not in kinds
+    finally:
+        reopened.close()
+        reopened_engine.close()
+        _restore_call_recording(original_open, original_append)

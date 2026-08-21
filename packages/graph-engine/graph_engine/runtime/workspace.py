@@ -1476,6 +1476,35 @@ class SnapshotStore:
         except (OSError, WorkspaceViolation, json.JSONDecodeError, UnicodeError, KeyError) as error:
             raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated") from error
 
+    def seal_authenticated_candidate(
+        self,
+        identity: AttemptWorkspaceIdentity,
+        claims: ResourceClaims,
+        validators: Sequence[NamedValidator] = (),
+        context: ValidationContext | None = None,
+    ) -> CandidateWriteSet:
+        """Seal the original attempt into an immutable candidate without moving HEAD."""
+
+        workspace = self.open_attempt(identity)
+        selected = tuple(validators)
+        validator_context = self._validate_validators(selected, context, claims)
+        candidate = self._seal_attempt(workspace.attempt_id, workspace.baseline_tree_id)
+        for changed_file in candidate.files:
+            path = _validate_relative_path(changed_file.path)
+            if not _path_is_covered(path, claims.writes):
+                raise WorkspaceViolation(f"changed path is not covered by a write claim: {path}")
+        if selected:
+            if validator_context is None:
+                raise WorkspaceViolation("validation context is required when validators are selected")
+            receipts = tuple(
+                _validation_receipt(validator_id, validator, candidate, validator_context)
+                for validator_id, validator in selected
+            )
+            if any(not receipt.accepted for receipt in receipts):
+                reason = next(receipt.reason for receipt in receipts if not receipt.accepted)
+                raise WorkspaceViolation(reason or "commit validator rejected the candidate")
+        return candidate
+
     def _create_attempt(self, attempt_directory_id: str) -> AttemptWorkspace:
         validated = _validate_attempt_id(attempt_directory_id)
         with self._opened_layout(lock=True) as (_root_fd, trees_fd, attempts_fd, _lock_fd):

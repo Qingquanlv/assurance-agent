@@ -71,6 +71,7 @@ from graph_engine.runtime.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
 )
+from graph_engine.runtime.host_receipts import TerminalReceiptStore
 from graph_engine.runtime.scheduler import (
     Clock,
     LeaseUnavailableError,
@@ -1056,6 +1057,11 @@ class Engine:
                 "role": "engine-scheduler",
             }
         )
+        receipts = TerminalReceiptStore.open_or_create_at(
+            invocation_fd,
+            "receipts",
+            display_root=invocation_root / "receipts",
+        )
         return Scheduler(
             composition.registries.capabilities,
             store,
@@ -1076,6 +1082,7 @@ class Engine:
             effects=composition.registries.effects,
             schemas=composition.registries.schemas,
             resources=composition.registries.resources,
+            receipts=receipts,
         )
 
     async def _recover_invocation(self, handle: InvocationHandle) -> RecoveryResult:

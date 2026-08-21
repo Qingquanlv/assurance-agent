@@ -6,6 +6,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import Field, field_validator, model_validator
 
+from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import (
     TASK_HOST_IMPLEMENTATION_ID,
     TASK_HOST_WIRE_SCHEMA_VERSION,
@@ -173,18 +174,31 @@ class TaskHostCallResult(FrozenModel):
 
 
 class TaskHostTerminalReceipt(FrozenModel):
-    host_call_id: str = Field(min_length=1)
-    identity: TaskHostCallIdentity
+    schema_version: Literal["1"] = "1"
+    host_implementation_digest: str = Field(pattern=_SHA256_PATTERN)
+    wire_schema_version: Literal["1"] = TASK_HOST_WIRE_SCHEMA_VERSION
+    invocation_id: str
+    task_id: str
+    activation_id: str
+    attempt: int = Field(ge=1)
+    activity_id: str = Field(min_length=1)
+    operation: HostOperation
     request_digest: str = Field(pattern=_SHA256_PATTERN)
     workspace_identity_digest: str = Field(pattern=_SHA256_PATTERN)
     dispatch_fingerprint_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     reference_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     outcome: TaskOutcome
     outcome_digest: str = Field(pattern=_SHA256_PATTERN)
-    proof_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
-    quiescence_digest: str = Field(pattern=_SHA256_PATTERN)
-    host_implementation_digest: str = Field(pattern=_SHA256_PATTERN)
-    wire_schema_version: Literal["1"] = TASK_HOST_WIRE_SCHEMA_VERSION
+    terminal_proof_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    quiescence_proof_digest: str = Field(pattern=_SHA256_PATTERN)
+    host_call_id: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _validate_outcome_digest(self) -> TaskHostTerminalReceipt:
+        expected = canonical_digest(self.outcome.model_dump(mode="json"))
+        if self.outcome_digest != expected:
+            raise ValueError("terminal receipt requires a canonical outcome digest")
+        return self
 
 
 @runtime_checkable
