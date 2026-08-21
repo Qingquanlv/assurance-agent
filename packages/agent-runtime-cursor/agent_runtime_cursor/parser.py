@@ -15,6 +15,7 @@ from agent_runtime_contracts.schema import (
 from graph_engine.plugin_api import TaskOutcome, TaskRequest
 
 from agent_runtime_cursor.process import CursorProcessReceipt
+from agent_runtime_cursor.redaction import failure_message, reject_canaries_in_payload
 
 ADAPTER_ID = "runtime.cursor"
 ADAPTER_VERSION = "0.1.0"
@@ -178,11 +179,10 @@ def reduce_terminal(
     request: TaskRequest,
     canaries: Sequence[str | bytes] = (),
 ) -> TaskOutcome:
-    del canaries
     if parsed.terminal.get("is_error") is True or parsed.terminal.get("subtype") == "error":
         return TaskOutcome.failed(
             "external_effect",
-            _provider_error_message(parsed.terminal),
+            failure_message(_provider_error_message(parsed.terminal), canaries=canaries),
             retryable=False,
         )
     try:
@@ -194,8 +194,13 @@ def reduce_terminal(
             schema_digest=agent_run.result_contract.schema_digest,
         )
         reject_credentials_in_digest_input(validated)
+        reject_canaries_in_payload(validated, canaries=canaries)
     except (TypeError, ValueError) as error:
-        return TaskOutcome.failed("invalid_output", str(error), retryable=False)
+        return TaskOutcome.failed(
+            "invalid_output",
+            failure_message(str(error), canaries=canaries),
+            retryable=False,
+        )
     result_digest = canonical_digest(validated)
     evidence_receipt = receipt.model_copy(update={"stream_session_id": parsed.session_id})
     evidence: dict[str, object] = {

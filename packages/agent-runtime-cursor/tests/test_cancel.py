@@ -5,12 +5,17 @@ from pathlib import Path
 from agent_runtime_contracts import AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest, thaw_json
 from fake_process_host import FakeConfinedProcessHost  # pyright: ignore[reportMissingImports]
-from harness import bind_spawned_fixture, complete_stream, init_only_stream  # pyright: ignore[reportMissingImports]
+from cursor_harness import bind_spawned_fixture, complete_stream, init_only_stream  # pyright: ignore[reportMissingImports]
 
 
 async def test_cancel_of_running_process_is_acknowledged_only(tmp_path: Path) -> None:
     cwd = str(tmp_path.resolve())
-    host = FakeConfinedProcessHost(status="running", stdout=init_only_stream(cwd), exit_code=None)
+    host = FakeConfinedProcessHost(
+        status="running",
+        stdout=init_only_stream(cwd),
+        exit_code=None,
+        cleanup_mode="leave_running",
+    )
     fixture = await bind_spawned_fixture(tmp_path, host=host)
     result = await fixture.handler.cancel(fixture.request, fixture.context, fixture.activity)
     assert result.status == "acknowledged"
@@ -19,7 +24,8 @@ async def test_cancel_of_running_process_is_acknowledged_only(tmp_path: Path) ->
     policy = fixture.host.terminations[0][1]
     assert policy.graceful_seconds == 5
     assert policy.forced_seconds == 10
-    assert fixture.host.signals == ["graceful", "forced"]
+    assert fixture.host.signals == ["graceful"]
+    assert fixture.host.wait_calls == []
     assert "--resume" not in fixture.host.launches[0].argv
 
 

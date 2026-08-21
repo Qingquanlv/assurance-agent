@@ -6,7 +6,7 @@ from agent_runtime_contracts import AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest, thaw_json
 from agent_runtime_cursor.process import CursorProcessReceipt
 from fake_process_host import FakeConfinedProcessHost  # pyright: ignore[reportMissingImports]
-from harness import complete_stream, error_stream, execute_fixture  # pyright: ignore[reportMissingImports]
+from cursor_harness import complete_stream, error_stream, execute_fixture  # pyright: ignore[reportMissingImports]
 
 
 _FORBIDDEN_RESULT_FIELDS = (

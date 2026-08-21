@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from graph_engine.plugin_api import (
     InvocationMetadata,
     SecretHandleUnauthorized,
     SecretPort,
+    TaskActivityReconcileResult,
     TaskActivitySnapshot,
     TaskContext,
     TaskRequest,
@@ -131,6 +133,25 @@ class ExactSecretPort:
             raise SecretHandleUnauthorized(f"unauthorized secret handle: {handle}") from error
 
 
+class RevocableSecretPort:
+    def __init__(self, authorized: dict[str, bytes] | None = None) -> None:
+        self._authorized = dict(authorized or {"cursor.api-key": CANARY})
+        self.revoked = False
+        self.resolved_handles: list[str] = []
+
+    def resolve(self, handle: str) -> bytes:
+        if self.revoked:
+            raise SecretHandleUnauthorized("secret port is revoked")
+        self.resolved_handles.append(handle)
+        try:
+            return bytes(self._authorized[handle])
+        except KeyError as error:
+            raise SecretHandleUnauthorized(f"unauthorized secret handle: {handle}") from error
+
+    def revoke(self) -> None:
+        self.revoked = True
+
+
 def prepared_snapshot() -> TaskActivitySnapshot:
     return TaskActivitySnapshot(
         activity_id="activity-1",
@@ -169,11 +190,20 @@ def encode_stream(events: list[dict[str, object]]) -> bytes:
     return b"".join(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n" for event in events)
 
 
-def complete_stream(cwd: str, *, result: object = None, session_id: str = "sess-1") -> bytes:
+def complete_stream(
+    cwd: str,
+    *,
+    result: object = None,
+    session_id: str = "sess-1",
+    version: str | None = None,
+) -> bytes:
     structured = {"ok": True} if result is None else result
+    init: dict[str, object] = {"cwd": cwd, "session_id": session_id, "subtype": "init", "type": "system"}
+    if version is not None:
+        init["version"] = version
     return encode_stream(
         [
-            {"cwd": cwd, "session_id": session_id, "subtype": "init", "type": "system"},
+            init,
             {
                 "message": {"content": [{"text": "working", "type": "text"}], "role": "assistant"},
                 "session_id": session_id,
@@ -225,6 +255,22 @@ class CursorFixture:
     def activity(self) -> TaskActivitySnapshot:
         return self.port.snapshot
 
+    @property
+    def spawn_count(self) -> int:
+        return self.host.spawn_count
+
+    async def execute_until_cut(self) -> None:
+        try:
+            await self.handler.execute(self.request, self.context)
+        except Exception:
+            return
+
+    async def reconcile_after_restart(self) -> TaskActivityReconcileResult:
+        restarted = CursorHandler(self.config, self.host)
+        result = await restarted.reconcile(self.request, self.context, self.activity)
+        assert isinstance(result, TaskActivityReconcileResult)
+        return result
+
 
 def execute_fixture(root: Path, host: FakeConfinedProcessHost | None = None) -> CursorFixture:
     cfg = config(root)
@@ -258,8 +304,36 @@ async def bind_spawned_fixture(
         launch.argv,
         request_digest=launch.request_digest,
         workspace_identity_digest=launch.workspace_identity_digest,
+        host_boot_identity_digest=identity.host_boot_identity_digest,
+        host_instance_id=identity.host_instance_id,
+        attempt=fixture.request.attempt,
+        task_id=fixture.request.task_id,
     )
     fixture.port.mark_dispatch_started(fingerprint)
     process = await fixture.host.spawn(launch)
     fixture.port.bind(process.receipt.model_dump(mode="json"))
+    return fixture
+
+
+def _host_for_cut(cut: str, cwd: str) -> FakeConfinedProcessHost:
+    if cut == "before_spawn":
+        return FakeConfinedProcessHost(cut="before_spawn")
+    if cut == "after_spawn_before_bind":
+        return FakeConfinedProcessHost(cut="after_spawn_before_bind")
+    if cut == "after_bind":
+        return FakeConfinedProcessHost(cut="after_bind", status="running", exit_code=None)
+    if cut == "mid_stream":
+        return FakeConfinedProcessHost(cut="mid_stream", stdout=complete_stream(cwd))
+    if cut == "after_host_terminal_receipt":
+        return FakeConfinedProcessHost(cut="after_host_terminal_receipt", stdout=complete_stream(cwd))
+    if cut == "after_process_exit_without_terminal":
+        return FakeConfinedProcessHost(stdout=init_only_stream(cwd), exit_code=0)
+    raise AssertionError(cut)
+
+
+async def cursor_cut(cut: str) -> CursorFixture:
+    root = Path(tempfile.mkdtemp())
+    host = _host_for_cut(cut, str(root.resolve()))
+    fixture = execute_fixture(root, host)
+    await fixture.execute_until_cut()
     return fixture

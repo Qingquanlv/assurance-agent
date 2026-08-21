@@ -31,11 +31,13 @@ class ConfinementIdentity(FrozenModel):
     identity: str = Field(min_length=1)
     descendant_inheritance: bool
     host_boot_identity_digest: str = Field(pattern=_SHA256_PATTERN)
+    host_instance_id: str = Field(min_length=1)
     executable_version: str = Field(min_length=1)
 
 
 class CursorProcessReceipt(FrozenModel):
     host_boot_identity_digest: str = Field(pattern=_SHA256_PATTERN)
+    host_instance_id: str = Field(min_length=1)
     confinement_identity: str = Field(min_length=1)
     process_group_identity: str = Field(min_length=1)
     process_start_token: str = Field(min_length=1)
@@ -87,6 +89,12 @@ class ConfinedProcessHost(Protocol):
     def preflight(self, request: ProcessLaunchRequest) -> ConfinementIdentity: ...
 
     def authenticate(self, receipt: CursorProcessReceipt) -> None: ...
+
+    def unbound_spawn_state(
+        self, fingerprint: Mapping[str, object]
+    ) -> Literal["not_spawned", "spawned", "unknown"]: ...
+
+    def read_durable_terminal(self, receipt: CursorProcessReceipt) -> HostTerminalResult | None: ...
 
     async def spawn(self, request: ProcessLaunchRequest) -> ConfinedProcess: ...
 
@@ -146,6 +154,10 @@ def cursor_dispatch_fingerprint(
     *,
     request_digest: str,
     workspace_identity_digest: str,
+    host_boot_identity_digest: str,
+    host_instance_id: str,
+    attempt: int,
+    task_id: str,
 ) -> dict[str, object]:
     fingerprint: dict[str, object] = {
         "protocol_profile": PROTOCOL_PROFILE,
@@ -154,6 +166,9 @@ def cursor_dispatch_fingerprint(
         "argv_policy_digest": canonical_digest(argv_policy_document(argv, config.environment_names)),
         "request_digest": request_digest,
         "workspace_identity_digest": workspace_identity_digest,
+        "host_boot_identity_digest": host_boot_identity_digest,
+        "host_instance_id": host_instance_id,
+        "request_identity_digest": canonical_digest({"attempt": attempt, "task_id": task_id}),
     }
     reject_credentials_in_digest_input(fingerprint)
     return fingerprint
