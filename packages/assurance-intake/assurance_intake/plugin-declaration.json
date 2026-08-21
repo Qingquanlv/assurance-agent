@@ -1,0 +1,44 @@
+{
+  "descriptor": {
+    "bindings": [],
+    "commit_validators": [],
+    "dependencies": [],
+    "effects": [],
+    "engine_api": "2.0",
+    "plugin_id": "assurance.intake",
+    "plugin_version": "0.1.0",
+    "resources": [],
+    "schema_version": "1",
+    "schemas": [
+      "assurance.intake.schema.case-authoring.v1",
+      "assurance.intake.schema.case-review.v1",
+      "assurance.intake.schema.case.v1",
+      "assurance.intake.schema.qa-change.v1"
+    ],
+    "source": {
+      "declaration_path": "assurance_intake/plugin-declaration.json",
+      "distribution": "assurance-intake",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "intake",
+      "entrypoint_value": "assurance_intake.plugin:IntakePlugin",
+      "import_roots": [
+        ""
+      ],
+      "version": "0.1.0"
+    },
+    "task_handlers": []
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "assurance_intake/plugin-declaration.json",
+    "distribution": "assurance-intake",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "intake",
+    "entrypoint_value": "assurance_intake.plugin:IntakePlugin",
+    "import_roots": [
+      ""
+    ],
+    "version": "0.1.0"
+  }
+}

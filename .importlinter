@@ -2,6 +2,7 @@
 root_packages =
     assurance_agent
     assurance_kernel
+    assurance_intake
     graph_engine
     graph_engine_toy_a
     graph_engine_toy_b
@@ -9,6 +10,15 @@ root_packages =
     agent_runtime_opencode
     agent_runtime_cursor
     agent_runtime_fixture
+
+[importlinter:contract:intake-no-legacy]
+name = intake must not import legacy Assurance packages
+type = forbidden
+source_modules =
+    assurance_intake
+forbidden_modules =
+    assurance_agent
+    assurance_kernel
 
 [importlinter:contract:graph-engine-independent]
 name = graph engine must not import products or the old runtime
