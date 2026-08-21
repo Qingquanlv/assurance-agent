@@ -248,27 +248,35 @@ def _idle_from_status_map(status_map: object, session_id: str) -> bool:
 
 
 def _has_complete_structured_result(messages: Sequence[object]) -> bool:
+    final: dict[str, object] | None = None
     for message in messages:
         if not isinstance(message, dict):
             continue
         info = message.get("info")
-        if isinstance(info, dict) and isinstance(info.get("error"), dict):
+        if not isinstance(info, dict):
             continue
-        parts = message.get("parts")
-        if not isinstance(parts, list):
+        if info.get("role") != "assistant":
             continue
-        for part in parts:
-            if not isinstance(part, dict) or part.get("type") != "text":
-                continue
-            text = part.get("text")
-            if not isinstance(text, str):
-                continue
-            try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict):
-                return True
+        if isinstance(info.get("error"), dict):
+            continue
+        final = message
+    if final is None:
+        return False
+    parts = final.get("parts")
+    if not isinstance(parts, list):
+        return False
+    for part in parts:
+        if not isinstance(part, dict) or part.get("type") != "text":
+            continue
+        text = part.get("text")
+        if not isinstance(text, str):
+            continue
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return True
     return False
 
 

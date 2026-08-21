@@ -409,7 +409,6 @@ class OpenCodeHandler:
                 status="indeterminate",
                 reason="bound session identity is unknown",
             )
-        advertised = AcceptedOpenCodeProfile.model_validate(await client.get_profile())
         cursor: str | None = None
         try:
             payload = await client.open_sse()
@@ -437,11 +436,7 @@ class OpenCodeHandler:
                         reason="malformed identity-bearing SSE event",
                     )
         except httpx.TimeoutException:
-            if not advertised.poll_fallback_supported:
-                return TaskActivityReconcileResult(
-                    status="indeterminate",
-                    reason="SSE was silent and polling is not permitted",
-                )
+            pass
         context.heartbeat()
         status_map = await client.get_status()
         session = await client.get_session(session_id)

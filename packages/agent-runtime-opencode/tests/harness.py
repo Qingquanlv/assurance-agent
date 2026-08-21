@@ -258,11 +258,12 @@ def _open_code_fixture(
     prompt_cut: str | None = None,
     config_overrides: dict[str, object] | None = None,
     profile_overrides: dict[str, object] | None = None,
+    agent_run: AgentRunRequest | None = None,
 ) -> OpenCodeFixture:
     root = tempfile.TemporaryDirectory()
     workspace_root = Path(root.name) / "attempt-1"
     workspace_root.mkdir()
-    request = task_request()
+    request = task_request(agent_run)
     snapshot = prepared_snapshot(request)
     metadata = discovery_metadata(
         request=request,
@@ -314,6 +315,7 @@ def _bound_fixture(
     omit_status: bool = False,
     request_timeout_seconds: float | None = None,
     poll_fallback_supported: bool = True,
+    agent_run: AgentRunRequest | None = None,
 ) -> OpenCodeFixture:
     overrides: dict[str, object] = {}
     if request_timeout_seconds is not None:
@@ -322,6 +324,7 @@ def _bound_fixture(
         prompt_cut=prompt_cut,
         config_overrides=overrides or None,
         profile_overrides={"poll_fallback_supported": poll_fallback_supported},
+        agent_run=agent_run,
     )
     fixture.fake.terminal_mode = terminal_mode  # type: ignore[assignment]
     fixture.fake.sse_mode = sse_mode  # type: ignore[assignment]

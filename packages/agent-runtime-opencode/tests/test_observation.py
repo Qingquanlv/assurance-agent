@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from harness import _bound_fixture  # pyright: ignore[reportMissingImports]
+from agent_runtime_contracts import InstructionPart
+from harness import _bound_fixture, agent_run_request  # pyright: ignore[reportMissingImports]
 
 
 def _message_gets(fixture: object, session_id: str) -> int:
@@ -62,6 +63,27 @@ async def test_silent_sse_falls_back_to_bounded_polling() -> None:
         fixture.close()
 
 
+async def test_silent_sse_timeout_gets_when_poll_fallback_is_locked_off() -> None:
+    fixture = _bound_fixture(
+        terminal_mode="success",
+        sse_mode="silent",
+        request_timeout_seconds=0.2,
+        poll_fallback_supported=False,
+    )
+    fixture.fake.sse_silent_seconds = 2.0
+    try:
+        result = await fixture.reconcile()
+        session_id = fixture.reference.session_id
+        assert session_id is not None
+        assert result.status == "terminal"
+        assert result.status != "indeterminate"
+        assert fixture.fake.count("GET", "/session/status") >= 1
+        assert fixture.fake.count("GET", f"/session/{session_id}") >= 1
+        assert _message_gets(fixture, session_id) >= 1
+    finally:
+        fixture.close()
+
+
 async def test_status_map_omission_triggers_exact_session_get() -> None:
     fixture = _bound_fixture(terminal_mode="busy", omit_status=True)
     try:
@@ -84,6 +106,22 @@ async def test_transient_idle_is_not_terminal() -> None:
         session_id = fixture.reference.session_id
         assert session_id is not None
         assert result.status == "running"
+        assert _message_gets(fixture, session_id) >= 1
+    finally:
+        fixture.close()
+
+
+async def test_idle_json_prompt_parts_are_not_a_complete_result() -> None:
+    agent_run = agent_run_request().model_copy(
+        update={"instructions": (InstructionPart.from_json({"task": "write result.json"}),)}
+    )
+    fixture = _bound_fixture(terminal_mode="idle_only", agent_run=agent_run)
+    try:
+        result = await fixture.reconcile()
+        session_id = fixture.reference.session_id
+        assert session_id is not None
+        assert result.status == "running"
+        assert result.status != "terminal"
         assert _message_gets(fixture, session_id) >= 1
     finally:
         fixture.close()
