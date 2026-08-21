@@ -57,6 +57,7 @@ testpaths = ["tests", "packages/graph-engine/tests", "packages/agent-runtime-con
 addopts = ["--import-mode=importlib"]
 markers = [
     "asyncio: async test executed by the local tests/agent_runtime hook",
+    "phase4: Phase 4 capability-extraction ownership and composition tests",
 ]
 
 [tool.ruff]
