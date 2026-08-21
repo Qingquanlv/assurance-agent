@@ -85,6 +85,7 @@ from graph_engine.runtime.models import (
     PlannedTask,
     PreparedTaskCommit,
     ProjectionError,
+    RecoveryResult,
     TokenRecord,
     fold_events,
 )
@@ -168,6 +169,7 @@ __all__ = [
     "PlanningError",
     "PreparedTaskCommit",
     "ProjectionError",
+    "RecoveryResult",
     "RuntimeEvent",
     "RunResult",
     "RuntimeFailure",

@@ -23,19 +23,29 @@ from graph_engine.plugin_api import (
     InvocationMetadata,
     RecoverableTaskHandler,
     ResourceClaims,
+    TaskActivityReconcileResult,
+    TaskActivitySnapshot,
     TaskHandler,
     TaskOutcome,
     TaskRequest,
     ValidationContext,
 )
-from graph_engine.runtime.activity import LedgerTaskActivityPort, TaskActivityRecoveryUnsupported
+from graph_engine.runtime.activity import (
+    LedgerTaskActivityPort,
+    TaskActivityRecoveryUnsupported,
+    recovery_decision_for_status,
+)
 from graph_engine.runtime.host_protocol import (
     AttemptRootDescriptor,
+    HostOperation,
     TaskActivityRpcIdentity,
     TaskExecutionHost,
     TaskHostCallIdentity,
     TaskHostCallResult,
+    TaskHostCancelCall,
     TaskHostExecuteCall,
+    TaskHostReconcileCall,
+    TaskHostTerminalReceipt,
 )
 from graph_engine.runtime.events import (
     EffectIntentCommitted,
@@ -49,6 +59,7 @@ from graph_engine.runtime.events import (
     TaskAttemptSucceeded,
     TaskCommitPrepared,
     TaskLeaseAcquired,
+    TaskLeaseAdopted,
     TaskLeaseHeartbeat,
 )
 from graph_engine.runtime.frozen_json import thaw_json
@@ -59,9 +70,12 @@ from graph_engine.runtime.ledger import (
     append_validated_batch,
 )
 from graph_engine.runtime.models import (
+    ActivityRecoveryDecision,
     CommitResult,
+    InvocationProjection,
     PlannedTask,
     ProjectionError,
+    RecoveryResult,
     activity_id_for_attempt,
     attempt_directory_id,
     fold_events,
@@ -243,6 +257,7 @@ class Scheduler:
         self._effects = effects if effects is not None else EffectRegistry({})
         self._schemas = schemas if schemas is not None else SchemaRegistry({})
         self._resources = resources
+        self._same_attempt_execute: set[tuple[str, int]] = set()
         bind_runtime = getattr(host, "bind_invocation_runtime", None)
         if callable(bind_runtime):
             bind_runtime(handlers=registry.task_handlers, store=store)
@@ -324,6 +339,70 @@ class Scheduler:
                 workspace.discard()
             raise
         return lease, workspace, identity
+
+    async def recover_activity(self, task: PlannedTask) -> ActivityRecoveryDecision:
+        """Reconcile one live recoverable activity before any reclaim or new attempt."""
+        envelopes = self._ledger.read_all()
+        try:
+            projection = fold_events(envelopes)
+        except ProjectionError as error:
+            raise SchedulerStateError("persisted ledger cannot authorize activity recovery") from error
+        activation = next(
+            (item for item in projection.activations if item.activation_id == task.activation_id),
+            None,
+        )
+        if (
+            activation is None
+            or not activation.attempts
+            or activation.attempts[-1].attempt != task.attempt
+            or activation.attempts[-1].activity is None
+        ):
+            raise SchedulerStateError(f"task activity does not match: {task.activation_id}")
+        attempt = activation.attempts[-1]
+        activity = attempt.activity
+        assert activity is not None
+        try:
+            workspace = self._store.open_attempt(activity.workspace_identity)
+        except Exception:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+
+        if activity.state == "terminal_observed":
+            return self._recovery_decision(task, activity, "promote_same_attempt", "terminal")
+
+        receipts = self._collect_terminal_receipts(task, activity)
+        if receipts is None:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        if len(receipts) == 1:
+            return self._recovery_decision(task, activity, "promote_same_attempt", "terminal")
+
+        if activity.cancel_requested:
+            cancel_status = await self._recover_cancel(task, activity, workspace)
+            if cancel_status == "block":
+                return self._blocked_recovery(task, activity, status="indeterminate")
+
+        reconciled = await self._recover_reconcile(task, activity, workspace)
+        if reconciled is None:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+
+        bound = self._bind_reconcile_reference(task, activity, reconciled)
+        if bound is None:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        activity = bound
+
+        decision = recovery_decision_for_status(reconciled.status)
+        if decision in {"execute_same_attempt", "adopt_same_attempt"}:
+            self._adopt_recovered_lease(task, activity, reconciled)
+            if decision == "execute_same_attempt":
+                self._same_attempt_execute.add((task.task_id, task.attempt))
+        return self._recovery_decision(task, activity, decision, reconciled.status)
+
+    async def recover_live_activities(self, tasks: Sequence[PlannedTask]) -> RecoveryResult:
+        decisions: list[ActivityRecoveryDecision] = []
+        for task in tasks:
+            if not self._task_has_live_activity(task):
+                continue
+            decisions.append(await self.recover_activity(task))
+        return RecoveryResult(decisions=tuple(decisions))
 
     async def run_wave(self, tasks: Sequence[PlannedTask]) -> tuple[AttemptResult, ...]:
         selected = select_wave(tasks, self._max_parallel)
@@ -409,7 +488,7 @@ class Scheduler:
             return ()
         envelopes = self._ledger.read_all()
         running = self._persisted_running_leases(envelopes)
-        work: list[tuple[PlannedTask, AttemptWorkspace, _LeaseState]] = []
+        work: list[tuple[PlannedTask, AttemptWorkspace, _LeaseState, str | None]] = []
         try:
             for task in selected:
                 _validate_running_transition(task, envelopes)
@@ -420,20 +499,44 @@ class Scheduler:
                     )
                 if lease.expires_at < self._now():
                     raise LeaseUnavailableError("persisted running task lease expired")
-                if self._handler_is_recoverable(task):
-                    raise TaskActivityRecoveryUnsupported(
-                        "recoverable attempt recovery cannot recreate the workspace"
+                if self._task_has_live_activity(task):
+                    if (task.task_id, task.attempt) not in self._same_attempt_execute:
+                        continue
+                    activity = self._live_activity(task)
+                    if activity is None:
+                        raise TaskActivityRecoveryUnsupported(
+                            "recoverable attempt recovery cannot recreate the workspace"
+                        )
+                    workspace = self._store.open_attempt(activity.workspace_identity)
+                    work.append(
+                        (
+                            task,
+                            workspace,
+                            _LeaseState(self, lease),
+                            activity.activity_id,
+                        )
                     )
+                    self._same_attempt_execute.discard((task.task_id, task.attempt))
+                    continue
                 workspace = self._store.reset_attempt(self._attempt_id(task, "run"))
-                work.append((task, workspace, _LeaseState(self, lease)))
+                work.append((task, workspace, _LeaseState(self, lease), None))
         except BaseException:
-            for _task, workspace, _lease in work:
-                workspace.discard()
+            for _task, workspace, _lease, activity_id in work:
+                if activity_id is None:
+                    workspace.discard()
             raise
+        if not work:
+            return ()
         gathered = await asyncio.gather(
-            *(self._execute(task, workspace, lease_state) for task, workspace, lease_state in work)
+            *(
+                self._execute(task, workspace, lease_state, activity_id=activity_id)
+                for task, workspace, lease_state, activity_id in work
+            )
         )
-        return tuple(self._finalize(result) for result in gathered)
+        return tuple(
+            result if activity_id is not None else self._finalize(result)
+            for result, (_task, _workspace, _lease, activity_id) in zip(gathered, work, strict=True)
+        )
 
     def heartbeat(self, lease: Lease) -> Lease:
         guard = self._lease_guard(lease)
@@ -478,7 +581,12 @@ class Scheduler:
                 key=lambda item: (item.task_id, item.attempt, item.activation_id),
             )
         )
-        if expired:
+        try:
+            projection = fold_events(tuple(envelopes))
+        except ProjectionError as error:
+            raise SchedulerStateError("persisted ledger cannot authorize lease reclamation") from error
+        reclaimable = tuple(lease for lease in expired if not _lease_has_live_activity(projection, lease))
+        if reclaimable:
             failure = TaskOutcome.failed("transient", "persisted task lease expired").failure
             assert failure is not None
             self._append(
@@ -488,11 +596,11 @@ class Scheduler:
                         attempt=lease.attempt,
                         failure=failure,
                     )
-                    for lease in expired
+                    for lease in reclaimable
                 ),
                 expected_next_seq=_next_sequence(envelopes),
             )
-        return tuple(lease.task_id for lease in expired)
+        return tuple(lease.task_id for lease in reclaimable)
 
     def _start(self, task: PlannedTask) -> Lease:
         envelopes = self._ledger.read_all()
@@ -964,6 +1072,216 @@ class Scheduler:
             authorized_secret_handles=(),
         )
 
+    def _host_call_identity(
+        self,
+        task: PlannedTask,
+        activity_id: str,
+        operation: HostOperation,
+    ) -> TaskHostCallIdentity:
+        host_lock = pinned_execution_host_lock()
+        return TaskHostCallIdentity(
+            invocation_id=task.invocation_id,
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=task.attempt,
+            activity_id=activity_id,
+            operation=operation,
+            host_implementation_id=host_lock.implementation_id,
+            host_implementation_digest=host_lock.implementation_digest,
+            wire_schema_version=host_lock.wire_schema_version,
+        )
+
+    def _host_lifecycle_call_fields(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        workspace: AttemptWorkspace,
+        operation: HostOperation,
+    ) -> dict[str, object]:
+        binding = getattr(self._registry, "bindings", {}).get(task.capability_id)
+        capability_id = binding.target_capability_id if binding is not None else task.capability_id
+        return {
+            "identity": self._host_call_identity(task, activity.activity_id, operation),
+            "capability_id": capability_id,
+            "capability_entrypoint": self._capability_entrypoint(capability_id),
+            "request": self._project_request(task),
+            "attempt_root": AttemptRootDescriptor(attempt_directory_id=workspace.attempt_id),
+            "activity_rpc": TaskActivityRpcIdentity(
+                invocation_id=task.invocation_id,
+                task_id=task.task_id,
+                activation_id=task.activation_id,
+                attempt=task.attempt,
+                activity_id=activity.activity_id,
+            ),
+            "authorized_secret_handles": (),
+            "activity": activity,
+        }
+
+    def _host_reconcile_call(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        workspace: AttemptWorkspace,
+    ) -> TaskHostReconcileCall:
+        return TaskHostReconcileCall(
+            **self._host_lifecycle_call_fields(task, activity, workspace, "reconcile")  # type: ignore[arg-type]
+        )
+
+    def _host_cancel_call(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        workspace: AttemptWorkspace,
+    ) -> TaskHostCancelCall:
+        return TaskHostCancelCall(
+            **self._host_lifecycle_call_fields(task, activity, workspace, "cancel")  # type: ignore[arg-type]
+        )
+
+    def _collect_terminal_receipts(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+    ) -> tuple[TaskHostTerminalReceipt, ...] | None:
+        collected: list[TaskHostTerminalReceipt] = []
+        for operation in ("execute", "reconcile", "cancel"):
+            try:
+                found = self._host.read_terminal_receipts(
+                    self._host_call_identity(task, activity.activity_id, operation)
+                )
+            except Exception:
+                return None
+            if not isinstance(found, tuple):
+                return None
+            collected.extend(found)
+        if len(collected) > 1:
+            return None
+        return tuple(collected)
+
+    async def _recover_cancel(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        workspace: AttemptWorkspace,
+    ) -> str:
+        try:
+            result = await self._host.cancel(self._host_cancel_call(task, activity, workspace))
+        except Exception:
+            return "block"
+        if (
+            not isinstance(result, TaskHostCallResult)
+            or result.operation != "cancel"
+            or result.cancel_result is None
+        ):
+            return "block"
+        if result.cancel_result.status == "indeterminate":
+            return "block"
+        return "continue"
+
+    async def _recover_reconcile(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        workspace: AttemptWorkspace,
+    ) -> TaskActivityReconcileResult | None:
+        try:
+            result = await self._host.reconcile(self._host_reconcile_call(task, activity, workspace))
+        except Exception:
+            return None
+        if (
+            not isinstance(result, TaskHostCallResult)
+            or result.operation != "reconcile"
+            or result.reconcile_result is None
+        ):
+            return None
+        return result.reconcile_result
+
+    def _bind_reconcile_reference(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        reconciled: TaskActivityReconcileResult,
+    ) -> TaskActivitySnapshot | None:
+        if reconciled.reference is None:
+            return activity
+        try:
+            port = self.task_activity_port(
+                TaskActivityRpcIdentity(
+                    invocation_id=task.invocation_id,
+                    task_id=task.task_id,
+                    activation_id=task.activation_id,
+                    attempt=task.attempt,
+                    activity_id=activity.activity_id,
+                )
+            )
+            return port.bind(thaw_json(reconciled.reference))
+        except Exception:
+            return None
+
+    def _adopt_recovered_lease(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        reconciled: TaskActivityReconcileResult,
+    ) -> None:
+        now = self._now()
+        evidence = canonical_digest(cast(JSONValue, reconciled.model_dump(mode="json")))
+        self._append(
+            (
+                TaskLeaseAdopted(
+                    activity_id=activity.activity_id,
+                    task_id=task.task_id,
+                    activation_id=task.activation_id,
+                    attempt=task.attempt,
+                    owner_id=self._owner_id,
+                    acquired_at=now,
+                    heartbeat_at=now,
+                    expires_at=now + self._lease_seconds,
+                    reconciliation_evidence_digest=evidence,
+                ),
+            )
+        )
+
+    def _recovery_decision(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        decision: str,
+        status: str | None,
+    ) -> ActivityRecoveryDecision:
+        return ActivityRecoveryDecision(
+            activity_id=activity.activity_id,
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=task.attempt,
+            decision=decision,  # type: ignore[arg-type]
+            reconcile_status=status,  # type: ignore[arg-type]
+        )
+
+    def _blocked_recovery(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        *,
+        status: str,
+    ) -> ActivityRecoveryDecision:
+        return self._recovery_decision(task, activity, "block", status)
+
+    def _task_has_live_activity(self, task: PlannedTask) -> bool:
+        return self._live_activity(task) is not None
+
+    def _live_activity(self, task: PlannedTask) -> TaskActivitySnapshot | None:
+        try:
+            projection = fold_events(self._ledger.read_all())
+        except ProjectionError:
+            return None
+        activation = next(
+            (item for item in projection.activations if item.activation_id == task.activation_id),
+            None,
+        )
+        if activation is None or not activation.attempts or activation.attempts[-1].attempt != task.attempt:
+            return None
+        return activation.attempts[-1].activity
+
     def _handler_is_recoverable(self, task: PlannedTask) -> bool:
         handler = self._registry.task_handlers.get(task.capability_id)
         return isinstance(handler, RecoverableTaskHandler)
@@ -999,6 +1317,18 @@ class Scheduler:
         for envelope in self._ledger.read_all() if envelopes is None else envelopes:
             event = envelope.event
             if isinstance(event, TaskLeaseAcquired):
+                key = (event.task_id, event.attempt)
+                running[key] = Lease(
+                    task_id=event.task_id,
+                    activation_id=event.activation_id,
+                    attempt=event.attempt,
+                    owner_id=event.owner_id,
+                    acquired_at=event.acquired_at,
+                    heartbeat_at=event.heartbeat_at,
+                    expires_at=event.expires_at,
+                )
+                by_activation[(event.activation_id, event.attempt)] = key
+            elif isinstance(event, TaskLeaseAdopted):
                 key = (event.task_id, event.attempt)
                 running[key] = Lease(
                     task_id=event.task_id,
@@ -1190,6 +1520,16 @@ def _validate_running_transition(task: PlannedTask, envelopes: Sequence[EventEnv
         raise SchedulerStateError(f"task prior failure does not match projection: {task.activation_id}")
 
 
+def _lease_has_live_activity(projection: InvocationProjection, lease: Lease) -> bool:
+    activation = next(
+        (item for item in projection.activations if item.activation_id == lease.activation_id),
+        None,
+    )
+    if activation is None or not activation.attempts or activation.attempts[-1].attempt != lease.attempt:
+        return False
+    return activation.attempts[-1].activity is not None
+
+
 def _replace_with_lease_failure(result: AttemptResult, message: str) -> AttemptResult:
     return result.model_copy(update={"outcome": TaskOutcome.failed("transient", message)})
 
@@ -1215,6 +1555,7 @@ __all__ = [
     "LedgerPublicationIndeterminate",
     "Lease",
     "LeaseUnavailableError",
+    "RecoveryResult",
     "Scheduler",
     "SchedulerStateError",
     "SystemClock",

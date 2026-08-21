@@ -22,11 +22,27 @@ from graph_engine.runtime.ledger import (
     LedgerPublicationIndeterminate,
     append_validated_batch,
 )
-from graph_engine.runtime.models import ProjectionError, fold_events
+from graph_engine.runtime.models import (
+    ProjectionError,
+    ReconcileStatus,
+    RecoveryDecisionKind,
+    fold_events,
+)
 
 
 MAX_ACTIVITY_VALUE_BYTES = 16 * 1024
 _LIVE_ATTEMPT_STATUSES = {"running", "effect_pending"}
+_RECOVERY_DECISIONS: dict[ReconcileStatus, RecoveryDecisionKind] = {
+    "not_dispatched": "execute_same_attempt",
+    "running": "adopt_same_attempt",
+    "terminal": "promote_same_attempt",
+    "absent": "finalize_failure_then_retry_policy",
+    "indeterminate": "block",
+}
+
+
+def recovery_decision_for_status(status: ReconcileStatus) -> RecoveryDecisionKind:
+    return _RECOVERY_DECISIONS[status]
 
 
 class TaskActivityConflict(GraphEngineError):
@@ -282,4 +298,5 @@ __all__ = [
     "TaskActivityRecoveryUnsupported",
     "TaskActivityReferenceInvalid",
     "bounded_canonical_json",
+    "recovery_decision_for_status",
 ]

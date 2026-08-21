@@ -207,6 +207,7 @@ class TaskHostProtocolError(GraphEngineError):
 __all__ = [
     "ATTEMPT_ROOT_CAPABILITY_ID",
     "AttemptRootDescriptor",
+    "HostOperation",
     "TASK_HOST_IMPLEMENTATION_ID",
     "TASK_HOST_WIRE_SCHEMA_VERSION",
     "TaskActivityRpcIdentity",

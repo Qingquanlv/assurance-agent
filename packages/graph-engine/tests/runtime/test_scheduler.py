@@ -46,6 +46,9 @@ from graph_engine.plugin_api import (
     PluginDescriptor,
     ResourceClaims,
     SchemaContribution,
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
+    TaskActivitySnapshot,
     TaskContext,
     TaskHandler,
     TaskOutcome,
@@ -1176,6 +1179,79 @@ def test_reclaim_uses_persisted_heartbeat_and_strict_expiry_boundary(tmp_path: P
     assert after_boundary.reclaim_expired((lease,)) == ("task-1",)
     assert isinstance(ledger.read_all()[-1].event, TaskAttemptFailed)
     assert after_boundary.reclaim_expired((lease,)) == ()
+
+
+class _RecoverableReclaimHandler:
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        del request, context
+        return TaskOutcome.succeeded()
+
+    async def reconcile(
+        self,
+        request: TaskRequest,
+        context: TaskContext,
+        activity: TaskActivitySnapshot,
+    ) -> TaskActivityReconcileResult:
+        del request, context, activity
+        return TaskActivityReconcileResult(status="running")
+
+    async def cancel(
+        self,
+        request: TaskRequest,
+        context: TaskContext,
+        activity: TaskActivitySnapshot,
+    ) -> TaskActivityCancelResult:
+        del request, context, activity
+        return TaskActivityCancelResult(status="acknowledged")
+
+
+class _RecoverableRegistry:
+    def __init__(self, handlers: Mapping[str, TaskHandler]) -> None:
+        self.task_handlers = handlers
+        self.commit_validators: dict[str, object] = {}
+        self.bindings: dict[str, object] = {}
+
+
+def test_reclaim_expired_skips_recoverable_live_activity(tmp_path: Path) -> None:
+    task = _planned_task()
+    store = SnapshotStore.create(tmp_path / "store", {})
+    ledger = Ledger(tmp_path / "ledger")
+    ledger.append_batch(
+        (
+            InvocationStarted(invocation_id="inv-1", lock_digest=_LOCK_DIGEST, entrypoint="main"),
+            GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
+            NodeActivated(
+                activation_id=task.activation_id,
+                graph_instance_id="graph-1",
+                node_id=task.node_id,
+                token_ids=(),
+            ),
+        ),
+        expected_next_seq=1,
+    )
+    clock = FakeClock(100.0)
+    scheduler = Scheduler(
+        _RecoverableRegistry({task.capability_id: _RecoverableReclaimHandler()}),
+        store,
+        ledger,
+        _InProcessTestHost(),
+        owner_id="worker-1",
+        clock=clock,
+        lease_seconds=10.0,
+        lock_digest=_LOCK_DIGEST,
+    )
+    lease, _workspace, _identity = scheduler.start_recoverable(task)
+    clock.set(lease.expires_at + 1)
+    kinds_before = [item.event.kind for item in ledger.read_all()]
+    assert scheduler.reclaim_expired() == ()
+    kinds_after = [item.event.kind for item in ledger.read_all()]
+    assert kinds_after == kinds_before
+    assert "task_attempt_failed" not in kinds_after
+    projection = fold_events(ledger.read_all())
+    attempt = projection.activations[-1].attempts[-1]
+    assert attempt.attempt == 1
+    assert attempt.status == "running"
+    assert attempt.activity is not None
 
 
 @pytest.mark.parametrize("failed_boundary", ["final_installed", "directory_fsynced"])

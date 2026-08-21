@@ -53,7 +53,7 @@ from graph_engine.runtime.ledger import (
     LedgerPublicationIndeterminate,
     append_validated_batch,
 )
-from graph_engine.runtime.models import InvocationProjection, fold_events
+from graph_engine.runtime.models import InvocationProjection, RecoveryResult, fold_events
 from graph_engine.runtime.planner import (
     PlanningError,
     _start_token_id,
@@ -104,6 +104,7 @@ class InvocationHandle:
     _entrypoint: str = field(repr=False, compare=False)
     _composition: FrozenComposition = field(repr=False, compare=False)
     _invocation_fd: int = field(repr=False, compare=False)
+    _engine: Engine = field(repr=False, compare=False)
     _closed: bool = field(default=False, init=False, repr=False, compare=False)
 
     @property
@@ -115,6 +116,11 @@ class InvocationHandle:
             "workspace",
             display_root=self.invocation_root / "workspace",
         )
+
+    async def recover(self) -> RecoveryResult:
+        if self._closed:
+            raise EngineError("invocation handle is closed")
+        return await self._engine._recover_invocation(self)
 
     def close(self) -> None:
         if self._closed:
@@ -400,6 +406,7 @@ class Engine:
             expected_tree_id = projection.head_tree_id or _EMPTY_TREE_ID
             if actual_tree_id != expected_tree_id:
                 raise EngineError("workspace HEAD disagrees with the authoritative ledger")
+            self._authenticate_live_activity_workspaces(projection, store)
             if projection.status == "running":
                 scheduler = self._scheduler(
                     invocation_id,
@@ -487,6 +494,7 @@ class Engine:
                 intent.entrypoint,
                 composition,
                 invocation_fd,
+                self,
             )
         except BaseException as error:
             _close_preserving_primary(invocation_fd, error, "invocation descriptor")
@@ -685,6 +693,7 @@ class Engine:
             entrypoint,
             composition,
             os.dup(invocation_fd),
+            self,
         )
 
     def _authenticate_bootstrap(
@@ -783,6 +792,7 @@ class Engine:
             ),
         )
 
+        recovered = False
         while True:
             envelopes = ledger.read_all()
             projection = fold_events(envelopes)
@@ -792,6 +802,23 @@ class Engine:
             if result is not None:
                 self._write_checkpoint(invocation_fd, envelopes, projection)
                 return result
+
+            if not recovered:
+                if projection.status == "running":
+                    try:
+                        asyncio.run(
+                            scheduler.recover_live_activities(
+                                plan_running_tasks(composition.workflow, projection)
+                            )
+                        )
+                    except LedgerConflictError as error:
+                        raise EngineConflictError("another runner advanced the invocation") from error
+                    except LedgerPublicationIndeterminate as error:
+                        raise EnginePublicationIndeterminate(
+                            "activity recovery publication is indeterminate"
+                        ) from error
+                recovered = True
+                continue
 
             try:
                 if scheduler.reclaim_expired():
@@ -829,7 +856,7 @@ class Engine:
             running_tasks = plan_running_tasks(composition.workflow, projection)
             if running_tasks:
                 try:
-                    asyncio.run(scheduler.resume_running(running_tasks))
+                    resumed = asyncio.run(scheduler.resume_running(running_tasks))
                 except (LedgerConflictError, LeaseUnavailableError) as error:
                     raise EngineConflictError("another runner owns or advanced the running task") from error
                 except LedgerPublicationIndeterminate as error:
@@ -842,6 +869,18 @@ class Engine:
                     ) from error
                 except FinalizationRolledBack as error:
                     raise EngineError("running task publication failed and was rolled back") from error
+                if resumed:
+                    continue
+                if any(scheduler._task_has_live_activity(task) for task in running_tasks):
+                    refreshed = fold_events(ledger.read_all())
+                    self._validate_workflow(composition, refreshed)
+                    self._write_checkpoint(invocation_fd, ledger.read_all(), refreshed)
+                    return RunResult(
+                        status="interrupted",
+                        terminal_reason="activity_recovery",
+                        actions=(),
+                        projection=refreshed,
+                    )
                 continue
 
             plan = plan_next(composition.workflow, projection)
@@ -997,6 +1036,7 @@ class Engine:
             handle._entrypoint,
             composition,
             os.dup(invocation_fd),
+            self,
         )
 
     def _scheduler(
@@ -1037,6 +1077,65 @@ class Engine:
             schemas=composition.registries.schemas,
             resources=composition.registries.resources,
         )
+
+    async def _recover_invocation(self, handle: InvocationHandle) -> RecoveryResult:
+        _composition, _invocation_root, invocation_fd = self._validated_handle(handle)
+        claim_fd = self._acquire_runner_claim(invocation_fd)
+        try:
+            return await self._recover_invocation_claimed(handle)
+        finally:
+            _cleanup_runtime_resources(
+                sys.exception(),
+                store=None,
+                descriptors=((claim_fd, "invocation runner claim descriptor"),),
+            )
+
+    async def _recover_invocation_claimed(self, handle: InvocationHandle) -> RecoveryResult:
+        composition, invocation_root, invocation_fd = self._validated_handle(handle)
+        with handle.workspace as store:
+            ledger = Ledger.at(
+                invocation_fd,
+                "ledger",
+                display_root=invocation_root / "ledger",
+            )
+            scheduler = self._scheduler(
+                handle.invocation_id,
+                composition,
+                handle._entrypoint,
+                invocation_root,
+                invocation_fd,
+                store,
+                ledger,
+            )
+            envelopes = ledger.read_all()
+            projection = fold_events(envelopes)
+            self._validate_projection_identity(handle, projection)
+            self._validate_workflow(composition, projection)
+            if projection.status != "running":
+                return RecoveryResult()
+            try:
+                return await scheduler.recover_live_activities(
+                    plan_running_tasks(composition.workflow, projection)
+                )
+            except LedgerConflictError as error:
+                raise EngineConflictError("another runner advanced the invocation") from error
+            except LedgerPublicationIndeterminate as error:
+                raise EnginePublicationIndeterminate(
+                    "activity recovery publication is indeterminate"
+                ) from error
+
+    def _authenticate_live_activity_workspaces(
+        self,
+        projection: InvocationProjection,
+        store: SnapshotStore,
+    ) -> None:
+        for activation in projection.activations:
+            if not activation.attempts:
+                continue
+            attempt = activation.attempts[-1]
+            if attempt.status not in {"running", "effect_pending"} or attempt.activity is None:
+                continue
+            store.open_attempt(attempt.activity.workspace_identity)
 
     def _require_invocation_anchor(self, invocation_id: str, invocation_fd: int) -> None:
         self._assert_namespace_path_current()
@@ -1587,5 +1686,6 @@ __all__ = [
     "EngineError",
     "EnginePublicationIndeterminate",
     "InvocationHandle",
+    "RecoveryResult",
     "RunResult",
 ]

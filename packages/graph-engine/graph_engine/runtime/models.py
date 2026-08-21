@@ -341,6 +341,29 @@ class PlannedTask(ProjectionModel):
     declaration_index: int = Field(ge=0)
 
 
+RecoveryDecisionKind = Literal[
+    "execute_same_attempt",
+    "adopt_same_attempt",
+    "promote_same_attempt",
+    "finalize_failure_then_retry_policy",
+    "block",
+]
+ReconcileStatus = Literal["not_dispatched", "running", "terminal", "absent", "indeterminate"]
+
+
+class ActivityRecoveryDecision(ProjectionModel):
+    activity_id: str
+    task_id: str
+    activation_id: str
+    attempt: int = Field(ge=1)
+    decision: RecoveryDecisionKind
+    reconcile_status: ReconcileStatus | None = None
+
+
+class RecoveryResult(ProjectionModel):
+    decisions: tuple[ActivityRecoveryDecision, ...] = ()
+
+
 class PlanResult(ProjectionModel):
     tasks: tuple[PlannedTask, ...] = ()
     events: tuple[RuntimeEvent, ...] = ()
@@ -1716,6 +1739,7 @@ def _replace_activation(
 
 __all__ = [
     "ActivationRecord",
+    "ActivityRecoveryDecision",
     "activity_id_for_attempt",
     "attempt_directory_id",
     "attempt_identity_digest",
@@ -1731,6 +1755,9 @@ __all__ = [
     "PlanResult",
     "PreparedTaskCommit",
     "ProjectionError",
+    "ReconcileStatus",
+    "RecoveryDecisionKind",
+    "RecoveryResult",
     "TokenRecord",
     "ValidationReceipt",
     "fold_events",

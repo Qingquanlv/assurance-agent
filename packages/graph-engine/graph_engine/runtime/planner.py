@@ -30,8 +30,14 @@ from graph_engine.runtime.events import (
     TaskAttemptStarted,
     TaskAttemptStopped,
     TaskAttemptSucceeded,
+    TaskActivityBound,
+    TaskActivityCancelRequested,
+    TaskActivityDispatchStarted,
+    TaskActivityPrepared,
+    TaskActivityTerminalObserved,
     TaskCommitPrepared,
     TaskLeaseAcquired,
+    TaskLeaseAdopted,
     TaskLeaseHeartbeat,
     TokenConsumed,
     TokenOffered,
@@ -330,9 +336,27 @@ def _validate_external_history_transition(
             or acquired.attempt != event.attempt
         ):
             raise PlanningError("event history task start lacks its exact canonical lease")
+        if cursor + 2 < len(envelopes):
+            prepared = envelopes[cursor + 2].event
+            if (
+                isinstance(prepared, TaskActivityPrepared)
+                and prepared.task_id == matching.task_id
+                and prepared.activation_id == event.activation_id
+                and prepared.attempt == event.attempt
+            ):
+                return 3
         return 2
 
-    if isinstance(event, TaskLeaseHeartbeat):
+    if isinstance(event, TaskLeaseHeartbeat | TaskLeaseAdopted):
+        return 1
+
+    if isinstance(
+        event,
+        TaskActivityDispatchStarted
+        | TaskActivityBound
+        | TaskActivityCancelRequested
+        | TaskActivityTerminalObserved,
+    ):
         return 1
 
     if isinstance(event, TaskCommitPrepared):

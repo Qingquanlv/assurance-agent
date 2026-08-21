@@ -40,6 +40,9 @@ from graph_engine.plugin_api import (
     PluginDescriptor,
     ProviderSource,
     ResourceClaims,
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
+    TaskActivitySnapshot,
     TaskContext,
     TaskFailure,
     TaskHandler,
@@ -1556,6 +1559,89 @@ def test_open_reclaims_expired_lease_before_running(tmp_path: Path) -> None:
 
     assert result.status == "failed"
     assert any(item.event.kind == "task_attempt_failed" for item in ledger.read_all())
+
+
+class _RecoverableOpenHandler:
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        del request, context
+        return TaskOutcome.succeeded()
+
+    async def reconcile(
+        self,
+        request: TaskRequest,
+        context: TaskContext,
+        activity: TaskActivitySnapshot,
+    ) -> TaskActivityReconcileResult:
+        del request, context, activity
+        return TaskActivityReconcileResult(status="running")
+
+    async def cancel(
+        self,
+        request: TaskRequest,
+        context: TaskContext,
+        activity: TaskActivitySnapshot,
+    ) -> TaskActivityCancelResult:
+        del request, context, activity
+        return TaskActivityCancelResult(status="acknowledged")
+
+
+class _DirectRecoverableRegistry:
+    def __init__(self, handlers: dict[str, TaskHandler]) -> None:
+        self.task_handlers = handlers
+        self.commit_validators: dict[str, object] = {}
+        self.bindings: dict[str, object] = {}
+
+
+def test_open_does_not_reclaim_expired_recoverable_activity(tmp_path: Path) -> None:
+    async def unused(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        raise AssertionError("disposable execute must not run")
+
+    product = _task_product(unused)
+    start_clock = FakeClock(10.0)
+    engine = Engine(tmp_path, clock=start_clock, host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id="expired-recoverable")
+    ledger = Ledger(handle.invocation_root / "ledger")
+    envelopes = ledger.read_all()
+    plan = plan_next(product.workflow, fold_events(envelopes))
+    ledger.append_batch(plan.events, expected_next_seq=envelopes[-1].seq + 1)
+    task = plan_next(product.workflow, fold_events(ledger.read_all())).tasks[0]
+    owner_id = canonical_digest(
+        {
+            "invocation_id": "expired-recoverable",
+            "lock_digest": product.lock_digest,
+            "role": "engine-scheduler",
+        }
+    )
+    with handle.workspace as store:
+        scheduler = Scheduler(
+            _DirectRecoverableRegistry({task.capability_id: _RecoverableOpenHandler()}),
+            store,
+            ledger,
+            _InProcessTestHost(),
+            owner_id=owner_id,
+            clock=start_clock,
+            lease_seconds=10.0,
+            lock_digest=product.lock_digest,
+            composition_digest=product.digest,
+            entrypoint="main",
+        )
+        scheduler.start_recoverable(task)
+    handle.close()
+    engine.close()
+
+    reopened_engine = Engine(tmp_path, clock=FakeClock(21.0), host=_InProcessTestHost())
+    reopened = reopened_engine.open("expired-recoverable", product)
+    try:
+        kinds = [item.event.kind for item in ledger.read_all()]
+        assert "task_attempt_failed" not in kinds
+        projection = fold_events(ledger.read_all())
+        attempt = projection.activations[-1].attempts[-1]
+        assert attempt.attempt == 1
+        assert attempt.status == "running"
+        assert attempt.activity is not None
+    finally:
+        reopened.close()
+        reopened_engine.close()
 
 
 def test_concurrent_open_reclaim_has_one_winner_and_one_engine_conflict(
