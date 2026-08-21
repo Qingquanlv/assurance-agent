@@ -91,7 +91,13 @@ class OpenCodeHttpClient:
 
     async def admit_message(self, session_id: str, body: Mapping[str, object]) -> dict[str, Any]:
         path = f"/session/{_path_segment(session_id, 'session id')}/prompt_async"
-        return await self._json("POST", path, body)
+        raw = await self._read("POST", path, body=body, accept="application/json")
+        if not raw.strip():
+            return {}
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError("admission response must be a JSON object")
+        return payload
 
     async def get_message(self, session_id: str, message_id: str) -> dict[str, Any]:
         path = (
@@ -100,15 +106,29 @@ class OpenCodeHttpClient:
         )
         return await self._json("GET", path)
 
+    async def list_messages(self, session_id: str) -> list[Any]:
+        path = f"/session/{_path_segment(session_id, 'session id')}/message"
+        payload = await self._json("GET", path)
+        if not isinstance(payload, list):
+            raise ValueError("message list shape must be a JSON array")
+        return payload
+
     async def get_status(self) -> dict[str, Any]:
         return await self._json("GET", "/session/status")
 
-    async def open_sse(self) -> bytes:
-        return await self._read("GET", "/event", accept="text/event-stream")
+    async def open_sse(self, *, cursor: str | None = None) -> bytes:
+        extra = {"cursor": cursor} if cursor else None
+        return await self._read("GET", "/event", accept="text/event-stream", extra_params=extra)
 
     async def abort(self, session_id: str) -> dict[str, Any]:
         path = f"/session/{_path_segment(session_id, 'session id')}/abort"
-        return await self._json("POST", path, {})
+        raw = await self._read("POST", path, body={}, accept="application/json")
+        payload = json.loads(raw) if raw.strip() else True
+        if payload is True:
+            return {"ok": True}
+        if isinstance(payload, dict):
+            return payload
+        raise ValueError("abort response must be a JSON object or true")
 
     async def _json(
         self,
@@ -128,13 +148,17 @@ class OpenCodeHttpClient:
         *,
         body: Mapping[str, object] | None = None,
         accept: str,
+        extra_params: Mapping[str, str] | None = None,
         _redirects: int = 0,
     ) -> bytes:
+        params: dict[str, str] = {"directory": self._config.project_scope}
+        if extra_params:
+            params.update(extra_params)
         response = await self._client.request(
             method,
             path,
             headers={"Accept": accept},
-            params={"directory": self._config.project_scope},
+            params=params,
             json=None if body is None else dict(body),
         )
         if response.status_code in {301, 302, 303, 307, 308}:
@@ -146,7 +170,14 @@ class OpenCodeHttpClient:
             absolute = urljoin(str(response.url), location)
             _RedirectTarget.model_validate({"location": absolute, "origin": self._origin})
             await response.aclose()
-            return await self._read(method, absolute, body=body, accept=accept, _redirects=_redirects + 1)
+            return await self._read(
+                method,
+                absolute,
+                body=body,
+                accept=accept,
+                extra_params=extra_params,
+                _redirects=_redirects + 1,
+            )
         response.raise_for_status()
         chunks: list[bytes] = []
         total = 0

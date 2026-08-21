@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import Any
 
 import httpx
@@ -34,6 +36,14 @@ from agent_runtime_opencode.discovery import (
     metadata_match_digest,
     prompt_body_digest,
 )
+from agent_runtime_opencode.observation import (
+    classify_admission,
+    classify_provider_state,
+    outcome_for_terminal,
+    parse_sse_frames,
+    prompt_admission_body,
+    reduce_sse_frames,
+)
 from agent_runtime_opencode.protocol import (
     AcceptedOpenCodeProfile,
     OpenCodeHttpClient,
@@ -58,10 +68,19 @@ class OpenCodeHandler:
             await client.aclose()
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        result = await self._reconcile_session(request, context, allow_create=True)
-        if result.status != "running":
-            raise OpenCodeDispatchIncomplete(result.reason or result.status)
-        raise NotImplementedError("OpenCode prompt admission is not implemented")
+        config = self._require_config()
+        deadline = time.monotonic() + config.observation_horizon_seconds
+        while True:
+            result = await self._reconcile_session(request, context, allow_create=True)
+            if result.status == "terminal":
+                if result.outcome is None:
+                    raise OpenCodeDispatchIncomplete("terminal observation is missing an outcome")
+                return result.outcome
+            if result.status != "running":
+                raise OpenCodeDispatchIncomplete(result.reason or result.status)
+            if time.monotonic() >= deadline:
+                raise OpenCodeDispatchIncomplete("observation horizon exceeded")
+            await asyncio.sleep(0.05)
 
     async def reconcile(
         self,
@@ -85,8 +104,63 @@ class OpenCodeHandler:
         context: TaskContext,
         activity: TaskActivitySnapshot,
     ) -> TaskActivityCancelResult:
-        del request, context, activity
-        return TaskActivityCancelResult(status="indeterminate", reason="OpenCode cancel is not implemented")
+        config = self._require_config()
+        if context.secrets is None:
+            raise SecretHandleUnauthorized("secret port is required")
+        port = context.activity
+        if port is None:
+            raise ValueError("activity port is required")
+        if activity.activity_id != port.snapshot.activity_id:
+            return TaskActivityCancelResult(
+                status="indeterminate",
+                reason="activity snapshot does not match the live port",
+            )
+        mismatch = self._identity_mismatch(request, context, port.snapshot)
+        if mismatch is not None:
+            return TaskActivityCancelResult(status="indeterminate", reason=mismatch)
+        secret = context.secrets.resolve(config.secret_handle)
+        client = OpenCodeHttpClient(config, secret=secret)
+        try:
+            context.heartbeat()
+            fingerprint = await self._observe_fingerprint(client, secret)
+            expected = self._expected_reference_fields(request, port.snapshot, fingerprint)
+            bound = await self._load_bound_session(client, port.snapshot, expected)
+            if isinstance(bound, TaskActivityReconcileResult):
+                return TaskActivityCancelResult(
+                    status="indeterminate",
+                    reason=bound.reason or "bound reference is not authentic",
+                )
+            reference, record = bound
+            observed = await self._observe_bound(client, request, context, reference, record)
+            if observed.status == "terminal":
+                if observed.outcome is None:
+                    return TaskActivityCancelResult(
+                        status="indeterminate",
+                        reason="terminal observation is missing an outcome",
+                    )
+                return TaskActivityCancelResult(status="terminal", outcome=observed.outcome)
+            if observed.status == "indeterminate":
+                return TaskActivityCancelResult(
+                    status="indeterminate",
+                    reason=observed.reason or "provider observation is indeterminate",
+                )
+            await client.abort(reference.session_id or "")
+            raced = await self._observe_bound(client, request, context, reference, record)
+            if raced.status == "terminal":
+                if raced.outcome is None:
+                    return TaskActivityCancelResult(
+                        status="indeterminate",
+                        reason="terminal observation is missing an outcome",
+                    )
+                return TaskActivityCancelResult(status="terminal", outcome=raced.outcome)
+            return TaskActivityCancelResult(status="acknowledged")
+        except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
+            return TaskActivityCancelResult(
+                status="indeterminate",
+                reason=str(error) or "provider cancel is indeterminate",
+            )
+        finally:
+            await client.aclose()
 
     async def _reconcile_session(
         self,
@@ -114,7 +188,7 @@ class OpenCodeHandler:
             fingerprint = await self._observe_fingerprint(client, secret)
             expected = self._expected_reference_fields(request, snapshot, fingerprint)
             if snapshot.reference is not None:
-                return await self._reconcile_bound(client, snapshot, expected)
+                return await self._reconcile_bound(client, request, context, snapshot, expected)
             if snapshot.state == "prepared" and not allow_create:
                 return await self._reconcile_prepared(client, port, request, snapshot, fingerprint, expected)
             was_prepared = snapshot.state == "prepared"
@@ -212,9 +286,26 @@ class OpenCodeHandler:
     async def _reconcile_bound(
         self,
         client: OpenCodeHttpClient,
+        request: TaskRequest,
+        context: TaskContext,
         snapshot: TaskActivitySnapshot,
         expected: dict[str, str],
     ) -> TaskActivityReconcileResult:
+        bound = await self._load_bound_session(client, snapshot, expected)
+        if isinstance(bound, TaskActivityReconcileResult):
+            return bound
+        reference, record = bound
+        admitted = await self._admit_prompt(client, request, reference)
+        if admitted is not None:
+            return admitted
+        return await self._observe_bound(client, request, context, reference, record)
+
+    async def _load_bound_session(
+        self,
+        client: OpenCodeHttpClient,
+        snapshot: TaskActivitySnapshot,
+        expected: dict[str, str],
+    ) -> TaskActivityReconcileResult | tuple[OpenCodeActivityReference, dict[str, Any]]:
         try:
             reference = OpenCodeActivityReference.model_validate(thaw_json(snapshot.reference))
         except ValidationError:
@@ -264,7 +355,113 @@ class OpenCodeHandler:
                 status="indeterminate",
                 reason="foreign session metadata",
             )
-        return TaskActivityReconcileResult(status="running", reference=thaw_json(snapshot.reference))
+        return reference, record
+
+    async def _admit_prompt(
+        self,
+        client: OpenCodeHttpClient,
+        request: TaskRequest,
+        reference: OpenCodeActivityReference,
+    ) -> TaskActivityReconcileResult | None:
+        session_id = reference.session_id
+        if not session_id:
+            return TaskActivityReconcileResult(
+                status="indeterminate",
+                reason="bound session identity is unknown",
+            )
+        agent_run = agent_run_from_request(request)
+        expected_body = prompt_admission_body(agent_run, reference.expected_message_id)
+        try:
+            record = await client.get_message(session_id, reference.expected_message_id)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 404:
+                raise
+        else:
+            if classify_admission(record, expected_body) == "conflict":
+                return TaskActivityReconcileResult(
+                    status="indeterminate",
+                    reason="prompt identity conflict",
+                )
+            return None
+        try:
+            await client.admit_message(session_id, expected_body)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code in {400, 409}:
+                return TaskActivityReconcileResult(
+                    status="indeterminate",
+                    reason="prompt identity conflict",
+                )
+            raise
+        return None
+
+    async def _observe_bound(
+        self,
+        client: OpenCodeHttpClient,
+        request: TaskRequest,
+        context: TaskContext,
+        reference: OpenCodeActivityReference,
+        record: dict[str, Any],
+    ) -> TaskActivityReconcileResult:
+        del request
+        session_id = reference.session_id
+        if not session_id:
+            return TaskActivityReconcileResult(
+                status="indeterminate",
+                reason="bound session identity is unknown",
+            )
+        advertised = AcceptedOpenCodeProfile.model_validate(await client.get_profile())
+        cursor: str | None = None
+        try:
+            payload = await client.open_sse()
+            reduced = reduce_sse_frames(
+                parse_sse_frames(payload),
+                session_id=session_id,
+                heartbeat=context.heartbeat,
+            )
+            if reduced.malformed:
+                return TaskActivityReconcileResult(
+                    status="indeterminate",
+                    reason="malformed identity-bearing SSE event",
+                )
+            cursor = reduced.cursor
+            if cursor:
+                follow = await client.open_sse(cursor=cursor)
+                follow_reduced = reduce_sse_frames(
+                    parse_sse_frames(follow),
+                    session_id=session_id,
+                    heartbeat=context.heartbeat,
+                )
+                if follow_reduced.malformed:
+                    return TaskActivityReconcileResult(
+                        status="indeterminate",
+                        reason="malformed identity-bearing SSE event",
+                    )
+        except httpx.TimeoutException:
+            if not advertised.poll_fallback_supported:
+                return TaskActivityReconcileResult(
+                    status="indeterminate",
+                    reason="SSE was silent and polling is not permitted",
+                )
+        context.heartbeat()
+        status_map = await client.get_status()
+        session = await client.get_session(session_id)
+        if not isinstance(session, dict):
+            session = record
+        messages = await client.list_messages(session_id)
+        kind = classify_provider_state(
+            session_id=session_id,
+            status_map=status_map,
+            session=session,
+            messages=messages,
+        )
+        dumped = thaw_json(reference.model_dump(mode="json"))
+        if kind == "running":
+            return TaskActivityReconcileResult(status="running", reference=dumped)
+        return TaskActivityReconcileResult(
+            status="terminal",
+            reference=dumped,
+            outcome=outcome_for_terminal(kind),
+        )
 
     def _bind_match(
         self,

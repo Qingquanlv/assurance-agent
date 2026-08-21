@@ -26,6 +26,21 @@ CreateCut = Literal[
     "invalid_success_body",
     "proxy_reset",
 ]
+PromptCut = Literal[
+    "before_prompt_post",
+    "after_admission_before_response",
+    "after_lost_success_response",
+]
+TerminalMode = Literal["busy", "idle_only", "success", "open_tools", "error", "canceled"]
+SseMode = Literal[
+    "heartbeat",
+    "gap",
+    "fast_idle",
+    "silent",
+    "cursor",
+    "malformed_identity",
+    "wrong_session",
+]
 _SUPPORTED_CUTS: tuple[CutName, ...] = (
     "before_request",
     "after_provider_mutation",
@@ -39,6 +54,11 @@ _SUPPORTED_CREATE_CUTS: tuple[CreateCut, ...] = (
     "after_create_before_response",
     "invalid_success_body",
     "proxy_reset",
+)
+_SUPPORTED_PROMPT_CUTS: tuple[PromptCut, ...] = (
+    "before_prompt_post",
+    "after_admission_before_response",
+    "after_lost_success_response",
 )
 
 
@@ -61,25 +81,38 @@ class OpenCodeFakeServer:
         existing_matches: int = 0,
         metadata: dict[str, object] | None = None,
         hide_sessions: bool = False,
+        prompt_cut: PromptCut | None = None,
     ) -> None:
         if cut is not None and cut not in _SUPPORTED_CUTS:
             raise ValueError(f"unsupported cut: {cut}")
         if create_cut is not None and create_cut not in _SUPPORTED_CREATE_CUTS:
             raise ValueError(f"unsupported create cut: {create_cut}")
+        if prompt_cut is not None and prompt_cut not in _SUPPORTED_PROMPT_CUTS:
+            raise ValueError(f"unsupported prompt cut: {prompt_cut}")
         self.profile = profile
         self.cut = cut
         self.create_cut = create_cut
+        self.prompt_cut = prompt_cut
         self.redirect_location = redirect_location
         self.project_scope = project_scope
         self.hide_sessions = hide_sessions
         self.metadata = dict(metadata or {})
         self.create_bodies: list[dict[str, object]] = []
+        self.prompt_bodies: list[dict[str, object]] = []
+        self.sse_cursors: list[str | None] = []
+        self.terminal_mode: TerminalMode = "success"
+        self.sse_mode: SseMode = "heartbeat"
+        self.omit_status = False
+        self.sse_silent_seconds = 2.0
         self._created_ids: list[str] = []
         self._sessions: dict[str, dict[str, object]] = {}
+        self._messages: dict[str, dict[str, dict[str, object]]] = {}
         self._seq = 0
         self._records: list[RecordedCall] = []
         self._lock = threading.Lock()
         self._mutated = False
+        self._abort_calls = 0
+        self._sse_release = threading.Event()
         for index in range(existing_matches):
             self.add_session(session_id=f"ses_existing_{index + 1}", metadata=self.metadata)
         handler = _make_handler(self)
@@ -103,6 +136,17 @@ class OpenCodeFakeServer:
         return self.count("POST", "/session")
 
     @property
+    def prompt_posts(self) -> int:
+        return sum(
+            1 for item in self.records if item.method == "POST" and item.path.endswith("/prompt_async")
+        )
+
+    @property
+    def abort_calls(self) -> int:
+        with self._lock:
+            return self._abort_calls
+
+    @property
     def generated_ids(self) -> tuple[str, ...]:
         with self._lock:
             return tuple(self._created_ids)
@@ -111,9 +155,18 @@ class OpenCodeFakeServer:
         return sum(1 for item in self.records if item.method == method and item.path == path)
 
     def close(self) -> None:
+        self._sse_release.set()
         self._server.shutdown()
         self._server.server_close()
         self._thread.join(timeout=2)
+
+    def accepted_message_count(self, message_id: str) -> int:
+        with self._lock:
+            return sum(1 for stored in self._messages.values() if message_id in stored)
+
+    def plant_message(self, session_id: str, message_id: str, body: dict[str, object]) -> None:
+        with self._lock:
+            self._messages.setdefault(session_id, {})[message_id] = dict(body)
 
     def add_session(
         self,
@@ -187,10 +240,13 @@ class OpenCodeFakeServer:
             self._handle_create(handler, body)
             return
         if path == "/event":
-            self._write_sse(handler)
+            self._write_sse(handler, query)
             return
-        if path == "/session/status" and self.cut == "polling_lag":
-            time.sleep(0.05)
+        if path == "/session/status":
+            if self.cut == "polling_lag":
+                time.sleep(0.05)
+            self._write_json(handler, 200, self._status_map())
+            return
         if path == "/session" and handler.command == "GET":
             directory = (query.get("directory") or [None])[0]
             if directory != self.project_scope or self.hide_sessions:
@@ -200,17 +256,8 @@ class OpenCodeFakeServer:
                     payload = list(self._sessions.values())
             self._write_json(handler, 200, payload)
             return
-        if handler.command == "GET" and path.startswith("/session/") and path != "/session/status":
-            session_id = path.removeprefix("/session/")
-            if "/" in session_id:
-                self._write_json(handler, 200, {"ok": True})
-                return
-            with self._lock:
-                session = self._sessions.get(session_id)
-            if session is None:
-                self._write_json(handler, 404, {"error": "not found"})
-                return
-            self._write_json(handler, 200, session)
+        if path.startswith("/session/") and path != "/session/status":
+            self._handle_session_resource(handler, path, body)
             return
         payload = self._payload(path)
         self._write_json(handler, 200, payload)
@@ -269,8 +316,185 @@ class OpenCodeFakeServer:
         if path == "/session":
             return []
         if path == "/session/status":
-            return {}
+            return self._status_map()
         return {"ok": True}
+
+    def _handle_session_resource(
+        self,
+        handler: BaseHTTPRequestHandler,
+        path: str,
+        body: bytes,
+    ) -> None:
+        remainder = path.removeprefix("/session/")
+        parts = remainder.split("/")
+        session_id = parts[0]
+        if len(parts) == 1:
+            if handler.command != "GET":
+                self._write_json(handler, 405, {"error": "method not allowed"})
+                return
+            with self._lock:
+                session = self._sessions.get(session_id)
+            if session is None:
+                self._write_json(handler, 404, {"error": "not found"})
+                return
+            self._write_json(handler, 200, self._session_view(session))
+            return
+        if parts[-1] == "prompt_async" and handler.command == "POST":
+            self._handle_prompt(handler, session_id, body)
+            return
+        if parts[-1] == "abort" and handler.command == "POST":
+            self._handle_abort(handler, session_id)
+            return
+        if "message" in parts and handler.command == "GET":
+            self._handle_messages(handler, session_id, parts)
+            return
+        self._write_json(handler, 404, {"error": "not found"})
+
+    def _handle_prompt(self, handler: BaseHTTPRequestHandler, session_id: str, body: bytes) -> None:
+        try:
+            parsed = json.loads(body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            parsed = {}
+        if not isinstance(parsed, dict):
+            parsed = {}
+        with self._lock:
+            self.prompt_bodies.append(parsed)
+            cut = self.prompt_cut
+            self.prompt_cut = None
+        if cut == "before_prompt_post":
+            self._disconnect(handler)
+            return
+        admitted = self._admit_message(session_id, parsed)
+        if admitted == "conflict":
+            self._write_json(handler, 409, {"error": "prompt identity conflict"})
+            return
+        if cut == "after_admission_before_response":
+            self._disconnect(handler)
+            return
+        if cut == "after_lost_success_response":
+            self._write_raw(handler, 200, b"{")
+            return
+        self._write_raw(handler, 204, b"")
+
+    def _admit_message(self, session_id: str, parsed: dict[str, object]) -> str:
+        message_id = parsed.get("messageID")
+        if not isinstance(message_id, str) or not message_id:
+            return "conflict"
+        with self._lock:
+            stored = self._messages.setdefault(session_id, {})
+            existing = stored.get(message_id)
+            if existing is None:
+                stored[message_id] = dict(parsed)
+                return "created"
+            if json.dumps(existing, sort_keys=True) == json.dumps(parsed, sort_keys=True):
+                return "reuse"
+            return "conflict"
+
+    def _handle_abort(self, handler: BaseHTTPRequestHandler, session_id: str) -> None:
+        del session_id
+        with self._lock:
+            self._abort_calls += 1
+        self._write_json(handler, 200, True)
+
+    def _handle_messages(
+        self,
+        handler: BaseHTTPRequestHandler,
+        session_id: str,
+        parts: list[str],
+    ) -> None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            stored = dict(self._messages.get(session_id, {}))
+        if session is None:
+            self._write_json(handler, 404, {"error": "not found"})
+            return
+        records = self._message_records(session_id, stored)
+        if len(parts) >= 3 and parts[1] == "message":
+            message_id = parts[2]
+            for record in records:
+                info = record.get("info")
+                if isinstance(info, dict) and info.get("id") == message_id:
+                    self._write_json(handler, 200, record)
+                    return
+            planted = stored.get(message_id)
+            if planted is not None:
+                self._write_json(handler, 200, planted)
+                return
+            self._write_json(handler, 404, {"error": "not found"})
+            return
+        self._write_json(handler, 200, records)
+
+    def _message_records(
+        self,
+        session_id: str,
+        stored: dict[str, dict[str, object]],
+    ) -> list[dict[str, object]]:
+        records: list[dict[str, object]] = []
+        for message_id, body in stored.items():
+            records.append(
+                {
+                    "info": {"id": message_id, "role": "user"},
+                    "parts": body.get("parts", []),
+                    "admission": body,
+                }
+            )
+        records.extend(self._synthetic_terminal_messages(session_id))
+        return records
+
+    def _synthetic_terminal_messages(self, session_id: str) -> list[dict[str, object]]:
+        del session_id
+        mode = self.terminal_mode
+        if mode == "busy" or mode == "idle_only":
+            return []
+        if mode == "error":
+            return [
+                {
+                    "info": {
+                        "id": "msg_terminal_error",
+                        "role": "assistant",
+                        "error": {"name": "ProviderError", "message": "provider failed"},
+                    },
+                    "parts": [],
+                }
+            ]
+        if mode == "canceled":
+            return [
+                {
+                    "info": {
+                        "id": "msg_terminal_canceled",
+                        "role": "assistant",
+                        "error": {"name": "Aborted", "message": "session aborted"},
+                    },
+                    "parts": [],
+                }
+            ]
+        parts: list[dict[str, object]] = [{"type": "text", "text": '{"ok": true}'}]
+        if mode == "open_tools":
+            parts.append({"type": "tool", "state": {"status": "running"}})
+        return [
+            {
+                "info": {"id": "msg_terminal_result", "role": "assistant"},
+                "parts": parts,
+            }
+        ]
+
+    def _status_map(self) -> dict[str, object]:
+        with self._lock:
+            session_ids = list(self._sessions)
+            omit = self.omit_status
+            mode = self.terminal_mode
+        if omit:
+            return {}
+        status_type = "busy" if mode == "busy" else "idle"
+        return {session_id: {"type": status_type} for session_id in session_ids}
+
+    def _session_view(self, session: dict[str, object]) -> dict[str, object]:
+        view = dict(session)
+        if self.terminal_mode == "error":
+            view["error"] = {"name": "ProviderError", "message": "provider failed"}
+        if self.terminal_mode == "canceled":
+            view["aborted"] = True
+        return view
 
     def _write_json(self, handler: BaseHTTPRequestHandler, status: int, payload: object) -> None:
         self._write_raw(handler, status, json.dumps(payload).encode("utf-8"))
@@ -282,15 +506,52 @@ class OpenCodeFakeServer:
         handler.end_headers()
         handler.wfile.write(payload)
 
-    def _write_sse(self, handler: BaseHTTPRequestHandler) -> None:
+    def _write_sse(self, handler: BaseHTTPRequestHandler, query: dict[str, list[str]]) -> None:
+        cursor = (query.get("cursor") or [None])[0]
+        with self._lock:
+            self.sse_cursors.append(cursor)
+            mode = self.sse_mode
+            session_id = next(iter(self._sessions), "ses_unknown")
         handler.send_response(200)
         handler.send_header("Content-Type", "text/event-stream")
         handler.send_header("Cache-Control", "no-cache")
+        handler.send_header("Connection", "close")
         handler.end_headers()
-        if self.cut == "sse_gap":
-            handler.wfile.write(b": keepalive\n\n")
+        try:
+            if self.cut == "sse_gap" or mode == "gap":
+                handler.wfile.write(b": keepalive\n\n")
+            elif mode == "silent":
+                self._sse_release.wait(timeout=self.sse_silent_seconds)
+            elif mode == "malformed_identity":
+                handler.wfile.write(b'data: {"type":"session.idle","properties":{"sessionID":1}}\n\n')
+            elif mode == "wrong_session":
+                handler.wfile.write(
+                    b'data: {"type":"session.idle","properties":{"sessionID":"ses_other"}}\n\n'
+                )
+            elif mode == "cursor":
+                if not cursor:
+                    payload = (
+                        f'id: cursor-1\ndata: {{"type":"session.status",'
+                        f'"properties":{{"sessionID":{json.dumps(session_id)}}}}}\n\n'
+                    )
+                else:
+                    payload = (
+                        f'id: cursor-2\ndata: {{"type":"session.idle",'
+                        f'"properties":{{"sessionID":{json.dumps(session_id)}}}}}\n\n'
+                    )
+                handler.wfile.write(payload.encode("utf-8"))
+            elif mode == "fast_idle":
+                payload = (
+                    f'id: cursor-1\ndata: {{"type":"session.idle",'
+                    f'"properties":{{"sessionID":{json.dumps(session_id)}}}}}\n\n'
+                )
+                handler.wfile.write(payload.encode("utf-8"))
+            else:
+                handler.wfile.write(b"event: server.heartbeat\ndata: {}\n\n")
+            handler.wfile.flush()
+        except OSError:
             return
-        handler.wfile.write(b"event: server.heartbeat\ndata: {}\n\n")
+        handler.close_connection = True
 
 
 def _make_handler(fake: OpenCodeFakeServer) -> type[BaseHTTPRequestHandler]:

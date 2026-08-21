@@ -30,8 +30,7 @@ async def test_ambiguous_create_never_posts_twice(cut: str) -> None:
 async def test_fresh_execute_posts_one_metadata_create_without_caller_id() -> None:
     fixture = _open_code_fixture()
     try:
-        with pytest.raises(NotImplementedError, match="prompt"):
-            await fixture.handler.execute(fixture.request, fixture.context)
+        await fixture.handler.execute(fixture.request, fixture.context)
         assert fixture.fake.create_calls == 1
         body = fixture.fake.create_bodies[0]
         assert "id" not in body
@@ -80,8 +79,7 @@ async def test_ambiguous_create_rediscovers_exactly_one_later_match() -> None:
 async def test_formerly_bound_404_is_missing_not_create_authorization() -> None:
     fixture = _open_code_fixture()
     try:
-        with pytest.raises(NotImplementedError, match="prompt"):
-            await fixture.handler.execute(fixture.request, fixture.context)
+        await fixture.handler.execute(fixture.request, fixture.context)
         reference = OpenCodeActivityReference.model_validate(fixture.port.snapshot.reference)
         assert reference.session_id is not None
         fixture.fake.drop_session(reference.session_id)
@@ -96,8 +94,7 @@ async def test_formerly_bound_404_is_missing_not_create_authorization() -> None:
 async def test_foreign_metadata_after_bind_is_rejected() -> None:
     fixture = _open_code_fixture()
     try:
-        with pytest.raises(NotImplementedError, match="prompt"):
-            await fixture.handler.execute(fixture.request, fixture.context)
+        await fixture.handler.execute(fixture.request, fixture.context)
         reference = OpenCodeActivityReference.model_validate(fixture.port.snapshot.reference)
         assert reference.session_id is not None
         fixture.fake.set_session_metadata(
@@ -113,8 +110,7 @@ async def test_foreign_metadata_after_bind_is_rejected() -> None:
 async def test_parent_id_reconnect_is_rejected_when_bound_session_is_missing() -> None:
     fixture = _open_code_fixture()
     try:
-        with pytest.raises(NotImplementedError, match="prompt"):
-            await fixture.handler.execute(fixture.request, fixture.context)
+        await fixture.handler.execute(fixture.request, fixture.context)
         reference = OpenCodeActivityReference.model_validate(fixture.port.snapshot.reference)
         assert reference.session_id is not None
         fixture.fake.drop_session(reference.session_id)
@@ -136,8 +132,7 @@ async def test_parent_id_reconnect_is_rejected_when_bound_session_is_missing() -
 async def test_changed_request_identity_is_rejected() -> None:
     fixture = _open_code_fixture()
     try:
-        with pytest.raises(NotImplementedError, match="prompt"):
-            await fixture.handler.execute(fixture.request, fixture.context)
+        await fixture.handler.execute(fixture.request, fixture.context)
         drifted = task_request(attempt=2)
         result = await fixture.handler.reconcile(drifted, fixture.context, fixture.activity)
         assert result.status == "indeterminate"
@@ -149,8 +144,7 @@ async def test_changed_request_identity_is_rejected() -> None:
 async def test_changed_message_identity_is_rejected() -> None:
     fixture = _open_code_fixture()
     try:
-        with pytest.raises(NotImplementedError, match="prompt"):
-            await fixture.handler.execute(fixture.request, fixture.context)
+        await fixture.handler.execute(fixture.request, fixture.context)
         reference = OpenCodeActivityReference.model_validate(fixture.port.snapshot.reference)
         fixture.port.replace_bound_reference(
             {**reference.model_dump(mode="json"), "expected_message_id": "0" * 64}
