@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 import graph_engine.runtime.ledger as ledger_runtime
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
-from graph_engine.plugin_api import TaskFailure
+from graph_engine.plugin_api import AttemptWorkspaceIdentity, TaskFailure, TaskOutcome
 from graph_engine.runtime.checkpoint import load_checkpoint, write_checkpoint
 from graph_engine.runtime.events import (
     EffectApplyStarted,
@@ -30,12 +30,18 @@ from graph_engine.runtime.events import (
     NodeActivated,
     NodeCompleted,
     NodeInterrupted,
+    TaskActivityBound,
+    TaskActivityCancelRequested,
+    TaskActivityDispatchStarted,
+    TaskActivityPrepared,
+    TaskActivityTerminalObserved,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
     TaskAttemptSucceeded,
     TaskCommitPrepared,
     TaskLeaseAcquired,
+    TaskLeaseAdopted,
     TaskLeaseHeartbeat,
     TokenConsumed,
     TokenOffered,
@@ -1548,3 +1554,61 @@ def test_checkpoint_round_trips_effect_pending_projection(tmp_path: Path) -> Non
     assert loaded.projection == projection
     assert loaded.projection.activations[-1].attempts[-1].status == "effect_pending"
     assert tuple(effect.status for effect in loaded.projection.effects) == ("committed", "committed")
+
+
+def test_activity_events_round_trip_through_ledger_json(tmp_path: Path) -> None:
+    fingerprint = {"endpoint": "https://127.0.0.1:1", "executable": "runner"}
+    reference = {"id": "ext-1"}
+    outcome = TaskOutcome.succeeded({"answer": 42})
+    events = (
+        TaskActivityPrepared(
+            activity_id="activity-1",
+            task_id="task-1",
+            activation_id="act-1",
+            attempt=1,
+            request_digest="0" * 64,
+            workspace_identity=AttemptWorkspaceIdentity(
+                attempt_directory_id="attempt-1",
+                baseline_tree_id="a" * 64,
+                attempt_identity_digest="b" * 64,
+            ),
+        ),
+        TaskActivityDispatchStarted(
+            activity_id="activity-1",
+            ordinal=1,
+            dispatch_fingerprint=fingerprint,
+            dispatch_fingerprint_digest=canonical_digest(fingerprint),
+        ),
+        TaskActivityBound(
+            activity_id="activity-1",
+            reference=reference,
+            reference_digest=canonical_digest(reference),
+        ),
+        TaskActivityCancelRequested(
+            activity_id="activity-1",
+            reason="timeout",
+            requested_at=1.0,
+        ),
+        TaskActivityTerminalObserved(
+            activity_id="activity-1",
+            outcome=outcome,
+            outcome_digest=canonical_digest(outcome.model_dump(mode="json")),
+            candidate_tree_id="c" * 64,
+            write_set_digest="d" * 64,
+        ),
+        TaskLeaseAdopted(
+            activity_id="activity-1",
+            task_id="task-1",
+            activation_id="act-1",
+            attempt=1,
+            owner_id="worker-2",
+            acquired_at=2.0,
+            heartbeat_at=2.0,
+            expires_at=12.0,
+            reconciliation_evidence_digest="e" * 64,
+        ),
+    )
+    ledger = Ledger(tmp_path / "ledger")
+    ledger.append_batch(events, expected_next_seq=1)
+    restored = tuple(item.event for item in ledger.read_all())
+    assert restored == events

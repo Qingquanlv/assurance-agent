@@ -1,6 +1,7 @@
 ENGINE_API_VERSION = "1.0"
 
 from graph_engine.plugin_api import (  # noqa: E402
+    AttemptWorkspaceIdentity,
     CandidateFile,
     CandidateWriteSet,
     CommitValidator,
@@ -9,6 +10,9 @@ from graph_engine.plugin_api import (  # noqa: E402
     PluginProvider,
     RegistryPorts,
     ResourceClaims,
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
+    TaskActivitySnapshot,
     TaskContext,
     TaskFailure,
     TaskHandler,
@@ -17,6 +21,14 @@ from graph_engine.plugin_api import (  # noqa: E402
     TaskStatus,
     ValidationContext,
     ValidationResult,
+)
+from graph_engine.runtime.activity import (  # noqa: E402
+    AttemptWorkspaceLost,
+    TaskActivityConflict,
+    TaskActivityIndeterminate,
+    TaskActivityProtocolViolation,
+    TaskActivityRecoveryUnsupported,
+    TaskActivityReferenceInvalid,
 )
 from graph_engine.runtime.engine import (  # noqa: E402
     Engine,
@@ -39,6 +51,8 @@ __all__ = [
     "EngineConflictError",
     "EngineError",
     "EnginePublicationIndeterminate",
+    "AttemptWorkspaceIdentity",
+    "AttemptWorkspaceLost",
     "CandidateFile",
     "CandidateWriteSet",
     "CommitValidator",
@@ -50,6 +64,14 @@ __all__ = [
     "InvocationDrift",
     "RunResult",
     "ResourceClaims",
+    "TaskActivityCancelResult",
+    "TaskActivityConflict",
+    "TaskActivityIndeterminate",
+    "TaskActivityProtocolViolation",
+    "TaskActivityReconcileResult",
+    "TaskActivityRecoveryUnsupported",
+    "TaskActivityReferenceInvalid",
+    "TaskActivitySnapshot",
     "TaskContext",
     "TaskFailure",
     "TaskHandler",

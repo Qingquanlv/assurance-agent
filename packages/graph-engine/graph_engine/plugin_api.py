@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.utils import canonicalize_name
@@ -20,6 +20,7 @@ from pydantic import (
     model_validator,
 )
 
+from graph_engine.canonical import canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
@@ -40,7 +41,9 @@ FailureKind = Literal[
 TaskStatus = Literal["succeeded", "failed", "stopped"]
 
 _FROZEN_MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+_SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _Capability = TypeVar("_Capability")
+ActivityState = Literal["prepared", "dispatch_started", "bound", "terminal_observed"]
 
 
 class FrozenModel(BaseModel):
@@ -145,6 +148,199 @@ class TaskOutcome(FrozenModel):
     @classmethod
     def stopped(cls, reason: str, output: JSONValue = None) -> TaskOutcome:
         return cls(status="stopped", output=output, stop_reason=reason)
+
+
+def _canonical_json_digest(value: object) -> str:
+    return canonical_digest(cast("JSONValue", thaw_json(value)))
+
+
+def _require_digest_pair(value: object, digest: str | None, label: str) -> None:
+    if (value is None) != (digest is None):
+        raise ValueError(f"{label} and {label} digest must be present together")
+    if value is not None and digest != _canonical_json_digest(value):
+        raise ValueError(f"{label} digest is not canonical")
+
+
+def _require_terminal_observation(
+    *,
+    terminal: TaskOutcome | None,
+    outcome_digest: str | None,
+    candidate_tree_id: str | None,
+    write_set_digest: str | None,
+    required: bool,
+) -> None:
+    if not required:
+        if (
+            terminal is not None
+            or outcome_digest is not None
+            or candidate_tree_id is not None
+            or write_set_digest is not None
+        ):
+            raise ValueError("terminal outcome is allowed only for terminal_observed")
+        return
+    if terminal is None or outcome_digest is None:
+        raise ValueError("terminal activity requires a canonical outcome digest")
+    if outcome_digest != _canonical_json_digest(terminal.model_dump(mode="json")):
+        raise ValueError("terminal activity requires a canonical outcome digest")
+    succeeded = terminal.status == "succeeded"
+    if succeeded != (candidate_tree_id is not None) or succeeded != (write_set_digest is not None):
+        raise ValueError(
+            "candidate tree and write-set digests are required exactly for a succeeded terminal outcome"
+        )
+
+
+class AttemptWorkspaceIdentity(FrozenModel):
+    attempt_directory_id: str
+    baseline_tree_id: str = Field(pattern=_SHA256_PATTERN)
+    attempt_identity_digest: str = Field(pattern=_SHA256_PATTERN)
+    layout_schema_version: Literal["1"] = "1"
+
+    @field_validator("attempt_directory_id")
+    @classmethod
+    def _reject_host_path(cls, value: str) -> str:
+        windows_path = PureWindowsPath(value)
+        if (
+            not value
+            or "/" in value
+            or "\\" in value
+            or value in {".", ".."}
+            or windows_path.is_absolute()
+            or bool(windows_path.drive)
+        ):
+            raise ValueError("attempt directory id must not contain a host path")
+        return value
+
+
+class TaskActivitySnapshot(FrozenModel):
+    activity_id: str = Field(min_length=1)
+    request_digest: str = Field(pattern=_SHA256_PATTERN)
+    workspace_identity: AttemptWorkspaceIdentity
+    state: ActivityState
+    reference: JSONValue | None = None
+    reference_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    dispatch_fingerprint: JSONValue | None = None
+    dispatch_fingerprint_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    cancel_requested: bool = False
+    cancel_reason: str | None = None
+    terminal: TaskOutcome | None = None
+    outcome_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    terminal_proof_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    candidate_tree_id: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    write_set_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+
+    @field_validator("reference", "dispatch_fingerprint", mode="after")
+    @classmethod
+    def _freeze_json_fields(cls, value: JSONValue) -> Any:
+        return freeze_json(value)
+
+    @field_serializer("reference", "dispatch_fingerprint")
+    def _serialize_json_fields(self, value: object) -> Any:
+        return thaw_json(value)
+
+    @model_validator(mode="after")
+    def _validate_state_fields(self) -> TaskActivitySnapshot:
+        _require_digest_pair(self.reference, self.reference_digest, "reference")
+        _require_digest_pair(
+            self.dispatch_fingerprint,
+            self.dispatch_fingerprint_digest,
+            "dispatch fingerprint",
+        )
+        if self.cancel_requested:
+            if not self.cancel_reason:
+                raise ValueError("a non-empty cancel_reason is required when cancel is requested")
+        elif self.cancel_reason is not None:
+            raise ValueError("cancel_reason is allowed only when cancel is requested")
+        if self.state in {"prepared", "dispatch_started"} and self.reference is not None:
+            raise ValueError("reference is forbidden on states that do not bind one")
+        if self.state == "bound" and self.reference is None:
+            raise ValueError("bound activity requires a reference")
+        if self.state == "prepared":
+            if self.dispatch_fingerprint is not None:
+                raise ValueError("dispatch fingerprint is forbidden before dispatch")
+        elif self.state in {"dispatch_started", "bound"} and self.dispatch_fingerprint is None:
+            raise ValueError("dispatch fingerprint is required after dispatch starts")
+        terminal_required = self.state == "terminal_observed"
+        _require_terminal_observation(
+            terminal=self.terminal,
+            outcome_digest=self.outcome_digest,
+            candidate_tree_id=self.candidate_tree_id,
+            write_set_digest=self.write_set_digest,
+            required=terminal_required,
+        )
+        if not terminal_required:
+            if self.terminal_proof_digest is not None:
+                raise ValueError("terminal_proof_digest is allowed only for terminal_observed")
+            return self
+        if self.terminal is None:
+            raise ValueError("terminal activity requires a canonical outcome digest")
+        dispatched = self.dispatch_fingerprint is not None
+        bound = self.reference is not None
+        if self.terminal.status == "succeeded":
+            if not bound:
+                raise ValueError("succeeded terminal activity requires a bound reference")
+            if not dispatched:
+                raise ValueError("succeeded terminal activity requires a dispatch fingerprint")
+            if self.terminal_proof_digest is not None:
+                raise ValueError("terminal_proof_digest is forbidden for bound terminal activity")
+        elif dispatched and not bound:
+            if self.terminal_proof_digest is None:
+                raise ValueError("unbound terminal after dispatch_started requires terminal_proof_digest")
+        elif self.terminal_proof_digest is not None:
+            raise ValueError(
+                "terminal_proof_digest is allowed only for unbound terminal after dispatch_started"
+            )
+        if not dispatched and bound:
+            raise ValueError("reference is forbidden on states that do not bind one")
+        return self
+
+
+class TaskActivityReconcileResult(FrozenModel):
+    status: Literal["not_dispatched", "running", "terminal", "absent", "indeterminate"]
+    reference: JSONValue | None = None
+    outcome: TaskOutcome | None = None
+    proof: JSONValue | None = None
+    reason: str | None = None
+
+    @field_validator("reference", "proof", mode="after")
+    @classmethod
+    def _freeze_json_fields(cls, value: JSONValue) -> Any:
+        return freeze_json(value)
+
+    @field_serializer("reference", "proof")
+    def _serialize_json_fields(self, value: object) -> Any:
+        return thaw_json(value)
+
+    @model_validator(mode="after")
+    def _validate_status_fields(self) -> TaskActivityReconcileResult:
+        if (self.outcome is not None) != (self.status == "terminal"):
+            raise ValueError("outcome is required exactly when status is terminal")
+        if (self.proof is not None) != (self.status == "absent"):
+            raise ValueError("canonical proof is required exactly when status is absent")
+        if self.status in {"not_dispatched", "absent"} and self.reference is not None:
+            raise ValueError("reference is forbidden on states that do not bind one")
+        if self.status == "indeterminate":
+            if not self.reason:
+                raise ValueError("a non-empty reason is required when status is indeterminate")
+        elif self.reason is not None:
+            raise ValueError("reason is allowed only when status is indeterminate")
+        return self
+
+
+class TaskActivityCancelResult(FrozenModel):
+    status: Literal["acknowledged", "terminal", "indeterminate"]
+    outcome: TaskOutcome | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_status_fields(self) -> TaskActivityCancelResult:
+        if (self.outcome is not None) != (self.status == "terminal"):
+            raise ValueError("outcome is required exactly when status is terminal")
+        if self.status == "indeterminate":
+            if not self.reason:
+                raise ValueError("a non-empty reason is required when status is indeterminate")
+        elif self.reason is not None:
+            raise ValueError("reason is allowed only when status is indeterminate")
+        return self
 
 
 class EffectPolicy(FrozenModel):
@@ -616,6 +812,8 @@ def validate_contribution(descriptor: PluginDescriptor, contribution: PluginCont
 
 
 __all__ = [
+    "ActivityState",
+    "AttemptWorkspaceIdentity",
     "CapabilityBindingContribution",
     "CandidateFile",
     "CandidateWriteSet",
@@ -638,6 +836,9 @@ __all__ = [
     "ResourceContribution",
     "ResourceClaims",
     "SchemaContribution",
+    "TaskActivityCancelResult",
+    "TaskActivityReconcileResult",
+    "TaskActivitySnapshot",
     "TaskContext",
     "TaskFailure",
     "TaskHandler",

@@ -6,8 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
-from graph_engine.plugin_api import FailureKind, TaskFailure
-from graph_engine.runtime.frozen_json import FrozenJSONValue
+from graph_engine.plugin_api import AttemptWorkspaceIdentity, FailureKind, TaskFailure, TaskOutcome
+from graph_engine.runtime.frozen_json import FrozenJSONValue, thaw_json
 
 
 _STRICT_FROZEN = ConfigDict(
@@ -18,6 +18,12 @@ _STRICT_FROZEN = ConfigDict(
 )
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 MAX_EVENT_SEQUENCE = 9_999_999_999
+
+
+def _require_canonical_digest(value: object, digest: str, label: str) -> None:
+    expected = canonical_digest(cast(JSONValue, thaw_json(value)))
+    if digest != expected:
+        raise ValueError(f"{label} digest is not canonical")
 
 
 class RuntimeEventModel(BaseModel):
@@ -127,6 +133,101 @@ class TaskLeaseHeartbeat(RuntimeEventModel):
     def _validate_times(self) -> Self:
         if self.expires_at < self.heartbeat_at:
             raise ValueError("lease heartbeat expiry precedes heartbeat time")
+        return self
+
+
+class TaskActivityPrepared(RuntimeEventModel):
+    kind: Literal["task_activity_prepared"] = "task_activity_prepared"
+    activity_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    activation_id: str = Field(min_length=1)
+    attempt: int = Field(ge=1)
+    request_digest: str = Field(pattern=_SHA256_PATTERN)
+    workspace_identity: AttemptWorkspaceIdentity
+
+
+class TaskActivityDispatchStarted(RuntimeEventModel):
+    kind: Literal["task_activity_dispatch_started"] = "task_activity_dispatch_started"
+    activity_id: str = Field(min_length=1)
+    ordinal: Literal[1] = 1
+    dispatch_fingerprint: FrozenJSONValue
+    dispatch_fingerprint_digest: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_fingerprint_digest(self) -> Self:
+        _require_canonical_digest(
+            self.dispatch_fingerprint,
+            self.dispatch_fingerprint_digest,
+            "dispatch fingerprint",
+        )
+        return self
+
+
+class TaskActivityBound(RuntimeEventModel):
+    kind: Literal["task_activity_bound"] = "task_activity_bound"
+    activity_id: str = Field(min_length=1)
+    reference: FrozenJSONValue
+    reference_digest: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_reference_digest(self) -> Self:
+        _require_canonical_digest(self.reference, self.reference_digest, "reference")
+        return self
+
+
+class TaskActivityCancelRequested(RuntimeEventModel):
+    kind: Literal["task_activity_cancel_requested"] = "task_activity_cancel_requested"
+    activity_id: str = Field(min_length=1)
+    reason: str
+    requested_at: float
+
+    @model_validator(mode="after")
+    def _validate_reason(self) -> Self:
+        if not self.reason:
+            raise ValueError("cancel reason must not be empty")
+        return self
+
+
+class TaskActivityTerminalObserved(RuntimeEventModel):
+    kind: Literal["task_activity_terminal_observed"] = "task_activity_terminal_observed"
+    activity_id: str = Field(min_length=1)
+    outcome: TaskOutcome
+    outcome_digest: str = Field(pattern=_SHA256_PATTERN)
+    terminal_proof_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    candidate_tree_id: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    write_set_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_terminal_fields(self) -> Self:
+        expected = canonical_digest(cast(JSONValue, self.outcome.model_dump(mode="json")))
+        if self.outcome_digest != expected:
+            raise ValueError("terminal activity requires a canonical outcome digest")
+        succeeded = self.outcome.status == "succeeded"
+        has_candidate = self.candidate_tree_id is not None
+        has_write_set = self.write_set_digest is not None
+        if succeeded != has_candidate or succeeded != has_write_set:
+            raise ValueError(
+                "candidate tree and write-set digests are required exactly for a succeeded terminal outcome"
+            )
+        return self
+
+
+class TaskLeaseAdopted(RuntimeEventModel):
+    kind: Literal["task_lease_adopted"] = "task_lease_adopted"
+    activity_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    activation_id: str = Field(min_length=1)
+    attempt: int = Field(ge=1)
+    owner_id: str = Field(min_length=1)
+    acquired_at: float
+    heartbeat_at: float
+    expires_at: float
+    reconciliation_evidence_digest: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_times(self) -> Self:
+        if self.heartbeat_at != self.acquired_at or self.expires_at < self.heartbeat_at:
+            raise ValueError("lease adoption timestamps are inconsistent")
         return self
 
 
@@ -307,6 +408,12 @@ RuntimeEvent = Annotated[
     | TaskAttemptStarted
     | TaskLeaseAcquired
     | TaskLeaseHeartbeat
+    | TaskActivityPrepared
+    | TaskActivityDispatchStarted
+    | TaskActivityBound
+    | TaskActivityCancelRequested
+    | TaskActivityTerminalObserved
+    | TaskLeaseAdopted
     | TaskCommitPrepared
     | EffectIntentCommitted
     | EffectApplyStarted
@@ -379,12 +486,18 @@ __all__ = [
     "RuntimeEvent",
     "RuntimeFailure",
     "TaskFailure",
+    "TaskActivityBound",
+    "TaskActivityCancelRequested",
+    "TaskActivityDispatchStarted",
+    "TaskActivityPrepared",
+    "TaskActivityTerminalObserved",
     "TaskAttemptFailed",
     "TaskAttemptStarted",
     "TaskAttemptStopped",
     "TaskAttemptSucceeded",
     "TaskCommitPrepared",
     "TaskLeaseAcquired",
+    "TaskLeaseAdopted",
     "TaskLeaseHeartbeat",
     "TokenConsumed",
     "TokenOffered",
