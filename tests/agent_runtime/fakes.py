@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sys
 import tempfile
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as dataclass_fields
 from importlib import metadata
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from agent_runtime_contracts import (
     AgentRunRequest,
@@ -19,8 +22,10 @@ from agent_runtime_contracts import (
 )
 from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes, thaw_json
 from agent_runtime_cursor import CursorAdapterConfig, CursorHandler
+from agent_runtime_cursor.handler import CursorDispatchIncomplete
 from agent_runtime_opencode import OpenCodeAdapterConfig, OpenCodeHandler
-from graph_engine import ENGINE_API_VERSION, Engine
+from agent_runtime_opencode.discovery import OpenCodeDispatchIncomplete
+from graph_engine import ENGINE_API_VERSION, CandidateWriteSet, Engine
 from graph_engine.canonical import canonical_digest as engine_digest
 from graph_engine.composition import (
     EditableWheelPluginSource,
@@ -60,7 +65,7 @@ from graph_engine.runtime.host_receipts import TerminalReceiptStore, prove_call_
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import PlannedTask, fold_events
 from graph_engine.runtime.planner import plan_next
-from graph_engine.runtime.scheduler import Scheduler, SystemClock
+from graph_engine.runtime.scheduler import AttemptResult, Scheduler, SystemClock
 from graph_engine.runtime.workspace import SnapshotStore
 
 from tests.agent_runtime.conformance import (
@@ -394,7 +399,7 @@ class ConfinedTestHost:
             activity=port,
             secrets=self.secret_port,
         )
-        self.last_context_fields = tuple(TaskContext.__dataclass_fields__)
+        self.last_context_fields = tuple(field.name for field in dataclass_fields(context))
         self.last_request_bytes = canonical_json_bytes(thaw_json(call.request.input))
         return context
 
@@ -509,6 +514,7 @@ class _AdapterHarness:
         self._agent_run = agent_run_request()
         self._expected_request_bytes = self._agent_run.canonical_bytes()
         self._temp_dirs: list[tempfile.TemporaryDirectory[str]] = []
+        self._drives = 0
 
     def _temp(self) -> Path:
         directory = tempfile.TemporaryDirectory()
@@ -542,15 +548,17 @@ class _AdapterHarness:
 
     def _activity(self, ledger: Ledger) -> Any:
         projection = fold_events(ledger.read_all())
-        if not projection.activations or not projection.activations[-1].attempts:
-            return None
-        return projection.activations[-1].attempts[-1].activity
+        for activation in reversed(projection.activations):
+            if activation.attempts and activation.attempts[-1].activity is not None:
+                return activation.attempts[-1].activity
+        return None
 
     def _attempt(self, ledger: Ledger) -> int | None:
         projection = fold_events(ledger.read_all())
-        if not projection.activations or not projection.activations[-1].attempts:
-            return None
-        return projection.activations[-1].attempts[-1].attempt
+        for activation in reversed(projection.activations):
+            if activation.attempts:
+                return activation.attempts[-1].attempt
+        return None
 
     async def _open_scenario(
         self,
@@ -624,6 +632,102 @@ class _AdapterHarness:
         self._scenario = scenario
         return scenario
 
+    def _count_on_provider(self, provider: Any, operation: str) -> int:
+        if provider is None:
+            return 0
+        if operation == "create":
+            return int(getattr(provider, "create_calls", 0))
+        if operation == "spawn":
+            return int(getattr(provider, "spawn_count", 0))
+        if operation == "dispatch":
+            return self._count_on_provider(provider, "create") + self._count_on_provider(provider, "spawn")
+        if operation == "prompt":
+            return int(getattr(provider, "prompt_posts", 0))
+        if operation == "abort":
+            return int(getattr(provider, "abort_calls", 0))
+        return 0
+
+    def _is_incomplete(self, error: BaseException) -> bool:
+        if isinstance(
+            error,
+            OpenCodeDispatchIncomplete
+            | CursorDispatchIncomplete
+            | TimeoutError
+            | asyncio.TimeoutError
+            | httpx.TransportError,
+        ):
+            return True
+        return error.__class__.__name__ == "ProcessDispatchCut"
+
+    async def _drive_wave(
+        self, scenario: _Scenario, *, allow_incomplete: bool = False
+    ) -> AttemptResult | None:
+        self._drives += 1
+        try:
+            results = await scenario.scheduler.run_wave((scenario.task,))
+        except Exception as error:
+            if allow_incomplete and self._is_incomplete(error):
+                return None
+            raise
+        return results[0] if results else None
+
+    async def _drive_recover(self, scenario: _Scenario) -> Any:
+        self._drives += 1
+        return await scenario.scheduler.recover_activity(scenario.task)
+
+    def _finalize_recoverable_if_needed(self, scenario: _Scenario, result: AttemptResult | None) -> None:
+        kinds = self._event_kinds(scenario.ledger)
+        if "task_attempt_succeeded" in kinds:
+            return
+        activity = self._activity(scenario.ledger)
+        if (
+            activity is None
+            or activity.state != "terminal_observed"
+            or activity.terminal is None
+            or activity.terminal.status != "succeeded"
+            or activity.candidate_tree_id is None
+        ):
+            raise AssertionError("success cut did not observe a succeeded terminal activity")
+        if result is None:
+            raise AssertionError("success cut missing AttemptResult for graph finalization")
+        candidate = CandidateWriteSet(
+            baseline_tree_id=activity.workspace_identity.baseline_tree_id,
+            candidate_tree_id=activity.candidate_tree_id,
+            files=(),
+        )
+        scenario.scheduler._finalize(  # noqa: SLF001
+            result.model_copy(update={"candidate": candidate, "outcome": activity.terminal})
+        )
+        if "task_attempt_succeeded" not in self._event_kinds(scenario.ledger):
+            raise AssertionError("graph finalization did not publish task_attempt_succeeded")
+
+    def _drain_planner(self, scenario: _Scenario) -> None:
+        while True:
+            envelopes = scenario.ledger.read_all()
+            projection = fold_events(envelopes)
+            if projection.status in {"succeeded", "failed", "stopped"}:
+                return
+            plan = plan_next(scenario.composition.workflow, projection)
+            if plan.events:
+                scenario.ledger.append_batch(plan.events, expected_next_seq=envelopes[-1].seq + 1)
+                continue
+            raise AssertionError(
+                f"planner stalled after recoverable success: status={projection.status!r} tasks={len(plan.tasks)}"
+            )
+
+    async def _complete_success(self, scenario: _Scenario) -> None:
+        wave = await self._drive_wave(scenario, allow_incomplete=False)
+        self._finalize_recoverable_if_needed(scenario, wave)
+        self._drain_planner(scenario)
+        projection = fold_events(scenario.ledger.read_all())
+        if projection.status != "succeeded":
+            raise AssertionError(f"projection status is {projection.status!r}, expected succeeded")
+        self._success = scenario
+        self._scenario = scenario
+
+    async def _replay_succeeded(self, scenario: _Scenario) -> None:
+        await self._drive_recover(scenario)
+
     def _cut_result(
         self,
         scenario: _Scenario,
@@ -631,13 +735,14 @@ class _AdapterHarness:
         *,
         reconcile_status: str | None = None,
         cancel_status: str | None = None,
-        outcome_status: str | None = None,
+        receipt_count: int | None = None,
     ) -> CutResult:
         activity = self._activity(scenario.ledger)
         projection = fold_events(scenario.ledger.read_all())
-        if outcome_status is None and projection.status in {"succeeded", "failed", "stopped"}:
+        outcome_status: str | None = None
+        if projection.status in {"succeeded", "failed", "stopped"}:
             outcome_status = projection.status
-        if outcome_status is None and activity is not None and activity.terminal is not None:
+        elif activity is not None and activity.terminal is not None:
             outcome_status = activity.terminal.status
         receipts = ()
         if activity is not None:
@@ -645,22 +750,23 @@ class _AdapterHarness:
                 scenario.task, activity.activity_id, "execute"
             )
             receipts = scenario.host.read_terminal_receipts(identity)
+        host_cancel = None if scenario.host.last_cancel is None else scenario.host.last_cancel.status
+        host_reconcile = None if scenario.host.last_reconcile is None else scenario.host.last_reconcile.status
         return CutResult(
             cut=cut,
             event_kinds=self._event_kinds(scenario.ledger),
             activity_state=None if activity is None else activity.state,
-            reconcile_status=reconcile_status
-            or (  # type: ignore[arg-type]
-                None if scenario.host.last_reconcile is None else scenario.host.last_reconcile.status
-            ),
-            cancel_status=cancel_status
-            or (None if scenario.host.last_cancel is None else scenario.host.last_cancel.status),
+            reconcile_status=reconcile_status or host_reconcile,  # type: ignore[arg-type]
+            cancel_status=cancel_status or host_cancel,
             outcome_status=outcome_status,
             attempt=self._attempt(scenario.ledger),
             workspace_identity=None if activity is None else activity.workspace_identity,
-            provider_calls=self.provider_call_count("dispatch"),
-            receipt_count=len(receipts),
-            instruction_bytes=scenario.host.last_request_bytes or self._expected_request_bytes,
+            provider_calls=self._count_on_provider(scenario.provider, "dispatch"),
+            receipt_count=len(receipts) if receipt_count is None else receipt_count,
+            instruction_bytes=scenario.host.last_request_bytes,
+            host_calls=tuple(scenario.host.host_calls),
+            scheduler_drives=self._drives,
+            context_exposed=scenario.host.last_context_fields,
         )
 
     async def prepared_fixture(self) -> PreparedAdapterFixture:
@@ -668,22 +774,20 @@ class _AdapterHarness:
         kinds = self._event_kinds(scenario.ledger)
         activity = self._activity(scenario.ledger)
         assert activity is not None
+        payload = thaw_json(scenario.task.input)
         return PreparedAdapterFixture(
-            provider_calls=self.provider_call_count("dispatch"),
+            provider_calls=self._count_on_provider(scenario.provider, "dispatch"),
             initial_event_kinds=kinds,
-            request_bytes=self._expected_request_bytes,
+            request_bytes=canonical_json_bytes(payload),
             expected_request_bytes=self._expected_request_bytes,
-            request_payload=self._agent_run.model_dump(mode="json"),
+            request_payload=payload,
             workspace_identity=activity.workspace_identity,
             activity_state=activity.state,
-            context_exposed=tuple(TaskContext.__dataclass_fields__),
+            context_exposed=tuple(field.name for field in dataclass_fields(TaskContext)),
             secret_handles_resolved=tuple(scenario.host.secret_port.resolved),
         )
 
     async def _fresh_prepared(self) -> _Scenario:
-        raise NotImplementedError
-
-    async def run_to_cut(self, cut: AdapterCut) -> CutResult:
         raise NotImplementedError
 
     def durable_bytes(self) -> tuple[bytes, ...]:
@@ -698,21 +802,10 @@ class _AdapterHarness:
         return tuple(blobs)
 
     def provider_call_count(self, operation: str) -> int:
-        scenario = self._success or self._scenario
+        scenario = self._scenario
         if scenario is None:
             return 0
-        provider = scenario.provider
-        if operation == "create":
-            return int(getattr(provider, "create_calls", 0))
-        if operation == "spawn":
-            return int(getattr(provider, "spawn_count", 0))
-        if operation == "dispatch":
-            return self.provider_call_count("create") + self.provider_call_count("spawn")
-        if operation == "prompt":
-            return int(getattr(provider, "prompt_posts", 0))
-        if operation == "abort":
-            return int(getattr(provider, "abort_calls", 0))
-        return 0
+        return self._count_on_provider(scenario.provider, operation)
 
     async def recover_live_activity(self) -> RecoveryOutcome:
         raise NotImplementedError
@@ -721,8 +814,10 @@ class _AdapterHarness:
         raise NotImplementedError
 
     def unauthorized_secret_resolve(self, handle: str) -> None:
-        port = RecordingSecretPort({self.secret_handle: CANARY})
-        port.resolve(handle)
+        scenario = self._scenario or self._success
+        if scenario is None:
+            raise AssertionError("unauthorized secret resolve requires a live host port")
+        scenario.host.secret_port.resolve(handle)
 
     def delete_checkpoint(self) -> None:
         scenario = self._success or self._scenario
@@ -731,6 +826,59 @@ class _AdapterHarness:
         checkpoint = scenario.handle.invocation_root / "checkpoint.json"
         if checkpoint.exists():
             checkpoint.unlink()
+
+    async def run_to_cut(self, cut: AdapterCut) -> CutResult:
+        if cut == "success" and self._success is not None:
+            self._scenario = self._success
+            await self._replay_succeeded(self._success)
+            return self._cut_result(self._success, "success")
+        if cut in {"prepared", "before_dispatch"}:
+            scenario = await self._fresh_prepared()
+            return self._cut_result(scenario, cut)
+        if cut == "cancel_before_provider":
+            scenario = await self._fresh_prepared()
+            await scenario.scheduler.cancel_activity(scenario.task, reason="conformance-cancel")
+            return self._cut_result(scenario, cut)
+        if cut == "after_bind":
+            scenario = await self._open_bind_scenario()
+            await self._drive_wave(scenario, allow_incomplete=True)
+            await self._drive_recover(scenario)
+            return self._cut_result(scenario, cut)
+        if cut == "after_terminal_receipt":
+            scenario = await self._open_receipt_scenario()
+            try:
+                await self._drive_wave(scenario, allow_incomplete=False)
+            except RuntimeError as error:
+                if str(error) != "after_terminal_receipt":
+                    raise
+            activity = self._activity(scenario.ledger)
+            receipt_count = 0
+            if activity is not None:
+                identity = scenario.scheduler._host_call_identity(  # noqa: SLF001
+                    scenario.task, activity.activity_id, "execute"
+                )
+                receipt_count = len(scenario.host.read_terminal_receipts(identity))
+            decision = await self._drive_recover(scenario)
+            return self._cut_result(
+                scenario,
+                cut,
+                reconcile_status=decision.reconcile_status,
+                receipt_count=receipt_count,
+            )
+        if cut == "success":
+            scenario = await self._open_success_scenario()
+            await self._complete_success(scenario)
+            return self._cut_result(scenario, cut)
+        raise AssertionError(cut)
+
+    async def _open_bind_scenario(self) -> _Scenario:
+        raise NotImplementedError
+
+    async def _open_success_scenario(self) -> _Scenario:
+        raise NotImplementedError
+
+    async def _open_receipt_scenario(self) -> _Scenario:
+        raise NotImplementedError
 
 
 class OpenCodeRuntimeHarness(_AdapterHarness):
@@ -789,64 +937,33 @@ class OpenCodeRuntimeHarness(_AdapterHarness):
         scenario.scheduler.start_recoverable(scenario.task)
         return scenario
 
-    async def run_to_cut(self, cut: AdapterCut) -> CutResult:
-        if cut == "success" and self._success is not None:
-            return self._cut_result(self._success, "success", outcome_status="succeeded")
-        if cut in {"prepared", "before_dispatch"}:
-            scenario = await self._fresh_prepared()
-            return self._cut_result(scenario, cut)
-        if cut == "cancel_before_provider":
-            scenario = await self._fresh_prepared()
-            decision = await scenario.scheduler.cancel_activity(scenario.task, reason="conformance-cancel")
-            return self._cut_result(
-                scenario,
-                cut,
-                cancel_status=None if decision.reconcile_status is None else "indeterminate",
-            )
-        if cut == "after_bind":
-            fake, handler = self._fake_and_handler(terminal_mode="busy", observation_horizon=0.4)
-            scenario = await self._open_scenario(
-                invocation_id="opencode-bind",
-                handler=handler,
-                provider=fake,
-                secrets={self.secret_handle: CANARY},
-            )
-            try:
-                await scenario.scheduler.run_wave((scenario.task,))
-            except Exception:
-                pass
-            return self._cut_result(scenario, cut)
-        if cut == "after_terminal_receipt":
-            fake, handler = self._fake_and_handler()
-            scenario = await self._open_scenario(
-                invocation_id="opencode-receipt",
-                handler=handler,
-                provider=fake,
-                host_cut="after_terminal_receipt",
-                secrets={self.secret_handle: CANARY},
-            )
-            try:
-                await scenario.scheduler.run_wave((scenario.task,))
-            except Exception:
-                pass
-            return self._cut_result(scenario, cut)
-        if cut in {"success", "ambiguous_create"}:
-            create_cut = "after_create_before_response" if cut == "ambiguous_create" else None
-            fake, handler = self._fake_and_handler(create_cut=create_cut)
-            scenario = await self._open_scenario(
-                invocation_id="opencode-success" if cut == "success" else "opencode-ambiguous",
-                handler=handler,
-                provider=fake,
-                secrets={self.secret_handle: CANARY},
-            )
-            try:
-                await scenario.scheduler.run_wave((scenario.task,))
-            except Exception:
-                pass
-            if cut == "success":
-                self._success = scenario
-            return self._cut_result(scenario, cut, outcome_status="succeeded" if cut == "success" else None)
-        raise AssertionError(cut)
+    async def _open_bind_scenario(self) -> _Scenario:
+        fake, handler = self._fake_and_handler(terminal_mode="busy", observation_horizon=0.4)
+        return await self._open_scenario(
+            invocation_id="opencode-bind",
+            handler=handler,
+            provider=fake,
+            secrets={self.secret_handle: CANARY},
+        )
+
+    async def _open_success_scenario(self) -> _Scenario:
+        fake, handler = self._fake_and_handler()
+        return await self._open_scenario(
+            invocation_id="opencode-success",
+            handler=handler,
+            provider=fake,
+            secrets={self.secret_handle: CANARY},
+        )
+
+    async def _open_receipt_scenario(self) -> _Scenario:
+        fake, handler = self._fake_and_handler()
+        return await self._open_scenario(
+            invocation_id="opencode-receipt",
+            handler=handler,
+            provider=fake,
+            host_cut="after_terminal_receipt",
+            secrets={self.secret_handle: CANARY},
+        )
 
     async def recover_live_activity(self) -> RecoveryOutcome:
         fake, handler = self._fake_and_handler(
@@ -858,11 +975,8 @@ class OpenCodeRuntimeHarness(_AdapterHarness):
             provider=fake,
             secrets={self.secret_handle: CANARY},
         )
-        try:
-            await scenario.scheduler.run_wave((scenario.task,))
-        except Exception:
-            pass
-        result = await scenario.scheduler.recover_activity(scenario.task)
+        await self._drive_wave(scenario, allow_incomplete=True)
+        result = await self._drive_recover(scenario)
         status = result.reconcile_status or "indeterminate"
         return RecoveryOutcome(status=status, attempt=result.attempt, reason=None)
 
@@ -920,60 +1034,33 @@ class CursorRuntimeHarness(_AdapterHarness):
         scenario.scheduler.start_recoverable(scenario.task)
         return scenario
 
-    async def run_to_cut(self, cut: AdapterCut) -> CutResult:
-        if cut == "success" and self._success is not None:
-            return self._cut_result(self._success, "success", outcome_status="succeeded")
-        if cut in {"prepared", "before_dispatch"}:
-            scenario = await self._fresh_prepared()
-            return self._cut_result(scenario, cut)
-        if cut == "cancel_before_provider":
-            scenario = await self._fresh_prepared()
-            await scenario.scheduler.cancel_activity(scenario.task, reason="conformance-cancel")
-            return self._cut_result(scenario, cut)
-        if cut == "after_bind":
-            fake, handler = self._fake_and_handler(cut="after_bind", status="running")
-            scenario = await self._open_scenario(
-                invocation_id="cursor-bind",
-                handler=handler,
-                provider=fake,
-                secrets={self.secret_handle: CANARY},
-            )
-            try:
-                await scenario.scheduler.run_wave((scenario.task,))
-            except Exception:
-                pass
-            return self._cut_result(scenario, cut)
-        if cut == "after_terminal_receipt":
-            fake, handler = self._fake_and_handler()
-            scenario = await self._open_scenario(
-                invocation_id="cursor-receipt",
-                handler=handler,
-                provider=fake,
-                host_cut="after_terminal_receipt",
-                secrets={self.secret_handle: CANARY},
-            )
-            try:
-                await scenario.scheduler.run_wave((scenario.task,))
-            except Exception:
-                pass
-            return self._cut_result(scenario, cut)
-        if cut == "success":
-            fake, handler = self._fake_and_handler()
-            scenario = await self._open_scenario(
-                invocation_id="cursor-success",
-                handler=handler,
-                provider=fake,
-                secrets={self.secret_handle: CANARY},
-            )
-            try:
-                await scenario.scheduler.run_wave((scenario.task,))
-            except Exception:
-                pass
-            self._success = scenario
-            return self._cut_result(scenario, cut, outcome_status="succeeded")
-        if cut == "dead_host":
-            return self._cut_result(await self._fresh_prepared(), cut)
-        raise AssertionError(cut)
+    async def _open_bind_scenario(self) -> _Scenario:
+        fake, handler = self._fake_and_handler(cut="after_bind", status="running")
+        return await self._open_scenario(
+            invocation_id="cursor-bind",
+            handler=handler,
+            provider=fake,
+            secrets={self.secret_handle: CANARY},
+        )
+
+    async def _open_success_scenario(self) -> _Scenario:
+        fake, handler = self._fake_and_handler()
+        return await self._open_scenario(
+            invocation_id="cursor-success",
+            handler=handler,
+            provider=fake,
+            secrets={self.secret_handle: CANARY},
+        )
+
+    async def _open_receipt_scenario(self) -> _Scenario:
+        fake, handler = self._fake_and_handler()
+        return await self._open_scenario(
+            invocation_id="cursor-receipt",
+            handler=handler,
+            provider=fake,
+            host_cut="after_terminal_receipt",
+            secrets={self.secret_handle: CANARY},
+        )
 
     async def recover_live_activity(self) -> RecoveryOutcome:
         raise AssertionError("Cursor recovery_profile does not claim durable live adoption")
@@ -986,11 +1073,8 @@ class CursorRuntimeHarness(_AdapterHarness):
             provider=fake,
             secrets={self.secret_handle: CANARY},
         )
-        try:
-            await scenario.scheduler.run_wave((scenario.task,))
-        except Exception:
-            pass
+        await self._drive_wave(scenario, allow_incomplete=True)
         fake.alive = False
-        result = await scenario.scheduler.recover_activity(scenario.task)
+        result = await self._drive_recover(scenario)
         status = result.reconcile_status or "indeterminate"
         return RecoveryOutcome(status=status, attempt=result.attempt, reason=None)

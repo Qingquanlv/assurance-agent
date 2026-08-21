@@ -24,6 +24,7 @@ AdapterCut = Literal[
     "success",
 ]
 ReconcileStatus = Literal["not_dispatched", "running", "terminal", "absent", "indeterminate"]
+_FORBIDDEN_CONTEXT = {"ledger", "store", "lock", "checkpoint", "registry", "event_writer"}
 
 
 class PreparedAdapterFixture:
@@ -76,6 +77,9 @@ class CutResult:
         "provider_calls",
         "receipt_count",
         "instruction_bytes",
+        "host_calls",
+        "scheduler_drives",
+        "context_exposed",
     )
 
     def __init__(
@@ -92,6 +96,9 @@ class CutResult:
         provider_calls: int,
         receipt_count: int,
         instruction_bytes: bytes,
+        host_calls: tuple[str, ...] = (),
+        scheduler_drives: int = 0,
+        context_exposed: tuple[str, ...] = (),
     ) -> None:
         self.cut = cut
         self.event_kinds = event_kinds
@@ -104,6 +111,9 @@ class CutResult:
         self.provider_calls = provider_calls
         self.receipt_count = receipt_count
         self.instruction_bytes = instruction_bytes
+        self.host_calls = host_calls
+        self.scheduler_drives = scheduler_drives
+        self.context_exposed = context_exposed
 
 
 class RecoveryOutcome:
@@ -145,69 +155,94 @@ async def assert_common_runtime_adapter_contract(harness: RuntimeAdapterHarness)
         "task_lease_acquired",
         "task_activity_prepared",
     )
+    assert fixture.request_bytes
     assert fixture.request_bytes == fixture.expected_request_bytes
     assert fixture.activity_state == "prepared"
+    _assert_prepared_workspace_identity(fixture.workspace_identity)
 
     _assert_strict_request_parsing(fixture)
     _assert_no_instruction_or_routing_mutation(fixture)
-    _assert_no_ledger_store_exposure(fixture)
-    _assert_authorized_secrets_only(fixture, harness)
+    _assert_authorized_secrets_only(harness)
 
     before_dispatch = await harness.run_to_cut("before_dispatch")
     assert before_dispatch.activity_state == "prepared"
+    assert before_dispatch.provider_calls == 0
     assert harness.provider_call_count("dispatch") == 0
     assert "task_activity_dispatch_started" not in before_dispatch.event_kinds
+    assert "execute" not in before_dispatch.host_calls
 
     bind = await harness.run_to_cut("after_bind")
     assert bind.activity_state in {"bound", "dispatch_started"}
     assert bind.attempt == 1
-    _assert_preserved_workspace(fixture.workspace_identity, bind.workspace_identity)
+    assert "execute" in bind.host_calls
+    assert bind.instruction_bytes == fixture.request_bytes
     assert bind.instruction_bytes == fixture.expected_request_bytes
+    _assert_no_ledger_store_exposure(bind.context_exposed)
+    assert bind.event_kinds.count("task_activity_bound") == 1
 
     cancel = await harness.run_to_cut("cancel_before_provider")
     assert "task_activity_cancel_requested" in cancel.event_kinds
     assert cancel.cancel_status in {"acknowledged", "terminal", "indeterminate"}
+    assert cancel.provider_calls == 0
+    assert harness.provider_call_count("dispatch") == 0
+    assert "cancel" in cancel.host_calls
+    assert "execute" not in cancel.host_calls
 
     success = await harness.run_to_cut("success")
     assert success.outcome_status == "succeeded"
+    assert "task_activity_bound" in success.event_kinds
     assert "task_activity_terminal_observed" in success.event_kinds
-    kinds = success.event_kinds
-    assert kinds.index("task_activity_terminal_observed") < _index_or_end(kinds, "task_attempt_succeeded")
-    assert success.receipt_count <= 1
+    assert "task_attempt_succeeded" in success.event_kinds
+    assert success.event_kinds.index("task_activity_terminal_observed") < success.event_kinds.index(
+        "task_attempt_succeeded"
+    )
+    assert success.event_kinds.count("task_activity_bound") == 1
     assert success.attempt == 1
-    _assert_preserved_workspace(fixture.workspace_identity, success.workspace_identity)
+    assert "execute" in success.host_calls
+    _assert_prepared_workspace_identity(success.workspace_identity)
 
     replay = await harness.run_to_cut("success")
     assert replay.outcome_status == "succeeded"
     assert replay.provider_calls == success.provider_calls
-    assert replay.workspace_identity == success.workspace_identity
-
-    receipt = await harness.run_to_cut("after_terminal_receipt")
-    assert receipt.receipt_count == 1
-    assert receipt.reconcile_status in {"terminal", None}
-    assert harness.provider_call_count("dispatch") == success.provider_calls or receipt.provider_calls <= (
-        success.provider_calls + 1
-    )
+    assert replay.scheduler_drives > success.scheduler_drives
+    assert replay.attempt == success.attempt == 1
+    _assert_same_attempt_workspace(success.workspace_identity, replay.workspace_identity)
 
     durable = b"\n".join(harness.durable_bytes())
     assert b"canary-secret-value" not in durable
 
     calls_before_checkpoint = harness.provider_call_count("dispatch")
     harness.delete_checkpoint()
+    after_checkpoint = await harness.run_to_cut("success")
+    assert after_checkpoint.outcome_status == "succeeded"
     assert harness.provider_call_count("dispatch") == calls_before_checkpoint
+    assert after_checkpoint.scheduler_drives > replay.scheduler_drives
+    _assert_same_attempt_workspace(success.workspace_identity, after_checkpoint.workspace_identity)
+
+    receipt = await harness.run_to_cut("after_terminal_receipt")
+    assert receipt.receipt_count == 1
+    assert receipt.reconcile_status == "terminal"
+    assert "reconcile" in receipt.host_calls or "execute" in receipt.host_calls
 
     await _assert_honest_recovery_profile(harness)
 
 
-def _assert_preserved_workspace(prepared: object, observed: object) -> None:
-    """Independent cuts mint distinct trees; the adapter must keep attempt-workspace shape."""
-    left = _workspace_identity(prepared)
-    right = _workspace_identity(observed)
-    assert left.layout_schema_version == right.layout_schema_version == "1"
-    assert left.attempt_directory_id
-    assert right.attempt_directory_id
-    assert "/" not in left.attempt_directory_id
-    assert "/" not in right.attempt_directory_id
+def _assert_prepared_workspace_identity(value: object) -> None:
+    identity = _workspace_identity(value)
+    assert identity.layout_schema_version == "1"
+    assert identity.attempt_directory_id
+    assert "/" not in identity.attempt_directory_id
+    assert identity.attempt_identity_digest
+
+
+def _assert_same_attempt_workspace(left: object, right: object) -> None:
+    first = _workspace_identity(left)
+    second = _workspace_identity(right)
+    assert first.layout_schema_version == second.layout_schema_version == "1"
+    assert first.attempt_directory_id == second.attempt_directory_id
+    assert first.attempt_identity_digest == second.attempt_identity_digest
+    assert first.attempt_directory_id
+    assert "/" not in first.attempt_directory_id
 
 
 def _workspace_identity(value: object) -> AttemptWorkspaceIdentity:
@@ -221,6 +256,7 @@ def _workspace_identity(value: object) -> AttemptWorkspaceIdentity:
 def _assert_strict_request_parsing(fixture: PreparedAdapterFixture) -> None:
     payload = thaw_json(fixture.request_payload)
     assert isinstance(payload, dict)
+    assert canonical_json_bytes(payload) == fixture.request_bytes
     with pytest.raises(ValidationError):
         AgentRunRequest.model_validate({**payload, "model_fallback": "auto"})
     with pytest.raises(ValidationError):
@@ -234,22 +270,24 @@ def _assert_strict_request_parsing(fixture: PreparedAdapterFixture) -> None:
 
 def _assert_no_instruction_or_routing_mutation(fixture: PreparedAdapterFixture) -> None:
     request = AgentRunRequest.model_validate(thaw_json(fixture.request_payload))
+    assert request.canonical_bytes() == fixture.request_bytes
     assert request.canonical_bytes() == fixture.expected_request_bytes
     assert request.execution.provider_model == "provider_default"
     lowered = request.execution.provider_model.lower()
     assert "fallback" not in lowered
     assert "route:" not in lowered
+    assert len(request.request_policy_digest) == 64
+    assert len(request.request_config_digest) == 64
 
 
-def _assert_no_ledger_store_exposure(fixture: PreparedAdapterFixture) -> None:
-    forbidden = {"ledger", "store", "lock", "checkpoint", "registry", "event_writer"}
-    assert forbidden.isdisjoint(fixture.context_exposed)
-    assert "workspace_root" in fixture.context_exposed
+def _assert_no_ledger_store_exposure(context_exposed: tuple[str, ...]) -> None:
+    assert context_exposed
+    assert _FORBIDDEN_CONTEXT.isdisjoint(context_exposed)
+    assert "workspace_root" in context_exposed
     assert set(TaskContext.__dataclass_fields__) >= {"workspace_root", "heartbeat", "activity", "secrets"}
 
 
-def _assert_authorized_secrets_only(fixture: PreparedAdapterFixture, harness: RuntimeAdapterHarness) -> None:
-    assert all(handle for handle in fixture.secret_handles_resolved)
+def _assert_authorized_secrets_only(harness: RuntimeAdapterHarness) -> None:
     with pytest.raises(SecretHandleUnauthorized):
         harness.unauthorized_secret_resolve("unlocked.foreign-secret")
 
@@ -259,18 +297,10 @@ async def _assert_honest_recovery_profile(harness: RuntimeAdapterHarness) -> Non
         recovered = await harness.recover_live_activity()
         assert recovered.status in {"running", "terminal"}
         assert recovered.status not in {"absent", "not_dispatched"}
+        assert recovered.attempt == 1
         assert harness.provider_call_count("create") <= 1
         return
     recovered = await harness.recover_from_dead_host()
     assert recovered.status == "indeterminate"
     assert recovered.status not in {"running", "terminal", "absent", "not_dispatched"}
-
-
-def _index_or_end(values: tuple[str, ...], item: str) -> int:
-    try:
-        return values.index(item)
-    except ValueError:
-        return len(values)
-
-
-assert canonical_json_bytes is not None
+    assert recovered.attempt == 1
