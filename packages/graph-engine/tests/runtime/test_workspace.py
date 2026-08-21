@@ -9,6 +9,7 @@ import pytest
 
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import (
+    AttemptWorkspaceIdentity,
     CandidateFile,
     CandidateWriteSet,
     CommitValidator,
@@ -16,6 +17,8 @@ from graph_engine.plugin_api import (
     ValidationContext,
     ValidationResult,
 )
+from graph_engine.runtime.activity import AttemptWorkspaceLost
+from graph_engine.runtime.models import attempt_directory_id, attempt_identity_digest
 from graph_engine.runtime.workspace import (
     HeadPublicationIndeterminate,
     SnapshotStore,
@@ -1551,3 +1554,58 @@ def test_recover_head_transaction_rejects_tampered_event_range_digest(tmp_path: 
 
     with pytest.raises(WorkspaceViolation, match="authentication"):
         store.recover_head_transaction(candidate.candidate_tree_id)
+
+
+def test_create_attempt_identity_binds_authoritative_head(tmp_path: Path) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"seed.txt": b"seed"})
+    head = store.head_tree_id()
+    workspace, identity = store.create_attempt_identity(
+        invocation_id="inv-1",
+        task_id="task-1",
+        activation_id="act-1",
+        attempt=1,
+    )
+    assert identity.baseline_tree_id == head
+    assert identity.attempt_directory_id == attempt_directory_id(
+        invocation_id="inv-1",
+        task_id="task-1",
+        activation_id="act-1",
+        attempt=1,
+    )
+    assert identity.attempt_identity_digest == attempt_identity_digest(
+        invocation_id="inv-1",
+        task_id="task-1",
+        activation_id="act-1",
+        attempt=1,
+    )
+    assert identity.layout_schema_version == "1"
+    assert workspace.attempt_id == identity.attempt_directory_id
+    dumped = identity.model_dump(mode="json")
+    assert str(workspace.root) not in identity.model_dump_json()
+    assert all("/" not in str(value) and "\\" not in str(value) for value in dumped.values())
+    reopened = store.open_attempt(identity)
+    assert reopened.baseline_tree_id == head
+    assert store.create_attempt_calls == 1
+
+
+def test_open_attempt_does_not_create_a_missing_directory(tmp_path: Path) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"seed.txt": b"seed"})
+    identity = AttemptWorkspaceIdentity(
+        attempt_directory_id=attempt_directory_id(
+            invocation_id="inv-1",
+            task_id="task-1",
+            activation_id="act-1",
+            attempt=1,
+        ),
+        baseline_tree_id=store.head_tree_id(),
+        attempt_identity_digest=attempt_identity_digest(
+            invocation_id="inv-1",
+            task_id="task-1",
+            activation_id="act-1",
+            attempt=1,
+        ),
+    )
+    with pytest.raises(AttemptWorkspaceLost):
+        store.open_attempt(identity)
+    assert store.create_attempt_calls == 0
+    assert not (store.root / "attempts" / identity.attempt_directory_id).exists()

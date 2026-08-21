@@ -45,6 +45,7 @@ class Ledger:
     def __init__(self, root: Path, *, _parent_fd: int | None = None) -> None:
         self.root = root
         self._parent_fd = _parent_fd
+        self.boundaries: list[str] = []
 
     @classmethod
     def at(cls, parent_fd: int, name: str, *, display_root: Path) -> Ledger:
@@ -127,6 +128,7 @@ class Ledger:
             os.unlink(pending, dir_fd=root_fd)
             pending = None
             os.fsync(root_fd)
+            self.boundaries.append("batch_append")
             return envelopes
         finally:
             if pending is not None:

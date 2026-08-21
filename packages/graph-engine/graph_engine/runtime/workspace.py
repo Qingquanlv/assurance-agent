@@ -16,6 +16,7 @@ from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_b
 from graph_engine.errors import GraphEngineError
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
+    AttemptWorkspaceIdentity,
     CandidateFile,
     CandidateWriteSet,
     CommitValidator,
@@ -23,7 +24,13 @@ from graph_engine.plugin_api import (
     ValidationContext,
     ValidationResult,
 )
-from graph_engine.runtime.models import CommitResult, ValidationReceipt
+from graph_engine.runtime.activity import AttemptWorkspaceLost
+from graph_engine.runtime.models import (
+    CommitResult,
+    ValidationReceipt,
+    attempt_directory_id,
+    attempt_identity_digest,
+)
 
 _TREE_ID_LENGTH = 64
 _COPY_BUFFER_SIZE = 1024 * 1024
@@ -33,6 +40,7 @@ _FILE_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 _LAYOUT = ".layout.json"
 _HEAD = "HEAD.json"
 _HEAD_TRANSACTION = ".HEAD-transaction.json"
+_ATTEMPT_AUTH = ".attempt-auth"
 NamedValidator = tuple[str, CommitValidator]
 Identity = tuple[int, int]
 EntryState = tuple[int, int, int, int, int, int, int]
@@ -571,6 +579,26 @@ class AttemptWorkspace:
     def discard(self) -> None:
         self._store._discard_attempt(self.attempt_id)
 
+    def snapshot_identity(
+        self,
+        *,
+        invocation_id: str,
+        task_id: str,
+        activation_id: str,
+        attempt: int,
+    ) -> AttemptWorkspaceIdentity:
+        expected_directory_id = attempt_directory_id(invocation_id, task_id, activation_id, attempt)
+        if self.attempt_id != expected_directory_id:
+            raise WorkspaceViolation("attempt directory id does not match identity tuple")
+        return AttemptWorkspaceIdentity(
+            attempt_directory_id=self.attempt_id,
+            baseline_tree_id=self.baseline_tree_id,
+            attempt_identity_digest=attempt_identity_digest(invocation_id, task_id, activation_id, attempt),
+        )
+
+    def authenticate_identity(self, identity: AttemptWorkspaceIdentity) -> None:
+        self._store._authenticate_attempt_identity(self, identity)
+
 
 class SnapshotStore:
     """Content-addressed snapshots rooted below a trusted parent directory.
@@ -588,6 +616,8 @@ class SnapshotStore:
         self.root = Path(root).absolute()
         self._parent_fd = _parent_fd
         self._closed = False
+        self.boundaries: list[str] = []
+        self.create_attempt_calls = 0
 
     @classmethod
     def at(cls, parent_fd: int, name: str, *, display_root: Path) -> SnapshotStore:
@@ -1407,6 +1437,259 @@ class SnapshotStore:
     def create_attempt(self, attempt_id: str) -> AttemptWorkspace:
         return self.create_attempts((attempt_id,))[0]
 
+    def create_attempt_identity(
+        self,
+        *,
+        invocation_id: str,
+        task_id: str,
+        activation_id: str,
+        attempt: int,
+    ) -> tuple[AttemptWorkspace, AttemptWorkspaceIdentity]:
+        directory_id = attempt_directory_id(invocation_id, task_id, activation_id, attempt)
+        workspace = self._create_attempt(directory_id)
+        try:
+            identity = workspace.snapshot_identity(
+                invocation_id=invocation_id,
+                task_id=task_id,
+                activation_id=activation_id,
+                attempt=attempt,
+            )
+            self._record_attempt_identity(identity)
+        except BaseException:
+            workspace.discard()
+            raise
+        self.create_attempt_calls += 1
+        self.boundaries.append("attempt_installed")
+        return workspace, identity
+
+    def open_attempt(self, identity: AttemptWorkspaceIdentity) -> AttemptWorkspace:
+        try:
+            workspace = self._open_attempt(identity.attempt_directory_id)
+            workspace.authenticate_identity(identity)
+            return workspace
+        except AttemptWorkspaceLost:
+            raise
+        except (OSError, WorkspaceViolation, json.JSONDecodeError, UnicodeError, KeyError) as error:
+            raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated") from error
+
+    def _create_attempt(self, attempt_directory_id: str) -> AttemptWorkspace:
+        validated = _validate_attempt_id(attempt_directory_id)
+        with self._opened_layout(lock=True) as (_root_fd, trees_fd, attempts_fd, _lock_fd):
+            document, baseline = self._head_tree(_root_fd, trees_fd)
+            created = False
+            try:
+                try:
+                    os.mkdir(validated, mode=0o700, dir_fd=attempts_fd)
+                except FileExistsError as error:
+                    raise WorkspaceViolation(f"attempt already exists: {validated}") from error
+                created = True
+                destination_fd, _ = _open_directory_at(attempts_fd, validated, "attempt directory")
+                try:
+                    copied = _copy_tree_fd(
+                        baseline.descriptor,
+                        destination_fd,
+                        source_immutable=True,
+                        seal_destination=False,
+                    )
+                    if copied != baseline.manifest:
+                        raise WorkspaceViolation("attempt copy does not match its baseline")
+                finally:
+                    os.close(destination_fd)
+                os.fsync(attempts_fd)
+                return AttemptWorkspace(self, validated, document["tree_id"])
+            except BaseException:
+                if created:
+                    _remove_entry_at(attempts_fd, validated)
+                    os.fsync(attempts_fd)
+                raise
+            finally:
+                os.close(baseline.descriptor)
+
+    def _open_attempt(self, attempt_directory_id: str) -> AttemptWorkspace:
+        validated = _validate_attempt_id(attempt_directory_id)
+        with self._opened_layout() as (root_fd, _trees_fd, attempts_fd, _lock_fd):
+            record = self._read_attempt_auth_record(root_fd, validated)
+            try:
+                descriptor, _opened = _open_directory_at(attempts_fd, validated, "attempt directory")
+            except (OSError, WorkspaceViolation) as error:
+                raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated") from error
+            os.close(descriptor)
+            return AttemptWorkspace(self, validated, record["baseline_tree_id"])
+
+    def _record_attempt_identity(self, identity: AttemptWorkspaceIdentity) -> None:
+        with self._opened_layout(lock=True) as (root_fd, trees_fd, attempts_fd, _lock_fd):
+            directory_stat = os.stat(
+                identity.attempt_directory_id,
+                dir_fd=attempts_fd,
+                follow_symlinks=False,
+            )
+            if stat.S_ISLNK(directory_stat.st_mode) or not stat.S_ISDIR(directory_stat.st_mode):
+                raise WorkspaceViolation("attempt identity must bind a no-follow directory")
+            tree = self._open_tree(trees_fd, identity.baseline_tree_id)
+            try:
+                tree_identity = tree.identity
+            finally:
+                os.close(tree.descriptor)
+            payload: dict[str, JSONValue] = {
+                "version": 1,
+                "attempt_directory_id": identity.attempt_directory_id,
+                "baseline_tree_id": identity.baseline_tree_id,
+                "attempt_identity_digest": identity.attempt_identity_digest,
+                "layout_schema_version": identity.layout_schema_version,
+                "dir_dev": directory_stat.st_dev,
+                "dir_ino": directory_stat.st_ino,
+                "dir_mode": stat.S_IFMT(directory_stat.st_mode),
+                "dir_nlink": directory_stat.st_nlink,
+                "tree_dev": tree_identity[0],
+                "tree_ino": tree_identity[1],
+            }
+            document: dict[str, JSONValue] = {**payload, "digest": canonical_digest(payload)}
+            auth_fd = self._ensure_attempt_auth_dir(root_fd)
+            try:
+                name = f"{identity.attempt_directory_id}.json"
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                descriptor = os.open(name, flags, 0o600, dir_fd=auth_fd)
+                try:
+                    _write_all(descriptor, canonical_json_bytes(document))
+                    os.fsync(descriptor)
+                    os.fchmod(descriptor, 0o400)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+                os.fsync(auth_fd)
+            finally:
+                os.close(auth_fd)
+
+    def _ensure_attempt_auth_dir(self, root_fd: int) -> int:
+        if not _entry_exists(root_fd, _ATTEMPT_AUTH):
+            os.mkdir(_ATTEMPT_AUTH, mode=0o700, dir_fd=root_fd)
+            os.fsync(root_fd)
+        descriptor, _stat = _open_directory_at(root_fd, _ATTEMPT_AUTH, "attempt identity directory")
+        return descriptor
+
+    def _read_attempt_auth_record(self, root_fd: int, attempt_directory_id: str) -> dict[str, Any]:
+        if not _entry_exists(root_fd, _ATTEMPT_AUTH):
+            raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated")
+        auth_fd, _stat = _open_directory_at(root_fd, _ATTEMPT_AUTH, "attempt identity directory")
+        try:
+            name = f"{attempt_directory_id}.json"
+            descriptor, file_stat = _open_file_at(auth_fd, name, name, immutable=True)
+            try:
+                raw = os.read(descriptor, 16384)
+                if os.read(descriptor, 1):
+                    raise WorkspaceViolation("attempt identity record is too large")
+                document = json.loads(raw.decode("utf-8"))
+                _assert_open_file_stable(
+                    descriptor,
+                    auth_fd,
+                    name,
+                    file_stat,
+                    "attempt identity record",
+                    immutable=True,
+                )
+            finally:
+                os.close(descriptor)
+        except (OSError, WorkspaceViolation, UnicodeError, json.JSONDecodeError) as error:
+            raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated") from error
+        finally:
+            os.close(auth_fd)
+        required = {
+            "version",
+            "attempt_directory_id",
+            "baseline_tree_id",
+            "attempt_identity_digest",
+            "layout_schema_version",
+            "dir_dev",
+            "dir_ino",
+            "dir_mode",
+            "dir_nlink",
+            "tree_dev",
+            "tree_ino",
+            "digest",
+        }
+        if not isinstance(document, dict) or set(document) != required:
+            raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated")
+        payload: dict[str, JSONValue] = {
+            "version": document["version"],
+            "attempt_directory_id": document["attempt_directory_id"],
+            "baseline_tree_id": document["baseline_tree_id"],
+            "attempt_identity_digest": document["attempt_identity_digest"],
+            "layout_schema_version": document["layout_schema_version"],
+            "dir_dev": document["dir_dev"],
+            "dir_ino": document["dir_ino"],
+            "dir_mode": document["dir_mode"],
+            "dir_nlink": document["dir_nlink"],
+            "tree_dev": document["tree_dev"],
+            "tree_ino": document["tree_ino"],
+        }
+        if (
+            document["version"] != 1
+            or document["digest"] != canonical_digest(payload)
+            or document["attempt_directory_id"] != attempt_directory_id
+        ):
+            raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated")
+        return document
+
+    def _remove_attempt_auth_record(self, root_fd: int, attempt_directory_id: str) -> None:
+        if not _entry_exists(root_fd, _ATTEMPT_AUTH):
+            return
+        auth_fd, _stat = _open_directory_at(root_fd, _ATTEMPT_AUTH, "attempt identity directory")
+        try:
+            try:
+                os.unlink(f"{attempt_directory_id}.json", dir_fd=auth_fd)
+            except FileNotFoundError:
+                return
+            os.fsync(auth_fd)
+        finally:
+            os.close(auth_fd)
+
+    def _authenticate_attempt_identity(
+        self,
+        workspace: AttemptWorkspace,
+        identity: AttemptWorkspaceIdentity,
+    ) -> None:
+        try:
+            with self._opened_layout() as (root_fd, trees_fd, attempts_fd, _lock_fd):
+                record = self._read_attempt_auth_record(root_fd, workspace.attempt_id)
+                if (
+                    identity.attempt_directory_id != workspace.attempt_id
+                    or identity.attempt_directory_id != record["attempt_directory_id"]
+                    or identity.baseline_tree_id != workspace.baseline_tree_id
+                    or identity.baseline_tree_id != record["baseline_tree_id"]
+                    or identity.attempt_identity_digest != record["attempt_identity_digest"]
+                    or identity.layout_schema_version != record["layout_schema_version"]
+                ):
+                    raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated")
+                directory_stat = os.stat(
+                    workspace.attempt_id,
+                    dir_fd=attempts_fd,
+                    follow_symlinks=False,
+                )
+                if (
+                    stat.S_ISLNK(directory_stat.st_mode)
+                    or not stat.S_ISDIR(directory_stat.st_mode)
+                    or stat.S_IFMT(directory_stat.st_mode) != record["dir_mode"]
+                    or _identity(directory_stat) != (record["dir_dev"], record["dir_ino"])
+                    or directory_stat.st_nlink < 2
+                ):
+                    raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated")
+                descriptor, opened = _open_directory_at(
+                    attempts_fd, workspace.attempt_id, "attempt directory"
+                )
+                os.close(descriptor)
+                if _identity(opened) != (record["dir_dev"], record["dir_ino"]):
+                    raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated")
+                tree = self._open_tree(trees_fd, identity.baseline_tree_id)
+                try:
+                    if tree.identity != (record["tree_dev"], record["tree_ino"]):
+                        raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated")
+                finally:
+                    os.close(tree.descriptor)
+        except AttemptWorkspaceLost:
+            raise
+        except (OSError, WorkspaceViolation, json.JSONDecodeError, UnicodeError, KeyError) as error:
+            raise AttemptWorkspaceLost("prepared attempt workspace cannot be authenticated") from error
+
     def reset_attempt(self, attempt_id: str) -> AttemptWorkspace:
         """Recreate one deterministic attempt from authoritative HEAD after process loss."""
         validated = _validate_attempt_id(attempt_id)
@@ -1441,12 +1724,13 @@ class SnapshotStore:
                 os.close(baseline.descriptor)
 
     def _discard_attempt(self, attempt_id: str) -> None:
-        with self._opened_layout(lock=True) as (_root_fd, _trees_fd, attempts_fd, _lock_fd):
+        with self._opened_layout(lock=True) as (root_fd, _trees_fd, attempts_fd, _lock_fd):
             try:
                 _remove_entry_at(attempts_fd, attempt_id)
                 os.fsync(attempts_fd)
             except FileNotFoundError:
-                return
+                pass
+            self._remove_attempt_auth_record(root_fd, attempt_id)
 
     def _validate_validators(
         self,

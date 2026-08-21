@@ -47,6 +47,48 @@ class ProjectionError(GraphEngineError):
     """Raised when an event stream describes an impossible runtime transition."""
 
 
+def attempt_identity_digest(
+    invocation_id: str,
+    task_id: str,
+    activation_id: str,
+    attempt: int,
+) -> str:
+    return canonical_digest(
+        {
+            "activation_id": activation_id,
+            "attempt": attempt,
+            "invocation_id": invocation_id,
+            "task_id": task_id,
+        }
+    )
+
+
+def attempt_directory_id(
+    invocation_id: str,
+    task_id: str,
+    activation_id: str,
+    attempt: int,
+) -> str:
+    return attempt_identity_digest(invocation_id, task_id, activation_id, attempt)
+
+
+def activity_id_for_attempt(
+    invocation_id: str,
+    task_id: str,
+    activation_id: str,
+    attempt: int,
+) -> str:
+    return canonical_digest(
+        {
+            "activation_id": activation_id,
+            "attempt": attempt,
+            "invocation_id": invocation_id,
+            "kind": "activity",
+            "task_id": task_id,
+        }
+    )
+
+
 _FROZEN = ConfigDict(frozen=True, extra="forbid", strict=True, allow_inf_nan=False)
 
 
@@ -1674,6 +1716,9 @@ def _replace_activation(
 
 __all__ = [
     "ActivationRecord",
+    "activity_id_for_attempt",
+    "attempt_directory_id",
+    "attempt_identity_digest",
     "AttemptRecord",
     "AttemptStatus",
     "CommitResult",

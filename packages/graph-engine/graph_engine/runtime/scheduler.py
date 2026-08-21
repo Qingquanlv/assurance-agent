@@ -15,18 +15,20 @@ from graph_engine.composition.models import EffectRegistry, SchemaRegistry
 from graph_engine.errors import GraphEngineError
 from graph_engine.identifiers import canonical_id
 from graph_engine.plugin_api import (
+    AttemptWorkspaceIdentity,
     CandidateWriteSet,
     CommitValidator,
     EffectIntent,
     FailureKind,
     InvocationMetadata,
+    RecoverableTaskHandler,
     ResourceClaims,
     TaskHandler,
     TaskOutcome,
     TaskRequest,
     ValidationContext,
 )
-from graph_engine.runtime.activity import LedgerTaskActivityPort
+from graph_engine.runtime.activity import LedgerTaskActivityPort, TaskActivityRecoveryUnsupported
 from graph_engine.runtime.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
@@ -40,6 +42,7 @@ from graph_engine.runtime.events import (
     EventEnvelope,
     HeadAdvanced,
     RuntimeEvent,
+    TaskActivityPrepared,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
@@ -55,7 +58,13 @@ from graph_engine.runtime.ledger import (
     LedgerPublicationIndeterminate,
     append_validated_batch,
 )
-from graph_engine.runtime.models import CommitResult, PlannedTask, ProjectionError, fold_events
+from graph_engine.runtime.models import (
+    CommitResult,
+    PlannedTask,
+    ProjectionError,
+    activity_id_for_attempt,
+    fold_events,
+)
 from graph_engine.runtime.workspace import (
     AttemptWorkspace,
     FinalizationRolledBack,
@@ -247,10 +256,73 @@ class Scheduler:
             transition_guard=self._guard_transition,
         )
 
+    def start_recoverable(
+        self, task: PlannedTask
+    ) -> tuple[Lease, AttemptWorkspace, AttemptWorkspaceIdentity]:
+        handler = self._registry.task_handlers.get(task.capability_id)
+        if not isinstance(handler, RecoverableTaskHandler):
+            raise TaskActivityRecoveryUnsupported(f"task handler is not recoverable: {task.capability_id}")
+        envelopes = self._ledger.read_all()
+        _validate_start_transition(task, envelopes)
+        request = self._project_request(task)
+        request_digest = canonical_digest(cast(JSONValue, request.model_dump(mode="json")))
+        workspace, identity = self._store.create_attempt_identity(
+            invocation_id=task.invocation_id,
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=task.attempt,
+        )
+        acquired = self._now()
+        lease = Lease(
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=task.attempt,
+            owner_id=self._owner_id,
+            acquired_at=acquired,
+            heartbeat_at=acquired,
+            expires_at=acquired + self._lease_seconds,
+        )
+        events: tuple[RuntimeEvent, ...] = (
+            TaskAttemptStarted(
+                activation_id=task.activation_id,
+                attempt=task.attempt,
+                lease_expires_at=format(lease.expires_at, ".17g"),
+            ),
+            TaskLeaseAcquired(**lease.model_dump()),
+            TaskActivityPrepared(
+                activity_id=activity_id_for_attempt(
+                    task.invocation_id,
+                    task.task_id,
+                    task.activation_id,
+                    task.attempt,
+                ),
+                task_id=task.task_id,
+                activation_id=task.activation_id,
+                attempt=task.attempt,
+                request_digest=request_digest,
+                workspace_identity=identity,
+            ),
+        )
+        expected_next_seq = _next_sequence(envelopes)
+        expected = tuple(
+            EventEnvelope.from_event(expected_next_seq + offset, event) for offset, event in enumerate(events)
+        )
+        try:
+            self._append(events, expected_next_seq=expected_next_seq)
+        except LedgerPublicationIndeterminate:
+            raise
+        except BaseException:
+            if _initial_batch_absent(self._ledger, expected, expected_next_seq):
+                workspace.discard()
+            raise
+        return lease, workspace, identity
+
     async def run_wave(self, tasks: Sequence[PlannedTask]) -> tuple[AttemptResult, ...]:
         selected = select_wave(tasks, self._max_parallel)
         if not selected:
             return ()
+        if any(self._handler_is_recoverable(task) for task in selected):
+            return await self._run_wave_including_recoverable(selected)
 
         leases = tuple(self._start(task) for task in selected)
         attempt_ids = tuple(self._attempt_id(task, "run") for task in selected)
@@ -277,6 +349,48 @@ class Scheduler:
             finalized.append(self._finalize(result))
         return tuple(finalized)
 
+    async def _run_wave_including_recoverable(
+        self, selected: Sequence[PlannedTask]
+    ) -> tuple[AttemptResult, ...]:
+        work: list[tuple[PlannedTask, AttemptWorkspace, _LeaseState, str | None]] = []
+        try:
+            for task in selected:
+                if self._handler_is_recoverable(task):
+                    lease, workspace, _identity = self.start_recoverable(task)
+                    activity_id = activity_id_for_attempt(
+                        task.invocation_id,
+                        task.task_id,
+                        task.activation_id,
+                        task.attempt,
+                    )
+                    self.task_activity_port(
+                        TaskActivityRpcIdentity(
+                            invocation_id=task.invocation_id,
+                            task_id=task.task_id,
+                            activation_id=task.activation_id,
+                            attempt=task.attempt,
+                            activity_id=activity_id,
+                        )
+                    )
+                else:
+                    lease = self._start(task)
+                    workspace = self._store.create_attempt(self._attempt_id(task, "run"))
+                    activity_id = None
+                work.append((task, workspace, _LeaseState(self, lease), activity_id))
+        except BaseException:
+            for _task, workspace, _lease, activity_id in work:
+                if activity_id is None:
+                    workspace.discard()
+            raise
+
+        gathered = await asyncio.gather(
+            *(
+                self._execute(task, workspace, lease_state, activity_id=activity_id)
+                for task, workspace, lease_state, activity_id in work
+            )
+        )
+        return tuple(self._finalize(result) for result in gathered)
+
     async def resume_running(self, tasks: Sequence[PlannedTask]) -> tuple[AttemptResult, ...]:
         """Resume attempts whose start and deterministic lease are already authoritative."""
         selected = select_wave(tasks, self._max_parallel)
@@ -295,6 +409,10 @@ class Scheduler:
                     )
                 if lease.expires_at < self._now():
                     raise LeaseUnavailableError("persisted running task lease expired")
+                if self._handler_is_recoverable(task):
+                    raise TaskActivityRecoveryUnsupported(
+                        "recoverable attempt recovery cannot recreate the workspace"
+                    )
                 workspace = self._store.reset_attempt(self._attempt_id(task, "run"))
                 work.append((task, workspace, _LeaseState(self, lease)))
         except BaseException:
@@ -395,6 +513,8 @@ class Scheduler:
         task: PlannedTask,
         workspace: AttemptWorkspace,
         lease_state: _LeaseState,
+        *,
+        activity_id: str | None = None,
     ) -> AttemptResult:
         try:
             if self._registry.task_handlers.get(task.capability_id) is None:
@@ -407,7 +527,9 @@ class Scheduler:
 
             try:
                 async with asyncio.timeout(task.timeout_seconds):
-                    result = await self._host.execute(self._host_execute_call(task, request, workspace))
+                    result = await self._host.execute(
+                        self._host_execute_call(task, request, workspace, activity_id=activity_id)
+                    )
             except TimeoutError:
                 outcome = TaskOutcome.failed("timeout", "task handler exceeded its run timeout")
             except asyncio.CancelledError as error:
@@ -450,7 +572,8 @@ class Scheduler:
                 candidate=candidate,
             )
         finally:
-            workspace.discard()
+            if activity_id is None:
+                workspace.discard()
 
     def _finalize(self, result: AttemptResult) -> AttemptResult:
         task = result.task
@@ -798,6 +921,8 @@ class Scheduler:
         task: PlannedTask,
         request: TaskRequest,
         workspace: AttemptWorkspace,
+        *,
+        activity_id: str | None = None,
     ) -> TaskHostExecuteCall:
         binding = getattr(self._registry, "bindings", {}).get(task.capability_id)
         capability_id = binding.target_capability_id if binding is not None else task.capability_id
@@ -808,7 +933,7 @@ class Scheduler:
                 task_id=task.task_id,
                 activation_id=task.activation_id,
                 attempt=task.attempt,
-                activity_id=None,
+                activity_id=activity_id,
                 operation="execute",
                 host_implementation_id=host_lock.implementation_id,
                 host_implementation_digest=host_lock.implementation_digest,
@@ -823,10 +948,14 @@ class Scheduler:
                 task_id=task.task_id,
                 activation_id=task.activation_id,
                 attempt=task.attempt,
-                activity_id=None,
+                activity_id=activity_id,
             ),
             authorized_secret_handles=(),
         )
+
+    def _handler_is_recoverable(self, task: PlannedTask) -> bool:
+        handler = self._registry.task_handlers.get(task.capability_id)
+        return isinstance(handler, RecoverableTaskHandler)
 
     def _capability_entrypoint(self, capability_id: str) -> str:
         entries = getattr(self._registry, "entries", {})
@@ -939,6 +1068,20 @@ class Scheduler:
             }
         )
         return f"{identity}.{phase}"
+
+
+def _initial_batch_absent(
+    ledger: Ledger,
+    expected: tuple[EventEnvelope, ...],
+    expected_next_seq: int,
+) -> bool:
+    try:
+        persisted = ledger.read_all()
+    except BaseException:
+        return False
+    offset = expected_next_seq - 1
+    window = persisted[offset : offset + len(expected)]
+    return window != expected
 
 
 def _exception_message(prefix: str, error: BaseException) -> str:

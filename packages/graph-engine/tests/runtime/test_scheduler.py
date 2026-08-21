@@ -2450,3 +2450,18 @@ def test_scheduler_binds_identity_narrow_activity_port(tmp_path: Path) -> None:
     public = {name for name in dir(port) if not name.startswith("_")}
     assert "append" not in public
     assert "ledger" not in public
+
+
+def test_disposable_wave_does_not_prepare_activity(tmp_path: Path) -> None:
+    task = _planned_task()
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        (context.workspace_root / "out.txt").write_bytes(b"ok")
+        return TaskOutcome.succeeded()
+
+    scheduler, _store, ledger = _scheduler(tmp_path, {task.capability_id: handler})
+    asyncio.run(scheduler.run_wave((task,)))
+    kinds = [envelope.event.kind for envelope in ledger.read_all()]
+    assert "task_activity_prepared" not in kinds
+    assert kinds.count("task_attempt_started") == 1
+    assert kinds.count("task_lease_acquired") == 1

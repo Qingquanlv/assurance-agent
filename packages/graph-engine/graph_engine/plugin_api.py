@@ -474,6 +474,23 @@ class TaskHandler(Protocol):
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome: ...
 
 
+@runtime_checkable
+class RecoverableTaskHandler(TaskHandler, Protocol):
+    async def reconcile(
+        self,
+        request: TaskRequest,
+        context: TaskContext,
+        activity: TaskActivitySnapshot,
+    ) -> TaskActivityReconcileResult: ...
+
+    async def cancel(
+        self,
+        request: TaskRequest,
+        context: TaskContext,
+        activity: TaskActivitySnapshot,
+    ) -> TaskActivityCancelResult: ...
+
+
 def _validate_resource_prefix(value: str) -> str:
     windows_path = PureWindowsPath(value)
     if (
@@ -890,6 +907,7 @@ __all__ = [
     "PluginDescriptor",
     "PluginProvider",
     "ProviderSource",
+    "RecoverableTaskHandler",
     "RegistryPorts",
     "ResourceContribution",
     "ResourceClaims",
