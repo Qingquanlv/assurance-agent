@@ -1463,8 +1463,12 @@ def test_fold_marks_frontier_effect_permanently_failed_and_refuses_later_attempt
     attempt = projection.activations[-1].attempts[-1]
     assert attempt.status == "failed"
     assert attempt.failure == failure
-    assert tuple(effect.status for effect in projection.effects) == ("permanently_failed", "committed")
+    assert tuple(effect.status for effect in projection.effects) == (
+        "permanently_failed",
+        "permanently_failed",
+    )
     assert projection.effects[0].failure == failure
+    assert projection.effects[1].failure == failure
     with pytest.raises(ProjectionError, match="non-retryable"):
         fold_events(
             _envelopes(

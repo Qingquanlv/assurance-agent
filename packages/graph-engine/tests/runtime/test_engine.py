@@ -1268,6 +1268,74 @@ def test_engine_returns_generic_effect_pending_result(tmp_path: Path) -> None:
     assert effect.reconcile_calls == 1
 
 
+@pytest.mark.parametrize(
+    ("apply_result", "reconcile_result", "effect_policy"),
+    [
+        (
+            EffectApplyResult(
+                status="permanent",
+                failure=TaskFailure(kind="external_effect", message="denied", retryable=False),
+            ),
+            None,
+            None,
+        ),
+        (EffectApplyResult.applied({"n": 1}), None, None),
+        (
+            EffectApplyResult(
+                status="transient",
+                failure=TaskFailure(kind="transient", message="busy"),
+            ),
+            EffectReconcileResult(status="not_applied"),
+            EffectPolicy(max_attempts=1, timeout_seconds=30, backoff_seconds=0),
+        ),
+    ],
+)
+def test_engine_non_last_effect_failure_returns_typed_failed_without_rerun(
+    tmp_path: Path,
+    apply_result: EffectApplyResult,
+    reconcile_result: EffectReconcileResult | None,
+    effect_policy: EffectPolicy | None,
+) -> None:
+    effect = _RecordingEffectHandler(apply_result=apply_result, reconcile_result=reconcile_result)
+    calls = 0
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        nonlocal calls
+        calls += 1
+        return TaskOutcome.succeeded(
+            {"ran": True},
+            effects=(
+                context.effect("test.empty.audit", {"n": 1}),
+                context.effect("test.empty.audit", {"n": 2}),
+            ),
+        )
+
+    product = _task_product(
+        handler,
+        effect_handlers={"test.empty.audit": effect},
+        effect_policy=effect_policy,
+    )
+    engine = Engine(tmp_path, clock=FakeClock(10.0), host=_InProcessTestHost())
+    handle = engine.start(product, entrypoint="main", invocation_id="effect-multi-fail")
+    result = engine.run_until_blocked(handle)
+
+    assert result.status == "failed"
+    assert calls == 1
+    assert effect.apply_calls == 1
+    ledger = Ledger(handle.invocation_root / "ledger")
+    kinds = [envelope.event.kind for envelope in ledger.read_all()]
+    assert kinds.count("head_advanced") == 1
+    assert "task_attempt_succeeded" not in kinds
+    advanced = next(
+        envelope.event for envelope in ledger.read_all() if envelope.event.kind == "head_advanced"
+    )
+    assert handle.workspace.head_tree_id() == advanced.tree_id
+    folded = fold_events(ledger.read_all())
+    assert folded.head_tree_id == advanced.tree_id
+    assert tuple(item.status for item in folded.effects) == ("permanently_failed", "permanently_failed")
+    assert folded.status == "failed"
+
+
 def test_engine_permanent_effect_failure_does_not_rerun_handler_or_roll_back_head(
     tmp_path: Path,
 ) -> None:

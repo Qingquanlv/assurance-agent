@@ -1193,27 +1193,24 @@ def _fail_pending_effect(
     failure: TaskFailure,
     seq: int,
 ) -> InvocationProjection:
-    pending = next(
-        (
-            item
-            for item in projection.effects
-            if item.activation_id == activation.activation_id
-            and item.task_attempt == attempt.attempt
-            and item.status in {"committed", "applying"}
-        ),
-        None,
-    )
-    if pending is None:
+    remaining_ids = {
+        item.effect_id
+        for item in projection.effects
+        if item.activation_id == activation.activation_id
+        and item.task_attempt == attempt.attempt
+        and item.status in {"committed", "applying"}
+    }
+    if not remaining_ids:
         _fail(seq, "effect failure without a pending effect")
     attempt = attempt.model_copy(update={"status": "failed", "failure": failure})
     activation = activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)})
-    return _replace_activation(
-        _replace_effect(
-            projection,
-            pending.model_copy(update={"status": "permanently_failed", "failure": failure}),
-        ),
-        activation,
+    effects = tuple(
+        item.model_copy(update={"status": "permanently_failed", "failure": failure})
+        if item.effect_id in remaining_ids
+        else item
+        for item in projection.effects
     )
+    return _replace_activation(projection.model_copy(update={"effects": effects}), activation)
 
 
 def _effect_idempotency_key(

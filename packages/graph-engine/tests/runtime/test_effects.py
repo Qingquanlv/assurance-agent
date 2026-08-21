@@ -454,6 +454,46 @@ def test_executor_does_not_apply_when_reconcile_is_pending(tmp_path: Path) -> No
     assert len(ledger.read_all()) == before
 
 
+def test_executor_retries_transient_then_not_applied_without_burning_start_slot(
+    tmp_path: Path,
+) -> None:
+    handler = RecordingEffectHandler(
+        apply_result=_TRANSIENT,
+        reconcile_result=EffectReconcileResult(status="not_applied"),
+    )
+    policy = EffectPolicy(max_attempts=2, timeout_seconds=30, backoff_seconds=0)
+    executor, ledger, projection = _effect_executor(
+        tmp_path,
+        handler=handler,
+        state="committed",
+        policy=policy,
+    )
+
+    first = asyncio.run(executor.settle_next(projection))
+    assert first.progressed is True
+    assert handler.apply_keys == (_KEY,)
+    assert handler.reconcile_keys == ()
+    assert sum(1 for event in ledger.read_all() if event.event.kind == "effect_apply_started") == 1
+
+    second = asyncio.run(executor.settle_next(fold_events(ledger.read_all())))
+    assert second.progressed is True
+    assert handler.apply_keys == (_KEY, _KEY)
+    assert handler.reconcile_keys == (_KEY,)
+    assert sum(1 for event in ledger.read_all() if event.event.kind == "effect_apply_started") == 2
+    assert all(event.event.kind != "task_attempt_failed" for event in ledger.read_all())
+
+    third = asyncio.run(executor.settle_next(fold_events(ledger.read_all())))
+    assert third.progressed is True
+    assert handler.apply_keys == (_KEY, _KEY)
+    failed = ledger.read_all()[-1].event
+    assert isinstance(failed, TaskAttemptFailed)
+    assert failed.failure.retryable is False
+    assert failed.failure.kind == "external_effect"
+    folded = fold_events(ledger.read_all())
+    assert folded.activations[-1].attempts[-1].status == "failed"
+    assert folded.head_tree_id == _TREE
+
+
 def test_executor_retries_transient_apply_after_backoff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -506,6 +546,48 @@ def test_executor_treats_handler_exception_as_ambiguous(tmp_path: Path) -> None:
     assert "task_attempt_failed" not in kinds
 
 
+@pytest.mark.parametrize(
+    ("apply_result", "reconcile_result", "policy"),
+    [
+        (_PERMANENT, None, None),
+        (EffectApplyResult.applied({"n": 1}), None, None),
+        (
+            _TRANSIENT,
+            EffectReconcileResult(status="not_applied"),
+            EffectPolicy(max_attempts=1, timeout_seconds=30, backoff_seconds=0),
+        ),
+    ],
+)
+def test_executor_non_last_effect_failure_marks_remaining_intents_failed(
+    tmp_path: Path,
+    apply_result: EffectApplyResult,
+    reconcile_result: EffectReconcileResult | None,
+    policy: EffectPolicy | None,
+) -> None:
+    from graph_engine.runtime.effects import needs_settlement
+
+    handler = RecordingEffectHandler(apply_result=apply_result, reconcile_result=reconcile_result)
+    executor, ledger, projection = _effect_executor(
+        tmp_path,
+        handler=handler,
+        state="committed",
+        policy=policy,
+        effects=(("effect-1", {"n": 1}), ("effect-2", {"n": 2})),
+    )
+    asyncio.run(executor.settle_next(projection))
+    if reconcile_result is not None:
+        asyncio.run(executor.settle_next(fold_events(ledger.read_all())))
+    folded = fold_events(ledger.read_all())
+    assert tuple(item.status for item in folded.effects) == ("permanently_failed", "permanently_failed")
+    assert folded.activations[-1].attempts[-1].status == "failed"
+    assert folded.head_tree_id == _TREE
+    assert needs_settlement(folded) is False
+    assert handler.apply_keys == (_effect_key("effect-1", {"n": 1}),)
+    assert handler.reconcile_keys == ((_effect_key("effect-1", {"n": 1}),) if reconcile_result else ())
+    failed = next(event.event for event in ledger.read_all() if isinstance(event.event, TaskAttemptFailed))
+    assert failed.failure.retryable is False
+
+
 def test_executor_publishes_permanent_failure_without_rolling_back_head(tmp_path: Path) -> None:
     handler = RecordingEffectHandler(apply_result=_PERMANENT)
     executor, ledger, projection = _effect_executor(tmp_path, handler=handler, state="committed")
@@ -524,7 +606,10 @@ def test_executor_publishes_permanent_failure_without_rolling_back_head(tmp_path
 
 
 def test_executor_exhausts_policy_as_non_retryable_failure(tmp_path: Path) -> None:
-    handler = RecordingEffectHandler(apply_result=_TRANSIENT)
+    handler = RecordingEffectHandler(
+        apply_result=_TRANSIENT,
+        reconcile_result=EffectReconcileResult(status="not_applied"),
+    )
     policy = EffectPolicy(max_attempts=1, timeout_seconds=30, backoff_seconds=0)
     executor, ledger, projection = _effect_executor(
         tmp_path,
@@ -532,14 +617,17 @@ def test_executor_exhausts_policy_as_non_retryable_failure(tmp_path: Path) -> No
         state="committed",
         policy=policy,
     )
-    settlement = asyncio.run(executor.settle_next(projection))
-    assert settlement.progressed is True
+    first = asyncio.run(executor.settle_next(projection))
+    assert first.progressed is True
+    second = asyncio.run(executor.settle_next(fold_events(ledger.read_all())))
+    assert second.progressed is True
     failed = ledger.read_all()[-1].event
     assert isinstance(failed, TaskAttemptFailed)
     assert failed.failure.retryable is False
     folded = fold_events(ledger.read_all())
     assert folded.activations[-1].attempts[-1].status == "failed"
     assert folded.head_tree_id == _TREE
+    assert handler.apply_keys == (_KEY,)
 
 
 def test_executor_applies_multiple_effects_in_serial_index_order(tmp_path: Path) -> None:

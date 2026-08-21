@@ -58,7 +58,7 @@ class EffectSettlement:
 
 
 def needs_settlement(projection: InvocationProjection) -> bool:
-    if any(item.status in _SETTLEABLE for item in projection.effects):
+    if _next_effect(projection) is not None:
         return True
     return any(
         item.attempts and item.attempts[-1].status == "effect_pending" for item in projection.activations
@@ -157,7 +157,8 @@ class EffectExecutor:
         if result.status == "not_applied":
             if effect.apply_attempts >= registration.policy.max_attempts:
                 return self._publish_failure(effect, _EXHAUSTED)
-            return await self._apply(registration, effect, effect.apply_attempts)
+            apply_attempt = self._append_apply_started(effect)
+            return await self._apply(registration, effect, apply_attempt)
         raise EffectStateError(f"unknown reconcile status: {result.status}")
 
     async def _handle_apply_result(
@@ -173,18 +174,8 @@ class EffectExecutor:
             assert result.failure is not None
             return self._publish_failure(effect, result.failure)
         if result.status == "transient":
-            if apply_attempt >= registration.policy.max_attempts:
-                return self._publish_failure(effect, _EXHAUSTED)
             if registration.policy.backoff_seconds > 0:
                 await asyncio.sleep(registration.policy.backoff_seconds)
-            next_attempt = apply_attempt + 1
-            if next_attempt <= registration.policy.max_attempts:
-                self._append(
-                    EffectApplyStarted(
-                        effect_id=effect.effect_id,
-                        apply_attempt=next_attempt,
-                    )
-                )
             return EffectSettlement(progressed=True)
         raise EffectStateError(f"unknown apply status: {result.status}")
 
@@ -256,8 +247,23 @@ class EffectExecutor:
             raise EffectPublicationIndeterminate(f"effect {action} failed without a typed result") from error
 
 
+def _attempt_is_effect_pending(projection: InvocationProjection, effect: EffectRecord) -> bool:
+    activation = next(
+        (item for item in projection.activations if item.activation_id == effect.activation_id),
+        None,
+    )
+    if activation is None:
+        return False
+    attempt = next((item for item in activation.attempts if item.attempt == effect.task_attempt), None)
+    return attempt is not None and attempt.status == "effect_pending"
+
+
 def _next_effect(projection: InvocationProjection) -> EffectRecord | None:
-    pending = [item for item in projection.effects if item.status in _SETTLEABLE]
+    pending = [
+        item
+        for item in projection.effects
+        if item.status in _SETTLEABLE and _attempt_is_effect_pending(projection, item)
+    ]
     pending.sort(key=lambda item: (item.task_id, item.task_attempt, item.index, item.effect_id))
     for effect in pending:
         predecessors = [
