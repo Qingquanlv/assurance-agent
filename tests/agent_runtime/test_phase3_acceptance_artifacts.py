@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import json
+from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -11,6 +15,8 @@ from agent_runtime_fixture import EXPECTED_AGENT_RUN_REQUEST_BYTES
 _REPO = Path(__file__).resolve().parents[2]
 _BENCH = _REPO / "benchmark" / "agent-runtime-phase3"
 _MANIFEST = _BENCH / "manifest.json"
+_RUN_ITEM = _BENCH / "run_item.py"
+_PACKAGING_SMOKE = _REPO / "scripts" / "packaging_smoke_test.sh"
 _REQUIRED = (
     "fixture",
     "graph",
@@ -62,3 +68,100 @@ def test_live_scripts_consume_only_the_committed_manifest_and_fail_closed(name: 
     assert "exit 0" not in script
     assert "set -euo pipefail" in script
     assert "fail-closed" in script
+
+
+def _load_run_item() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("phase3_run_item", _RUN_ITEM)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _assert_driver_fail_closed(action: Callable[[], int]) -> None:
+    try:
+        code = action()
+    except SystemExit as error:
+        assert error.code not in (0, None)
+        return
+    except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
+        return
+    assert code != 0
+
+
+def test_packaging_smoke_forbids_contracts_and_graph_engine_as_aa_runtime_deps() -> None:
+    script = _PACKAGING_SMOKE.read_text(encoding="utf-8")
+    # Requires-Dist and installed distribution names (hyphenated).
+    assert script.count("agent-runtime-contracts") >= 2
+    assert script.count("graph-engine") >= 2
+    # find_spec import names (underscored).
+    assert "agent_runtime_contracts" in script
+    assert "graph_engine" in script
+
+
+def test_run_item_driver_has_no_success_or_fallback_path() -> None:
+    source = _RUN_ITEM.read_text(encoding="utf-8")
+    assert "manifest.json" in source
+    assert "fallback" not in source.lower()
+    assert "pytest.skip" not in source
+    assert "return 0" not in source
+    assert "sys.exit(0)" not in source
+    assert "fail-closed" in source.lower()
+
+
+def test_run_item_fails_closed_when_manifest_is_missing(tmp_path: Path) -> None:
+    driver = _load_run_item()
+    missing = tmp_path / "manifest.json"
+    _assert_driver_fail_closed(lambda: driver.main(["--adapter", "opencode", "--manifest", str(missing)]))
+
+
+def test_run_item_fails_closed_when_source_digest_drifted(tmp_path: Path) -> None:
+    driver = _load_run_item()
+    document = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    document["fixture"]["source_digest"] = "0" * 64
+    drifted = tmp_path / "manifest.json"
+    drifted.write_text(json.dumps(document), encoding="utf-8")
+    _assert_driver_fail_closed(lambda: driver.main(["--adapter", "cursor", "--manifest", str(drifted)]))
+
+
+def test_run_item_fails_closed_when_cursor_secret_is_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _load_run_item()
+    version = "phase3-fail-closed"
+    executable = tmp_path / "cursor-agent"
+    executable.write_text(f"#!/bin/sh\necho '{version}'\n", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    code = driver._check_cursor(
+        {
+            "executable": str(executable),
+            "executable_digest": hashlib.sha256(executable.read_bytes()).hexdigest(),
+            "external_tool_version": version,
+            "secret_env": "CURSOR_API_KEY",
+        }
+    )
+    assert code == 1
+
+
+def test_run_item_fails_closed_when_opencode_profile_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _load_run_item()
+
+    def _json_get(url: str) -> dict[str, object]:
+        if url.endswith("/global/health"):
+            return {"version": "1.18.4"}
+        return {"name": "not-the-pinned-profile"}
+
+    monkeypatch.setattr(driver, "_json_get", _json_get)
+    monkeypatch.delenv("OPENCODE_PHASE3_TOKEN", raising=False)
+    code = driver._check_opencode(
+        {
+            "endpoint": "http://127.0.0.1:4096",
+            "external_tool_version": "1.18.4",
+            "protocol_profile": "opencode-http-v1",
+            "secret_env": "OPENCODE_PHASE3_TOKEN",
+        }
+    )
+    assert code == 1

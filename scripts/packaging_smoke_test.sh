@@ -65,7 +65,7 @@ grep -qi product "$WORK_DIR/bare-compile.out"
 uv venv --python 3.11 "$WORK_DIR/venv-b"
 uv pip install --quiet --python "$WORK_DIR/venv-b/bin/python" --find-links "$WORK_DIR/dist" "$AGENT_WHL"
 
-# Installing assurance-agent must not install or import Phase 3 adapter/fixture wheels.
+# Installing assurance-agent must not install or import Phase 3 runtime wheels.
 python3 - "$AGENT_WHL" <<'PY'
 import sys
 import zipfile
@@ -78,7 +78,13 @@ requirements = [
     value.lower().replace("_", "-")
     for value in metadata.get_all("Requires-Dist", [])
 ]
-forbidden = ("agent-runtime-opencode", "agent-runtime-cursor", "agent-runtime-fixture")
+forbidden = (
+    "agent-runtime-opencode",
+    "agent-runtime-cursor",
+    "agent-runtime-fixture",
+    "agent-runtime-contracts",
+    "graph-engine",
+)
 assert not any(item.startswith(forbidden) for item in requirements), requirements
 PY
 "$WORK_DIR/venv-b/bin/python" - <<'PY'
@@ -90,6 +96,8 @@ for package in (
     "agent_runtime_opencode",
     "agent_runtime_cursor",
     "agent_runtime_fixture",
+    "agent_runtime_contracts",
+    "graph_engine",
 ):
     assert importlib.util.find_spec(package) is None, package
     assert package not in sys.modules, package
@@ -99,6 +107,8 @@ for name in (
     "agent-runtime-opencode",
     "agent-runtime-cursor",
     "agent-runtime-fixture",
+    "agent-runtime-contracts",
+    "graph-engine",
 ):
     assert name not in installed, name
 PY
