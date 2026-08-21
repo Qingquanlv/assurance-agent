@@ -11,6 +11,7 @@ from agent_runtime_contracts.schema import (
     canonical_digest,
     canonical_json_bytes,
     freeze_json,
+    reject_credentials_in_digest_input,
     thaw_json,
 )
 
@@ -139,7 +140,9 @@ class AgentRunResult(FrozenModel):
 
     @model_validator(mode="after")
     def _authenticate_result_digest(self) -> Self:
-        expected = canonical_digest(thaw_json(self.structured_result))
+        thawed = thaw_json(self.structured_result)
+        reject_credentials_in_digest_input(thawed)
+        expected = canonical_digest(thawed)
         if self.result_digest != expected:
             raise ValueError("result digest is not canonical")
         return self

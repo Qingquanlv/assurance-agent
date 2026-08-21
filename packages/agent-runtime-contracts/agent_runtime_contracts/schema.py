@@ -229,6 +229,34 @@ def validate_structured_result(
     return thawed_value
 
 
+def _contains_credential(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _SECRET_PATTERNS)
+
+
+def _credential_texts(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Mapping):
+        texts: list[str] = []
+        for key, item in value.items():
+            if isinstance(key, str):
+                texts.append(key)
+            texts.extend(_credential_texts(item))
+        return tuple(texts)
+    if isinstance(value, list | tuple):
+        texts: list[str] = []
+        for item in value:
+            texts.extend(_credential_texts(item))
+        return tuple(texts)
+    return ()
+
+
+def reject_credentials_in_digest_input(value: object) -> None:
+    for text in _credential_texts(thaw_json(value)):
+        if _contains_credential(text):
+            raise ValueError("credentials must not enter result or digest input")
+
+
 def _redact(message: str) -> str:
     text = message
     for pattern in _SECRET_PATTERNS:

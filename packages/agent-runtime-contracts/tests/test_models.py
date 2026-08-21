@@ -238,6 +238,17 @@ def test_agent_run_result_authenticates_digests_and_forbids_provider_payloads() 
     for field_name in _FORBIDDEN_RESULT_FIELDS:
         with pytest.raises(ValidationError, match="extra"):
             AgentRunResult.model_validate({**dumped, field_name: "leak"})
+    canary = {"status": "ok", "token": "sk-secret-canary"}
+    with pytest.raises(ValidationError, match="credential"):
+        AgentRunResult.model_validate(
+            {
+                "structured_result": canary,
+                "result_digest": canonical_digest(canary),
+                "evidence_digest": _SHA_B,
+                "adapter_id": "agent-runtime-fixture",
+                "adapter_version": "1.0.0",
+            }
+        )
 
 
 def test_agent_run_result_bounds_and_redacts_diagnostics() -> None:
