@@ -27,8 +27,8 @@ from pydantic import ValidationError, field_validator, model_validator
 
 from graph_engine.composition.models import (
     AuthenticatedContribution,
+    ContributionAuthority,
     ExecutableAuthority,
-    ExecutableAuthoritySet,
     ExecutableBindingMode,
     ExecutableKind,
     ExecutableModuleProvenance,
@@ -220,6 +220,7 @@ class AuthenticatedProviderBinding:
     _cache: _AuthenticatedBindingCache
     _cache_key: tuple[str, str, str, str]
     _import_plan: ImportProvenancePlan
+    _issued_contributions: tuple[ContributionAuthority, ...] = ()
 
     @property
     def import_plan(self) -> ImportProvenancePlan:
@@ -239,11 +240,27 @@ class AuthenticatedProviderBinding:
 
     def authenticate_executable(
         self,
-        authority_set: ExecutableAuthoritySet,
+        authority: ContributionAuthority,
         executable: object,
         provenance: ExecutableProvenance,
     ) -> None:
-        _authenticate_bound_executable(self, authority_set, executable, provenance)
+        _authenticate_bound_executable(self, authority, executable, provenance)
+
+    def authenticate_contribution(self, authority: ContributionAuthority) -> None:
+        """Require an exact contribution generation issued by this live binding."""
+
+        with _serialized_imports():
+            if self._cache.bindings.get(self._cache_key) is not self:
+                raise SourceSnapshotError("provider binding is not owned by the current RegistryPlatform")
+            resolved = _resolve_wheel_snapshot(self._source, self._metadata_provider)
+            if resolved.snapshot != self._snapshot:
+                raise SourceSnapshotError("wheel source changed before contribution authentication")
+            if authority.provider_binding is not self or not any(
+                candidate is authority for candidate in self._issued_contributions
+            ):
+                raise SourceSnapshotError(
+                    "contribution authority was not issued by this authenticated provider binding"
+                )
 
 
 @dataclass(slots=True)
@@ -1332,7 +1349,7 @@ def _authenticated_contribution(
         sorted(authorities, key=lambda item: (item.provenance.registry_id, item.provenance.kind.value))
     )
     descriptor = cast(PluginDescriptor, binding.declaration)
-    authority_set = ExecutableAuthoritySet(
+    authority = ContributionAuthority(
         provider_binding=binding,
         descriptor=descriptor,
         owner_id=owner_id,
@@ -1348,7 +1365,7 @@ def _authenticated_contribution(
         descriptor=descriptor,
         contribution=contribution,
         executables=tuple(item.provenance for item in ordered),
-        authority_set=authority_set,
+        authority=authority,
     )
 
 
@@ -1615,7 +1632,7 @@ def _executable_module_projection(
 
 def _authenticate_bound_executable(
     binding: AuthenticatedProviderBinding,
-    authority_set: ExecutableAuthoritySet,
+    contribution_authority: ContributionAuthority,
     executable: object,
     expected: ExecutableProvenance,
 ) -> None:
@@ -1625,10 +1642,12 @@ def _authenticate_bound_executable(
         resolved = _resolve_wheel_snapshot(binding._source, binding._metadata_provider)
         if resolved.snapshot != binding._snapshot:
             raise SourceSnapshotError("wheel source changed before executable authentication")
-        if authority_set.provider_binding is not binding:
-            raise SourceSnapshotError("executable authority belongs to another provider binding")
+        if contribution_authority.provider_binding is not binding or not any(
+            candidate is contribution_authority for candidate in binding._issued_contributions
+        ):
+            raise SourceSnapshotError("executable authority was not issued by this provider binding")
         try:
-            authority = authority_set.authority(expected.kind, expected.registry_id)
+            authority = contribution_authority.authority(expected.kind, expected.registry_id)
         except KeyError as error:
             raise SourceSnapshotError(
                 "executable is not a member of the authenticated contribution generation"
@@ -1748,6 +1767,11 @@ def _authenticated_provider_call(
                 session.restore_unconsumed_quarantine(import_plan)
             _commit_authenticated_plan(binding._cache, authenticated_modules)
             binding._import_plan = active_import_provenance_plan(import_plan)
+            if isinstance(validated_result, AuthenticatedContribution):
+                binding._issued_contributions = (
+                    *binding._issued_contributions,
+                    validated_result.authority,
+                )
             return validated_result
         except BaseException as primary_error:
             _restore_import_transaction(

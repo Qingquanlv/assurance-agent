@@ -32,11 +32,14 @@ from graph_engine.composition import (
 )
 from graph_engine.composition.models import (
     AuthenticatedContribution,
+    ContributionAuthority,
     ExecutableAuthority,
-    ExecutableAuthoritySet,
 )
 from graph_engine.composition.provenance import StandardLoader
-from graph_engine.composition.registries import _build_registries as _build_authenticated_registries
+from graph_engine.composition.registries import (
+    _build_registries as _build_authenticated_registries,
+    validate_registry_contribution_authorities,
+)
 from graph_engine.plugin_api import (
     CapabilityBindingContribution,
     CandidateWriteSet,
@@ -57,6 +60,7 @@ from graph_engine.plugin_api import (
     ValidationResult,
     validate_contribution,
 )
+from graph_engine.frozen_json import thaw_json
 
 
 class _Handler:
@@ -200,7 +204,7 @@ def _authenticated(
         },
     }
     ordered_proofs = tuple(sorted(proofs, key=lambda item: (item.registry_id, item.kind.value)))
-    authority_set = ExecutableAuthoritySet(
+    authority_set = ContributionAuthority(
         provider_binding=object() if source_key.role is SourceRole.PLUGIN else None,
         descriptor=descriptor,
         owner_id=source_key.owner_id,
@@ -227,7 +231,7 @@ def _authenticated(
         descriptor=descriptor,
         contribution=contribution,
         executables=ordered_proofs,
-        authority_set=authority_set,
+        authority=authority_set,
     )
 
 
@@ -353,14 +357,14 @@ def test_public_registry_views_reject_inconsistent_entry_mappings() -> None:
         "toy.runtime",
         handler,
         _proof(source, ExecutableKind.TASK_HANDLER, "toy.runtime.execute"),
-        authenticated.authority_set,
+        authenticated.authority,
     )
     validator_entry = CommitValidatorEntry(
         "toy.runtime.validate",
         "toy.runtime",
         validator,
         _proof(source, ExecutableKind.COMMIT_VALIDATOR, "toy.runtime.validate"),
-        authenticated.authority_set,
+        authenticated.authority,
     )
 
     with pytest.raises(ValueError, match="task handler view disagrees"):
@@ -468,7 +472,7 @@ def test_registry_set_rejects_executable_owner_that_is_not_a_plugin_source() -> 
         "toy.product",
         handler,
         _proof(plugin_source, ExecutableKind.TASK_HANDLER, "toy.product.execute"),
-        authenticated.authority_set,
+        authenticated.authority,
     )
 
     with pytest.raises(ValueError, match="owner is not a plugin source"):
@@ -821,3 +825,146 @@ def test_registry_requires_exact_selected_source_and_contribution_sets() -> None
 def test_plugin_contribution_has_no_sixth_registry_kind() -> None:
     with pytest.raises(TypeError):
         PluginContribution(lifecycles=())  # type: ignore[call-arg]
+
+
+def test_every_selected_plugin_retains_one_six_category_contribution_authority() -> None:
+    contribution = PluginContribution(
+        task_handlers={"toy.runtime.execute": _Handler()},
+        commit_validators={"toy.runtime.validate": _Validator()},
+        schemas=(
+            SchemaContribution("toy.runtime.intent", "application/schema+json", b"{}"),
+            SchemaContribution("toy.runtime.receipt", "application/schema+json", b"{}"),
+        ),
+        resources=(ResourceContribution("toy.runtime.prompt", "text/plain", b"prompt"),),
+        effects=(
+            EffectRegistration(
+                "toy.runtime.audit",
+                "toy.runtime.intent",
+                "toy.runtime.receipt",
+                _EffectHandler(),
+                EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
+            ),
+        ),
+        bindings=(
+            CapabilityBindingContribution(
+                capability_id="toy.runtime.bound",
+                target_capability_id="toy.runtime.execute",
+                data={"mode": "strict"},
+                resource_ids=("toy.runtime.prompt",),
+            ),
+        ),
+    )
+    snapshot = _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN)
+    authenticated = _authenticated(snapshot, contribution)
+    registries = _build_authenticated_registries(
+        (snapshot,),
+        (authenticated,),
+        ("toy.runtime",),
+    )
+
+    validate_registry_contribution_authorities(
+        registries,
+        {"toy.runtime": authenticated.authority},
+        (authenticated.descriptor,),
+    )
+    assert authenticated.authority.contribution is contribution
+    assert (
+        authenticated.authority.projection["schemas"][0]["content_sha256"]
+        == hashlib.sha256(b"{}").hexdigest()
+    )
+    assert (
+        authenticated.authority.projection["resources"][0]["content_sha256"]
+        == hashlib.sha256(b"prompt").hexdigest()
+    )
+    assert thaw_json(authenticated.authority.projection["bindings"]) == [
+        {
+            "capability_id": "toy.runtime.bound",
+            "data": {"mode": "strict"},
+            "resource_ids": ["toy.runtime.prompt"],
+            "target_capability_id": "toy.runtime.execute",
+        }
+    ]
+
+
+@pytest.mark.parametrize("registry_kind", ["schema", "resource", "binding"])
+def test_contribution_authority_rejects_missing_nonexecutable_registry_value(
+    registry_kind: str,
+) -> None:
+    contribution = PluginContribution(
+        task_handlers={"toy.runtime.execute": _Handler()},
+        schemas=(SchemaContribution("toy.runtime.schema", "application/schema+json", b"{}"),),
+        resources=(ResourceContribution("toy.runtime.prompt", "text/plain", b"prompt"),),
+        bindings=(
+            CapabilityBindingContribution(
+                capability_id="toy.runtime.bound",
+                target_capability_id="toy.runtime.execute",
+                resource_ids=("toy.runtime.prompt",),
+            ),
+        ),
+    )
+    snapshot = _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN)
+    authenticated = _authenticated(snapshot, contribution)
+    registries = _build_authenticated_registries(
+        (snapshot,),
+        (authenticated,),
+        ("toy.runtime",),
+    )
+    if registry_kind == "schema":
+        forged = RegistrySet(
+            sources=registries.sources,
+            capabilities=registries.capabilities,
+            schemas=SchemaRegistry({}),
+            resources=registries.resources,
+            effects=registries.effects,
+        )
+    elif registry_kind == "resource":
+        direct = registries.capabilities.entries["toy.runtime.execute"]
+        assert isinstance(direct, TaskHandlerEntry)
+        forged_capabilities = CapabilityRegistry(
+            entries={"toy.runtime.execute": direct},
+            task_handlers={"toy.runtime.execute": direct.handler},
+            commit_validators={},
+            bindings={},
+        )
+        forged = RegistrySet(
+            sources=registries.sources,
+            capabilities=forged_capabilities,
+            schemas=registries.schemas,
+            resources=ResourceRegistry({}),
+            effects=registries.effects,
+        )
+    else:
+        direct = registries.capabilities.entries["toy.runtime.execute"]
+        assert isinstance(direct, TaskHandlerEntry)
+        forged_capabilities = CapabilityRegistry(
+            entries={"toy.runtime.execute": direct},
+            task_handlers={"toy.runtime.execute": direct.handler},
+            commit_validators={},
+            bindings={},
+        )
+        forged = RegistrySet(
+            sources=registries.sources,
+            capabilities=forged_capabilities,
+            schemas=registries.schemas,
+            resources=registries.resources,
+            effects=registries.effects,
+        )
+
+    with pytest.raises(ValueError, match="contribution authority"):
+        validate_registry_contribution_authorities(
+            forged,
+            {"toy.runtime": authenticated.authority},
+            (authenticated.descriptor,),
+        )
+
+
+def test_data_only_plugin_authority_is_required_even_without_executables() -> None:
+    snapshot = _source("toy.data")
+    authenticated = _authenticated(
+        snapshot,
+        PluginContribution(resources=(ResourceContribution("toy.data.prompt", "text/plain", b"prompt"),)),
+    )
+    registries = _build_authenticated_registries((snapshot,), (authenticated,), ("toy.data",))
+
+    with pytest.raises(ValueError, match="selected plugin contribution authorities"):
+        validate_registry_contribution_authorities(registries, {}, (authenticated.descriptor,))

@@ -25,7 +25,7 @@ from graph_engine.composition.dependencies import resolve_dependency_order
 from graph_engine.composition.lock import build_invocation_lock
 from graph_engine.composition.models import (
     AuthenticatedContribution,
-    ExecutableAuthoritySet,
+    ContributionAuthority,
     FrozenComposition,
     PluginRequirement,
     ProductManifest,
@@ -174,6 +174,9 @@ class RegistryPlatform:
 
         # 8. Obtain validated frozen wheel/config contributions in dependency order.
         contributions = self._load_contributions(loaded, dependency_order)
+        contribution_authorities = {
+            contribution.owner_id: contribution.authority for contribution in contributions
+        }
 
         # 9-10. Build exactly five registries; builders close aliases and references.
         registries = _build_registries(
@@ -202,6 +205,7 @@ class RegistryPlatform:
             configuration=configuration,
             workflow=workflow,
             engine_snapshot=captured.engine,
+            contribution_authorities=contribution_authorities,
         )
 
         # 15. Return the sole complete composition value; no runtime path was touched.
@@ -212,6 +216,7 @@ class RegistryPlatform:
             lock,
             descriptors=tuple(loaded.descriptors[plugin_id] for plugin_id in dependency_order),
             configuration=configuration,
+            contribution_authorities=contribution_authorities,
             providers=loaded.providers,
             product_provider=product_provider,
             declarative_sources={
@@ -439,7 +444,7 @@ class RegistryPlatform:
                     descriptor=descriptor,
                     contribution=raw_contribution,
                     executables=(),
-                    authority_set=ExecutableAuthoritySet(
+                    authority=ContributionAuthority(
                         provider_binding=None,
                         descriptor=descriptor,
                         owner_id=plugin_id,

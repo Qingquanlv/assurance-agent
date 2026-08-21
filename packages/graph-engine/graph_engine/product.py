@@ -13,6 +13,10 @@ from packaging.version import Version
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.models import PluginRequirement, ProductManifest
+from graph_engine.composition.contributions import (
+    ContributionValueError,
+    validate_contribution_values,
+)
 from graph_engine.errors import GraphEngineError
 from graph_engine.frozen_json import freeze_json
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
@@ -27,7 +31,6 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
     TaskRequest,
-    validate_contribution,
 )
 
 
@@ -184,40 +187,27 @@ def _assemble_selected_contributions(
     ports = RegistryPorts(ENGINE_API_VERSION)
     task_handlers: dict[str, TaskHandler] = {}
     commit_validators: dict[str, CommitValidator] = {}
-    resource_ids: set[str] = set()
     pending_bindings = []
-    for item in selected:
-        descriptor = item.selected_descriptor
-        contribution = item.contribute(ports)
-        validate_contribution(descriptor, contribution)
-        for capability_id, handler in contribution.task_handlers.items():
-            if capability_id in task_handlers or capability_id in commit_validators:
-                raise ProductResolutionError(f"duplicate legacy capability id: {capability_id}")
-            task_handlers[capability_id] = handler
-        for capability_id, validator in contribution.commit_validators.items():
-            if capability_id in task_handlers or capability_id in commit_validators:
-                raise ProductResolutionError(f"duplicate legacy capability id: {capability_id}")
-            commit_validators[capability_id] = validator
-        for resource in contribution.resources:
-            if resource.resource_id in resource_ids:
-                raise ProductResolutionError(f"duplicate legacy resource id: {resource.resource_id}")
-            resource_ids.add(resource.resource_id)
+    contributed = tuple((item.selected_descriptor, item.contribute(ports)) for item in selected)
+    try:
+        validate_contribution_values(
+            tuple(
+                (descriptor.plugin_id, descriptor, contribution) for descriptor, contribution in contributed
+            )
+        )
+    except ContributionValueError as error:
+        message = (
+            str(error)
+            .replace("unknown binding resource", "unknown legacy binding resource")
+            .replace("unknown target capability for binding", "unknown legacy binding target")
+        )
+        raise ProductResolutionError(message) from error
+    for _descriptor, contribution in contributed:
+        task_handlers.update(contribution.task_handlers)
+        commit_validators.update(contribution.commit_validators)
         pending_bindings.extend(contribution.bindings)
     for binding in pending_bindings:
-        if binding.capability_id in task_handlers or binding.capability_id in commit_validators:
-            raise ProductResolutionError(f"duplicate legacy capability id: {binding.capability_id}")
-        target = task_handlers.get(binding.target_capability_id)
-        if target is None:
-            raise ProductResolutionError(f"unknown legacy binding target: {binding.target_capability_id}")
-        if len(binding.resource_ids) != len(set(binding.resource_ids)):
-            raise ProductResolutionError(f"duplicate legacy binding resource: {binding.capability_id}")
-        missing_resources = tuple(
-            resource_id for resource_id in binding.resource_ids if resource_id not in resource_ids
-        )
-        if missing_resources:
-            raise ProductResolutionError(
-                f"unknown legacy binding resource for {binding.capability_id}: {missing_resources[0]}"
-            )
+        target = task_handlers[binding.target_capability_id]
         task_handlers[binding.capability_id] = _LegacyBoundTaskHandler(
             alias_id=binding.capability_id,
             target_capability_id=binding.target_capability_id,

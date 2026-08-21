@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import math
 from pathlib import Path
@@ -9,6 +10,10 @@ import pytest
 from pydantic import ValidationError
 
 from graph_engine.composition import (
+    ExecutableBindingMode,
+    ExecutableKind,
+    ExecutableModuleProvenance,
+    ExecutableProvenance,
     InvocationLock,
     LockedDependency,
     LockedPlugin,
@@ -17,7 +22,10 @@ from graph_engine.composition import (
     LockedSourceFile,
     RegistryDigests,
     RegistryProjections,
+    SourceKey,
+    SourceRole,
 )
+from graph_engine.composition.provenance import StandardLoader
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import PluginDependency, PluginDescriptor, ProviderSource
@@ -29,6 +37,20 @@ _C = "c" * 64
 _D = "d" * 64
 _E = "e" * 64
 _F = "f" * 64
+
+
+def _empty_contribution(plugin_id: str, source_digest: str) -> dict[str, object]:
+    return {
+        "owner_id": plugin_id,
+        "source_key": {"role": "plugin", "owner_id": plugin_id},
+        "source_digest": source_digest,
+        "task_handlers": [],
+        "commit_validators": [],
+        "schemas": [],
+        "resources": [],
+        "effects": [],
+        "bindings": [],
+    }
 
 
 def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
@@ -115,14 +137,64 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
         plugin_version="2.0.0",
         engine_api="1.0",
         dependencies=(),
-        task_handlers=(),
+        task_handlers=("toy.runtime.greet",),
         commit_validators=(),
+        resources=("toy.runtime.prompt",),
+        bindings=("toy.runtime.alias",),
     )
+    prompt = b"prompt"
+    prompt_digest = hashlib.sha256(prompt).hexdigest()
+    task_provenance = ExecutableProvenance.create(
+        kind=ExecutableKind.TASK_HANDLER,
+        registry_id="toy.runtime.greet",
+        owner_id="toy.runtime",
+        source_key=SourceKey(SourceRole.PLUGIN, "toy.runtime"),
+        source_digest=_C,
+        module=ExecutableModuleProvenance(
+            module_name="toy_runtime.plugin",
+            standard_loader=StandardLoader.SOURCE,
+            standard_is_package=False,
+            relative_origin="toy_runtime/plugin.py",
+            authenticated_locations=(),
+            physical_sha256=_D,
+            source_digest=_C,
+        ),
+        callable_path="toy_runtime.plugin:Handler.execute",
+        binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
+    )
+    contribution = {
+        **_empty_contribution("toy.runtime", _C),
+        "task_handlers": [
+            {
+                "capability_id": "toy.runtime.greet",
+                "implementation": task_provenance.projection(),
+                "implementation_digest": task_provenance.digest,
+            }
+        ],
+        "resources": [
+            {
+                "resource_id": "toy.runtime.prompt",
+                "media_type": "text/plain",
+                "content_base64": base64.b64encode(prompt).decode("ascii"),
+                "content_sha256": prompt_digest,
+            }
+        ],
+        "bindings": [
+            {
+                "capability_id": "toy.runtime.alias",
+                "target_capability_id": "toy.runtime.greet",
+                "data": {"locale": "zh-CN"},
+                "resource_ids": ["toy.runtime.prompt"],
+            }
+        ],
+    }
     plugin = LockedPlugin(
         plugin_id="toy.runtime",
         plugin_version="2.0.0",
         descriptor=descriptor,
         descriptor_digest=canonical_digest(descriptor.model_dump(mode="json")),
+        contribution=contribution,
+        contribution_digest=canonical_digest(contribution),
         dependencies=(),
         source=plugin_source,
     )
@@ -137,15 +209,30 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
             {
                 "capability_id": "toy.runtime.alias",
                 "data": {"locale": "zh-CN"},
-                "implementation_digest": _C,
+                "implementation_digest": task_provenance.digest,
                 "kind": "binding",
                 "owner_id": "toy.runtime",
                 "resource_ids": ["toy.runtime.prompt"],
                 "target_capability_id": "toy.runtime.greet",
-            }
+                "target_implementation": task_provenance.projection(),
+            },
+            {
+                "capability_id": "toy.runtime.greet",
+                "implementation": task_provenance.projection(),
+                "implementation_digest": task_provenance.digest,
+                "kind": "task_handler",
+                "owner_id": "toy.runtime",
+            },
         ],
         schemas=[],
-        resources=[{"resource_id": "toy.runtime.prompt", "sha256": _D}],
+        resources=[
+            {
+                "resource_id": "toy.runtime.prompt",
+                "owner_id": "toy.runtime",
+                "media_type": "text/plain",
+                "sha256": prompt_digest,
+            }
+        ],
         effects=[],
     )
     registry_digests = RegistryDigests(
@@ -162,16 +249,33 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
                 {
                     "capability_id": "toy.runtime.alias",
                     "data": {"locale": "zh-CN"},
-                    "implementation_digest": _C,
+                    "implementation_digest": task_provenance.digest,
                     "kind": "binding",
                     "owner_id": "toy.runtime",
                     "resource_ids": ["toy.runtime.prompt"],
                     "target_capability_id": "toy.runtime.greet",
-                }
+                    "target_implementation": task_provenance.projection(),
+                },
+                {
+                    "capability_id": "toy.runtime.greet",
+                    "implementation": task_provenance.projection(),
+                    "implementation_digest": task_provenance.digest,
+                    "kind": "task_handler",
+                    "owner_id": "toy.runtime",
+                },
             ]
         ),
         schemas=canonical_digest([]),
-        resources=canonical_digest([{"resource_id": "toy.runtime.prompt", "sha256": _D}]),
+        resources=canonical_digest(
+            [
+                {
+                    "resource_id": "toy.runtime.prompt",
+                    "owner_id": "toy.runtime",
+                    "media_type": "text/plain",
+                    "sha256": prompt_digest,
+                }
+            ]
+        ),
         effects=canonical_digest([]),
     )
     configuration = {"toy.runtime": {"greeting": "你好"}}
@@ -179,11 +283,12 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
         {
             "capability_id": "toy.runtime.alias",
             "data": {"locale": "zh-CN"},
-            "implementation_digest": _C,
+            "implementation_digest": task_provenance.digest,
             "kind": "binding",
             "owner_id": "toy.runtime",
             "resource_ids": ["toy.runtime.prompt"],
             "target_capability_id": "toy.runtime.greet",
+            "target_implementation": task_provenance.projection(),
         }
     ]
     compiled_workflow = {
@@ -311,6 +416,8 @@ def test_invocation_lock_recomputes_exact_dependency_closure() -> None:
         plugin_version=selected.plugin_version,
         descriptor=descriptor,
         descriptor_digest=canonical_digest(descriptor_projection),
+        contribution=selected.contribution,
+        contribution_digest=selected.contribution_digest,
         dependencies=(LockedDependency(plugin_id="toy.missing", version_specifier=">=1"),),
         source=selected.source,
     )
@@ -356,6 +463,8 @@ def _locked_plugin(
         plugin_version=version,
         descriptor=descriptor,
         descriptor_digest=canonical_digest(descriptor.model_dump(mode="json")),
+        contribution=_empty_contribution(plugin_id, _C),
+        contribution_digest=canonical_digest(_empty_contribution(plugin_id, _C)),
         dependencies=tuple(
             LockedDependency(
                 plugin_id=dependency.plugin_id,
@@ -482,6 +591,8 @@ def test_locked_plugin_authenticates_id_and_version_against_source_identity() ->
             plugin_version="2.0.0",
             descriptor=descriptor,
             descriptor_digest=descriptor_digest,
+            contribution=_empty_contribution("toy.other", _A),
+            contribution_digest=canonical_digest(_empty_contribution("toy.other", _A)),
             dependencies=(),
             source=source,
         )
@@ -491,8 +602,85 @@ def test_locked_plugin_authenticates_id_and_version_against_source_identity() ->
             plugin_version="3.0.0",
             descriptor=descriptor,
             descriptor_digest=descriptor_digest,
+            contribution=_empty_contribution("toy.runtime", _A),
+            contribution_digest=canonical_digest(_empty_contribution("toy.runtime", _A)),
             dependencies=(),
             source=source,
+        )
+
+
+def test_locked_plugin_contribution_authority_binds_the_typed_source_key() -> None:
+    plugin = _lock().plugins[0]
+    contribution = thaw_json(plugin.contribution)
+    assert isinstance(contribution, dict)
+    contribution["source_key"] = {"role": "config", "owner_id": plugin.plugin_id}
+
+    with pytest.raises(ValidationError, match="contribution (source key|provenance)"):
+        LockedPlugin(
+            **plugin.model_dump(exclude={"contribution", "contribution_digest"}),
+            contribution=contribution,
+            contribution_digest=canonical_digest(contribution),
+        )
+
+
+def test_invocation_lock_rejects_self_consistent_missing_binding_target() -> None:
+    lock = _lock()
+    plugin = lock.plugins[0]
+    descriptor = plugin.descriptor.model_copy(update={"task_handlers": ()})
+    contribution = thaw_json(plugin.contribution)
+    assert isinstance(contribution, dict)
+    contribution["task_handlers"] = []
+    forged_plugin = LockedPlugin(
+        plugin_id=plugin.plugin_id,
+        plugin_version=plugin.plugin_version,
+        descriptor=descriptor,
+        descriptor_digest=canonical_digest(descriptor.model_dump(mode="json")),
+        contribution=contribution,
+        contribution_digest=canonical_digest(contribution),
+        dependencies=plugin.dependencies,
+        source=plugin.source,
+    )
+    capabilities = [
+        entry
+        for entry in thaw_json(lock.registry_projections.capabilities)
+        if isinstance(entry, dict) and entry.get("kind") == "binding"
+    ]
+    projections = RegistryProjections(
+        sources=thaw_json(lock.registry_projections.sources),
+        capabilities=capabilities,
+        schemas=thaw_json(lock.registry_projections.schemas),
+        resources=thaw_json(lock.registry_projections.resources),
+        effects=thaw_json(lock.registry_projections.effects),
+    )
+    digests = lock.registry_digests.model_copy(update={"capabilities": canonical_digest(capabilities)})
+
+    with pytest.raises(ValidationError, match="unknown target capability"):
+        _recreate_lock(
+            lock,
+            plugins=(forged_plugin,),
+            registry_projections=projections,
+            registry_digests=digests,
+        )
+
+
+def test_invocation_lock_rejects_self_consistent_blank_resource_media_type() -> None:
+    lock = _lock()
+    plugin = lock.plugins[0]
+    contribution = thaw_json(plugin.contribution)
+    assert isinstance(contribution, dict)
+    resources = contribution["resources"]
+    assert isinstance(resources, list) and isinstance(resources[0], dict)
+    resources[0]["media_type"] = ""
+    with pytest.raises(ValidationError, match="resource.*media type"):
+        LockedPlugin(
+            plugin_id=plugin.plugin_id,
+            plugin_version=plugin.plugin_version,
+            descriptor=plugin.descriptor,
+            descriptor_digest=plugin.descriptor_digest,
+            contribution=contribution,
+            contribution_digest=canonical_digest(contribution),
+            dependencies=plugin.dependencies,
+            source=plugin.source,
         )
 
 
@@ -535,7 +723,7 @@ def test_lock_rejects_an_extra_unsupported_executable_projection_kind() -> None:
     )
     digests = lock.registry_digests.model_copy(update={"capabilities": canonical_digest(capabilities)})
 
-    with pytest.raises(ValidationError, match="unsupported kind"):
+    with pytest.raises(ValidationError, match="contribution authority"):
         _recreate_lock(
             lock,
             registry_projections=projections,

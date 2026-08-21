@@ -371,6 +371,21 @@ class DeclarativeProduct:
     snapshot: SourceSnapshot
 
 
+def _authenticate_frozen_config_contribution(
+    snapshot: SourceSnapshot,
+    descriptor: PluginDescriptor,
+    contribution: PluginContribution,
+) -> None:
+    """Re-derive one config contribution from its frozen authenticated bytes."""
+
+    if snapshot.identity.kind is not SourceKind.CONFIG_TREE:
+        raise ValueError("declarative contribution requires a config-tree snapshot")
+    document = _parse_plugin_document(_source_file(snapshot, _PLUGIN_MANIFEST).content)
+    expected_descriptor, expected_contribution = _plugin_values(document, snapshot)
+    if descriptor != expected_descriptor or contribution != expected_contribution:
+        raise ValueError("declarative contribution disagrees with its frozen source bytes")
+
+
 def load_config_tree(source: ConfigTreePluginSource) -> DeclarativePlugin:
     try:
         probe = capture_explicit_file(

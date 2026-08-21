@@ -12,11 +12,17 @@ from graph_engine.graph.compiler import CompileError
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
     CapabilityBindingContribution,
+    EffectApplyResult,
+    EffectIntent,
+    EffectPolicy,
+    EffectReconcileResult,
+    EffectRegistration,
     PluginContribution,
     PluginDescriptor,
     PluginProvider,
     RegistryPorts,
     ResourceContribution,
+    SchemaContribution,
     TaskContext,
     TaskOutcome,
     TaskRequest,
@@ -474,6 +480,117 @@ def test_legacy_resolved_binding_rejects_an_unknown_resource(
 
     with pytest.raises(ProductResolutionError, match="unknown legacy binding resource"):
         resolve_product(product_provider, {"toy.one": BindingProvider()})
+
+
+class _EffectHandler:
+    async def apply(self, _intent: EffectIntent, _key: str) -> EffectApplyResult:
+        return EffectApplyResult.applied({"ok": True})
+
+    async def reconcile(self, _intent: EffectIntent, _key: str) -> EffectReconcileResult:
+        return EffectReconcileResult.applied({"ok": True})
+
+
+@pytest.mark.parametrize(
+    ("descriptor", "contribution", "message"),
+    [
+        (
+            _descriptor(task_handlers=("toy.other.ping",)),
+            PluginContribution(task_handlers={"toy.other.ping": _PingHandler()}),
+            "task handler id is not owned by toy.one",
+        ),
+        (
+            _descriptor(),
+            PluginContribution(task_handlers={"toy.one.ping": object()}),
+            "task handler has no execute method",
+        ),
+        (
+            PluginDescriptor(
+                schema_version="1",
+                source=None,
+                plugin_id="toy.one",
+                plugin_version="1.0.0",
+                engine_api="1.0",
+                task_handlers=("toy.one.ping",),
+                commit_validators=("toy.one.validate",),
+            ),
+            PluginContribution(
+                task_handlers={"toy.one.ping": _PingHandler()},
+                commit_validators={"toy.one.validate": object()},
+            ),
+            "commit validator has no validate method",
+        ),
+        (
+            PluginDescriptor(
+                schema_version="1",
+                source=None,
+                plugin_id="toy.one",
+                plugin_version="1.0.0",
+                engine_api="1.0",
+                task_handlers=("toy.one.ping",),
+                commit_validators=(),
+                effects=("toy.one.audit",),
+            ),
+            PluginContribution(
+                task_handlers={"toy.one.ping": _PingHandler()},
+                effects=(
+                    EffectRegistration(
+                        "toy.one.audit",
+                        "toy.one.missing-intent",
+                        "toy.one.missing-receipt",
+                        _EffectHandler(),
+                        EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
+                    ),
+                ),
+            ),
+            "unknown effect intent schema",
+        ),
+        (
+            PluginDescriptor(
+                schema_version="1",
+                source=None,
+                plugin_id="toy.one",
+                plugin_version="1.0.0",
+                engine_api="1.0",
+                task_handlers=("toy.one.ping",),
+                commit_validators=(),
+                schemas=("toy.one.intent", "toy.one.receipt"),
+                effects=("toy.one.audit",),
+            ),
+            PluginContribution(
+                task_handlers={"toy.one.ping": _PingHandler()},
+                schemas=(
+                    SchemaContribution("toy.one.intent", "application/schema+json", b"{}"),
+                    SchemaContribution("toy.one.receipt", "application/schema+json", b"{}"),
+                ),
+                effects=(
+                    EffectRegistration(
+                        "toy.one.audit",
+                        "toy.one.intent",
+                        "toy.one.receipt",
+                        object(),
+                        EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
+                    ),
+                ),
+            ),
+            "effect handler must provide apply and reconcile",
+        ),
+    ],
+)
+def test_phase_one_private_bridge_uses_closed_shared_contribution_validation(
+    product_provider: _ProductProvider,
+    descriptor: PluginDescriptor,
+    contribution: PluginContribution,
+    message: str,
+) -> None:
+    class MalformedProvider:
+        def descriptor(self) -> PluginDescriptor:
+            return descriptor
+
+        def contribute(self, _ports: RegistryPorts) -> PluginContribution:
+            return contribution
+
+    with pytest.raises(ProductResolutionError, match=message):
+        resolve_product(product_provider, {"toy.one": MalformedProvider()})
 
 
 @pytest.mark.parametrize("product_id", ["toy", "Toy.product", "toy_product.main", "toy/product"])

@@ -25,7 +25,7 @@ from graph_engine.composition import (
 from graph_engine.composition.models import (
     AuthenticatedContribution,
     ExecutableAuthority,
-    ExecutableAuthoritySet,
+    ContributionAuthority,
 )
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
@@ -182,7 +182,7 @@ def _registry(
             },
         }
         ordered_proofs = tuple(sorted(proofs, key=lambda item: (item.registry_id, item.kind.value)))
-        authority_set = ExecutableAuthoritySet(
+        authority_set = ContributionAuthority(
             provider_binding=object(),
             descriptor=descriptor,
             owner_id=owner_id,
@@ -212,7 +212,7 @@ def _registry(
                 descriptor=descriptor,
                 contribution=contribution,
                 executables=ordered_proofs,
-                authority_set=authority_set,
+                authority=authority_set,
             )
         )
     return _build_registries(tuple(sources), tuple(authenticated), tuple(order)).capabilities

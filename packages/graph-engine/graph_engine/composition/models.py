@@ -485,8 +485,8 @@ class ExecutableAuthority:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class ExecutableAuthoritySet:
-    """One immutable contribution generation retained by registry entries."""
+class ContributionAuthority:
+    """One immutable six-category contribution generation for a selected plugin."""
 
     provider_binding: object | None
     descriptor: PluginDescriptor
@@ -498,25 +498,25 @@ class ExecutableAuthoritySet:
 
     def __post_init__(self) -> None:
         if type(self.descriptor) is not PluginDescriptor:
-            raise TypeError("executable authority set requires an exact static PluginDescriptor")
+            raise TypeError("contribution authority requires an exact static PluginDescriptor")
         if self.descriptor.plugin_id != self.owner_id:
-            raise ValueError("executable authority set owner disagrees with its descriptor")
+            raise ValueError("contribution authority owner disagrees with its descriptor")
         if self.source_key.owner_id != self.owner_id or self.source_key.role not in {
             SourceRole.PLUGIN,
             SourceRole.CONFIG,
         }:
-            raise ValueError("executable authority set source key disagrees with its owner")
-        _validate_sha256(self.source_digest, "executable authority source digest")
+            raise ValueError("contribution authority source key disagrees with its owner")
+        _validate_sha256(self.source_digest, "contribution authority source digest")
         if type(self.contribution) is not PluginContribution:
-            raise TypeError("executable authority set requires an exact PluginContribution")
+            raise TypeError("contribution authority requires an exact PluginContribution")
         validate_contribution(self.descriptor, self.contribution)
         values = tuple(self.authorities)
         if any(not isinstance(item, ExecutableAuthority) for item in values):
-            raise TypeError("executable authority set is closed")
+            raise TypeError("contribution authority executable proofs are closed")
         keys = tuple((item.provenance.kind, item.provenance.registry_id) for item in values)
         expected = _descriptor_executable_keys(self.descriptor)
         if keys != expected:
-            raise ValueError("executable authority set disagrees with declared executable keys")
+            raise ValueError("contribution authority disagrees with declared executable keys")
         contribution_objects = _contribution_executable_objects(self.contribution)
         if tuple(sorted(contribution_objects, key=lambda item: (item[1], item[0].value))) != expected:
             raise ValueError("raw contribution disagrees with declared executable keys")
@@ -536,6 +536,16 @@ class ExecutableAuthoritySet:
         elif self.provider_binding is None:
             raise ValueError("wheel contribution requires an owning provider binding")
         object.__setattr__(self, "authorities", values)
+
+    @property
+    def projection(self) -> FrozenJSONValue:
+        from graph_engine.composition.contributions import contribution_authority_projection
+
+        return freeze_json(contribution_authority_projection(self))
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(cast(JSONValue, thaw_json(self.projection)))
 
     @property
     def keys(self) -> tuple[ExecutableKey, ...]:
@@ -562,7 +572,7 @@ class AuthenticatedContribution:
     descriptor: PluginDescriptor
     contribution: PluginContribution
     executables: tuple[ExecutableProvenance, ...]
-    authority_set: ExecutableAuthoritySet
+    authority: ContributionAuthority
 
     def __post_init__(self) -> None:
         _validate_registry_id(self.owner_id, "authenticated contribution owner id")
@@ -574,14 +584,14 @@ class AuthenticatedContribution:
         _validate_sha256(self.source_digest, "authenticated contribution source digest")
         if type(self.contribution) is not PluginContribution:
             raise TypeError("authenticated contribution requires an exact PluginContribution")
-        if not isinstance(self.authority_set, ExecutableAuthoritySet):
-            raise TypeError("authenticated contribution requires an executable authority generation")
+        if not isinstance(self.authority, ContributionAuthority):
+            raise TypeError("authenticated contribution requires a contribution authority generation")
         if (
-            self.authority_set.descriptor != self.descriptor
-            or self.authority_set.owner_id != self.owner_id
-            or self.authority_set.source_key != self.source_key
-            or self.authority_set.source_digest != self.source_digest
-            or self.authority_set.contribution is not self.contribution
+            self.authority.descriptor != self.descriptor
+            or self.authority.owner_id != self.owner_id
+            or self.authority.source_key != self.source_key
+            or self.authority.source_digest != self.source_digest
+            or self.authority.contribution is not self.contribution
         ):
             raise ValueError("authenticated contribution disagrees with its authority generation")
         values = tuple(self.executables)
@@ -593,7 +603,7 @@ class AuthenticatedContribution:
         if len(keys) != len(set(keys)):
             raise ValueError("authenticated executable proofs must be unique")
         expected = _descriptor_executable_keys(self.descriptor)
-        if keys != expected or keys != self.authority_set.keys:
+        if keys != expected or keys != self.authority.keys:
             raise ValueError("authenticated executable proofs are incomplete or contain extras")
         for item in values:
             if (
@@ -621,7 +631,7 @@ class TaskHandlerEntry:
     owner_id: str
     handler: TaskHandler
     provenance: ExecutableProvenance
-    authority_set: ExecutableAuthoritySet = dataclass_field(compare=False, repr=False)
+    authority: ContributionAuthority = dataclass_field(compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.capability_id, self.owner_id, "task handler")
@@ -634,7 +644,7 @@ class TaskHandlerEntry:
             self.owner_id,
         )
         _validate_entry_authority(
-            self.authority_set,
+            self.authority,
             self.handler,
             self.provenance,
         )
@@ -646,7 +656,7 @@ class CommitValidatorEntry:
     owner_id: str
     validator: CommitValidator
     provenance: ExecutableProvenance
-    authority_set: ExecutableAuthoritySet = dataclass_field(compare=False, repr=False)
+    authority: ContributionAuthority = dataclass_field(compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.capability_id, self.owner_id, "commit validator")
@@ -659,7 +669,7 @@ class CommitValidatorEntry:
             self.owner_id,
         )
         _validate_entry_authority(
-            self.authority_set,
+            self.authority,
             self.validator,
             self.provenance,
         )
@@ -870,7 +880,7 @@ class EffectEntry:
     policy: EffectPolicy
     apply_provenance: ExecutableProvenance
     reconcile_provenance: ExecutableProvenance
-    authority_set: ExecutableAuthoritySet = dataclass_field(compare=False, repr=False)
+    authority: ContributionAuthority = dataclass_field(compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.kind, self.owner_id, "effect")
@@ -889,7 +899,7 @@ class EffectEntry:
             self.owner_id,
         )
         _validate_entry_authority(
-            self.authority_set,
+            self.authority,
             self.handler,
             self.apply_provenance,
         )
@@ -900,24 +910,24 @@ class EffectEntry:
             self.owner_id,
         )
         _validate_entry_authority(
-            self.authority_set,
+            self.authority,
             self.handler,
             self.reconcile_provenance,
         )
 
 
 def _validate_entry_authority(
-    authority_set: ExecutableAuthoritySet,
+    authority: ContributionAuthority,
     executable: object,
     provenance: ExecutableProvenance,
 ) -> None:
-    if not isinstance(authority_set, ExecutableAuthoritySet):
-        raise TypeError("executable registry entry requires an authority generation")
+    if not isinstance(authority, ContributionAuthority):
+        raise TypeError("executable registry entry requires a contribution authority generation")
     try:
-        authority = authority_set.authority(provenance.kind, provenance.registry_id)
+        executable_authority = authority.authority(provenance.kind, provenance.registry_id)
     except KeyError as error:
         raise ValueError("executable registry entry is missing its declared authority") from error
-    if authority.executable is not executable or authority.provenance != provenance:
+    if executable_authority.executable is not executable or executable_authority.provenance != provenance:
         raise ValueError("executable registry entry disagrees with its authority generation")
 
 
@@ -1384,6 +1394,10 @@ class FrozenComposition:
     registries: RegistrySet
     workflow: CompiledWorkflow
     configuration: object
+    contribution_authorities: Mapping[str, ContributionAuthority] = dataclass_field(
+        compare=False,
+        repr=False,
+    )
     providers: Mapping[str, object]
     product_provider: object | None
     declarative_sources: Mapping[str, SourceSnapshot]
@@ -1392,6 +1406,8 @@ class FrozenComposition:
 
     def __post_init__(self) -> None:
         from graph_engine.composition.lock import InvocationLock, authenticate_composition_lock
+        from graph_engine.composition.contributions import validate_registry_contribution_authorities
+        from graph_engine.composition.declarative import _authenticate_frozen_config_contribution
         from graph_engine.composition.sources import AuthenticatedProviderBinding
         from graph_engine.graph.compiler import CompiledWorkflow
 
@@ -1407,6 +1423,7 @@ class FrozenComposition:
         if not isinstance(self.lock, InvocationLock):
             raise TypeError("frozen composition lock must be an InvocationLock")
         providers = _immutable_mapping(self.providers)
+        contribution_authorities = _immutable_mapping(self.contribution_authorities)
         declarative_sources = _immutable_mapping(self.declarative_sources)
         if any(not isinstance(snapshot, SourceSnapshot) for snapshot in declarative_sources.values()):
             raise TypeError("declarative source view must contain SourceSnapshot values")
@@ -1415,9 +1432,42 @@ class FrozenComposition:
             raise TypeError("frozen composition configuration must be a mapping")
         object.__setattr__(self, "descriptors", descriptors)
         object.__setattr__(self, "providers", providers)
+        object.__setattr__(self, "contribution_authorities", contribution_authorities)
         object.__setattr__(self, "declarative_sources", declarative_sources)
         object.__setattr__(self, "configuration", configuration)
 
+        for owner_id, authority in contribution_authorities.items():
+            if authority.source_key.role is SourceRole.PLUGIN:
+                provider = providers.get(owner_id)
+                if not isinstance(provider, AuthenticatedProviderBinding):
+                    raise ValueError(
+                        f"wheel contribution lacks its authenticated provider binding: {owner_id}"
+                    )
+                try:
+                    provider.authenticate_contribution(authority)
+                except Exception as error:
+                    raise ValueError(
+                        f"wheel contribution provenance is not currently authenticated: {owner_id}"
+                    ) from error
+            else:
+                snapshot = declarative_sources.get(owner_id)
+                if not isinstance(snapshot, SourceSnapshot):
+                    raise ValueError(f"declarative contribution lacks its frozen source bytes: {owner_id}")
+                try:
+                    _authenticate_frozen_config_contribution(
+                        snapshot,
+                        authority.descriptor,
+                        authority.contribution,
+                    )
+                except Exception as error:
+                    raise ValueError(
+                        f"declarative contribution authority is not authenticated: {owner_id}"
+                    ) from error
+        validate_registry_contribution_authorities(
+            self.registries,
+            contribution_authorities,
+            descriptors,
+        )
         authenticate_composition_lock(
             self.manifest,
             descriptors,
@@ -1425,6 +1475,7 @@ class FrozenComposition:
             self.workflow,
             configuration,
             self.lock,
+            contribution_authorities,
         )
         expected_digest = canonical_digest({"lock_digest": self.lock.digest})
         if self.digest != expected_digest:
@@ -1462,21 +1513,21 @@ class FrozenComposition:
 
         executable_entries = (
             *(
-                (entry.owner_id, entry.handler, entry.provenance, entry.authority_set)
+                (entry.owner_id, entry.handler, entry.provenance, entry.authority)
                 for entry in self.registries.capabilities.entries.values()
                 if isinstance(entry, TaskHandlerEntry)
             ),
             *(
-                (entry.owner_id, entry.validator, entry.provenance, entry.authority_set)
+                (entry.owner_id, entry.validator, entry.provenance, entry.authority)
                 for entry in self.registries.capabilities.entries.values()
                 if isinstance(entry, CommitValidatorEntry)
             ),
             *(
-                (entry.owner_id, entry.handler, entry.apply_provenance, entry.authority_set)
+                (entry.owner_id, entry.handler, entry.apply_provenance, entry.authority)
                 for entry in self.registries.effects.entries.values()
             ),
             *(
-                (entry.owner_id, entry.handler, entry.reconcile_provenance, entry.authority_set)
+                (entry.owner_id, entry.handler, entry.reconcile_provenance, entry.authority)
                 for entry in self.registries.effects.entries.values()
             ),
         )
@@ -1491,21 +1542,19 @@ class FrozenComposition:
         }
         if actual_executables != expected_executables:
             raise ValueError("composition registries disagree with declared executable set")
-        generations: dict[str, ExecutableAuthoritySet] = {}
-        for owner_id, _, _, authority_set in executable_entries:
-            previous = generations.setdefault(owner_id, authority_set)
-            if previous is not authority_set:
+        for owner_id, _, _, authority in executable_entries:
+            if contribution_authorities.get(owner_id) is not authority:
                 raise ValueError(
-                    f"composition registry entries mix executable authority generations: {owner_id}"
+                    f"composition registry entries mix contribution authority generations: {owner_id}"
                 )
-        for owner_id, executable, provenance, authority_set in executable_entries:
+        for owner_id, executable, provenance, authority in executable_entries:
             provider = providers.get(owner_id)
             if not isinstance(provider, AuthenticatedProviderBinding):
                 raise ValueError(
                     f"executable registry owner lacks an authenticated provider binding: {owner_id}"
                 )
             try:
-                provider.authenticate_executable(authority_set, executable, provenance)
+                provider.authenticate_executable(authority, executable, provenance)
             except Exception as error:
                 raise ValueError(
                     f"executable registry provenance is not currently authenticated: {provenance.registry_id}"
@@ -1521,6 +1570,7 @@ class FrozenComposition:
         *,
         descriptors: tuple[PluginDescriptor, ...] = (),
         configuration: object | None = None,
+        contribution_authorities: Mapping[str, ContributionAuthority] | None = None,
         providers: Mapping[str, object] | None = None,
         product_provider: object | None = None,
         declarative_sources: Mapping[str, SourceSnapshot] | None = None,
@@ -1535,6 +1585,7 @@ class FrozenComposition:
             workflow,
             frozen_configuration,
             lock,
+            {} if contribution_authorities is None else contribution_authorities,
         )
         digest = canonical_digest({"lock_digest": lock.digest})
         return cls(
@@ -1543,6 +1594,7 @@ class FrozenComposition:
             registries=registries,
             workflow=workflow,
             configuration=frozen_configuration,
+            contribution_authorities=({} if contribution_authorities is None else contribution_authorities),
             providers={} if providers is None else providers,
             product_provider=product_provider,
             declarative_sources={} if declarative_sources is None else declarative_sources,

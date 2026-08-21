@@ -25,7 +25,7 @@ from graph_engine.composition import (
 from graph_engine.composition.models import (
     AuthenticatedContribution,
     ExecutableAuthority,
-    ExecutableAuthoritySet,
+    ContributionAuthority,
 )
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
@@ -127,7 +127,7 @@ def registry() -> CapabilityRegistry:
         (ExecutableKind.COMMIT_VALIDATOR, "toy.one.clean"): contribution.commit_validators["toy.one.clean"],
         (ExecutableKind.TASK_HANDLER, "toy.one.ping"): contribution.task_handlers["toy.one.ping"],
     }
-    authority_set = ExecutableAuthoritySet(
+    authority_set = ContributionAuthority(
         provider_binding=object(),
         descriptor=descriptor,
         owner_id="toy.one",
@@ -152,7 +152,7 @@ def registry() -> CapabilityRegistry:
         descriptor=descriptor,
         contribution=contribution,
         executables=proofs,
-        authority_set=authority_set,
+        authority=authority_set,
     )
     return _build_registries((source,), (authenticated,), ("toy.one",)).capabilities
 

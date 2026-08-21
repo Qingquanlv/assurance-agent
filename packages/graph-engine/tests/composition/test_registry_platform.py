@@ -16,6 +16,7 @@ import yaml
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.composition import (
+    CapabilityBindingEntry,
     CapabilityRegistry,
     CommitValidatorEntry,
     ConfigTreePluginSource,
@@ -32,17 +33,21 @@ from graph_engine.composition import (
     ProductManifest,
     RegistryPlatform,
     RegistrySet,
+    ResourceEntry,
+    ResourceRegistry,
     ResolutionError,
     ResolutionRequest,
     SourceKey,
     SourceRole,
+    SchemaEntry,
+    SchemaRegistry,
     TaskHandlerEntry,
     WheelPluginSource,
     WheelProductSource,
 )
 from graph_engine.composition.dependencies import DependencyConflict
 from graph_engine.composition.lock import _locked_source, build_invocation_lock
-from graph_engine.composition.models import ExecutableAuthority, ExecutableAuthoritySet
+from graph_engine.composition.models import ContributionAuthority, ExecutableAuthority
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import RegistryConflict
 from graph_engine.composition.resolver import _capture_editable_engine_snapshot
@@ -52,6 +57,7 @@ from graph_engine.frozen_json import thaw_json
 from graph_engine.graph.compiler import CompileError
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
+    CapabilityBindingContribution,
     CandidateWriteSet,
     EffectApplyResult,
     EffectIntent,
@@ -63,6 +69,7 @@ from graph_engine.plugin_api import (
     PluginDescriptor,
     ProviderSource,
     RegistryPorts,
+    ResourceContribution,
     SchemaContribution,
     TaskContext,
     TaskOutcome,
@@ -892,7 +899,7 @@ def test_public_frozen_composition_rejects_self_consistent_unowned_executable_pr
         binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
     )
     descriptor = composition.descriptors[0]
-    forged_authority_set = ExecutableAuthoritySet(
+    forged_authority_set = ContributionAuthority(
         provider_binding=object(),
         descriptor=descriptor,
         owner_id="toy.runtime",
@@ -916,7 +923,7 @@ def test_public_frozen_composition_rejects_self_consistent_unowned_executable_pr
         owner_id="toy.runtime",
         handler=forged_module.handler,
         provenance=forged_provenance,
-        authority_set=forged_authority_set,
+        authority=forged_authority_set,
     )
     forged_registries = RegistrySet(
         sources=composition.registries.sources,
@@ -943,6 +950,7 @@ def test_public_frozen_composition_rejects_self_consistent_unowned_executable_pr
         engine_snapshot=forged_registries.sources.entries[
             SourceKey(SourceRole.ENGINE, "graph.engine")
         ].snapshot,
+        contribution_authorities={"toy.runtime": forged_authority_set},
     )
 
     with pytest.raises(ValueError, match="provenance is not currently authenticated"):
@@ -953,6 +961,7 @@ def test_public_frozen_composition_rejects_self_consistent_unowned_executable_pr
             forged_lock,
             descriptors=composition.descriptors,
             configuration=composition.configuration,
+            contribution_authorities={"toy.runtime": forged_authority_set},
             providers=composition.providers,
             product_provider=composition.product_provider,
             declarative_sources=composition.declarative_sources,
@@ -1045,7 +1054,7 @@ def test_declared_executable_set_cannot_be_removed_from_a_self_consistent_lock(
         effects=effects,
     )
 
-    with pytest.raises(ValueError, match="declared executable"):
+    with pytest.raises(ValueError, match="contribution authority"):
         build_invocation_lock(
             manifest=composition.manifest,
             product_snapshot=forged_registries.sources.entries[
@@ -1059,6 +1068,272 @@ def test_declared_executable_set_cannot_be_removed_from_a_self_consistent_lock(
             engine_snapshot=forged_registries.sources.entries[
                 SourceKey(SourceRole.ENGINE, "graph.engine")
             ].snapshot,
+            contribution_authorities=composition.contribution_authorities,
+        )
+
+
+@pytest.mark.parametrize("registry_kind", ("schema", "resource", "binding"))
+@pytest.mark.parametrize("mutation", ("missing", "extra", "value"))
+def test_nonexecutable_contribution_authority_rejects_self_consistent_registry_lock_forges(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    registry_kind: str,
+    mutation: str,
+) -> None:
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id="toy.runtime",
+        plugin_version="1.0.0",
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=("toy.runtime.greet",),
+        commit_validators=(),
+        schemas=("toy.runtime.schema",),
+        resources=("toy.runtime.prompt", "toy.runtime.unused"),
+        bindings=("toy.runtime.alias",),
+    )
+    contribution = PluginContribution(
+        task_handlers={"toy.runtime.greet": _Handler()},
+        schemas=(
+            SchemaContribution(
+                "toy.runtime.schema",
+                "application/schema+json",
+                b'{"type":"object"}',
+            ),
+        ),
+        resources=(
+            ResourceContribution("toy.runtime.prompt", "text/plain", b"prompt"),
+            ResourceContribution("toy.runtime.unused", "text/plain", b"unused"),
+        ),
+        bindings=(
+            CapabilityBindingContribution(
+                capability_id="toy.runtime.alias",
+                target_capability_id="toy.runtime.greet",
+                data={"mode": "strict"},
+                resource_ids=("toy.runtime.prompt",),
+            ),
+        ),
+    )
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(_manifest(workflow=_passive_workflow())),
+        plugins={
+            "toy.runtime": _PluginProvider(
+                "toy.runtime",
+                contribution=contribution,
+                descriptors=(descriptor,),
+            )
+        },
+    )
+    assert product_source is not None
+    composition = platform.resolve(
+        ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],))
+    )
+    registries = composition.registries
+
+    if registry_kind == "schema":
+        entries = dict(registries.schemas.entries)
+        if mutation == "missing":
+            del entries["toy.runtime.schema"]
+        elif mutation == "extra":
+            entries["toy.runtime.extra-schema"] = SchemaEntry.from_content(
+                schema_id="toy.runtime.extra-schema",
+                owner_id="toy.runtime",
+                media_type="application/schema+json",
+                content=b"{}",
+            )
+        else:
+            entries["toy.runtime.schema"] = SchemaEntry.from_content(
+                schema_id="toy.runtime.schema",
+                owner_id="toy.runtime",
+                media_type="application/schema+json",
+                content=b'{"type":"string"}',
+            )
+        forged = replace(registries, schemas=SchemaRegistry(entries))
+    elif registry_kind == "resource":
+        entries = dict(registries.resources.entries)
+        if mutation == "missing":
+            del entries["toy.runtime.unused"]
+        elif mutation == "extra":
+            content = b"extra"
+            entries["toy.runtime.extra-resource"] = ResourceEntry(
+                resource_id="toy.runtime.extra-resource",
+                owner_id="toy.runtime",
+                media_type="text/plain",
+                content=content,
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+        else:
+            content = b"changed"
+            entries["toy.runtime.unused"] = ResourceEntry(
+                resource_id="toy.runtime.unused",
+                owner_id="toy.runtime",
+                media_type="text/plain",
+                content=content,
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+        forged = replace(registries, resources=ResourceRegistry(entries))
+    else:
+        capability_entries = dict(registries.capabilities.entries)
+        bindings = dict(registries.capabilities.bindings)
+        task_handlers = dict(registries.capabilities.task_handlers)
+        target_entry = capability_entries["toy.runtime.greet"]
+        assert isinstance(target_entry, TaskHandlerEntry)
+        if mutation == "missing":
+            del capability_entries["toy.runtime.alias"]
+            del bindings["toy.runtime.alias"]
+            del task_handlers["toy.runtime.alias"]
+        else:
+            capability_id = "toy.runtime.extra-alias" if mutation == "extra" else "toy.runtime.alias"
+            entry = CapabilityBindingEntry._from_target(
+                capability_id=capability_id,
+                owner_id="toy.runtime",
+                target_capability_id="toy.runtime.greet",
+                data={"mode": "forged"},
+                resource_ids=("toy.runtime.prompt",),
+                target=target_entry.handler,
+                target_provenance=target_entry.provenance,
+            )
+            capability_entries[capability_id] = entry
+            bindings[capability_id] = entry
+            task_handlers[capability_id] = entry.handler
+        forged = replace(
+            registries,
+            capabilities=CapabilityRegistry(
+                entries=capability_entries,
+                task_handlers=task_handlers,
+                commit_validators=registries.capabilities.commit_validators,
+                bindings=bindings,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="contribution authority"):
+        build_invocation_lock(
+            manifest=composition.manifest,
+            product_snapshot=forged.sources.entries[
+                SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
+            ].snapshot,
+            descriptors={item.plugin_id: item for item in composition.descriptors},
+            dependency_order=composition.lock.dependency_order,
+            registries=forged,
+            configuration=composition.configuration,
+            workflow=composition.workflow,
+            engine_snapshot=forged.sources.entries[SourceKey(SourceRole.ENGINE, "graph.engine")].snapshot,
+            contribution_authorities=composition.contribution_authorities,
+        )
+
+
+def test_frozen_composition_rejects_self_consistent_forged_raw_contribution_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id="toy.runtime",
+        plugin_version="1.0.0",
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=("toy.runtime.greet",),
+        commit_validators=(),
+        schemas=("toy.runtime.schema",),
+    )
+    contribution = PluginContribution(
+        task_handlers={"toy.runtime.greet": _Handler()},
+        schemas=(
+            SchemaContribution(
+                "toy.runtime.schema",
+                "application/schema+json",
+                b'{"type":"object"}',
+            ),
+        ),
+    )
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(_manifest(workflow=_passive_workflow())),
+        plugins={
+            "toy.runtime": _PluginProvider(
+                "toy.runtime",
+                contribution=contribution,
+                descriptors=(descriptor,),
+            )
+        },
+    )
+    assert product_source is not None
+    composition = platform.resolve(
+        ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],))
+    )
+    genuine = composition.contribution_authorities["toy.runtime"]
+    forged_raw = PluginContribution(
+        task_handlers=genuine.contribution.task_handlers,
+        schemas=(
+            SchemaContribution(
+                "toy.runtime.schema",
+                "application/schema+json",
+                b'{"type":"string"}',
+            ),
+        ),
+    )
+    forged_authority = replace(genuine, contribution=forged_raw)
+    task_entry = composition.registries.capabilities.entries["toy.runtime.greet"]
+    assert isinstance(task_entry, TaskHandlerEntry)
+    forged_task = TaskHandlerEntry(
+        capability_id=task_entry.capability_id,
+        owner_id=task_entry.owner_id,
+        handler=task_entry.handler,
+        provenance=task_entry.provenance,
+        authority=forged_authority,
+    )
+    capabilities = CapabilityRegistry(
+        entries={"toy.runtime.greet": forged_task},
+        task_handlers={"toy.runtime.greet": task_entry.handler},
+        commit_validators={},
+        bindings={},
+    )
+    schemas = SchemaRegistry(
+        {
+            "toy.runtime.schema": SchemaEntry.from_content(
+                schema_id="toy.runtime.schema",
+                owner_id="toy.runtime",
+                media_type="application/schema+json",
+                content=b'{"type":"string"}',
+            )
+        }
+    )
+    forged_registries = replace(
+        composition.registries,
+        capabilities=capabilities,
+        schemas=schemas,
+    )
+    forged_lock = build_invocation_lock(
+        manifest=composition.manifest,
+        product_snapshot=forged_registries.sources.entries[
+            SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
+        ].snapshot,
+        descriptors={item.plugin_id: item for item in composition.descriptors},
+        dependency_order=composition.lock.dependency_order,
+        registries=forged_registries,
+        configuration=composition.configuration,
+        workflow=composition.workflow,
+        engine_snapshot=forged_registries.sources.entries[
+            SourceKey(SourceRole.ENGINE, "graph.engine")
+        ].snapshot,
+        contribution_authorities={"toy.runtime": forged_authority},
+    )
+
+    with pytest.raises(ValueError, match="contribution provenance is not currently authenticated"):
+        FrozenComposition.freeze(
+            manifest=composition.manifest,
+            descriptors=composition.descriptors,
+            registries=forged_registries,
+            workflow=composition.workflow,
+            configuration=composition.configuration,
+            contribution_authorities={"toy.runtime": forged_authority},
+            providers=composition.providers,
+            product_provider=composition.product_provider,
+            declarative_sources=composition.declarative_sources,
+            lock=forged_lock,
         )
 
 
@@ -1150,6 +1425,7 @@ def test_same_source_executable_helper_drift_changes_snapshot_and_lock(
     ].snapshot.digest
 
     assert second_source_digest != first_source_digest
+    assert second.lock.plugins[0].contribution_digest != first.lock.plugins[0].contribution_digest
     assert second.lock.canonical_bytes != first.lock.canonical_bytes
     assert second.lock.digest != first.lock.digest
 
@@ -1373,6 +1649,7 @@ def test_frozen_composition_rejects_same_module_executable_substitution(
             composition.lock,
             descriptors=composition.descriptors,
             configuration=composition.configuration,
+            contribution_authorities=composition.contribution_authorities,
             providers=composition.providers,
             product_provider=composition.product_provider,
             declarative_sources=composition.declarative_sources,
@@ -1801,6 +2078,7 @@ def test_repeated_fresh_contributions_preserve_each_frozen_authority_generation(
             composition.lock,
             descriptors=composition.descriptors,
             configuration=composition.configuration,
+            contribution_authorities=composition.contribution_authorities,
             providers=composition.providers,
             product_provider=composition.product_provider,
             declarative_sources=composition.declarative_sources,
@@ -1845,32 +2123,21 @@ def test_frozen_composition_rejects_mixed_executable_authority_generations(
         bindings={},
     )
     mixed_registries = replace(first.registries, capabilities=mixed_capabilities)
-    mixed_lock = build_invocation_lock(
-        manifest=first.manifest,
-        product_snapshot=mixed_registries.sources.entries[
-            SourceKey(SourceRole.PRODUCT, first.manifest.product_id)
-        ].snapshot,
-        descriptors={item.plugin_id: item for item in first.descriptors},
-        dependency_order=first.lock.dependency_order,
-        registries=mixed_registries,
-        configuration=first.configuration,
-        workflow=first.workflow,
-        engine_snapshot=mixed_registries.sources.entries[
-            SourceKey(SourceRole.ENGINE, "graph.engine")
-        ].snapshot,
-    )
-
-    with pytest.raises(ValueError, match="mix executable authority generations"):
-        FrozenComposition.freeze(
-            first.manifest,
-            mixed_registries,
-            first.workflow,
-            mixed_lock,
-            descriptors=first.descriptors,
+    with pytest.raises(ValueError, match="contribution authority"):
+        build_invocation_lock(
+            manifest=first.manifest,
+            product_snapshot=mixed_registries.sources.entries[
+                SourceKey(SourceRole.PRODUCT, first.manifest.product_id)
+            ].snapshot,
+            descriptors={item.plugin_id: item for item in first.descriptors},
+            dependency_order=first.lock.dependency_order,
+            registries=mixed_registries,
             configuration=first.configuration,
-            providers=first.providers,
-            product_provider=first.product_provider,
-            declarative_sources=first.declarative_sources,
+            workflow=first.workflow,
+            engine_snapshot=mixed_registries.sources.entries[
+                SourceKey(SourceRole.ENGINE, "graph.engine")
+            ].snapshot,
+            contribution_authorities=first.contribution_authorities,
         )
 
 
@@ -2158,6 +2425,13 @@ def test_resolution_is_identical_for_permuted_explicit_sources(
     assert first.digest == second.digest
     assert first == second
     assert first.declarative_sources["toy.flow"].files == second.declarative_sources["toy.flow"].files
+    assert set(first.contribution_authorities) == {"toy.flow", "toy.runtime"}
+    assert first.contribution_authorities["toy.flow"].keys == ()
+    with pytest.raises(ValueError, match="selected plugin contribution authorities"):
+        replace(
+            first,
+            contribution_authorities={"toy.runtime": first.contribution_authorities["toy.runtime"]},
+        )
 
 
 @pytest.mark.parametrize("case", ("missing", "extra"))

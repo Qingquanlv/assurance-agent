@@ -11,9 +11,15 @@ from pydantic import Field, field_validator, model_validator
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.composition.contributions import (
+    ContributionProjection,
+    validate_contribution_projection_set,
+    validate_registry_contribution_authorities,
+)
 from graph_engine.composition.models import (
     CapabilityBindingEntry,
     CommitValidatorEntry,
+    ContributionAuthority,
     ProductManifest,
     RegistrySet,
     SourceIdentity,
@@ -182,6 +188,8 @@ class LockedPlugin(FrozenModel):
     plugin_version: str
     descriptor: PluginDescriptor
     descriptor_digest: str
+    contribution: FrozenJSONValue
+    contribution_digest: str
     dependencies: tuple[LockedDependency, ...]
     source: LockedSource
 
@@ -195,7 +203,7 @@ class LockedPlugin(FrozenModel):
     def _validate_plugin_version(cls, value: str) -> str:
         return _version(value, "locked plugin version")
 
-    @field_validator("descriptor_digest")
+    @field_validator("descriptor_digest", "contribution_digest")
     @classmethod
     def _validate_descriptor_digest(cls, value: str) -> str:
         return _sha256(value, "locked plugin descriptor")
@@ -210,6 +218,16 @@ class LockedPlugin(FrozenModel):
             or self.descriptor.plugin_version != self.plugin_version
         ):
             raise ValueError("locked plugin fields disagree with its descriptor")
+        raw_contribution = cast(JSONValue, thaw_json(self.contribution))
+        if canonical_digest(raw_contribution) != self.contribution_digest:
+            raise ValueError("locked plugin contribution digest does not authenticate its projection")
+        expected_role = SourceRole.CONFIG if self.source.kind is SourceKind.CONFIG_TREE else SourceRole.PLUGIN
+        contribution = ContributionProjection.model_validate(raw_contribution)
+        contribution.validate_selected(
+            self.descriptor,
+            SourceKey(expected_role, self.plugin_id),
+            self.source.digest,
+        )
         dependency_ids = tuple(item.plugin_id for item in self.dependencies)
         if dependency_ids != tuple(sorted(dependency_ids)) or len(dependency_ids) != len(set(dependency_ids)):
             raise ValueError("locked plugin dependencies must have unique canonical order")
@@ -343,7 +361,7 @@ class InvocationLock(FrozenModel):
             raise ValueError("invocation lock dependency declarations are invalid") from error
         if self.dependency_order != expected_order:
             raise ValueError("invocation lock dependency order is not canonical")
-        _validate_declared_executable_projection_set(self.plugins, self.registry_projections)
+        _validate_locked_contribution_projection_set(self.plugins, self.registry_projections)
         expected_registry_digests = _registry_digests_from_projections(self.registry_projections)
         if self.registry_digests != expected_registry_digests:
             raise ValueError("invocation lock registry digests do not authenticate their projections")
@@ -422,7 +440,13 @@ def build_invocation_lock(
     configuration: object,
     workflow: CompiledWorkflow,
     engine_snapshot: SourceSnapshot,
+    contribution_authorities: Mapping[str, ContributionAuthority],
 ) -> InvocationLock:
+    validate_registry_contribution_authorities(
+        registries,
+        contribution_authorities,
+        tuple(descriptors[plugin_id] for plugin_id in dependency_order),
+    )
     manifest_projection = _manifest_projection(manifest)
     locked_product = LockedProduct(
         product_id=manifest.product_id,
@@ -439,12 +463,19 @@ def build_invocation_lock(
         if source_entry is None:
             raise ValueError(f"locked plugin has no selected source: {plugin_id}")
         descriptor_projection = _descriptor_projection(descriptor)
+        try:
+            authority = contribution_authorities[plugin_id]
+        except KeyError as error:
+            raise ValueError(f"locked plugin has no contribution authority: {plugin_id}") from error
+        contribution_projection = cast(JSONValue, thaw_json(authority.projection))
         locked_plugins.append(
             LockedPlugin(
                 plugin_id=plugin_id,
                 plugin_version=descriptor.plugin_version,
                 descriptor=descriptor,
                 descriptor_digest=canonical_digest(descriptor_projection),
+                contribution=contribution_projection,
+                contribution_digest=canonical_digest(contribution_projection),
                 dependencies=tuple(
                     LockedDependency(
                         plugin_id=dependency.plugin_id,
@@ -578,60 +609,67 @@ def compute_registry_digests(registries: RegistrySet) -> RegistryDigests:
     return _registry_digests_from_projections(compute_registry_projections(registries))
 
 
-def _validate_declared_executable_projection_set(
+def _validate_locked_contribution_projection_set(
     plugins: tuple[LockedPlugin, ...],
     projections: RegistryProjections,
 ) -> None:
-    expected = [
-        *(
-            (plugin.plugin_id, "task_handler", registry_id)
-            for plugin in plugins
-            for registry_id in plugin.descriptor.task_handlers
-        ),
-        *(
-            (plugin.plugin_id, "commit_validator", registry_id)
-            for plugin in plugins
-            for registry_id in plugin.descriptor.commit_validators
-        ),
-        *(
-            (plugin.plugin_id, "effect_apply", registry_id)
-            for plugin in plugins
-            for registry_id in plugin.descriptor.effects
-        ),
-        *(
-            (plugin.plugin_id, "effect_reconcile", registry_id)
-            for plugin in plugins
-            for registry_id in plugin.descriptor.effects
-        ),
-    ]
-    actual: list[tuple[str, str, str]] = []
-    capabilities = thaw_json(projections.capabilities)
-    effects = thaw_json(projections.effects)
-    if not isinstance(capabilities, list) or not isinstance(effects, list):
-        raise ValueError("invocation lock executable registry projections must be lists")
-    for entry in capabilities:
-        if not isinstance(entry, dict):
-            raise ValueError("invocation lock capability projection must be a mapping")
-        kind = entry.get("kind")
-        if kind in {"task_handler", "commit_validator"}:
-            owner_id = entry.get("owner_id")
-            registry_id = entry.get("capability_id")
-            if not isinstance(owner_id, str) or not isinstance(registry_id, str):
-                raise ValueError("invocation lock executable capability projection is incomplete")
-            actual.append((owner_id, kind, registry_id))
-        elif kind != "binding":
-            raise ValueError("invocation lock capability projection has an unsupported kind")
-    for entry in effects:
-        if not isinstance(entry, dict):
-            raise ValueError("invocation lock effect projection must be a mapping")
-        owner_id = entry.get("owner_id")
-        registry_id = entry.get("kind")
-        if not isinstance(owner_id, str) or not isinstance(registry_id, str):
-            raise ValueError("invocation lock executable effect projection is incomplete")
-        actual.append((owner_id, "effect_apply", registry_id))
-        actual.append((owner_id, "effect_reconcile", registry_id))
-    if sorted(actual) != sorted(expected) or len(actual) != len(set(actual)):
-        raise ValueError("invocation lock registries disagree with declared executable set")
+    capabilities = _projection_entries(projections.capabilities, "capabilities")
+    schemas = _projection_entries(projections.schemas, "schemas")
+    resources = _projection_entries(projections.resources, "resources")
+    effects = _projection_entries(projections.effects, "effects")
+    plugin_ids = {plugin.plugin_id for plugin in plugins}
+    actual_owners: set[str] = set()
+    for group in (capabilities, schemas, resources, effects):
+        for entry in group:
+            owner = entry.get("owner_id")
+            if not isinstance(owner, str):
+                raise ValueError("invocation lock registry contribution owner must be text")
+            actual_owners.add(owner)
+    if not actual_owners.issubset(plugin_ids):
+        raise ValueError("invocation lock registries contain an unselected contribution owner")
+    contributions: list[ContributionProjection] = []
+    for plugin in plugins:
+        owner_id = plugin.plugin_id
+        contribution = ContributionProjection.model_validate(thaw_json(plugin.contribution))
+        expected_role = (
+            SourceRole.CONFIG if plugin.source.kind is SourceKind.CONFIG_TREE else SourceRole.PLUGIN
+        )
+        contribution.validate_selected(
+            plugin.descriptor,
+            SourceKey(expected_role, owner_id),
+            plugin.source.digest,
+        )
+        contributions.append(contribution)
+        actual_capabilities: list[JSONValue] = []
+        for entry in capabilities:
+            if entry.get("owner_id") != owner_id:
+                continue
+            if entry.get("kind") == "binding":
+                entry = {
+                    key: value
+                    for key, value in entry.items()
+                    if key not in {"target_implementation", "implementation_digest"}
+                }
+            actual_capabilities.append(cast(JSONValue, entry))
+        if actual_capabilities != contribution.capability_registry_projection():
+            raise ValueError("invocation lock capabilities disagree with contribution authority")
+        actual_schemas = [entry for entry in schemas if entry.get("owner_id") == owner_id]
+        if actual_schemas != contribution.schema_registry_projection():
+            raise ValueError("invocation lock schemas disagree with contribution authority")
+        actual_resources = [entry for entry in resources if entry.get("owner_id") == owner_id]
+        if actual_resources != contribution.resource_registry_projection():
+            raise ValueError("invocation lock resources disagree with contribution authority")
+        actual_effects = [entry for entry in effects if entry.get("owner_id") == owner_id]
+        if actual_effects != contribution.effect_registry_projection():
+            raise ValueError("invocation lock effects disagree with contribution authority")
+    validate_contribution_projection_set(tuple(contributions))
+
+
+def _projection_entries(value: FrozenJSONValue, kind: str) -> list[dict[str, JSONValue]]:
+    projection = thaw_json(value)
+    if not isinstance(projection, list) or any(not isinstance(entry, dict) for entry in projection):
+        raise ValueError(f"invocation lock {kind} projection must be a list of mappings")
+    return cast(list[dict[str, JSONValue]], projection)
 
 
 def authenticate_composition_lock(
@@ -641,7 +679,13 @@ def authenticate_composition_lock(
     workflow: object,
     configuration: object,
     lock: InvocationLock,
+    contribution_authorities: Mapping[str, ContributionAuthority],
 ) -> None:
+    validate_registry_contribution_authorities(
+        registries,
+        contribution_authorities,
+        descriptors,
+    )
     if not isinstance(workflow, CompiledWorkflow):
         raise TypeError("composition workflow must be compiled")
     engine_source = registries.sources.entries.get(SourceKey(SourceRole.ENGINE, "graph.engine"))
@@ -669,6 +713,16 @@ def authenticate_composition_lock(
             or locked_plugin.descriptor_digest != canonical_digest(_descriptor_projection(descriptor))
         ):
             raise ValueError(f"invocation lock descriptor disagrees with composition: {plugin_id}")
+        authority = contribution_authorities[plugin_id]
+        contribution_projection = cast(JSONValue, thaw_json(authority.projection))
+        if thaw_json(
+            locked_plugin.contribution
+        ) != contribution_projection or locked_plugin.contribution_digest != canonical_digest(
+            contribution_projection
+        ):
+            raise ValueError(
+                f"invocation lock contribution authority disagrees with composition: {plugin_id}"
+            )
         role = SourceRole.PLUGIN if descriptor.source is not None else SourceRole.CONFIG
         plugin_source = registries.sources.entries.get(SourceKey(role, plugin_id))
         if plugin_source is None or locked_plugin.source != _locked_source(plugin_source.snapshot):
@@ -916,6 +970,8 @@ def _locked_plugin_projection(plugin: LockedPlugin) -> JSONValue:
         "plugin_version": plugin.plugin_version,
         "descriptor": _descriptor_projection(plugin.descriptor),
         "descriptor_digest": plugin.descriptor_digest,
+        "contribution": cast(JSONValue, thaw_json(plugin.contribution)),
+        "contribution_digest": plugin.contribution_digest,
         "dependencies": [
             {
                 "plugin_id": dependency.plugin_id,
