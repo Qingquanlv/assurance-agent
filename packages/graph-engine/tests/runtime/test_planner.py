@@ -29,7 +29,13 @@ from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.graph.schema import parse_workflow
-from graph_engine.plugin_api import PluginContribution, PluginDescriptor, TaskFailure
+from graph_engine.plugin_api import (
+    AttemptWorkspaceIdentity,
+    PluginContribution,
+    PluginDescriptor,
+    TaskActivitySnapshot,
+    TaskFailure,
+)
 from graph_engine.runtime.events import (
     EffectApplyStarted,
     EffectIntentCommitted,
@@ -1605,3 +1611,56 @@ def test_event_history_rejects_partial_prepared_effect_batch() -> None:
 
     with pytest.raises(PlanningError, match="partial prepared"):
         validate_event_history(compiled, envelopes, projection)
+
+
+def _live_activity_snapshot(state: str) -> TaskActivitySnapshot:
+    identity = AttemptWorkspaceIdentity(
+        attempt_directory_id="attempt-1",
+        baseline_tree_id="a" * 64,
+        attempt_identity_digest="b" * 64,
+    )
+    fingerprint = {"endpoint": "https://127.0.0.1:1", "executable": "runner"}
+    reference = {"id": "ext-1"}
+    fields: dict[str, object] = {
+        "activity_id": "activity-1",
+        "request_digest": "0" * 64,
+        "workspace_identity": identity,
+        "state": state,
+    }
+    if state in {"dispatch_started", "bound"}:
+        fields["dispatch_fingerprint"] = fingerprint
+        fields["dispatch_fingerprint_digest"] = canonical_digest(fingerprint)
+    if state == "bound":
+        fields["reference"] = reference
+        fields["reference_digest"] = canonical_digest(reference)
+    return TaskActivitySnapshot.model_validate(fields)
+
+
+@pytest.mark.parametrize("state", ["prepared", "dispatch_started", "bound"])
+def test_planner_rejects_new_attempt_behind_live_or_indeterminate_activity(state: str) -> None:
+    compiled = _compiled(
+        f"{_task_node('work')}\n      done: {{kind: end}}",
+        "      - {from: work, to: done}",
+        start="work",
+        retry_on="[transient, timeout]",
+        max_attempts=3,
+    )
+    start_token = _canonical_start_token(compiled)
+    activation = activation_id("root", "work", 0, (start_token.token_id,))
+    failure = TaskFailure(kind="timeout", message="lease expired")
+    projection = _projection(
+        _invocation(),
+        _root(),
+        *_task_activation_events(compiled),
+        TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
+        _task_lease(activation),
+        TaskAttemptFailed(activation_id=activation, attempt=1, failure=failure),
+    )
+    record = projection.activations[0]
+    attempt = record.attempts[0].model_copy(update={"activity": _live_activity_snapshot(state)})
+    blocked = projection.model_copy(
+        update={"activations": (record.model_copy(update={"attempts": (attempt,)}),)}
+    )
+
+    with pytest.raises(PlanningError, match="live or indeterminate"):
+        plan_next(compiled, blocked)

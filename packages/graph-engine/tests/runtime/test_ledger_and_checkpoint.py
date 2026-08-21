@@ -1612,3 +1612,44 @@ def test_activity_events_round_trip_through_ledger_json(tmp_path: Path) -> None:
     ledger.append_batch(events, expected_next_seq=1)
     restored = tuple(item.event for item in ledger.read_all())
     assert restored == events
+
+
+def test_checkpoint_round_trips_bound_activity_projection(tmp_path: Path) -> None:
+    fingerprint = {"endpoint": "https://127.0.0.1:1", "executable": "runner"}
+    reference = {"id": "ext-1"}
+    envelopes = _envelopes(
+        *_running_task_prefix(),
+        TaskActivityPrepared(
+            activity_id="activity-1",
+            task_id="task-1",
+            activation_id="a1",
+            attempt=1,
+            request_digest="0" * 64,
+            workspace_identity=AttemptWorkspaceIdentity(
+                attempt_directory_id="attempt-1",
+                baseline_tree_id="a" * 64,
+                attempt_identity_digest="b" * 64,
+            ),
+        ),
+        TaskActivityDispatchStarted(
+            activity_id="activity-1",
+            ordinal=1,
+            dispatch_fingerprint=fingerprint,
+            dispatch_fingerprint_digest=canonical_digest(fingerprint),
+        ),
+        TaskActivityBound(
+            activity_id="activity-1",
+            reference=reference,
+            reference_digest=canonical_digest(reference),
+        ),
+    )
+    projection = fold_events(envelopes)
+    attempt = projection.activations[-1].attempts[-1]
+    assert attempt.activity is not None
+    assert attempt.activity.state == "bound"
+    path = tmp_path / "checkpoint.json"
+    write_checkpoint(path, projection, last_seq=len(envelopes), ledger_envelopes=envelopes)
+    loaded = load_checkpoint(path, ledger_envelopes=envelopes)
+    assert loaded is not None
+    assert loaded.projection == projection
+    assert loaded.projection.activations[-1].attempts[-1].activity == attempt.activity

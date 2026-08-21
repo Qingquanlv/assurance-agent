@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
-from graph_engine.plugin_api import ResourceClaims, TaskFailure
+from graph_engine.plugin_api import ResourceClaims, TaskActivitySnapshot, TaskFailure
 from graph_engine.runtime.events import (
     EffectApplyStarted,
     EffectIntentCommitted,
@@ -24,12 +24,18 @@ from graph_engine.runtime.events import (
     NodeFailed,
     NodeInterrupted,
     RuntimeEvent,
+    TaskActivityBound,
+    TaskActivityCancelRequested,
+    TaskActivityDispatchStarted,
+    TaskActivityPrepared,
+    TaskActivityTerminalObserved,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
     TaskAttemptSucceeded,
     TaskCommitPrepared,
     TaskLeaseAcquired,
+    TaskLeaseAdopted,
     TaskLeaseHeartbeat,
     TokenConsumed,
     TokenOffered,
@@ -52,6 +58,7 @@ AttemptStatus = Literal["running", "effect_pending", "succeeded", "failed", "sto
 EffectStatus = Literal["committed", "applying", "applied", "permanently_failed"]
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _LIVE_ATTEMPT_STATUSES = {"running", "effect_pending"}
+_LIVE_ACTIVITY_STATES = {"prepared", "dispatch_started", "bound"}
 
 
 class PreparedTaskCommit(ProjectionModel):
@@ -173,6 +180,7 @@ class AttemptRecord(ProjectionModel):
     attempt: int = Field(ge=1)
     lease_expires_at: str
     status: AttemptStatus = "running"
+    activity: TaskActivitySnapshot | None = None
     output: FrozenJSONValue = None
     failure: TaskFailure | None = None
     stop_reason: str | None = None
@@ -437,6 +445,10 @@ class FoldCursor(ProjectionModel):
     projection: InvocationProjection = Field(default_factory=InvocationProjection)
     next_seq: int = Field(default=1, ge=1)
 
+    @classmethod
+    def initial(cls) -> Self:
+        return cls()
+
     def advance(self, envelopes: tuple[EventEnvelope, ...]) -> FoldCursor:
         """Purely advance this cursor through one ordered envelope batch."""
         return _advance_fold(self, envelopes)
@@ -632,6 +644,11 @@ def _advance_fold(
                 prior = activation.attempts[-1]
                 if prior.status in _LIVE_ATTEMPT_STATUSES:
                     _fail(envelope.seq, "activation already has an active attempt")
+                if prior.activity is not None and prior.activity.state in _LIVE_ACTIVITY_STATES:
+                    _fail(
+                        envelope.seq,
+                        "cannot start a new attempt while prior activity is live or indeterminate",
+                    )
                 if prior.status != "failed":
                     _fail(envelope.seq, f"cannot retry after a {prior.status} attempt")
                 if prior.failure is not None and not prior.failure.retryable:
@@ -700,6 +717,18 @@ def _advance_fold(
                 projection,
                 activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)}),
             )
+        elif isinstance(event, TaskActivityPrepared):
+            projection = _fold_task_activity_prepared(projection, event, envelope.seq)
+        elif isinstance(event, TaskActivityDispatchStarted):
+            projection = _fold_task_activity_dispatch_started(projection, event, envelope.seq)
+        elif isinstance(event, TaskActivityBound):
+            projection = _fold_task_activity_bound(projection, event, envelope.seq)
+        elif isinstance(event, TaskActivityCancelRequested):
+            projection = _fold_task_activity_cancel_requested(projection, event, envelope.seq)
+        elif isinstance(event, TaskActivityTerminalObserved):
+            projection = _fold_task_activity_terminal_observed(projection, event, envelope.seq)
+        elif isinstance(event, TaskLeaseAdopted):
+            projection = _fold_task_lease_adopted(projection, event, envelope.seq)
         elif isinstance(event, TaskCommitPrepared):
             projection = _fold_task_commit_prepared(projection, event, envelope.seq)
         elif isinstance(event, EffectIntentCommitted):
@@ -789,6 +818,7 @@ def _advance_fold(
             if not activation.attempts:
                 _fail(envelope.seq, "HEAD advanced without a successful task attempt")
             attempt = activation.attempts[-1]
+            _require_activity_head_candidate(attempt, event.tree_id, envelope.seq)
             if attempt.status == "succeeded":
                 if attempt.attempt != event.attempt or attempt.lease_task_id != event.task_id:
                     _fail(envelope.seq, "HEAD advance does not match the successful attempt")
@@ -1130,6 +1160,7 @@ def _fold_task_attempt_outcome(
     attempt = activation.attempts[-1]
     if attempt.attempt != event.attempt:
         _fail(seq, "attempt outcome without a matching active attempt")
+    _require_activity_attempt_outcome(attempt, event, seq)
     if isinstance(event, TaskAttemptSucceeded):
         if attempt.status == "running":
             attempt = attempt.model_copy(update={"status": "succeeded", "output": event.output})
@@ -1166,6 +1197,287 @@ def _fold_task_attempt_outcome(
         }
     )
     return _replace_activation(projection, activation)
+
+
+def _require_activity_attempt_outcome(
+    attempt: AttemptRecord,
+    event: TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptStopped,
+    seq: int,
+) -> None:
+    activity = attempt.activity
+    if activity is None:
+        return
+    if activity.state != "terminal_observed" or activity.terminal is None:
+        _fail(seq, "recoverable attempt outcome requires a terminal activity")
+    terminal = activity.terminal
+    if isinstance(event, TaskAttemptSucceeded):
+        if terminal.status != "succeeded":
+            _fail(seq, "task success disagrees with the observed terminal activity")
+        if thaw_json(event.output) != thaw_json(terminal.output):
+            _fail(seq, "task success output disagrees with the observed terminal activity")
+        _require_success_candidate_match(attempt, seq)
+        return
+    if activity.candidate_tree_id is not None or activity.write_set_digest is not None:
+        _fail(seq, "failed terminal activity cannot have a candidate")
+    if isinstance(event, TaskAttemptFailed):
+        if terminal.status != "failed" or event.failure != terminal.failure:
+            _fail(seq, "task failure disagrees with the observed terminal activity")
+        return
+    if terminal.status != "stopped" or event.reason != terminal.stop_reason:
+        _fail(seq, "task stop disagrees with the observed terminal activity")
+
+
+def _require_activity_head_candidate(attempt: AttemptRecord, tree_id: str, seq: int) -> None:
+    activity = attempt.activity
+    if activity is None:
+        return
+    if activity.state == "terminal_observed" and activity.terminal is not None:
+        if activity.terminal.status != "succeeded":
+            _fail(seq, "failed terminal activity cannot have a candidate")
+    _require_success_candidate_match(attempt, seq, tree_id)
+
+
+def _require_success_candidate_match(
+    attempt: AttemptRecord,
+    seq: int,
+    tree_id: str | None = None,
+) -> None:
+    activity = attempt.activity
+    if activity is None or activity.terminal is None or activity.terminal.status != "succeeded":
+        return
+    observed_tree = tree_id
+    if observed_tree is None:
+        observed_tree = attempt.committed_tree_id
+        if observed_tree is None and attempt.prepared_commit is not None:
+            observed_tree = attempt.prepared_commit.tree_id
+    if observed_tree is None:
+        return
+    if observed_tree != activity.candidate_tree_id or activity.write_set_digest is None:
+        _fail(seq, "success candidate does not match the observed activity candidate")
+
+
+def _fold_task_activity_prepared(
+    projection: InvocationProjection,
+    event: TaskActivityPrepared,
+    seq: int,
+) -> InvocationProjection:
+    activation = _activation(projection, event.activation_id, seq)
+    _ensure_graph_open_if_known(projection, activation.graph_instance_id, seq)
+    if activation.status != "active":
+        _fail(seq, "activity prepared for a non-active activation")
+    if not activation.attempts or activation.attempts[-1].status != "running":
+        _fail(seq, "activity prepared without a matching active attempt")
+    attempt = activation.attempts[-1]
+    if attempt.attempt != event.attempt or attempt.lease_owner_id is None:
+        _fail(seq, "activity prepared without a matching active attempt")
+    if attempt.activity is not None:
+        _fail(seq, "activity is already prepared")
+    if attempt.lease_task_id is not None and attempt.lease_task_id != event.task_id:
+        _fail(seq, "activity task id does not match the active attempt")
+    if _find_attempt_for_activity(projection, event.activity_id) is not None:
+        _fail(seq, "activity id is already assigned")
+    snapshot = _activity_snapshot(
+        seq,
+        {
+            "activity_id": event.activity_id,
+            "request_digest": event.request_digest,
+            "workspace_identity": event.workspace_identity,
+            "state": "prepared",
+        },
+    )
+    return _replace_latest_attempt(projection, activation, attempt.model_copy(update={"activity": snapshot}))
+
+
+def _fold_task_activity_dispatch_started(
+    projection: InvocationProjection,
+    event: TaskActivityDispatchStarted,
+    seq: int,
+) -> InvocationProjection:
+    activation, attempt = _attempt_for_activity(projection, event.activity_id, seq)
+    _ensure_graph_open_if_known(projection, activation.graph_instance_id, seq)
+    activity = attempt.activity
+    if activity is None or activity.state != "prepared":
+        _fail(seq, "dispatch transition is already durable")
+    if attempt.status not in _LIVE_ATTEMPT_STATUSES:
+        _fail(seq, "dispatch started without a matching active attempt")
+    snapshot = _activity_snapshot(
+        seq,
+        {
+            **activity.model_dump(mode="python"),
+            "state": "dispatch_started",
+            "dispatch_fingerprint": thaw_json(event.dispatch_fingerprint),
+            "dispatch_fingerprint_digest": event.dispatch_fingerprint_digest,
+        },
+    )
+    return _replace_latest_attempt(projection, activation, attempt.model_copy(update={"activity": snapshot}))
+
+
+def _fold_task_activity_bound(
+    projection: InvocationProjection,
+    event: TaskActivityBound,
+    seq: int,
+) -> InvocationProjection:
+    activation, attempt = _attempt_for_activity(projection, event.activity_id, seq)
+    _ensure_graph_open_if_known(projection, activation.graph_instance_id, seq)
+    activity = attempt.activity
+    if activity is None:
+        _fail(seq, f"activity {event.activity_id!r} does not exist")
+    if activity.state == "bound" or activity.reference is not None:
+        _fail(seq, "activity reference is immutable")
+    if activity.state != "dispatch_started":
+        _fail(seq, "activity cannot bind from the current state")
+    if attempt.status not in _LIVE_ATTEMPT_STATUSES:
+        _fail(seq, "activity bound without a matching active attempt")
+    snapshot = _activity_snapshot(
+        seq,
+        {
+            **activity.model_dump(mode="python"),
+            "state": "bound",
+            "reference": thaw_json(event.reference),
+            "reference_digest": event.reference_digest,
+        },
+    )
+    return _replace_latest_attempt(projection, activation, attempt.model_copy(update={"activity": snapshot}))
+
+
+def _fold_task_activity_cancel_requested(
+    projection: InvocationProjection,
+    event: TaskActivityCancelRequested,
+    seq: int,
+) -> InvocationProjection:
+    activation, attempt = _attempt_for_activity(projection, event.activity_id, seq)
+    _ensure_graph_open_if_known(projection, activation.graph_instance_id, seq)
+    activity = attempt.activity
+    if activity is None:
+        _fail(seq, f"activity {event.activity_id!r} does not exist")
+    if activity.state == "terminal_observed":
+        _fail(seq, "cancel requested after terminal activity")
+    if activity.cancel_requested:
+        _fail(seq, "cancel transition is already durable")
+    if attempt.status not in _LIVE_ATTEMPT_STATUSES:
+        _fail(seq, "cancel requested without a matching active attempt")
+    snapshot = _activity_snapshot(
+        seq,
+        {
+            **activity.model_dump(mode="python"),
+            "cancel_requested": True,
+            "cancel_reason": event.reason,
+        },
+    )
+    return _replace_latest_attempt(projection, activation, attempt.model_copy(update={"activity": snapshot}))
+
+
+def _fold_task_activity_terminal_observed(
+    projection: InvocationProjection,
+    event: TaskActivityTerminalObserved,
+    seq: int,
+) -> InvocationProjection:
+    activation, attempt = _attempt_for_activity(projection, event.activity_id, seq)
+    _ensure_graph_open_if_known(projection, activation.graph_instance_id, seq)
+    activity = attempt.activity
+    if activity is None:
+        _fail(seq, f"activity {event.activity_id!r} does not exist")
+    if activity.state == "terminal_observed":
+        _fail(seq, "terminal activity is already observed")
+    if attempt.status not in _LIVE_ATTEMPT_STATUSES:
+        _fail(seq, "terminal observed without a matching active attempt")
+    if event.outcome.status == "succeeded":
+        if activity.state != "bound":
+            _fail(seq, "success requires a bound activity")
+    else:
+        if event.candidate_tree_id is not None or event.write_set_digest is not None:
+            _fail(seq, "failed terminal activity cannot have a candidate")
+        if attempt.prepared_commit is not None or attempt.committed_tree_id is not None:
+            _fail(seq, "failed terminal activity cannot have a candidate")
+        if activity.state == "dispatch_started" and event.terminal_proof_digest is None:
+            _fail(seq, "unbound terminal after dispatch_started requires terminal_proof_digest")
+        if activity.state not in {"prepared", "dispatch_started", "bound"}:
+            _fail(seq, "terminal observed from an illegal activity state")
+    snapshot = _activity_snapshot(
+        seq,
+        {
+            **activity.model_dump(mode="python"),
+            "state": "terminal_observed",
+            "terminal": event.outcome,
+            "outcome_digest": event.outcome_digest,
+            "terminal_proof_digest": event.terminal_proof_digest,
+            "candidate_tree_id": event.candidate_tree_id,
+            "write_set_digest": event.write_set_digest,
+        },
+    )
+    return _replace_latest_attempt(projection, activation, attempt.model_copy(update={"activity": snapshot}))
+
+
+def _fold_task_lease_adopted(
+    projection: InvocationProjection,
+    event: TaskLeaseAdopted,
+    seq: int,
+) -> InvocationProjection:
+    found = _find_attempt_for_activity(projection, event.activity_id)
+    if found is None or not event.reconciliation_evidence_digest:
+        _fail(seq, "lease adoption requires reconciliation evidence")
+    activation, attempt = found
+    _ensure_graph_open_if_known(projection, activation.graph_instance_id, seq)
+    if (
+        event.activation_id != activation.activation_id
+        or event.attempt != attempt.attempt
+        or attempt.lease_owner_id is None
+        or (attempt.lease_task_id is not None and attempt.lease_task_id != event.task_id)
+    ):
+        _fail(seq, "lease adoption does not match the active attempt")
+    if attempt.status not in _LIVE_ATTEMPT_STATUSES:
+        _fail(seq, "lease adoption without a matching active attempt")
+    if attempt.lease_heartbeat_at is not None and event.heartbeat_at < attempt.lease_heartbeat_at:
+        _fail(seq, "lease adoption timestamps are inconsistent")
+    attempt = attempt.model_copy(
+        update={
+            "lease_owner_id": event.owner_id,
+            "lease_task_id": event.task_id,
+            "lease_acquired_at": event.acquired_at,
+            "lease_heartbeat_at": event.heartbeat_at,
+            "lease_expires_at_value": event.expires_at,
+        }
+    )
+    return _replace_latest_attempt(projection, activation, attempt)
+
+
+def _activity_snapshot(seq: int, payload: dict[str, object]) -> TaskActivitySnapshot:
+    try:
+        return TaskActivitySnapshot.model_validate(payload)
+    except ValueError as error:
+        _fail(seq, str(error))
+
+
+def _find_attempt_for_activity(
+    projection: InvocationProjection, activity_id: str
+) -> tuple[ActivationRecord, AttemptRecord] | None:
+    matches = tuple(
+        (activation, attempt)
+        for activation in projection.activations
+        for attempt in activation.attempts
+        if attempt.activity is not None and attempt.activity.activity_id == activity_id
+    )
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _attempt_for_activity(
+    projection: InvocationProjection, activity_id: str, seq: int
+) -> tuple[ActivationRecord, AttemptRecord]:
+    found = _find_attempt_for_activity(projection, activity_id)
+    if found is None:
+        _fail(seq, f"activity {activity_id!r} does not exist")
+    return found
+
+
+def _replace_latest_attempt(
+    projection: InvocationProjection,
+    activation: ActivationRecord,
+    attempt: AttemptRecord,
+) -> InvocationProjection:
+    attempts = tuple(attempt if item.attempt == attempt.attempt else item for item in activation.attempts)
+    return _replace_activation(projection, activation.model_copy(update={"attempts": attempts}))
 
 
 def _all_effect_receipts_present(

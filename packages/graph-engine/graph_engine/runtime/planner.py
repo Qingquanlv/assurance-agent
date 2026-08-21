@@ -1111,6 +1111,12 @@ def _terminal_task_activations(state: _PlannerState) -> tuple[ActivationRecord, 
         latest = activation.attempts[-1]
         if latest.status != "failed":
             continue
+        if latest.activity is not None and latest.activity.state in {
+            "prepared",
+            "dispatch_started",
+            "bound",
+        }:
+            continue
         assert latest.failure is not None
         policy_name = node.definition.retry
         assert policy_name is not None
@@ -1348,6 +1354,17 @@ def _activation_input(state: _PlannerState, node: CompiledNode, activation: Acti
 def _planned_task(state: _PlannerState, node: CompiledNode, activation: ActivationRecord) -> PlannedTask:
     latest = activation.attempts[-1] if activation.attempts else None
     prior_failure = latest.failure if latest is not None and latest.status == "failed" else None
+    if (
+        latest is not None
+        and latest.activity is not None
+        and latest.activity.state
+        in {
+            "prepared",
+            "dispatch_started",
+            "bound",
+        }
+    ):
+        raise PlanningError("cannot start a new attempt while prior activity is live or indeterminate")
     attempt = len(activation.attempts) + 1
     capability_id = node.definition.capability
     retry_name = node.definition.retry
