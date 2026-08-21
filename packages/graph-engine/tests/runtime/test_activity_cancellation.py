@@ -333,6 +333,38 @@ def test_indeterminate_cancel_preserves_blocking_activity(tmp_path: Path, mode: 
     assert host.reconcile_calls == 0
 
 
+def test_recover_cancel_is_bounded_by_cancel_timeout(tmp_path: Path) -> None:
+    receipts = TerminalReceiptStore.create(tmp_path / "receipts")
+    host = _CancelHost(Ledger(tmp_path / "ledger"), receipts, cancel_status="acknowledged")
+    scheduler, ledger, _store, task = _scheduler(tmp_path, host, receipts)
+    host._ledger = ledger
+    scheduler.start_recoverable(task)
+    first = asyncio.run(scheduler.cancel_activity(task, reason="operator-stop"))
+    assert first.decision == "adopt_same_attempt"
+    activity = fold_events(ledger.read_all()).activations[-1].attempts[-1].activity
+    assert activity is not None
+    assert activity.cancel_requested is True
+    host._hang = True
+    adopted_before = [item.event.kind for item in ledger.read_all()].count("task_lease_adopted")
+
+    async def recover() -> str:
+        return (await scheduler.recover_activity(task)).decision
+
+    try:
+        decision = asyncio.run(asyncio.wait_for(recover(), timeout=1.0))
+    except TimeoutError:
+        pytest.fail("recover cancel was not bounded by cancel timeout")
+    assert decision == "block"
+    kinds = [item.event.kind for item in ledger.read_all()]
+    assert "task_activity_terminal_observed" not in kinds
+    assert kinds.count("task_lease_adopted") == adopted_before
+    attempt = fold_events(ledger.read_all()).activations[-1].attempts[-1]
+    assert attempt.status == "running"
+    assert attempt.activity is not None
+    assert attempt.activity.state != "terminal_observed"
+    assert host.reconcile_calls == 1
+
+
 def test_http_abort_success_is_never_terminal_by_itself(tmp_path: Path) -> None:
     receipts = TerminalReceiptStore.create(tmp_path / "receipts")
     host = _CancelHost(Ledger(tmp_path / "ledger"), receipts, cancel_status="acknowledged")

@@ -34,8 +34,8 @@ _ReconcileStatus = Literal["not_dispatched", "running", "terminal", "absent", "i
 _DECISIONS = (
     ("not_dispatched", "execute_same_attempt"),
     ("running", "adopt_same_attempt"),
-    ("terminal", "promote_same_attempt"),
-    ("absent", "finalize_failure_then_retry_policy"),
+    ("terminal", "block"),
+    ("absent", "block"),
     ("indeterminate", "block"),
 )
 
@@ -311,6 +311,14 @@ async def _assert_recovery_decision_matrix(tmp_path: Path, status: _ReconcileSta
         result = await fixture.handle.recover()
         assert fixture.calls.order[:2] == ["authenticate_workspace", "reconcile"]
         assert fixture.observed_decision(result) == expected
+        if status in {"terminal", "absent"}:
+            kinds = [item.event.kind for item in fixture.ledger.read_all()]
+            assert "task_activity_terminal_observed" not in kinds
+            assert "task_attempt_failed" not in kinds
+            attempt = fold_events(fixture.ledger.read_all()).activations[-1].attempts[-1]
+            assert attempt.status == "running"
+            assert attempt.activity is not None
+            assert attempt.activity.state != "terminal_observed"
     finally:
         fixture.handle.close()
         fixture.engine.close()
@@ -413,8 +421,8 @@ async def _assert_no_blind_retry(tmp_path: Path, mode: str) -> None:
 
 
 _NON_ADOPTED = (
-    ("terminal", "promote_same_attempt"),
-    ("absent", "finalize_failure_then_retry_policy"),
+    ("terminal", "block"),
+    ("absent", "block"),
     ("indeterminate", "block"),
 )
 

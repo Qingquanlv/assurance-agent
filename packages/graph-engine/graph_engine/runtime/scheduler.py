@@ -419,12 +419,7 @@ class Scheduler:
         if len(receipts) == 1:
             return self._promote_receipt(task, activity, receipts[0])
 
-        decision = recovery_decision_for_status(reconciled.status)
-        if decision in {"execute_same_attempt", "adopt_same_attempt"}:
-            self._adopt_recovered_lease(task, activity, reconciled)
-            if decision == "execute_same_attempt":
-                self._same_attempt_execute.add((task.task_id, task.attempt))
-        return self._recovery_decision(task, activity, decision, reconciled.status)
+        return self._decision_after_receiptless_reconcile(task, activity, reconciled)
 
     async def cancel_activity(self, task: PlannedTask, *, reason: str) -> ActivityRecoveryDecision:
         """Request cancel, then map host acknowledgement without treating signals as terminal."""
@@ -488,12 +483,7 @@ class Scheduler:
             return self._blocked_recovery(task, activity, status="indeterminate")
         if len(receipts) == 1:
             return self._promote_receipt(task, activity, receipts[0])
-        decision = recovery_decision_for_status(reconciled.status)
-        if decision in {"execute_same_attempt", "adopt_same_attempt"}:
-            self._adopt_recovered_lease(task, activity, reconciled)
-            if decision == "execute_same_attempt":
-                self._same_attempt_execute.add((task.task_id, task.attempt))
-        return self._recovery_decision(task, activity, decision, reconciled.status)
+        return self._decision_after_receiptless_reconcile(task, activity, reconciled)
 
     async def recover_live_activities(self, tasks: Sequence[PlannedTask]) -> RecoveryResult:
         decisions: list[ActivityRecoveryDecision] = []
@@ -1298,7 +1288,10 @@ class Scheduler:
         workspace: AttemptWorkspace,
     ) -> str:
         try:
-            result = await self._host.cancel(self._host_cancel_call(task, activity, workspace))
+            async with asyncio.timeout(self._cancel_timeout_seconds):
+                result = await self._host.cancel(self._host_cancel_call(task, activity, workspace))
+        except TimeoutError:
+            return "block"
         except Exception:
             return "block"
         if (
@@ -1512,6 +1505,21 @@ class Scheduler:
         status: str,
     ) -> ActivityRecoveryDecision:
         return self._recovery_decision(task, activity, "block", status)
+
+    def _decision_after_receiptless_reconcile(
+        self,
+        task: PlannedTask,
+        activity: TaskActivitySnapshot,
+        reconciled: TaskActivityReconcileResult,
+    ) -> ActivityRecoveryDecision:
+        decision = recovery_decision_for_status(reconciled.status)
+        if decision in {"promote_same_attempt", "finalize_failure_then_retry_policy"}:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        if decision in {"execute_same_attempt", "adopt_same_attempt"}:
+            self._adopt_recovered_lease(task, activity, reconciled)
+            if decision == "execute_same_attempt":
+                self._same_attempt_execute.add((task.task_id, task.attempt))
+        return self._recovery_decision(task, activity, decision, reconciled.status)
 
     def _task_has_live_activity(self, task: PlannedTask) -> bool:
         return self._live_activity(task) is not None
