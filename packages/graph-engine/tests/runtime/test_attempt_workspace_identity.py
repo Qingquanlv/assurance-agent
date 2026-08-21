@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import inspect
 import os
 import shutil
@@ -26,8 +27,14 @@ from graph_engine.runtime.events import (
     InvocationStarted,
     NodeActivated,
 )
+from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostExecuteCall
 from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.models import PlannedTask, activity_id_for_attempt, attempt_directory_id
+from graph_engine.runtime.models import (
+    PlannedTask,
+    activity_id_for_attempt,
+    attempt_directory_id,
+    fold_events,
+)
 from graph_engine.runtime.scheduler import FakeClock, Scheduler
 from graph_engine.runtime.workspace import SnapshotStore
 
@@ -97,6 +104,23 @@ class _InProcessTestHost:
         return ()
 
 
+class _ExecutingTestHost(_InProcessTestHost):
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        assert self._store is not None
+        handler = self._handlers[call.request.capability_id]
+        workspace_root = self._store.root / "attempts" / call.attempt_root.attempt_directory_id
+        outcome = await handler.execute(
+            call.request,
+            TaskContext(
+                workspace_root=workspace_root,
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=call.request.invocation,
+            ),
+        )
+        return TaskHostCallResult(operation="execute", outcome=outcome)
+
+
 def _task() -> PlannedTask:
     activation = "activation-work"
     return PlannedTask(
@@ -118,6 +142,8 @@ def _task() -> PlannedTask:
 
 def _scheduler_with_boundaries(
     tmp_path: Path,
+    *,
+    host: _InProcessTestHost | None = None,
 ) -> tuple[Scheduler, Ledger, SnapshotStore]:
     task = _task()
     handler = _RecoverableHandler()
@@ -141,7 +167,7 @@ def _scheduler_with_boundaries(
         _DirectRegistry({task.capability_id: handler}),
         store,
         ledger,
-        _InProcessTestHost(),
+        host if host is not None else _InProcessTestHost(),
         owner_id="worker-1",
         clock=FakeClock(100.0),
         lease_seconds=10.0,
@@ -310,6 +336,66 @@ def test_ambiguous_initial_batch_retains_the_attempt_workspace(
         scheduler.start_recoverable(task)
 
     assert (store.root / "attempts" / directory_id).exists()
+
+
+def test_recoverable_run_wave_does_not_promote_attempt_outcome_before_terminal(
+    tmp_path: Path,
+) -> None:
+    scheduler, ledger, store = _scheduler_with_boundaries(tmp_path, host=_ExecutingTestHost())
+    task = _task()
+    results = asyncio.run(scheduler.run_wave((task,)))
+    kinds = [envelope.event.kind for envelope in ledger.read_all()]
+    assert "task_activity_terminal_observed" not in kinds
+    assert "task_attempt_succeeded" not in kinds
+    assert "task_attempt_failed" not in kinds
+    assert "task_attempt_stopped" not in kinds
+    assert "task_commit_prepared" not in kinds
+    assert results[0].outcome.status == "succeeded"
+    projection = fold_events(tuple(ledger.read_all()))
+    activation = next(item for item in projection.activations if item.activation_id == task.activation_id)
+    attempt = activation.attempts[-1]
+    assert attempt.status == "running"
+    assert attempt.activity is not None
+    assert attempt.activity.state == "prepared"
+    directory_id = attempt_directory_id(
+        invocation_id=task.invocation_id,
+        task_id=task.task_id,
+        activation_id=task.activation_id,
+        attempt=task.attempt,
+    )
+    assert (store.root / "attempts" / directory_id).exists()
+
+
+@pytest.mark.parametrize("orphan", ["unauthenticated", "authenticated"])
+def test_legal_start_replaces_pre_batch_orphan(tmp_path: Path, orphan: str) -> None:
+    scheduler, ledger, store = _scheduler_with_boundaries(tmp_path)
+    task = _task()
+    directory_id = attempt_directory_id(
+        invocation_id=task.invocation_id,
+        task_id=task.task_id,
+        activation_id=task.activation_id,
+        attempt=task.attempt,
+    )
+    if orphan == "authenticated":
+        store.create_attempt_identity(
+            invocation_id=task.invocation_id,
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=task.attempt,
+        )
+    else:
+        store._create_attempt(directory_id)
+    assert (store.root / "attempts" / directory_id).exists()
+    scheduler.start_recoverable(task)
+    assert [envelope.event.kind for envelope in ledger.read_all()[-3:]] == [
+        "task_attempt_started",
+        "task_lease_acquired",
+        "task_activity_prepared",
+    ]
+    prepared = ledger.read_all()[-1].event
+    reopened = store.open_attempt(prepared.workspace_identity)
+    assert reopened.root.exists()
+    assert store.create_attempt_calls == (2 if orphan == "authenticated" else 1)
 
 
 def test_prepared_activity_uses_derived_ids(tmp_path: Path) -> None:

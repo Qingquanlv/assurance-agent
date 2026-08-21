@@ -1462,6 +1462,10 @@ class SnapshotStore:
         self.boundaries.append("attempt_installed")
         return workspace, identity
 
+    def discard_unprepared_orphan(self, attempt_directory_id: str) -> None:
+        """Remove a leftover attempt directory that never published TaskAttemptStarted."""
+        self._discard_attempt(_validate_attempt_id(attempt_directory_id))
+
     def open_attempt(self, identity: AttemptWorkspaceIdentity) -> AttemptWorkspace:
         try:
             workspace = self._open_attempt(identity.attempt_directory_id)

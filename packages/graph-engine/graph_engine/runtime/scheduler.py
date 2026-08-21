@@ -63,6 +63,7 @@ from graph_engine.runtime.models import (
     PlannedTask,
     ProjectionError,
     activity_id_for_attempt,
+    attempt_directory_id,
     fold_events,
 )
 from graph_engine.runtime.workspace import (
@@ -266,6 +267,13 @@ class Scheduler:
         _validate_start_transition(task, envelopes)
         request = self._project_request(task)
         request_digest = canonical_digest(cast(JSONValue, request.model_dump(mode="json")))
+        directory_id = attempt_directory_id(
+            task.invocation_id,
+            task.task_id,
+            task.activation_id,
+            task.attempt,
+        )
+        self._store.discard_unprepared_orphan(directory_id)
         workspace, identity = self._store.create_attempt_identity(
             invocation_id=task.invocation_id,
             task_id=task.task_id,
@@ -389,7 +397,10 @@ class Scheduler:
                 for task, workspace, lease_state, activity_id in work
             )
         )
-        return tuple(self._finalize(result) for result in gathered)
+        return tuple(
+            result if self._handler_is_recoverable(result.task) else self._finalize(result)
+            for result in gathered
+        )
 
     async def resume_running(self, tasks: Sequence[PlannedTask]) -> tuple[AttemptResult, ...]:
         """Resume attempts whose start and deterministic lease are already authoritative."""
