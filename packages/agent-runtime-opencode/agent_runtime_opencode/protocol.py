@@ -78,7 +78,13 @@ class OpenCodeHttpClient:
         return await self._json("GET", "/session")
 
     async def create_session(self, body: Mapping[str, object]) -> dict[str, Any]:
-        return await self._json("POST", "/session", body)
+        from agent_runtime_opencode.discovery import OpenCodeSessionCreateRequest
+
+        typed = OpenCodeSessionCreateRequest.model_validate(body)
+        payload = typed.model_dump(mode="json")
+        if "id" in payload or "parentID" in payload:
+            raise ValueError("create must not supply a session id or parentID")
+        return await self._json("POST", "/session", payload)
 
     async def get_session(self, session_id: str) -> dict[str, Any]:
         return await self._json("GET", f"/session/{_path_segment(session_id, 'session id')}")
