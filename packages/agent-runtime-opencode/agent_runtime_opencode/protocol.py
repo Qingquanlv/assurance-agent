@@ -61,6 +61,7 @@ class OpenCodeHttpClient:
             base_url=self._origin,
             timeout=httpx.Timeout(config.request_timeout_seconds),
             follow_redirects=False,
+            trust_env=False,
             headers={"Authorization": f"Bearer {secret.decode('utf-8')}"},
         )
 

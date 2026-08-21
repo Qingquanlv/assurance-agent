@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -15,7 +17,11 @@ from pydantic import ValidationError
 
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
 from agent_runtime_opencode.handler import OpenCodeHandler
-from agent_runtime_opencode.protocol import OpenCodeProtocolProfile, canonical_json_text
+from agent_runtime_opencode.protocol import (
+    OpenCodeHttpClient,
+    OpenCodeProtocolProfile,
+    canonical_json_text,
+)
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 
 
@@ -123,6 +129,74 @@ async def test_preflight_rejects_undeclared_secret_handle() -> None:
         assert fake.records == ()
     finally:
         fake.close()
+
+
+class _RecordingProxy:
+    def __init__(self) -> None:
+        self.hits = 0
+        self._lock = threading.Lock()
+        proxy = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self) -> None:
+                with proxy._lock:
+                    proxy.hits += 1
+                body = b'{"healthy":false,"via":"proxy"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_CONNECT(self) -> None:
+                self.do_GET()
+
+            def log_message(self, format: str, *args: object) -> None:
+                del format, args
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        port = self._server.server_address[1]
+        self.url = f"http://127.0.0.1:{port}"
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=2)
+
+
+async def test_http_client_ignores_ambient_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = OpenCodeFakeServer(profile=_profile())
+    proxy = _RecordingProxy()
+    try:
+        for key in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
+            monkeypatch.setenv(key, proxy.url)
+        monkeypatch.setenv("NO_PROXY", "")
+        monkeypatch.setenv("no_proxy", "")
+        config = _config(fake)
+        client = OpenCodeHttpClient(config, secret=_CANARY)
+        try:
+            payload = await client.get_server_identity()
+        finally:
+            await client.aclose()
+        assert payload == {"healthy": True, "version": "opencode-http-v1"}
+        assert fake.count("GET", "/global/health") == 1
+        assert config.origin.rstrip("/") == fake.base_url.rstrip("/")
+        assert config.origin.rstrip("/") != proxy.url.rstrip("/")
+        assert proxy.hits == 0
+    finally:
+        fake.close()
+        proxy.close()
 
 
 async def test_preflight_rejects_cross_origin_redirect() -> None:

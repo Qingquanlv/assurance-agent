@@ -3,11 +3,12 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from pydantic import ValidationError
 
-from agent_runtime_opencode.config import OpenCodeAdapterConfig
+from agent_runtime_opencode.config import OpenCodeAdapterConfig, endpoint_origin
 from agent_runtime_opencode.plugin import OpenCodePlugin
 from agent_runtime_opencode.protocol import canonical_json_text
 from graph_engine.plugin_api import PluginDescriptor, RegistryPorts, validate_contribution
@@ -82,6 +83,11 @@ def test_opencode_config_accepts_closed_handle_only_projection() -> None:
     [
         {"endpoint": "http://user:pass@127.0.0.1:4096"},
         {"endpoint": "https://token:secret@example.invalid"},
+        {"endpoint": "http://127.0.0.1:4096/opencode"},
+        {"endpoint": "http://127.0.0.1:4096?token=leak"},
+        {"endpoint": "http://127.0.0.1:4096#frag"},
+        {"endpoint": "http://127.0.0.1:4096/?q=1"},
+        {"endpoint": "http://127.0.0.1:4096/#frag"},
         {"model_fallback": "auto"},
         {"default_model": "openai/gpt-4.1"},
         {"provider_default": "opencode"},
@@ -127,6 +133,25 @@ def test_plugin_registers_only_execute_capability_and_request_result_schemas() -
     root_pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     project_block = root_pyproject.split("[dependency-groups]", 1)[0]
     assert "agent-runtime-opencode" not in project_block
+
+
+def test_opencode_config_rejects_non_origin_endpoint_path_query_and_fragment() -> None:
+    for endpoint in (
+        "http://127.0.0.1:4096/opencode",
+        "http://127.0.0.1:4096?token=leak",
+        "http://127.0.0.1:4096#frag",
+    ):
+        with pytest.raises(ValidationError):
+            OpenCodeAdapterConfig.model_validate(_valid_config_payload(endpoint=endpoint))
+
+    config = _valid_config(endpoint="http://127.0.0.1:4096/")
+    dumped = json.loads(canonical_json_text(config.model_dump(mode="json")))
+    parsed = urlparse(str(dumped["endpoint"]))
+    assert parsed.path in {"", "/"}
+    assert parsed.query == ""
+    assert parsed.fragment == ""
+    assert dumped["endpoint"] == config.origin or endpoint_origin(str(dumped["endpoint"])) == config.origin
+    assert config.origin == endpoint_origin("http://127.0.0.1:4096")
 
 
 def test_http_client_exposes_only_pinned_profile_routes() -> None:

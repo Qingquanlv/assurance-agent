@@ -41,6 +41,14 @@ class OpenCodeAdapterConfig(FrozenModel):
         endpoint_origin(str(value))
         if value.username or value.password:
             raise ValueError("endpoint must not contain URL credentials")
+        parsed = urlparse(str(value))
+        if parsed.query:
+            raise ValueError("endpoint must not include a query")
+        if parsed.fragment:
+            raise ValueError("endpoint must not include a fragment")
+        path = parsed.path or "/"
+        if path != "/":
+            raise ValueError("endpoint must not include a path prefix")
         return value
 
     @field_validator("secret_handle")
