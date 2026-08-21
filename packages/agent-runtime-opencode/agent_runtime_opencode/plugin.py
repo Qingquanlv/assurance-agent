@@ -72,7 +72,7 @@ class OpenCodePlugin:
         return PluginContribution(
             task_handlers={"runtime.opencode.execute": OpenCodeHandler()},
             schemas=(
-                SchemaContribution("runtime.opencode.request", "application/json", _REQUEST_SCHEMA),
-                SchemaContribution("runtime.opencode.result", "application/json", _RESULT_SCHEMA),
+                SchemaContribution("runtime.opencode.request", "application/schema+json", _REQUEST_SCHEMA),
+                SchemaContribution("runtime.opencode.result", "application/schema+json", _RESULT_SCHEMA),
             ),
         )

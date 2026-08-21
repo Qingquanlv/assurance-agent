@@ -1,0 +1,28 @@
+{
+  "product": {
+    "kind": "wheel_product",
+    "distribution": "agent-runtime-fixture",
+    "entrypoint_name": "fixture",
+    "declaration_path": "agent_runtime_fixture/product-declaration.json"
+  },
+  "plugins": [
+    {
+      "kind": "wheel_plugin",
+      "distribution": "agent-runtime-fixture",
+      "entrypoint_name": "fixture",
+      "declaration_path": "agent_runtime_fixture/plugin-declaration.json"
+    },
+    {
+      "kind": "wheel_plugin",
+      "distribution": "agent-runtime-fixture",
+      "entrypoint_name": "opencode-binding",
+      "declaration_path": "agent_runtime_fixture/opencode-binding-declaration.json"
+    },
+    {
+      "kind": "wheel_plugin",
+      "distribution": "agent-runtime-opencode",
+      "entrypoint_name": "opencode",
+      "declaration_path": "agent_runtime_opencode/plugin-declaration.json"
+    }
+  ]
+}

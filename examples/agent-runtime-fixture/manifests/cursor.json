@@ -1,0 +1,28 @@
+{
+  "product": {
+    "kind": "wheel_product",
+    "distribution": "agent-runtime-fixture",
+    "entrypoint_name": "fixture",
+    "declaration_path": "agent_runtime_fixture/product-declaration.json"
+  },
+  "plugins": [
+    {
+      "kind": "wheel_plugin",
+      "distribution": "agent-runtime-fixture",
+      "entrypoint_name": "fixture",
+      "declaration_path": "agent_runtime_fixture/plugin-declaration.json"
+    },
+    {
+      "kind": "wheel_plugin",
+      "distribution": "agent-runtime-fixture",
+      "entrypoint_name": "cursor-binding",
+      "declaration_path": "agent_runtime_fixture/cursor-binding-declaration.json"
+    },
+    {
+      "kind": "wheel_plugin",
+      "distribution": "agent-runtime-cursor",
+      "entrypoint_name": "cursor",
+      "declaration_path": "agent_runtime_cursor/plugin-declaration.json"
+    }
+  ]
+}

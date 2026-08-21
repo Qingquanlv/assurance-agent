@@ -72,7 +72,7 @@ class CursorPlugin:
         return PluginContribution(
             task_handlers={"runtime.cursor.execute": CursorHandler()},
             schemas=(
-                SchemaContribution("runtime.cursor.request", "application/json", _REQUEST_SCHEMA),
-                SchemaContribution("runtime.cursor.result", "application/json", _RESULT_SCHEMA),
+                SchemaContribution("runtime.cursor.request", "application/schema+json", _REQUEST_SCHEMA),
+                SchemaContribution("runtime.cursor.result", "application/schema+json", _RESULT_SCHEMA),
             ),
         )
