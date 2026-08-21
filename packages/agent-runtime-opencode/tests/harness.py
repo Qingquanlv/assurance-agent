@@ -48,7 +48,6 @@ FIXTURE_RESULT_SCHEMA = {
     "required": ["ok"],
     "type": "object",
 }
-FIXTURE_RESULT_SCHEMA_DIGEST = canonical_digest(FIXTURE_RESULT_SCHEMA)
 
 
 class FakeActivityPort:
@@ -223,13 +222,14 @@ def profile(**overrides: object) -> OpenCodeProtocolProfile:
     return OpenCodeProtocolProfile.model_validate(payload)
 
 
-def agent_run_request() -> AgentRunRequest:
+def agent_run_request(*, result_schema: dict[str, object] | None = None) -> AgentRunRequest:
+    schema = result_schema if result_schema is not None else FIXTURE_RESULT_SCHEMA
     return AgentRunRequest(
         schema_version="1",
         instructions=(InstructionPart.text("text/plain", "write result.json"),),
         result_contract=ResultContract(
             schema_id="fixture.result.v1",
-            schema_digest=FIXTURE_RESULT_SCHEMA_DIGEST,
+            schema_digest=canonical_digest(schema),
             extraction_mode="structured",
         ),
         execution=FrozenExecutionSelection(
@@ -308,11 +308,14 @@ def _open_code_fixture(
     config_overrides: dict[str, object] | None = None,
     profile_overrides: dict[str, object] | None = None,
     agent_run: AgentRunRequest | None = None,
+    result_schema: dict[str, object] | None = None,
 ) -> OpenCodeFixture:
     root = tempfile.TemporaryDirectory()
     workspace_root = Path(root.name) / "attempt-1"
     workspace_root.mkdir()
-    request = task_request(agent_run)
+    schema = result_schema if result_schema is not None else FIXTURE_RESULT_SCHEMA
+    run = agent_run if agent_run is not None else agent_run_request(result_schema=schema)
+    request = task_request(run, binding_data={"result_schema": schema})
     snapshot = prepared_snapshot(request)
     metadata = discovery_metadata(
         request=request,
@@ -365,6 +368,7 @@ def _bound_fixture(
     request_timeout_seconds: float | None = None,
     poll_fallback_supported: bool = True,
     agent_run: AgentRunRequest | None = None,
+    result_schema: dict[str, object] | None = None,
 ) -> OpenCodeFixture:
     overrides: dict[str, object] = {}
     if request_timeout_seconds is not None:
@@ -374,6 +378,7 @@ def _bound_fixture(
         config_overrides=overrides or None,
         profile_overrides={"poll_fallback_supported": poll_fallback_supported},
         agent_run=agent_run,
+        result_schema=result_schema,
     )
     fixture.fake.terminal_mode = terminal_mode  # type: ignore[assignment]
     fixture.fake.sse_mode = sse_mode  # type: ignore[assignment]

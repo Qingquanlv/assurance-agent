@@ -83,6 +83,39 @@ async def test_success_durable_outputs_and_workspace_have_no_canary() -> None:
         fixture.close()
 
 
+_NOTE_SCHEMA = {
+    "additionalProperties": False,
+    "properties": {
+        "ok": {"const": True, "type": "boolean"},
+        "note": {"type": "string"},
+    },
+    "required": ["ok", "note"],
+    "type": "object",
+}
+
+
+async def test_structured_result_canary_is_invalid_output() -> None:
+    fixture = _bound_fixture(
+        terminal_mode="success",
+        sse_mode="fast_idle",
+        result_schema=_NOTE_SCHEMA,
+    )
+    fixture.fake.structured_result = {"ok": True, "note": _SECRET_TEXT}
+    try:
+        outcome = await fixture.handler.execute(fixture.request, fixture.context)
+        assert outcome.status == "failed"
+        assert outcome.failure is not None
+        assert outcome.failure.kind == "invalid_output"
+        assert outcome.failure.retryable is False
+        texts, workspace = _durable_blobs(fixture, outcome)
+        scan_for_canaries(texts=texts, roots=(workspace,), canaries=(_CANARY,))
+        dumped = canonical_json_text(outcome.model_dump(mode="json"))
+        assert _SECRET_TEXT not in dumped
+        assert outcome.output is None
+    finally:
+        fixture.close()
+
+
 async def test_provider_error_redacts_canary_from_typed_failure() -> None:
     handler, stream = _capture_logs()
     fixture = _bound_fixture(terminal_mode="error", sse_mode="fast_idle")

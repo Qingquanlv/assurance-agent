@@ -458,7 +458,6 @@ class OpenCodeHandler:
             if not isinstance(session, dict):
                 session = record
             messages = await client.list_messages(session_id)
-            diff = await client.get_session_diff(session_id)
         except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
             return TaskActivityReconcileResult(
                 status="indeterminate",
@@ -473,6 +472,13 @@ class OpenCodeHandler:
         dumped = thaw_json(reference.model_dump(mode="json"))
         if kind == "running":
             return TaskActivityReconcileResult(status="running", reference=dumped)
+        try:
+            diff = await client.get_session_diff(session_id)
+        except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
+            return TaskActivityReconcileResult(
+                status="indeterminate",
+                reason=str(error) or "provider observation is indeterminate",
+            )
         agent_run = agent_run_from_request(request)
         return TaskActivityReconcileResult(
             status="terminal",

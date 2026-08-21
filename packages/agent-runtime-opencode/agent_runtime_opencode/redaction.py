@@ -84,6 +84,27 @@ def redact_json(value: object, *, canaries: Sequence[str | bytes] = ()) -> objec
     return thawed
 
 
+def _payload_contains_canary(value: object, *, canaries: Sequence[str | bytes]) -> bool:
+    thawed = thaw_json(value)
+    if isinstance(thawed, str):
+        return redact_text(thawed, canaries=canaries) != thawed
+    if isinstance(thawed, Mapping):
+        for key, item in thawed.items():
+            if isinstance(key, str) and redact_text(key, canaries=canaries) != key:
+                return True
+            if _payload_contains_canary(item, canaries=canaries):
+                return True
+        return False
+    if isinstance(thawed, list):
+        return any(_payload_contains_canary(item, canaries=canaries) for item in thawed)
+    return False
+
+
+def reject_canaries_in_payload(value: object, *, canaries: Sequence[str | bytes] = ()) -> None:
+    if _payload_contains_canary(value, canaries=canaries):
+        raise ValueError("structured result contains a credential")
+
+
 def bound_redacted_messages(
     messages: Sequence[str],
     *,

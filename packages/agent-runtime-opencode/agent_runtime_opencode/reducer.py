@@ -18,7 +18,12 @@ from agent_runtime_opencode.observation import (
     provider_error_message,
     structured_result_from_messages,
 )
-from agent_runtime_opencode.redaction import bound_redacted_messages, failure_message, redact_json
+from agent_runtime_opencode.redaction import (
+    bound_redacted_messages,
+    failure_message,
+    redact_json,
+    reject_canaries_in_payload,
+)
 
 
 ADAPTER_ID = "runtime.opencode"
@@ -78,6 +83,7 @@ def _reduce_success(
             schema_digest=agent_run.result_contract.schema_digest,
         )
         reject_credentials_in_digest_input(validated)
+        reject_canaries_in_payload(validated, canaries=canaries)
     except (TypeError, ValueError) as error:
         return TaskOutcome.failed(
             "invalid_output",

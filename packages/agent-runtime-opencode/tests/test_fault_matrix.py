@@ -189,6 +189,20 @@ async def test_idle_with_open_tools_is_not_terminal() -> None:
         fixture.close()
 
 
+@pytest.mark.parametrize("fault", ["http_500", "oversized_response"])
+async def test_busy_session_stays_running_when_diff_errors(fault: str) -> None:
+    fixture = _bound_fixture(terminal_mode="busy")
+    try:
+        session_id = fixture.reference.session_id
+        assert session_id is not None
+        fixture.fake.fault_on(f"/session/{session_id}/diff", fault)
+        result = _reconcile(await fixture.reconcile())
+        assert result.status == "running"
+        assert result.outcome is None
+    finally:
+        fixture.close()
+
+
 async def test_completion_cancel_race_provider_terminal_wins() -> None:
     fixture = _terminal_success_fixture()
     try:

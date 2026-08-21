@@ -244,6 +244,9 @@ class OpenCodeFakeServer:
         if path_fault == "oversized_response":
             self._write_raw(handler, 200, b"x" * 70_000)
             return
+        if path_fault == "http_500":
+            self._write_json(handler, 500, {"error": "internal"})
+            return
         if path_fault == "disconnect":
             self._disconnect(handler)
             return
