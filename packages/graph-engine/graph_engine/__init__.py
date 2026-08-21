@@ -18,17 +18,6 @@ from graph_engine.plugin_api import (  # noqa: E402
     ValidationContext,
     ValidationResult,
 )
-from graph_engine.product import (  # noqa: E402
-    LegacyResolvedCapabilityView,
-    PluginRequirement,
-    ProductManifest,
-    ProductProvider,
-    ProductResolutionError,
-    ResolvedProduct,
-    load_plugin_entrypoint,
-    load_product_entrypoint,
-    resolve_product,
-)
 from graph_engine.runtime.engine import (  # noqa: E402
     Engine,
     EngineConflictError,
@@ -36,6 +25,12 @@ from graph_engine.runtime.engine import (  # noqa: E402
     EnginePublicationIndeterminate,
     InvocationHandle,
     RunResult,
+)
+from graph_engine.runtime.invocation_lock import (  # noqa: E402
+    InvocationDrift,
+    authenticate_invocation_lock,
+    install_invocation_lock_at,
+    read_invocation_lock_at,
 )
 
 __all__ = [
@@ -48,16 +43,11 @@ __all__ = [
     "CandidateWriteSet",
     "CommitValidator",
     "FailureKind",
-    "LegacyResolvedCapabilityView",
     "PluginDescriptor",
     "PluginProvider",
     "RegistryPorts",
-    "PluginRequirement",
-    "ProductManifest",
-    "ProductProvider",
-    "ProductResolutionError",
-    "ResolvedProduct",
     "InvocationHandle",
+    "InvocationDrift",
     "RunResult",
     "ResourceClaims",
     "TaskContext",
@@ -68,7 +58,7 @@ __all__ = [
     "TaskStatus",
     "ValidationContext",
     "ValidationResult",
-    "load_plugin_entrypoint",
-    "load_product_entrypoint",
-    "resolve_product",
+    "authenticate_invocation_lock",
+    "install_invocation_lock_at",
+    "read_invocation_lock_at",
 ]

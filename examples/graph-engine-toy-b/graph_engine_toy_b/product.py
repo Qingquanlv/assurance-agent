@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from graph_engine import ENGINE_API_VERSION
+from graph_engine.composition import PluginRequirement, ProductManifest
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import ProviderSource
-from graph_engine.product import PluginRequirement, ProductManifest
 
 
 class ToyBProduct:

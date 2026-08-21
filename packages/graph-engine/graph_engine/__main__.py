@@ -1,44 +1,39 @@
 from __future__ import annotations
 
 import argparse
+from importlib import metadata
 import json
+from pathlib import Path
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from pathlib import Path
 from typing import cast
 
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.errors import GraphEngineError
-from graph_engine.plugin_api import PluginProvider, TaskContext, TaskHandler, TaskOutcome, TaskRequest
-from graph_engine.product import (
-    ProductManifest,
-    ProductProvider,
-    ProductResolutionError,
-    ResolvedProduct,
-    load_plugin_entrypoint,
-    load_product_entrypoint,
-    resolve_product,
+from graph_engine.composition import (
+    FrozenComposition,
+    PluginSource,
+    ProductSource,
+    RegistryPlatform,
+    ResolutionRequest,
+    WheelPluginSource,
+    WheelProductSource,
 )
+from graph_engine.errors import GraphEngineError
+from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 from graph_engine.runtime.engine import Engine, RunResult
 from graph_engine.runtime.ledger import Ledger
 
 
-@dataclass(frozen=True, slots=True)
-class _ManifestSnapshot:
-    value: ProductManifest
-
-    def manifest(self) -> ProductManifest:
-        return self.value
+class _CliSourceError(GraphEngineError):
+    """Raised when explicit distribution coordinates do not select one source."""
 
 
 class _TrustedWheelPluginHost:
-    """Run explicitly selected, trusted Phase 1 wheel plugins in-process.
+    """Run explicitly selected, trusted wheel plugins in-process.
 
-    This command-boundary adapter is deliberately not an OS sandbox and is not a
-    production host.  It exists so the Phase 1 demonstration CLI can execute
-    reviewed wheel plugins while ``Engine`` itself remains fail-closed when no
-    ``TaskExecutionHost`` is supplied.
+    This command-boundary adapter is deliberately not an OS sandbox and is not
+    a production host. Engine itself remains fail-closed when no execution host
+    is supplied.
     """
 
     async def execute(
@@ -55,71 +50,150 @@ class _TrustedWheelPluginHost:
         )
 
 
-def _plugin_map(entrypoint_names: Sequence[str]) -> dict[str, PluginProvider]:
-    providers: dict[str, PluginProvider] = {}
-    selected_entrypoints: dict[str, str] = {}
-    for entrypoint_name in entrypoint_names:
-        provider = load_plugin_entrypoint(entrypoint_name)
-        plugin_id = provider.descriptor().plugin_id
-        if plugin_id in providers:
-            first = selected_entrypoints[plugin_id]
-            raise ProductResolutionError(
-                f"plugin entry points {first!r} and {entrypoint_name!r} both provide {plugin_id}"
-            )
-        providers[plugin_id] = provider
-        selected_entrypoints[plugin_id] = entrypoint_name
-    return providers
-
-
-def _resolve_bundle(product_entrypoint: str, plugin_entrypoints: Sequence[str]) -> ResolvedProduct:
-    provider: ProductProvider = load_product_entrypoint(product_entrypoint)
-    manifest = provider.manifest()
-    plugins = _plugin_map(plugin_entrypoints)
-    expected = {requirement.plugin_id for requirement in manifest.plugins}
-    selected = set(plugins)
-    if selected != expected:
-        missing = sorted(expected - selected)
-        extra = sorted(selected - expected)
-        details: list[str] = []
-        if missing:
-            details.append(f"missing {missing}")
-        if extra:
-            details.append(f"unexpected {extra}")
-        raise ProductResolutionError(
-            "explicit plugin set does not match product manifest: " + "; ".join(details)
+def _selected_entrypoint(
+    distribution_name: str,
+    group: str,
+    entrypoint_name: str,
+) -> tuple[metadata.Distribution, metadata.EntryPoint]:
+    try:
+        distribution = metadata.distribution(distribution_name)
+    except metadata.PackageNotFoundError as error:
+        raise _CliSourceError(f"selected distribution is not installed: {distribution_name}") from error
+    selected = tuple(
+        entrypoint
+        for entrypoint in distribution.entry_points
+        if entrypoint.group == group and entrypoint.name == entrypoint_name
+    )
+    if len(selected) != 1:
+        raise _CliSourceError(
+            f"distribution {distribution_name!r} does not expose exactly one "
+            f"{group} entry point named {entrypoint_name!r}"
         )
-    return resolve_product(_ManifestSnapshot(manifest), plugins)
+    return distribution, selected[0]
+
+
+def _declaration_path(entrypoint: metadata.EntryPoint, kind: str) -> str:
+    top_level = entrypoint.module.partition(".")[0]
+    if not top_level or not top_level.isidentifier():
+        raise _CliSourceError("selected entry point has no canonical top-level package")
+    return f"{top_level}/{kind}-declaration.json"
+
+
+def _require_installed_wheel(distribution: metadata.Distribution) -> None:
+    """Reject ambient editable inference at the CLI boundary.
+
+    Task 8's explicit distribution/entry-point flags can describe an installed
+    wheel source.  An editable source additionally requires the physical root
+    and exact closed file tuple, neither of which these flags can express.
+    """
+
+    direct_url_text = distribution.read_text("direct_url.json")
+    if direct_url_text is None:
+        return
+    try:
+        direct_url = json.loads(direct_url_text)
+    except json.JSONDecodeError as error:
+        raise _CliSourceError("selected distribution has malformed direct_url.json") from error
+    if not isinstance(direct_url, dict):
+        raise _CliSourceError("selected distribution has malformed direct_url.json")
+    directory_info = direct_url.get("dir_info")
+    if directory_info is not None and not isinstance(directory_info, dict):
+        raise _CliSourceError("selected distribution has malformed direct_url.json")
+    if isinstance(directory_info, dict) and directory_info.get("editable") is True:
+        raise _CliSourceError("editable distribution requires an explicit source root and file tuple")
+
+
+def _product_source(
+    distribution_name: str,
+    entrypoint_name: str,
+) -> ProductSource:
+    distribution, entrypoint = _selected_entrypoint(
+        distribution_name,
+        "graph_engine.products",
+        entrypoint_name,
+    )
+    _require_installed_wheel(distribution)
+    declaration_path = _declaration_path(entrypoint, "product")
+    return WheelProductSource(
+        distribution=distribution_name,
+        entrypoint_name=entrypoint_name,
+        declaration_path=declaration_path,
+    )
+
+
+def _plugin_source(
+    distribution_name: str,
+    entrypoint_name: str,
+) -> PluginSource:
+    distribution, entrypoint = _selected_entrypoint(
+        distribution_name,
+        "graph_engine.plugins",
+        entrypoint_name,
+    )
+    _require_installed_wheel(distribution)
+    declaration_path = _declaration_path(entrypoint, "plugin")
+    return WheelPluginSource(
+        distribution=distribution_name,
+        entrypoint_name=entrypoint_name,
+        declaration_path=declaration_path,
+    )
+
+
+def _resolve_bundle(
+    *,
+    product_distribution: str,
+    product_entrypoint: str,
+    plugin_distributions: Sequence[str],
+    plugin_entrypoints: Sequence[str],
+) -> FrozenComposition:
+    product = _product_source(product_distribution, product_entrypoint)
+    plugins = tuple(
+        _plugin_source(distribution, entrypoint)
+        for distribution, entrypoint in zip(
+            plugin_distributions,
+            plugin_entrypoints,
+            strict=True,
+        )
+    )
+    request = ResolutionRequest(product=product, plugins=plugins)
+    return RegistryPlatform().resolve(request)
 
 
 def _compile_document(
+    composition: FrozenComposition,
+    *,
+    product_distribution: str,
     product_entrypoint: str,
+    plugin_distributions: Sequence[str],
     plugin_entrypoints: Sequence[str],
-) -> tuple[ResolvedProduct, dict[str, JSONValue]]:
-    resolved = _resolve_bundle(product_entrypoint, plugin_entrypoints)
-    document: dict[str, JSONValue] = {
+) -> dict[str, JSONValue]:
+    return {
+        "product_distribution": product_distribution,
         "product_entrypoint": product_entrypoint,
-        "product_id": resolved.manifest.product_id,
-        "product_version": resolved.manifest.product_version,
-        "product_digest": resolved.digest,
-        "compiled_digest": resolved.workflow.digest,
+        "plugin_distributions": list(plugin_distributions),
+        "plugin_entrypoints": list(plugin_entrypoints),
+        "product_id": composition.manifest.product_id,
+        "product_version": composition.manifest.product_version,
+        "lock_digest": composition.lock_digest,
+        "composition_digest": composition.digest,
+        "compiled_digest": composition.workflow.digest,
     }
-    return resolved, document
 
 
 def _run_document(
-    resolved: ResolvedProduct,
+    composition: FrozenComposition,
     *,
+    product_distribution: str,
     product_entrypoint: str,
+    plugin_distributions: Sequence[str],
     plugin_entrypoints: Sequence[str],
     entrypoint: str,
     invocation_id: str,
     root: Path,
 ) -> tuple[RunResult, dict[str, JSONValue]]:
-    # Host construction is intentionally local to this trusted demonstration
-    # command. Engine(root) still uses its fail-closed unavailable host.
     with Engine(root, host=_TrustedWheelPluginHost()) as engine:
         with engine.start(
-            resolved,
+            composition,
             entrypoint=entrypoint,
             invocation_id=invocation_id,
         ) as handle:
@@ -132,34 +206,51 @@ def _run_document(
             with handle.workspace as workspace:
                 final_tree_id = workspace.head_tree_id()
 
-    document: dict[str, JSONValue] = {
-        "product_entrypoint": product_entrypoint,
-        "plugin_entrypoints": list(plugin_entrypoints),
-        "product_id": resolved.manifest.product_id,
-        "product_version": resolved.manifest.product_version,
-        "product_digest": resolved.digest,
-        "compiled_digest": resolved.workflow.digest,
-        "invocation_id": invocation_id,
-        "status": result.status,
-        "terminal_reason": result.terminal_reason,
-        "actions": list(result.actions),
-        "output": cast(JSONValue, result.model_dump(mode="json")["output"]),
-        "ledger_digest": canonical_digest(ledger_document),
-        "final_tree_id": final_tree_id,
-    }
+    document = _compile_document(
+        composition,
+        product_distribution=product_distribution,
+        product_entrypoint=product_entrypoint,
+        plugin_distributions=plugin_distributions,
+        plugin_entrypoints=plugin_entrypoints,
+    )
+    document.update(
+        {
+            "invocation_id": invocation_id,
+            "status": result.status,
+            "terminal_reason": result.terminal_reason,
+            "actions": list(result.actions),
+            "output": cast(JSONValue, result.model_dump(mode="json")["output"]),
+            "ledger_digest": canonical_digest(ledger_document),
+            "final_tree_id": final_tree_id,
+        }
+    )
     return result, document
 
 
+def _add_source_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--product-dist")
+    parser.add_argument("--product-entrypoint")
+    parser.add_argument("--plugin-dist", action="append")
+    parser.add_argument("--plugin-entrypoint", action="append")
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m graph_engine")
+    parser = argparse.ArgumentParser(prog="python -m graph_engine", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
 
-    compile_parser = commands.add_parser("compile", help="compile one explicit product bundle")
-    compile_parser.add_argument("--product")
+    compile_parser = commands.add_parser(
+        "compile",
+        help="compile one explicit product bundle",
+        allow_abbrev=False,
+    )
+    _add_source_arguments(compile_parser)
 
-    run_parser = commands.add_parser("run", help="run one explicit product bundle")
-    run_parser.add_argument("--product")
-    run_parser.add_argument("--plugin", action="append")
+    run_parser = commands.add_parser(
+        "run",
+        help="run one explicit product bundle",
+        allow_abbrev=False,
+    )
+    _add_source_arguments(run_parser)
     run_parser.add_argument("--entrypoint")
     run_parser.add_argument("--invocation-id")
     run_parser.add_argument("--root", type=Path)
@@ -174,27 +265,40 @@ def _required(parser: argparse.ArgumentParser, value: object, message: str) -> N
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
-    _required(parser, arguments.product, "product is required")
+    _required(parser, arguments.product_dist, "product distribution is required")
+    _required(parser, arguments.product_entrypoint, "product entrypoint is required")
+    _required(parser, arguments.plugin_dist, "at least one plugin distribution is required")
+    _required(parser, arguments.plugin_entrypoint, "at least one plugin entrypoint is required")
+    if len(arguments.plugin_dist) != len(arguments.plugin_entrypoint):
+        parser.error("plugin distribution and entrypoint counts must match")
+    if arguments.command == "run":
+        _required(parser, arguments.entrypoint, "entrypoint is required")
+        _required(parser, arguments.invocation_id, "invocation id is required")
+        _required(parser, arguments.root, "root is required")
 
     try:
+        composition = _resolve_bundle(
+            product_distribution=arguments.product_dist,
+            product_entrypoint=arguments.product_entrypoint,
+            plugin_distributions=arguments.plugin_dist,
+            plugin_entrypoints=arguments.plugin_entrypoint,
+        )
         if arguments.command == "compile":
-            _resolved, document = _compile_document(
-                arguments.product,
-                # Phase 1 toy distributions deliberately use the same explicit
-                # entry-point name for their product and sole plugin.
-                (arguments.product,),
-            )
             result: RunResult | None = None
+            document = _compile_document(
+                composition,
+                product_distribution=arguments.product_dist,
+                product_entrypoint=arguments.product_entrypoint,
+                plugin_distributions=arguments.plugin_dist,
+                plugin_entrypoints=arguments.plugin_entrypoint,
+            )
         else:
-            _required(parser, arguments.plugin, "at least one plugin is required")
-            _required(parser, arguments.entrypoint, "entrypoint is required")
-            _required(parser, arguments.invocation_id, "invocation id is required")
-            _required(parser, arguments.root, "root is required")
-            resolved, _compile = _compile_document(arguments.product, arguments.plugin)
             result, document = _run_document(
-                resolved,
-                product_entrypoint=arguments.product,
-                plugin_entrypoints=arguments.plugin,
+                composition,
+                product_distribution=arguments.product_dist,
+                product_entrypoint=arguments.product_entrypoint,
+                plugin_distributions=arguments.plugin_dist,
+                plugin_entrypoints=arguments.plugin_entrypoint,
                 entrypoint=arguments.entrypoint,
                 invocation_id=arguments.invocation_id,
                 root=arguments.root,

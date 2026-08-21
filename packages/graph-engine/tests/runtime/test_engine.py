@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import builtins
 import fcntl
+import importlib
+from importlib import metadata
 import json
 import os
+import sys
+import tempfile
 import threading
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -17,20 +22,26 @@ import graph_engine.runtime.engine as engine_runtime
 import graph_engine.runtime.ledger as ledger_runtime
 import graph_engine.runtime.workspace as workspace_runtime
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.graph.compiler import compile_workflow
+from graph_engine.composition import (
+    EditableWheelPluginSource,
+    EditableWheelProductSource,
+    FrozenComposition,
+    PluginRequirement,
+    ProductManifest,
+    RegistryPlatform,
+    ResolutionRequest,
+)
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import (
-    PluginContribution,
     PluginDescriptor,
-    RegistryPorts,
+    ProviderSource,
     ResourceClaims,
     TaskContext,
     TaskHandler,
     TaskOutcome,
     TaskRequest,
 )
-from graph_engine.product import PluginRequirement, ProductManifest, ResolvedProduct, resolve_product
 from graph_engine.runtime.engine import (
     Engine,
     EngineConflictError,
@@ -61,31 +72,12 @@ from graph_engine.runtime.events import (
     TokenOffered,
 )
 from graph_engine.runtime.ledger import Ledger, LedgerIntegrityError
+from graph_engine.runtime.invocation_lock import InvocationDrift
 from graph_engine.runtime.models import fold_events
 from graph_engine.runtime.planner import activation_id, plan_next, task_id
 from graph_engine.runtime.scheduler import FakeClock
 from graph_engine.runtime.scheduler import Scheduler
 from graph_engine.runtime.workspace import SnapshotStore, WorkspaceViolation
-
-
-@dataclass(frozen=True)
-class _StaticPlugin:
-    handlers: Mapping[str, TaskHandler]
-
-    def descriptor(self) -> PluginDescriptor:
-        return PluginDescriptor(
-            schema_version="1",
-            source=None,
-            plugin_id="test.empty",
-            plugin_version="1.0.0",
-            engine_api=ENGINE_API_VERSION,
-            task_handlers=tuple(sorted(self.handlers)),
-            commit_validators=(),
-        )
-
-    def contribute(self, ports: RegistryPorts) -> PluginContribution:
-        assert ports.engine_api == ENGINE_API_VERSION
-        return PluginContribution(task_handlers=self.handlers)
 
 
 class _FunctionHandler:
@@ -99,29 +91,174 @@ class _FunctionHandler:
         return await self._implementation(request, context)
 
 
-@dataclass(frozen=True)
-class _StaticProduct:
-    workflow: WorkflowDef
+class _MetadataProvider:
+    def __init__(self, distribution_name: str, distribution: metadata.Distribution) -> None:
+        self._distribution_name = distribution_name
+        self._distribution = distribution
 
-    def manifest(self) -> ProductManifest:
-        return ProductManifest(
-            schema_version="1",
-            source=None,
-            product_id="test.product",
-            product_version="1.0.0",
-            engine_api=ENGINE_API_VERSION,
-            plugins=(PluginRequirement(plugin_id="test.empty", version_specifier="==1.0.0"),),
-            entrypoints=dict(self.workflow.entrypoints),
-            configuration={},
-            workflow=self.workflow,
-        )
+    def distribution(self, name: str) -> metadata.Distribution:
+        if name != self._distribution_name:
+            raise metadata.PackageNotFoundError(name)
+        return self._distribution
+
+
+_CALLBACK_REGISTRY_NAME = "_graph_engine_runtime_test_callbacks"
+_CALLBACKS: dict[str, Mapping[str, TaskHandler]] = {}
+setattr(builtins, _CALLBACK_REGISTRY_NAME, _CALLBACKS)
 
 
 def _resolved(
     workflow: dict[str, object], handlers: Mapping[str, TaskHandler] | None = None
-) -> ResolvedProduct:
-    product = _StaticProduct(WorkflowDef.model_validate(workflow))
-    return resolve_product(product, {"test.empty": _StaticPlugin(handlers or {})})
+) -> FrozenComposition:
+    """Resolve an authenticated editable test distribution through the public platform."""
+
+    parsed_workflow = WorkflowDef.model_validate(workflow)
+    selected_handlers = dict(handlers or {})
+    identity = uuid.uuid4().hex
+    distribution_name = f"graph-engine-runtime-test-{identity}"
+    package_name = f"graph_engine_runtime_test_{identity}"
+    entrypoint_name = f"runtime-{identity}"
+    source_root = Path(tempfile.mkdtemp(prefix="graph-engine-runtime-source-")).resolve()
+    package_root = source_root / package_name
+    package_root.mkdir()
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    provider_value = f"{package_name}.provider"
+    product_declaration_path = f"{package_name}/product-declaration.json"
+    plugin_declaration_path = f"{package_name}/plugin-declaration.json"
+    product_source = ProviderSource(
+        distribution=distribution_name,
+        version="1.0.0",
+        entrypoint_group="graph_engine.products",
+        entrypoint_name=entrypoint_name,
+        entrypoint_value=f"{provider_value}:RuntimeProduct",
+        declaration_path=product_declaration_path,
+        import_roots=("",),
+    )
+    plugin_source = ProviderSource(
+        distribution=distribution_name,
+        version="1.0.0",
+        entrypoint_group="graph_engine.plugins",
+        entrypoint_name=entrypoint_name,
+        entrypoint_value=f"{provider_value}:RuntimePlugin",
+        declaration_path=plugin_declaration_path,
+        import_roots=("",),
+    )
+    manifest = ProductManifest(
+        schema_version="1",
+        source=product_source,
+        product_id="test.product",
+        product_version="1.0.0",
+        engine_api=ENGINE_API_VERSION,
+        plugins=(PluginRequirement(plugin_id="test.empty", version_specifier="==1.0.0"),),
+        entrypoints=dict(parsed_workflow.entrypoints),
+        configuration={},
+        workflow=parsed_workflow,
+    )
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=plugin_source,
+        plugin_id="test.empty",
+        plugin_version="1.0.0",
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=tuple(sorted(selected_handlers)),
+        commit_validators=(),
+    )
+    manifest_document = manifest.model_dump(mode="json")
+    manifest_document["workflow"] = parsed_workflow.model_dump(mode="json", exclude_defaults=True)
+    (source_root / product_declaration_path).write_bytes(
+        canonical_json_bytes(
+            {
+                "kind": "product",
+                "manifest": manifest_document,
+                "schema_version": "1",
+                "source": product_source.model_dump(mode="json"),
+            }
+        )
+    )
+    (source_root / plugin_declaration_path).write_bytes(
+        canonical_json_bytes(
+            {
+                "descriptor": descriptor.model_dump(mode="json"),
+                "kind": "plugin",
+                "schema_version": "1",
+                "source": plugin_source.model_dump(mode="json"),
+            }
+        )
+    )
+    callback_key = f"runtime-{identity}"
+    _CALLBACKS[callback_key] = selected_handlers
+    manifest_json = json.dumps(manifest_document, sort_keys=True)
+    descriptor_json = json.dumps(descriptor.model_dump(mode="json"), sort_keys=True)
+    (package_root / "provider.py").write_text(
+        "import builtins\n"
+        "import json\n"
+        "from graph_engine.composition import ProductManifest\n"
+        "from graph_engine.plugin_api import PluginContribution, PluginDescriptor\n"
+        f"_callbacks = getattr(builtins, {_CALLBACK_REGISTRY_NAME!r})[{callback_key!r}]\n"
+        "class _DelegatingHandler:\n"
+        "    def __init__(self, delegate):\n"
+        "        self._delegate = delegate\n"
+        "    async def execute(self, request, context):\n"
+        "        return await self._delegate.execute(request, context)\n"
+        "class RuntimeProduct:\n"
+        "    @staticmethod\n"
+        "    def manifest():\n"
+        f"        return ProductManifest.model_validate(json.loads({manifest_json!r}))\n"
+        "class RuntimePlugin:\n"
+        "    @staticmethod\n"
+        "    def descriptor():\n"
+        f"        return PluginDescriptor.model_validate(json.loads({descriptor_json!r}))\n"
+        "    @staticmethod\n"
+        "    def contribute(_ports):\n"
+        "        return PluginContribution(task_handlers={\n"
+        "            key: _DelegatingHandler(value) for key, value in _callbacks.items()\n"
+        "        })\n",
+        encoding="utf-8",
+    )
+    source_files = tuple(
+        sorted(path.relative_to(source_root).as_posix() for path in source_root.rglob("*") if path.is_file())
+    )
+    metadata_root = Path(tempfile.mkdtemp(prefix="graph-engine-runtime-metadata-"))
+    dist_info = metadata_root / f"{package_name}-1.0.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {distribution_name}\nVersion: 1.0.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "entry_points.txt").write_text(
+        "[graph_engine.products]\n"
+        f"{entrypoint_name} = {provider_value}:RuntimeProduct\n"
+        "[graph_engine.plugins]\n"
+        f"{entrypoint_name} = {provider_value}:RuntimePlugin\n",
+        encoding="utf-8",
+    )
+    sys.path.insert(0, str(source_root))
+    importlib.invalidate_caches()
+    request = ResolutionRequest(
+        product=EditableWheelProductSource(
+            distribution=distribution_name,
+            entrypoint_name=entrypoint_name,
+            declaration_path=product_declaration_path,
+            source_root=source_root,
+            source_files=source_files,
+        ),
+        plugins=(
+            EditableWheelPluginSource(
+                distribution=distribution_name,
+                entrypoint_name=entrypoint_name,
+                declaration_path=plugin_declaration_path,
+                source_root=source_root,
+                source_files=source_files,
+            ),
+        ),
+    )
+    platform = RegistryPlatform(
+        metadata_provider=_MetadataProvider(
+            distribution_name,
+            metadata.Distribution.at(dist_info),
+        )
+    )
+    return platform.resolve(request)
 
 
 def _structural_product(
@@ -131,7 +268,7 @@ def _structural_product(
     edges: list[dict[str, str]],
     start: str,
     maximum: int,
-) -> ResolvedProduct:
+) -> FrozenComposition:
     return _resolved(
         {
             "name": name,
@@ -189,7 +326,7 @@ def _task_product(
     handler: Callable[..., Awaitable[TaskOutcome]],
     *,
     nested: bool = False,
-) -> ResolvedProduct:
+) -> FrozenComposition:
     root_start = "child" if nested else "work"
     root_nodes: dict[str, object]
     root_edges: list[dict[str, str]]
@@ -241,7 +378,7 @@ def _task_product(
     )
 
 
-def _two_task_product(handler: Callable[..., Awaitable[TaskOutcome]]) -> ResolvedProduct:
+def _two_task_product(handler: Callable[..., Awaitable[TaskOutcome]]) -> FrozenComposition:
     task = {
         "kind": "task",
         "capability": "test.empty.run",
@@ -274,7 +411,7 @@ def _two_task_product(handler: Callable[..., Awaitable[TaskOutcome]]) -> Resolve
     )
 
 
-def _sibling_task_product() -> ResolvedProduct:
+def _sibling_task_product() -> FrozenComposition:
     async def unused(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
         return TaskOutcome.succeeded("unused")
 
@@ -320,7 +457,7 @@ def _sibling_task_product() -> ResolvedProduct:
 def _forge_unrelated_failed_sibling(
     root: Path,
     terminal_status: Literal["failed", "stopped"],
-) -> tuple[ResolvedProduct, str]:
+) -> tuple[FrozenComposition, str]:
     product = _sibling_task_product()
     invocation_id = f"unrelated-sibling-{terminal_status}"
     engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
@@ -387,7 +524,7 @@ def _forge_unrelated_failed_sibling(
     return product, invocation_id
 
 
-def _parallel_task_product(*, activation_bound: bool = False) -> ResolvedProduct:
+def _parallel_task_product(*, activation_bound: bool = False) -> FrozenComposition:
     async def unused(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
         return TaskOutcome.succeeded("unused")
 
@@ -402,11 +539,11 @@ def _parallel_task_product(*, activation_bound: bool = False) -> ResolvedProduct
     }
     edges = [{"from": "split", "to": "sibling"}]
     if activation_bound:
-        nodes["loop"] = {"kind": "gate", "expression": "true"}
+        nodes["z-loop"] = {"kind": "gate", "expression": "true"}
         edges.extend(
             (
-                {"from": "split", "to": "loop"},
-                {"from": "loop", "to": "loop"},
+                {"from": "split", "to": "z-loop"},
+                {"from": "z-loop", "to": "z-loop"},
             )
         )
     else:
@@ -441,7 +578,7 @@ def _parallel_task_ledger(
     invocation_id: str,
     *,
     activation_bound: bool = False,
-) -> tuple[ResolvedProduct, Path, dict[str, str]]:
+) -> tuple[FrozenComposition, Path, dict[str, str]]:
     product = _parallel_task_product(activation_bound=activation_bound)
     with Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as engine:
         with engine.start(product, entrypoint="main", invocation_id=invocation_id) as handle:
@@ -540,7 +677,7 @@ def _stopped_attempt_events(
 
 def _nested_task_interrupt_product(
     handler: Callable[..., Awaitable[TaskOutcome]],
-) -> ResolvedProduct:
+) -> FrozenComposition:
     return _resolved(
         {
             "name": "crash-matrix",
@@ -592,7 +729,7 @@ def engine(tmp_path: Path) -> Engine:
 
 
 @pytest.fixture
-def resolved_subgraph_product() -> ResolvedProduct:
+def resolved_subgraph_product() -> FrozenComposition:
     return _resolved(
         {
             "name": "subgraph-test",
@@ -625,7 +762,7 @@ def resolved_subgraph_product() -> ResolvedProduct:
 
 
 @pytest.fixture
-def resolved_interrupt_product() -> ResolvedProduct:
+def resolved_interrupt_product() -> FrozenComposition:
     return _resolved(
         {
             "name": "interrupt-test",
@@ -653,12 +790,12 @@ def resolved_interrupt_product() -> ResolvedProduct:
 
 def test_engine_has_no_default_product(tmp_path: Path) -> None:
     engine = Engine(tmp_path)
-    with pytest.raises(TypeError, match="product"):
+    with pytest.raises(TypeError, match="composition"):
         engine.start(entrypoint="main", invocation_id="missing-product")  # type: ignore[call-arg]
 
 
 def test_subgraph_completion_returns_to_parent(
-    engine: Engine, resolved_subgraph_product: ResolvedProduct
+    engine: Engine, resolved_subgraph_product: FrozenComposition
 ) -> None:
     handle = engine.start(resolved_subgraph_product, entrypoint="main", invocation_id="inv-sub")
     result = engine.run_until_blocked(handle)
@@ -667,7 +804,7 @@ def test_subgraph_completion_returns_to_parent(
 
 
 def test_interrupt_requires_explicit_resume(
-    engine: Engine, resolved_interrupt_product: ResolvedProduct
+    engine: Engine, resolved_interrupt_product: FrozenComposition
 ) -> None:
     handle = engine.start(resolved_interrupt_product, entrypoint="main", invocation_id="inv-int")
     blocked = engine.run_until_blocked(handle)
@@ -826,7 +963,7 @@ def test_resume_mismatch_repeat_and_payload_freezing_do_not_append(tmp_path: Pat
 
 
 def test_concurrent_resume_commits_only_one_atomic_sequence(
-    tmp_path: Path, resolved_interrupt_product: ResolvedProduct
+    tmp_path: Path, resolved_interrupt_product: FrozenComposition
 ) -> None:
     engine = Engine(tmp_path)
     handle = engine.start(resolved_interrupt_product, entrypoint="main", invocation_id="resume-race")
@@ -869,7 +1006,7 @@ def test_invocation_id_is_confined(tmp_path: Path, invocation_id: str) -> None:
         Engine(tmp_path).start(product, entrypoint="main", invocation_id=invocation_id)
 
 
-def test_open_rejects_product_digest_mismatch_without_appending(tmp_path: Path) -> None:
+def test_open_rejects_lock_digest_mismatch_without_appending(tmp_path: Path) -> None:
     first = _resolved(
         {
             "name": "first",
@@ -886,18 +1023,27 @@ def test_open_rejects_product_digest_mismatch_without_appending(tmp_path: Path) 
             },
         }
     )
-    second = first.__class__(
-        manifest=first.manifest.model_copy(update={"product_version": "2.0.0"}),
-        descriptors=first.descriptors,
-        registry=first.registry,
-        workflow=first.workflow,
-        digest="f" * 64,
+    second = _resolved(
+        {
+            "name": "second",
+            "entrypoints": {"main": "root"},
+            "retry": {},
+            "timeout": {},
+            "graphs": {
+                "root": {
+                    "max_activations": 1,
+                    "start": "end",
+                    "nodes": {"end": {"kind": "end"}},
+                    "edges": [],
+                }
+            },
+        }
     )
     handle = Engine(tmp_path).start(first, entrypoint="main", invocation_id="digest")
     ledger = Ledger(handle.invocation_root / "ledger")
     before = ledger.read_all()
 
-    with pytest.raises(EngineError, match="digest mismatch"):
+    with pytest.raises(InvocationDrift, match="lock|composition"):
         Engine(tmp_path).open("digest", second)
 
     assert ledger.read_all() == before
@@ -905,7 +1051,7 @@ def test_open_rejects_product_digest_mismatch_without_appending(tmp_path: Path) 
 
 def test_duplicate_start_rejects_digest_mismatch_without_replacing_invocation(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
 ) -> None:
     engine = Engine(tmp_path)
     handle = engine.start(
@@ -915,9 +1061,24 @@ def test_duplicate_start_rejects_digest_mismatch_without_replacing_invocation(
     )
     ledger = Ledger(handle.invocation_root / "ledger")
     before = ledger.read_all()
-    mismatched = replace(resolved_interrupt_product, digest="f" * 64)
+    mismatched = _resolved(
+        {
+            "name": "mismatched-duplicate",
+            "entrypoints": {"main": "root"},
+            "retry": {},
+            "timeout": {},
+            "graphs": {
+                "root": {
+                    "max_activations": 1,
+                    "start": "end",
+                    "nodes": {"end": {"kind": "end"}},
+                    "edges": [],
+                }
+            },
+        }
+    )
 
-    with pytest.raises(EngineError, match="digest mismatch"):
+    with pytest.raises(InvocationDrift, match="lock|composition"):
         engine.start(mismatched, entrypoint="main", invocation_id="duplicate")
 
     assert ledger.read_all() == before
@@ -1291,7 +1452,7 @@ class _CrashAfterAppendEngine(Engine):
 
 def _finish_interrupt_invocation(
     root: Path,
-    product: ResolvedProduct,
+    product: FrozenComposition,
     *,
     cut: int | None,
 ) -> tuple[str, str]:
@@ -1338,7 +1499,7 @@ def _finish_interrupt_invocation(
 @pytest.mark.parametrize("cut", [1, 2, 3, 4])
 def test_reopen_after_each_structural_batch_has_identical_final_digests(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
     cut: int,
 ) -> None:
     baseline = _finish_interrupt_invocation(tmp_path / "baseline", resolved_interrupt_product, cut=None)
@@ -1349,7 +1510,7 @@ def test_reopen_after_each_structural_batch_has_identical_final_digests(
 
 def _finish_crash_matrix_invocation(
     root: Path,
-    product: ResolvedProduct,
+    product: FrozenComposition,
 ) -> tuple[str, str]:
     engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
     try:
@@ -1704,7 +1865,7 @@ def test_open_cannot_reclaim_expired_lease_from_active_claimed_runner(tmp_path: 
 
 def test_runner_claim_rejects_directory_entry_replacement_after_lock(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = Engine(tmp_path)
@@ -1737,7 +1898,7 @@ def test_runner_claim_rejects_directory_entry_replacement_after_lock(
 
 def test_open_rejects_workspace_head_without_authoritative_head_advance(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
 ) -> None:
     engine = Engine(tmp_path)
     handle = engine.start(
@@ -1754,7 +1915,9 @@ def test_open_rejects_workspace_head_without_authoritative_head_advance(
         Engine(tmp_path).open("orphan-head", resolved_interrupt_product)
 
 
-def test_same_digest_products_keep_exact_handler_binding_per_handle(tmp_path: Path) -> None:
+def test_distinct_authenticated_handler_sources_have_distinct_lock_bound_handles(
+    tmp_path: Path,
+) -> None:
     async def first(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
         return TaskOutcome.succeeded("first")
 
@@ -1763,7 +1926,7 @@ def test_same_digest_products_keep_exact_handler_binding_per_handle(tmp_path: Pa
 
     first_product = _task_product(first)
     second_product = _task_product(second)
-    assert first_product.digest == second_product.digest
+    assert first_product.lock_digest != second_product.lock_digest
     engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
     first_handle = engine.start(first_product, entrypoint="main", invocation_id="first-binding")
     second_handle = engine.start(second_product, entrypoint="main", invocation_id="second-binding")
@@ -1772,7 +1935,7 @@ def test_same_digest_products_keep_exact_handler_binding_per_handle(tmp_path: Pa
     assert engine.run_until_blocked(second_handle).output == "second"
 
 
-def test_open_binds_only_returned_handle_to_supplied_same_digest_product(tmp_path: Path) -> None:
+def test_open_rejects_a_distinct_authenticated_handler_source(tmp_path: Path) -> None:
     async def original(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
         return TaskOutcome.succeeded("original")
 
@@ -1782,25 +1945,17 @@ def test_open_binds_only_returned_handle_to_supplied_same_digest_product(tmp_pat
     original_product = _task_product(original)
     reopened_product = _task_product(reopened)
     engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
-    reopened_source = engine.start(
+    original_handle = engine.start(
         original_product,
         entrypoint="main",
         invocation_id="open-binding-reopened",
     )
-    reopened_handle = engine.open("open-binding-reopened", reopened_product)
-    original_handle = engine.start(
-        original_product,
-        entrypoint="main",
-        invocation_id="open-binding-original",
-    )
-    engine.open("open-binding-original", reopened_product)
-
-    assert engine.run_until_blocked(reopened_handle).output == "reopened"
+    with pytest.raises(InvocationDrift):
+        engine.open("open-binding-reopened", reopened_product)
     assert engine.run_until_blocked(original_handle).output == "original"
-    assert reopened_handle.product_digest == reopened_source.product_digest
 
 
-def test_open_validates_terminal_projection_against_exact_compiled_workflow(tmp_path: Path) -> None:
+def test_open_requires_the_exact_lock_for_the_compiled_workflow(tmp_path: Path) -> None:
     product = _resolved(
         {
             "name": "terminal-validation",
@@ -1820,28 +1975,24 @@ def test_open_validates_terminal_projection_against_exact_compiled_workflow(tmp_
     engine = Engine(tmp_path)
     handle = engine.start(product, entrypoint="main", invocation_id="terminal-validation")
     assert engine.run_until_blocked(handle).status == "succeeded"
-    foreign_workflow = compile_workflow(
-        WorkflowDef.model_validate(
-            {
-                "name": "foreign",
-                "entrypoints": {"main": "foreign"},
-                "retry": {},
-                "timeout": {},
-                "graphs": {
-                    "foreign": {
-                        "max_activations": 1,
-                        "start": "end",
-                        "nodes": {"end": {"kind": "end"}},
-                        "edges": [],
-                    }
-                },
-            }
-        ),
-        product.registry,
+    adversarial = _resolved(
+        {
+            "name": "foreign",
+            "entrypoints": {"main": "foreign"},
+            "retry": {},
+            "timeout": {},
+            "graphs": {
+                "foreign": {
+                    "max_activations": 1,
+                    "start": "end",
+                    "nodes": {"end": {"kind": "end"}},
+                    "edges": [],
+                }
+            },
+        }
     )
-    adversarial = replace(product, workflow=foreign_workflow)
 
-    with pytest.raises(EngineError, match="workflow|graph|entrypoint"):
+    with pytest.raises(InvocationDrift):
         Engine(tmp_path).open("terminal-validation", adversarial)
 
 
@@ -2375,7 +2526,7 @@ def test_open_rejects_forged_terminal_structural_output(tmp_path: Path) -> None:
 @pytest.mark.parametrize("status", ["failed", "stopped"])
 def test_open_rejects_terminal_status_without_compiled_causal_proof(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
     status: str,
 ) -> None:
     engine = Engine(tmp_path)
@@ -2993,8 +3144,8 @@ def test_open_rejects_activation_bound_failure_missing_deterministic_settlement(
         Engine(tmp_path).open("incomplete-activation-bound", product)
 
 
-def test_open_rejects_activation_bound_history_beyond_compiled_maximum(tmp_path: Path) -> None:
-    def cyclic_product(maximum: int) -> ResolvedProduct:
+def test_open_rejects_a_different_compiled_activation_bound_by_lock(tmp_path: Path) -> None:
+    def cyclic_product(maximum: int) -> FrozenComposition:
         return _resolved(
             {
                 "name": "over-bound-history",
@@ -3022,18 +3173,11 @@ def test_open_rejects_activation_bound_history_beyond_compiled_maximum(tmp_path:
     )
     assert engine.run_until_blocked(handle).status == "failed"
     ledger_root = handle.invocation_root / "ledger"
-    forged_events = tuple(
-        event.model_copy(update={"product_digest": compiled_product.digest})
-        if event.kind == "invocation_started"
-        else event
-        for event in (envelope.event for envelope in Ledger(ledger_root).read_all())
-    )
-    _rewrite_ledger(ledger_root, forged_events)
     projection = fold_events(Ledger(ledger_root).read_all())
     assert len(projection.activations) == 2
     assert projection.status == "failed"
 
-    with pytest.raises(EngineError, match="causal proof|activation"):
+    with pytest.raises(InvocationDrift):
         Engine(tmp_path).open("over-bound-history", compiled_product)
 
 
@@ -3064,7 +3208,7 @@ def test_open_rejects_noncanonical_task_id_in_terminal_ledger(tmp_path: Path) ->
 
 def test_open_rejects_forged_child_input_even_with_matching_start_token(
     tmp_path: Path,
-    resolved_subgraph_product: ResolvedProduct,
+    resolved_subgraph_product: FrozenComposition,
 ) -> None:
     engine = Engine(tmp_path)
     handle = engine.start(
@@ -3125,7 +3269,7 @@ def test_graph_started_root_has_no_parent_and_uses_graph_id_as_instance_id() -> 
 
 def test_open_translates_reclaim_conflict_to_engine_conflict(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     Engine(tmp_path).start(resolved_interrupt_product, entrypoint="main", invocation_id="open-conflict")
@@ -3175,9 +3319,9 @@ def test_run_translates_unreadable_success_reconciliation_to_engine_indeterminat
         engine.run_until_blocked(handle)
 
 
-def test_initialization_failure_before_ledger_does_not_poison_invocation_id(
+def test_initialization_failure_before_ledger_leaves_exactly_recoverable_identity(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def crash(name: str) -> None:
@@ -3188,7 +3332,11 @@ def test_initialization_failure_before_ledger_does_not_poison_invocation_id(
     engine = Engine(tmp_path)
     with pytest.raises(OSError, match="pre-ledger"):
         engine.start(resolved_interrupt_product, entrypoint="main", invocation_id="retryable")
-    assert not (tmp_path / "invocations" / "retryable").exists()
+    invocation_root = tmp_path / "invocations" / "retryable"
+    assert (invocation_root / "invocation.lock.json").read_bytes() == (
+        resolved_interrupt_product.lock.canonical_bytes
+    )
+    assert not (invocation_root / "ledger").exists()
 
     monkeypatch.setattr(engine_runtime, "_initialization_boundary", lambda _name: None, raising=False)
     assert (
@@ -3199,7 +3347,7 @@ def test_initialization_failure_before_ledger_does_not_poison_invocation_id(
 
 def test_symlinked_invocation_namespace_is_rejected_without_external_write(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
 ) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -3229,7 +3377,7 @@ def test_symlinked_engine_root_component_is_rejected_before_external_creation(
 
 def test_namespace_swap_after_handle_binding_fails_closed_without_external_write(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
 ) -> None:
     root = tmp_path / "engine"
     engine = Engine(root)
@@ -3252,7 +3400,7 @@ def test_namespace_swap_after_handle_binding_fails_closed_without_external_write
 
 def test_leaf_swap_after_handle_binding_is_rejected_as_stale(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
 ) -> None:
     engine = Engine(tmp_path)
     handle = engine.start(
@@ -3273,7 +3421,7 @@ def test_leaf_swap_after_handle_binding_is_rejected_as_stale(
 
 def test_engine_and_handle_lifecycle_is_context_managed_idempotent_and_fail_closed(
     tmp_path: Path,
-    resolved_subgraph_product: ResolvedProduct,
+    resolved_subgraph_product: FrozenComposition,
 ) -> None:
     engine = Engine(tmp_path)
     with engine:
@@ -3297,7 +3445,7 @@ def test_engine_and_handle_lifecycle_is_context_managed_idempotent_and_fail_clos
 
 def test_repeated_open_close_does_not_grow_invocation_descriptors(
     tmp_path: Path,
-    resolved_subgraph_product: ResolvedProduct,
+    resolved_subgraph_product: FrozenComposition,
 ) -> None:
     engine = Engine(tmp_path)
     initial = engine.start(
@@ -3360,7 +3508,7 @@ def test_workspace_store_remains_bound_after_handle_descriptor_is_reused(tmp_pat
 
 def test_workspace_store_lifecycle_is_idempotent_and_does_not_grow_descriptors(
     tmp_path: Path,
-    resolved_subgraph_product: ResolvedProduct,
+    resolved_subgraph_product: FrozenComposition,
 ) -> None:
     engine = Engine(tmp_path)
     handle = engine.start(
@@ -3385,7 +3533,7 @@ def test_workspace_store_lifecycle_is_idempotent_and_does_not_grow_descriptors(
 
 def test_repeated_failed_initialization_closes_internal_workspace_with_retained_tracebacks(
     tmp_path: Path,
-    resolved_subgraph_product: ResolvedProduct,
+    resolved_subgraph_product: FrozenComposition,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = Engine(tmp_path)
@@ -3417,7 +3565,7 @@ def test_repeated_failed_initialization_closes_internal_workspace_with_retained_
 @pytest.mark.parametrize("failure_stage", ["recovery", "validation"])
 def test_repeated_failed_open_closes_internal_workspace_with_retained_tracebacks(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
     monkeypatch: pytest.MonkeyPatch,
     failure_stage: str,
 ) -> None:
@@ -3444,7 +3592,7 @@ def test_repeated_failed_open_closes_internal_workspace_with_retained_tracebacks
 
         def fail_second_validation(
             self: Engine,
-            product: ResolvedProduct,
+            product: FrozenComposition,
             projection: object,
         ) -> None:
             nonlocal validation_calls
@@ -3470,7 +3618,7 @@ def test_repeated_failed_open_closes_internal_workspace_with_retained_tracebacks
 
 def test_repeated_failed_run_closes_internal_workspace_with_retained_tracebacks(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = Engine(tmp_path)
@@ -3503,7 +3651,7 @@ def test_repeated_failed_run_closes_internal_workspace_with_retained_tracebacks(
 
 def test_open_rejects_interrupt_metadata_that_differs_from_compiled_definition(
     tmp_path: Path,
-    resolved_interrupt_product: ResolvedProduct,
+    resolved_interrupt_product: FrozenComposition,
 ) -> None:
     engine = Engine(tmp_path)
     handle = engine.start(

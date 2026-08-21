@@ -184,7 +184,7 @@ def _projection_after(events: tuple[object, ...], plan_events: tuple[object, ...
 
 
 def _invocation() -> InvocationStarted:
-    return InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main")
+    return InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main")
 
 
 def _root() -> GraphStarted:
@@ -1273,7 +1273,7 @@ def test_illegal_projection_node_is_rejected_fail_closed() -> None:
     projection = InvocationProjection(
         status="running",
         invocation_id="inv-1",
-        product_digest="a" * 64,
+        lock_digest="a" * 64,
         entrypoint="main",
         graph_instances=base.graph_instances,
         offered_tokens=base.offered_tokens,

@@ -62,7 +62,7 @@ def test_atomic_batches_have_contiguous_sequences(tmp_path: Path) -> None:
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
         (
-            InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+            InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
             TokenOffered(
                 token_id="tok-1",
                 graph_instance_id="root",
@@ -99,7 +99,7 @@ def test_append_requires_nonempty_batch_and_expected_sequence(tmp_path: Path) ->
         ledger.append_batch((), expected_next_seq=1)
     with pytest.raises(ValueError, match="positive"):
         ledger.append_batch(
-            (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+            (InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),),
             expected_next_seq=0,
         )
 
@@ -107,7 +107,7 @@ def test_append_requires_nonempty_batch_and_expected_sequence(tmp_path: Path) ->
 def test_append_rejects_stale_writer_without_changing_final_batch(tmp_path: Path) -> None:
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
-        (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+        (InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),),
         expected_next_seq=1,
     )
     final = ledger.root / "0000000001-0000000001.json"
@@ -133,7 +133,7 @@ def test_append_rejects_stale_writer_without_changing_final_batch(tmp_path: Path
 def test_validated_append_rejects_invalid_fold_before_publication(tmp_path: Path) -> None:
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
-        (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+        (InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),),
         expected_next_seq=1,
     )
     append = getattr(ledger_runtime, "append_validated_batch", None)
@@ -145,7 +145,7 @@ def test_validated_append_rejects_invalid_fold_before_publication(tmp_path: Path
             (
                 InvocationStarted(
                     invocation_id="inv-2",
-                    product_digest="b" * 64,
+                    lock_digest="b" * 64,
                     entrypoint="main",
                 ),
             ),
@@ -181,7 +181,7 @@ def test_validated_append_reports_indeterminate_reconciliation_read(
     with pytest.raises(error_type, match="indeterminate"):
         append(
             ledger,
-            (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+            (InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),),
             expected_next_seq=1,
         )
 
@@ -212,7 +212,7 @@ def test_validated_append_syncs_visible_exact_range_before_acknowledging(
 
     ledger_runtime.append_validated_batch(
         ledger,
-        (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+        (InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),),
         expected_next_seq=1,
     )
 
@@ -247,7 +247,7 @@ def test_visible_exact_range_with_failed_durability_barrier_is_indeterminate(
             (
                 InvocationStarted(
                     invocation_id="inv-1",
-                    product_digest="a" * 64,
+                    lock_digest="a" * 64,
                     entrypoint="main",
                 ),
             ),
@@ -264,7 +264,7 @@ def test_append_never_replaces_an_invalid_colliding_final_file(tmp_path: Path) -
 
     with pytest.raises(LedgerIntegrityError, match="malformed JSON"):
         ledger.append_batch(
-            (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+            (InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),),
             expected_next_seq=1,
         )
 
@@ -290,7 +290,7 @@ def test_malformed_final_files_are_rejected(tmp_path: Path, name: str, contents:
 def test_final_filename_must_match_envelope_range(tmp_path: Path) -> None:
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
-        (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+        (InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),),
         expected_next_seq=1,
     )
     source = ledger.root / "0000000001-0000000001.json"
@@ -302,7 +302,7 @@ def test_final_filename_must_match_envelope_range(tmp_path: Path) -> None:
 def test_envelope_hash_and_inner_sequence_are_verified(tmp_path: Path) -> None:
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
-        (InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),),
+        (InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),),
         expected_next_seq=1,
     )
     final = ledger.root / "0000000001-0000000001.json"
@@ -319,7 +319,7 @@ def test_inner_sequence_gap_is_rejected_even_with_valid_hashes(tmp_path: Path) -
     events = (
         EventEnvelope.from_event(
             1,
-            InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+            InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         ),
         EventEnvelope.from_event(
             3,
@@ -344,7 +344,7 @@ def test_strict_json_decoder_restores_tuple_fields(tmp_path: Path) -> None:
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
         (
-            InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+            InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
             NodeActivated(
                 activation_id="act-1",
                 graph_instance_id="root",
@@ -358,13 +358,13 @@ def test_strict_json_decoder_restores_tuple_fields(tmp_path: Path) -> None:
 
 
 def test_event_models_are_frozen_strict_and_extra_forbidden() -> None:
-    event = InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main")
+    event = InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main")
     with pytest.raises(ValidationError):
         InvocationStarted.model_validate(
             {
                 "kind": "invocation_started",
                 "invocation_id": "inv-1",
-                "product_digest": "a" * 64,
+                "lock_digest": "a" * 64,
                 "entrypoint": "main",
                 "business": "no",
             }
@@ -384,7 +384,7 @@ def _envelopes(*events: object) -> tuple[EventEnvelope, ...]:
 
 def _complete_task_history() -> tuple[EventEnvelope, ...]:
     return _envelopes(
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         GraphStarted(graph_instance_id="root", graph_id="root"),
         TokenOffered(
             token_id="tok-1",
@@ -486,7 +486,7 @@ def test_incremental_fold_rejects_digest_mismatch_without_partial_advance() -> N
 
 def test_fold_rejects_success_without_started_attempt() -> None:
     events = _envelopes(
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         NodeActivated(activation_id="act-1", graph_instance_id="root", node_id="task", token_ids=()),
         TaskAttemptSucceeded(activation_id="act-1", attempt=1, output=None),
     )
@@ -496,7 +496,7 @@ def test_fold_rejects_success_without_started_attempt() -> None:
 
 def test_fold_rejects_consuming_a_token_twice() -> None:
     events = _envelopes(
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         TokenOffered(token_id="tok-1", graph_instance_id="root", source=None, target="task", payload=None),
         TokenConsumed(token_id="tok-1", graph_instance_id="root", node_id="task"),
         TokenConsumed(token_id="tok-1", graph_instance_id="root", node_id="task"),
@@ -508,7 +508,7 @@ def test_fold_rejects_consuming_a_token_twice() -> None:
 def test_fold_records_attempt_history() -> None:
     projection = fold_events(
         _envelopes(
-            InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+            InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
             NodeActivated(activation_id="act-1", graph_instance_id="root", node_id="task", token_ids=()),
             TaskAttemptStarted(activation_id="act-1", attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
             TaskAttemptSucceeded(activation_id="act-1", attempt=1, output={"ok": True}),
@@ -518,9 +518,7 @@ def test_fold_records_attempt_history() -> None:
 
 
 def test_checkpoint_round_trip_and_corruption_fallback(tmp_path: Path) -> None:
-    envelopes = _envelopes(
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main")
-    )
+    envelopes = _envelopes(InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"))
     projection = fold_events(envelopes)
     path = tmp_path / "checkpoint.json"
     write_checkpoint(path, projection, last_seq=1, ledger_envelopes=envelopes)
@@ -541,9 +539,7 @@ def test_checkpoint_missing_malformed_and_ahead_return_none(tmp_path: Path) -> N
     path.write_text("{broken", encoding="utf-8")
     assert load_checkpoint(path, ledger_envelopes=()) is None
 
-    envelopes = _envelopes(
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main")
-    )
+    envelopes = _envelopes(InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"))
     projection = fold_events(envelopes)
     write_checkpoint(path, projection, last_seq=1, ledger_envelopes=envelopes)
     document = json.loads(path.read_text(encoding="utf-8"))
@@ -617,7 +613,7 @@ def test_append_recovers_after_subprocess_crash_boundary(
         stop = sys.argv[2]
         module._append_boundary = lambda name: os._exit(91) if name == stop else None
         module.Ledger(Path(sys.argv[1])).append_batch((InvocationStarted(
-            invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"
+            invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"
         ),), expected_next_seq=1)
         """
     )
@@ -636,7 +632,7 @@ def test_append_recovers_after_subprocess_crash_boundary(
             payload=None,
         )
         if committed
-        else InvocationStarted(invocation_id="inv-2", product_digest="b" * 64, entrypoint="main")
+        else InvocationStarted(invocation_id="inv-2", lock_digest="b" * 64, entrypoint="main")
     )
     ledger.append_batch((next_event,), expected_next_seq=next_seq)
     assert ledger.read_all()[-1].seq == next_seq
@@ -647,8 +643,8 @@ def test_append_rejects_batch_crossing_filename_sequence_limit(tmp_path: Path) -
     with pytest.raises(ValueError, match="maximum sequence"):
         ledger.append_batch(
             (
-                InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
-                InvocationStarted(invocation_id="inv-2", product_digest="b" * 64, entrypoint="main"),
+                InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
+                InvocationStarted(invocation_id="inv-2", lock_digest="b" * 64, entrypoint="main"),
             ),
             expected_next_seq=MAX_SEQUENCE,
         )
@@ -707,7 +703,7 @@ def test_tokens_are_bound_to_target_graph_and_one_activation(case: str, expected
     consume_node = "other" if case == "wrong_target" else "task"
     activation_graph = "child" if case == "cross_instance" else "root"
     events: list[object] = [
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         TokenOffered(
             token_id="tok-1",
             graph_instance_id="root",
@@ -738,7 +734,7 @@ def test_tokens_are_bound_to_target_graph_and_one_activation(case: str, expected
 
 def _attempt_history(status: str) -> list[object]:
     events: list[object] = [
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         NodeActivated(activation_id="act-1", graph_instance_id="root", node_id="task", token_ids=()),
         TaskAttemptStarted(activation_id="act-1", attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
     ]
@@ -813,7 +809,7 @@ def test_succeeded_task_cannot_enter_interrupt_resume_lifecycle() -> None:
 
 def test_graph_completion_and_successful_invocation_require_settled_state() -> None:
     live_attempt = _envelopes(
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         GraphStarted(graph_instance_id="root", graph_id="root"),
         NodeActivated(activation_id="act-1", graph_instance_id="root", node_id="task", token_ids=()),
         TaskAttemptStarted(activation_id="act-1", attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
@@ -823,7 +819,7 @@ def test_graph_completion_and_successful_invocation_require_settled_state() -> N
         fold_events(live_attempt)
 
     running_graph = _envelopes(
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         GraphStarted(graph_instance_id="root", graph_id="root"),
         InvocationFinished(invocation_id="inv-1", status="succeeded"),
     )
@@ -834,7 +830,7 @@ def test_graph_completion_and_successful_invocation_require_settled_state() -> N
 @pytest.mark.parametrize("consumed", [False, True])
 def test_graph_completion_rejects_unactivated_token(consumed: bool) -> None:
     events: list[object] = [
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         GraphStarted(graph_instance_id="root", graph_id="root"),
         TokenOffered(
             token_id="tok-1",
@@ -854,7 +850,7 @@ def test_graph_completion_rejects_unactivated_token(consumed: bool) -> None:
 @pytest.mark.parametrize("consumed", [False, True])
 def test_successful_invocation_rejects_token_outside_completed_work(consumed: bool) -> None:
     events: list[object] = [
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         GraphStarted(graph_instance_id="root", graph_id="root"),
         GraphCompleted(graph_instance_id="root"),
         TokenOffered(
@@ -875,7 +871,7 @@ def test_successful_invocation_rejects_token_outside_completed_work(consumed: bo
 def test_claimed_token_settles_with_completed_activation_and_graph() -> None:
     projection = fold_events(
         _envelopes(
-            InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+            InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
             GraphStarted(graph_instance_id="root", graph_id="root"),
             TokenOffered(
                 token_id="tok-1",
@@ -901,7 +897,7 @@ def test_claimed_token_settles_with_completed_activation_and_graph() -> None:
 
 def test_graph_scoped_activity_is_rejected_after_completion() -> None:
     events = _envelopes(
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         GraphStarted(graph_instance_id="root", graph_id="root"),
         GraphCompleted(graph_instance_id="root"),
         TokenOffered(token_id="tok-1", graph_instance_id="root", source=None, target="end", payload=None),
@@ -913,7 +909,7 @@ def test_graph_scoped_activity_is_rejected_after_completion() -> None:
 def test_success_failed_and_stopped_invocation_cleanup_semantics_are_explicit() -> None:
     succeeded = fold_events(
         _envelopes(
-            InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+            InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
             GraphStarted(graph_instance_id="root", graph_id="root"),
             GraphCompleted(graph_instance_id="root"),
             InvocationFinished(invocation_id="inv-1", status="succeeded"),
@@ -967,7 +963,7 @@ def test_success_terminal_reason_is_forbidden_by_event_fold_and_projection() -> 
                 *_envelopes(
                     InvocationStarted(
                         invocation_id="inv-1",
-                        product_digest="a" * 64,
+                        lock_digest="a" * 64,
                         entrypoint="main",
                     ),
                     GraphStarted(graph_instance_id="root", graph_id="root"),
@@ -988,7 +984,7 @@ def test_success_terminal_reason_is_forbidden_by_event_fold_and_projection() -> 
         InvocationProjection(
             status="succeeded",
             invocation_id="inv-1",
-            product_digest="a" * 64,
+            lock_digest="a" * 64,
             entrypoint="main",
             graph_instances=(completed_graph,),
             terminal_reason="forged-success-reason",
@@ -1001,7 +997,7 @@ def test_success_without_terminal_reason_remains_valid() -> None:
         _envelopes(
             InvocationStarted(
                 invocation_id="inv-1",
-                product_digest="a" * 64,
+                lock_digest="a" * 64,
                 entrypoint="main",
             ),
             GraphStarted(graph_instance_id="root", graph_id="root"),
@@ -1018,7 +1014,7 @@ def test_success_without_terminal_reason_remains_valid() -> None:
 def test_folded_projection_json_is_deeply_immutable() -> None:
     projection = fold_events(
         _envelopes(
-            InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+            InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
             TokenOffered(
                 token_id="tok-1",
                 graph_instance_id="root",
@@ -1047,7 +1043,7 @@ def test_projection_rejects_semantically_impossible_states() -> None:
         InvocationProjection(
             status="running",
             invocation_id="inv-1",
-            product_digest="a" * 64,
+            lock_digest="a" * 64,
             entrypoint="main",
             graph_instances=(graph, graph),
         )
@@ -1055,7 +1051,7 @@ def test_projection_rejects_semantically_impossible_states() -> None:
         InvocationProjection(
             status="running",
             invocation_id="inv-1",
-            product_digest="a" * 64,
+            lock_digest="a" * 64,
             entrypoint="main",
             pending_interrupt=PendingInterrupt(
                 interrupt_id="int-1",
@@ -1071,7 +1067,7 @@ def test_projection_rejects_semantically_impossible_states() -> None:
         InvocationProjection(
             status="succeeded",
             invocation_id="inv-1",
-            product_digest="a" * 64,
+            lock_digest="a" * 64,
             entrypoint="main",
             graph_instances=(completed_graph,),
             offered_tokens=(
@@ -1087,14 +1083,12 @@ def test_projection_rejects_semantically_impossible_states() -> None:
 
 
 def test_checkpoint_rejects_unrelated_and_stale_authoritative_prefixes(tmp_path: Path) -> None:
-    first = _envelopes(InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"))
+    first = _envelopes(InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"))
     first_projection = fold_events(first)
     path = tmp_path / "checkpoint.json"
     write_checkpoint(path, first_projection, last_seq=1, ledger_envelopes=first)
 
-    unrelated = _envelopes(
-        InvocationStarted(invocation_id="inv-2", product_digest="b" * 64, entrypoint="main")
-    )
+    unrelated = _envelopes(InvocationStarted(invocation_id="inv-2", lock_digest="b" * 64, entrypoint="main"))
     assert load_checkpoint(path, ledger_envelopes=unrelated) is None
 
     stale = (
@@ -1118,9 +1112,7 @@ def test_checkpoint_rejects_unrelated_and_stale_authoritative_prefixes(tmp_path:
 
 
 def test_checkpoint_rejects_impossible_or_mismatched_projection(tmp_path: Path) -> None:
-    envelopes = _envelopes(
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main")
-    )
+    envelopes = _envelopes(InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"))
     projection = fold_events(envelopes)
     path = tmp_path / "checkpoint.json"
     with pytest.raises(ValueError, match="does not match ledger prefix"):
@@ -1146,7 +1138,7 @@ def test_checkpoint_rejects_impossible_or_mismatched_projection(tmp_path: Path) 
 
 def test_loaded_checkpoint_json_is_deeply_immutable(tmp_path: Path) -> None:
     envelopes = _envelopes(
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         TokenOffered(
             token_id="tok-1",
             graph_instance_id="root",

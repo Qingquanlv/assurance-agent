@@ -29,7 +29,7 @@ RuntimeFailure = TaskFailure
 class InvocationStarted(RuntimeEventModel):
     kind: Literal["invocation_started"] = "invocation_started"
     invocation_id: str
-    product_digest: str = Field(pattern=_SHA256_PATTERN)
+    lock_digest: str = Field(pattern=_SHA256_PATTERN)
     entrypoint: str
 
 

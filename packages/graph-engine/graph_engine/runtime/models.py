@@ -245,7 +245,7 @@ class PlanResult(ProjectionModel):
 class InvocationProjection(ProjectionModel):
     status: Literal["not_started", "running", "succeeded", "failed", "stopped"] = "not_started"
     invocation_id: str | None = None
-    product_digest: str | None = None
+    lock_digest: str | None = None
     entrypoint: str | None = None
     graph_instances: tuple[GraphInstanceRecord, ...] = ()
     offered_tokens: tuple[TokenRecord, ...] = ()
@@ -257,7 +257,7 @@ class InvocationProjection(ProjectionModel):
 
     @model_validator(mode="after")
     def _validate_semantics(self) -> Self:
-        identity = (self.invocation_id, self.product_digest, self.entrypoint)
+        identity = (self.invocation_id, self.lock_digest, self.entrypoint)
         if self.status == "not_started":
             if any(value is not None for value in identity) or any(
                 (
@@ -430,7 +430,7 @@ def _advance_fold(
                 update={
                     "status": "running",
                     "invocation_id": event.invocation_id,
-                    "product_digest": event.product_digest,
+                    "lock_digest": event.lock_digest,
                     "entrypoint": event.entrypoint,
                 }
             )

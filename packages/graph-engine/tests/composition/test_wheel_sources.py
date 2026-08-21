@@ -29,7 +29,7 @@ from graph_engine.composition import (
 )
 from graph_engine.plugin_api import PluginContribution, PluginDescriptor, ProviderSource
 from graph_engine.graph.schema import WorkflowDef
-from graph_engine.product import PluginRequirement, ProductManifest
+from graph_engine.composition import PluginRequirement, ProductManifest
 
 
 class _PluginProvider:

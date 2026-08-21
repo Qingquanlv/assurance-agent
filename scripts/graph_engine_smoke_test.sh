@@ -115,7 +115,7 @@ set +e
 missing_product_status="$?"
 set -e
 test "$missing_product_status" -eq 2
-grep -q "product is required" "$smoke_root/missing-product.out"
+grep -q "product distribution is required" "$smoke_root/missing-product.out"
 
 uv venv --offline --python 3.11 "$smoke_root/venv-b"
 uv pip install \
@@ -125,10 +125,15 @@ uv pip install \
   "$engine_wheel" \
   "$toy_a_wheel"
 "$smoke_root/venv-b/bin/python" -m graph_engine compile \
-  --product toy-a >"$smoke_root/toy-a-compile.json"
+  --product-dist graph-engine-toy-a \
+  --product-entrypoint toy-a \
+  --plugin-dist graph-engine-toy-a \
+  --plugin-entrypoint toy-a >"$smoke_root/toy-a-compile.json"
 "$smoke_root/venv-b/bin/python" -m graph_engine run \
-  --product toy-a \
-  --plugin toy-a \
+  --product-dist graph-engine-toy-a \
+  --product-entrypoint toy-a \
+  --plugin-dist graph-engine-toy-a \
+  --plugin-entrypoint toy-a \
   --entrypoint hello \
   --invocation-id smoke-a \
   --root "$smoke_root/toy-a-root" >"$smoke_root/toy-a-run.json"
@@ -191,8 +196,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from graph_engine.canonical import canonical_digest
+from graph_engine.composition import (
+    RegistryPlatform,
+    ResolutionRequest,
+    WheelPluginSource,
+    WheelProductSource,
+)
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
-from graph_engine.product import load_plugin_entrypoint, load_product_entrypoint, resolve_product
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.ledger import Ledger
 
@@ -217,9 +227,22 @@ class TrustedSmokeHost:
 for package in ("assurance_agent", "assurance_kernel", "graph_engine_toy_a"):
     assert importlib.util.find_spec(package) is None, package
 
-product = load_product_entrypoint("toy-b")
-plugin = load_plugin_entrypoint("toy-b")
-resolved = resolve_product(product, {"toy.b": plugin})
+resolved = RegistryPlatform().resolve(
+    ResolutionRequest(
+        product=WheelProductSource(
+            distribution="graph-engine-toy-b",
+            entrypoint_name="toy-b",
+            declaration_path="graph_engine_toy_b/product-declaration.json",
+        ),
+        plugins=(
+            WheelPluginSource(
+                distribution="graph-engine-toy-b",
+                entrypoint_name="toy-b",
+                declaration_path="graph_engine_toy_b/plugin-declaration.json",
+            ),
+        ),
+    )
+)
 with Engine(Path(sys.argv[1]), host=TrustedSmokeHost()) as engine:
     with engine.start(resolved, entrypoint="review", invocation_id="smoke-b") as handle:
         blocked = engine.run_until_blocked(handle)
@@ -238,7 +261,7 @@ evidence = {
     "blocked_status": blocked.status,
     "terminal_status": completed.status,
     "compiled_digest": resolved.workflow.digest,
-    "product_digest": resolved.digest,
+    "lock_digest": resolved.lock_digest,
     "ledger_digest": ledger_digest,
     "final_tree_id": final_tree_id,
 }

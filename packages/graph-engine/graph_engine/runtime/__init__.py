@@ -40,6 +40,12 @@ from graph_engine.runtime.ledger import (
     LedgerIntegrityError,
     MAX_SEQUENCE,
 )
+from graph_engine.runtime.invocation_lock import (
+    InvocationDrift,
+    authenticate_invocation_lock,
+    install_invocation_lock_at,
+    read_invocation_lock_at,
+)
 from graph_engine.runtime.models import (
     ActivationRecord,
     AttemptRecord,
@@ -90,6 +96,7 @@ __all__ = [
     "InterruptResumed",
     "InvocationFinished",
     "InvocationHandle",
+    "InvocationDrift",
     "InvocationProjection",
     "InvocationStarted",
     "Ledger",
@@ -127,9 +134,12 @@ __all__ = [
     "TokenOffered",
     "TokenRecord",
     "activation_id",
+    "authenticate_invocation_lock",
     "fold_events",
+    "install_invocation_lock_at",
     "load_checkpoint",
     "plan_next",
+    "read_invocation_lock_at",
     "select_wave",
     "task_id",
     "write_checkpoint",

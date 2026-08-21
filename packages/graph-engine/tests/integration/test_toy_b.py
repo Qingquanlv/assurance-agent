@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from importlib.resources import files
+import importlib
 from pathlib import Path
+import shutil
+import sys
 from typing import cast, get_args
 
 import pytest
 
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.composition.sources import WheelPluginDeclaration, WheelProductDeclaration
+from graph_engine.composition import (
+    EditableWheelPluginSource,
+    EditableWheelProductSource,
+    FrozenComposition,
+    RegistryPlatform,
+    ResolutionRequest,
+)
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
-from graph_engine.product import load_plugin_entrypoint, load_product_entrypoint, resolve_product
 from graph_engine.runtime.engine import Engine, EngineError, RunResult
 from graph_engine.runtime.events import (
     EventEnvelope,
@@ -23,20 +30,59 @@ from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import ActivationRecord
 
 
-def test_toy_b_static_declarations_match_live_providers() -> None:
-    package = files("graph_engine_toy_b")
-    product = load_product_entrypoint("toy-b")
-    plugin = load_plugin_entrypoint("toy-b")
-
-    product_declaration = WheelProductDeclaration.model_validate_json(
-        package.joinpath("product-declaration.json").read_bytes()
+def _toy_composition(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    toy: str,
+) -> FrozenComposition:
+    source = root / "source"
+    repository = Path(__file__).parents[4]
+    distribution = f"graph-engine-toy-{toy}"
+    package_name = f"graph_engine_toy_{toy}"
+    entrypoint_name = f"toy-{toy}"
+    shutil.copytree(
+        repository / "examples" / distribution,
+        source,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    plugin_declaration = WheelPluginDeclaration.model_validate_json(
-        package.joinpath("plugin-declaration.json").read_bytes()
+    source_files = tuple(
+        sorted(path.relative_to(source).as_posix() for path in source.rglob("*") if path.is_file())
+    )
+    monkeypatch.syspath_prepend(str(source))
+    for module_name in tuple(sys.modules):
+        if module_name == package_name or module_name.startswith(f"{package_name}."):
+            sys.modules.pop(module_name, None)
+    importlib.invalidate_caches()
+    return RegistryPlatform().resolve(
+        ResolutionRequest(
+            product=EditableWheelProductSource(
+                distribution=distribution,
+                entrypoint_name=entrypoint_name,
+                declaration_path=f"{package_name}/product-declaration.json",
+                source_root=source,
+                source_files=source_files,
+            ),
+            plugins=(
+                EditableWheelPluginSource(
+                    distribution=distribution,
+                    entrypoint_name=entrypoint_name,
+                    declaration_path=f"{package_name}/plugin-declaration.json",
+                    source_root=source,
+                    source_files=source_files,
+                ),
+            ),
+        )
     )
 
-    assert product_declaration.manifest == product.manifest()
-    assert plugin_declaration.descriptor == plugin.descriptor()
+
+def test_toy_b_static_declarations_match_live_providers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composition = _toy_composition(tmp_path, monkeypatch, "b")
+
+    assert composition.manifest.product_id == "toy.b"
+    assert tuple(descriptor.plugin_id for descriptor in composition.descriptors) == ("toy.b",)
 
 
 class _InProcessTestHost:
@@ -192,14 +238,12 @@ def test_event_id_projection_covers_every_runtime_event_id_field() -> None:
 
 def _run_to_completion(
     root: Path,
+    composition: FrozenComposition,
     *,
     invocation_id: str,
 ) -> tuple[str, tuple[EventIDSignature, ...], str, JSONValue]:
-    product = load_product_entrypoint("toy-b")
-    plugin = load_plugin_entrypoint("toy-b")
-    resolved = resolve_product(product, {"toy.b": plugin})
     with Engine(root, host=_InProcessTestHost()) as engine:
-        with engine.start(resolved, entrypoint="review", invocation_id=invocation_id) as handle:
+        with engine.start(composition, entrypoint="review", invocation_id=invocation_id) as handle:
             blocked = engine.run_until_blocked(handle)
             assert blocked.status == "interrupted"
             with engine.resume(
@@ -216,15 +260,16 @@ def _run_to_completion(
                     JSONValue,
                     completed.model_dump(mode="json")["output"],
                 )
-    return resolved.workflow.digest, _event_id_sequence(envelopes), final_tree_id, terminal_output
+    return composition.workflow.digest, _event_id_sequence(envelopes), final_tree_id, terminal_output
 
 
-def test_toy_b_recovers_then_interrupts_and_resumes(tmp_path: Path) -> None:
-    product = load_product_entrypoint("toy-b")
-    plugin = load_plugin_entrypoint("toy-b")
-    resolved = resolve_product(product, {"toy.b": plugin})
+def test_toy_b_recovers_then_interrupts_and_resumes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved = _toy_composition(tmp_path / "composition", monkeypatch, "b")
 
-    assert tuple(resolved.registry.task_handlers) == (
+    assert tuple(resolved.registries.capabilities.task_handlers) == (
         "toy.b.child",
         "toy.b.combine",
         "toy.b.left",
@@ -297,20 +342,23 @@ def test_toy_b_recovers_then_interrupts_and_resumes(tmp_path: Path) -> None:
                 assert replayed.output == completed.output
 
 
-def test_toy_b_replay_is_deterministic_and_products_are_separate(tmp_path: Path) -> None:
-    first = _run_to_completion(tmp_path / "first", invocation_id="toy-b-replay")
-    second = _run_to_completion(tmp_path / "second", invocation_id="toy-b-replay")
+def test_toy_b_replay_is_deterministic_and_products_are_separate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    toy_b = _toy_composition(tmp_path / "toy-b", monkeypatch, "b")
+    first = _run_to_completion(tmp_path / "first", toy_b, invocation_id="toy-b-replay")
+    second = _run_to_completion(tmp_path / "second", toy_b, invocation_id="toy-b-replay")
     assert second == first
 
-    toy_a_product = load_product_entrypoint("toy-a")
-    toy_a_plugin = load_plugin_entrypoint("toy-a")
-    toy_a = resolve_product(toy_a_product, {"toy.a": toy_a_plugin})
-    toy_b_product = load_product_entrypoint("toy-b")
-    toy_b_plugin = load_plugin_entrypoint("toy-b")
-    toy_b = resolve_product(toy_b_product, {"toy.b": toy_b_plugin})
+    toy_a = _toy_composition(tmp_path / "toy-a", monkeypatch, "a")
 
     assert toy_a.manifest.product_id == "toy.a"
     assert toy_b.manifest.product_id == "toy.b"
-    assert toy_a.digest != toy_b.digest
-    assert not any(capability.startswith("toy.b.") for capability in toy_a.registry.task_handlers)
-    assert not any(capability.startswith("toy.a.") for capability in toy_b.registry.task_handlers)
+    assert toy_a.lock_digest != toy_b.lock_digest
+    assert not any(
+        capability.startswith("toy.b.") for capability in toy_a.registries.capabilities.task_handlers
+    )
+    assert not any(
+        capability.startswith("toy.a.") for capability in toy_b.registries.capabilities.task_handlers
+    )

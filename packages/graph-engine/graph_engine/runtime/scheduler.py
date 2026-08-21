@@ -199,6 +199,7 @@ class Scheduler:
         clock: Clock | None = None,
         lease_seconds: float = 30.0,
         max_parallel: int = 1,
+        transition_guard: Callable[[], None] | None = None,
     ) -> None:
         if not owner_id:
             raise ValueError("owner_id must not be empty")
@@ -214,6 +215,7 @@ class Scheduler:
         self._clock = clock or SystemClock()
         self._lease_seconds = lease_seconds
         self._max_parallel = max_parallel
+        self._transition_guard = transition_guard
 
     async def run_wave(self, tasks: Sequence[PlannedTask]) -> tuple[AttemptResult, ...]:
         selected = select_wave(tasks, self._max_parallel)
@@ -665,24 +667,32 @@ class Scheduler:
         existing = self._ledger.read_all()
         if expected_next_seq is None:
             expected_next_seq = _next_sequence(existing)
+        self._guard_transition()
         append_validated_batch(
             self._ledger,
             materialized,
             expected_next_seq=expected_next_seq,
         )
+        self._guard_transition()
 
     def _append_success(self, events: Sequence[RuntimeEvent], *, expected_next_seq: int) -> None:
         materialized = tuple(events)
         try:
+            self._guard_transition()
             append_validated_batch(
                 self._ledger,
                 materialized,
                 expected_next_seq=expected_next_seq,
             )
+            self._guard_transition()
         except LedgerPublicationIndeterminate as error:
             raise HeadPublicationIndeterminate(
                 "success ledger publication outcome is indeterminate; candidate HEAD preserved"
             ) from error.__cause__
+
+    def _guard_transition(self) -> None:
+        if self._transition_guard is not None:
+            self._transition_guard()
 
     def _now(self) -> float:
         value = self._clock.now()

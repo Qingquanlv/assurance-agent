@@ -279,7 +279,7 @@ def _scheduler(
     store = SnapshotStore.create(tmp_path / "store", initial or {})
     ledger = Ledger(tmp_path / "ledger")
     lifecycle: list[object] = [
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
     ]
     lifecycle.extend(
@@ -675,7 +675,7 @@ def _persist_lease(ledger: Ledger, lease: Lease) -> None:
     if not existing:
         ledger.append_batch(
             (
-                InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+                InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
                 GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
                 NodeActivated(
                     activation_id=lease.activation_id,
@@ -1059,7 +1059,7 @@ def test_unpersisted_or_tampered_lease_is_not_reclaimable(tmp_path: Path) -> Non
 
 def test_fold_persists_lease_heartbeat_and_head_transition() -> None:
     events = (
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         NodeActivated(
             activation_id="activation-1",
             graph_instance_id="graph-1",
@@ -1107,7 +1107,7 @@ def test_fold_persists_lease_heartbeat_and_head_transition() -> None:
 
 def test_fold_rejects_head_advance_after_graph_failure() -> None:
     events = (
-        InvocationStarted(invocation_id="inv-1", product_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
         GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
         NodeActivated(
             activation_id="activation-1",
