@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import stat
@@ -1325,7 +1326,8 @@ def test_failed_new_head_transaction_preserves_prior_recovery_journal(tmp_path: 
             first_candidate,
             ResourceClaims(writes=("value.txt",)),
             authorize_publish=lambda: None,
-            publish_success=leave_recovery_journal,
+            publish_prepared=leave_recovery_journal,
+            prepared_event_range_digest="a" * 64,
         )
     assert store.head_tree_id() == first_candidate.candidate_tree_id
 
@@ -1337,7 +1339,8 @@ def test_failed_new_head_transaction_preserves_prior_recovery_journal(tmp_path: 
             second_candidate,
             ResourceClaims(writes=("value.txt",)),
             authorize_publish=lambda: None,
-            publish_success=lambda _previous, _tree: None,
+            publish_prepared=lambda _previous, _tree: None,
+            prepared_event_range_digest="a" * 64,
         )
 
     store.recover_head_transaction(authoritative)
@@ -1368,7 +1371,8 @@ def test_finalize_candidate_reauthorizes_immediately_before_head_publication(
             candidate,
             ResourceClaims(writes=("value.txt",)),
             authorize_publish=authorize_publish,
-            publish_success=lambda _previous, _tree: None,
+            publish_prepared=lambda _previous, _tree: None,
+            prepared_event_range_digest="a" * 64,
         )
 
     assert authorizations == 2
@@ -1490,3 +1494,60 @@ def test_parent_fsync_failure_after_root_install_leaves_complete_reopenable_stor
     assert SnapshotStore(root).read_head("value.txt") == b"complete"
     with pytest.raises(WorkspaceViolation, match="already exists"):
         SnapshotStore.create(root, {})
+
+
+def test_head_transaction_records_prepared_event_range_digest(tmp_path: Path) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": b"base"})
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "value.txt").write_bytes(b"candidate")
+    candidate = attempt.seal()
+    expected_digest = canonical_digest(["prepared-range"])
+
+    def leave_journal(_previous_tree_id: str, _tree_id: str) -> None:
+        raise HeadPublicationIndeterminate("ledger outcome unavailable")
+
+    with pytest.raises(HeadPublicationIndeterminate, match="unavailable"):
+        store.finalize_candidate(
+            candidate,
+            ResourceClaims(writes=("value.txt",)),
+            authorize_publish=lambda: None,
+            publish_prepared=leave_journal,
+            prepared_event_range_digest=expected_digest,
+        )
+
+    journal = json.loads((store.root / ".HEAD-transaction.json").read_bytes())
+    assert journal["event_range_digest"] == expected_digest
+    payload = {
+        "version": journal["version"],
+        "previous_head": journal["previous_head"],
+        "candidate_tree_id": journal["candidate_tree_id"],
+        "event_range_digest": journal["event_range_digest"],
+    }
+    assert journal["digest"] == canonical_digest(payload)
+
+
+def test_recover_head_transaction_rejects_tampered_event_range_digest(tmp_path: Path) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": b"base"})
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "value.txt").write_bytes(b"candidate")
+    candidate = attempt.seal()
+
+    def leave_journal(_previous_tree_id: str, _tree_id: str) -> None:
+        raise HeadPublicationIndeterminate("ledger outcome unavailable")
+
+    with pytest.raises(HeadPublicationIndeterminate, match="unavailable"):
+        store.finalize_candidate(
+            candidate,
+            ResourceClaims(writes=("value.txt",)),
+            authorize_publish=lambda: None,
+            publish_prepared=leave_journal,
+            prepared_event_range_digest="a" * 64,
+        )
+
+    journal_path = store.root / ".HEAD-transaction.json"
+    journal = json.loads(journal_path.read_bytes())
+    journal["event_range_digest"] = "b" * 64
+    journal_path.write_bytes(canonical_json_bytes(journal))
+
+    with pytest.raises(WorkspaceViolation, match="authentication"):
+        store.recover_head_transaction(candidate.candidate_tree_id)

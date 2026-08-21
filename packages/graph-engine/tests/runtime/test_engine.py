@@ -2447,6 +2447,7 @@ def test_open_rejects_terminal_task_completed_without_committed_attempt(tmp_path
         "task_lease_heartbeat",
         "task_attempt_succeeded",
         "head_advanced",
+        "task_commit_prepared",
     }
     events = tuple(
         envelope.event
@@ -3254,7 +3255,13 @@ def test_open_rejects_noncanonical_task_id_in_terminal_ledger(tmp_path: Path) ->
     ledger_root = handle.invocation_root / "ledger"
     forged_events = tuple(
         event.model_copy(update={"task_id": "forged-task-id"})
-        if event.kind in {"task_lease_acquired", "task_lease_heartbeat", "head_advanced"}
+        if event.kind
+        in {
+            "task_lease_acquired",
+            "task_lease_heartbeat",
+            "head_advanced",
+            "task_commit_prepared",
+        }
         else event
         for event in (envelope.event for envelope in Ledger(ledger_root).read_all())
     )

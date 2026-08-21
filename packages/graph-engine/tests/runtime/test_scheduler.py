@@ -24,16 +24,24 @@ from graph_engine.composition import (
 )
 from graph_engine.composition.models import (
     AuthenticatedContribution,
-    ExecutableAuthority,
     ContributionAuthority,
+    EffectRegistry,
+    ExecutableAuthority,
+    SchemaRegistry,
 )
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
 from graph_engine.plugin_api import (
     CandidateWriteSet,
+    EffectApplyResult,
+    EffectIntent,
+    EffectPolicy,
+    EffectReconcileResult,
+    EffectRegistration,
     PluginContribution,
     PluginDescriptor,
     ResourceClaims,
+    SchemaContribution,
     TaskContext,
     TaskHandler,
     TaskOutcome,
@@ -42,6 +50,7 @@ from graph_engine.plugin_api import (
     ValidationResult,
 )
 from graph_engine.runtime.events import (
+    EffectIntentCommitted,
     EventEnvelope,
     GraphFailed,
     GraphStarted,
@@ -51,6 +60,7 @@ from graph_engine.runtime.events import (
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptSucceeded,
+    TaskCommitPrepared,
     TaskLeaseAcquired,
     TaskLeaseHeartbeat,
 )
@@ -218,6 +228,122 @@ def _registry(
     return _build_registries(tuple(sources), tuple(authenticated), tuple(order)).capabilities
 
 
+_INTENT_SCHEMA = (
+    b'{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"],"additionalProperties":false}'
+)
+_RECEIPT_SCHEMA = b'{"type":"object"}'
+_LOCK_DIGEST = "a" * 64
+
+
+class _NullEffectHandler:
+    async def apply(self, _intent: EffectIntent, _idempotency_key: str) -> EffectApplyResult:
+        return EffectApplyResult.applied({"ok": True})
+
+    async def reconcile(self, _intent: EffectIntent, _idempotency_key: str) -> EffectReconcileResult:
+        return EffectReconcileResult.applied({"ok": True})
+
+
+def _effect_registries(*kinds: str) -> tuple[EffectRegistry, SchemaRegistry]:
+    if not kinds:
+        return EffectRegistry({}), SchemaRegistry({})
+    owner_id = "test.effects"
+    source = _source(owner_id)
+    contribution = PluginContribution(
+        schemas=(
+            SchemaContribution(f"{owner_id}.intent", "application/schema+json", _INTENT_SCHEMA),
+            SchemaContribution(f"{owner_id}.receipt", "application/schema+json", _RECEIPT_SCHEMA),
+        ),
+        effects=tuple(
+            EffectRegistration(
+                kind=kind,
+                intent_schema_id=f"{owner_id}.intent",
+                receipt_schema_id=f"{owner_id}.receipt",
+                handler=_NullEffectHandler(),
+                policy=EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
+            )
+            for kind in kinds
+        ),
+    )
+    source_key = SourceKey(SourceRole.PLUGIN, owner_id)
+    proofs = [
+        *(
+            ExecutableProvenance.create(
+                kind=kind,
+                registry_id=registration.kind,
+                owner_id=owner_id,
+                source_key=source_key,
+                source_digest=source.digest,
+                module=ExecutableModuleProvenance(
+                    module_name="test_effects.implementation",
+                    standard_loader=StandardLoader.SOURCE,
+                    standard_is_package=False,
+                    relative_origin="implementation.py",
+                    authenticated_locations=(),
+                    physical_sha256="0" * 64,
+                    source_digest=source.digest,
+                ),
+                callable_path="test.effects.implementation:Handler.apply",
+                binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
+            )
+            for registration in contribution.effects
+            for kind in (ExecutableKind.EFFECT_APPLY, ExecutableKind.EFFECT_RECONCILE)
+        )
+    ]
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id=owner_id,
+        plugin_version="1.0.0",
+        engine_api="1.0.0",
+        task_handlers=(),
+        commit_validators=(),
+        schemas=tuple(item.schema_id for item in contribution.schemas),
+        effects=tuple(item.kind for item in contribution.effects),
+    )
+    executable_objects = {
+        (kind, registration.kind): registration.handler
+        for registration in contribution.effects
+        for kind in (ExecutableKind.EFFECT_APPLY, ExecutableKind.EFFECT_RECONCILE)
+    }
+    ordered_proofs = tuple(sorted(proofs, key=lambda item: (item.registry_id, item.kind.value)))
+    authority_set = ContributionAuthority(
+        provider_binding=object(),
+        descriptor=descriptor,
+        owner_id=owner_id,
+        source_key=source_key,
+        source_digest=source.digest,
+        contribution=contribution,
+        authorities=tuple(
+            ExecutableAuthority(
+                executable=executable_objects[(proof.kind, proof.registry_id)],
+                function=type(executable_objects[(proof.kind, proof.registry_id)]).__dict__[proof.kind.slot],
+                bound_self=executable_objects[(proof.kind, proof.registry_id)],
+                descriptor=type(executable_objects[(proof.kind, proof.registry_id)]).__dict__[
+                    proof.kind.slot
+                ],
+                provenance=proof,
+            )
+            for proof in ordered_proofs
+        ),
+    )
+    registries = _build_registries(
+        (source,),
+        (
+            AuthenticatedContribution(
+                owner_id=owner_id,
+                source_key=source_key,
+                source_digest=source.digest,
+                descriptor=descriptor,
+                contribution=contribution,
+                executables=ordered_proofs,
+                authority=authority_set,
+            ),
+        ),
+        (owner_id,),
+    )
+    return registries.effects, registries.schemas
+
+
 class _InProcessTestHost:
     """Deliberately unconfined test double; never a production host."""
 
@@ -266,20 +392,47 @@ def _task(
     )
 
 
+def _planned_task() -> PlannedTask:
+    return _task("work", resources=ResourceClaims(writes=("out.txt",)))
+
+
+def _effectful_outcome() -> TaskOutcome:
+    return TaskOutcome.succeeded(
+        {"ok": True},
+        effects=(
+            EffectIntent(kind="test.effects.audit", payload={"n": 1}),
+            EffectIntent(kind="test.effects.audit", payload={"n": 2}),
+        ),
+    )
+
+
 def _scheduler(
     tmp_path: Path,
-    handlers: dict[str, Handler],
+    handlers: dict[str, Handler] | None = None,
     *,
+    outcome: TaskOutcome | None = None,
+    registered_effect_kinds: tuple[str, ...] | None = None,
     initial: dict[str, bytes] | None = None,
     validators: dict[str, object] | None = None,
     clock: FakeClock | None = None,
     max_parallel: int = 4,
     host: _InProcessTestHost | None = None,
 ) -> tuple[Scheduler, SnapshotStore, Ledger]:
+    if outcome is not None:
+        task = _planned_task()
+
+        async def returning(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+            if outcome.status == "succeeded":
+                (context.workspace_root / "out.txt").write_bytes(b"ok")
+            return outcome
+
+        handlers = {task.capability_id: returning}
+    if handlers is None:
+        handlers = {}
     store = SnapshotStore.create(tmp_path / "store", initial or {})
     ledger = Ledger(tmp_path / "ledger")
     lifecycle: list[object] = [
-        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
+        InvocationStarted(invocation_id="inv-1", lock_digest=_LOCK_DIGEST, entrypoint="main"),
         GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
     ]
     lifecycle.extend(
@@ -293,6 +446,10 @@ def _scheduler(
     )
     if handlers:
         ledger.append_batch(lifecycle, expected_next_seq=1)  # type: ignore[arg-type]
+    kinds = registered_effect_kinds
+    if kinds is None and outcome is not None:
+        kinds = tuple(dict.fromkeys(intent.kind for intent in outcome.effects))
+    effects, schemas = _effect_registries(*(kinds or ()))
     scheduler = Scheduler(
         _registry(handlers, validators),
         store,
@@ -302,6 +459,9 @@ def _scheduler(
         clock=clock or FakeClock(100.0),
         lease_seconds=10.0,
         max_parallel=max_parallel,
+        lock_digest=_LOCK_DIGEST,
+        effects=effects,
+        schemas=schemas,
     )
     return scheduler, store, ledger
 
@@ -1192,16 +1352,15 @@ def test_start_lease_and_success_head_are_atomic_ledger_batches(tmp_path: Path) 
     assert batch_names == [
         "0000000001-0000000003.json",
         "0000000004-0000000005.json",
-        "0000000006-0000000007.json",
+        "0000000006-0000000008.json",
     ]
-    assert [item.event.kind for item in ledger.read_all()][-4:] == [
-        "task_attempt_started",
-        "task_lease_acquired",
-        "task_attempt_succeeded",
+    assert [item.event.kind for item in ledger.read_all()][-3:] == [
+        "task_commit_prepared",
         "head_advanced",
+        "task_attempt_succeeded",
     ]
     projection = fold_events(ledger.read_all())
-    head_event = ledger.read_all()[-1].event
+    head_event = ledger.read_all()[-2].event
     assert isinstance(head_event, HeadAdvanced)
     assert projection.head_tree_id == head_event.tree_id
 
@@ -1215,7 +1374,7 @@ def test_success_ledger_failure_rolls_head_back_without_success_event(tmp_path: 
         original = ledger.append_batch
 
         def fail_success(events: object, expected_next_seq: int) -> object:
-            if any(getattr(event, "kind", None) == "task_attempt_succeeded" for event in events):  # type: ignore[union-attr]
+            if any(getattr(event, "kind", None) == "task_commit_prepared" for event in events):  # type: ignore[union-attr]
                 raise RuntimeError("ledger unavailable")
             return original(events, expected_next_seq)  # type: ignore[arg-type]
 
@@ -1318,7 +1477,7 @@ def test_success_ledger_and_rollback_failure_is_explicitly_indeterminate(
         original = ledger.append_batch
 
         def fail_success(events: object, expected_next_seq: int) -> object:
-            if any(getattr(event, "kind", None) == "task_attempt_succeeded" for event in events):  # type: ignore[union-attr]
+            if any(getattr(event, "kind", None) == "task_commit_prepared" for event in events):  # type: ignore[union-attr]
                 raise RuntimeError("ledger unavailable")
             return original(events, expected_next_seq)  # type: ignore[arg-type]
 
@@ -1613,3 +1772,337 @@ def test_wave_attempts_use_one_baseline_despite_commit_between_creations(
     asyncio.run(scheduler.run_wave(tasks))
 
     assert observed == {"first": b"H0", "second": b"H0"}
+
+
+def test_effectful_success_publishes_head_and_intents_without_task_success(tmp_path: Path) -> None:
+    scheduler, store, ledger = _scheduler(tmp_path, outcome=_effectful_outcome())
+    result = asyncio.run(scheduler.run_wave((_planned_task(),)))[0]
+    events = tuple(envelope.event for envelope in ledger.read_all())
+    assert isinstance(events[-4], TaskCommitPrepared)
+    assert isinstance(events[-3], HeadAdvanced)
+    assert isinstance(events[-2], EffectIntentCommitted)
+    assert isinstance(events[-1], EffectIntentCommitted)
+    assert not any(isinstance(event, TaskAttemptSucceeded) for event in events)
+    assert result.outcome.effects
+    assert store.head_tree_id() == result.head_tree_id
+
+
+def test_effect_free_success_keeps_one_atomic_publication(tmp_path: Path) -> None:
+    scheduler, _store, ledger = _scheduler(tmp_path, outcome=TaskOutcome.succeeded({"ok": True}))
+    asyncio.run(scheduler.run_wave((_planned_task(),)))
+    tail = tuple(envelope.event.kind for envelope in ledger.read_all()[-3:])
+    assert tail == ("task_commit_prepared", "head_advanced", "task_attempt_succeeded")
+
+
+def test_unknown_effect_kind_fails_before_head(tmp_path: Path) -> None:
+    outcome = TaskOutcome.succeeded(
+        {"ok": True},
+        effects=(EffectIntent(kind="test.effects.missing", payload={"n": 1}),),
+    )
+    scheduler, store, ledger = _scheduler(
+        tmp_path,
+        outcome=outcome,
+        registered_effect_kinds=("test.effects.audit",),
+    )
+    before = store.head_tree_id()
+
+    result = asyncio.run(scheduler.run_wave((_planned_task(),)))[0]
+
+    assert result.outcome.failure is not None
+    assert result.outcome.failure.kind == "invalid_output"
+    assert store.head_tree_id() == before
+    events = tuple(envelope.event for envelope in ledger.read_all())
+    assert not any(
+        isinstance(event, (TaskCommitPrepared, HeadAdvanced, EffectIntentCommitted)) for event in events
+    )
+    assert isinstance(events[-1], TaskAttemptFailed)
+
+
+def test_invalid_intent_payload_fails_before_head(tmp_path: Path) -> None:
+    outcome = TaskOutcome.succeeded(
+        {"ok": True},
+        effects=(EffectIntent(kind="test.effects.audit", payload={"n": "bad"}),),
+    )
+    scheduler, store, ledger = _scheduler(tmp_path, outcome=outcome)
+    before = store.head_tree_id()
+
+    result = asyncio.run(scheduler.run_wave((_planned_task(),)))[0]
+
+    assert result.outcome.failure is not None
+    assert result.outcome.failure.kind == "invalid_output"
+    assert store.head_tree_id() == before
+    assert all(item.event.kind != "head_advanced" for item in ledger.read_all())
+
+
+def test_prepared_effect_ids_and_keys_are_stable(tmp_path: Path) -> None:
+    task = _planned_task()
+    scheduler, _store, ledger = _scheduler(tmp_path, outcome=_effectful_outcome())
+    result = asyncio.run(scheduler.run_wave((task,)))[0]
+    events = tuple(envelope.event for envelope in ledger.read_all())
+    prepared = events[-4]
+    first = events[-2]
+    second = events[-1]
+    assert isinstance(prepared, TaskCommitPrepared)
+    assert isinstance(first, EffectIntentCommitted)
+    assert isinstance(second, EffectIntentCommitted)
+    expected_ids = tuple(
+        canonical_digest(["effect", task.invocation_id, task.activation_id, str(task.attempt), str(index)])
+        for index in range(2)
+    )
+    assert prepared.effect_ids == expected_ids
+    assert result.effect_ids == expected_ids
+    assert first.effect_id == expected_ids[0]
+    assert second.effect_id == expected_ids[1]
+    assert first.index == 0
+    assert second.index == 1
+    payloads = ({"n": 1}, {"n": 2})
+    for intent, payload, effect_id in zip((first, second), payloads, expected_ids, strict=True):
+        assert intent.idempotency_key == canonical_digest(
+            {
+                "lock_digest": _LOCK_DIGEST,
+                "effect_id": effect_id,
+                "kind": "test.effects.audit",
+                "payload_digest": canonical_digest(payload),
+            }
+        )
+
+
+def test_prepared_intents_preserve_declaration_order(tmp_path: Path) -> None:
+    outcome = TaskOutcome.succeeded(
+        {"ok": True},
+        effects=(
+            EffectIntent(kind="test.effects.audit", payload={"n": 3}),
+            EffectIntent(kind="test.effects.audit", payload={"n": 1}),
+            EffectIntent(kind="test.effects.audit", payload={"n": 2}),
+        ),
+    )
+    scheduler, _store, ledger = _scheduler(tmp_path, outcome=outcome)
+    asyncio.run(scheduler.run_wave((_planned_task(),)))
+    intents = [
+        envelope.event for envelope in ledger.read_all() if isinstance(envelope.event, EffectIntentCommitted)
+    ]
+    assert [intent.index for intent in intents] == [0, 1, 2]
+    assert [intent.payload["n"] for intent in intents] == [3, 1, 2]
+
+
+def test_lease_expiry_before_prepared_publication_does_not_move_head(tmp_path: Path) -> None:
+    clock = FakeClock(100.0)
+
+    class ExpiringValidator:
+        def validate(self, _candidate: CandidateWriteSet, _context: ValidationContext) -> ValidationResult:
+            clock.set(110.001)
+            return ValidationResult(accepted=True)
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        (context.workspace_root / "out.txt").write_bytes(b"candidate")
+        return _effectful_outcome()
+
+    task = _planned_task()
+    task = task.model_copy(update={"validators": ("test.validators.expire",)})
+    scheduler, store, ledger = _scheduler(
+        tmp_path,
+        {task.capability_id: handler},
+        registered_effect_kinds=("test.effects.audit",),
+        validators={"test.validators.expire": ExpiringValidator()},
+        clock=clock,
+    )
+    before = store.head_tree_id()
+
+    result = asyncio.run(scheduler.run_wave((task,)))[0]
+
+    assert result.outcome.failure is not None
+    assert result.outcome.failure.kind == "transient"
+    assert store.head_tree_id() == before
+    assert all(
+        item.event.kind not in {"task_commit_prepared", "head_advanced", "effect_intent_committed"}
+        for item in ledger.read_all()
+    )
+
+
+def test_concurrent_reclaim_during_prepared_publication_rolls_head_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = FakeClock(100.0)
+    scheduler, store, ledger = _scheduler(tmp_path, outcome=_effectful_outcome(), clock=clock)
+    recovery = Scheduler(
+        CapabilityRegistry.empty(),
+        store,
+        Ledger(ledger.root),
+        _InProcessTestHost(),
+        owner_id="recovery-worker",
+        clock=clock,
+    )
+    task = _planned_task()
+
+    def reclaim_after_publish(_name: str) -> None:
+        clock.set(110.001)
+        assert recovery.reclaim_expired() == (task.task_id,)
+
+    monkeypatch.setattr(workspace_runtime, "_finalization_boundary", reclaim_after_publish)
+    before = store.head_tree_id()
+
+    with pytest.raises(FinalizationRolledBack):
+        asyncio.run(scheduler.run_wave((task,)))
+
+    assert store.head_tree_id() == before
+    kinds = [item.event.kind for item in ledger.read_all()]
+    assert kinds.count("task_attempt_failed") == 1
+    assert "task_commit_prepared" not in kinds
+    assert "head_advanced" not in kinds
+
+
+def test_prepared_cas_conflict_rolls_head_back(tmp_path: Path) -> None:
+    scheduler, store, ledger = _scheduler(tmp_path, outcome=_effectful_outcome())
+    original = ledger.append_batch
+    before = store.head_tree_id()
+
+    def conflict_prepared(events: object, expected_next_seq: int) -> object:
+        materialized = tuple(events)  # type: ignore[arg-type]
+        if any(isinstance(event, TaskCommitPrepared) for event in materialized):
+            raise LedgerConflictError("concurrent prepared append")
+        return original(materialized, expected_next_seq)
+
+    ledger.append_batch = conflict_prepared  # type: ignore[method-assign]
+
+    with pytest.raises(FinalizationRolledBack):
+        asyncio.run(scheduler.run_wave((_planned_task(),)))
+
+    assert store.head_tree_id() == before
+    assert all(item.event.kind != "task_commit_prepared" for item in ledger.read_all())
+
+
+@pytest.mark.parametrize("failed_boundary", ["final_installed", "directory_fsynced"])
+def test_prepared_append_installed_completes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_boundary: str,
+) -> None:
+    armed = False
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        nonlocal armed
+        (context.workspace_root / "out.txt").write_bytes(b"ok")
+        armed = True
+        return _effectful_outcome()
+
+    task = _planned_task()
+    scheduler, store, ledger = _scheduler(
+        tmp_path,
+        {task.capability_id: handler},
+        registered_effect_kinds=("test.effects.audit",),
+    )
+
+    def fail_after_final_install(name: str) -> None:
+        if armed and name == failed_boundary:
+            raise OSError("append result unavailable")
+
+    monkeypatch.setattr(ledger_runtime, "_append_boundary", fail_after_final_install)
+
+    result = asyncio.run(scheduler.run_wave((task,)))[0]
+
+    assert result.outcome.status == "succeeded"
+    assert result.head_tree_id == store.head_tree_id()
+    kinds = [item.event.kind for item in ledger.read_all()]
+    assert kinds.count("task_commit_prepared") == 1
+    assert kinds.count("head_advanced") == 1
+    assert kinds.count("effect_intent_committed") == 2
+    assert "task_attempt_succeeded" not in kinds
+
+
+def test_prepared_append_unreadable_preserves_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    armed = False
+    append_failed = False
+    task = _planned_task()
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        nonlocal armed
+        (context.workspace_root / "out.txt").write_bytes(b"ok")
+        armed = True
+        return _effectful_outcome()
+
+    scheduler, store, ledger = _scheduler(
+        tmp_path,
+        {task.capability_id: handler},
+        registered_effect_kinds=("test.effects.audit",),
+    )
+    original_read = ledger.read_all
+
+    def fail_after_final_install(name: str) -> None:
+        nonlocal append_failed
+        if armed and name == "final_installed":
+            append_failed = True
+            raise OSError("append result unavailable")
+
+    def fail_reconciliation_read() -> tuple[EventEnvelope, ...]:
+        if append_failed:
+            raise OSError("ledger unreadable")
+        return original_read()
+
+    monkeypatch.setattr(ledger_runtime, "_append_boundary", fail_after_final_install)
+    ledger.read_all = fail_reconciliation_read  # type: ignore[method-assign]
+
+    with pytest.raises(HeadPublicationIndeterminate):
+        asyncio.run(scheduler.run_wave((task,)))
+
+    assert store.read_head("out.txt") == b"ok"
+    kinds = [item.event.kind for item in Ledger(ledger.root).read_all()]
+    assert kinds.count("task_commit_prepared") == 1
+    assert kinds.count("head_advanced") == 1
+
+
+def test_prepared_publication_never_overwrites_newer_head(tmp_path: Path) -> None:
+    scheduler, store, ledger = _scheduler(tmp_path, outcome=_effectful_outcome())
+    task = _planned_task()
+    newer = store.create_attempt("newer-head")
+    (newer.root / "out.txt").write_bytes(b"ok")
+    (newer.root / "other.txt").write_bytes(b"B")
+    newer_candidate = newer.seal()
+    newer.discard()
+    lease_b = Lease(
+        task_id="task-writer-b",
+        activation_id="activation-writer-b",
+        attempt=1,
+        owner_id="worker-b",
+        acquired_at=100.0,
+        heartbeat_at=100.0,
+        expires_at=1000.0,
+    )
+    _persist_lease(ledger, lease_b)
+    original_append = ledger.append_batch
+
+    def append_newer_success_first(events: object, expected_next_seq: int) -> object:
+        materialized = tuple(events)  # type: ignore[arg-type]
+        prepared = next((event for event in materialized if isinstance(event, TaskCommitPrepared)), None)
+        if prepared is None:
+            return original_append(materialized, expected_next_seq)
+        _install_head_document(store, newer_candidate.candidate_tree_id)
+        Ledger(ledger.root).append_batch(
+            (
+                TaskAttemptSucceeded(
+                    activation_id=lease_b.activation_id,
+                    attempt=lease_b.attempt,
+                    output=None,
+                ),
+                HeadAdvanced(
+                    task_id=lease_b.task_id,
+                    activation_id=lease_b.activation_id,
+                    attempt=lease_b.attempt,
+                    previous_tree_id=prepared.tree_id,
+                    tree_id=newer_candidate.candidate_tree_id,
+                ),
+            ),
+            expected_next_seq=expected_next_seq,
+        )
+        return original_append(materialized, expected_next_seq)
+
+    ledger.append_batch = append_newer_success_first  # type: ignore[method-assign]
+
+    with pytest.raises(HeadPublicationIndeterminate):
+        asyncio.run(scheduler.run_wave((task,)))
+
+    assert store.head_tree_id() == newer_candidate.candidate_tree_id
+    events = [envelope.event for envelope in ledger.read_all()]
+    assert all(
+        not isinstance(event, TaskCommitPrepared) or event.activation_id != task.activation_id
+        for event in events
+    )

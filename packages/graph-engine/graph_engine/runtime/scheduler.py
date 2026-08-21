@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from graph_engine.canonical import canonical_digest
+from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.composition.models import EffectRegistry, SchemaRegistry
 from graph_engine.errors import GraphEngineError
+from graph_engine.identifiers import canonical_id
 from graph_engine.plugin_api import (
     CandidateWriteSet,
     CommitValidator,
+    EffectIntent,
     FailureKind,
     ResourceClaims,
     TaskHandler,
@@ -23,6 +27,7 @@ from graph_engine.plugin_api import (
     ValidationContext,
 )
 from graph_engine.runtime.events import (
+    EffectIntentCommitted,
     EventEnvelope,
     HeadAdvanced,
     RuntimeEvent,
@@ -30,6 +35,7 @@ from graph_engine.runtime.events import (
     TaskAttemptStarted,
     TaskAttemptStopped,
     TaskAttemptSucceeded,
+    TaskCommitPrepared,
     TaskLeaseAcquired,
     TaskLeaseHeartbeat,
 )
@@ -133,6 +139,7 @@ class AttemptResult(BaseModel):
     candidate: CandidateWriteSet | None = None
     commit: CommitResult | None = None
     head_tree_id: str | None = None
+    effect_ids: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -200,6 +207,9 @@ class Scheduler:
         lease_seconds: float = 30.0,
         max_parallel: int = 1,
         transition_guard: Callable[[], None] | None = None,
+        lock_digest: str | None = None,
+        effects: EffectRegistry | None = None,
+        schemas: SchemaRegistry | None = None,
     ) -> None:
         if not owner_id:
             raise ValueError("owner_id must not be empty")
@@ -216,6 +226,9 @@ class Scheduler:
         self._lease_seconds = lease_seconds
         self._max_parallel = max_parallel
         self._transition_guard = transition_guard
+        self._lock_digest = lock_digest
+        self._effects = effects if effects is not None else EffectRegistry({})
+        self._schemas = schemas if schemas is not None else SchemaRegistry({})
 
     async def run_wave(self, tasks: Sequence[PlannedTask]) -> tuple[AttemptResult, ...]:
         selected = select_wave(tasks, self._max_parallel)
@@ -481,9 +494,26 @@ class Scheduler:
                 expected_next_seq=guard.expected_next_seq,
             )
         try:
+            prepared_intents = self._validated_effect_intents(task, result.outcome)
+        except _InvalidPreparedOutput as error:
+            return self._record_commit_failure(
+                result,
+                str(error),
+                kind="invalid_output",
+                expected_next_seq=guard.expected_next_seq,
+            )
+        try:
             current_tree_id = self._store.head_tree_id()
             if candidate.baseline_tree_id != current_tree_id:
                 candidate = self._store.rebase_candidate(candidate, self._attempt_id(task, "rebase"))
+            events = self.prepare_success(
+                task,
+                result.outcome,
+                candidate.baseline_tree_id,
+                candidate.candidate_tree_id,
+                prepared_intents,
+            )
+            range_digest = _prepared_event_range_digest(guard.expected_next_seq, events)
             validators = tuple(
                 (validator_id, self._registry.commit_validators[validator_id])
                 for validator_id in task.validators
@@ -500,25 +530,9 @@ class Scheduler:
                 self._guard_transition()
                 self._require_live_lease(result.lease)
 
-            def publish_success(previous_tree_id: str, tree_id: str) -> None:
+            def publish_prepared(_previous_tree_id: str, _tree_id: str) -> None:
                 live = self._require_live_lease(result.lease)
-                self._append_success(
-                    (
-                        TaskAttemptSucceeded(
-                            activation_id=task.activation_id,
-                            attempt=task.attempt,
-                            output=result.outcome.output,
-                        ),
-                        HeadAdvanced(
-                            task_id=task.task_id,
-                            activation_id=task.activation_id,
-                            attempt=task.attempt,
-                            previous_tree_id=previous_tree_id,
-                            tree_id=tree_id,
-                        ),
-                    ),
-                    expected_next_seq=live.expected_next_seq,
-                )
+                self._append_prepared(events, expected_next_seq=live.expected_next_seq)
 
             commit = self._store.finalize_candidate(
                 candidate,
@@ -526,7 +540,8 @@ class Scheduler:
                 validators,
                 context,
                 authorize_publish=authorize_publish,
-                publish_success=publish_success,
+                publish_prepared=publish_prepared,
+                prepared_event_range_digest=range_digest,
             )
         except LeaseUnavailableError:
             expired = _replace_with_lease_failure(result, "persisted task lease expired")
@@ -583,6 +598,7 @@ class Scheduler:
                 "candidate": candidate,
                 "commit": commit,
                 "head_tree_id": candidate.candidate_tree_id,
+                "effect_ids": tuple(effect_id for effect_id, _intent, _key in prepared_intents),
             }
         )
 
@@ -608,6 +624,107 @@ class Scheduler:
             expected_next_seq=expected_next_seq,
         )
         return result.model_copy(update={"outcome": outcome, "commit": commit})
+
+    def prepare_success(
+        self,
+        task: PlannedTask,
+        outcome: TaskOutcome,
+        previous_tree_id: str,
+        tree_id: str,
+        intents: tuple[tuple[str, EffectIntent, str], ...] | None = None,
+    ) -> tuple[RuntimeEvent, ...]:
+        prepared_intents = intents if intents is not None else self._validated_effect_intents(task, outcome)
+        effect_ids = tuple(effect_id for effect_id, _intent, _key in prepared_intents)
+        events: list[RuntimeEvent] = [
+            TaskCommitPrepared(
+                task_id=task.task_id,
+                activation_id=task.activation_id,
+                attempt=task.attempt,
+                output=outcome.output,
+                previous_tree_id=previous_tree_id,
+                tree_id=tree_id,
+                effect_ids=effect_ids,
+            ),
+            HeadAdvanced(
+                task_id=task.task_id,
+                activation_id=task.activation_id,
+                attempt=task.attempt,
+                previous_tree_id=previous_tree_id,
+                tree_id=tree_id,
+            ),
+        ]
+        if prepared_intents:
+            events.extend(
+                EffectIntentCommitted(
+                    effect_id=effect_id,
+                    activation_id=task.activation_id,
+                    attempt=task.attempt,
+                    index=index,
+                    effect_kind=intent.kind,
+                    payload=intent.payload,
+                    idempotency_key=key,
+                )
+                for index, (effect_id, intent, key) in enumerate(prepared_intents)
+            )
+        else:
+            events.append(
+                TaskAttemptSucceeded(
+                    activation_id=task.activation_id,
+                    attempt=task.attempt,
+                    output=outcome.output,
+                )
+            )
+        return tuple(events)
+
+    def _validated_effect_intents(
+        self,
+        task: PlannedTask,
+        outcome: TaskOutcome,
+    ) -> tuple[tuple[str, EffectIntent, str], ...]:
+        prepared: list[tuple[str, EffectIntent, str]] = []
+        lock_digest = self._resolved_lock_digest()
+        for index, intent in enumerate(outcome.effects):
+            try:
+                entry = self._effects.require(intent.kind)
+            except KeyError as error:
+                raise _InvalidPreparedOutput(f"unknown effect kind: {intent.kind}") from error
+            schema = self._schemas.entries.get(entry.intent_schema_id)
+            if schema is None:
+                raise _InvalidPreparedOutput(
+                    f"effect intent schema is not registered: {entry.intent_schema_id}"
+                )
+            try:
+                _validate_json_schema(thaw_json(intent.payload), schema.content)
+            except ValueError as error:
+                raise _InvalidPreparedOutput(
+                    f"effect intent payload is invalid for {intent.kind}: {error}"
+                ) from error
+            effect_id = canonical_id(
+                "effect",
+                task.invocation_id,
+                task.activation_id,
+                str(task.attempt),
+                str(index),
+            )
+            payload = thaw_json(intent.payload)
+            idempotency_key = canonical_digest(
+                {
+                    "lock_digest": lock_digest,
+                    "effect_id": effect_id,
+                    "kind": intent.kind,
+                    "payload_digest": canonical_digest(payload),
+                }
+            )
+            prepared.append((effect_id, intent, idempotency_key))
+        return tuple(prepared)
+
+    def _resolved_lock_digest(self) -> str:
+        if self._lock_digest is not None:
+            return self._lock_digest
+        projection = fold_events(self._ledger.read_all())
+        if projection.lock_digest is None:
+            raise SchedulerStateError("invocation lock digest is unavailable")
+        return projection.lock_digest
 
     def _lease_guard(self, lease: Lease) -> _LeaseGuard:
         envelopes = self._ledger.read_all()
@@ -676,7 +793,7 @@ class Scheduler:
         )
         self._guard_transition()
 
-    def _append_success(self, events: Sequence[RuntimeEvent], *, expected_next_seq: int) -> None:
+    def _append_prepared(self, events: Sequence[RuntimeEvent], *, expected_next_seq: int) -> None:
         materialized = tuple(events)
         try:
             self._guard_transition()
@@ -688,7 +805,7 @@ class Scheduler:
             self._guard_transition()
         except LedgerPublicationIndeterminate as error:
             raise HeadPublicationIndeterminate(
-                "success ledger publication outcome is indeterminate; candidate HEAD preserved"
+                "prepared ledger publication outcome is indeterminate; candidate HEAD preserved"
             ) from error.__cause__
 
     def _guard_transition(self) -> None:
@@ -717,6 +834,91 @@ def _exception_message(prefix: str, error: BaseException) -> str:
     detail = str(error)
     suffix = f": {detail}" if detail else ""
     return f"{prefix} {type(error).__name__}{suffix}"
+
+
+class _InvalidPreparedOutput(ValueError):
+    """Raised when a successful outcome cannot be published as a prepared commit."""
+
+
+def _prepared_event_range_digest(expected_next_seq: int, events: Sequence[RuntimeEvent]) -> str:
+    envelopes = [
+        EventEnvelope.from_event(expected_next_seq + offset, event).model_dump(mode="json")
+        for offset, event in enumerate(events)
+    ]
+    return canonical_digest(cast(JSONValue, envelopes))
+
+
+def _validate_json_schema(instance: object, schema_bytes: bytes) -> None:
+    try:
+        schema = json.loads(schema_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("intent schema is not valid JSON") from error
+    _match_json_schema(instance, schema)
+
+
+def _match_json_schema(instance: object, schema: object) -> None:
+    if schema is True:
+        return
+    if schema is False:
+        raise ValueError("schema rejects all values")
+    if not isinstance(schema, dict):
+        raise ValueError("schema must be a JSON object")
+    expected_type = schema.get("type")
+    if expected_type == "object":
+        if not isinstance(instance, dict) or isinstance(instance, bool):
+            raise ValueError("expected a JSON object")
+        required = schema.get("required", [])
+        if not isinstance(required, list):
+            raise ValueError("schema required must be an array")
+        for key in required:
+            if key not in instance:
+                raise ValueError(f"missing required property: {key}")
+        properties = schema.get("properties", {})
+        if not isinstance(properties, dict):
+            raise ValueError("schema properties must be an object")
+        additional = schema.get("additionalProperties", True)
+        for key, value in instance.items():
+            if key in properties:
+                _match_json_schema(value, properties[key])
+            elif additional is False:
+                raise ValueError(f"unexpected property: {key}")
+            elif isinstance(additional, dict | bool) and additional is not True:
+                _match_json_schema(value, additional)
+        return
+    if expected_type == "array":
+        if not isinstance(instance, list):
+            raise ValueError("expected a JSON array")
+        items = schema.get("items")
+        if items is not None:
+            for item in instance:
+                _match_json_schema(item, items)
+        return
+    if expected_type == "string":
+        if not isinstance(instance, str):
+            raise ValueError("expected a JSON string")
+        return
+    if expected_type == "integer":
+        if isinstance(instance, bool) or not isinstance(instance, int):
+            raise ValueError("expected a JSON integer")
+        return
+    if expected_type == "number":
+        if isinstance(instance, bool) or not isinstance(instance, int | float):
+            raise ValueError("expected a JSON number")
+        return
+    if expected_type == "boolean":
+        if not isinstance(instance, bool):
+            raise ValueError("expected a JSON boolean")
+        return
+    if expected_type == "null":
+        if instance is not None:
+            raise ValueError("expected JSON null")
+        return
+    if "const" in schema and instance != schema["const"]:
+        raise ValueError("value does not match schema const")
+    if "enum" in schema:
+        allowed = schema["enum"]
+        if not isinstance(allowed, list) or instance not in allowed:
+            raise ValueError("value is not in schema enum")
 
 
 def _next_sequence(envelopes: Sequence[EventEnvelope]) -> int:

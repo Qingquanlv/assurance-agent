@@ -1132,6 +1132,7 @@ class SnapshotStore:
         root_fd: int,
         previous: bytes,
         candidate_tree_id: str,
+        event_range_digest: str,
     ) -> None:
         if _entry_exists(root_fd, _HEAD_TRANSACTION):
             raise _HeadTransactionExists("unfinished HEAD transaction requires recovery")
@@ -1140,6 +1141,7 @@ class SnapshotStore:
             "version": 1,
             "previous_head": previous_head,
             "candidate_tree_id": candidate_tree_id,
+            "event_range_digest": event_range_digest,
         }
         document: dict[str, JSONValue] = {**payload, "digest": canonical_digest(payload)}
         temporary = f".{_HEAD_TRANSACTION}-{uuid.uuid4().hex}.tmp"
@@ -1172,6 +1174,7 @@ class SnapshotStore:
         previous: bytes,
         candidate_tree_id: str,
         published: bytes,
+        event_range_digest: str,
     ) -> None:
         try:
             self._clear_head_transaction(root_fd)
@@ -1185,7 +1188,7 @@ class SnapshotStore:
         try:
             self._clear_head_transaction(root_fd)
         except BaseException as retry_error:
-            self._retain_head_transaction(root_fd, previous, candidate_tree_id)
+            self._retain_head_transaction(root_fd, previous, candidate_tree_id, event_range_digest)
             raise HeadPublicationIndeterminate(
                 "authoritative success and candidate HEAD agree but journal clear is indeterminate"
             ) from retry_error
@@ -1195,11 +1198,12 @@ class SnapshotStore:
         root_fd: int,
         previous: bytes,
         candidate_tree_id: str,
+        event_range_digest: str,
     ) -> None:
         if _entry_exists(root_fd, _HEAD_TRANSACTION):
             return
         try:
-            self._begin_head_transaction(root_fd, previous, candidate_tree_id)
+            self._begin_head_transaction(root_fd, previous, candidate_tree_id, event_range_digest)
         except BaseException:
             # The caller raises an explicit indeterminate-publication error either way.
             # A best-effort recreation keeps the common post-unlink fsync cut recoverable.
@@ -1237,6 +1241,7 @@ class SnapshotStore:
                 "version",
                 "previous_head",
                 "candidate_tree_id",
+                "event_range_digest",
                 "digest",
             }:
                 raise WorkspaceViolation("HEAD transaction document is invalid")
@@ -1244,6 +1249,7 @@ class SnapshotStore:
                 "version": transaction["version"],
                 "previous_head": transaction["previous_head"],
                 "candidate_tree_id": transaction["candidate_tree_id"],
+                "event_range_digest": transaction["event_range_digest"],
             }
             if transaction["version"] != 1 or transaction["digest"] != canonical_digest(payload):
                 raise WorkspaceViolation("HEAD transaction authentication failed")
@@ -1255,6 +1261,7 @@ class SnapshotStore:
                 transaction["candidate_tree_id"],
                 "transaction candidate tree id",
             )
+            _validate_tree_id(transaction["event_range_digest"], "transaction event range digest")
             if not isinstance(previous_tree_id, str):
                 raise WorkspaceViolation("HEAD transaction previous tree is invalid")
             previous_bytes = canonical_json_bytes(cast(JSONValue, previous))
@@ -1477,7 +1484,8 @@ class SnapshotStore:
             validators,
             context,
             authorize_publish=lambda: None,
-            publish_success=lambda _previous_tree_id, _tree_id: None,
+            publish_prepared=lambda _previous_tree_id, _tree_id: None,
+            prepared_event_range_digest=canonical_digest([]),
         )
 
     def finalize_candidate(
@@ -1488,7 +1496,8 @@ class SnapshotStore:
         context: ValidationContext | None = None,
         *,
         authorize_publish: Callable[[], None],
-        publish_success: Callable[[str, str], None],
+        publish_prepared: Callable[[str, str], None],
+        prepared_event_range_digest: str,
     ) -> CommitResult:
         """Validate, publish, and record success under one stable commit lock.
 
@@ -1497,6 +1506,7 @@ class SnapshotStore:
         overwritten and is reported as indeterminate for external reconciliation.
         """
         selected = tuple(validators)
+        range_digest = _validate_tree_id(prepared_event_range_digest, "prepared event range digest")
         validator_context = self._validate_validators(selected, context, claims)
         with self._opened_layout(lock=True) as (root_fd, trees_fd, _attempts_fd, _lock_fd):
             head_document, baseline = self._head_tree(root_fd, trees_fd)
@@ -1527,6 +1537,7 @@ class SnapshotStore:
                         root_fd,
                         previous,
                         candidate.candidate_tree_id,
+                        range_digest,
                     )
                 except _HeadTransactionExists:
                     raise
@@ -1554,7 +1565,7 @@ class SnapshotStore:
                 published = self._head_bytes(candidate.candidate_tree_id, candidate_tree.identity)
                 try:
                     _finalization_boundary("candidate_published")
-                    publish_success(current_tree_id, candidate.candidate_tree_id)
+                    publish_prepared(current_tree_id, candidate.candidate_tree_id)
                 except HeadPublicationIndeterminate:
                     raise
                 except BaseException as error:
@@ -1580,6 +1591,7 @@ class SnapshotStore:
                     previous=previous,
                     candidate_tree_id=candidate.candidate_tree_id,
                     published=published,
+                    event_range_digest=range_digest,
                 )
                 return CommitResult(committed=True, receipts=receipts)
             finally:

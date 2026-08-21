@@ -957,6 +957,9 @@ class Engine:
                 invocation_fd,
                 ledger,
             ),
+            lock_digest=composition.lock_digest,
+            effects=composition.registries.effects,
+            schemas=composition.registries.schemas,
         )
 
     def _require_invocation_anchor(self, invocation_id: str, invocation_fd: int) -> None:
