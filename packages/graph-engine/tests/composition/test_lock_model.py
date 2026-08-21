@@ -19,6 +19,7 @@ from graph_engine.composition import (
     RegistryProjections,
 )
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
+from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import PluginDependency, PluginDescriptor, ProviderSource
 
 
@@ -513,3 +514,30 @@ def test_lock_authenticates_auditable_projections_against_their_digests() -> Non
         )
     with pytest.raises(ValidationError, match="workflow digest"):
         _recreate_lock(lock, compiled_workflow={"entrypoints": {}, "graphs": {}, "name": "toy"})
+
+
+def test_lock_rejects_an_extra_unsupported_executable_projection_kind() -> None:
+    lock = _lock()
+    capabilities = [
+        *thaw_json(lock.registry_projections.capabilities),
+        {
+            "capability_id": "toy.runtime.unknown",
+            "kind": "unknown-executable",
+            "owner_id": "toy.runtime",
+        },
+    ]
+    projections = RegistryProjections(
+        sources=lock.registry_projections.sources,
+        capabilities=capabilities,
+        schemas=lock.registry_projections.schemas,
+        resources=lock.registry_projections.resources,
+        effects=lock.registry_projections.effects,
+    )
+    digests = lock.registry_digests.model_copy(update={"capabilities": canonical_digest(capabilities)})
+
+    with pytest.raises(ValidationError, match="unsupported kind"):
+        _recreate_lock(
+            lock,
+            registry_projections=projections,
+            registry_digests=digests,
+        )

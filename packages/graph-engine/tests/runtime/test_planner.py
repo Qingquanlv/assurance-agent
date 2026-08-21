@@ -20,12 +20,16 @@ from graph_engine.composition import (
     SourceRole,
     SourceSnapshot,
 )
-from graph_engine.composition.models import AuthenticatedContribution
+from graph_engine.composition.models import (
+    AuthenticatedContribution,
+    ExecutableAuthority,
+    ExecutableAuthoritySet,
+)
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.graph.schema import parse_workflow
-from graph_engine.plugin_api import PluginContribution, TaskFailure
+from graph_engine.plugin_api import PluginContribution, PluginDescriptor, TaskFailure
 from graph_engine.runtime.events import (
     EventEnvelope,
     GraphStarted,
@@ -93,12 +97,41 @@ def _registry() -> CapabilityRegistry:
         callable_path="test_tasks.implementation:Handler.execute",
         binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
     )
-    authenticated = AuthenticatedContribution(
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id="test.tasks",
+        plugin_version="1.0.0",
+        engine_api="1.0.0",
+        task_handlers=("test.tasks.run",),
+        commit_validators=(),
+    )
+    handler = contribution.task_handlers["test.tasks.run"]
+    authority_set = ExecutableAuthoritySet(
+        provider_binding=object(),
+        descriptor=descriptor,
         owner_id="test.tasks",
         source_key=source_key,
         source_digest=source.digest,
         contribution=contribution,
+        authorities=(
+            ExecutableAuthority(
+                executable=handler,
+                function=type(handler).__dict__["execute"],
+                bound_self=handler,
+                descriptor=type(handler).__dict__["execute"],
+                provenance=provenance,
+            ),
+        ),
+    )
+    authenticated = AuthenticatedContribution(
+        owner_id="test.tasks",
+        source_key=source_key,
+        source_digest=source.digest,
+        descriptor=descriptor,
+        contribution=contribution,
         executables=(provenance,),
+        authority_set=authority_set,
     )
     return _build_registries((source,), (authenticated,), ("test.tasks",)).capabilities
 

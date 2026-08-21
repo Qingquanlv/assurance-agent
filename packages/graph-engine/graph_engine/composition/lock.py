@@ -343,6 +343,7 @@ class InvocationLock(FrozenModel):
             raise ValueError("invocation lock dependency declarations are invalid") from error
         if self.dependency_order != expected_order:
             raise ValueError("invocation lock dependency order is not canonical")
+        _validate_declared_executable_projection_set(self.plugins, self.registry_projections)
         expected_registry_digests = _registry_digests_from_projections(self.registry_projections)
         if self.registry_digests != expected_registry_digests:
             raise ValueError("invocation lock registry digests do not authenticate their projections")
@@ -575,6 +576,62 @@ def compute_registry_projections(registries: RegistrySet) -> RegistryProjections
 
 def compute_registry_digests(registries: RegistrySet) -> RegistryDigests:
     return _registry_digests_from_projections(compute_registry_projections(registries))
+
+
+def _validate_declared_executable_projection_set(
+    plugins: tuple[LockedPlugin, ...],
+    projections: RegistryProjections,
+) -> None:
+    expected = [
+        *(
+            (plugin.plugin_id, "task_handler", registry_id)
+            for plugin in plugins
+            for registry_id in plugin.descriptor.task_handlers
+        ),
+        *(
+            (plugin.plugin_id, "commit_validator", registry_id)
+            for plugin in plugins
+            for registry_id in plugin.descriptor.commit_validators
+        ),
+        *(
+            (plugin.plugin_id, "effect_apply", registry_id)
+            for plugin in plugins
+            for registry_id in plugin.descriptor.effects
+        ),
+        *(
+            (plugin.plugin_id, "effect_reconcile", registry_id)
+            for plugin in plugins
+            for registry_id in plugin.descriptor.effects
+        ),
+    ]
+    actual: list[tuple[str, str, str]] = []
+    capabilities = thaw_json(projections.capabilities)
+    effects = thaw_json(projections.effects)
+    if not isinstance(capabilities, list) or not isinstance(effects, list):
+        raise ValueError("invocation lock executable registry projections must be lists")
+    for entry in capabilities:
+        if not isinstance(entry, dict):
+            raise ValueError("invocation lock capability projection must be a mapping")
+        kind = entry.get("kind")
+        if kind in {"task_handler", "commit_validator"}:
+            owner_id = entry.get("owner_id")
+            registry_id = entry.get("capability_id")
+            if not isinstance(owner_id, str) or not isinstance(registry_id, str):
+                raise ValueError("invocation lock executable capability projection is incomplete")
+            actual.append((owner_id, kind, registry_id))
+        elif kind != "binding":
+            raise ValueError("invocation lock capability projection has an unsupported kind")
+    for entry in effects:
+        if not isinstance(entry, dict):
+            raise ValueError("invocation lock effect projection must be a mapping")
+        owner_id = entry.get("owner_id")
+        registry_id = entry.get("kind")
+        if not isinstance(owner_id, str) or not isinstance(registry_id, str):
+            raise ValueError("invocation lock executable effect projection is incomplete")
+        actual.append((owner_id, "effect_apply", registry_id))
+        actual.append((owner_id, "effect_reconcile", registry_id))
+    if sorted(actual) != sorted(expected) or len(actual) != len(set(actual)):
+        raise ValueError("invocation lock registries disagree with declared executable set")
 
 
 def authenticate_composition_lock(

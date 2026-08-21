@@ -25,6 +25,7 @@ from graph_engine.composition.dependencies import resolve_dependency_order
 from graph_engine.composition.lock import build_invocation_lock
 from graph_engine.composition.models import (
     AuthenticatedContribution,
+    ExecutableAuthoritySet,
     FrozenComposition,
     PluginRequirement,
     ProductManifest,
@@ -435,8 +436,18 @@ class RegistryPlatform:
                     owner_id=plugin_id,
                     source_key=SourceKey(SourceRole.CONFIG, plugin_id),
                     source_digest=snapshot.digest,
+                    descriptor=descriptor,
                     contribution=raw_contribution,
                     executables=(),
+                    authority_set=ExecutableAuthoritySet(
+                        provider_binding=None,
+                        descriptor=descriptor,
+                        owner_id=plugin_id,
+                        source_key=SourceKey(SourceRole.CONFIG, plugin_id),
+                        source_digest=snapshot.digest,
+                        contribution=raw_contribution,
+                        authorities=(),
+                    ),
                 )
             else:
                 binding = loaded.providers[plugin_id]

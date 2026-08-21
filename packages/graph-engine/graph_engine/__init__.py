@@ -19,6 +19,7 @@ from graph_engine.plugin_api import (  # noqa: E402
     ValidationResult,
 )
 from graph_engine.product import (  # noqa: E402
+    LegacyResolvedCapabilityView,
     PluginRequirement,
     ProductManifest,
     ProductProvider,
@@ -47,6 +48,7 @@ __all__ = [
     "CandidateWriteSet",
     "CommitValidator",
     "FailureKind",
+    "LegacyResolvedCapabilityView",
     "PluginDescriptor",
     "PluginProvider",
     "RegistryPorts",

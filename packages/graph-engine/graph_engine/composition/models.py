@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from types import MappingProxyType
+from types import FunctionType, MappingProxyType
 from typing import TYPE_CHECKING, Literal, NoReturn, TypeAlias, TypeVar, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -30,6 +30,7 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
     TaskRequest,
+    validate_contribution,
     validate_provider_import_roots,
 )
 
@@ -433,6 +434,124 @@ class ExecutableProvenance:
         return projection
 
 
+ExecutableKey: TypeAlias = tuple[ExecutableKind, str]
+
+
+def _descriptor_executable_keys(descriptor: PluginDescriptor) -> tuple[ExecutableKey, ...]:
+    keys = (
+        *((ExecutableKind.TASK_HANDLER, entry_id) for entry_id in descriptor.task_handlers),
+        *((ExecutableKind.COMMIT_VALIDATOR, entry_id) for entry_id in descriptor.commit_validators),
+        *((ExecutableKind.EFFECT_APPLY, entry_id) for entry_id in descriptor.effects),
+        *((ExecutableKind.EFFECT_RECONCILE, entry_id) for entry_id in descriptor.effects),
+    )
+    ordered = tuple(sorted(keys, key=lambda item: (item[1], item[0].value)))
+    if len(ordered) != len(set(ordered)):
+        raise ValueError("plugin descriptor executable declarations must be unique")
+    return ordered
+
+
+def _contribution_executable_objects(
+    contribution: PluginContribution,
+) -> Mapping[ExecutableKey, object]:
+    values: dict[ExecutableKey, object] = {
+        **{
+            (ExecutableKind.TASK_HANDLER, entry_id): executable
+            for entry_id, executable in contribution.task_handlers.items()
+        },
+        **{
+            (ExecutableKind.COMMIT_VALIDATOR, entry_id): executable
+            for entry_id, executable in contribution.commit_validators.items()
+        },
+    }
+    for registration in contribution.effects:
+        values[(ExecutableKind.EFFECT_APPLY, registration.kind)] = registration.handler
+        values[(ExecutableKind.EFFECT_RECONCILE, registration.kind)] = registration.handler
+    return MappingProxyType(values)
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutableAuthority:
+    executable: object
+    function: FunctionType
+    bound_self: object | None
+    descriptor: object
+    provenance: ExecutableProvenance
+
+    def __post_init__(self) -> None:
+        if type(self.function) is not FunctionType:
+            raise TypeError("executable authority requires an exact Python function")
+        if not isinstance(self.provenance, ExecutableProvenance):
+            raise TypeError("executable authority requires typed provenance")
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class ExecutableAuthoritySet:
+    """One immutable contribution generation retained by registry entries."""
+
+    provider_binding: object | None
+    descriptor: PluginDescriptor
+    owner_id: str
+    source_key: SourceKey
+    source_digest: str
+    contribution: PluginContribution
+    authorities: tuple[ExecutableAuthority, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.descriptor) is not PluginDescriptor:
+            raise TypeError("executable authority set requires an exact static PluginDescriptor")
+        if self.descriptor.plugin_id != self.owner_id:
+            raise ValueError("executable authority set owner disagrees with its descriptor")
+        if self.source_key.owner_id != self.owner_id or self.source_key.role not in {
+            SourceRole.PLUGIN,
+            SourceRole.CONFIG,
+        }:
+            raise ValueError("executable authority set source key disagrees with its owner")
+        _validate_sha256(self.source_digest, "executable authority source digest")
+        if type(self.contribution) is not PluginContribution:
+            raise TypeError("executable authority set requires an exact PluginContribution")
+        validate_contribution(self.descriptor, self.contribution)
+        values = tuple(self.authorities)
+        if any(not isinstance(item, ExecutableAuthority) for item in values):
+            raise TypeError("executable authority set is closed")
+        keys = tuple((item.provenance.kind, item.provenance.registry_id) for item in values)
+        expected = _descriptor_executable_keys(self.descriptor)
+        if keys != expected:
+            raise ValueError("executable authority set disagrees with declared executable keys")
+        contribution_objects = _contribution_executable_objects(self.contribution)
+        if tuple(sorted(contribution_objects, key=lambda item: (item[1], item[0].value))) != expected:
+            raise ValueError("raw contribution disagrees with declared executable keys")
+        for item in values:
+            key = (item.provenance.kind, item.provenance.registry_id)
+            if item.executable is not contribution_objects[key]:
+                raise ValueError("executable authority object is not the contributed object")
+            if (
+                item.provenance.owner_id != self.owner_id
+                or item.provenance.source_key != self.source_key
+                or item.provenance.source_digest != self.source_digest
+            ):
+                raise ValueError("executable authority provenance disagrees with its selected source")
+        if self.source_key.role is SourceRole.CONFIG:
+            if values or self.provider_binding is not None:
+                raise ValueError("config contribution cannot retain executable authority")
+        elif self.provider_binding is None:
+            raise ValueError("wheel contribution requires an owning provider binding")
+        object.__setattr__(self, "authorities", values)
+
+    @property
+    def keys(self) -> tuple[ExecutableKey, ...]:
+        return tuple((item.provenance.kind, item.provenance.registry_id) for item in self.authorities)
+
+    def authority(self, kind: ExecutableKind, registry_id: str) -> ExecutableAuthority:
+        try:
+            return next(
+                item
+                for item in self.authorities
+                if item.provenance.kind is kind and item.provenance.registry_id == registry_id
+            )
+        except StopIteration as error:  # pragma: no cover - constructor proves completeness.
+            raise KeyError((kind, registry_id)) from error
+
+
 @dataclass(frozen=True, slots=True)
 class AuthenticatedContribution:
     """Frozen contribution paired with exact executable implementation proofs."""
@@ -440,8 +559,10 @@ class AuthenticatedContribution:
     owner_id: str
     source_key: SourceKey
     source_digest: str
+    descriptor: PluginDescriptor
     contribution: PluginContribution
     executables: tuple[ExecutableProvenance, ...]
+    authority_set: ExecutableAuthoritySet
 
     def __post_init__(self) -> None:
         _validate_registry_id(self.owner_id, "authenticated contribution owner id")
@@ -453,6 +574,16 @@ class AuthenticatedContribution:
         _validate_sha256(self.source_digest, "authenticated contribution source digest")
         if type(self.contribution) is not PluginContribution:
             raise TypeError("authenticated contribution requires an exact PluginContribution")
+        if not isinstance(self.authority_set, ExecutableAuthoritySet):
+            raise TypeError("authenticated contribution requires an executable authority generation")
+        if (
+            self.authority_set.descriptor != self.descriptor
+            or self.authority_set.owner_id != self.owner_id
+            or self.authority_set.source_key != self.source_key
+            or self.authority_set.source_digest != self.source_digest
+            or self.authority_set.contribution is not self.contribution
+        ):
+            raise ValueError("authenticated contribution disagrees with its authority generation")
         values = tuple(self.executables)
         if any(not isinstance(item, ExecutableProvenance) for item in values):
             raise TypeError("authenticated contribution executable proofs are closed")
@@ -461,16 +592,8 @@ class AuthenticatedContribution:
             raise ValueError("authenticated executable proofs require canonical order")
         if len(keys) != len(set(keys)):
             raise ValueError("authenticated executable proofs must be unique")
-        expected = {
-            *((ExecutableKind.TASK_HANDLER, entry_id) for entry_id in self.contribution.task_handlers),
-            *(
-                (ExecutableKind.COMMIT_VALIDATOR, entry_id)
-                for entry_id in self.contribution.commit_validators
-            ),
-            *((ExecutableKind.EFFECT_APPLY, entry.kind) for entry in self.contribution.effects),
-            *((ExecutableKind.EFFECT_RECONCILE, entry.kind) for entry in self.contribution.effects),
-        }
-        if set(keys) != expected:
+        expected = _descriptor_executable_keys(self.descriptor)
+        if keys != expected or keys != self.authority_set.keys:
             raise ValueError("authenticated executable proofs are incomplete or contain extras")
         for item in values:
             if (
@@ -498,6 +621,7 @@ class TaskHandlerEntry:
     owner_id: str
     handler: TaskHandler
     provenance: ExecutableProvenance
+    authority_set: ExecutableAuthoritySet = dataclass_field(compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.capability_id, self.owner_id, "task handler")
@@ -509,6 +633,11 @@ class TaskHandlerEntry:
             self.capability_id,
             self.owner_id,
         )
+        _validate_entry_authority(
+            self.authority_set,
+            self.handler,
+            self.provenance,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,6 +646,7 @@ class CommitValidatorEntry:
     owner_id: str
     validator: CommitValidator
     provenance: ExecutableProvenance
+    authority_set: ExecutableAuthoritySet = dataclass_field(compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.capability_id, self.owner_id, "commit validator")
@@ -527,6 +657,11 @@ class CommitValidatorEntry:
             ExecutableKind.COMMIT_VALIDATOR,
             self.capability_id,
             self.owner_id,
+        )
+        _validate_entry_authority(
+            self.authority_set,
+            self.validator,
+            self.provenance,
         )
 
 
@@ -735,6 +870,7 @@ class EffectEntry:
     policy: EffectPolicy
     apply_provenance: ExecutableProvenance
     reconcile_provenance: ExecutableProvenance
+    authority_set: ExecutableAuthoritySet = dataclass_field(compare=False, repr=False)
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.kind, self.owner_id, "effect")
@@ -752,12 +888,37 @@ class EffectEntry:
             self.kind,
             self.owner_id,
         )
+        _validate_entry_authority(
+            self.authority_set,
+            self.handler,
+            self.apply_provenance,
+        )
         _validate_entry_provenance(
             self.reconcile_provenance,
             ExecutableKind.EFFECT_RECONCILE,
             self.kind,
             self.owner_id,
         )
+        _validate_entry_authority(
+            self.authority_set,
+            self.handler,
+            self.reconcile_provenance,
+        )
+
+
+def _validate_entry_authority(
+    authority_set: ExecutableAuthoritySet,
+    executable: object,
+    provenance: ExecutableProvenance,
+) -> None:
+    if not isinstance(authority_set, ExecutableAuthoritySet):
+        raise TypeError("executable registry entry requires an authority generation")
+    try:
+        authority = authority_set.authority(provenance.kind, provenance.registry_id)
+    except KeyError as error:
+        raise ValueError("executable registry entry is missing its declared authority") from error
+    if authority.executable is not executable or authority.provenance != provenance:
+        raise ValueError("executable registry entry disagrees with its authority generation")
 
 
 def _validate_entry_provenance(
@@ -1301,32 +1462,50 @@ class FrozenComposition:
 
         executable_entries = (
             *(
-                (entry.owner_id, entry.handler, entry.provenance)
+                (entry.owner_id, entry.handler, entry.provenance, entry.authority_set)
                 for entry in self.registries.capabilities.entries.values()
                 if isinstance(entry, TaskHandlerEntry)
             ),
             *(
-                (entry.owner_id, entry.validator, entry.provenance)
+                (entry.owner_id, entry.validator, entry.provenance, entry.authority_set)
                 for entry in self.registries.capabilities.entries.values()
                 if isinstance(entry, CommitValidatorEntry)
             ),
             *(
-                (entry.owner_id, entry.handler, entry.apply_provenance)
+                (entry.owner_id, entry.handler, entry.apply_provenance, entry.authority_set)
                 for entry in self.registries.effects.entries.values()
             ),
             *(
-                (entry.owner_id, entry.handler, entry.reconcile_provenance)
+                (entry.owner_id, entry.handler, entry.reconcile_provenance, entry.authority_set)
                 for entry in self.registries.effects.entries.values()
             ),
         )
-        for owner_id, executable, provenance in executable_entries:
+        expected_executables = {
+            (descriptor.plugin_id, kind, registry_id)
+            for descriptor in descriptors
+            for kind, registry_id in _descriptor_executable_keys(descriptor)
+        }
+        actual_executables = {
+            (owner_id, provenance.kind, provenance.registry_id)
+            for owner_id, _, provenance, _ in executable_entries
+        }
+        if actual_executables != expected_executables:
+            raise ValueError("composition registries disagree with declared executable set")
+        generations: dict[str, ExecutableAuthoritySet] = {}
+        for owner_id, _, _, authority_set in executable_entries:
+            previous = generations.setdefault(owner_id, authority_set)
+            if previous is not authority_set:
+                raise ValueError(
+                    f"composition registry entries mix executable authority generations: {owner_id}"
+                )
+        for owner_id, executable, provenance, authority_set in executable_entries:
             provider = providers.get(owner_id)
             if not isinstance(provider, AuthenticatedProviderBinding):
                 raise ValueError(
                     f"executable registry owner lacks an authenticated provider binding: {owner_id}"
                 )
             try:
-                provider.authenticate_executable(executable, provenance)
+                provider.authenticate_executable(authority_set, executable, provenance)
             except Exception as error:
                 raise ValueError(
                     f"executable registry provenance is not currently authenticated: {provenance.registry_id}"

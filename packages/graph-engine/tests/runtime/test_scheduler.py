@@ -22,12 +22,17 @@ from graph_engine.composition import (
     SourceRole,
     SourceSnapshot,
 )
-from graph_engine.composition.models import AuthenticatedContribution
+from graph_engine.composition.models import (
+    AuthenticatedContribution,
+    ExecutableAuthority,
+    ExecutableAuthoritySet,
+)
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
 from graph_engine.plugin_api import (
     CandidateWriteSet,
     PluginContribution,
+    PluginDescriptor,
     ResourceClaims,
     TaskContext,
     TaskHandler,
@@ -157,13 +162,57 @@ def _registry(
                 for registry_id in contribution.commit_validators
             ),
         ]
+        descriptor = PluginDescriptor(
+            schema_version="1",
+            source=None,
+            plugin_id=owner_id,
+            plugin_version="1.0.0",
+            engine_api="1.0.0",
+            task_handlers=tuple(contribution.task_handlers),
+            commit_validators=tuple(contribution.commit_validators),
+        )
+        executable_objects = {
+            **{
+                (ExecutableKind.TASK_HANDLER, registry_id): executable
+                for registry_id, executable in contribution.task_handlers.items()
+            },
+            **{
+                (ExecutableKind.COMMIT_VALIDATOR, registry_id): executable
+                for registry_id, executable in contribution.commit_validators.items()
+            },
+        }
+        ordered_proofs = tuple(sorted(proofs, key=lambda item: (item.registry_id, item.kind.value)))
+        authority_set = ExecutableAuthoritySet(
+            provider_binding=object(),
+            descriptor=descriptor,
+            owner_id=owner_id,
+            source_key=source_key,
+            source_digest=source.digest,
+            contribution=contribution,
+            authorities=tuple(
+                ExecutableAuthority(
+                    executable=executable_objects[(proof.kind, proof.registry_id)],
+                    function=type(executable_objects[(proof.kind, proof.registry_id)]).__dict__[
+                        proof.kind.slot
+                    ],
+                    bound_self=executable_objects[(proof.kind, proof.registry_id)],
+                    descriptor=type(executable_objects[(proof.kind, proof.registry_id)]).__dict__[
+                        proof.kind.slot
+                    ],
+                    provenance=proof,
+                )
+                for proof in ordered_proofs
+            ),
+        )
         authenticated.append(
             AuthenticatedContribution(
                 owner_id=owner_id,
                 source_key=source_key,
                 source_digest=source.digest,
+                descriptor=descriptor,
                 contribution=contribution,
-                executables=tuple(sorted(proofs, key=lambda item: (item.registry_id, item.kind.value))),
+                executables=ordered_proofs,
+                authority_set=authority_set,
             )
         )
     return _build_registries(tuple(sources), tuple(authenticated), tuple(order)).capabilities

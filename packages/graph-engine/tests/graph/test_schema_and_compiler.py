@@ -22,7 +22,11 @@ from graph_engine.composition import (
     SourceRole,
     SourceSnapshot,
 )
-from graph_engine.composition.models import AuthenticatedContribution
+from graph_engine.composition.models import (
+    AuthenticatedContribution,
+    ExecutableAuthority,
+    ExecutableAuthoritySet,
+)
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
 from graph_engine.errors import GraphEngineError
@@ -115,15 +119,40 @@ def registry() -> CapabilityRegistry:
             binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
         )
 
-    authenticated = AuthenticatedContribution(
+    proofs = (
+        proof(ExecutableKind.COMMIT_VALIDATOR, "toy.one.clean"),
+        proof(ExecutableKind.TASK_HANDLER, "toy.one.ping"),
+    )
+    executable_objects = {
+        (ExecutableKind.COMMIT_VALIDATOR, "toy.one.clean"): contribution.commit_validators["toy.one.clean"],
+        (ExecutableKind.TASK_HANDLER, "toy.one.ping"): contribution.task_handlers["toy.one.ping"],
+    }
+    authority_set = ExecutableAuthoritySet(
+        provider_binding=object(),
+        descriptor=descriptor,
         owner_id="toy.one",
         source_key=source_key,
         source_digest=source.digest,
         contribution=contribution,
-        executables=(
-            proof(ExecutableKind.COMMIT_VALIDATOR, "toy.one.clean"),
-            proof(ExecutableKind.TASK_HANDLER, "toy.one.ping"),
+        authorities=tuple(
+            ExecutableAuthority(
+                executable=executable_objects[(item.kind, item.registry_id)],
+                function=type(executable_objects[(item.kind, item.registry_id)]).__dict__[item.kind.slot],
+                bound_self=executable_objects[(item.kind, item.registry_id)],
+                descriptor=type(executable_objects[(item.kind, item.registry_id)]).__dict__[item.kind.slot],
+                provenance=item,
+            )
+            for item in proofs
         ),
+    )
+    authenticated = AuthenticatedContribution(
+        owner_id="toy.one",
+        source_key=source_key,
+        source_digest=source.digest,
+        descriptor=descriptor,
+        contribution=contribution,
+        executables=proofs,
+        authority_set=authority_set,
     )
     return _build_registries((source,), (authenticated,), ("toy.one",)).capabilities
 

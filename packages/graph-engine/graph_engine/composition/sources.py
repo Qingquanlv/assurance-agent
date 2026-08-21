@@ -18,7 +18,7 @@ from pathlib import Path
 import stat
 import sys
 from threading import RLock
-from types import FunctionType, MappingProxyType, MethodType, ModuleType
+from types import FunctionType, MethodType, ModuleType
 from typing import Iterator, Literal, NoReturn, Protocol, TypeAlias, cast
 
 from packaging.utils import canonicalize_name
@@ -27,6 +27,8 @@ from pydantic import ValidationError, field_validator, model_validator
 
 from graph_engine.composition.models import (
     AuthenticatedContribution,
+    ExecutableAuthority,
+    ExecutableAuthoritySet,
     ExecutableBindingMode,
     ExecutableKind,
     ExecutableModuleProvenance,
@@ -218,7 +220,6 @@ class AuthenticatedProviderBinding:
     _cache: _AuthenticatedBindingCache
     _cache_key: tuple[str, str, str, str]
     _import_plan: ImportProvenancePlan
-    _executables: Mapping[tuple[ExecutableKind, str], _ExecutableBinding]
 
     @property
     def import_plan(self) -> ImportProvenancePlan:
@@ -238,10 +239,11 @@ class AuthenticatedProviderBinding:
 
     def authenticate_executable(
         self,
+        authority_set: ExecutableAuthoritySet,
         executable: object,
         provenance: ExecutableProvenance,
     ) -> None:
-        _authenticate_bound_executable(self, executable, provenance)
+        _authenticate_bound_executable(self, authority_set, executable, provenance)
 
 
 @dataclass(slots=True)
@@ -256,15 +258,6 @@ class _AuthenticatedBindingCache:
 class _AuthenticatedModule:
     module: ModuleType
     provenances: frozenset[ModuleProvenance]
-
-
-@dataclass(frozen=True, slots=True)
-class _ExecutableBinding:
-    executable: object
-    function: FunctionType
-    bound_self: object | None
-    descriptor: object
-    provenance: ExecutableProvenance
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,7 +510,6 @@ def _load_snapshotted_entrypoint_binding(
                 _cache=cache,
                 _cache_key=cache_key,
                 _import_plan=active_import_provenance_plan(import_plan),
-                _executables=MappingProxyType({}),
             )
             cache.bindings[cache_key] = binding
             return binding
@@ -1295,12 +1287,12 @@ def _authenticated_contribution(
     binding: AuthenticatedProviderBinding,
     contribution: PluginContribution,
     authenticated_modules: tuple[tuple[ModuleImportPlan, ModuleType], ...],
-) -> tuple[AuthenticatedContribution, tuple[_ExecutableBinding, ...]]:
+) -> AuthenticatedContribution:
     owner_id = cast(PluginDescriptor, binding.declaration).plugin_id
     source_key = SourceKey(SourceRole.PLUGIN, owner_id)
-    bindings: list[_ExecutableBinding] = []
+    authorities: list[ExecutableAuthority] = []
     for capability_id, handler in contribution.task_handlers.items():
-        bindings.append(
+        authorities.append(
             _executable_binding(
                 binding,
                 authenticated_modules,
@@ -1312,7 +1304,7 @@ def _authenticated_contribution(
             )
         )
     for capability_id, validator in contribution.commit_validators.items():
-        bindings.append(
+        authorities.append(
             _executable_binding(
                 binding,
                 authenticated_modules,
@@ -1325,7 +1317,7 @@ def _authenticated_contribution(
         )
     for registration in contribution.effects:
         for kind in (ExecutableKind.EFFECT_APPLY, ExecutableKind.EFFECT_RECONCILE):
-            bindings.append(
+            authorities.append(
                 _executable_binding(
                     binding,
                     authenticated_modules,
@@ -1337,17 +1329,26 @@ def _authenticated_contribution(
                 )
             )
     ordered = tuple(
-        sorted(bindings, key=lambda item: (item.provenance.registry_id, item.provenance.kind.value))
+        sorted(authorities, key=lambda item: (item.provenance.registry_id, item.provenance.kind.value))
     )
-    return (
-        AuthenticatedContribution(
-            owner_id=owner_id,
-            source_key=source_key,
-            source_digest=binding._snapshot.digest,
-            contribution=contribution,
-            executables=tuple(item.provenance for item in ordered),
-        ),
-        ordered,
+    descriptor = cast(PluginDescriptor, binding.declaration)
+    authority_set = ExecutableAuthoritySet(
+        provider_binding=binding,
+        descriptor=descriptor,
+        owner_id=owner_id,
+        source_key=source_key,
+        source_digest=binding._snapshot.digest,
+        contribution=contribution,
+        authorities=ordered,
+    )
+    return AuthenticatedContribution(
+        owner_id=owner_id,
+        source_key=source_key,
+        source_digest=binding._snapshot.digest,
+        descriptor=descriptor,
+        contribution=contribution,
+        executables=tuple(item.provenance for item in ordered),
+        authority_set=authority_set,
     )
 
 
@@ -1359,7 +1360,7 @@ def _executable_binding(
     registry_id: str,
     owner_id: str,
     source_key: SourceKey,
-) -> _ExecutableBinding:
+) -> ExecutableAuthority:
     function, bound_self, descriptor, callable_path, binding_mode = _resolve_executable_callable(
         executable,
         kind.slot,
@@ -1389,7 +1390,7 @@ def _executable_binding(
         callable_path=callable_path,
         binding_mode=binding_mode,
     )
-    return _ExecutableBinding(
+    return ExecutableAuthority(
         executable=executable,
         function=function,
         bound_self=bound_self,
@@ -1438,7 +1439,6 @@ def _resolve_executable_callable(
         )
 
     executable_type = type(executable)
-    type_module_name, type_name = _class_binding(executable_type, authenticated_modules, registry_id)
     try:
         descriptor = inspect.getattr_static(executable_type, slot)
     except AttributeError as error:
@@ -1451,11 +1451,10 @@ def _resolve_executable_callable(
     )
     if declaring_type is None:
         raise SourceSnapshotError(f"retained executable descriptor is not statically owned: {registry_id}")
-    owner_module_name, owner_name = _class_binding(
-        declaring_type,
-        authenticated_modules,
-        registry_id,
-    )
+    if declaring_type is not executable_type:
+        raise SourceSnapshotError(
+            f"retained executable must own its execution descriptor directly: {registry_id}"
+        )
     if isinstance(descriptor, FunctionType):
         if (
             not isinstance(method, MethodType)
@@ -1468,13 +1467,13 @@ def _resolve_executable_callable(
         function = descriptor
         bound_self: object | None = executable
         mode = ExecutableBindingMode.INSTANCE_METHOD
-    elif isinstance(descriptor, staticmethod):
+    elif type(descriptor) is staticmethod:
         function = descriptor.__func__
         if not isinstance(function, FunctionType) or method is not function:
             raise SourceSnapshotError(f"retained executable static method binding is unstable: {registry_id}")
         bound_self = None
         mode = ExecutableBindingMode.STATIC_METHOD
-    elif isinstance(descriptor, classmethod):
+    elif type(descriptor) is classmethod:
         function = descriptor.__func__
         if (
             not isinstance(function, FunctionType)
@@ -1489,11 +1488,18 @@ def _resolve_executable_callable(
         raise SourceSnapshotError(
             f"retained executable uses an unsupported dynamic descriptor: {registry_id}"
         )
+    module_name, class_name = _class_binding(
+        executable_type,
+        function,
+        slot,
+        authenticated_modules,
+        registry_id,
+    )
     return (
         function,
         bound_self,
         descriptor,
-        f"{type_module_name}:{type_name}->{owner_module_name}:{owner_name}.{slot}",
+        f"{module_name}:{class_name}.{slot}",
         mode,
     )
 
@@ -1522,26 +1528,53 @@ def _require_exact_authenticated_module(
 
 def _class_binding(
     value: type[object],
+    function: FunctionType,
+    slot: str,
     authenticated_modules: tuple[tuple[ModuleImportPlan, ModuleType], ...],
     registry_id: str,
 ) -> tuple[str, str]:
-    matches = tuple(
-        (item.module_name, name)
+    module_matches = tuple(
+        (item.module_name, module)
         for item, module in authenticated_modules
-        for name, candidate in module.__dict__.items()
-        if name.isidentifier() and candidate is value
+        if module.__dict__ is function.__globals__
     )
-    if len(matches) != 1:
+    if len(module_matches) != 1:
         raise SourceSnapshotError(
-            f"retained executable class lacks a unique authenticated static binding: {registry_id}"
+            f"retained executable class lacks one authenticated defining module: {registry_id}"
         )
-    module_name, name = matches[0]
-    module = sys.modules.get(module_name)
-    if not isinstance(module, ModuleType) or module.__dict__.get(name) is not value:
+    module_name, module = module_matches[0]
+    suffix = f".{slot}"
+    code_qualname = function.__code__.co_qualname
+    if not code_qualname.endswith(suffix):
+        raise SourceSnapshotError(f"retained executable function lacks a canonical class path: {registry_id}")
+    class_name = code_qualname[: -len(suffix)]
+    segments = class_name.split(".")
+    if any(not segment.isidentifier() for segment in segments) or "<locals>" in segments:
+        raise SourceSnapshotError(
+            f"retained executable class path is not statically resolvable: {registry_id}"
+        )
+    if type(value) is not type:
+        raise SourceSnapshotError(f"retained executable class uses a custom metaclass: {registry_id}")
+    actual_module = value.__module__
+    actual_qualname = value.__qualname__
+    if actual_module != module_name or actual_qualname != class_name:
+        raise SourceSnapshotError(
+            "retained executable class metadata disagrees with its defining code: "
+            f"{registry_id}; {actual_module!r}:{actual_qualname!r} != {module_name!r}:{class_name!r}"
+        )
+    resolved: object = module
+    for segment in segments:
+        namespace = getattr(resolved, "__dict__", None)
+        if not isinstance(namespace, Mapping) or segment not in namespace:
+            raise SourceSnapshotError(
+                f"retained executable class lacks its canonical static binding: {registry_id}"
+            )
+        resolved = namespace[segment]
+    if resolved is not value or sys.modules.get(module_name) is not module:
         raise SourceSnapshotError(
             f"retained executable class binding is not the exact imported object: {registry_id}"
         )
-    return module_name, name
+    return module_name, class_name
 
 
 def _executable_module_projection(
@@ -1582,6 +1615,7 @@ def _executable_module_projection(
 
 def _authenticate_bound_executable(
     binding: AuthenticatedProviderBinding,
+    authority_set: ExecutableAuthoritySet,
     executable: object,
     expected: ExecutableProvenance,
 ) -> None:
@@ -1591,8 +1625,15 @@ def _authenticate_bound_executable(
         resolved = _resolve_wheel_snapshot(binding._source, binding._metadata_provider)
         if resolved.snapshot != binding._snapshot:
             raise SourceSnapshotError("wheel source changed before executable authentication")
-        authority = binding._executables.get((expected.kind, expected.registry_id))
-        if authority is None or authority.executable is not executable or authority.provenance != expected:
+        if authority_set.provider_binding is not binding:
+            raise SourceSnapshotError("executable authority belongs to another provider binding")
+        try:
+            authority = authority_set.authority(expected.kind, expected.registry_id)
+        except KeyError as error:
+            raise SourceSnapshotError(
+                "executable is not a member of the authenticated contribution generation"
+            ) from error
+        if authority.executable is not executable or authority.provenance != expected:
             raise SourceSnapshotError("executable is not an exact member of the authenticated contribution")
         authenticated_modules: list[tuple[ModuleImportPlan, ModuleType]] = []
         for item in binding._import_plan.modules:
@@ -1662,7 +1703,6 @@ def _authenticated_provider_call(
             before_modules,
         )
         parent_attributes = _capture_parent_attributes(before_modules)
-        executable_bindings: tuple[_ExecutableBinding, ...] | None = None
         try:
             with ImportPlanSession(
                 resolved.declaration.source,
@@ -1700,7 +1740,7 @@ def _authenticated_provider_call(
                     result,
                 )
                 if method_name == "contribute":
-                    validated_result, executable_bindings = _authenticated_contribution(
+                    validated_result = _authenticated_contribution(
                         binding,
                         cast(PluginContribution, validated_result),
                         authenticated_modules,
@@ -1708,13 +1748,6 @@ def _authenticated_provider_call(
                 session.restore_unconsumed_quarantine(import_plan)
             _commit_authenticated_plan(binding._cache, authenticated_modules)
             binding._import_plan = active_import_provenance_plan(import_plan)
-            if executable_bindings is not None:
-                keyed = {
-                    (item.provenance.kind, item.provenance.registry_id): item for item in executable_bindings
-                }
-                if len(keyed) != len(executable_bindings):  # pragma: no cover - model invariant.
-                    raise AssertionError("authenticated executable bindings are not unique")
-                binding._executables = MappingProxyType(keyed)
             return validated_result
         except BaseException as primary_error:
             _restore_import_transaction(

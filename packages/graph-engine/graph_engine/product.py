@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from importlib import metadata
 import re
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import Protocol, cast
 
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
@@ -18,6 +18,7 @@ from graph_engine.frozen_json import freeze_json
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
+    CommitValidator,
     PluginContribution,
     PluginDescriptor,
     PluginProvider,
@@ -28,9 +29,6 @@ from graph_engine.plugin_api import (
     TaskRequest,
     validate_contribution,
 )
-
-if TYPE_CHECKING:
-    from graph_engine.composition.models import CapabilityRegistry
 
 
 class ProductResolutionError(GraphEngineError):
@@ -45,10 +43,30 @@ _ENTRYPOINT_NAME = re.compile(r"^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$|^[a-z][a
 
 
 @dataclass(frozen=True, slots=True)
+class LegacyResolvedCapabilityView:
+    """Temporary honest Phase 1 runtime view; Task 8 removes it with the old resolver."""
+
+    task_handlers: Mapping[str, TaskHandler]
+    commit_validators: Mapping[str, CommitValidator]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "task_handlers",
+            MappingProxyType(dict(sorted(self.task_handlers.items()))),
+        )
+        object.__setattr__(
+            self,
+            "commit_validators",
+            MappingProxyType(dict(sorted(self.commit_validators.items()))),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedProduct:
     manifest: ProductManifest
     descriptors: tuple[PluginDescriptor, ...]
-    registry: CapabilityRegistry
+    registry: LegacyResolvedCapabilityView
     workflow: CompiledWorkflow
     digest: str
 
@@ -74,6 +92,10 @@ class _LegacyBoundTaskHandler:
     target: TaskHandler
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        if request.capability_id != self.alias_id:
+            raise ValueError(
+                f"legacy bound handler for {self.alias_id} received request for {request.capability_id}"
+            )
         bound = request.model_copy(
             update={
                 "target_capability_id": self.target_capability_id,
@@ -82,12 +104,6 @@ class _LegacyBoundTaskHandler:
             }
         )
         return await self.target.execute(bound, context)
-
-
-@dataclass(frozen=True, slots=True)
-class _LegacyCapabilityView:
-    task_handlers: Mapping[str, TaskHandler]
-    commit_validators: Mapping[str, object]
 
 
 def _select_plugin(
@@ -162,12 +178,13 @@ def _descriptor_json(descriptor: PluginDescriptor) -> dict[str, JSONValue]:
 
 def _assemble_selected_contributions(
     selected: tuple[_SelectedPluginProvider, ...],
-) -> CapabilityRegistry:
+) -> LegacyResolvedCapabilityView:
     """Temporary Phase 1 product bridge; Task 8 removes this resolver."""
 
     ports = RegistryPorts(ENGINE_API_VERSION)
     task_handlers: dict[str, TaskHandler] = {}
-    commit_validators: dict[str, object] = {}
+    commit_validators: dict[str, CommitValidator] = {}
+    resource_ids: set[str] = set()
     pending_bindings = []
     for item in selected:
         descriptor = item.selected_descriptor
@@ -181,6 +198,10 @@ def _assemble_selected_contributions(
             if capability_id in task_handlers or capability_id in commit_validators:
                 raise ProductResolutionError(f"duplicate legacy capability id: {capability_id}")
             commit_validators[capability_id] = validator
+        for resource in contribution.resources:
+            if resource.resource_id in resource_ids:
+                raise ProductResolutionError(f"duplicate legacy resource id: {resource.resource_id}")
+            resource_ids.add(resource.resource_id)
         pending_bindings.extend(contribution.bindings)
     for binding in pending_bindings:
         if binding.capability_id in task_handlers or binding.capability_id in commit_validators:
@@ -188,6 +209,15 @@ def _assemble_selected_contributions(
         target = task_handlers.get(binding.target_capability_id)
         if target is None:
             raise ProductResolutionError(f"unknown legacy binding target: {binding.target_capability_id}")
+        if len(binding.resource_ids) != len(set(binding.resource_ids)):
+            raise ProductResolutionError(f"duplicate legacy binding resource: {binding.capability_id}")
+        missing_resources = tuple(
+            resource_id for resource_id in binding.resource_ids if resource_id not in resource_ids
+        )
+        if missing_resources:
+            raise ProductResolutionError(
+                f"unknown legacy binding resource for {binding.capability_id}: {missing_resources[0]}"
+            )
         task_handlers[binding.capability_id] = _LegacyBoundTaskHandler(
             alias_id=binding.capability_id,
             target_capability_id=binding.target_capability_id,
@@ -195,11 +225,10 @@ def _assemble_selected_contributions(
             resource_ids=tuple(binding.resource_ids),
             target=target,
         )
-    legacy = _LegacyCapabilityView(
-        task_handlers=MappingProxyType(dict(sorted(task_handlers.items()))),
-        commit_validators=MappingProxyType(dict(sorted(commit_validators.items()))),
+    return LegacyResolvedCapabilityView(
+        task_handlers=task_handlers,
+        commit_validators=commit_validators,
     )
-    return cast("CapabilityRegistry", legacy)
 
 
 def resolve_product(
@@ -299,6 +328,7 @@ def load_plugin_entrypoint(entrypoint_name: str) -> PluginProvider:
 
 
 __all__ = [
+    "LegacyResolvedCapabilityView",
     "PluginRequirement",
     "ProductManifest",
     "ProductProvider",

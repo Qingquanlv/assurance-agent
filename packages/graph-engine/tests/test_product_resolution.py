@@ -1,5 +1,8 @@
+import asyncio
 from collections.abc import Iterator, Mapping
 from dataclasses import FrozenInstanceError, dataclass
+from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 from pydantic import ValidationError
@@ -8,10 +11,12 @@ import graph_engine
 from graph_engine.graph.compiler import CompileError
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
+    CapabilityBindingContribution,
     PluginContribution,
     PluginDescriptor,
     PluginProvider,
     RegistryPorts,
+    ResourceContribution,
     TaskContext,
     TaskOutcome,
     TaskRequest,
@@ -345,6 +350,130 @@ def test_resolved_product_is_frozen_and_package_exports_product_api(
         resolved.digest = "changed"  # type: ignore[reportAttributeAccessIssue]
     assert graph_engine.resolve_product is resolve_product
     assert graph_engine.ProductManifest is ProductManifest
+
+
+def test_resolved_product_registry_has_an_honest_public_legacy_view(
+    product_provider: _ProductProvider,
+    plugin_one: _PluginProvider,
+) -> None:
+    resolved = resolve_product(product_provider, {"toy.one": plugin_one})
+    registry_type = getattr(graph_engine, "LegacyResolvedCapabilityView", None)
+
+    assert registry_type is not None
+    assert get_type_hints(graph_engine.ResolvedProduct)["registry"] is registry_type
+    assert isinstance(resolved.registry, registry_type)
+    assert tuple(resolved.registry.task_handlers) == ("toy.one.ping",)
+    assert resolved.registry.commit_validators == {}
+    assert not hasattr(resolved.registry, "entries")
+    assert not hasattr(resolved.registry, "bindings")
+    with pytest.raises(TypeError):
+        resolved.registry.task_handlers["toy.one.other"] = _PingHandler()
+
+
+def test_legacy_resolved_binding_preserves_alias_request_semantics(
+    product_provider: _ProductProvider,
+) -> None:
+    requests: list[TaskRequest] = []
+
+    class RecordingHandler:
+        async def execute(self, request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+            requests.append(request)
+            return TaskOutcome.succeeded()
+
+    class BindingProvider:
+        def descriptor(self) -> PluginDescriptor:
+            return PluginDescriptor(
+                schema_version="1",
+                source=None,
+                plugin_id="toy.one",
+                plugin_version="1.0.0",
+                engine_api="1.0",
+                task_handlers=("toy.one.ping",),
+                commit_validators=(),
+                resources=("toy.one.prompt",),
+                bindings=("toy.one.alias",),
+            )
+
+        def contribute(self, _ports: RegistryPorts) -> PluginContribution:
+            return PluginContribution(
+                task_handlers={"toy.one.ping": RecordingHandler()},
+                resources=(ResourceContribution("toy.one.prompt", "text/plain", b"prompt"),),
+                bindings=(
+                    CapabilityBindingContribution(
+                        capability_id="toy.one.alias",
+                        target_capability_id="toy.one.ping",
+                        data={"prompt": {"mode": "strict"}},
+                        resource_ids=("toy.one.prompt",),
+                    ),
+                ),
+            )
+
+    manifest = product_provider.manifest()
+    assert manifest.workflow is not None
+    ping = manifest.workflow.graphs["root"].nodes["ping"].model_copy(update={"capability": "toy.one.alias"})
+    graph = manifest.workflow.graphs["root"].model_copy(
+        update={"nodes": {**manifest.workflow.graphs["root"].nodes, "ping": ping}}
+    )
+    workflow = manifest.workflow.model_copy(update={"graphs": {"root": graph}})
+    resolved = resolve_product(
+        _ChangingProductProvider((manifest.model_copy(update={"workflow": workflow}),)),
+        {"toy.one": BindingProvider()},
+    )
+    alias = resolved.registry.task_handlers["toy.one.alias"]
+    context = TaskContext(workspace_root=Path("/workspace"), heartbeat=lambda: None)
+    wrong = TaskRequest(
+        invocation_id="inv-1",
+        task_id="task-1",
+        graph_instance_id="graph-1",
+        node_id="ping",
+        capability_id="toy.one.ping",
+        attempt=1,
+        input={},
+    )
+
+    with pytest.raises(ValueError, match="received request"):
+        asyncio.run(alias.execute(wrong, context))
+
+    correct = wrong.model_copy(update={"capability_id": "toy.one.alias"})
+    asyncio.run(alias.execute(correct, context))
+    assert requests[0].capability_id == "toy.one.alias"
+    assert requests[0].target_capability_id == "toy.one.ping"
+    assert requests[0].binding_data == {"prompt": {"mode": "strict"}}
+    assert requests[0].resource_ids == ("toy.one.prompt",)
+    with pytest.raises(TypeError):
+        requests[0].binding_data["prompt"]["mode"] = "changed"  # type: ignore[index]
+
+
+def test_legacy_resolved_binding_rejects_an_unknown_resource(
+    product_provider: _ProductProvider,
+) -> None:
+    class BindingProvider:
+        def descriptor(self) -> PluginDescriptor:
+            return PluginDescriptor(
+                schema_version="1",
+                source=None,
+                plugin_id="toy.one",
+                plugin_version="1.0.0",
+                engine_api="1.0",
+                task_handlers=("toy.one.ping",),
+                commit_validators=(),
+                bindings=("toy.one.alias",),
+            )
+
+        def contribute(self, _ports: RegistryPorts) -> PluginContribution:
+            return PluginContribution(
+                task_handlers={"toy.one.ping": _PingHandler()},
+                bindings=(
+                    CapabilityBindingContribution(
+                        capability_id="toy.one.alias",
+                        target_capability_id="toy.one.ping",
+                        resource_ids=("toy.one.missing",),
+                    ),
+                ),
+            )
+
+    with pytest.raises(ProductResolutionError, match="unknown legacy binding resource"):
+        resolve_product(product_provider, {"toy.one": BindingProvider()})
 
 
 @pytest.mark.parametrize("product_id", ["toy", "Toy.product", "toy_product.main", "toy/product"])

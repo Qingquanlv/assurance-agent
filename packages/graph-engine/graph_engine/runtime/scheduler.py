@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -11,10 +11,10 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from graph_engine.canonical import canonical_digest
-from graph_engine.composition.models import CapabilityRegistry
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
     CandidateWriteSet,
+    CommitValidator,
     FailureKind,
     ResourceClaims,
     TaskHandler,
@@ -76,6 +76,14 @@ class TaskExecutionHost(Protocol):
         workspace_root: Path,
         heartbeat: Callable[[], None],
     ) -> TaskOutcome: ...
+
+
+class _CapabilityRegistryView(Protocol):
+    @property
+    def task_handlers(self) -> Mapping[str, TaskHandler]: ...
+
+    @property
+    def commit_validators(self) -> Mapping[str, CommitValidator]: ...
 
 
 class SystemClock:
@@ -182,7 +190,7 @@ def select_wave(tasks: Sequence[PlannedTask], max_parallel: int) -> tuple[Planne
 class Scheduler:
     def __init__(
         self,
-        registry: CapabilityRegistry,
+        registry: _CapabilityRegistryView,
         store: SnapshotStore,
         ledger: Ledger,
         host: TaskExecutionHost,

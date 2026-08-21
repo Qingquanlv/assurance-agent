@@ -69,6 +69,7 @@ def _build_registries(
     resource_view = _build_resource_registry(owned)
     capability_view = _build_capability_registry(owned)
     effect_view = _build_effect_registry(owned, schema_view)
+    _validate_executable_registry_sets(owned, capability_view, effect_view)
     _validate_cross_kind_ids(
         capability_view,
         schema_view,
@@ -245,6 +246,7 @@ def _build_capability_registry(
                 owned.owner_id,
                 handler,
                 owned.authenticated.executable(ExecutableKind.TASK_HANDLER, capability_id),
+                owned.authenticated.authority_set,
             )
             entries[capability_id] = entry
             task_handlers[capability_id] = handler
@@ -259,6 +261,7 @@ def _build_capability_registry(
                 owned.owner_id,
                 validator,
                 owned.authenticated.executable(ExecutableKind.COMMIT_VALIDATOR, capability_id),
+                owned.authenticated.authority_set,
             )
             entries[capability_id] = entry
             validators[capability_id] = validator
@@ -381,8 +384,32 @@ def _build_effect_registry(
                     ExecutableKind.EFFECT_RECONCILE,
                     registration.kind,
                 ),
+                authority_set=owned.authenticated.authority_set,
             )
     return EffectRegistry(entries)
+
+
+def _validate_executable_registry_sets(
+    contributions: tuple[_OwnedContribution, ...],
+    capabilities: CapabilityRegistry,
+    effects: EffectRegistry,
+) -> None:
+    expected = {
+        (owned.owner_id, kind, registry_id)
+        for owned in contributions
+        for kind, registry_id in owned.authenticated.authority_set.keys
+    }
+    actual: set[tuple[str, ExecutableKind, str]] = set()
+    for entry in capabilities.entries.values():
+        if isinstance(entry, TaskHandlerEntry):
+            actual.add((entry.owner_id, ExecutableKind.TASK_HANDLER, entry.capability_id))
+        elif isinstance(entry, CommitValidatorEntry):
+            actual.add((entry.owner_id, ExecutableKind.COMMIT_VALIDATOR, entry.capability_id))
+    for entry in effects.entries.values():
+        actual.add((entry.owner_id, ExecutableKind.EFFECT_APPLY, entry.kind))
+        actual.add((entry.owner_id, ExecutableKind.EFFECT_RECONCILE, entry.kind))
+    if actual != expected:
+        raise RegistryConflict("executable registry entries disagree with declared executable set")
 
 
 def _validate_cross_kind_ids(
