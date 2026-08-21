@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+import yaml
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
@@ -15,12 +16,15 @@ from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.phase4.conformance import execute_task
 
 from assurance_intake.operations import (
+    CaseDesignFinalizeHandler,
     CaseDesignPrepareHandler,
     CaseReviewFinalizeHandler,
     ExploreFinalizeHandler,
+    IntakeFinalizeHandler,
 )
 
 _SHA = "a" * 64
+_FIXTURES = Path(__file__).resolve().parent / "fixtures"
 VALID_LEAFS = ("auth.session.create", "entities.item.create")
 BINDING: dict[str, JSONValue] = {
     "execution": {
@@ -82,7 +86,7 @@ async def test_case_design_prepare_is_canonical_and_provider_neutral(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_case_review_finalize_rejects_nonexistent_leaf(tmp_path: Path) -> None:
-    result = fake_agent_result({"status": "pass", "required_capabilities": ["entities.fake"]})
+    result = fake_agent_result(_case_review_document(missing=["entities.fake"]))
     outcome = await run_finalize(CaseReviewFinalizeHandler(), result, tmp_path)
     assert outcome.failure == TaskFailure(
         kind="invalid_output",
@@ -138,6 +142,60 @@ async def test_finalize_rejects_malformed_input(tmp_path: Path) -> None:
     assert executed.failure.retryable is False
 
 
+def _case_review_document(*, missing: list[str]) -> JSONValue:
+    skipped = len(missing)
+    return cast(
+        JSONValue,
+        {
+            "schema_version": "1.0",
+            "review_type": "case",
+            "change_id": "CH-DEMO-001",
+            "decision": "pass",
+            "findings": [],
+            "auto_fix_plan": [],
+            "next_action": "continue",
+            "auto_fix_allowed": False,
+            "human_review_required": False,
+            "risk_level": "low",
+            "minimum_coverage": {
+                "total_required": 2,
+                "covered": 2 - skipped,
+                "skipped_by_scope": skipped,
+                "missing": missing,
+            },
+            "source_verification": {
+                "independent": True,
+                "reviewed_source_files": ["src/app.py"],
+                "verified_claims": [
+                    {"claim": "create item persists a menu record", "evidence_files": ["src/app.py"]}
+                ],
+            },
+        },
+    )
+
+
+async def _finalize_files(
+    handler: TaskHandler,
+    structured_result: JSONValue,
+    workspace: Path,
+    artifact_paths: list[str],
+) -> Any:
+    result = fake_agent_result(structured_result)
+    executed = await execute_task(
+        handler,
+        cast(
+            JSONValue,
+            {
+                "agent_result": result.model_dump(mode="json"),
+                "capability_leafs": list(VALID_LEAFS),
+                "artifact_paths": artifact_paths,
+            },
+        ),
+        workspace,
+    )
+    return executed
+
+
 @pytest.mark.asyncio
 async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None:
     relative = "qa/changes/CH-DEMO-001/explore/advisory.json"
@@ -159,3 +217,93 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
     assert executed.output == {
         "artifacts": [{"path": relative, "digest": hashlib.sha256(payload).hexdigest()}]
     }
+
+
+@pytest.mark.asyncio
+async def test_intake_finalize_returns_artifact_digests(tmp_path: Path) -> None:
+    relative = "qa/changes/CH-DEMO-001/explore/advisory.json"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    payload = b'{"ok":true}'
+    path.write_bytes(payload)
+    executed = await _finalize_files(
+        IntakeFinalizeHandler(),
+        {"output_files": [relative]},
+        tmp_path,
+        [relative],
+    )
+    assert executed.status == "succeeded"
+    assert executed.output == {
+        "artifacts": [{"path": relative, "digest": hashlib.sha256(payload).hexdigest()}]
+    }
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_accepts_typed_authoring(tmp_path: Path) -> None:
+    structured = cast(
+        JSONValue,
+        yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8")),
+    )
+    executed = await _finalize_files(CaseDesignFinalizeHandler(), structured, tmp_path, [])
+    assert executed.status == "succeeded"
+    assert executed.output["added"][0]["trace"] == {"entities.item.create": {"covered": True}}
+
+
+@pytest.mark.asyncio
+async def test_case_review_finalize_accepts_typed_review(tmp_path: Path) -> None:
+    executed = await _finalize_files(
+        CaseReviewFinalizeHandler(),
+        _case_review_document(missing=[]),
+        tmp_path,
+        [],
+    )
+    assert executed.status == "succeeded"
+    assert executed.output["decision"] == "pass"
+    assert executed.output["minimum_coverage"]["missing"] == []
+
+
+@pytest.mark.asyncio
+async def test_case_review_finalize_rejects_prefix_leaf(tmp_path: Path) -> None:
+    result = fake_agent_result(_case_review_document(missing=["entities.item"]))
+    outcome = await run_finalize(CaseReviewFinalizeHandler(), result, tmp_path)
+    assert outcome.failure == TaskFailure(
+        kind="invalid_output",
+        message="case review references unknown capability leaf: entities.item",
+        retryable=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_empty_artifact_paths(tmp_path: Path) -> None:
+    relative = "qa/changes/CH-DEMO-001/explore/advisory.json"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'{"ok":true}')
+    executed = await _finalize_files(
+        ExploreFinalizeHandler(),
+        {"output_files": [relative]},
+        tmp_path,
+        [],
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_input"
+    assert executed.failure.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_path_escape(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (tmp_path / "secret.json").write_bytes(b'{"secret":true}')
+    executed = await _finalize_files(
+        ExploreFinalizeHandler(),
+        {"output_files": ["../secret.json"]},
+        workspace,
+        ["qa/changes/CH-DEMO-001/explore/advisory.json"],
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert executed.failure.retryable is True
+    assert executed.output is None

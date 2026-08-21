@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
@@ -12,6 +13,7 @@ from graph_engine.plugin_api import (
     ValidationResult,
 )
 
+from assurance_intake.plugin import IntakePlugin
 from assurance_intake.validators import CaseCandidateValidator, CaseReferenceValidator
 
 _SHA = "a" * 64
@@ -59,6 +61,22 @@ def test_case_validator_accepts_change_case_yaml_with_exact_leaf() -> None:
         file_bytes={path: payload},
     ).validate(candidate_with(path), validation_context())
     assert result == ValidationResult(accepted=True)
+
+
+def test_plugin_contributed_validators_allowlist_registered_paths() -> None:
+    contribution = IntakePlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
+    candidate = contribution.commit_validators["assurance.intake.validator.case-candidate.v1"]
+    references = contribution.commit_validators["assurance.intake.validator.case-references.v1"]
+    context = validation_context()
+    allowed = candidate_with("qa/changes/CH-DEMO-001/cases/menus/case.yaml")
+    assert candidate.validate(allowed, context) == ValidationResult(accepted=True)
+    assert references.validate(allowed, context) == ValidationResult(accepted=True)
+    rejected = candidate.validate(candidate_with("src/app.py"), context)
+    assert rejected == ValidationResult(
+        accepted=False,
+        reason="intake candidate may write only change and cases paths",
+    )
+    assert references.validate(candidate_with("../secret.yaml"), context).accepted is False
 
 
 def test_case_reference_validator_rejects_missing_related_case() -> None:

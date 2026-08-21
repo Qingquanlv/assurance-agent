@@ -198,7 +198,7 @@ The following must NOT appear in any `case.yaml` field:
 
 ## Usage Template
 
-This prompt is used **inline** within `aa-case-reviewer` — load the skill in the primary agent, not via subagent dispatch. Reference this checklist with:
+This prompt is used by the case-review skill. Reference this checklist with:
 
 ```
 Review the case delta at qa/changes/[CHANGE_ID]/cases/[MODULE]/case.yaml.

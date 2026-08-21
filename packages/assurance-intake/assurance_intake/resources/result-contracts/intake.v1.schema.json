@@ -1,1 +1,1 @@
-{"additionalProperties":false,"properties":{"output_files":{"items":{"minLength":1,"type":"string"},"type":"array"}},"required":["output_files"],"type":"object"}
+{"additionalProperties":false,"properties":{"output_files":{"items":{"type":"string"},"title":"Output Files","type":"array"}},"required":["output_files"],"title":"ArtifactListResultV1","type":"object"}

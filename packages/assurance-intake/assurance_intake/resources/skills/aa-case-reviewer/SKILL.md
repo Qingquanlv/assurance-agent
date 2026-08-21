@@ -10,7 +10,7 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.json`.
+1. Read graph-owned case-design phase status.
 2. Verify `phases.case_design.status == done`.
 3. Read input files from disk: `.qa.yaml`, `proposal.md`, `cases/<module>/case.yaml`.
 4. Independently read the relevant **product source code** for every product fact used in the verdict. At minimum inspect the implementation entry point plus the controller/service/schema/model or frontend component needed to verify the proposed scenarios. Do not treat proposal, case, Explore advisory, requirements, docs, or tests as product-fact evidence.
@@ -22,7 +22,7 @@ Do not rely on prior conversation context.
 1. Write output files:
    - `qa/changes/<change-id>/review/case-review.json`
    - `qa/changes/<change-id>/review/case-review-summary.md`
-2. Report the `workflow-state.json` state delta (inline mode: apply it directly; dispatched subagent: never write `workflow-state.json` — report the values in your final message and the orchestrator applies them):
+2. Report the graph-owned state delta (the graph applies it; do not write an orchestration state file):
    - `phases.case_review.status` = `pass | needs_fix | needs_human_review | reject`
    - `phases.case_review.gate_file` = `review/case-review.json`
 
@@ -640,7 +640,7 @@ Set `human_review_required = true` when:
 ## Required JSON Format
 
 > **Schema source of truth:** the complete, enforced field contract for review gate JSON
-> lives in `assurance_agent/artifacts/models/review.py`. Runtime `finalize` validates
+> lives in `assurance_intake.contracts` (`CaseReviewResultV1`). Runtime `finalize` validates
 > authored files against that model. The example below is illustrative only.
 
 Write valid JSON to:
@@ -649,7 +649,7 @@ Write valid JSON to:
 qa/changes/<change-id>/review/case-review.json
 ```
 
-**Minimal top-level structure (illustrative — see `assurance_agent/artifacts/models/review.py` for the full contract):**
+**Minimal top-level structure (illustrative — see `assurance_intake.contracts` (`CaseReviewResultV1`) for the full contract):**
 
 ```json
 {
@@ -660,9 +660,6 @@ qa/changes/<change-id>/review/case-review.json
   "risk_level": "low",
   "auto_fix_allowed": false,
   "human_review_required": false,
-  "summary": "Short review summary.",
-  "reviewed_files": [],
-  "blockers": [],
   "findings": [
     {
       "id": "CR-001",
@@ -672,10 +669,21 @@ qa/changes/<change-id>/review/case-review.json
       "locator": {"artifact": "change:cases/module/case.yaml", "case_id": "TC_001"}
     }
   ],
-  "needs_review": [],
   "auto_fix_plan": [],
   "next_action": "continue",
-  "created_at": "YYYY-MM-DDTHH:mm:ssZ"
+  "minimum_coverage": {
+    "total_required": 2,
+    "covered": 2,
+    "skipped_by_scope": 0,
+    "missing": []
+  },
+  "source_verification": {
+    "independent": true,
+    "reviewed_source_files": ["src/app.py"],
+    "verified_claims": [
+      {"claim": "create item persists a menu record", "evidence_files": ["src/app.py"]}
+    ]
+  }
 }
 ```
 

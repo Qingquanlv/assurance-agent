@@ -13,8 +13,8 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.json` if it exists, including top-level `run_context`.
-   - `run_context.interaction_mode == autonomous` (default when absent under `the product graph`) → do not run planned clarification dialogue or require user approval; generate from Explore `test_strategy` + resolved `open_questions`, then hand off to `aa-case-reviewer`.
+1. Read graph-owned run context when the graph provides it.
+   - `run_context.interaction_mode == autonomous` (default when absent) → do not run planned clarification dialogue or require user approval; generate from Explore `test_strategy` + resolved `open_questions`, then hand off to `aa-case-reviewer`.
    - `run_context.interaction_mode == interactive` → keep the existing clarification dialogue and explicit user approval before writing files.
 2. **Explore gate (Phase 1.1):** If `phases.explore` exists (written by `aa-explore`), apply gate logic from this repo's `aa-explore/SKILL.md` (Context Contract + Phase 1 gate):
    - `status == pending` → **STOP**
@@ -35,7 +35,7 @@ Do not rely on prior conversation context.
    - existing `qa/knowledge/**`
    - existing `qa/changes/**`
    If optional QA directories are missing, record a warning and continue as a **new QA asset initialization** path. Do **not** stop solely because `qa/cases/`, `tests/`, or `qa/knowledge/` does not exist.
-5. If `workflow-state.json` exists and `phases.skill_registry_check.status == fail` → **STOP**.
+5. If graph-owned skill-resolution status is `fail` → **STOP**.
 6. Use files as the sole source of truth.
 7. **Review re-entry:** If `review/case-review.json` exists with `decision: needs_fix`,
    apply only findings that carry a `locator`. Do not rewrite cases or proposal
@@ -47,23 +47,11 @@ Do not rely on prior conversation context.
    - `qa/changes/<change-id>/.qa.yaml`
    - `qa/changes/<change-id>/proposal.md`
    - `qa/changes/<change-id>/cases/<module>/case.yaml`
-2. Handle `qa/changes/<change-id>/workflow-state.json` by execution context:
-   - **Dispatched phase subagent (the product graph subagent-dispatch mode):** never create or write `workflow-state.json` — the orchestrator owns it and created it in Phase 1.1. Report the state delta in your final message instead:
-     - `phases.case_design.status = done`
-     - `phases.case_design.outputs` = all output files
-   - **Standalone / inline invocation (primary agent):** create or update the file directly:
-     - If the file does **not** exist, create it with the full base schema (see `the product graph` `workflow-state.json` schema), including:
-       - `execution_mode: inline`
-       - `subagent_skill_inheritance: disabled`
-       - `phases.skill_registry_check.status: skipped`
-       - `phases.skill_registry_check.reason: standalone aa-case-design invocation; full registry check is owned by the product graph`
-       - `phases.skill_registry_check.checked_skills: [aa-case-design]`
-       - `agent_warnings` with `INTAKE-SKILL-RESOLUTION-001`
-     - Do **not** set `phases.skill_registry_check.status: pass` from this skill — full registry verification belongs to `the product graph` Phase 0.
-     - Do **not** create a partial file containing only `phases.case_design`. Always write the full schema.
-     - Set `phases.case_design.status = done`
-     - List all output files under `phases.case_design.outputs`
-3. Record any warnings or known issues explicitly (in `workflow-state.json` when inline/standalone; in the reported state delta when dispatched).
+2. Report a graph-owned state delta after writing files:
+   - `phases.case_design.status = done`
+   - `phases.case_design.outputs` = all output files
+   The graph owns phase state. Do not write an orchestration state file.
+3. Record any warnings or known issues in the reported state delta.
 
 ---
 
@@ -862,7 +850,7 @@ qa/
 
 ## .qa.yaml Template
 
-`.qa.yaml` stores **stable change metadata** (change id, targets, feature name). `workflow-state.json` stores **mutable runtime phase state** and is the gate source for orchestration.
+`.qa.yaml` stores **stable change metadata** (change id, targets, feature name). Graph-owned phase state is the gate source.
 
 The optional `workflow` section below is **informational only** — do **not** use `.qa.yaml.workflow` as a gate source.
 
@@ -893,7 +881,7 @@ workflow:   # informational only — not a gate source
 ## Case YAML Output Contract
 
 > **Schema source of truth:** the complete, enforced field contract for `case.yaml`
-> lives in `assurance_agent/artifacts/models/cases.py`. Runtime `finalize` validates
+> lives in `assurance_intake.contracts` (`CaseYamlAuthoring`). Runtime `finalize` validates
 > authored files against that model. The example below is illustrative only.
 
 The generated case delta MUST be YAML. It contains natural language QA cases.
@@ -922,7 +910,7 @@ modified: []
 removed: []
 ```
 
-Every case under `added` or `modified` must satisfy the field contract in `assurance_agent/artifacts/models/cases.py`. There is no `automation.target` field — top-level `type` is the single source of truth for the test target.
+Every case under `added` or `modified` must satisfy the field contract in `assurance_intake.contracts` (`CaseYamlAuthoring`). There is no `automation.target` field — top-level `type` is the single source of truth for the test target.
 
 `trace` is required on every case. When `risk-advisory/advisory.json` or `explore/advisory.json` contains `minimum_required_coverage`, every required MRC item must be mapped to at least one case via `trace.minimum_required_coverage`; do not rely on title/name inference. Downstream archive / execution may enrich other trace fields.
 
@@ -954,7 +942,7 @@ cases to it; do not duplicate the key under a second `mrc_id`.
 
 One case has exactly one `type`. Fuzz and Performance are **independent cases** (`type: Fuzz` / `type: Performance`) that link the functional case they harden via `related_cases`. They do **not** replace the functional API/E2E coverage of that endpoint.
 
-**Minimal example (illustrative — see `assurance_agent/artifacts/models/cases.py` for the full contract):**
+**Minimal example (illustrative — see `assurance_intake.contracts` (`CaseYamlAuthoring`) for the full contract):**
 
 ```yaml
 modified:
@@ -967,7 +955,7 @@ modified:
     module: user.auth
     requirement_id: REQ-002
     feature_name: user-logout
-    # remaining fields: assurance_agent/artifacts/models/cases.py
+    # remaining fields: assurance_intake.contracts (CaseYamlAuthoring)
 ```
 
 **Every case under `removed` MUST include:**
@@ -1130,7 +1118,7 @@ If uncertain, choose the lower priority and explain the assumption in `proposal.
 
 ## Risk-based Regression Rules
 
-Every case under `added` or `modified` MUST include a `regression` block (field contract: `assurance_agent/artifacts/models/cases.py`).
+Every case under `added` or `modified` MUST include a `regression` block (field contract: `assurance_intake.contracts` (`CaseYamlAuthoring`)).
 
 **Tier definitions:**
 
@@ -1208,7 +1196,7 @@ Example:
 
 ## Test Design Technique Rule
 
-Every generated case MUST include a `design_technique` field (enum values: `assurance_agent/artifacts/models/cases.py`).
+Every generated case MUST include a `design_technique` field (enum values: `assurance_intake.contracts` (`CaseYamlAuthoring`)).
 
 **Technique selection guide:**
 
@@ -1234,7 +1222,7 @@ Every generated case MUST include a `design_technique` field (enum values: `assu
 
 ## Risk-based Testing Rule
 
-Every generated case MUST include a `risk` block (field contract: `assurance_agent/artifacts/models/cases.py`).
+Every generated case MUST include a `risk` block (field contract: `assurance_intake.contracts` (`CaseYamlAuthoring`)).
 
 **Risk level mapping:**
 

@@ -9,7 +9,7 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read `qa/changes/<change-id>/workflow-state.json` if it exists → `phases.explore` and top-level `run_context`.
+1. Read graph-owned run context and `phases.explore` status when the graph provides them.
    - `run_context.interaction_mode == autonomous` (default when absent) → do not ask planned clarification questions; resolve OQs with transparent `auto_default` decisions.
    - `run_context.interaction_mode == interactive` → enable Step 5's one-question-at-a-time pitfall dialogue.
 2. Derive `<project-root>` (directory containing `.aa/config.yaml`; default = cwd).
@@ -39,7 +39,7 @@ Do not rely on prior conversation context.
 3. Do **not** write `qa/changes/<change-id>/explore/advisory.md`
 4. Run `validate the explore advisory artifact --change <change-id> --project-dir <project-root>` only after the read-back succeeds.
 5. On validation failure → report state delta `phases.explore.status = failed` with `validation_errors`
-6. On success → report state delta `phases.explore.status = done` with counts and outputs (see Step 7). Inline mode: apply the delta to `workflow-state.json` directly; dispatched subagent: never write `workflow-state.json` — report the values in your final message and the orchestrator applies them.
+6. On success → report state delta `phases.explore.status = done` with counts and outputs (see Step 7). The graph owns phase state; report the delta and do not write an orchestration state file.
 
 ---
 
@@ -51,7 +51,7 @@ Produce the **Explore** artifacts (Phase 0.5) from deterministic historical fact
 
 **Does not** write `case.yaml`, modify `context.json`, or simulate `aa-case-design`.
 
-**Workflow binding:** When invoked from `the product graph`, this skill **always** runs **inline in the primary agent** — even when `execution_mode == subagent-dispatch`. It is never dispatched to `the intake document-author persona` (subagents lack Bash for `aa risk` CLI).
+**Graph binding:** This skill is an intake-owned explore capability. Use the locked execution binding from the prepare request. Do not select a provider, model, or adapter. Do not look up a global skill catalog.
 
 ---
 
@@ -377,7 +377,7 @@ Do NOT ask about test scope, layer, data needs, or target selection in this step
   - write the same text to `open_questions_for_case_design[i].answer_text` for the new lifecycle schema
   - map the choice to `open_questions_for_case_design[i].assertion_intent`: A → `assert_known_bug`, B → `assert_ideal`, C → `ignore` (open-ended answers that don't fit A/B/C → `undecided`, with the raw text kept in `answer`)
   - set `status = "answered"` and `answered_via = "aa-intake"` when called from `aa-intake`; otherwise `answered_via = "explore"` for standalone legacy interactive use.
-  - when `answered_via = "aa-intake"`, also set `confirmed_by = "user"` and `confirmed_at = <ISO timestamp>` (or `user_confirmed = true`). `validate the explore advisory artifact` reads `workflow-state.json.run_context` and fails interactive intake if answers are auto-filled without this user confirmation metadata.
+  - when `answered_via = "aa-intake"`, also set `confirmed_by = "user"` and `confirmed_at = <ISO timestamp>` (or `user_confirmed = true`). `validate the explore advisory artifact` reads graph-owned `run_context` and fails interactive intake if answers are auto-filled without this user confirmation metadata.
 - User inputs "跳过" (or equivalent) → set `status = "deferred"`, leave `assertion_intent = null` / `answered_via = null`, and set `deferred_reason` (for example, `user skipped during intake`).
 - After all questions are asked (or user skips ≥3 in a row), **reconcile `case_design_guidance` with the collected answers** (mandatory — do not proceed to Step 6 until done), then output:
   `"已记录回答，继续生成最终 advisory。"` and proceed to Step 6.
@@ -428,9 +428,9 @@ validate the explore advisory artifact --change <change-id> --project-dir <proje
 
 ---
 
-## Step 7 — `workflow-state.json` State Delta
+## Step 7 — Graph-owned state delta
 
-Report the following delta (applied by the state owner per the Context Contract):
+Report the following delta. The graph owns phase state and applies it:
 
 ```yaml
 phases:

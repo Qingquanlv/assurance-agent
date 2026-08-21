@@ -71,6 +71,15 @@ class CaseReviewInputV1(_SkillInputV1):
     pass
 
 
+class ArtifactListResultV1(FrozenModel):
+    output_files: tuple[str, ...]
+
+    @field_validator("output_files")
+    @classmethod
+    def _output_files(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_relative_paths(value)
+
+
 class AgentFinalizeInputV1(FrozenModel):
     agent_result: AgentRunResult
     capability_leafs: tuple[str, ...]

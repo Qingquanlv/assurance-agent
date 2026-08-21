@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Mapping
-from pathlib import Path
-from typing import Any, cast
+from collections.abc import Iterable
+from pathlib import Path, PurePosixPath
+from typing import cast
 
 from pydantic import ValidationError
 
@@ -14,7 +14,7 @@ from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts import CaseReviewResultV1, CaseYamlAuthoring
-from assurance_intake.contracts.agent import AgentFinalizeInputV1
+from assurance_intake.contracts.agent import AgentFinalizeInputV1, ArtifactListResultV1
 from assurance_intake.operations.agent_skills import InputError, failed_input, validate_input
 
 
@@ -40,21 +40,31 @@ def _require_known_leafs(keys: Iterable[str], leafs: frozenset[str], *, kind: st
             raise OutputError(f"{kind} references unknown capability leaf: {key}")
 
 
-def _mapping(value: object) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise OutputError("structured result must be an object")
-    return value
-
-
-def _output_files(structured: Mapping[str, Any]) -> tuple[str, ...]:
-    raw = structured.get("output_files")
-    if not isinstance(raw, list) or any(not isinstance(item, str) or not item.strip() for item in raw):
-        raise OutputError("structured result output_files must be a list of paths")
-    return tuple(str(item) for item in raw)
-
-
 def _file_digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _canonical_relative(path: str) -> bool:
+    posix = PurePosixPath(path)
+    return not (
+        posix.is_absolute()
+        or "\\" in path
+        or posix.as_posix() != path
+        or any(part in {"", ".", ".."} for part in posix.parts)
+    )
+
+
+def _workspace_file(workspace: Path, relative: str) -> Path:
+    if not _canonical_relative(relative):
+        raise OutputError(f"output file path must be canonical and relative: {relative}")
+    path = workspace.joinpath(*PurePosixPath(relative).parts)
+    if path.is_symlink():
+        raise OutputError(f"declared output file is missing: {relative}")
+    try:
+        path.resolve().relative_to(workspace.resolve())
+    except ValueError as error:
+        raise OutputError(f"output file path must be canonical and relative: {relative}") from error
+    return path
 
 
 def _authenticate_files(
@@ -62,37 +72,39 @@ def _authenticate_files(
     declared: tuple[str, ...],
     locked: tuple[str, ...],
 ) -> list[dict[str, str]]:
-    expected = set(locked) if locked else set(declared)
+    if not locked:
+        raise InputError("artifact_paths must lock the expected output files")
+    expected = set(locked)
     artifacts: list[dict[str, str]] = []
     for relative in declared:
-        if expected and relative not in expected:
+        if relative not in expected:
             raise OutputError(f"undeclared output file: {relative}")
-        path = workspace.joinpath(*Path(relative).parts)
+        path = _workspace_file(workspace, relative)
         if not path.is_file() or path.is_symlink():
             raise OutputError(f"declared output file is missing: {relative}")
         artifacts.append({"path": relative, "digest": _file_digest(path.read_bytes())})
     return artifacts
 
 
-def _review_capability_keys(structured: Mapping[str, Any]) -> tuple[str, ...]:
-    raw = structured.get("required_capabilities")
-    if raw is None:
-        return ()
-    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
-        raise OutputError("required_capabilities must be a list of strings")
-    return tuple(str(item) for item in raw)
+def _artifact_list(payload: AgentFinalizeInputV1) -> ArtifactListResultV1:
+    try:
+        return ArtifactListResultV1.model_validate(_structured(payload))
+    except ValidationError as error:
+        raise OutputError(str(error)) from error
+
+
+def _finalize_artifact_list(payload: AgentFinalizeInputV1, workspace: Path) -> list[dict[str, str]]:
+    if not payload.artifact_paths:
+        raise InputError("artifact_paths must lock the expected output files")
+    document = _artifact_list(payload)
+    return _authenticate_files(workspace, document.output_files, payload.artifact_paths)
 
 
 class IntakeFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
-            structured = _mapping(_structured(payload))
-            artifacts = _authenticate_files(
-                context.workspace_root,
-                _output_files(structured),
-                payload.artifact_paths,
-            )
+            artifacts = _finalize_artifact_list(payload, context.workspace_root)
             return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
         except InputError as error:
             return failed_input(error)
@@ -104,12 +116,7 @@ class ExploreFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
-            structured = _mapping(_structured(payload))
-            artifacts = _authenticate_files(
-                context.workspace_root,
-                _output_files(structured),
-                payload.artifact_paths,
-            )
+            artifacts = _finalize_artifact_list(payload, context.workspace_root)
             return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
         except InputError as error:
             return failed_input(error)
@@ -142,16 +149,15 @@ class CaseReviewFinalizeHandler:
         del context
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
-            structured = _mapping(_structured(payload))
+            try:
+                document = CaseReviewResultV1.model_validate(_structured(payload))
+            except ValidationError as error:
+                raise OutputError(str(error)) from error
             _require_known_leafs(
-                _review_capability_keys(structured),
+                document.minimum_coverage.missing,
                 _leafs(payload.capability_leafs),
                 kind="case review",
             )
-            try:
-                document = CaseReviewResultV1.model_validate(structured)
-            except ValidationError as error:
-                raise OutputError(str(error)) from error
             return TaskOutcome.succeeded(document.model_dump(mode="json"))
         except InputError as error:
             return failed_input(error)
