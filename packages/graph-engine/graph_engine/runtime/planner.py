@@ -10,6 +10,9 @@ from graph_engine.graph.compiler import CompiledGraph, CompiledNode, CompiledWor
 from graph_engine.graph.expressions import evaluate_expression
 from graph_engine.plugin_api import TaskFailure
 from graph_engine.runtime.events import (
+    EffectApplyStarted,
+    EffectIntentCommitted,
+    EffectReceiptRecorded,
     EventEnvelope,
     GraphCompleted,
     GraphFailed,
@@ -27,6 +30,7 @@ from graph_engine.runtime.events import (
     TaskAttemptStarted,
     TaskAttemptStopped,
     TaskAttemptSucceeded,
+    TaskCommitPrepared,
     TaskLeaseAcquired,
     TaskLeaseHeartbeat,
     TokenConsumed,
@@ -331,7 +335,20 @@ def _validate_external_history_transition(
     if isinstance(event, TaskLeaseHeartbeat):
         return 1
 
+    if isinstance(event, TaskCommitPrepared):
+        return _validate_prepared_commit_history(event, envelopes, cursor)
+
+    if isinstance(event, EffectApplyStarted | EffectReceiptRecorded):
+        return 1
+
     if isinstance(event, TaskAttemptSucceeded):
+        activation = next(
+            (item for item in projection.activations if item.activation_id == event.activation_id),
+            None,
+        )
+        latest = activation.attempts[-1] if activation is not None and activation.attempts else None
+        if latest is not None and latest.status == "effect_pending":
+            return 1
         if cursor + 1 >= len(envelopes):
             raise PlanningError("event history contains a partial task-success publication")
         advanced = envelopes[cursor + 1].event
@@ -364,17 +381,54 @@ def _validate_external_history_transition(
     raise PlanningError(f"event history contains an unplanned {event.kind!r} event at sequence {cursor + 1}")
 
 
+def _validate_prepared_commit_history(
+    event: TaskCommitPrepared,
+    envelopes: tuple[EventEnvelope, ...],
+    cursor: int,
+) -> int:
+    needed = 2 + len(event.effect_ids)
+    if cursor + needed > len(envelopes):
+        raise PlanningError("event history contains a partial prepared-commit publication")
+    advanced = envelopes[cursor + 1].event
+    if (
+        not isinstance(advanced, HeadAdvanced)
+        or advanced.activation_id != event.activation_id
+        or advanced.attempt != event.attempt
+        or advanced.task_id != event.task_id
+        or advanced.previous_tree_id != event.previous_tree_id
+        or advanced.tree_id != event.tree_id
+    ):
+        raise PlanningError("event history prepared commit lacks its atomic HEAD advance")
+    for index, effect_id in enumerate(event.effect_ids):
+        intent = envelopes[cursor + 2 + index].event
+        if (
+            not isinstance(intent, EffectIntentCommitted)
+            or intent.effect_id != effect_id
+            or intent.activation_id != event.activation_id
+            or intent.attempt != event.attempt
+            or intent.index != index
+        ):
+            raise PlanningError("event history prepared commit lacks its exact effect intents")
+    return needed
+
+
 def _can_defer_planned_events(
     projection: InvocationProjection,
     event: RuntimeEvent,
 ) -> bool:
     has_running_attempt = any(
-        activation.attempts and activation.attempts[-1].status == "running"
+        activation.attempts and activation.attempts[-1].status in {"running", "effect_pending"}
         for activation in projection.activations
     )
     return has_running_attempt and isinstance(
         event,
-        TaskLeaseHeartbeat | TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptStopped,
+        TaskLeaseHeartbeat
+        | TaskAttemptSucceeded
+        | TaskAttemptFailed
+        | TaskAttemptStopped
+        | TaskCommitPrepared
+        | EffectApplyStarted
+        | EffectReceiptRecorded,
     )
 
 
@@ -1061,14 +1115,18 @@ def _terminal_task_activations(state: _PlannerState) -> tuple[ActivationRecord, 
         policy_name = node.definition.retry
         assert policy_name is not None
         policy = state.compiled.retry[policy_name]
-        if latest.failure.kind not in policy.retry_on or latest.attempt >= policy.max_attempts:
+        if (
+            latest.failure.kind not in policy.retry_on
+            or latest.attempt >= policy.max_attempts
+            or not latest.failure.retryable
+        ):
             terminal.append(activation)
     return tuple(sorted(terminal, key=lambda item: item.activation_id))
 
 
 def _has_running_attempt(state: _PlannerState) -> bool:
     return any(
-        activation.attempts and activation.attempts[-1].status == "running"
+        activation.attempts and activation.attempts[-1].status in {"running", "effect_pending"}
         for activation in state.activations.values()
     )
 
@@ -1157,6 +1215,8 @@ def _settle_existing_activations(state: _PlannerState) -> None:
             state.tasks.append(_planned_task(state, node, activation))
             continue
         latest = activation.attempts[-1]
+        if latest.status in {"running", "effect_pending"}:
+            continue
         if latest.status == "succeeded":
             completed = activation.model_copy(update={"status": "completed", "output": latest.output})
             state.events.append(NodeCompleted(activation_id=activation.activation_id, output=latest.output))
@@ -1295,7 +1355,9 @@ def _planned_task(state: _PlannerState, node: CompiledNode, activation: Activati
     assert capability_id is not None and retry_name is not None and timeout_name is not None
     policy = state.compiled.retry[retry_name]
     if prior_failure is not None and (
-        prior_failure.kind not in policy.retry_on or attempt > policy.max_attempts
+        prior_failure.kind not in policy.retry_on
+        or attempt > policy.max_attempts
+        or not prior_failure.retryable
     ):
         raise PlanningError("terminal task failure was routed as a retry")
     return PlannedTask(

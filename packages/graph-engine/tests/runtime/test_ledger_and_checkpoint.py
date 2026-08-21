@@ -16,8 +16,12 @@ from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import TaskFailure
 from graph_engine.runtime.checkpoint import load_checkpoint, write_checkpoint
 from graph_engine.runtime.events import (
+    EffectApplyStarted,
+    EffectIntentCommitted,
+    EffectReceiptRecorded,
     EventEnvelope,
     GraphCompleted,
+    GraphFailed,
     GraphStarted,
     HeadAdvanced,
     InterruptResumed,
@@ -30,6 +34,7 @@ from graph_engine.runtime.events import (
     TaskAttemptStarted,
     TaskAttemptStopped,
     TaskAttemptSucceeded,
+    TaskCommitPrepared,
     TaskLeaseAcquired,
     TaskLeaseHeartbeat,
     TokenConsumed,
@@ -1155,3 +1160,331 @@ def test_loaded_checkpoint_json_is_deeply_immutable(tmp_path: Path) -> None:
     payload = cast(Mapping[str, object], loaded.projection.offered_tokens[0].payload)
     with pytest.raises(TypeError):
         cast(tuple[object, ...], payload["nested"])[0] = 2  # type: ignore[index]
+
+
+_EMPTY = "0" * 64
+_TREE = "b" * 64
+_LOCK = "a" * 64
+
+
+def _effect_key(effect_id: str, kind: str, payload: Mapping[str, object]) -> str:
+    return canonical_digest(
+        {
+            "lock_digest": _LOCK,
+            "effect_id": effect_id,
+            "kind": kind,
+            "payload_digest": canonical_digest(cast(dict[str, object], dict(payload))),
+        }
+    )
+
+
+_KEY1 = _effect_key("effect-1", "toy.audit", {"n": 1})
+_KEY2 = _effect_key("effect-2", "toy.audit", {"n": 2})
+
+
+def _running_task_prefix() -> tuple[object, ...]:
+    return (
+        InvocationStarted(invocation_id="inv-1", lock_digest=_LOCK, entrypoint="main"),
+        GraphStarted(graph_instance_id="root", graph_id="root"),
+        TokenOffered(
+            token_id="tok-1",
+            graph_instance_id="root",
+            source=None,
+            target="task",
+            payload=None,
+        ),
+        TokenConsumed(token_id="tok-1", graph_instance_id="root", node_id="task"),
+        NodeActivated(
+            activation_id="a1",
+            graph_instance_id="root",
+            node_id="task",
+            token_ids=("tok-1",),
+        ),
+        TaskAttemptStarted(activation_id="a1", attempt=1, lease_expires_at="11"),
+        TaskLeaseAcquired(
+            task_id="task-1",
+            activation_id="a1",
+            attempt=1,
+            owner_id="worker-1",
+            acquired_at=1.0,
+            heartbeat_at=1.0,
+            expires_at=11.0,
+        ),
+    )
+
+
+def _prepared_commit() -> TaskCommitPrepared:
+    return TaskCommitPrepared(
+        task_id="task-1",
+        activation_id="a1",
+        attempt=1,
+        output={"ok": True},
+        previous_tree_id=_EMPTY,
+        tree_id=_TREE,
+        effect_ids=("effect-1", "effect-2"),
+    )
+
+
+def _prepared_head() -> HeadAdvanced:
+    return HeadAdvanced(
+        task_id="task-1",
+        activation_id="a1",
+        attempt=1,
+        previous_tree_id=_EMPTY,
+        tree_id=_TREE,
+    )
+
+
+def _intent(effect_id: str, index: int, payload: Mapping[str, object], key: str) -> EffectIntentCommitted:
+    return EffectIntentCommitted(
+        effect_id=effect_id,
+        activation_id="a1",
+        attempt=1,
+        index=index,
+        effect_kind="toy.audit",
+        payload=dict(payload),
+        idempotency_key=key,
+    )
+
+
+def _committed_effect_history() -> tuple[object, ...]:
+    return (
+        *_running_task_prefix(),
+        _prepared_commit(),
+        _prepared_head(),
+        _intent("effect-1", 0, {"n": 1}, _KEY1),
+        _intent("effect-2", 1, {"n": 2}, _KEY2),
+    )
+
+
+def test_fold_keeps_task_pending_until_all_effect_receipts() -> None:
+    envelopes = _envelopes(
+        *_running_task_prefix(),
+        TaskCommitPrepared(
+            task_id="task-1",
+            activation_id="a1",
+            attempt=1,
+            output={"ok": True},
+            previous_tree_id=_EMPTY,
+            tree_id=_TREE,
+            effect_ids=("effect-1", "effect-2"),
+        ),
+        HeadAdvanced(
+            task_id="task-1",
+            activation_id="a1",
+            attempt=1,
+            previous_tree_id=_EMPTY,
+            tree_id=_TREE,
+        ),
+        EffectIntentCommitted(
+            effect_id="effect-1",
+            activation_id="a1",
+            attempt=1,
+            index=0,
+            effect_kind="toy.audit",
+            payload={"n": 1},
+            idempotency_key=_KEY1,
+        ),
+        EffectIntentCommitted(
+            effect_id="effect-2",
+            activation_id="a1",
+            attempt=1,
+            index=1,
+            effect_kind="toy.audit",
+            payload={"n": 2},
+            idempotency_key=_KEY2,
+        ),
+    )
+    projection = fold_events(envelopes)
+    assert projection.activations[-1].attempts[-1].status == "effect_pending"
+    assert tuple(effect.status for effect in projection.effects) == ("committed", "committed")
+
+
+def test_fold_records_receipts_then_succeeds_the_effect_pending_attempt() -> None:
+    envelopes = _envelopes(
+        *_committed_effect_history(),
+        EffectApplyStarted(effect_id="effect-1", apply_attempt=1),
+        EffectReceiptRecorded(effect_id="effect-1", apply_attempt=1, receipt={"remote": 1}),
+        EffectApplyStarted(effect_id="effect-2", apply_attempt=1),
+        EffectReceiptRecorded(effect_id="effect-2", apply_attempt=1, receipt={"remote": 2}),
+        TaskAttemptSucceeded(activation_id="a1", attempt=1, output={"ok": True}),
+    )
+    projection = fold_events(envelopes)
+    assert projection.activations[-1].attempts[-1].status == "succeeded"
+    assert tuple(effect.status for effect in projection.effects) == ("applied", "applied")
+    assert projection.activations[-1].attempts[-1].committed_tree_id == _TREE
+
+
+@pytest.mark.parametrize("partition", ["all", "one", "split"])
+def test_incremental_effect_fold_matches_one_shot(partition: str) -> None:
+    envelopes = _envelopes(
+        *_committed_effect_history(),
+        EffectApplyStarted(effect_id="effect-1", apply_attempt=1),
+        EffectReceiptRecorded(effect_id="effect-1", apply_attempt=1, receipt={"remote": 1}),
+        EffectApplyStarted(effect_id="effect-2", apply_attempt=1),
+        EffectReceiptRecorded(effect_id="effect-2", apply_attempt=1, receipt={"remote": 2}),
+        TaskAttemptSucceeded(activation_id="a1", attempt=1, output={"ok": True}),
+    )
+    if partition == "all":
+        batch_sizes = (len(envelopes),)
+    elif partition == "one":
+        batch_sizes = (1,) * len(envelopes)
+    else:
+        batch_sizes = (7, 4, len(envelopes) - 11)
+    cursor = FoldCursor()
+    offset = 0
+    for batch_size in batch_sizes:
+        cursor = cursor.advance(envelopes[offset : offset + batch_size])
+        offset += batch_size
+    assert offset == len(envelopes)
+    assert cursor.projection == fold_events(envelopes)
+
+
+def test_fold_rejects_effect_intent_without_prepared_commit() -> None:
+    with pytest.raises(ProjectionError, match="prepared commit"):
+        fold_events(_envelopes(*_running_task_prefix(), _intent("effect-1", 0, {"n": 1}, _KEY1)))
+
+
+def test_fold_rejects_wrong_effect_index_order() -> None:
+    with pytest.raises(ProjectionError, match="index"):
+        fold_events(
+            _envelopes(
+                *_running_task_prefix(),
+                _prepared_commit(),
+                _prepared_head(),
+                _intent("effect-2", 1, {"n": 2}, _KEY2),
+            )
+        )
+
+
+def test_fold_rejects_wrong_effect_order() -> None:
+    with pytest.raises(ProjectionError, match="effect id"):
+        fold_events(
+            _envelopes(
+                *_running_task_prefix(),
+                _prepared_commit(),
+                _prepared_head(),
+                _intent("effect-2", 0, {"n": 2}, _KEY2),
+            )
+        )
+
+
+def test_fold_rejects_wrong_effect_idempotency_key() -> None:
+    with pytest.raises(ProjectionError, match="idempotency"):
+        fold_events(
+            _envelopes(
+                *_running_task_prefix(),
+                _prepared_commit(),
+                _prepared_head(),
+                _intent("effect-1", 0, {"n": 1}, "c" * 64),
+            )
+        )
+
+
+def test_fold_rejects_duplicate_effect_intent() -> None:
+    with pytest.raises(ProjectionError, match="duplicate"):
+        fold_events(
+            _envelopes(
+                *_committed_effect_history(),
+                _intent("effect-1", 0, {"n": 1}, _KEY1),
+            )
+        )
+
+
+def test_fold_rejects_duplicate_effect_receipt() -> None:
+    with pytest.raises(ProjectionError, match="duplicate"):
+        fold_events(
+            _envelopes(
+                *_committed_effect_history(),
+                EffectApplyStarted(effect_id="effect-1", apply_attempt=1),
+                EffectReceiptRecorded(effect_id="effect-1", apply_attempt=1, receipt={"remote": 1}),
+                EffectReceiptRecorded(effect_id="effect-1", apply_attempt=1, receipt={"remote": 1}),
+            )
+        )
+
+
+def test_fold_rejects_effect_apply_before_prior_receipt() -> None:
+    with pytest.raises(ProjectionError, match="prior receipt"):
+        fold_events(
+            _envelopes(
+                *_committed_effect_history(),
+                EffectApplyStarted(effect_id="effect-2", apply_attempt=1),
+            )
+        )
+
+
+def test_fold_rejects_effect_receipt_without_apply() -> None:
+    with pytest.raises(ProjectionError, match="without apply"):
+        fold_events(
+            _envelopes(
+                *_committed_effect_history(),
+                EffectReceiptRecorded(effect_id="effect-1", apply_attempt=1, receipt={"remote": 1}),
+            )
+        )
+
+
+def test_fold_rejects_success_before_all_effect_receipts() -> None:
+    with pytest.raises(ProjectionError, match="receipt"):
+        fold_events(
+            _envelopes(
+                *_committed_effect_history(),
+                TaskAttemptSucceeded(activation_id="a1", attempt=1, output={"ok": True}),
+            )
+        )
+
+
+def test_fold_rejects_non_retryable_effect_failure_followed_by_retry() -> None:
+    with pytest.raises(ProjectionError, match="non-retryable"):
+        fold_events(
+            _envelopes(
+                *_running_task_prefix(),
+                TaskAttemptFailed(
+                    activation_id="a1",
+                    attempt=1,
+                    failure=TaskFailure(kind="external_effect", message="denied", retryable=False),
+                ),
+                TaskAttemptStarted(activation_id="a1", attempt=2, lease_expires_at="12"),
+            )
+        )
+
+
+def test_fold_rejects_effect_head_mismatch_for_prepared_commit() -> None:
+    with pytest.raises(ProjectionError, match="HEAD"):
+        fold_events(
+            _envelopes(
+                *_running_task_prefix(),
+                _prepared_commit(),
+                HeadAdvanced(
+                    task_id="task-1",
+                    activation_id="a1",
+                    attempt=1,
+                    previous_tree_id=_EMPTY,
+                    tree_id="c" * 64,
+                ),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "terminal",
+    [
+        GraphCompleted(graph_instance_id="root"),
+        GraphFailed(graph_instance_id="root", reason="forged"),
+        InvocationFinished(invocation_id="inv-1", status="failed", terminal_reason="forged"),
+    ],
+)
+def test_fold_rejects_graph_terminal_while_effects_remain_pending(terminal: object) -> None:
+    with pytest.raises(ProjectionError, match="pending"):
+        fold_events(_envelopes(*_committed_effect_history(), terminal))
+
+
+def test_checkpoint_round_trips_effect_pending_projection(tmp_path: Path) -> None:
+    envelopes = _envelopes(*_committed_effect_history())
+    projection = fold_events(envelopes)
+    path = tmp_path / "checkpoint.json"
+    write_checkpoint(path, projection, last_seq=len(envelopes), ledger_envelopes=envelopes)
+    loaded = load_checkpoint(path, ledger_envelopes=envelopes)
+    assert loaded is not None
+    assert loaded.projection == projection
+    assert loaded.projection.activations[-1].attempts[-1].status == "effect_pending"
+    assert tuple(effect.status for effect in loaded.projection.effects) == ("committed", "committed")

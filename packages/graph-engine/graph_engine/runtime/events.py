@@ -5,6 +5,7 @@ from typing import Annotated, Literal, Self, cast
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FailureKind, TaskFailure
 from graph_engine.runtime.frozen_json import FrozenJSONValue
 
@@ -151,6 +152,78 @@ class TaskAttemptStopped(RuntimeEventModel):
     output: FrozenJSONValue = None
 
 
+class TaskCommitPrepared(RuntimeEventModel):
+    kind: Literal["task_commit_prepared"] = "task_commit_prepared"
+    task_id: str
+    activation_id: str
+    attempt: int = Field(ge=1)
+    output: FrozenJSONValue
+    previous_tree_id: str = Field(pattern=_SHA256_PATTERN)
+    tree_id: str = Field(pattern=_SHA256_PATTERN)
+    effect_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_effect_ids(self) -> Self:
+        if any(not effect_id for effect_id in self.effect_ids):
+            raise ValueError("prepared effect ids must be non-empty")
+        if len(set(self.effect_ids)) != len(self.effect_ids):
+            raise ValueError("prepared effect ids must be unique")
+        return self
+
+
+class EffectIntentCommitted(RuntimeEventModel):
+    kind: Literal["effect_intent_committed"] = "effect_intent_committed"
+    effect_id: str
+    activation_id: str
+    attempt: int = Field(ge=1)
+    index: int = Field(ge=0)
+    effect_kind: str
+    payload: FrozenJSONValue
+    idempotency_key: str = Field(pattern=_SHA256_PATTERN)
+
+    @field_validator("effect_kind")
+    @classmethod
+    def _validate_effect_kind(cls, value: str) -> str:
+        try:
+            return validate_qualified_id(value)
+        except IdentifierError as error:
+            raise ValueError(f"invalid effect kind: {value!r}") from error
+
+    @field_validator("effect_id")
+    @classmethod
+    def _validate_effect_id(cls, value: str) -> str:
+        if not value:
+            raise ValueError("effect id must not be empty")
+        return value
+
+
+class EffectApplyStarted(RuntimeEventModel):
+    kind: Literal["effect_apply_started"] = "effect_apply_started"
+    effect_id: str
+    apply_attempt: int = Field(ge=1)
+
+    @field_validator("effect_id")
+    @classmethod
+    def _validate_effect_id(cls, value: str) -> str:
+        if not value:
+            raise ValueError("effect id must not be empty")
+        return value
+
+
+class EffectReceiptRecorded(RuntimeEventModel):
+    kind: Literal["effect_receipt_recorded"] = "effect_receipt_recorded"
+    effect_id: str
+    apply_attempt: int = Field(ge=1)
+    receipt: FrozenJSONValue
+
+    @field_validator("effect_id")
+    @classmethod
+    def _validate_effect_id(cls, value: str) -> str:
+        if not value:
+            raise ValueError("effect id must not be empty")
+        return value
+
+
 class HeadAdvanced(RuntimeEventModel):
     kind: Literal["head_advanced"] = "head_advanced"
     task_id: str
@@ -234,6 +307,10 @@ RuntimeEvent = Annotated[
     | TaskAttemptStarted
     | TaskLeaseAcquired
     | TaskLeaseHeartbeat
+    | TaskCommitPrepared
+    | EffectIntentCommitted
+    | EffectApplyStarted
+    | EffectReceiptRecorded
     | TaskAttemptSucceeded
     | TaskAttemptFailed
     | TaskAttemptStopped
@@ -283,6 +360,9 @@ def _envelope_digest_payload(seq: int, event: RuntimeEvent) -> JSONValue:
 
 
 __all__ = [
+    "EffectApplyStarted",
+    "EffectIntentCommitted",
+    "EffectReceiptRecorded",
     "EventEnvelope",
     "FailureKind",
     "GraphCompleted",
@@ -303,6 +383,7 @@ __all__ = [
     "TaskAttemptStarted",
     "TaskAttemptStopped",
     "TaskAttemptSucceeded",
+    "TaskCommitPrepared",
     "TaskLeaseAcquired",
     "TaskLeaseHeartbeat",
     "TokenConsumed",

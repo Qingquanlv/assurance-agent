@@ -31,6 +31,9 @@ from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.graph.schema import parse_workflow
 from graph_engine.plugin_api import PluginContribution, PluginDescriptor, TaskFailure
 from graph_engine.runtime.events import (
+    EffectApplyStarted,
+    EffectIntentCommitted,
+    EffectReceiptRecorded,
     EventEnvelope,
     GraphStarted,
     HeadAdvanced,
@@ -41,6 +44,7 @@ from graph_engine.runtime.events import (
     TaskAttemptStarted,
     TaskAttemptStopped,
     TaskAttemptSucceeded,
+    TaskCommitPrepared,
     TaskLeaseAcquired,
     TokenConsumed,
     TokenOffered,
@@ -1318,3 +1322,209 @@ def test_planned_inputs_are_deeply_frozen() -> None:
     assert isinstance(task.input, Mapping)
     with pytest.raises(TypeError):
         task.input["new"] = True  # type: ignore[index]
+
+
+_EMPTY_TREE = "0" * 64
+_EFFECT_TREE = "b" * 64
+
+
+def _effect_idempotency_key(effect_id: str, kind: str, payload: dict[str, object]) -> str:
+    return canonical_digest(
+        {
+            "lock_digest": "a" * 64,
+            "effect_id": effect_id,
+            "kind": kind,
+            "payload_digest": canonical_digest(payload),
+        }
+    )
+
+
+def _effect_intent(
+    activation: str,
+    effect_id: str,
+    index: int,
+    payload: dict[str, object],
+) -> EffectIntentCommitted:
+    return EffectIntentCommitted(
+        effect_id=effect_id,
+        activation_id=activation,
+        attempt=1,
+        index=index,
+        effect_kind="toy.audit",
+        payload=payload,
+        idempotency_key=_effect_idempotency_key(effect_id, "toy.audit", payload),
+    )
+
+
+def test_plan_next_emits_no_downstream_while_effect_pending() -> None:
+    compiled = _compiled(
+        f"{_task_node('work')}\n      done: {{kind: end}}",
+        "      - {from: work, to: done}",
+        start="work",
+    )
+    start_token = _canonical_start_token(compiled)
+    activation = activation_id("root", "work", 0, (start_token.token_id,))
+    identifier = task_id(activation)
+    projection = _projection(
+        _invocation(),
+        _root(),
+        *_task_activation_events(compiled),
+        TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2"),
+        _task_lease(activation),
+        TaskCommitPrepared(
+            task_id=identifier,
+            activation_id=activation,
+            attempt=1,
+            output={"ok": True},
+            previous_tree_id=_EMPTY_TREE,
+            tree_id=_EFFECT_TREE,
+            effect_ids=("effect-1", "effect-2"),
+        ),
+        HeadAdvanced(
+            task_id=identifier,
+            activation_id=activation,
+            attempt=1,
+            previous_tree_id=_EMPTY_TREE,
+            tree_id=_EFFECT_TREE,
+        ),
+        _effect_intent(activation, "effect-1", 0, {"n": 1}),
+        _effect_intent(activation, "effect-2", 1, {"n": 2}),
+    )
+
+    plan = plan_next(compiled, projection)
+
+    assert plan.tasks == ()
+    assert plan.events == ()
+    assert plan.terminal is None
+    assert projection.activations[-1].attempts[-1].status == "effect_pending"
+
+
+def test_non_retryable_failure_never_creates_planned_task() -> None:
+    compiled = _compiled(
+        f"{_task_node('work')}\n      done: {{kind: end}}",
+        "      - {from: work, to: done}",
+        start="work",
+        retry_on="[transient, timeout, external_effect]",
+        max_attempts=3,
+    )
+    start_token = _canonical_start_token(compiled)
+    activation = activation_id("root", "work", 0, (start_token.token_id,))
+    failure = TaskFailure(kind="external_effect", message="denied", retryable=False)
+    projection = _projection(
+        _invocation(),
+        _root(),
+        *_task_activation_events(compiled),
+        TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2"),
+        _task_lease(activation),
+        TaskAttemptFailed(activation_id=activation, attempt=1, failure=failure),
+    )
+
+    plan = plan_next(compiled, projection)
+
+    assert plan.tasks == ()
+    assert plan.terminal == "failed"
+    assert [event.kind for event in plan.events] == [
+        "node_failed",
+        "graph_failed",
+        "invocation_finished",
+    ]
+
+
+def test_event_history_accepts_prepared_effect_apply_receipt_and_final_success() -> None:
+    compiled = _compiled(
+        f"{_task_node('work')}\n      done: {{kind: end}}",
+        "      - {from: work, to: done}",
+        start="work",
+    )
+    bootstrap = (_invocation(), _root(), _canonical_start_token(compiled))
+    planned = plan_next(compiled, _projection(*bootstrap))
+    assert len(planned.tasks) == 1
+    task = planned.tasks[0]
+    events: list[object] = [
+        *bootstrap,
+        *planned.events,
+        TaskAttemptStarted(
+            activation_id=task.activation_id,
+            attempt=1,
+            lease_expires_at="2",
+        ),
+        _task_lease(task.activation_id),
+        TaskCommitPrepared(
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=1,
+            output={"ok": True},
+            previous_tree_id=_EMPTY_TREE,
+            tree_id=_EFFECT_TREE,
+            effect_ids=("effect-1", "effect-2"),
+        ),
+        HeadAdvanced(
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=1,
+            previous_tree_id=_EMPTY_TREE,
+            tree_id=_EFFECT_TREE,
+        ),
+        _effect_intent(task.activation_id, "effect-1", 0, {"n": 1}),
+        _effect_intent(task.activation_id, "effect-2", 1, {"n": 2}),
+        EffectApplyStarted(effect_id="effect-1", apply_attempt=1),
+        EffectReceiptRecorded(effect_id="effect-1", apply_attempt=1, receipt={"remote": 1}),
+        EffectApplyStarted(effect_id="effect-2", apply_attempt=1),
+        EffectReceiptRecorded(effect_id="effect-2", apply_attempt=1, receipt={"remote": 2}),
+        TaskAttemptSucceeded(
+            activation_id=task.activation_id,
+            attempt=1,
+            output={"ok": True},
+        ),
+    ]
+    settled = plan_next(compiled, _projection(*events))
+    assert settled.terminal == "succeeded"
+    events.extend(settled.events)
+    envelopes = tuple(
+        EventEnvelope.from_event(index, event)  # type: ignore[arg-type]
+        for index, event in enumerate(events, start=1)
+    )
+    projection = fold_events(envelopes)
+
+    validate_event_history(compiled, envelopes, projection)
+
+    assert projection.status == "succeeded"
+    assert tuple(effect.status for effect in projection.effects) == ("applied", "applied")
+
+
+def test_event_history_rejects_partial_prepared_effect_batch() -> None:
+    compiled = _compiled(
+        f"{_task_node('work')}\n      done: {{kind: end}}",
+        "      - {from: work, to: done}",
+        start="work",
+    )
+    bootstrap = (_invocation(), _root(), _canonical_start_token(compiled))
+    planned = plan_next(compiled, _projection(*bootstrap))
+    task = planned.tasks[0]
+    events = (
+        *bootstrap,
+        *planned.events,
+        TaskAttemptStarted(
+            activation_id=task.activation_id,
+            attempt=1,
+            lease_expires_at="2",
+        ),
+        _task_lease(task.activation_id),
+        TaskCommitPrepared(
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=1,
+            output={"ok": True},
+            previous_tree_id=_EMPTY_TREE,
+            tree_id=_EFFECT_TREE,
+            effect_ids=("effect-1", "effect-2"),
+        ),
+    )
+    envelopes = tuple(
+        EventEnvelope.from_event(index, event)  # type: ignore[arg-type]
+        for index, event in enumerate(events, start=1)
+    )
+    projection = fold_events(envelopes)
+
+    with pytest.raises(PlanningError, match="partial prepared"):
+        validate_event_history(compiled, envelopes, projection)
