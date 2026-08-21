@@ -155,6 +155,8 @@ class TaskActivityDispatchStarted(RuntimeEventModel):
 
     @model_validator(mode="after")
     def _validate_fingerprint_digest(self) -> Self:
+        if self.dispatch_fingerprint is None:
+            raise ValueError("dispatch fingerprint is required after dispatch starts")
         _require_canonical_digest(
             self.dispatch_fingerprint,
             self.dispatch_fingerprint_digest,
@@ -171,6 +173,8 @@ class TaskActivityBound(RuntimeEventModel):
 
     @model_validator(mode="after")
     def _validate_reference_digest(self) -> Self:
+        if self.reference is None:
+            raise ValueError("bound activity requires a reference")
         _require_canonical_digest(self.reference, self.reference_digest, "reference")
         return self
 

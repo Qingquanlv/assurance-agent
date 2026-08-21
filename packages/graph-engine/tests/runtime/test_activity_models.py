@@ -336,6 +336,25 @@ def test_activity_errors_are_graph_engine_errors(error_type: type[GraphEngineErr
         raise error_type("closed")
 
 
+def test_dispatch_started_event_rejects_null_fingerprint() -> None:
+    with pytest.raises(ValueError, match="dispatch fingerprint is required after dispatch starts"):
+        TaskActivityDispatchStarted(
+            activity_id="activity-1",
+            ordinal=1,
+            dispatch_fingerprint=None,
+            dispatch_fingerprint_digest=_digest(None),
+        )
+
+
+def test_bound_event_rejects_null_reference() -> None:
+    with pytest.raises(ValueError, match="bound activity requires a reference"):
+        TaskActivityBound(
+            activity_id="activity-1",
+            reference=None,
+            reference_digest=_digest(None),
+        )
+
+
 def test_activity_events_round_trip_through_strict_envelopes() -> None:
     events = _all_six_activity_events()
     restored = tuple(
