@@ -9,8 +9,9 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,17 +23,27 @@ from agent_runtime_opencode import OpenCodeAdapterConfig, OpenCodeHandler
 from graph_engine.composition import (
     EditableWheelPluginSource,
     EditableWheelProductSource,
+    FrozenComposition,
     RegistryPlatform,
     ResolutionRequest,
 )
+from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
     AttemptWorkspaceIdentity,
     InvocationMetadata,
-    SecretHandleUnauthorized,
     TaskActivitySnapshot,
     TaskContext,
+    TaskHandler,
+    TaskOutcome,
     TaskRequest,
 )
+from graph_engine.runtime.host_protocol import (
+    AttemptRootDescriptor,
+    TaskActivityRpcIdentity,
+    TaskHostCallIdentity,
+    TaskHostExecuteCall,
+)
+from tests.agent_runtime.fakes import ConfinedTestHost
 
 from agent_runtime_fixture import (
     EXPECTED_AGENT_RUN_REQUEST_BYTES,
@@ -60,17 +71,6 @@ class FixtureBinding:
     lock_digest: str
     result: AgentRunResult | None = None
     _keep_alive: ExitStack = field(default_factory=ExitStack, repr=False)
-
-
-class _SecretPort:
-    def __init__(self, authorized: dict[str, bytes]) -> None:
-        self._authorized = dict(authorized)
-
-    def resolve(self, handle: str) -> bytes:
-        try:
-            return bytes(self._authorized[handle])
-        except KeyError as error:
-            raise SecretHandleUnauthorized(f"unauthorized secret handle: {handle}") from error
 
 
 class _ActivityPort:
@@ -135,6 +135,8 @@ _WORKSPACE_PACKAGES = {
     "agent-runtime-opencode": (_REPO / "packages" / "agent-runtime-opencode", "agent_runtime_opencode"),
     "agent-runtime-cursor": (_REPO / "packages" / "agent-runtime-cursor", "agent_runtime_cursor"),
 }
+_COPY_STACK = ExitStack()
+_COPIES: dict[str, tuple[Path, tuple[str, ...]]] = {}
 
 
 def _copied_package(
@@ -189,9 +191,12 @@ def _editable_plugin(
     )
 
 
-def _resolution_request(target: str, stack: ExitStack) -> ResolutionRequest:
+def _resolution_request(
+    target: str,
+    stack: ExitStack,
+    copies: dict[str, tuple[Path, tuple[str, ...]]],
+) -> ResolutionRequest:
     document = json.loads((_MANIFESTS / _manifest_name(target)).read_text(encoding="utf-8"))
-    copies: dict[str, tuple[Path, tuple[str, ...]]] = {}
     plugins: list[EditableWheelPluginSource] = []
     for plugin in document["plugins"]:
         kind = plugin.get("kind")
@@ -230,8 +235,7 @@ def _workflow_input(composition: Any) -> object:
 
 
 async def resolve_fixture_composition(target: str) -> FixtureBinding:
-    stack = ExitStack()
-    request_sources = _resolution_request(target, stack)
+    request_sources = _resolution_request(target, _COPY_STACK, _COPIES)
     _activate_editable_imports(request_sources)
     composition = RegistryPlatform().resolve(request_sources)
     request = assemble_request(fixture_resources(), fixture_config())
@@ -246,7 +250,7 @@ async def resolve_fixture_composition(target: str) -> FixtureBinding:
         request_bytes=request_bytes,
         captured_request_bytes=request_bytes,
         lock_digest=composition.lock_digest,
-        _keep_alive=stack,
+        _keep_alive=_COPY_STACK,
     )
 
 
@@ -258,8 +262,8 @@ def _task_request(fixture: FixtureBinding, workspace_root: Path) -> tuple[TaskRe
             "task_id": "fixture-task",
             "graph_instance_id": "fixture-graph",
             "node_id": "run",
-            "capability_id": "fixture.binding.run",
-            "target_capability_id": fixture.target,
+            "capability_id": binding.target_capability_id,
+            "target_capability_id": binding.target_capability_id,
             "binding_data": thaw_json(binding.data),
             "resource_ids": list(binding.resource_ids),
             "invocation": InvocationMetadata(
@@ -285,20 +289,85 @@ def _task_request(fixture: FixtureBinding, workspace_root: Path) -> tuple[TaskRe
     return request, _ActivityPort(snapshot)
 
 
-def _context(workspace_root: Path, port: _ActivityPort, secrets: dict[str, bytes]) -> TaskContext:
-    return TaskContext(
-        workspace_root=workspace_root,
-        heartbeat=lambda: None,
-        cancel_requested=lambda: False,
-        invocation=InvocationMetadata(
-            invocation_id="fixture-inv",
-            lock_digest=_SHA,
-            composition_digest="b" * 64,
-            entrypoint="run",
-        ),
-        activity=port,
-        secrets=_SecretPort(secrets),
+class _FixtureDispatchHost(ConfinedTestHost):
+    """Task 16 host seam with the fixture activity port; not Engine.run_until_blocked."""
+
+    def __init__(
+        self,
+        *,
+        secrets: dict[str, bytes],
+        activity: _ActivityPort,
+        workspace_root: Path,
+    ) -> None:
+        super().__init__(secrets=secrets, binding_data={})
+        self._activity_port = activity
+        self._workspace_root = workspace_root
+
+    def _context(self, call: TaskHostExecuteCall) -> TaskContext:  # type: ignore[override]
+        context = TaskContext(
+            workspace_root=self._workspace_root,
+            heartbeat=lambda: None,
+            cancel_requested=lambda: False,
+            invocation=call.request.invocation,
+            activity=self._activity_port,
+            secrets=self.secret_port,
+        )
+        self.last_context_fields = tuple(field.name for field in dataclass_fields(context))
+        self.last_request_bytes = canonical_json_bytes(thaw_json(call.request.input))
+        return context
+
+
+async def _dispatch_target(
+    fixture: FixtureBinding,
+    handler: TaskHandler,
+    secrets: dict[str, bytes],
+    workspace: Path,
+) -> tuple[TaskOutcome, bytes]:
+    binding = fixture.composition.registries.capabilities.bindings["fixture.binding.run"]
+    request, port = _task_request(fixture, workspace)
+    host = _FixtureDispatchHost(secrets=secrets, activity=port, workspace_root=workspace)
+    host.bind_invocation_runtime(
+        handlers={binding.target_capability_id: handler},
+        store=SimpleNamespace(root=workspace.parent),  # type: ignore[arg-type]
     )
+    host_lock = pinned_execution_host_lock()
+    outcome = await host.execute(
+        TaskHostExecuteCall(
+            identity=TaskHostCallIdentity(
+                invocation_id=request.invocation_id,
+                task_id=request.task_id,
+                activation_id="fixture-run",
+                attempt=1,
+                activity_id="fixture-activity",
+                operation="execute",
+                host_implementation_id=host_lock.implementation_id,
+                host_implementation_digest=host_lock.implementation_digest,
+            ),
+            capability_id=binding.target_capability_id,
+            capability_entrypoint=binding.target_capability_id,
+            request=request,
+            attempt_root=AttemptRootDescriptor(attempt_directory_id=workspace.name),
+            activity_rpc=TaskActivityRpcIdentity(
+                invocation_id=request.invocation_id,
+                task_id=request.task_id,
+                activation_id="fixture-run",
+                attempt=1,
+                activity_id="fixture-activity",
+            ),
+            authorized_secret_handles=tuple(sorted(secrets)),
+        )
+    )
+    assert outcome.outcome is not None
+    return outcome.outcome, host.last_request_bytes
+
+
+def _editable_identity_root(composition: FrozenComposition, distribution: str) -> str:
+    identities = [thaw_json(composition.lock.product.source.identity)]
+    identities.extend(thaw_json(plugin.source.identity) for plugin in composition.lock.plugins)
+    for identity in identities:
+        if isinstance(identity, dict) and identity.get("distribution") == distribution:
+            return str(identity["root"])
+    raise AssertionError(f"editable source root missing for {distribution}")
 
 
 def _cursor_success_bytes(cwd: str) -> bytes:
@@ -347,16 +416,18 @@ async def _run_opencode(fixture: FixtureBinding) -> AgentRunResult:
         with tempfile.TemporaryDirectory() as raw:
             workspace = Path(raw, "attempt-1")
             workspace.mkdir()
-            request, port = _task_request(fixture, workspace)
-            outcome = await OpenCodeHandler(config).execute(
-                request,
-                _context(workspace, port, {"opencode.token": b"fixture-opencode-secret"}),
+            outcome, delivered = await _dispatch_target(
+                fixture,
+                OpenCodeHandler(config),
+                {"opencode.token": b"fixture-opencode-secret"},
+                workspace,
             )
     finally:
         fake.close()
     assert outcome.status == "succeeded", outcome
+    assert fake.prompt_bodies, "OpenCode fake recorded no prompt body"
     result = AgentRunResult.model_validate(thaw_json(outcome.output))
-    fixture.captured_request_bytes = fixture.request.canonical_bytes()
+    fixture.captured_request_bytes = delivered
     fixture.result = result
     return result
 
@@ -390,19 +461,23 @@ async def _run_cursor(fixture: FixtureBinding) -> AgentRunResult:
                 "max_line_bytes": 4096,
             }
         )
-        request, port = _task_request(fixture, workspace)
-        outcome = await CursorHandler(config, host).execute(
-            request,
-            _context(workspace, port, {"cursor.api-key": b"fixture-cursor-secret"}),
+        outcome, delivered = await _dispatch_target(
+            fixture,
+            CursorHandler(config, host),
+            {"cursor.api-key": b"fixture-cursor-secret"},
+            workspace,
         )
     assert outcome.status == "succeeded", outcome
+    assert host.launches, "Cursor fake recorded no launch"
     result = AgentRunResult.model_validate(thaw_json(outcome.output))
-    fixture.captured_request_bytes = fixture.request.canonical_bytes()
+    fixture.captured_request_bytes = host.launches[-1].stdin
+    assert fixture.captured_request_bytes == delivered
     fixture.result = result
     return result
 
 
 async def run_fixture(fixture: FixtureBinding) -> AgentRunResult:
+    """Handler-level dispatch through ConfinedTestHost, not Engine composition run."""
     if fixture.target == _OPENCODE:
         return await _run_opencode(fixture)
     if fixture.target == _CURSOR:
@@ -440,14 +515,27 @@ def _imported_modules(path: Path) -> set[str]:
 async def test_fixture_rebinds_without_engine_change(target: str) -> None:
     fixture = await resolve_fixture_composition(target)
     result = await run_fixture(fixture)
+    assert canonical_json_bytes(_workflow_input(fixture.composition)) == EXPECTED_AGENT_RUN_REQUEST_BYTES
     assert fixture.captured_request_bytes == EXPECTED_AGENT_RUN_REQUEST_BYTES
     assert result.structured_result == _STRUCTURED
+
+
+async def test_same_manifest_lock_is_stable_across_two_resolves() -> None:
+    first = await resolve_fixture_composition(_OPENCODE)
+    second = await resolve_fixture_composition(_OPENCODE)
+    assert first.lock_digest == second.lock_digest
 
 
 async def test_adapter_rebinding_changes_lock_and_evidence_not_request() -> None:
     opencode, cursor = await run_both_fixture_bindings()
     assert opencode.request_bytes == cursor.request_bytes
     assert opencode.request_bytes == EXPECTED_AGENT_RUN_REQUEST_BYTES
+    assert (
+        opencode.captured_request_bytes == cursor.captured_request_bytes == EXPECTED_AGENT_RUN_REQUEST_BYTES
+    )
+    assert _editable_identity_root(opencode.composition, "agent-runtime-fixture") == _editable_identity_root(
+        cursor.composition, "agent-runtime-fixture"
+    )
     assert opencode.lock_digest != cursor.lock_digest
     assert opencode.result is not None and cursor.result is not None
     assert opencode.result.structured_result == cursor.result.structured_result == _STRUCTURED
