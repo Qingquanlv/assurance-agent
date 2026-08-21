@@ -19,6 +19,7 @@ from graph_engine.plugin_api import (
     CommitValidator,
     EffectIntent,
     FailureKind,
+    InvocationMetadata,
     ResourceClaims,
     TaskHandler,
     TaskOutcome,
@@ -93,6 +94,9 @@ class _CapabilityRegistryView(Protocol):
 
     @property
     def commit_validators(self) -> Mapping[str, CommitValidator]: ...
+
+    @property
+    def bindings(self) -> Mapping[str, object]: ...
 
 
 class SystemClock:
@@ -211,8 +215,11 @@ class Scheduler:
         max_parallel: int = 1,
         transition_guard: Callable[[], None] | None = None,
         lock_digest: str | None = None,
+        composition_digest: str | None = None,
+        entrypoint: str | None = None,
         effects: EffectRegistry | None = None,
         schemas: SchemaRegistry | None = None,
+        resources: object | None = None,
     ) -> None:
         if not owner_id:
             raise ValueError("owner_id must not be empty")
@@ -230,8 +237,11 @@ class Scheduler:
         self._max_parallel = max_parallel
         self._transition_guard = transition_guard
         self._lock_digest = lock_digest
+        self._composition_digest = composition_digest
+        self._entrypoint = entrypoint
         self._effects = effects if effects is not None else EffectRegistry({})
         self._schemas = schemas if schemas is not None else SchemaRegistry({})
+        self._resources = resources
 
     async def run_wave(self, tasks: Sequence[PlannedTask]) -> tuple[AttemptResult, ...]:
         selected = select_wave(tasks, self._max_parallel)
@@ -390,16 +400,7 @@ class Scheduler:
                     outcome=TaskOutcome.failed("internal", f"missing task handler: {task.capability_id}"),
                     lease=lease_state.current,
                 )
-            request = TaskRequest(
-                invocation_id=task.invocation_id,
-                task_id=task.task_id,
-                graph_instance_id=task.graph_instance_id,
-                node_id=task.node_id,
-                capability_id=task.capability_id,
-                attempt=task.attempt,
-                input=thaw_json(task.input),
-                prior_failure=task.prior_failure,
-            )
+            request = self._project_request(task)
 
             try:
                 async with asyncio.timeout(task.timeout_seconds):
@@ -728,6 +729,59 @@ class Scheduler:
         if projection.lock_digest is None:
             raise SchedulerStateError("invocation lock digest is unavailable")
         return projection.lock_digest
+
+    def _resolved_composition_digest(self) -> str:
+        if self._composition_digest is not None:
+            return self._composition_digest
+        return canonical_digest({"lock_digest": self._resolved_lock_digest()})
+
+    def _resolved_entrypoint(self) -> str:
+        if self._entrypoint is not None:
+            return self._entrypoint
+        projection = fold_events(self._ledger.read_all())
+        if not projection.entrypoint:
+            raise SchedulerStateError("invocation entrypoint is unavailable")
+        return projection.entrypoint
+
+    def _project_request(self, task: PlannedTask) -> TaskRequest:
+        binding = getattr(self._registry, "bindings", {}).get(task.capability_id)
+        if binding is not None:
+            target_capability_id = binding.target_capability_id
+            binding_data = thaw_json(binding.data)
+            resource_ids = tuple(sorted(binding.resource_ids))
+        else:
+            target_capability_id = None
+            binding_data = None
+            resource_ids = ()
+        resource_digests: dict[str, str] = {}
+        if resource_ids:
+            entries = getattr(self._resources, "entries", {})
+            for resource_id in resource_ids:
+                try:
+                    resource_digests[resource_id] = entries[resource_id].sha256
+                except KeyError as error:
+                    raise SchedulerStateError(f"binding resource is not registered: {resource_id}") from error
+        return TaskRequest(
+            invocation_id=task.invocation_id,
+            task_id=task.task_id,
+            graph_instance_id=task.graph_instance_id,
+            node_id=task.node_id,
+            capability_id=task.capability_id,
+            target_capability_id=target_capability_id,
+            binding_data=binding_data,
+            resource_ids=resource_ids,
+            resource_digests=resource_digests,
+            resources=task.resources,
+            invocation=InvocationMetadata(
+                invocation_id=task.invocation_id,
+                lock_digest=self._resolved_lock_digest(),
+                composition_digest=self._resolved_composition_digest(),
+                entrypoint=self._resolved_entrypoint(),
+            ),
+            attempt=task.attempt,
+            input=thaw_json(task.input),
+            prior_failure=task.prior_failure,
+        )
 
     def _lease_guard(self, lease: Lease) -> _LeaseGuard:
         envelopes = self._ledger.read_all()

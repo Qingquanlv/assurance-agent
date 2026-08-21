@@ -37,6 +37,8 @@ from graph_engine.plugin_api import FrozenModel, PluginDescriptor, ProviderSourc
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+TASK_HOST_IMPLEMENTATION_ID = "graph.engine.task-host"
+TASK_HOST_WIRE_SCHEMA_VERSION: Literal["1"] = "1"
 
 
 def _validate_provider_source_identity(
@@ -293,8 +295,45 @@ class RegistryProjections(FrozenModel):
         return self
 
 
+class ExecutionHostLock(FrozenModel):
+    implementation_id: str
+    implementation_digest: str
+    wire_schema_version: Literal["1"]
+
+    @field_validator("implementation_id")
+    @classmethod
+    def _validate_implementation_id(cls, value: str) -> str:
+        return _qualified_id(value, "execution host implementation id")
+
+    @field_validator("implementation_digest")
+    @classmethod
+    def _validate_implementation_digest(cls, value: str) -> str:
+        return _sha256(value, "execution host implementation")
+
+
+def pinned_execution_host_lock() -> ExecutionHostLock:
+    projection: JSONValue = {
+        "implementation_id": TASK_HOST_IMPLEMENTATION_ID,
+        "operations": ["cancel", "execute", "read_terminal_receipts", "reconcile"],
+        "wire_schema_version": TASK_HOST_WIRE_SCHEMA_VERSION,
+    }
+    return ExecutionHostLock(
+        implementation_id=TASK_HOST_IMPLEMENTATION_ID,
+        implementation_digest=canonical_digest(projection),
+        wire_schema_version=TASK_HOST_WIRE_SCHEMA_VERSION,
+    )
+
+
+def _execution_host_projection(host: ExecutionHostLock) -> JSONValue:
+    return {
+        "implementation_digest": host.implementation_digest,
+        "implementation_id": host.implementation_id,
+        "wire_schema_version": host.wire_schema_version,
+    }
+
+
 class InvocationLock(FrozenModel):
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["2"] = "2"
     digest_algorithm: Literal["graph-engine-source-v1"] = "graph-engine-source-v1"
     engine_api: str
     engine: LockedSource
@@ -310,6 +349,7 @@ class InvocationLock(FrozenModel):
     capability_bindings_digest: str
     compiled_workflow: FrozenJSONValue
     compiled_workflow_digest: str
+    execution_host: ExecutionHostLock
     canonical_bytes: bytes = Field(exclude=True, repr=False)
     digest: str
 
@@ -381,6 +421,8 @@ class InvocationLock(FrozenModel):
             raise ValueError("invocation lock compiled workflow must be a mapping")
         if canonical_digest(compiled_workflow) != self.compiled_workflow_digest:
             raise ValueError("invocation lock workflow digest does not authenticate its projection")
+        if self.execution_host != pinned_execution_host_lock():
+            raise ValueError("invocation lock execution host is not the pinned engine host")
         return self
 
     @classmethod
@@ -401,10 +443,12 @@ class InvocationLock(FrozenModel):
         capability_bindings_digest: str,
         compiled_workflow: object,
         compiled_workflow_digest: str,
+        execution_host: ExecutionHostLock | None = None,
     ) -> Self:
         ordered_plugins = tuple(sorted(plugins, key=lambda plugin: plugin.plugin_id))
+        host = pinned_execution_host_lock() if execution_host is None else execution_host
         values = {
-            "schema_version": "1",
+            "schema_version": "2",
             "digest_algorithm": "graph-engine-source-v1",
             "engine_api": engine_api,
             "engine": engine,
@@ -420,6 +464,7 @@ class InvocationLock(FrozenModel):
             "capability_bindings_digest": capability_bindings_digest,
             "compiled_workflow": compiled_workflow,
             "compiled_workflow_digest": compiled_workflow_digest,
+            "execution_host": host,
         }
         projection = _invocation_lock_values_projection(**values)
         encoded = canonical_json_bytes(projection)
@@ -765,6 +810,8 @@ def authenticate_composition_lock(
         raise ValueError("invocation lock workflow projection disagrees with composition")
     if lock.compiled_workflow_digest != canonical_digest(compiled_workflow):
         raise ValueError("invocation lock workflow digest disagrees with composition")
+    if lock.execution_host != pinned_execution_host_lock():
+        raise ValueError("invocation lock execution host disagrees with the pinned engine host")
 
 
 def _locked_source(snapshot: SourceSnapshot) -> LockedSource:
@@ -868,6 +915,7 @@ def _invocation_lock_projection(lock: InvocationLock) -> JSONValue:
         capability_bindings_digest=lock.capability_bindings_digest,
         compiled_workflow=lock.compiled_workflow,
         compiled_workflow_digest=lock.compiled_workflow_digest,
+        execution_host=lock.execution_host,
     )
 
 
@@ -889,6 +937,7 @@ def _invocation_lock_values_projection(
     capability_bindings_digest: str,
     compiled_workflow: object,
     compiled_workflow_digest: str,
+    execution_host: ExecutionHostLock,
 ) -> JSONValue:
     return {
         "schema_version": schema_version,
@@ -919,6 +968,7 @@ def _invocation_lock_values_projection(
         "capability_bindings_digest": capability_bindings_digest,
         "compiled_workflow": cast(JSONValue, thaw_json(compiled_workflow)),
         "compiled_workflow_digest": compiled_workflow_digest,
+        "execution_host": _execution_host_projection(execution_host),
     }
 
 
@@ -1020,6 +1070,7 @@ def _normalized_engine_api(value: str) -> str:
 
 
 __all__ = [
+    "ExecutionHostLock",
     "InvocationLock",
     "LockedDependency",
     "LockedPlugin",
@@ -1028,7 +1079,10 @@ __all__ = [
     "LockedSourceFile",
     "RegistryDigests",
     "RegistryProjections",
+    "TASK_HOST_IMPLEMENTATION_ID",
+    "TASK_HOST_WIRE_SCHEMA_VERSION",
     "build_invocation_lock",
     "compute_registry_digests",
     "compute_registry_projections",
+    "pinned_execution_host_lock",
 ]

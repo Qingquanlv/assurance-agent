@@ -87,6 +87,17 @@ from graph_engine.runtime.models import (
     TokenRecord,
     fold_events,
 )
+from graph_engine.runtime.host_protocol import (
+    AttemptRootDescriptor,
+    TaskActivityRpcIdentity,
+    TaskHostCancelCall,
+    TaskHostCallIdentity,
+    TaskHostCallResult,
+    TaskHostExecuteCall,
+    TaskHostReconcileCall,
+    TaskHostTerminalReceipt,
+    authorized_secret_port,
+)
 from graph_engine.runtime.planner import PlanningError, activation_id, plan_next, task_id
 from graph_engine.runtime.scheduler import (
     AttemptResult,
@@ -171,6 +182,7 @@ __all__ = [
     "TaskActivityRecoveryUnsupported",
     "TaskActivityReferenceInvalid",
     "TaskActivityTerminalObserved",
+    "TaskActivityRpcIdentity",
     "TaskExecutionHost",
     "TaskAttemptFailed",
     "TaskFailure",
@@ -178,6 +190,13 @@ __all__ = [
     "TaskAttemptStopped",
     "TaskAttemptSucceeded",
     "TaskCommitPrepared",
+    "TaskHostCancelCall",
+    "TaskHostCallIdentity",
+    "TaskHostCallResult",
+    "TaskHostExecuteCall",
+    "TaskHostReconcileCall",
+    "TaskHostTerminalReceipt",
+    "AttemptRootDescriptor",
     "TaskLeaseAcquired",
     "TaskLeaseAdopted",
     "TaskLeaseHeartbeat",
@@ -186,6 +205,7 @@ __all__ = [
     "TokenRecord",
     "activation_id",
     "authenticate_invocation_lock",
+    "authorized_secret_port",
     "fold_events",
     "install_invocation_lock_at",
     "needs_settlement",

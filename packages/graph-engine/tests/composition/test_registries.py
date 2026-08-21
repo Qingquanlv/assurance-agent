@@ -56,11 +56,20 @@ from graph_engine.plugin_api import (
     TaskContext,
     TaskOutcome,
     TaskRequest,
+    InvocationMetadata,
     ValidationContext,
     ValidationResult,
     validate_contribution,
 )
 from graph_engine.frozen_json import thaw_json
+
+
+_TEST_INVOCATION = InvocationMetadata(
+    invocation_id="inv-1",
+    lock_digest="a" * 64,
+    composition_digest="b" * 64,
+    entrypoint="main",
+)
 
 
 class _Handler:
@@ -553,6 +562,7 @@ def test_binding_adapter_preserves_alias_target_frozen_data_and_resource_ids() -
         graph_instance_id="graph-1",
         node_id="run",
         capability_id="toy.flow.run",
+        invocation=_TEST_INVOCATION,
         attempt=1,
         input={"name": "Ada"},
     )
@@ -560,7 +570,12 @@ def test_binding_adapter_preserves_alias_target_frozen_data_and_resource_ids() -
     outcome = asyncio.run(
         registries.capabilities.task_handlers["toy.flow.run"].execute(
             request,
-            TaskContext(workspace_root=Path("/workspace"), heartbeat=lambda: None),
+            TaskContext(
+                workspace_root=Path("/workspace"),
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=_TEST_INVOCATION,
+            ),
         )
     )
 

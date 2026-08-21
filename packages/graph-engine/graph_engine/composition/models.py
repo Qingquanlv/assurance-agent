@@ -1405,7 +1405,11 @@ class FrozenComposition:
     digest: str
 
     def __post_init__(self) -> None:
-        from graph_engine.composition.lock import InvocationLock, authenticate_composition_lock
+        from graph_engine.composition.lock import (
+            InvocationLock,
+            authenticate_composition_lock,
+            pinned_execution_host_lock,
+        )
         from graph_engine.composition.contributions import validate_registry_contribution_authorities
         from graph_engine.composition.declarative import _authenticate_frozen_config_contribution
         from graph_engine.composition.sources import AuthenticatedProviderBinding
@@ -1477,6 +1481,8 @@ class FrozenComposition:
             self.lock,
             contribution_authorities,
         )
+        if self.lock.execution_host != pinned_execution_host_lock():
+            raise ValueError("frozen composition execution host disagrees with the pinned engine host")
         expected_digest = canonical_digest({"lock_digest": self.lock.digest})
         if self.digest != expected_digest:
             raise ValueError("frozen composition digest does not authenticate its lock")

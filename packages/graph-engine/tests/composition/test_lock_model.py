@@ -14,6 +14,7 @@ from graph_engine.composition import (
     ExecutableKind,
     ExecutableModuleProvenance,
     ExecutableProvenance,
+    ExecutionHostLock,
     InvocationLock,
     LockedDependency,
     LockedPlugin,
@@ -354,7 +355,7 @@ def test_invocation_lock_has_one_golden_canonical_projection() -> None:
 
     expected = (
         Path(__file__)
-        .with_name("invocation-lock-v1.golden.json")
+        .with_name("invocation-lock-v2.golden.json")
         .read_text(encoding="utf-8")
         .strip()
         .encode()
@@ -363,6 +364,51 @@ def test_invocation_lock_has_one_golden_canonical_projection() -> None:
     assert lock.digest == hashlib.sha256(expected).hexdigest()
     assert b'"canonical_bytes"' not in lock.canonical_bytes
     assert "digest" not in json.loads(lock.canonical_bytes)
+
+
+def test_invocation_lock_schema_version_2_pins_execution_host() -> None:
+    lock = _lock()
+    assert lock.schema_version == "2"
+    assert lock.execution_host.implementation_id == "graph.engine.task-host"
+    assert lock.execution_host.wire_schema_version == "1"
+    assert b'"execution_host"' in lock.canonical_bytes
+    assert b'"schema_version":"2"' in lock.canonical_bytes
+    payload = json.loads(lock.canonical_bytes)
+    assert "execution_host" in payload
+    assert payload["execution_host"]["implementation_id"] == "graph.engine.task-host"
+
+
+def test_invocation_lock_rejects_schema_version_1_and_foreign_host() -> None:
+    lock = _lock()
+    with pytest.raises(ValidationError):
+        InvocationLock(
+            **{**lock.model_dump(exclude={"canonical_bytes", "digest"}), "schema_version": "1"},
+            canonical_bytes=lock.canonical_bytes,
+            digest=lock.digest,
+        )
+    drifted = ExecutionHostLock(
+        implementation_id="graph.engine.other-host",
+        implementation_digest=lock.execution_host.implementation_digest,
+        wire_schema_version="1",
+    )
+    with pytest.raises((ValidationError, TypeError, ValueError), match="execution host"):
+        InvocationLock.create(
+            engine_api=lock.engine_api,
+            engine=lock.engine,
+            engine_digest=lock.engine_digest,
+            product=lock.product,
+            plugins=lock.plugins,
+            dependency_order=lock.dependency_order,
+            registry_projections=lock.registry_projections,
+            registry_digests=lock.registry_digests,
+            configuration=lock.configuration,
+            configuration_digest=lock.configuration_digest,
+            capability_bindings=lock.capability_bindings,
+            capability_bindings_digest=lock.capability_bindings_digest,
+            compiled_workflow=lock.compiled_workflow,
+            compiled_workflow_digest=lock.compiled_workflow_digest,
+            execution_host=drifted,
+        )
 
 
 def test_lock_projection_normalizes_unicode_map_and_tuple_order() -> None:

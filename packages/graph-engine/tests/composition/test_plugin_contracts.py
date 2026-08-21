@@ -30,9 +30,18 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
     TaskRequest,
+    InvocationMetadata,
     ValidationContext,
     ValidationResult,
     validate_contribution,
+)
+
+
+_TEST_INVOCATION = InvocationMetadata(
+    invocation_id="inv-1",
+    lock_digest="a" * 64,
+    composition_digest="b" * 64,
+    entrypoint="main",
 )
 
 
@@ -419,6 +428,7 @@ def test_task_request_is_frozen_forbids_extra_and_enforces_attempts() -> None:
         graph_instance_id="graph-1",
         node_id="node-1",
         capability_id="toy.runtime.run",
+        invocation=_TEST_INVOCATION,
         attempt=1,
         input={"items": [1, None]},
     )
@@ -431,7 +441,12 @@ def test_task_request_is_frozen_forbids_extra_and_enforces_attempts() -> None:
 
 
 def test_task_context_and_candidate_contracts_remain_frozen() -> None:
-    context = TaskContext(workspace_root=Path("/workspace"), heartbeat=lambda: None)
+    context = TaskContext(
+        workspace_root=Path("/workspace"),
+        heartbeat=lambda: None,
+        cancel_requested=lambda: False,
+        invocation=_TEST_INVOCATION,
+    )
     with pytest.raises(AttributeError):
         context.workspace_root = Path("/elsewhere")
 

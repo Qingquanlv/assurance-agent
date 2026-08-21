@@ -381,7 +381,12 @@ class _InProcessTestHost:
     ) -> TaskOutcome:
         return await handler.execute(
             request,
-            TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
+            TaskContext(
+                workspace_root=workspace_root,
+                heartbeat=heartbeat,
+                cancel_requested=lambda: False,
+                invocation=request.invocation,
+            ),
         )
 
 
@@ -1647,7 +1652,12 @@ def test_concurrent_reopeners_execute_one_live_persisted_attempt_exclusively(
                 assert release.wait(timeout=5)
             return await handler.execute(
                 request,
-                TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
+                TaskContext(
+                    workspace_root=workspace_root,
+                    heartbeat=heartbeat,
+                    cancel_requested=lambda: False,
+                    invocation=request.invocation,
+                ),
             )
 
     product = _task_product(task_handler)

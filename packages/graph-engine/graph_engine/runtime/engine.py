@@ -999,8 +999,11 @@ class Engine:
                 ledger,
             ),
             lock_digest=composition.lock_digest,
+            composition_digest=composition.digest,
+            entrypoint=entrypoint,
             effects=composition.registries.effects,
             schemas=composition.registries.schemas,
+            resources=composition.registries.resources,
         )
 
     def _require_invocation_anchor(self, invocation_id: str, invocation_fd: int) -> None:

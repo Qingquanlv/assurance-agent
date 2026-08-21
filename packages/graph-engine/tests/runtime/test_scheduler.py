@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import cast
@@ -234,6 +235,11 @@ _INTENT_SCHEMA = (
 )
 _RECEIPT_SCHEMA = b'{"type":"object"}'
 _LOCK_DIGEST = "a" * 64
+_COMPOSITION_DIGEST = canonical_digest({"lock_digest": _LOCK_DIGEST})
+_FIXTURE_INSTRUCTIONS = b"fixture-instructions"
+_FIXTURE_SCHEMA = b'{"type":"object"}'
+_RESOURCE_DIGEST = hashlib.sha256(_FIXTURE_INSTRUCTIONS).hexdigest()
+_SCHEMA_DIGEST = hashlib.sha256(_FIXTURE_SCHEMA).hexdigest()
 
 
 class _NullEffectHandler:
@@ -362,7 +368,12 @@ class _InProcessTestHost:
         self.workspace_roots.append(workspace_root)
         return await handler.execute(
             request,
-            TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
+            TaskContext(
+                workspace_root=workspace_root,
+                heartbeat=heartbeat,
+                cancel_requested=lambda: False,
+                invocation=request.invocation,
+            ),
         )
 
 
@@ -465,6 +476,121 @@ def _scheduler(
         schemas=schemas,
     )
     return scheduler, store, ledger
+
+
+class _BindingView:
+    def __init__(
+        self,
+        target_capability_id: str,
+        data: object,
+        resource_ids: tuple[str, ...],
+    ) -> None:
+        self.target_capability_id = target_capability_id
+        self.data = data
+        self.resource_ids = resource_ids
+
+
+class _ResourceView:
+    def __init__(self, sha256: str) -> None:
+        self.sha256 = sha256
+
+
+class _ResourceRegistryView:
+    def __init__(self, entries: Mapping[str, _ResourceView]) -> None:
+        self.entries = entries
+
+
+class _AliasRegistry:
+    def __init__(self, handlers: Mapping[str, TaskHandler], bindings: Mapping[str, _BindingView]) -> None:
+        self.task_handlers = handlers
+        self.commit_validators: Mapping[str, object] = {}
+        self.bindings = bindings
+
+
+def _captured_request_for_alias(tmp_path: Path, alias: str) -> TaskRequest:
+    captured: list[TaskRequest] = []
+
+    async def handler(request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        captured.append(request)
+        return TaskOutcome.succeeded()
+
+    activation = "activation-run"
+    task = PlannedTask(
+        invocation_id="inv-1",
+        task_id=canonical_digest({"activation_id": activation, "kind": "task"}),
+        activation_id=activation,
+        graph_instance_id="graph-1",
+        node_id="run",
+        capability_id=alias,
+        attempt=1,
+        input={"prompt": "go"},
+        timeout_seconds=1.0,
+        resources=ResourceClaims(reads=("out",)),
+        validators=(),
+        topology_rank=0,
+        declaration_index=0,
+    )
+    store = SnapshotStore.create(tmp_path / "store", {})
+    ledger = Ledger(tmp_path / "ledger")
+    ledger.append_batch(
+        (
+            InvocationStarted(invocation_id="inv-1", lock_digest=_LOCK_DIGEST, entrypoint="main"),
+            GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
+            NodeActivated(
+                activation_id=activation,
+                graph_instance_id="graph-1",
+                node_id="run",
+                token_ids=(),
+            ),
+        ),
+        expected_next_seq=1,
+    )
+    registry = _AliasRegistry(
+        {alias: _FunctionHandler(handler)},
+        {
+            alias: _BindingView(
+                "runtime.opencode.execute",
+                {"profile": "fixture-default"},
+                ("fixture.instructions", "fixture.result-schema"),
+            )
+        },
+    )
+    resources = _ResourceRegistryView(
+        {
+            "fixture.instructions": _ResourceView(_RESOURCE_DIGEST),
+            "fixture.result-schema": _ResourceView(_SCHEMA_DIGEST),
+        }
+    )
+    scheduler = Scheduler(
+        registry,  # type: ignore[arg-type]
+        store,
+        ledger,
+        _InProcessTestHost(),
+        owner_id="worker-1",
+        clock=FakeClock(100.0),
+        lease_seconds=10.0,
+        max_parallel=1,
+        lock_digest=_LOCK_DIGEST,
+        resources=resources,  # type: ignore[arg-type]
+    )
+    asyncio.run(scheduler.run_wave((task,)))
+    assert captured
+    return captured[0]
+
+
+def test_scheduler_projects_exact_binding_resources_and_invocation_metadata(tmp_path: Path) -> None:
+    request = _captured_request_for_alias(tmp_path, "fixture.agent.run")
+    assert request.target_capability_id == "runtime.opencode.execute"
+    assert request.binding_data == {"profile": "fixture-default"}
+    assert request.resource_ids == ("fixture.instructions", "fixture.result-schema")
+    assert request.resource_digests == {
+        "fixture.instructions": _RESOURCE_DIGEST,
+        "fixture.result-schema": _SCHEMA_DIGEST,
+    }
+    assert request.invocation.lock_digest == _LOCK_DIGEST
+    assert request.invocation.composition_digest == _COMPOSITION_DIGEST
+    assert request.invocation.entrypoint == "main"
+    assert request.resources == ResourceClaims(reads=("out",))
 
 
 def _install_head_document(store: SnapshotStore, tree_id: str) -> None:
@@ -1578,7 +1704,14 @@ def test_explicit_test_host_receives_the_exact_attempt_root(tmp_path: Path) -> N
 
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
         seen.append(context)
-        assert set(context.__dataclass_fields__) == {"workspace_root", "heartbeat"}
+        assert set(context.__dataclass_fields__) == {
+            "workspace_root",
+            "heartbeat",
+            "cancel_requested",
+            "invocation",
+            "activity",
+            "secrets",
+        }
         assert context.workspace_root.name.endswith(".run")
         assert context.workspace_root.parent.name == "attempts"
         return TaskOutcome.succeeded()

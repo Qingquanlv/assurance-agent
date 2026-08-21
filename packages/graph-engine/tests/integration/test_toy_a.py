@@ -89,7 +89,12 @@ class _InProcessTestHost:
             return TaskOutcome.failed("transient", "retry the toy greeting")
         return await handler.execute(
             request,
-            TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
+            TaskContext(
+                workspace_root=workspace_root,
+                heartbeat=heartbeat,
+                cancel_requested=lambda: False,
+                invocation=request.invocation,
+            ),
         )
 
 

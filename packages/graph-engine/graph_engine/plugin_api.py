@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast, runtime_checkable
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.utils import canonicalize_name
@@ -35,6 +35,10 @@ class PluginContractError(GraphEngineError):
     """Raised when a frozen Phase 2 plugin contribution violates its descriptor."""
 
 
+class SecretHandleUnauthorized(GraphEngineError):
+    """Raised when a secret handle is not authorized for the current host call."""
+
+
 FailureKind = Literal[
     "transient", "timeout", "invalid_input", "invalid_output", "external_effect", "internal"
 ]
@@ -48,6 +52,13 @@ ActivityState = Literal["prepared", "dispatch_started", "bound", "terminal_obser
 
 class FrozenModel(BaseModel):
     model_config = _FROZEN_MODEL_CONFIG
+
+
+class InvocationMetadata(FrozenModel):
+    invocation_id: str
+    lock_digest: str = Field(pattern=_SHA256_PATTERN)
+    composition_digest: str = Field(pattern=_SHA256_PATTERN)
+    entrypoint: str = Field(min_length=1)
 
 
 class TaskFailure(FrozenModel):
@@ -78,6 +89,9 @@ class TaskRequest(FrozenModel):
     target_capability_id: str | None = None
     binding_data: JSONValue = None
     resource_ids: tuple[str, ...] = ()
+    resource_digests: FrozenJSONValue = Field(default_factory=dict)
+    resources: ResourceClaims = Field(default_factory=lambda: ResourceClaims())
+    invocation: InvocationMetadata
     attempt: int = Field(ge=1)
     input: JSONValue
     prior_failure: TaskFailure | None = None
@@ -100,11 +114,35 @@ class TaskRequest(FrozenModel):
         validated = tuple(_validate_contract_id(value, "request resource id") for value in values)
         if len(set(validated)) != len(validated):
             raise ValueError("request resource ids must be unique")
-        return validated
+        return tuple(sorted(validated))
 
-    @field_serializer("binding_data")
-    def _serialize_binding_data(self, value: object) -> Any:
+    @field_validator("resource_digests", mode="after")
+    @classmethod
+    def _freeze_resource_digests(cls, value: object) -> Any:
+        frozen = freeze_json(value)
+        if not isinstance(frozen, Mapping):
+            raise ValueError("resource digests must be a mapping")
+        return frozen
+
+    @field_serializer("binding_data", "resource_digests")
+    def _serialize_json_fields(self, value: object) -> Any:
         return thaw_json(value)
+
+    @model_validator(mode="after")
+    def _validate_resource_digest_keys(self) -> TaskRequest:
+        digests = thaw_json(self.resource_digests)
+        if not isinstance(digests, dict):
+            raise ValueError("resource digests must be a mapping")
+        if set(digests) != set(self.resource_ids):
+            raise ValueError("resource digests must be keyed by the exact resource ids")
+        for digest in digests.values():
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError("resource digest must be a lowercase SHA-256 hex value")
+        return self
 
 
 class TaskOutcome(FrozenModel):
@@ -404,10 +442,29 @@ class DurableEffectHandler(Protocol):
     async def reconcile(self, intent: EffectIntent, idempotency_key: str) -> EffectReconcileResult: ...
 
 
+@runtime_checkable
+class SecretPort(Protocol):
+    def resolve(self, handle: str) -> bytes: ...
+
+
+@runtime_checkable
+class TaskActivityPort(Protocol):
+    @property
+    def snapshot(self) -> TaskActivitySnapshot: ...
+
+    def mark_dispatch_started(self, fingerprint: JSONValue) -> TaskActivitySnapshot: ...
+
+    def bind(self, reference: JSONValue) -> TaskActivitySnapshot: ...
+
+
 @dataclass(frozen=True, slots=True)
 class TaskContext:
     workspace_root: Path
     heartbeat: Callable[[], None]
+    cancel_requested: Callable[[], bool]
+    invocation: InvocationMetadata
+    activity: TaskActivityPort | None = None
+    secrets: SecretPort | None = None
 
     def effect(self, kind: str, payload: JSONValue) -> EffectIntent:
         return EffectIntent(kind=kind, payload=payload)
@@ -826,6 +883,7 @@ __all__ = [
     "EffectRegistration",
     "FailureKind",
     "FrozenModel",
+    "InvocationMetadata",
     "PluginContribution",
     "PluginContractError",
     "PluginDependency",
@@ -836,7 +894,10 @@ __all__ = [
     "ResourceContribution",
     "ResourceClaims",
     "SchemaContribution",
+    "SecretHandleUnauthorized",
+    "SecretPort",
     "TaskActivityCancelResult",
+    "TaskActivityPort",
     "TaskActivityReconcileResult",
     "TaskActivitySnapshot",
     "TaskContext",

@@ -46,7 +46,12 @@ class _TrustedWheelPluginHost:
     ) -> TaskOutcome:
         return await handler.execute(
             request,
-            TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
+            TaskContext(
+                workspace_root=workspace_root,
+                heartbeat=heartbeat,
+                cancel_requested=lambda: False,
+                invocation=request.invocation,
+            ),
         )
 
 

@@ -55,7 +55,7 @@ def _lock() -> InvocationLock:
     canonical_bytes = (
         Path(__file__)
         .parents[1]
-        .joinpath("composition", "invocation-lock-v1.golden.json")
+        .joinpath("composition", "invocation-lock-v2.golden.json")
         .read_text(encoding="utf-8")
         .strip()
         .encode()
