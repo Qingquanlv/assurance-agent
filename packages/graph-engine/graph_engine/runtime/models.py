@@ -671,7 +671,7 @@ def _advance_fold(
             )
         elif isinstance(event, TaskLeaseHeartbeat):
             activation = _activation(projection, event.activation_id, envelope.seq)
-            if not activation.attempts or activation.attempts[-1].status != "running":
+            if not activation.attempts or activation.attempts[-1].status not in _LIVE_ATTEMPT_STATUSES:
                 _fail(envelope.seq, "lease heartbeat without a matching active attempt")
             attempt = activation.attempts[-1]
             if (

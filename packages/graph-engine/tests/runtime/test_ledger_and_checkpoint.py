@@ -1300,6 +1300,26 @@ def test_fold_keeps_task_pending_until_all_effect_receipts() -> None:
     assert tuple(effect.status for effect in projection.effects) == ("committed", "committed")
 
 
+def test_fold_accepts_lease_heartbeat_while_effect_pending() -> None:
+    envelopes = _envelopes(
+        *_committed_effect_history(),
+        TaskLeaseHeartbeat(
+            task_id="task-1",
+            activation_id="a1",
+            attempt=1,
+            owner_id="worker-1",
+            heartbeat_at=5.0,
+            expires_at=15.0,
+        ),
+    )
+    projection = fold_events(envelopes)
+    attempt = projection.activations[-1].attempts[-1]
+    assert attempt.status == "effect_pending"
+    assert attempt.lease_heartbeat_at == 5.0
+    assert attempt.lease_expires_at_value == 15.0
+    assert tuple(effect.status for effect in projection.effects) == ("committed", "committed")
+
+
 def test_fold_records_receipts_then_succeeds_the_effect_pending_attempt() -> None:
     envelopes = _envelopes(
         *_committed_effect_history(),
@@ -1429,6 +1449,42 @@ def test_fold_rejects_success_before_all_effect_receipts() -> None:
             _envelopes(
                 *_committed_effect_history(),
                 TaskAttemptSucceeded(activation_id="a1", attempt=1, output={"ok": True}),
+            )
+        )
+
+
+def test_fold_marks_frontier_effect_permanently_failed_and_refuses_later_attempt() -> None:
+    failure = TaskFailure(kind="external_effect", message="denied", retryable=False)
+    envelopes = _envelopes(
+        *_committed_effect_history(),
+        TaskAttemptFailed(activation_id="a1", attempt=1, failure=failure),
+    )
+    projection = fold_events(envelopes)
+    attempt = projection.activations[-1].attempts[-1]
+    assert attempt.status == "failed"
+    assert attempt.failure == failure
+    assert tuple(effect.status for effect in projection.effects) == ("permanently_failed", "committed")
+    assert projection.effects[0].failure == failure
+    with pytest.raises(ProjectionError, match="non-retryable"):
+        fold_events(
+            _envelopes(
+                *_committed_effect_history(),
+                TaskAttemptFailed(activation_id="a1", attempt=1, failure=failure),
+                TaskAttemptStarted(activation_id="a1", attempt=2, lease_expires_at="12"),
+            )
+        )
+
+
+def test_fold_rejects_retryable_failure_while_effect_pending() -> None:
+    with pytest.raises(ProjectionError, match="pending effect failure must be non-retryable"):
+        fold_events(
+            _envelopes(
+                *_committed_effect_history(),
+                TaskAttemptFailed(
+                    activation_id="a1",
+                    attempt=1,
+                    failure=TaskFailure(kind="external_effect", message="denied", retryable=True),
+                ),
             )
         )
 

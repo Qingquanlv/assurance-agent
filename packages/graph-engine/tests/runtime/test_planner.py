@@ -46,6 +46,7 @@ from graph_engine.runtime.events import (
     TaskAttemptSucceeded,
     TaskCommitPrepared,
     TaskLeaseAcquired,
+    TaskLeaseHeartbeat,
     TokenConsumed,
     TokenOffered,
 )
@@ -1490,6 +1491,82 @@ def test_event_history_accepts_prepared_effect_apply_receipt_and_final_success()
 
     assert projection.status == "succeeded"
     assert tuple(effect.status for effect in projection.effects) == ("applied", "applied")
+
+
+def test_event_history_accepts_heartbeat_while_effect_pending() -> None:
+    compiled = _compiled(
+        f"{_task_node('work')}\n      done: {{kind: end}}",
+        "      - {from: work, to: done}",
+        start="work",
+    )
+    bootstrap = (_invocation(), _root(), _canonical_start_token(compiled))
+    planned = plan_next(compiled, _projection(*bootstrap))
+    task = planned.tasks[0]
+    prefix = (
+        *bootstrap,
+        *planned.events,
+        TaskAttemptStarted(
+            activation_id=task.activation_id,
+            attempt=1,
+            lease_expires_at="2",
+        ),
+        _task_lease(task.activation_id),
+        TaskCommitPrepared(
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=1,
+            output={"ok": True},
+            previous_tree_id=_EMPTY_TREE,
+            tree_id=_EFFECT_TREE,
+            effect_ids=("effect-1", "effect-2"),
+        ),
+        HeadAdvanced(
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=1,
+            previous_tree_id=_EMPTY_TREE,
+            tree_id=_EFFECT_TREE,
+        ),
+        _effect_intent(task.activation_id, "effect-1", 0, {"n": 1}),
+        _effect_intent(task.activation_id, "effect-2", 1, {"n": 2}),
+        TaskLeaseHeartbeat(
+            task_id=task.task_id,
+            activation_id=task.activation_id,
+            attempt=1,
+            owner_id="worker-1",
+            heartbeat_at=1.5,
+            expires_at=3.0,
+        ),
+    )
+    pending = _projection(*prefix)
+    attempt = pending.activations[-1].attempts[-1]
+    assert attempt.status == "effect_pending"
+    assert attempt.lease_heartbeat_at == 1.5
+    events: list[object] = [
+        *prefix,
+        EffectApplyStarted(effect_id="effect-1", apply_attempt=1),
+        EffectReceiptRecorded(effect_id="effect-1", apply_attempt=1, receipt={"remote": 1}),
+        EffectApplyStarted(effect_id="effect-2", apply_attempt=1),
+        EffectReceiptRecorded(effect_id="effect-2", apply_attempt=1, receipt={"remote": 2}),
+        TaskAttemptSucceeded(
+            activation_id=task.activation_id,
+            attempt=1,
+            output={"ok": True},
+        ),
+    ]
+    settled = plan_next(compiled, _projection(*events))
+    events.extend(settled.events)
+    envelopes = tuple(
+        EventEnvelope.from_event(index, event)  # type: ignore[arg-type]
+        for index, event in enumerate(events, start=1)
+    )
+    projection = fold_events(envelopes)
+
+    validate_event_history(compiled, envelopes, projection)
+
+    assert projection.status == "succeeded"
+    work = next(item for item in projection.activations if item.activation_id == task.activation_id)
+    assert work.attempts[-1].lease_heartbeat_at == 1.5
 
 
 def test_event_history_rejects_partial_prepared_effect_batch() -> None:
