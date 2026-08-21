@@ -73,6 +73,7 @@ from graph_engine.runtime.scheduler import (
     LeaseUnavailableError,
     Scheduler,
     SchedulerStateError,
+    _match_json_schema,
     select_wave,
 )
 from graph_engine.runtime.workspace import (
@@ -1832,6 +1833,29 @@ def test_invalid_intent_payload_fails_before_head(tmp_path: Path) -> None:
     assert result.outcome.failure.kind == "invalid_output"
     assert store.head_tree_id() == before
     assert all(item.event.kind != "head_advanced" for item in ledger.read_all())
+
+
+def test_typed_schema_applies_enum_after_type_match() -> None:
+    with pytest.raises(ValueError, match="enum"):
+        _match_json_schema("c", {"type": "string", "enum": ["a", "b"]})
+    _match_json_schema("a", {"type": "string", "enum": ["a", "b"]})
+
+
+def test_typed_schema_applies_const_after_type_match() -> None:
+    with pytest.raises(ValueError, match="const"):
+        _match_json_schema(2, {"type": "integer", "const": 1})
+    _match_json_schema(1, {"type": "integer", "const": 1})
+
+
+def test_non_string_schema_type_rejects_instance() -> None:
+    with pytest.raises(ValueError, match="unsupported schema type"):
+        _match_json_schema("x", {"type": ["string"]})
+
+
+def test_required_without_type_rejects_missing_property() -> None:
+    with pytest.raises(ValueError, match="missing required property"):
+        _match_json_schema({}, {"required": ["n"]})
+    _match_json_schema({"n": 1}, {"required": ["n"]})
 
 
 def test_prepared_effect_ids_and_keys_are_stable(tmp_path: Path) -> None:

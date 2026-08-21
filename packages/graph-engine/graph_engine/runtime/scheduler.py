@@ -867,6 +867,31 @@ def _match_json_schema(instance: object, schema: object) -> None:
     if expected_type == "object":
         if not isinstance(instance, dict) or isinstance(instance, bool):
             raise ValueError("expected a JSON object")
+    elif expected_type == "array":
+        if not isinstance(instance, list):
+            raise ValueError("expected a JSON array")
+        items = schema.get("items")
+        if items is not None:
+            for item in instance:
+                _match_json_schema(item, items)
+    elif expected_type == "string":
+        if not isinstance(instance, str):
+            raise ValueError("expected a JSON string")
+    elif expected_type == "integer":
+        if isinstance(instance, bool) or not isinstance(instance, int):
+            raise ValueError("expected a JSON integer")
+    elif expected_type == "number":
+        if isinstance(instance, bool) or not isinstance(instance, int | float):
+            raise ValueError("expected a JSON number")
+    elif expected_type == "boolean":
+        if not isinstance(instance, bool):
+            raise ValueError("expected a JSON boolean")
+    elif expected_type == "null":
+        if instance is not None:
+            raise ValueError("expected JSON null")
+    elif expected_type is not None:
+        raise ValueError(f"unsupported schema type: {expected_type!r}")
+    if isinstance(instance, dict) and not isinstance(instance, bool):
         required = schema.get("required", [])
         if not isinstance(required, list):
             raise ValueError("schema required must be an array")
@@ -884,35 +909,6 @@ def _match_json_schema(instance: object, schema: object) -> None:
                 raise ValueError(f"unexpected property: {key}")
             elif isinstance(additional, dict | bool) and additional is not True:
                 _match_json_schema(value, additional)
-        return
-    if expected_type == "array":
-        if not isinstance(instance, list):
-            raise ValueError("expected a JSON array")
-        items = schema.get("items")
-        if items is not None:
-            for item in instance:
-                _match_json_schema(item, items)
-        return
-    if expected_type == "string":
-        if not isinstance(instance, str):
-            raise ValueError("expected a JSON string")
-        return
-    if expected_type == "integer":
-        if isinstance(instance, bool) or not isinstance(instance, int):
-            raise ValueError("expected a JSON integer")
-        return
-    if expected_type == "number":
-        if isinstance(instance, bool) or not isinstance(instance, int | float):
-            raise ValueError("expected a JSON number")
-        return
-    if expected_type == "boolean":
-        if not isinstance(instance, bool):
-            raise ValueError("expected a JSON boolean")
-        return
-    if expected_type == "null":
-        if instance is not None:
-            raise ValueError("expected JSON null")
-        return
     if "const" in schema and instance != schema["const"]:
         raise ValueError("value does not match schema const")
     if "enum" in schema:
