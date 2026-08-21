@@ -1539,6 +1539,7 @@ class SnapshotStore:
                         ) from cleanup_error
                     raise
                 try:
+                    authorize_publish()
                     self._publish_head(
                         root_fd,
                         trees_fd,

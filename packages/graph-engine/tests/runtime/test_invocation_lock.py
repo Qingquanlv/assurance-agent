@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -13,6 +15,7 @@ import pytest
 
 import graph_engine.runtime.engine as engine_runtime
 import graph_engine.runtime.invocation_lock as invocation_lock_runtime
+import graph_engine.runtime.ledger as ledger_runtime
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.composition import (
     EditableWheelPluginSource,
@@ -22,7 +25,7 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.runtime.engine import Engine, EngineError
+from graph_engine.runtime.engine import Engine, EngineError, EnginePublicationIndeterminate
 from graph_engine.runtime.events import (
     EventEnvelope,
     InvocationStarted,
@@ -76,6 +79,7 @@ def _toy_a_composition(
     monkeypatch: pytest.MonkeyPatch,
     *,
     second_entrypoint: bool = False,
+    interrupt: bool = False,
 ) -> FrozenComposition:
     source = root / "source"
     repository = Path(__file__).parents[4]
@@ -104,6 +108,36 @@ def _toy_a_composition(
                 '"entrypoints": {"hello": "root"}',
                 '"entrypoints": {"hello": "root", "alternate": "root"}',
             ),
+            encoding="utf-8",
+        )
+    if interrupt:
+        declaration_path = source / "graph_engine_toy_a" / "product-declaration.json"
+        declaration = json.loads(declaration_path.read_bytes())
+        workflow = declaration["manifest"]["workflow"]
+        workflow["graphs"]["root"] = {
+            "edges": [{"from": "pause", "to": "done"}],
+            "max_activations": 2,
+            "nodes": {
+                "done": {"kind": "end"},
+                "pause": {
+                    "actions": ["continue"],
+                    "kind": "interrupt",
+                    "reason": "choose",
+                },
+            },
+            "start": "pause",
+        }
+        declaration_path.write_bytes(canonical_json_bytes(declaration))
+        (source / "graph_engine_toy_a" / "product.py").write_text(
+            "from __future__ import annotations\n"
+            "import json\n"
+            "from pathlib import Path\n"
+            "from graph_engine.composition import ProductManifest\n"
+            "class ToyAProduct:\n"
+            "    @staticmethod\n"
+            "    def manifest() -> ProductManifest:\n"
+            '        document = json.loads(Path(__file__).with_name("product-declaration.json").read_bytes())\n'
+            '        return ProductManifest.model_validate(document["manifest"])\n',
             encoding="utf-8",
         )
     source_files = tuple(
@@ -181,6 +215,25 @@ def _ledger_bytes(root: Path, invocation_id: str) -> bytes:
     if not ledger.exists():
         return b""
     return b"".join(path.read_bytes() for path in sorted(ledger.glob("[0-9]*.json")))
+
+
+def _replace_start_intent(
+    invocation: Path,
+    composition: FrozenComposition,
+    entrypoint: str,
+) -> None:
+    intent_path = invocation / _START_INTENT_NAME
+    intent_path.unlink()
+    intent_path.write_bytes(
+        canonical_json_bytes(
+            {
+                "entrypoint": entrypoint,
+                "lock_digest": composition.lock_digest,
+                "schema_version": "1",
+            }
+        )
+    )
+    intent_path.chmod(0o400)
 
 
 def test_install_read_and_authenticate_preserve_exact_immutable_lock_bytes(tmp_path: Path) -> None:
@@ -630,20 +683,9 @@ def test_start_reauthenticates_exact_intent_immediately_before_bootstrap(
     invocation = root / "invocations" / "intent-race"
 
     def replace_intent(phase: str) -> None:
-        if phase != "workspace_ready":
+        if phase != "before_ledger_bootstrap":
             return
-        path = invocation / _START_INTENT_NAME
-        path.unlink()
-        path.write_bytes(
-            canonical_json_bytes(
-                {
-                    "entrypoint": "alternate",
-                    "lock_digest": composition.lock_digest,
-                    "schema_version": "1",
-                }
-            )
-        )
-        path.chmod(0o400)
+        _replace_start_intent(invocation, composition, "alternate")
 
     with Engine(root) as engine:
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", replace_intent)
@@ -732,7 +774,7 @@ def test_handle_actions_reject_ledger_entrypoint_drift_before_claim_or_append(
             raise AssertionError("append must not be attempted")
 
         monkeypatch.setattr(Engine, "_acquire_runner_claim", reject_claim)
-        monkeypatch.setattr(Engine, "_append", reject_append)
+        monkeypatch.setattr(Engine, "_append_authenticated", reject_append)
         with pytest.raises(InvocationDrift, match="entrypoint|intent|bootstrap"):
             engine.run_until_blocked(handle)
         handle.close()
@@ -869,7 +911,7 @@ def test_lock_only_recovery_rejects_a_different_selected_entrypoint_without_clai
     claims = 0
     appends = 0
     real_claim = Engine._acquire_runner_claim
-    real_append = Engine._append
+    real_append = Engine._append_authenticated
 
     def count_claim(self: Engine, invocation_fd: int) -> int:
         nonlocal claims
@@ -883,7 +925,7 @@ def test_lock_only_recovery_rejects_a_different_selected_entrypoint_without_clai
 
     monkeypatch.setattr(engine_runtime, "_initialization_boundary", lambda _phase: None)
     monkeypatch.setattr(Engine, "_acquire_runner_claim", count_claim)
-    monkeypatch.setattr(Engine, "_append", count_append)
+    monkeypatch.setattr(Engine, "_append_authenticated", count_append)
     with Engine(root) as engine, pytest.raises(InvocationDrift, match="entrypoint|intent"):
         engine.start(composition, entrypoint="alternate", invocation_id="entrypoint-drift")
 
@@ -935,7 +977,7 @@ def test_start_intent_drift_fails_before_claim_or_append(
         raise AssertionError("append must not be attempted")
 
     monkeypatch.setattr(Engine, "_acquire_runner_claim", reject_claim)
-    monkeypatch.setattr(Engine, "_append", reject_append)
+    monkeypatch.setattr(Engine, "_append_authenticated", reject_append)
     with Engine(root) as engine, pytest.raises(InvocationDrift):
         engine.start(composition, entrypoint="hello", invocation_id="intent-drift")
 
@@ -970,7 +1012,7 @@ def test_engine_open_rejects_lock_drift_before_claim_or_append(
     claims = 0
     appends = 0
     real_claim = Engine._acquire_runner_claim
-    real_append = Engine._append
+    real_append = Engine._append_authenticated
 
     def count_claim(self: Engine, invocation_fd: int) -> int:
         nonlocal claims
@@ -983,7 +1025,7 @@ def test_engine_open_rejects_lock_drift_before_claim_or_append(
         real_append(self, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(Engine, "_acquire_runner_claim", count_claim)
-    monkeypatch.setattr(Engine, "_append", count_append)
+    monkeypatch.setattr(Engine, "_append_authenticated", count_append)
     with Engine(root) as engine, pytest.raises(InvocationDrift):
         engine.open("drift", composition)
 
@@ -1139,3 +1181,507 @@ def test_open_reauthenticates_identity_inside_expired_lease_reclaim_before_appen
         engine.open("reclaim-intent", composition)
 
     assert _ledger_bytes(root, "reclaim-intent") == before
+
+
+def test_start_rejects_a_replaced_final_invocation_directory_before_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
+    root = tmp_path / "engine"
+    invocation = root / "invocations" / "replaced-start"
+    displaced = root / "invocations" / "replaced-start.displaced"
+
+    def replace_final_name(phase: str) -> None:
+        if phase != "after_invocation_rename":
+            return
+        invocation.rename(displaced)
+        invocation.mkdir(mode=0o700)
+
+    with Engine(root) as engine:
+        monkeypatch.setattr(engine_runtime, "_initialization_boundary", replace_final_name)
+        with pytest.raises(InvocationDrift, match="anchor|directory|identity"):
+            engine.start(composition, entrypoint="hello", invocation_id="replaced-start")
+
+    assert _ledger_bytes(root, "replaced-start") == b""
+    assert not (displaced / "ledger").exists()
+
+
+def test_open_rejects_a_final_directory_replaced_after_open_without_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
+    root = tmp_path / "engine"
+    with Engine(root) as bootstrap:
+        bootstrap.start(composition, entrypoint="hello", invocation_id="replaced-open").close()
+    invocation = root / "invocations" / "replaced-open"
+    displaced = root / "invocations" / "replaced-open.displaced"
+    before = _ledger_bytes(root, "replaced-open")
+    claims = 0
+    real_open = Engine._open_invocation
+    real_claim = Engine._acquire_runner_claim
+
+    def open_then_replace(self: Engine, invocation_id: str) -> int:
+        descriptor = real_open(self, invocation_id)
+        invocation.rename(displaced)
+        invocation.mkdir(mode=0o700)
+        return descriptor
+
+    def count_claim(self: Engine, invocation_fd: int) -> int:
+        nonlocal claims
+        claims += 1
+        return real_claim(self, invocation_fd)
+
+    monkeypatch.setattr(Engine, "_open_invocation", open_then_replace)
+    monkeypatch.setattr(Engine, "_acquire_runner_claim", count_claim)
+    with Engine(root) as engine, pytest.raises(InvocationDrift, match="anchor|directory|identity"):
+        engine.open("replaced-open", composition)
+
+    assert claims == 0
+    assert _ledger_bytes(root, "replaced-open") == b""
+    assert _ledger_bytes(root, "replaced-open.displaced") == before
+
+
+@pytest.mark.parametrize(
+    "phase",
+    ["after_root_fsync", "before_ledger_bootstrap", "after_ledger_bootstrap", "start_return"],
+)
+def test_start_reanchors_the_final_invocation_name_at_every_acknowledgement_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
+    root = tmp_path / "engine"
+    invocation = root / "invocations" / "replaced-at-boundary"
+    displaced = root / "invocations" / "replaced-at-boundary.displaced"
+    replaced = False
+
+    def replace_final_name(boundary: str) -> None:
+        nonlocal replaced
+        if boundary != phase or replaced:
+            return
+        replaced = True
+        invocation.rename(displaced)
+        invocation.mkdir(mode=0o700)
+
+    with Engine(root) as engine:
+        monkeypatch.setattr(engine_runtime, "_initialization_boundary", replace_final_name)
+        monkeypatch.setattr(engine_runtime, "_transition_boundary", replace_final_name)
+        with pytest.raises(InvocationDrift, match="anchor|directory|identity"):
+            engine.start(
+                composition,
+                entrypoint="hello",
+                invocation_id="replaced-at-boundary",
+            )
+
+    assert replaced
+    assert _ledger_bytes(root, "replaced-at-boundary") == b""
+
+
+def test_open_reanchors_the_final_invocation_name_immediately_before_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
+    root = tmp_path / "engine"
+    with Engine(root) as bootstrap:
+        bootstrap.start(composition, entrypoint="hello", invocation_id="open-return").close()
+    invocation = root / "invocations" / "open-return"
+    displaced = root / "invocations" / "open-return.displaced"
+    before = _ledger_bytes(root, "open-return")
+
+    def replace_before_return(boundary: str) -> None:
+        if boundary != "open_return" or displaced.exists():
+            return
+        invocation.rename(displaced)
+        invocation.mkdir(mode=0o700)
+
+    monkeypatch.setattr(engine_runtime, "_transition_boundary", replace_before_return)
+    with Engine(root) as engine, pytest.raises(InvocationDrift, match="anchor|directory|identity"):
+        engine.open("open-return", composition)
+
+    assert _ledger_bytes(root, "open-return") == b""
+    assert _ledger_bytes(root, "open-return.displaced") == before
+
+
+def test_terminal_open_guards_noop_head_recovery_before_checkpoint_or_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composition = _toy_a_composition(
+        tmp_path / "composition",
+        monkeypatch,
+        second_entrypoint=True,
+    )
+    root = tmp_path / "engine"
+    with Engine(root) as bootstrap:
+        handle = bootstrap.start(composition, entrypoint="hello", invocation_id="terminal-head")
+        assert bootstrap.run_until_blocked(handle).status in {"succeeded", "failed", "stopped"}
+        handle.close()
+    invocation = root / "invocations" / "terminal-head"
+    head = invocation / "workspace" / "HEAD.json"
+    before_head = head.read_bytes()
+    before_ledger = _ledger_bytes(root, "terminal-head")
+
+    def drift_before_noop_recovery(boundary: str) -> None:
+        if boundary == "head_recovery":
+            _replace_start_intent(invocation, composition, "alternate")
+
+    monkeypatch.setattr(engine_runtime, "_transition_boundary", drift_before_noop_recovery)
+    with Engine(root) as engine, pytest.raises(InvocationDrift, match="entrypoint|intent"):
+        engine.open("terminal-head", composition)
+
+    assert head.read_bytes() == before_head
+    assert not (invocation / "workspace" / ".HEAD-transaction.json").exists()
+    assert _ledger_bytes(root, "terminal-head") == before_ledger
+
+
+def test_planner_append_reauthenticates_after_fault_seam_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composition = _toy_a_composition(
+        tmp_path / "composition",
+        monkeypatch,
+        second_entrypoint=True,
+    )
+    root = tmp_path / "engine"
+    invocation = root / "invocations" / "planner-guard"
+    with Engine(root) as engine:
+        handle = engine.start(composition, entrypoint="hello", invocation_id="planner-guard")
+        before = _ledger_bytes(root, "planner-guard")
+
+        def drift(context: str) -> None:
+            if context == "planner_append":
+                _replace_start_intent(invocation, composition, "alternate")
+
+        monkeypatch.setattr(engine_runtime, "_transition_boundary", drift, raising=False)
+        try:
+            with pytest.raises(InvocationDrift, match="entrypoint|intent"):
+                engine.run_until_blocked(handle)
+        finally:
+            handle.close()
+
+    assert _ledger_bytes(root, "planner-guard") == before
+
+
+def test_resume_append_reauthenticates_after_fault_seam_before_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composition = _toy_a_composition(
+        tmp_path / "composition",
+        monkeypatch,
+        second_entrypoint=True,
+        interrupt=True,
+    )
+    root = tmp_path / "engine"
+    invocation = root / "invocations" / "resume-guard"
+    with Engine(root) as engine:
+        handle = engine.start(composition, entrypoint="hello", invocation_id="resume-guard")
+        assert engine.run_until_blocked(handle).status == "interrupted"
+        before = _ledger_bytes(root, "resume-guard")
+
+        def drift(context: str) -> None:
+            if context == "resume_append":
+                _replace_start_intent(invocation, composition, "alternate")
+
+        monkeypatch.setattr(engine_runtime, "_transition_boundary", drift, raising=False)
+        try:
+            with pytest.raises(InvocationDrift, match="entrypoint|intent"):
+                engine.resume(handle, action="continue", payload={})
+        finally:
+            handle.close()
+
+    assert _ledger_bytes(root, "resume-guard") == before
+
+
+def test_engine_has_one_authenticated_authoritative_append_boundary() -> None:
+    tree = ast.parse(inspect.getsource(engine_runtime.Engine))
+    method_calls: dict[str, list[str]] = {}
+    for method in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
+        calls = [
+            node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+            for node in ast.walk(method)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute | ast.Name)
+        ]
+        method_calls[method.name] = calls
+
+    assert "_append" not in method_calls
+    assert {method for method, calls in method_calls.items() if "append_validated_batch" in calls} == {
+        "_append_authenticated"
+    }
+    assert method_calls["_complete_start_at"].count("_append_authenticated") == 1
+    assert method_calls["_run_until_blocked_with_store"].count("_append_authenticated") == 1
+    assert method_calls["_resume_claimed"].count("_append_authenticated") == 1
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires process-crash fork semantics")
+def test_repeated_start_repairs_visible_bootstrap_after_final_install_process_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
+    root = tmp_path / "engine"
+    process_id = os.fork()
+    if process_id == 0:
+
+        def crash_after_final_install(phase: str) -> None:
+            if phase == "final_installed":
+                os._exit(91)
+
+        ledger_runtime._append_boundary = crash_after_final_install
+        child_engine = Engine(root)
+        child_engine.start(composition, entrypoint="hello", invocation_id="durable-bootstrap")
+        os._exit(0)
+
+    _child, status = os.waitpid(process_id, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    ledger = Ledger(root / "invocations" / "durable-bootstrap" / "ledger")
+    assert sum(isinstance(envelope.event, InvocationStarted) for envelope in ledger.read_all()) == 1
+    durability_barriers = 0
+    real_ensure_durable = Ledger.ensure_durable
+
+    def track_durability_barrier(self: Ledger) -> None:
+        nonlocal durability_barriers
+        durability_barriers += 1
+        real_ensure_durable(self)
+
+    monkeypatch.setattr(Ledger, "ensure_durable", track_durability_barrier)
+    with Engine(root) as engine:
+        engine.start(
+            composition,
+            entrypoint="hello",
+            invocation_id="durable-bootstrap",
+        ).close()
+
+    assert durability_barriers >= 1
+    assert sum(isinstance(envelope.event, InvocationStarted) for envelope in ledger.read_all()) == 1
+
+
+def test_repeated_start_durability_failure_is_indeterminate_before_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
+    root = tmp_path / "engine"
+    with Engine(root) as bootstrap:
+        bootstrap.start(composition, entrypoint="hello", invocation_id="durability-failure").close()
+    before = _ledger_bytes(root, "durability-failure")
+    claims = 0
+
+    def fail_durability(_ledger: Ledger) -> None:
+        raise OSError("ledger directory fsync failed")
+
+    def reject_claim(self: Engine, invocation_fd: int) -> int:
+        del self, invocation_fd
+        nonlocal claims
+        claims += 1
+        raise AssertionError("runner claim must not be attempted")
+
+    monkeypatch.setattr(Ledger, "ensure_durable", fail_durability)
+    monkeypatch.setattr(Engine, "_acquire_runner_claim", reject_claim)
+    with Engine(root) as engine, pytest.raises(EnginePublicationIndeterminate, match="durability"):
+        engine.start(
+            composition,
+            entrypoint="hello",
+            invocation_id="durability-failure",
+        )
+
+    assert claims == 0
+    assert _ledger_bytes(root, "durability-failure") == before
+
+
+def test_existing_invocation_authenticates_drift_before_requested_entrypoint_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = _toy_a_composition(
+        tmp_path / "original",
+        monkeypatch,
+        second_entrypoint=True,
+    )
+    root = tmp_path / "engine"
+    with Engine(root) as bootstrap:
+        bootstrap.start(original, entrypoint="alternate", invocation_id="ordering").close()
+    drifted = _toy_a_composition(tmp_path / "drifted", monkeypatch)
+    before = _ledger_bytes(root, "ordering")
+    claims = 0
+
+    def reject_claim(self: Engine, invocation_fd: int) -> int:
+        del self, invocation_fd
+        nonlocal claims
+        claims += 1
+        raise AssertionError("runner claim must not be attempted")
+
+    monkeypatch.setattr(Engine, "_acquire_runner_claim", reject_claim)
+    with Engine(root) as engine, pytest.raises(InvocationDrift):
+        engine.start(drifted, entrypoint="alternate", invocation_id="ordering")
+
+    assert claims == 0
+    assert _ledger_bytes(root, "ordering") == before
+
+
+def test_staging_cleanup_preserves_primary_and_attempts_close_remove_and_parent_fsync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
+    root = tmp_path / "engine"
+    primary = RuntimeError("primary staging publication failure")
+    staging_fd: int | None = None
+    close_attempted = False
+    remove_attempted = False
+    parent_fsync_attempted = False
+    real_open_directory = engine_runtime._open_directory_at
+    real_remove = engine_runtime._remove_entry_at
+    real_close = os.close
+    real_fsync = os.fsync
+
+    def capture_staging(parent_fd: int, name: str, kind: str) -> int:
+        nonlocal staging_fd
+        descriptor = real_open_directory(parent_fd, name, kind)
+        if kind == "invocation initialization staging":
+            staging_fd = descriptor
+        return descriptor
+
+    def fail_publication(phase: str) -> None:
+        if phase == "before_invocation_rename":
+            raise primary
+
+    def fail_staging_close(descriptor: int) -> None:
+        nonlocal close_attempted
+        if descriptor == staging_fd and not close_attempted:
+            close_attempted = True
+            real_close(descriptor)
+            raise OSError("secondary staging close failure")
+        real_close(descriptor)
+
+    def fail_staging_remove(parent_fd: int, name: str) -> None:
+        nonlocal remove_attempted
+        real_remove(parent_fd, name)
+        if name.startswith(".cleanup-staging.invocation-init-"):
+            remove_attempted = True
+            raise OSError("secondary staging removal failure")
+
+    with Engine(root) as engine:
+
+        def fail_cleanup_fsync(descriptor: int) -> None:
+            nonlocal parent_fsync_attempted
+            if remove_attempted and descriptor == engine._invocations_fd:
+                parent_fsync_attempted = True
+                raise OSError("secondary parent fsync failure")
+            real_fsync(descriptor)
+
+        monkeypatch.setattr(engine_runtime, "_open_directory_at", capture_staging)
+        monkeypatch.setattr(engine_runtime, "_initialization_boundary", fail_publication)
+        monkeypatch.setattr(engine_runtime, "_remove_entry_at", fail_staging_remove)
+        monkeypatch.setattr(engine_runtime.os, "close", fail_staging_close)
+        monkeypatch.setattr(engine_runtime.os, "fsync", fail_cleanup_fsync)
+        with pytest.raises(RuntimeError) as captured:
+            engine.start(composition, entrypoint="hello", invocation_id="cleanup-staging")
+
+    assert captured.value is primary
+    assert close_attempted
+    assert remove_attempted
+    assert parent_fsync_attempted
+    notes = getattr(primary, "__notes__", ())
+    assert any("close" in note for note in notes)
+    assert any("remov" in note for note in notes)
+    assert any("fsync" in note for note in notes)
+
+
+@pytest.mark.parametrize(
+    ("operation", "claimed_method", "kwargs"),
+    [
+        ("run_until_blocked", "_run_until_blocked_claimed", {}),
+        ("resume", "_resume_claimed", {"action": "continue", "payload": {}}),
+    ],
+)
+def test_direct_actions_preserve_primary_when_claim_close_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    claimed_method: str,
+    kwargs: dict[str, object],
+) -> None:
+    composition = _toy_a_composition(
+        tmp_path / "composition",
+        monkeypatch,
+        interrupt=True,
+    )
+    root = tmp_path / "engine"
+    primary = RuntimeError(f"primary {operation} failure")
+    claim_fd: int | None = None
+    close_attempted = False
+    real_claim = Engine._acquire_runner_claim
+    real_close = os.close
+
+    with Engine(root) as engine:
+        handle = engine.start(composition, entrypoint="hello", invocation_id=operation)
+        if operation == "resume":
+            assert engine.run_until_blocked(handle).status == "interrupted"
+
+        def capture_claim(self: Engine, invocation_fd: int) -> int:
+            nonlocal claim_fd
+            claim_fd = real_claim(self, invocation_fd)
+            return claim_fd
+
+        def fail_claimed(*args: object, **call_kwargs: object) -> object:
+            del args, call_kwargs
+            raise primary
+
+        def fail_claim_close(descriptor: int) -> None:
+            nonlocal close_attempted
+            if descriptor == claim_fd and not close_attempted:
+                close_attempted = True
+                real_close(descriptor)
+                raise OSError("secondary claim close failure")
+            real_close(descriptor)
+
+        monkeypatch.setattr(Engine, "_acquire_runner_claim", capture_claim)
+        monkeypatch.setattr(Engine, claimed_method, fail_claimed)
+        monkeypatch.setattr(engine_runtime.os, "close", fail_claim_close)
+        try:
+            with pytest.raises(RuntimeError) as captured:
+                getattr(engine, operation)(handle, **kwargs)
+        finally:
+            handle.close()
+
+    assert captured.value is primary
+    assert close_attempted
+    assert any("claim" in note for note in getattr(primary, "__notes__", ()))
+
+
+def test_cleanup_without_a_primary_raises_the_first_secondary_and_notes_the_rest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_fd = os.open(tmp_path / "first", os.O_WRONLY | os.O_CREAT, 0o600)
+    second_fd = os.open(tmp_path / "second", os.O_WRONLY | os.O_CREAT, 0o600)
+    real_close = os.close
+
+    def fail_closes(descriptor: int) -> None:
+        real_close(descriptor)
+        if descriptor == first_fd:
+            raise OSError("first cleanup failure")
+        if descriptor == second_fd:
+            raise OSError("second cleanup failure")
+
+    def fail_action() -> None:
+        raise OSError("third cleanup failure")
+
+    monkeypatch.setattr(engine_runtime.os, "close", fail_closes)
+    with pytest.raises(OSError, match="first cleanup failure") as captured:
+        engine_runtime._cleanup_runtime_resources(
+            None,
+            store=None,
+            descriptors=((first_fd, "first descriptor"), (second_fd, "second descriptor")),
+            actions=((fail_action, "final action"),),
+        )
+
+    notes = getattr(captured.value, "__notes__", ())
+    assert any("second descriptor" in note and "second cleanup" in note for note in notes)
+    assert any("final action" in note and "third cleanup" in note for note in notes)

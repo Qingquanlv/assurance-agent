@@ -207,13 +207,14 @@ class Engine:
         self._invocation_root(invocation_id)
         if not isinstance(composition, FrozenComposition):
             raise TypeError("engine start requires a FrozenComposition")
-        if entrypoint not in composition.workflow.entrypoints:
-            raise EngineError(f"unknown entrypoint {entrypoint!r}")
         if _entry_exists(self._invocations_fd, invocation_id):
             return self._continue_start(invocation_id, composition, entrypoint)
+        if entrypoint not in composition.workflow.entrypoints:
+            raise EngineError(f"unknown entrypoint {entrypoint!r}")
         staging_name = f".{invocation_id}.invocation-init-{uuid.uuid4().hex}"
         staging_fd: int | None = None
         installed = False
+        cleanup_attempted = False
         try:
             os.mkdir(staging_name, mode=0o700, dir_fd=self._invocations_fd)
             os.fsync(self._invocations_fd)
@@ -229,16 +230,17 @@ class Engine:
                 entrypoint=entrypoint,
             )
             _initialization_boundary("lock_installed")
-            installed_now = self._install_invocation(staging_name, invocation_id)
+            installed_now = self._install_invocation(staging_name, invocation_id, staging_fd)
             if not installed_now:
-                _close_preserving_primary(
-                    staging_fd,
-                    None,
-                    "invocation initialization staging descriptor",
-                )
+                cleanup_fd = staging_fd
                 staging_fd = None
-                _remove_entry_at(self._invocations_fd, staging_name)
-                os.fsync(self._invocations_fd)
+                cleanup_attempted = True
+                _cleanup_staging(
+                    None,
+                    parent_fd=self._invocations_fd,
+                    name=staging_name,
+                    descriptor=cleanup_fd,
+                )
                 return self._continue_start(invocation_id, composition, entrypoint)
             installed = True
             return self._complete_start_at(
@@ -254,23 +256,23 @@ class Engine:
                     invocation_id,
                     staging_fd,
                 )
-            if not installed and _entry_exists(self._invocations_fd, staging_name):
-                if staging_fd is not None:
-                    _close_preserving_primary(
-                        staging_fd,
-                        error,
-                        "invocation initialization staging descriptor",
-                    )
-                    staging_fd = None
-                _remove_entry_at(self._invocations_fd, staging_name)
-                os.fsync(self._invocations_fd)
+            if not installed and not cleanup_attempted:
+                cleanup_fd = staging_fd
+                staging_fd = None
+                cleanup_attempted = True
+                _cleanup_staging(
+                    error,
+                    parent_fd=self._invocations_fd,
+                    name=staging_name,
+                    descriptor=cleanup_fd,
+                )
             raise
         finally:
             if staging_fd is not None:
-                _close_preserving_primary(
-                    staging_fd,
+                _cleanup_runtime_resources(
                     sys.exception(),
-                    "invocation initialization staging descriptor",
+                    store=None,
+                    descriptors=((staging_fd, "invocation initialization staging descriptor"),),
                 )
 
     def open(self, invocation_id: str, composition: FrozenComposition) -> InvocationHandle:
@@ -282,10 +284,11 @@ class Engine:
         claim_fd: int | None = None
         store: SnapshotStore | None = None
         try:
-            authenticate_invocation_lock(invocation_fd, composition.lock)
-            intent = authenticate_invocation_start_intent(
+            intent = self._authenticate_invocation_records(
+                invocation_id,
+                composition,
+                None,
                 invocation_fd,
-                lock_digest=composition.lock_digest,
             )
             preclaim_ledger = Ledger.at(
                 invocation_fd,
@@ -300,18 +303,25 @@ class Engine:
                 intent,
             )
             claim_fd = self._acquire_runner_claim(invocation_fd)
-            authenticate_invocation_lock(invocation_fd, composition.lock)
-            intent = authenticate_invocation_start_intent(
+            intent = self._authenticate_invocation_records(
+                invocation_id,
+                composition,
+                intent.entrypoint,
                 invocation_fd,
-                lock_digest=composition.lock_digest,
             )
             ledger = Ledger.at(
                 invocation_fd,
                 "ledger",
                 display_root=invocation_root / "ledger",
             )
+            self._authenticate_transition_identity(
+                invocation_id,
+                composition,
+                intent.entrypoint,
+                invocation_fd,
+                ledger,
+            )
             envelopes = ledger.read_all()
-            self._authenticate_bootstrap(invocation_id, composition, envelopes, intent)
             projection = fold_events(envelopes)
             if projection.invocation_id != invocation_id:
                 raise EngineError("invocation ledger identity does not match its path")
@@ -331,13 +341,23 @@ class Engine:
                 "workspace",
                 display_root=invocation_root / "workspace",
             )
-            try:
-                ledger.ensure_durable()
-            except OSError as error:
-                raise EnginePublicationIndeterminate(
-                    "authoritative ledger durability is indeterminate"
-                ) from error
+            self._ensure_ledger_durable(ledger)
+            _transition_boundary("head_recovery")
+            self._authenticate_transition_identity(
+                invocation_id,
+                composition,
+                intent.entrypoint,
+                invocation_fd,
+                ledger,
+            )
             store.recover_head_transaction(projection.head_tree_id)
+            self._authenticate_transition_identity(
+                invocation_id,
+                composition,
+                intent.entrypoint,
+                invocation_fd,
+                ledger,
+            )
             actual_tree_id = store.head_tree_id()
             expected_tree_id = projection.head_tree_id or _EMPTY_TREE_ID
             if actual_tree_id != expected_tree_id:
@@ -378,7 +398,21 @@ class Engine:
                 projection = fold_events(envelopes)
                 self._validate_workflow(composition, projection)
                 self._validate_history(composition, envelopes, projection)
+            self._authenticate_transition_identity(
+                invocation_id,
+                composition,
+                intent.entrypoint,
+                invocation_fd,
+                ledger,
+            )
             self._write_checkpoint(invocation_fd, envelopes, projection)
+            self._authenticate_transition_identity(
+                invocation_id,
+                composition,
+                intent.entrypoint,
+                invocation_fd,
+                ledger,
+            )
         except BaseException as error:
             _close_preserving_primary(invocation_fd, error, "invocation descriptor")
             raise
@@ -399,14 +433,26 @@ class Engine:
                     "invocation descriptor",
                 )
                 raise
-        return InvocationHandle(
-            invocation_id,
-            invocation_root,
-            composition.lock_digest,
-            intent.entrypoint,
-            composition,
-            invocation_fd,
-        )
+        try:
+            _transition_boundary("open_return")
+            self._authenticate_transition_identity(
+                invocation_id,
+                composition,
+                intent.entrypoint,
+                invocation_fd,
+                ledger,
+            )
+            return InvocationHandle(
+                invocation_id,
+                invocation_root,
+                composition.lock_digest,
+                intent.entrypoint,
+                composition,
+                invocation_fd,
+            )
+        except BaseException as error:
+            _close_preserving_primary(invocation_fd, error, "invocation descriptor")
+            raise
 
     def _continue_start(
         self,
@@ -423,10 +469,10 @@ class Engine:
                 invocation_fd,
             )
         finally:
-            _close_preserving_primary(
-                invocation_fd,
+            _cleanup_runtime_resources(
                 sys.exception(),
-                "invocation descriptor",
+                store=None,
+                descriptors=((invocation_fd, "invocation descriptor"),),
             )
 
     def _complete_start_at(
@@ -437,23 +483,56 @@ class Engine:
         invocation_fd: int,
     ) -> InvocationHandle:
         invocation_root = self._invocation_root(invocation_id)
-        authenticate_invocation_lock(invocation_fd, composition.lock)
-        intent = authenticate_invocation_start_intent(
+        intent = self._authenticate_invocation_records(
+            invocation_id,
+            composition,
+            entrypoint,
             invocation_fd,
-            lock_digest=composition.lock_digest,
-            entrypoint=entrypoint,
         )
         _initialization_boundary("before_recovery_root_fsync")
         os.fsync(self._invocations_fd)
         _initialization_boundary("after_recovery_root_fsync")
+        intent = self._authenticate_invocation_records(
+            invocation_id,
+            composition,
+            entrypoint,
+            invocation_fd,
+        )
+        preclaim_ledger = Ledger.at(
+            invocation_fd,
+            "ledger",
+            display_root=invocation_root / "ledger",
+        )
+        preclaim_envelopes = preclaim_ledger.read_all()
+        if preclaim_envelopes:
+            self._authenticate_bootstrap(
+                invocation_id,
+                composition,
+                preclaim_envelopes,
+                intent,
+            )
+            self._authenticate_invocation_records(
+                invocation_id,
+                composition,
+                entrypoint,
+                invocation_fd,
+            )
+            self._ensure_ledger_durable(preclaim_ledger)
+            self._authenticate_transition_identity(
+                invocation_id,
+                composition,
+                entrypoint,
+                invocation_fd,
+                preclaim_ledger,
+            )
         claim_fd = self._acquire_runner_claim(invocation_fd)
         store: SnapshotStore | None = None
         try:
-            authenticate_invocation_lock(invocation_fd, composition.lock)
-            intent = authenticate_invocation_start_intent(
+            intent = self._authenticate_invocation_records(
+                invocation_id,
+                composition,
+                entrypoint,
                 invocation_fd,
-                lock_digest=composition.lock_digest,
-                entrypoint=entrypoint,
             )
             ledger = Ledger.at(
                 invocation_fd,
@@ -474,14 +553,22 @@ class Engine:
                     {},
                     display_root=invocation_root / "workspace",
                 )
-            authenticate_invocation_lock(invocation_fd, composition.lock)
-            intent = authenticate_invocation_start_intent(
+            intent = self._authenticate_invocation_records(
+                invocation_id,
+                composition,
+                entrypoint,
                 invocation_fd,
-                lock_digest=composition.lock_digest,
-                entrypoint=entrypoint,
             )
             if envelopes:
                 self._authenticate_bootstrap(invocation_id, composition, envelopes, intent)
+                self._ensure_ledger_durable(ledger)
+                self._authenticate_transition_identity(
+                    invocation_id,
+                    composition,
+                    entrypoint,
+                    invocation_fd,
+                    ledger,
+                )
                 projection = fold_events(envelopes)
                 self._validate_workflow(composition, projection)
                 self._validate_history(composition, envelopes, projection)
@@ -509,33 +596,50 @@ class Engine:
                         payload=None,
                     ),
                 )
-                authenticate_invocation_lock(invocation_fd, composition.lock)
-                intent = authenticate_invocation_start_intent(
-                    invocation_fd,
-                    lock_digest=composition.lock_digest,
-                    entrypoint=entrypoint,
-                )
                 _initialization_boundary("before_ledger_bootstrap")
-                self._append(ledger, bootstrap, ())
-                _initialization_boundary("after_ledger_bootstrap")
-                envelopes = ledger.read_all()
-                authenticate_invocation_lock(invocation_fd, composition.lock)
-                intent = authenticate_invocation_start_intent(
-                    invocation_fd,
-                    lock_digest=composition.lock_digest,
+                envelopes = self._append_authenticated(
+                    context="bootstrap",
+                    invocation_id=invocation_id,
+                    composition=composition,
                     entrypoint=entrypoint,
+                    invocation_fd=invocation_fd,
+                    ledger=ledger,
+                    events=bootstrap,
+                    existing=(),
                 )
-                self._authenticate_bootstrap(invocation_id, composition, envelopes, intent)
+                _initialization_boundary("after_ledger_bootstrap")
                 projection = fold_events(envelopes)
                 self._validate_workflow(composition, projection)
                 self._validate_history(composition, envelopes, projection)
+            self._authenticate_transition_identity(
+                invocation_id,
+                composition,
+                entrypoint,
+                invocation_fd,
+                ledger,
+            )
             self._write_checkpoint(invocation_fd, envelopes, projection)
+            self._authenticate_transition_identity(
+                invocation_id,
+                composition,
+                entrypoint,
+                invocation_fd,
+                ledger,
+            )
         finally:
             _cleanup_runtime_resources(
                 sys.exception(),
                 store=store,
                 descriptors=((claim_fd, "invocation runner claim descriptor"),),
             )
+        _transition_boundary("start_return")
+        self._authenticate_transition_identity(
+            invocation_id,
+            composition,
+            entrypoint,
+            invocation_fd,
+            ledger,
+        )
         return InvocationHandle(
             invocation_id,
             invocation_root,
@@ -565,6 +669,22 @@ class Engine:
             raise InvocationDrift("invocation ledger bootstrap entrypoint differs from its start intent")
         if started.entrypoint not in composition.workflow.entrypoints:
             raise EngineError("invocation ledger bootstrap uses an unknown entrypoint")
+        if len(envelopes) < 3:
+            raise EngineError("invocation ledger lacks its canonical bootstrap")
+        graph_id = composition.workflow.entrypoints[started.entrypoint]
+        graph = composition.workflow.graphs[graph_id]
+        expected_graph = GraphStarted(graph_instance_id=graph_id, graph_id=graph_id)
+        expected_token = TokenOffered(
+            token_id=_start_token_id(graph_id, graph.start),
+            graph_instance_id=graph_id,
+            source=None,
+            target=graph.start,
+            payload=None,
+        )
+        if envelopes[1].event != expected_graph:
+            raise EngineError("invocation ledger bootstrap root graph input is not canonical")
+        if envelopes[2].event != expected_token:
+            raise EngineError("invocation ledger bootstrap root graph input is not canonical")
 
     def run_until_blocked(self, handle: InvocationHandle) -> RunResult:
         _composition, _invocation_root, invocation_fd = self._validated_handle(handle)
@@ -572,7 +692,11 @@ class Engine:
         try:
             return self._run_until_blocked_claimed(handle)
         finally:
-            os.close(claim_fd)
+            _cleanup_runtime_resources(
+                sys.exception(),
+                store=None,
+                descriptors=((claim_fd, "invocation runner claim descriptor"),),
+            )
 
     def _run_until_blocked_claimed(self, handle: InvocationHandle) -> RunResult:
         composition, invocation_root, invocation_fd = self._validated_handle(handle)
@@ -649,7 +773,16 @@ class Engine:
 
             plan = plan_next(composition.workflow, projection)
             if plan.events:
-                self._append(ledger, plan.events, envelopes)
+                self._append_authenticated(
+                    context="planner_append",
+                    invocation_id=handle.invocation_id,
+                    composition=composition,
+                    entrypoint=handle._entrypoint,
+                    invocation_fd=invocation_fd,
+                    ledger=ledger,
+                    events=plan.events,
+                    existing=envelopes,
+                )
                 continue
             if plan.tasks:
                 try:
@@ -708,7 +841,11 @@ class Engine:
                 raise EngineError("invocation runner claim lost its stable anchor")
             return descriptor
         except BaseException:
-            os.close(descriptor)
+            _close_preserving_primary(
+                descriptor,
+                sys.exception(),
+                "invocation runner claim descriptor",
+            )
             raise
 
     def resume(
@@ -723,7 +860,11 @@ class Engine:
         try:
             return self._resume_claimed(handle, action=action, payload=payload)
         finally:
-            os.close(claim_fd)
+            _cleanup_runtime_resources(
+                sys.exception(),
+                store=None,
+                descriptors=((claim_fd, "invocation runner claim descriptor"),),
+            )
 
     def _resume_claimed(
         self,
@@ -763,8 +904,16 @@ class Engine:
             InterruptResumed(interrupt_id=pending.interrupt_id, action=action, payload=payload),
             NodeCompleted(activation_id=activation.activation_id, output=output),
         )
-        self._append(ledger, events, envelopes)
-        refreshed = ledger.read_all()
+        refreshed = self._append_authenticated(
+            context="resume_append",
+            invocation_id=handle.invocation_id,
+            composition=composition,
+            entrypoint=handle._entrypoint,
+            invocation_fd=invocation_fd,
+            ledger=ledger,
+            events=events,
+            existing=envelopes,
+        )
         refreshed_projection = fold_events(refreshed)
         self._validate_workflow(composition, refreshed_projection)
         self._write_checkpoint(invocation_fd, refreshed, refreshed_projection)
@@ -810,6 +959,41 @@ class Engine:
             ),
         )
 
+    def _require_invocation_anchor(self, invocation_id: str, invocation_fd: int) -> None:
+        self._assert_namespace_path_current()
+        try:
+            current = os.stat(
+                invocation_id,
+                dir_fd=self._invocations_fd,
+                follow_symlinks=False,
+            )
+            opened = os.fstat(invocation_fd)
+        except OSError as error:
+            raise InvocationDrift("invocation directory lost its final-name anchor") from error
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or not stat.S_ISDIR(opened.st_mode)
+            or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise InvocationDrift("invocation directory identity differs from its final-name anchor")
+
+    def _authenticate_invocation_records(
+        self,
+        invocation_id: str,
+        composition: FrozenComposition,
+        entrypoint: str | None,
+        invocation_fd: int,
+    ) -> InvocationStartIntent:
+        self._require_invocation_anchor(invocation_id, invocation_fd)
+        authenticate_invocation_lock(invocation_fd, composition.lock)
+        intent = authenticate_invocation_start_intent(
+            invocation_fd,
+            lock_digest=composition.lock_digest,
+            entrypoint=entrypoint,
+        )
+        self._require_invocation_anchor(invocation_id, invocation_fd)
+        return intent
+
     def _authenticate_transition_identity(
         self,
         invocation_id: str,
@@ -818,17 +1002,24 @@ class Engine:
         invocation_fd: int,
         ledger: Ledger,
     ) -> None:
-        authenticate_invocation_lock(invocation_fd, composition.lock)
-        intent = authenticate_invocation_start_intent(
+        intent = self._authenticate_invocation_records(
+            invocation_id,
+            composition,
+            entrypoint,
             invocation_fd,
-            lock_digest=composition.lock_digest,
-            entrypoint=entrypoint,
         )
+        envelopes = ledger.read_bootstrap()
         self._authenticate_bootstrap(
             invocation_id,
             composition,
-            ledger.read_all(),
+            envelopes,
             intent,
+        )
+        self._authenticate_invocation_records(
+            invocation_id,
+            composition,
+            entrypoint,
+            invocation_fd,
         )
 
     def _validated_handle(self, handle: InvocationHandle) -> tuple[FrozenComposition, Path, int]:
@@ -841,33 +1032,17 @@ class Engine:
         composition = handle._composition
         if composition.lock_digest != handle.lock_digest:
             raise EngineError("invocation handle lock digest mismatch")
-        try:
-            current_fd = self._open_invocation(handle.invocation_id)
-        except EngineError as error:
-            raise EngineError("invocation handle no longer names a trusted invocation directory") from error
-        try:
-            current = os.fstat(current_fd)
-            bound = os.fstat(handle._invocation_fd)
-            if (current.st_dev, current.st_ino) != (bound.st_dev, bound.st_ino):
-                raise EngineError("invocation handle is stale after namespace replacement")
-        finally:
-            os.close(current_fd)
-        authenticate_invocation_lock(handle._invocation_fd, composition.lock)
-        intent = authenticate_invocation_start_intent(
-            handle._invocation_fd,
-            lock_digest=composition.lock_digest,
-            entrypoint=handle._entrypoint,
-        )
-        envelopes = Ledger.at(
+        ledger = Ledger.at(
             handle._invocation_fd,
             "ledger",
             display_root=expected_root / "ledger",
-        ).read_all()
-        self._authenticate_bootstrap(
+        )
+        self._authenticate_transition_identity(
             handle.invocation_id,
             composition,
-            envelopes,
-            intent,
+            handle._entrypoint,
+            handle._invocation_fd,
+            ledger,
         )
         return composition, expected_root, handle._invocation_fd
 
@@ -944,7 +1119,12 @@ class Engine:
         except FileNotFoundError as error:
             raise EngineError(f"invocation does not exist: {invocation_id}") from error
 
-    def _install_invocation(self, staging_name: str, invocation_id: str) -> bool:
+    def _install_invocation(
+        self,
+        staging_name: str,
+        invocation_id: str,
+        invocation_fd: int,
+    ) -> bool:
         lock_fd = os.open(
             ".namespace.lock",
             os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
@@ -977,9 +1157,11 @@ class Engine:
             except FileExistsError:
                 return False
             _initialization_boundary("after_invocation_rename")
+            self._require_invocation_anchor(invocation_id, invocation_fd)
             _initialization_boundary("before_root_fsync")
             os.fsync(self._invocations_fd)
             _initialization_boundary("after_root_fsync")
+            self._require_invocation_anchor(invocation_id, invocation_fd)
             return True
         finally:
             _close_preserving_primary(
@@ -988,12 +1170,34 @@ class Engine:
                 "invocation namespace lock descriptor",
             )
 
-    def _append(
+    def _append_authenticated(
         self,
+        *,
+        context: Literal["bootstrap", "planner_append", "resume_append"],
+        invocation_id: str,
+        composition: FrozenComposition,
+        entrypoint: str,
+        invocation_fd: int,
         ledger: Ledger,
         events: tuple[RuntimeEvent, ...],
         existing: tuple[EventEnvelope, ...],
-    ) -> None:
+    ) -> tuple[EventEnvelope, ...]:
+        _transition_boundary(context)
+        if context == "bootstrap":
+            self._authenticate_invocation_records(
+                invocation_id,
+                composition,
+                entrypoint,
+                invocation_fd,
+            )
+        else:
+            self._authenticate_transition_identity(
+                invocation_id,
+                composition,
+                entrypoint,
+                invocation_fd,
+                ledger,
+            )
         expected_next_seq = existing[-1].seq + 1 if existing else 1
         try:
             append_validated_batch(ledger, events, expected_next_seq=expected_next_seq)
@@ -1001,6 +1205,43 @@ class Engine:
             raise EngineConflictError("another runner advanced the invocation") from error
         except LedgerPublicationIndeterminate as error:
             raise EnginePublicationIndeterminate("ledger publication outcome is indeterminate") from error
+        if context == "bootstrap":
+            refreshed = ledger.read_all()
+            intent = self._authenticate_invocation_records(
+                invocation_id,
+                composition,
+                entrypoint,
+                invocation_fd,
+            )
+            self._authenticate_bootstrap(
+                invocation_id,
+                composition,
+                refreshed,
+                intent,
+            )
+            self._authenticate_invocation_records(
+                invocation_id,
+                composition,
+                entrypoint,
+                invocation_fd,
+            )
+            return refreshed
+        self._authenticate_transition_identity(
+            invocation_id,
+            composition,
+            entrypoint,
+            invocation_fd,
+            ledger,
+        )
+        return ledger.read_all()
+
+    def _ensure_ledger_durable(self, ledger: Ledger) -> None:
+        try:
+            ledger.ensure_durable()
+        except OSError as error:
+            raise EnginePublicationIndeterminate(
+                "authoritative ledger durability is indeterminate"
+            ) from error
 
     def _write_checkpoint(
         self,
@@ -1171,7 +1412,11 @@ def _remove_entry_at(parent_fd: int, name: str) -> None:
             _remove_entry_at(child_fd, child_name)
         os.fsync(child_fd)
     finally:
-        os.close(child_fd)
+        _close_preserving_primary(
+            child_fd,
+            sys.exception(),
+            "owned initialization staging child descriptor",
+        )
     os.rmdir(name, dir_fd=parent_fd)
 
 
@@ -1193,6 +1438,7 @@ def _cleanup_runtime_resources(
     *,
     store: SnapshotStore | None,
     descriptors: tuple[tuple[int, str], ...],
+    actions: tuple[tuple[Callable[[], None], str], ...] = (),
 ) -> None:
     cleanup_failure: BaseException | None = None
 
@@ -1215,11 +1461,44 @@ def _cleanup_runtime_resources(
             os.close(descriptor)
         except BaseException as error:
             record(error, kind)
+    for action, kind in actions:
+        try:
+            action()
+        except BaseException as error:
+            record(error, kind)
     if primary is None and cleanup_failure is not None:
         raise cleanup_failure
 
 
+def _cleanup_staging(
+    primary: BaseException | None,
+    *,
+    parent_fd: int,
+    name: str,
+    descriptor: int | None,
+) -> None:
+    def remove() -> None:
+        if _entry_exists(parent_fd, name):
+            _remove_entry_at(parent_fd, name)
+
+    _cleanup_runtime_resources(
+        primary,
+        store=None,
+        descriptors=(
+            () if descriptor is None else ((descriptor, "invocation initialization staging descriptor"),)
+        ),
+        actions=(
+            (remove, "invocation initialization staging removal"),
+            (lambda: os.fsync(parent_fd), "invocation namespace fsync"),
+        ),
+    )
+
+
 def _initialization_boundary(name: str) -> None:
+    del name
+
+
+def _transition_boundary(name: str) -> None:
     del name
 
 

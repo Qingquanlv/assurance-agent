@@ -14,6 +14,7 @@ from typing import cast
 import pytest
 import yaml
 
+import graph_engine.composition.resolver as resolver_runtime
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.composition import (
     CapabilityBindingEntry,
@@ -37,8 +38,10 @@ from graph_engine.composition import (
     ResourceRegistry,
     ResolutionError,
     ResolutionRequest,
+    SourceFile,
     SourceKey,
     SourceRole,
+    SourceSnapshot,
     SchemaEntry,
     SchemaRegistry,
     TaskHandlerEntry,
@@ -52,7 +55,7 @@ from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import RegistryConflict
 from graph_engine.composition.resolver import _capture_editable_engine_snapshot
 from graph_engine.composition.sources import _snapshot_installed_engine_distribution
-from graph_engine.canonical import canonical_digest, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.graph.compiler import CompileError
 from graph_engine.graph.schema import WorkflowDef
@@ -77,6 +80,8 @@ from graph_engine.plugin_api import (
     ValidationContext,
     ValidationResult,
 )
+from graph_engine.runtime.engine import Engine
+from graph_engine.runtime.invocation_lock import InvocationDrift
 
 
 class _Handler:
@@ -2940,3 +2945,365 @@ def test_installed_engine_lock_identity_is_relocatable(tmp_path: Path) -> None:
     assert first.digest == second.digest
     assert _locked_source(first) == _locked_source(second)
     assert "root" not in thaw_json(_locked_source(first).identity)
+
+
+def _write_lock_matrix_config_plugin(path: Path) -> None:
+    path.mkdir()
+    (path / "plugin.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1",
+                "plugin_id": "toy.config",
+                "plugin_version": "1.0.0",
+                "engine_api": ENGINE_API_VERSION,
+                "dependencies": [],
+                "files": [],
+                "bindings": [],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _lock_matrix_contribution(
+    *,
+    schema: bytes = b'{"type":"object"}',
+    resource: bytes = b"base resource\n",
+    binding_data: object = None,
+) -> PluginContribution:
+    return PluginContribution(
+        task_handlers={"toy.runtime.greet": _Handler()},
+        schemas=(SchemaContribution("toy.runtime.schema", "application/schema+json", schema),),
+        resources=(ResourceContribution("toy.runtime.resource", "text/plain", resource),),
+        bindings=(
+            CapabilityBindingContribution(
+                capability_id="toy.runtime.alias",
+                target_capability_id="toy.runtime.greet",
+                data={"mode": "base"} if binding_data is None else binding_data,
+                resource_ids=("toy.runtime.resource",),
+            ),
+        ),
+    )
+
+
+def _lock_matrix_descriptor(
+    *,
+    version: str = "1.0.0",
+    dependencies: tuple[PluginDependency, ...] = (),
+) -> PluginDescriptor:
+    return PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id="toy.runtime",
+        plugin_version=version,
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=("toy.runtime.greet",),
+        commit_validators=(),
+        dependencies=dependencies,
+        schemas=("toy.runtime.schema",),
+        resources=("toy.runtime.resource",),
+        bindings=("toy.runtime.alias",),
+    )
+
+
+def _refresh_lock_matrix_product_distribution(
+    distribution: metadata.Distribution,
+    provider: _ProductProvider,
+) -> None:
+    manifest = provider._manifest
+    assert manifest.source is not None
+    _replace_distribution_file(
+        distribution,
+        "toy_product/product-declaration.json",
+        canonical_json_bytes(
+            {
+                "schema_version": "1",
+                "kind": "product",
+                "source": manifest.source.model_dump(mode="json"),
+                "manifest": _manifest_declaration(manifest),
+            }
+        ),
+    )
+
+
+def _refresh_lock_matrix_plugin_distribution(
+    distribution: metadata.Distribution,
+    provider: _PluginProvider,
+) -> None:
+    descriptor = provider._descriptors[0]
+    assert descriptor.source is not None
+    _replace_distribution_file(
+        distribution,
+        "toy_runtime/plugin-declaration.json",
+        canonical_json_bytes(
+            {
+                "schema_version": "1",
+                "kind": "plugin",
+                "source": descriptor.source.model_dump(mode="json"),
+                "descriptor": descriptor.model_dump(mode="json"),
+            }
+        ),
+    )
+
+
+def _locked_file_digest(files: object, suffix: str) -> str:
+    matches = [item.sha256 for item in files if item.path.endswith(suffix)]  # type: ignore[union-attr]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _lock_matrix_facets(composition: FrozenComposition) -> dict[str, object]:
+    lock = composition.lock
+    plugins = {plugin.plugin_id: plugin for plugin in lock.plugins}
+    runtime = plugins["toy.runtime"]
+    config = plugins["toy.config"]
+    engine_identity = cast(dict[str, object], thaw_json(lock.engine.identity))
+    manifest = cast(dict[str, object], thaw_json(lock.product.manifest))
+    compiled = cast(dict[str, object], thaw_json(lock.compiled_workflow))
+    binding_projection = cast(list[dict[str, JSONValue]], thaw_json(lock.capability_bindings))
+    semantic_bindings = [
+        {
+            key: value
+            for key, value in binding.items()
+            if key not in {"implementation_digest", "target_implementation"}
+        }
+        for binding in binding_projection
+    ]
+    return {
+        "engine_code": tuple((item.path, item.sha256) for item in lock.engine.files),
+        "engine_version": engine_identity["version"],
+        "product_code": _locked_file_digest(lock.product.source.files, "toy_product/__init__.py"),
+        "product_version": lock.product.product_version,
+        "plugin_code": _locked_file_digest(runtime.source.files, "toy_runtime/__init__.py"),
+        "plugin_version": runtime.plugin_version,
+        "config_bytes": config.source.digest,
+        "dependencies": tuple(
+            (dependency.plugin_id, dependency.version_specifier) for dependency in runtime.dependencies
+        ),
+        "schema": lock.registry_digests.schemas,
+        "resource": lock.registry_digests.resources,
+        "binding": canonical_digest(cast(JSONValue, semantic_bindings)),
+        "validated_config": lock.configuration_digest,
+        "graph_definition": canonical_digest(cast(JSONValue, manifest["workflow"])),
+        "compiled_artifact": lock.compiled_workflow_digest,
+        "entrypoint_map": canonical_digest(cast(JSONValue, compiled["entrypoints"])),
+    }
+
+
+_LOCK_MATRIX_ALLOWED_CHANGES = {
+    "engine_code": {"engine_code"},
+    "engine_version": {"engine_version"},
+    "product_code": {"product_code"},
+    "product_version": {"product_version"},
+    "plugin_code": {"plugin_code"},
+    "plugin_version": {"plugin_version"},
+    "config_bytes": {"config_bytes"},
+    "dependencies": {"dependencies"},
+    "schema": {"schema"},
+    "resource": {"resource"},
+    "binding": {"binding"},
+    "validated_config": {"validated_config"},
+    "graph_definition": {"graph_definition", "compiled_artifact"},
+    "compiled_artifact": {"compiled_artifact"},
+    "entrypoint_map": {"graph_definition", "compiled_artifact", "entrypoint_map"},
+}
+
+
+@pytest.mark.parametrize("facet", tuple(_LOCK_MATRIX_ALLOWED_CHANGES))
+def test_engine_open_rejects_each_independently_reresolved_lock_facet_without_claim_or_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    facet: str,
+) -> None:
+    config_root = tmp_path / "config"
+    _write_lock_matrix_config_plugin(config_root)
+    workflow = _workflow(
+        "toy.runtime.greet",
+        schemas=("toy.runtime.schema",),
+        resources=("toy.runtime.resource",),
+    )
+    product_provider = _ProductProvider(
+        _manifest(
+            plugins=(
+                PluginRequirement(plugin_id="toy.config", version_specifier="==1.0.0"),
+                PluginRequirement(plugin_id="toy.runtime", version_specifier=">=1,<2"),
+            ),
+            workflow=workflow,
+            configuration={"toy.runtime": {"mode": "base"}},
+        )
+    )
+    runtime_provider = _PluginProvider(
+        "toy.runtime",
+        descriptors=(_lock_matrix_descriptor(),),
+        contribution=_lock_matrix_contribution(),
+    )
+    platform, plugins, product_source = _platform(
+        tmp_path / "wheels",
+        monkeypatch,
+        product=product_provider,
+        plugins={"toy.runtime": runtime_provider},
+    )
+    assert product_source is not None
+    metadata_provider = cast(_MetadataProvider, platform._metadata_provider)
+    product_distribution = metadata_provider._distributions["toy-product"]
+    product_provider._manifest = product_provider._manifest.model_copy(
+        update={"config_plugin_paths": (str(config_root.resolve()),)}
+    )
+    _refresh_lock_matrix_product_distribution(product_distribution, product_provider)
+    request = ResolutionRequest(
+        product=product_source,
+        plugins=(plugins["toy.runtime"], ConfigTreePluginSource(path=config_root)),
+    )
+    original = platform.resolve(request)
+    engine_root = tmp_path / "engine"
+    with Engine(engine_root) as engine:
+        engine.start(original, entrypoint="hello", invocation_id="facet-drift").close()
+    invocation = engine_root / "invocations" / "facet-drift"
+    before_ledger = b"".join(
+        path.read_bytes() for path in sorted((invocation / "ledger").glob("[0-9]*.json"))
+    )
+    runtime_distribution = metadata_provider._distributions["toy-runtime"]
+
+    if facet in {"engine_code", "engine_version"}:
+        snapshot = resolver_runtime._capture_engine_snapshot()
+        if facet == "engine_code":
+            changed = SourceSnapshot.from_identity(
+                snapshot.identity,
+                (*snapshot.files, SourceFile.from_bytes("facet-engine.txt", b"changed\n")),
+            )
+        else:
+            changed = SourceSnapshot.from_identity(
+                replace(snapshot.identity, version="9.9.9"),
+                snapshot.files,
+            )
+        monkeypatch.setattr(resolver_runtime, "_capture_engine_snapshot", lambda: changed)
+    elif facet == "product_code":
+        path = Path(product_distribution.locate_file("toy_product/__init__.py"))
+        _replace_distribution_file(
+            product_distribution,
+            "toy_product/__init__.py",
+            path.read_bytes() + b"# product code drift\n",
+        )
+    elif facet == "product_version":
+        assert product_provider._manifest.source is not None
+        source = product_provider._manifest.source.model_copy(update={"version": "1.0.1"})
+        product_provider._manifest = product_provider._manifest.model_copy(
+            update={"product_version": "1.0.1", "source": source}
+        )
+        _refresh_lock_matrix_product_distribution(product_distribution, product_provider)
+        _replace_distribution_file(
+            product_distribution,
+            "toy_product-1.0.0.dist-info/METADATA",
+            b"Metadata-Version: 2.1\nName: toy-product\nVersion: 1.0.1\n",
+        )
+        metadata_provider._distributions["toy-product"] = metadata.Distribution.at(product_distribution._path)
+    elif facet == "plugin_code":
+        path = Path(runtime_distribution.locate_file("toy_runtime/__init__.py"))
+        _replace_distribution_file(
+            runtime_distribution,
+            "toy_runtime/__init__.py",
+            path.read_bytes() + b"# plugin code drift\n",
+        )
+    elif facet == "plugin_version":
+        descriptor = runtime_provider._descriptors[0]
+        assert descriptor.source is not None
+        source = descriptor.source.model_copy(update={"version": "1.0.1"})
+        runtime_provider._descriptors = (
+            descriptor.model_copy(update={"plugin_version": "1.0.1", "source": source}),
+        )
+        _refresh_lock_matrix_plugin_distribution(runtime_distribution, runtime_provider)
+        _replace_distribution_file(
+            runtime_distribution,
+            "toy_runtime-1.0.0.dist-info/METADATA",
+            b"Metadata-Version: 2.1\nName: toy-runtime\nVersion: 1.0.1\n",
+        )
+        metadata_provider._distributions["toy-runtime"] = metadata.Distribution.at(runtime_distribution._path)
+    elif facet == "config_bytes":
+        plugin_yaml = config_root / "plugin.yaml"
+        plugin_yaml.write_bytes(plugin_yaml.read_bytes() + b"# config byte drift\n")
+    elif facet == "dependencies":
+        descriptor = runtime_provider._descriptors[0]
+        runtime_provider._descriptors = (
+            descriptor.model_copy(update={"dependencies": (PluginDependency("toy.config", "==1.0.0"),)}),
+        )
+        _refresh_lock_matrix_plugin_distribution(runtime_distribution, runtime_provider)
+    elif facet == "schema":
+        runtime_provider._contribution = _lock_matrix_contribution(
+            schema=b'{"type":"object","required":["changed"]}'
+        )
+    elif facet == "resource":
+        runtime_provider._contribution = _lock_matrix_contribution(resource=b"changed resource\n")
+    elif facet == "binding":
+        runtime_provider._contribution = _lock_matrix_contribution(binding_data={"mode": "changed"})
+    elif facet == "validated_config":
+        product_provider._manifest = product_provider._manifest.model_copy(
+            update={"configuration": {"toy.runtime": {"mode": "changed"}}}
+        )
+        _refresh_lock_matrix_product_distribution(product_distribution, product_provider)
+    elif facet == "graph_definition":
+        document = workflow.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        document["graphs"]["root"]["nodes"]["greet"]["input"] = {"changed": True}
+        changed_workflow = WorkflowDef.model_validate(document)
+        product_provider._manifest = product_provider._manifest.model_copy(
+            update={"workflow": changed_workflow}
+        )
+        _refresh_lock_matrix_product_distribution(product_distribution, product_provider)
+    elif facet == "compiled_artifact":
+        real_compile = resolver_runtime.compile_workflow
+
+        def compile_with_changed_artifact(
+            selected_workflow: WorkflowDef,
+            registries: RegistrySet,
+        ) -> object:
+            compiled = real_compile(selected_workflow, registries)
+            changed = compiled.model_copy(update={"name": f"{compiled.name}-changed"})
+            payload = cast(
+                JSONValue,
+                changed.model_dump(mode="json", by_alias=True, exclude={"digest"}),
+            )
+            return changed.model_copy(update={"digest": canonical_digest(payload)})
+
+        monkeypatch.setattr(resolver_runtime, "compile_workflow", compile_with_changed_artifact)
+    else:
+        changed_workflow = _workflow(
+            "toy.runtime.greet",
+            schemas=("toy.runtime.schema",),
+            resources=("toy.runtime.resource",),
+            entrypoints={"alternate": "root", "hello": "root"},
+        )
+        product_provider._manifest = product_provider._manifest.model_copy(
+            update={
+                "entrypoints": dict(changed_workflow.entrypoints),
+                "workflow": changed_workflow,
+            }
+        )
+        _refresh_lock_matrix_product_distribution(product_distribution, product_provider)
+
+    for module_name in tuple(sys.modules):
+        if module_name in {"toy_product", "toy_runtime"}:
+            sys.modules.pop(module_name, None)
+    drifted = RegistryPlatform(metadata_provider=metadata_provider).resolve(request)
+    original_facets = _lock_matrix_facets(original)
+    drifted_facets = _lock_matrix_facets(drifted)
+    changed_facets = {name for name, value in original_facets.items() if drifted_facets[name] != value}
+    assert facet in changed_facets
+    assert changed_facets <= _LOCK_MATRIX_ALLOWED_CHANGES[facet]
+    assert drifted.lock.canonical_bytes != original.lock.canonical_bytes
+    claims = 0
+
+    def reject_claim(self: Engine, invocation_fd: int) -> int:
+        del self, invocation_fd
+        nonlocal claims
+        claims += 1
+        raise AssertionError("runner claim must not be attempted")
+
+    monkeypatch.setattr(Engine, "_acquire_runner_claim", reject_claim)
+    with Engine(engine_root) as engine, pytest.raises(InvocationDrift):
+        engine.open("facet-drift", drifted)
+
+    assert claims == 0
+    assert (
+        b"".join(path.read_bytes() for path in sorted((invocation / "ledger").glob("[0-9]*.json")))
+        == before_ledger
+    )

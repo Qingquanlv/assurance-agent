@@ -1651,6 +1651,68 @@ def test_open_durably_syncs_linked_success_before_clearing_head_journal(
     assert not journal.exists()
 
 
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires process-crash fork semantics")
+def test_open_authenticates_before_head_recovery_and_leaves_workspace_unchanged_on_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    armed = False
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        nonlocal armed
+        (context.workspace_root / "out.txt").write_bytes(b"candidate")
+        armed = True
+        return TaskOutcome.succeeded("done")
+
+    composition = _nested_task_interrupt_product(handler)
+    root = tmp_path / "head-recovery-guard"
+    with Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as bootstrap:
+        bootstrap.start(composition, entrypoint="main", invocation_id="guarded").close()
+    process_id = os.fork()
+    if process_id == 0:
+
+        def crash_after_success_link(name: str) -> None:
+            if armed and name == "final_installed":
+                os._exit(91)
+
+        ledger_runtime._append_boundary = crash_after_success_link
+        child_engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
+        child_handle = child_engine.open("guarded", composition)
+        child_engine.run_until_blocked(child_handle)
+        os._exit(0)
+
+    _child, status = os.waitpid(process_id, 0)
+    assert os.waitstatus_to_exitcode(status) == 91
+    invocation = root / "invocations" / "guarded"
+    workspace = invocation / "workspace"
+    journal = workspace / ".HEAD-transaction.json"
+    head = workspace / "HEAD.json"
+    assert journal.exists()
+    before_journal = journal.read_bytes()
+    before_head = head.read_bytes()
+    before_ledger = b"".join(
+        path.read_bytes() for path in sorted((invocation / "ledger").glob("[0-9]*.json"))
+    )
+
+    def drift_before_recovery(context: str) -> None:
+        if context == "head_recovery":
+            (invocation / "invocation.lock.json").unlink()
+
+    monkeypatch.setattr(engine_runtime, "_transition_boundary", drift_before_recovery, raising=False)
+    with (
+        Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as engine,
+        pytest.raises(InvocationDrift),
+    ):
+        engine.open("guarded", composition)
+
+    assert journal.read_bytes() == before_journal
+    assert head.read_bytes() == before_head
+    assert (
+        b"".join(path.read_bytes() for path in sorted((invocation / "ledger").glob("[0-9]*.json")))
+        == before_ledger
+    )
+
+
 @pytest.mark.parametrize("cut", ["unlink", "directory_fsync"])
 def test_post_success_journal_clear_fault_stops_before_successor_and_recovers(
     tmp_path: Path,
@@ -3414,7 +3476,7 @@ def test_leaf_swap_after_handle_binding_is_rejected_as_stale(
     outside.mkdir()
     invocation.symlink_to(outside, target_is_directory=True)
 
-    with pytest.raises(EngineError, match="trusted|stale"):
+    with pytest.raises(InvocationDrift, match="anchor|directory|identity"):
         engine.run_until_blocked(handle)
     assert tuple(outside.iterdir()) == ()
 

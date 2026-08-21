@@ -147,6 +147,40 @@ class Ledger:
         finally:
             os.close(root_fd)
 
+    def read_bootstrap(self) -> tuple[EventEnvelope, ...]:
+        """Read and authenticate only the unique sequence-one batch."""
+        try:
+            root_fd = self._open_root(create=False)
+        except FileNotFoundError:
+            return ()
+        try:
+            candidates: list[str] = []
+            try:
+                names = os.listdir(root_fd)
+            except OSError as error:
+                raise LedgerIntegrityError("cannot enumerate ledger directory") from error
+            for name in names:
+                match = _FINAL_BATCH.fullmatch(name)
+                if match is not None and int(match.group("first")) == 1:
+                    candidates.append(name)
+            if len(candidates) != 1:
+                raise LedgerIntegrityError("ledger must contain one canonical bootstrap batch")
+            name = candidates[0]
+            envelopes = _read_batch_at(root_fd, name)
+            match = _FINAL_BATCH.fullmatch(name)
+            assert match is not None
+            if (envelopes[0].seq, envelopes[-1].seq) != (
+                int(match.group("first")),
+                int(match.group("last")),
+            ):
+                raise LedgerIntegrityError("canonical bootstrap batch range is invalid")
+            for expected_seq, envelope in enumerate(envelopes, start=1):
+                if envelope.seq != expected_seq or not envelope.has_valid_digest():
+                    raise LedgerIntegrityError("canonical bootstrap batch is invalid")
+            return envelopes
+        finally:
+            os.close(root_fd)
+
     def ensure_durable(self) -> None:
         """Establish a durability barrier for every currently visible ledger entry."""
         root_fd = self._open_root(create=False)

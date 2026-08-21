@@ -497,6 +497,7 @@ class Scheduler:
             )
 
             def authorize_publish() -> None:
+                self._guard_transition()
                 self._require_live_lease(result.lease)
 
             def publish_success(previous_tree_id: str, tree_id: str) -> None:

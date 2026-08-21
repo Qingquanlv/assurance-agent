@@ -1346,6 +1346,37 @@ def test_failed_new_head_transaction_preserves_prior_recovery_journal(tmp_path: 
     assert store.read_head("value.txt") == b"base"
 
 
+def test_finalize_candidate_reauthorizes_immediately_before_head_publication(
+    tmp_path: Path,
+) -> None:
+    store = SnapshotStore.create(tmp_path / "store", {"value.txt": b"base"})
+    before_tree_id = store.head_tree_id()
+    before_head = (store.root / "HEAD.json").read_bytes()
+    attempt = store.create_attempt("attempt-1")
+    (attempt.root / "value.txt").write_bytes(b"candidate")
+    candidate = attempt.seal()
+    authorizations = 0
+
+    def authorize_publish() -> None:
+        nonlocal authorizations
+        authorizations += 1
+        if authorizations == 2:
+            raise RuntimeError("identity drift before HEAD publication")
+
+    with pytest.raises(RuntimeError, match="identity drift"):
+        store.finalize_candidate(
+            candidate,
+            ResourceClaims(writes=("value.txt",)),
+            authorize_publish=authorize_publish,
+            publish_success=lambda _previous, _tree: None,
+        )
+
+    assert authorizations == 2
+    assert store.head_tree_id() == before_tree_id
+    assert (store.root / "HEAD.json").read_bytes() == before_head
+    assert not (store.root / ".HEAD-transaction.json").exists()
+
+
 def test_paired_layout_and_lock_replacement_cannot_change_lock_domain(tmp_path: Path) -> None:
     store = SnapshotStore.create(tmp_path / "store", {})
     candidate = store.create_attempt("attempt-1").seal()
