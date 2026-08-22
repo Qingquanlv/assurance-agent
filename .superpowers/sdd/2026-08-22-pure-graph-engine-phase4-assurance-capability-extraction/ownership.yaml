@@ -1,4 +1,5 @@
 # Phase 4 capability ownership ledger. Migration authority; not loaded at runtime.
+# Task 13: quality operations and validators extracted; operation/validator rows stay planned.
 schema_version: '1'
 dependencies:
   assurance.intake: []

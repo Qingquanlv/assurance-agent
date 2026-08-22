@@ -189,6 +189,12 @@ class TraceRow(BaseModel):
     issue_ids: tuple[str, ...] = ()
     evidence_refs: tuple[str, ...] = ()
 
+    @property
+    def test_path(self) -> str:
+        if not self.covering_tests:
+            return ""
+        return self.covering_tests[0].file
+
 
 class TraceSource(BaseModel):
     model_config = _FROZEN

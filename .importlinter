@@ -96,6 +96,14 @@ forbidden_modules =
     assurance_execution.validators
     assurance_execution.resource_loader
 
+[importlinter:contract:healing-no-quality]
+name = healing must not import quality
+type = forbidden
+source_modules =
+    assurance_healing
+forbidden_modules =
+    assurance_quality
+
 [importlinter:contract:quality-no-legacy]
 name = quality must not import legacy Assurance packages
 type = forbidden

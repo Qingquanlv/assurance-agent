@@ -10,7 +10,11 @@ from graph_engine.plugin_api import (
     SchemaContribution,
 )
 
+from assurance_quality.operations import quality_handlers
 from assurance_quality.resource_loader import resource_bytes
+from assurance_quality.validators.issues import IssueValidator, ProblemApplyValidator
+from assurance_quality.validators.metrics import CrossArtifactValidator, MetricsValidator
+from assurance_quality.validators.trace import TraceValidator
 
 QUALITY_SOURCE = ProviderSource(
     distribution="assurance-quality",
@@ -27,6 +31,47 @@ QUALITY_DEPENDENCIES: tuple[PluginDependency, ...] = (
     PluginDependency("assurance.generation", "==0.1.0"),
     PluginDependency("assurance.execution", "==0.1.0"),
     PluginDependency("assurance.healing", "==0.1.0"),
+)
+
+QUALITY_HANDLER_IDS: tuple[str, ...] = (
+    "assurance.quality.aggregate-nightly-metrics",
+    "assurance.quality.apply-problem-review",
+    "assurance.quality.build-coverage-gap-signals",
+    "assurance.quality.collect-adversarial-yield",
+    "assurance.quality.collect-diff-coverage",
+    "assurance.quality.collect-observations",
+    "assurance.quality.collect-pr-metrics-batch",
+    "assurance.quality.compute-assertion-strength",
+    "assurance.quality.compute-auth-matrix",
+    "assurance.quality.compute-baseline-drift",
+    "assurance.quality.compute-constraint-coverage",
+    "assurance.quality.compute-journey-coverage",
+    "assurance.quality.compute-threshold-slack",
+    "assurance.quality.derive-plan-layer-applicability",
+    "assurance.quality.evaluate-retrospective-shortboards",
+    "assurance.quality.load-latest-pr-metrics",
+    "assurance.quality.load-problem-review-context",
+    "assurance.quality.materialize-c-layer-metrics",
+    "assurance.quality.materialize-minimum-coverage",
+    "assurance.quality.materialize-pr-metrics",
+    "assurance.quality.materialize-quarantine-projection",
+    "assurance.quality.materialize-trace-and-coverage-gaps",
+    "assurance.quality.materialize-trace-projection",
+    "assurance.quality.probe-coverage-repair-need",
+    "assurance.quality.reconcile-issues",
+    "assurance.quality.record-empty-issue-analysis",
+    "assurance.quality.record-issue-analysis-failure",
+    "assurance.quality.record-project-sync-pending",
+    "assurance.quality.run-mutation-sample",
+    "assurance.quality.run-nightly-metrics-pipeline",
+)
+
+QUALITY_VALIDATOR_IDS: tuple[str, ...] = (
+    "assurance.quality.validator.cross-artifact.v1",
+    "assurance.quality.validator.issues.v1",
+    "assurance.quality.validator.metrics.v1",
+    "assurance.quality.validator.problem-apply.v1",
+    "assurance.quality.validator.trace.v2",
 )
 
 QUALITY_SCHEMA_IDS: tuple[str, ...] = (
@@ -80,6 +125,15 @@ _SCHEMA_FILES: dict[str, str] = {
 }
 
 
+_VALIDATORS = {
+    "assurance.quality.validator.cross-artifact.v1": CrossArtifactValidator(path_only=True),
+    "assurance.quality.validator.issues.v1": IssueValidator(path_only=True),
+    "assurance.quality.validator.metrics.v1": MetricsValidator(path_only=True),
+    "assurance.quality.validator.problem-apply.v1": ProblemApplyValidator(path_only=True),
+    "assurance.quality.validator.trace.v2": TraceValidator(path_only=True),
+}
+
+
 def _schema_contributions() -> tuple[SchemaContribution, ...]:
     return tuple(
         SchemaContribution(
@@ -100,8 +154,8 @@ class QualityPlugin:
             plugin_id="assurance.quality",
             plugin_version="0.1.0",
             engine_api=ENGINE_API_VERSION,
-            task_handlers=(),
-            commit_validators=(),
+            task_handlers=QUALITY_HANDLER_IDS,
+            commit_validators=QUALITY_VALIDATOR_IDS,
             dependencies=QUALITY_DEPENDENCIES,
             schemas=QUALITY_SCHEMA_IDS,
             resources=(),
@@ -113,4 +167,8 @@ class QualityPlugin:
     def contribute(ports: RegistryPorts) -> PluginContribution:
         if ports.engine_api != ENGINE_API_VERSION:
             raise ValueError(f"unsupported engine API: {ports.engine_api!r}")
-        return PluginContribution(schemas=_schema_contributions())
+        return PluginContribution(
+            task_handlers=dict(quality_handlers()),
+            commit_validators=dict(sorted(_VALIDATORS.items())),
+            schemas=_schema_contributions(),
+        )
