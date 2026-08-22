@@ -121,6 +121,15 @@ from graph_engine.runtime.seed import (
     WorkspaceSeed,
     empty_invocation_seed,
 )
+from graph_engine.runtime.tree_io import (
+    ExportManifest,
+    ExportedFile,
+    SeedCaptureError,
+    SeedCapturePolicy,
+    SnapshotExportError,
+    capture_workspace_seed,
+    materialize_snapshot,
+)
 
 __all__ = [
     "ActivationRecord",
@@ -143,6 +152,8 @@ __all__ = [
     "EngineConflictError",
     "EngineError",
     "EnginePublicationIndeterminate",
+    "ExportManifest",
+    "ExportedFile",
     "FailureKind",
     "FakeClock",
     "FoldCursor",
@@ -182,7 +193,10 @@ __all__ = [
     "RuntimeFailure",
     "Scheduler",
     "SchedulerStateError",
+    "SeedCaptureError",
+    "SeedCapturePolicy",
     "SeedFile",
+    "SnapshotExportError",
     "SystemClock",
     "TaskActivityBound",
     "TaskActivityCancelRequested",
@@ -218,7 +232,9 @@ __all__ = [
     "EMPTY_RUNTIME_AUTHORIZATION_DIGEST",
     "InvocationSeed",
     "WorkspaceSeed",
+    "capture_workspace_seed",
     "empty_invocation_seed",
+    "materialize_snapshot",
     "activation_id",
     "authenticate_invocation_lock",
     "authorized_secret_port",
