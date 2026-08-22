@@ -2,10 +2,20 @@ from __future__ import annotations
 
 import pytest
 
+from agent_runtime_opencode.discovery import expected_message_id
 from harness import (  # pyright: ignore[reportMissingImports]
     _bound_fixture,
+    prepared_snapshot,
     prompt_admission_body,
+    task_request,
 )
+
+
+def test_expected_message_id_uses_opencode_msg_prefix() -> None:
+    message_id = expected_message_id(prepared_snapshot(task_request()))
+    assert message_id.startswith("msg_")
+    assert len(message_id) == 68
+    assert message_id[4:].isalnum()
 
 
 @pytest.mark.parametrize(

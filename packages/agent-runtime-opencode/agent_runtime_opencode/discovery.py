@@ -82,13 +82,14 @@ def discovery_metadata(
 
 
 def expected_message_id(snapshot: TaskActivitySnapshot) -> str:
-    return canonical_digest(
+    digest = canonical_digest(
         {
             "activity_id": snapshot.activity_id,
             "kind": "opencode-prompt-message",
             "request_digest": snapshot.request_digest,
         }
     )
+    return f"msg_{digest}"
 
 
 def prompt_body_digest(agent_run: AgentRunRequest) -> str:
