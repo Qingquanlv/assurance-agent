@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from tests.phase4.six_wheel_harness import (
@@ -18,6 +20,8 @@ async def test_rebinding_preserves_business_request_and_result() -> None:
     assert opencode.adapter_id != cursor.adapter_id
     assert opencode.lock_digest != cursor.lock_digest
     assert opencode.composition_digest != cursor.composition_digest
+    assert [entry for entry in sys.path if entry.startswith(str(opencode.workspace))] == []
+    assert [entry for entry in sys.path if entry.startswith(str(cursor.workspace))] == []
 
 
 @pytest.mark.asyncio

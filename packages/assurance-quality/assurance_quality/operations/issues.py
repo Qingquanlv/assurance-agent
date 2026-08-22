@@ -337,35 +337,56 @@ class CollectObservationsHandler(_Handler):
     input_model = CollectObservationsInput
     builder = staticmethod(collect_observations)
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class RecordEmptyIssueAnalysisHandler(_Handler):
     input_model = AnalysisStatusInput
     builder = staticmethod(empty_analysis)
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
 
 
 class RecordIssueAnalysisFailureHandler(_Handler):
     input_model = AnalysisStatusInput
     builder = staticmethod(failed_analysis)
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class RecordProjectSyncPendingHandler(_Handler):
     input_model = SyncPendingInput
     builder = staticmethod(sync_pending)
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
 
 
 class ReconcileIssuesHandler(_Handler):
     input_model = ReconcileInput
     builder = staticmethod(reconcile_issues)
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class LoadProblemReviewContextHandler(_Handler):
     input_model = ReviewContextInput
     builder = staticmethod(load_review_context)
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class ApplyProblemReviewHandler(_Handler):
     input_model = ApplyReviewInput
     builder = staticmethod(apply_problem_review)
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
 
 
 # Re-export proposed types so tests can build candidates without hunting.

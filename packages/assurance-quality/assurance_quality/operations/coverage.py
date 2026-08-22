@@ -636,30 +636,48 @@ class MaterializeMinimumCoverageHandler(_Handler):
     input_model = MinimumCoverageInput
     builder = staticmethod(join_minimum_coverage)
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class CollectDiffCoverageHandler(_Handler):
     input_model = DiffCoverageInput
     builder = staticmethod(collect_diff_coverage)
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
 
 
 class ComputeConstraintCoverageHandler(_Handler):
     input_model = ConstraintCoverageInput
     builder = staticmethod(compute_constraint_coverage)
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class ComputeAuthMatrixHandler(_Handler):
     input_model = AuthMatrixInput
     builder = staticmethod(compute_auth_matrix)
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
 
 
 class ComputeJourneyCoverageHandler(_Handler):
     input_model = JourneyCoverageInput
     builder = staticmethod(compute_journey_coverage)
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class ComputeThresholdSlackHandler(_Handler):
     input_model = ThresholdSlackInput
     builder = staticmethod(compute_threshold_slack)
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
 
 
 class MaterializeQuarantineProjectionHandler(_Handler):
@@ -668,6 +686,9 @@ class MaterializeQuarantineProjectionHandler(_Handler):
     @staticmethod
     def builder(payload: QuarantineInput) -> QuarantineProjection:
         return QuarantineProjection(schema_version="1", change_id=payload.change_id, entries=payload.entries)
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
 
 
 class MaterializeCLayerMetricsHandler(_Handler):
@@ -686,10 +707,16 @@ class MaterializeCLayerMetricsHandler(_Handler):
             seed_replay_stability=payload.seed_replay_stability,
         )
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class ProbeCoverageRepairNeedHandler(_Handler):
     input_model = CoverageRepairNeedInput
     builder = staticmethod(probe_coverage_repair_need)
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
 
 
 class DerivePlanLayerApplicabilityHandler:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from importlib import metadata
 import json
 from pathlib import Path
+import sys
 import tomllib
 import zipfile
 
@@ -118,6 +119,24 @@ def test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entr
     with zipfile.ZipFile(built.fixture_wheel) as archive:
         names = archive.namelist()
     assert any(name.startswith("test_assurance_phase4_product/") for name in names)
+
+
+def test_six_wheel_resolve_authenticates_committed_quality_and_restores_imports() -> None:
+    committed = REPO_ROOT / "packages" / "assurance-quality" / "assurance_quality"
+    resolved = resolve_fixture("phase4-opencode")
+    copied = resolved.workspace / "wheels" / "assurance-quality" / "assurance_quality"
+    for path in committed.rglob("*.py"):
+        rel = path.relative_to(committed)
+        assert (copied / rel).read_bytes() == path.read_bytes()
+    wheel_root = resolved.workspace / "wheels"
+    leftover = [entry for entry in sys.path if entry.startswith(str(resolved.workspace))]
+    assert leftover == []
+    assert str(resolved.product_root) not in sys.path
+    assert str(wheel_root / "assurance-quality") not in sys.path
+    import assurance_quality
+
+    quality_file = Path(assurance_quality.__file__).resolve()
+    assert not quality_file.is_relative_to(resolved.workspace)
 
 
 def _load_json(path: Path) -> dict[str, object]:

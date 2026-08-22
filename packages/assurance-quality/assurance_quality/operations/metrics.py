@@ -461,15 +461,24 @@ class CollectPrMetricsBatchHandler(_ModelHandler):
             "evidence": parts,
         }
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class MaterializePrMetricsHandler(_ModelHandler):
     input_model = PrEvidenceBundle
     builder = staticmethod(build_metrics_document)
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class LoadLatestPrMetricsHandler(_ModelHandler):
     input_model = LatestMetricsInput
     builder = staticmethod(load_latest_pr_metrics)
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
 
 
 class RunMutationSampleHandler:
@@ -492,15 +501,24 @@ class ComputeAssertionStrengthHandler(_ModelHandler):
     input_model = AssertionStrengthInput
     builder = staticmethod(compute_assertion_strength)
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class ComputeBaselineDriftHandler(_ModelHandler):
     input_model = BaselineDriftInput
     builder = staticmethod(compute_baseline_drift)
 
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
+
 
 class CollectAdversarialYieldHandler(_ModelHandler):
     input_model = AdversarialYieldInput
     builder = staticmethod(collect_adversarial_yield)
+
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return await super().execute(request, context)
 
 
 def metric_keys() -> tuple[MetricKey, ...]:

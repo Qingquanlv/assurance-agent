@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import inspect
 import json
 from importlib.resources import files
+from types import FunctionType
 
 import pytest
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.plugin_api import PluginDependency, PluginDescriptor, ProviderSource
 
+from assurance_quality.operations import quality_handlers
 from assurance_quality.plugin import QUALITY_SCHEMA_IDS, QUALITY_SOURCE, QualityPlugin
 from assurance_quality.resource_loader import resource_bytes
 from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
@@ -76,6 +79,19 @@ def test_quality_source_identity() -> None:
     assert QualityPlugin.descriptor().resources
     assert QualityPlugin.descriptor().effects == ()
     assert QualityPlugin.descriptor().bindings == ()
+
+
+def test_quality_handlers_own_execute() -> None:
+    for handler_id, handler in quality_handlers().items():
+        cls = type(handler)
+        descriptor = inspect.getattr_static(cls, "execute")
+        declaring = next(
+            (candidate for candidate in cls.__mro__ if candidate.__dict__.get("execute") is descriptor),
+            None,
+        )
+        assert declaring is cls, handler_id
+        assert isinstance(descriptor, FunctionType), handler_id
+        assert descriptor.__qualname__.startswith(f"{cls.__name__}."), handler_id
 
 
 def test_quality_rejects_unsupported_engine_api() -> None:

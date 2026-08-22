@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import metadata
 import importlib
 import json
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -223,6 +223,7 @@ class SixWheelComposition:
     fixture_wheel: Path
     product_root: Path
     bindings_root: Path
+    workspace: Path
 
     @property
     def dependency_order(self) -> tuple[str, ...]:
@@ -250,6 +251,8 @@ class SixWheelRun:
     engine_root: Path
     provider_state_dir: Path
     fixture_wheel: Path
+    product_root: Path
+    workspace: Path
 
 
 class _OverlayMetadata:
@@ -346,35 +349,35 @@ def resolve_fixture(product_name: str) -> SixWheelComposition:
     product_root, fixtures, wheel = _materialize_fixture_distribution(workspace)
     bindings_root = _bindings_for(product_name, fixtures)
     plugins = _editable_wheel_plugins(workspace)
-    _activate_product_imports(product_root)
-    _activate_wheel_imports(workspace)
     _scrub_generated(product_root)
     overlay = _product_metadata(workspace)
     if product_name == "phase4-opencode":
         plugins = tuple(plugin for plugin in plugins if plugin.distribution != "agent-runtime-cursor")
     else:
         plugins = tuple(plugin for plugin in plugins if plugin.distribution != "agent-runtime-opencode")
-    composition = RegistryPlatform(metadata_provider=overlay).resolve(
-        ResolutionRequest(
-            product=EditableWheelProductSource(
-                distribution=PRODUCT_DISTRIBUTION,
-                entrypoint_name=product_name,
-                declaration_path=PRODUCT_DECLARATIONS[product_name],
-                source_root=product_root,
-                source_files=_source_files(product_root),
-            ),
-            plugins=(
-                *plugins,
-                ConfigTreePluginSource(path=bindings_root),
-            ),
+    with _import_activation(product_root, workspace):
+        composition = RegistryPlatform(metadata_provider=overlay).resolve(
+            ResolutionRequest(
+                product=EditableWheelProductSource(
+                    distribution=PRODUCT_DISTRIBUTION,
+                    entrypoint_name=product_name,
+                    declaration_path=PRODUCT_DECLARATIONS[product_name],
+                    source_root=product_root,
+                    source_files=_source_files(product_root),
+                ),
+                plugins=(
+                    *plugins,
+                    ConfigTreePluginSource(path=bindings_root),
+                ),
+            )
         )
-    )
     return SixWheelComposition(
         composition=composition,
         product_name=product_name,
         fixture_wheel=wheel,
         product_root=product_root,
         bindings_root=bindings_root,
+        workspace=workspace,
     )
 
 
@@ -416,13 +419,14 @@ async def run_fixture(product_name: str) -> SixWheelRun:
     host = SixWheelTaskHost(adapter_id=ADAPTER_IDS[product_name], provider_state_dir=provider_state)
     engine_root = resolved.product_root.parent / f"{product_name}-engine"
     invocation_id = f"{product_name}-inv"
-    result, invocation_root = _engine_call(
-        _start_until_blocked,
-        engine_root,
-        host,
-        resolved.composition,
-        invocation_id,
-    )
+    with _import_activation(resolved.product_root, resolved.workspace):
+        result, invocation_root = _engine_call(
+            _start_until_blocked,
+            engine_root,
+            host,
+            resolved.composition,
+            invocation_id,
+        )
     if result.status != "succeeded":
         raise AssertionError(f"{product_name} fixture run failed: {result}")
     if host.recorded_request_bytes is None:
@@ -439,6 +443,8 @@ async def run_fixture(product_name: str) -> SixWheelRun:
         engine_root=engine_root,
         provider_state_dir=provider_state,
         fixture_wheel=resolved.fixture_wheel,
+        product_root=resolved.product_root,
+        workspace=resolved.workspace,
     )
 
 
@@ -446,13 +452,14 @@ def replay_after_deleting_provider_state(run: SixWheelRun) -> None:
     if run.provider_state_dir.exists():
         shutil.rmtree(run.provider_state_dir)
     host = SixWheelTaskHost(adapter_id=run.adapter_id, provider_state_dir=run.provider_state_dir)
-    result = _engine_call(
-        _open_until_blocked,
-        run.engine_root,
-        host,
-        run.composition,
-        f"{run.product_name}-inv",
-    )
+    with _import_activation(run.product_root, run.workspace):
+        result = _engine_call(
+            _open_until_blocked,
+            run.engine_root,
+            host,
+            run.composition,
+            f"{run.product_name}-inv",
+        )
     if result.status != "succeeded":
         raise AssertionError(f"{run.product_name} replay failed: {result}")
     if host.recorded_request_bytes is not None:
@@ -565,7 +572,6 @@ def _editable_wheel_plugins(workspace: Path) -> tuple[EditableWheelPluginSource,
         dest = wheels / distribution
         if not dest.exists():
             shutil.copytree(source, dest / package, ignore=_IGNORE)
-            _own_inherited_execute(dest / package)
         plugins.append(
             EditableWheelPluginSource(
                 distribution=distribution,
@@ -578,37 +584,21 @@ def _editable_wheel_plugins(workspace: Path) -> tuple[EditableWheelPluginSource,
     return tuple(plugins)
 
 
-_OWNED_EXECUTE = (
-    "    async def execute(self, request, context):  # noqa: ANN001, ANN201\n"
-    "        return await super().execute(request, context)\n"
-)
-_INHERITED_HANDLER = re.compile(
-    r"^class (?P<name>\w+)\((?:_Handler|_ModelHandler)\):\n",
-    re.MULTILINE,
-)
-
-
-def _own_inherited_execute(package_root: Path) -> None:
-    """Give copied handler subclasses a statically defined execute method.
-
-    Several Assurance quality handlers inherit ``execute``. RegistryPlatform
-    authenticates only a class-owned function whose ``co_qualname`` matches
-    the subclass. The committed wheels stay unchanged; this rewrite applies
-    only to the temporary editable copies.
-    """
-
-    for path in package_root.rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        updated = text
-        for match in reversed(tuple(_INHERITED_HANDLER.finditer(updated))):
-            start = match.end()
-            next_class = updated.find("\nclass ", start)
-            body = updated[start:] if next_class < 0 else updated[start:next_class]
-            if "async def execute(" in body:
-                continue
-            updated = updated[:start] + _OWNED_EXECUTE + updated[start:]
-        if updated != text:
-            path.write_text(updated, encoding="utf-8")
+@contextmanager
+def _import_activation(product_root: Path, workspace: Path) -> Iterator[None]:
+    path_snapshot = list(sys.path)
+    module_snapshot = sys.modules.copy()
+    try:
+        _activate_product_imports(product_root)
+        _activate_wheel_imports(workspace)
+        yield
+    finally:
+        sys.path[:] = path_snapshot
+        for name in tuple(sys.modules):
+            if name not in module_snapshot:
+                del sys.modules[name]
+        sys.modules.update(module_snapshot)
+        importlib.invalidate_caches()
 
 
 def _scrub_generated(root: Path) -> None:
