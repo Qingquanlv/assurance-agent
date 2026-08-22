@@ -374,11 +374,12 @@ def _bound_fixture(
     sse_mode: str = "heartbeat",
     omit_status: bool = False,
     request_timeout_seconds: float | None = None,
+    config_overrides: dict[str, object] | None = None,
     poll_fallback_supported: bool = True,
     agent_run: AgentRunRequest | None = None,
     result_schema: dict[str, object] | None = None,
 ) -> OpenCodeFixture:
-    overrides: dict[str, object] = {}
+    overrides: dict[str, object] = dict(config_overrides or {})
     if request_timeout_seconds is not None:
         overrides["request_timeout_seconds"] = request_timeout_seconds
     fixture = _open_code_fixture(

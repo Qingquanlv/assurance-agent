@@ -81,7 +81,7 @@ class OpenCodeHandler:
                 raise OpenCodeDispatchIncomplete(result.reason or result.status)
             if time.monotonic() >= deadline:
                 raise OpenCodeDispatchIncomplete("observation horizon exceeded")
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(config.poll_interval_seconds)
 
     async def reconcile(
         self,
@@ -156,15 +156,26 @@ class OpenCodeHandler:
                     reason=observed.reason or "provider observation is indeterminate",
                 )
             await client.abort(reference.session_id or "")
-            raced = await self._observe_bound(client, request, context, reference, record, canaries=canaries)
-            if raced.status == "terminal":
-                if raced.outcome is None:
+            deadline = time.monotonic() + config.cancel_timeout_seconds
+            while True:
+                raced = await self._observe_bound(
+                    client, request, context, reference, record, canaries=canaries
+                )
+                if raced.status == "terminal":
+                    if raced.outcome is None:
+                        return TaskActivityCancelResult(
+                            status="indeterminate",
+                            reason="terminal observation is missing an outcome",
+                        )
+                    return TaskActivityCancelResult(status="terminal", outcome=raced.outcome)
+                if raced.status == "indeterminate":
                     return TaskActivityCancelResult(
                         status="indeterminate",
-                        reason="terminal observation is missing an outcome",
+                        reason=raced.reason or "provider observation is indeterminate",
                     )
-                return TaskActivityCancelResult(status="terminal", outcome=raced.outcome)
-            return TaskActivityCancelResult(status="acknowledged")
+                if time.monotonic() >= deadline:
+                    return TaskActivityCancelResult(status="acknowledged")
+                await asyncio.sleep(config.poll_interval_seconds)
         except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
             return TaskActivityCancelResult(
                 status="indeterminate",
