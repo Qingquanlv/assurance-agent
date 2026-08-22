@@ -274,15 +274,37 @@ def structured_result_from_messages(messages: Sequence[object]) -> dict[str, Any
         if not isinstance(parts, list):
             continue
         for part in parts:
-            if not isinstance(part, dict) or part.get("type") != "text":
+            if not isinstance(part, dict):
                 continue
-            text = part.get("text")
-            if not isinstance(text, str):
+            if part.get("type") == "text":
+                text = part.get("text")
+                if not isinstance(text, str):
+                    continue
+                parsed = _json_object_from_text(text)
+                if parsed is not None:
+                    found = parsed
                 continue
-            parsed = _json_object_from_text(text)
+            if part.get("type") != "tool":
+                continue
+            parsed = _json_object_from_completed_tool(part)
             if parsed is not None:
                 found = parsed
     return found
+
+
+def _json_object_from_completed_tool(part: Mapping[str, object]) -> dict[str, Any] | None:
+    state = part.get("state")
+    if not isinstance(state, dict) or state.get("status") != "completed":
+        return None
+    payload = state.get("input")
+    if not isinstance(payload, dict):
+        return None
+    content = payload.get("content")
+    if isinstance(content, dict):
+        return content
+    if isinstance(content, str):
+        return _json_object_from_text(content)
+    return None
 
 
 def _json_object_from_text(text: str) -> dict[str, Any] | None:

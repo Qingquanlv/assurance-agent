@@ -162,6 +162,67 @@ async def test_open_tool_work_is_not_terminal() -> None:
         fixture.close()
 
 
+def test_completed_write_tool_content_is_the_structured_result() -> None:
+    messages = [
+        {
+            "info": {"id": "msg_user", "role": "user"},
+            "parts": [{"type": "text", "text": 'Write result.json with {"status": "ok"}.'}],
+        },
+        {
+            "info": {"id": "msg_write", "role": "assistant"},
+            "parts": [
+                {
+                    "type": "tool",
+                    "tool": "write",
+                    "state": {
+                        "status": "completed",
+                        "input": {
+                            "filePath": "/tmp/result.json",
+                            "content": '{"status": "ok", "artifact": "result.json"}',
+                        },
+                    },
+                },
+                {"type": "text", "text": ""},
+            ],
+        },
+        {
+            "info": {"id": "msg_empty", "role": "assistant"},
+            "parts": [{"type": "text", "text": ""}],
+        },
+    ]
+    assert structured_result_from_messages(messages) == {
+        "artifact": "result.json",
+        "status": "ok",
+    }
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "busy"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "succeeded"
+    )
+
+
+def test_running_write_tool_is_not_a_structured_result() -> None:
+    messages = [
+        {
+            "info": {"id": "msg_write", "role": "assistant"},
+            "parts": [
+                {
+                    "type": "tool",
+                    "state": {
+                        "status": "running",
+                        "input": {"content": '{"ok": true}'},
+                    },
+                }
+            ],
+        }
+    ]
+    assert structured_result_from_messages(messages) is None
+
+
 def test_embedded_json_in_assistant_prose_is_the_structured_result() -> None:
     messages = [
         {
