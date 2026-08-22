@@ -12,6 +12,13 @@ from graph_engine.plugin_api import TaskHandler
 from tests.phase4.conformance import execute_task
 
 from assurance_improvement.contracts.agent import RetroAnalysisResultV3
+from assurance_improvement.contracts.delivery import artifact_digest
+from assurance_improvement.contracts.improvements import ImprovementKind, ImprovementState
+from assurance_improvement.contracts.retro import (
+    EvalEvidenceSlice,
+    IssueEvidenceSlice,
+    WorkflowEvidenceSlice,
+)
 from assurance_improvement.operations.agent import (
     RetroEvalFinalizeHandler,
     RetroEvalPrepareHandler,
@@ -21,13 +28,21 @@ from assurance_improvement.operations.agent import (
     RetroPrepareHandler,
     RetroWorkflowPrepareHandler,
 )
-from assurance_improvement.operations.retro import AssembleRetroContextHandler
+from assurance_improvement.operations.retro import (
+    AssembleRetroContextHandler,
+    ReconcileImprovementsHandler,
+    RetroCollectHandler,
+)
 from assurance_improvement.resource_loader import resource_bytes
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     HEX_A,
     RETRO_ID,
+    as_object,
+    candidate_payload,
     fake_agent_result,
+    improvement_projection,
+    json_value,
     retro_result,
     skill_input,
 )
@@ -205,19 +220,32 @@ async def test_assemble_rejects_incomplete_optional_domain() -> None:
 
 def _empty_slice(domain: str) -> dict[str, object]:
     window = {"selection": {"mode": "last", "requested_last": 1}, "change_ids": ["CH-DEMO-001"]}
+    sources = (
+        [
+            {
+                "kind": "project_problem_ledger",
+                "change_id": None,
+                "head_event_id": "evt-1",
+                "sha256": "abc",
+                "evidence_ids": ["PROB-1", "OCC-1"],
+            }
+        ]
+        if domain == "issue"
+        else []
+    )
     return {
         "schema_version": "3",
         "retro_id": RETRO_ID,
         "domain": domain,
         "window": window,
-        "sources": [],
+        "sources": sources,
         "integrity": {"status": "complete", "reasons": []},
         "deterministic_signals": [],
         "entries": [],
     }
 
 
-def _ok_signals(domain: str) -> dict[str, object]:
+def _ok_signals(domain: str, digest: str = HEX_A) -> dict[str, object]:
     return {
         "schema_version": "3",
         "retro_id": RETRO_ID,
@@ -226,5 +254,149 @@ def _ok_signals(domain: str) -> dict[str, object]:
         "failure_reason": None,
         "analyzer": f"aa-retro-{domain}-analysis",
         "signals": [],
-        "slice_sha256": HEX_A,
+        "slice_sha256": digest,
     }
+
+
+def _slice_model(domain: str) -> IssueEvidenceSlice | WorkflowEvidenceSlice | EvalEvidenceSlice:
+    raw = _empty_slice(domain)
+    if domain == "issue":
+        return IssueEvidenceSlice.model_validate(raw)
+    if domain == "workflow":
+        return WorkflowEvidenceSlice.model_validate(raw)
+    return EvalEvidenceSlice.model_validate(raw)
+
+
+def _assemble_payload(**overrides: object) -> dict[str, object]:
+    issue = _slice_model("issue")
+    workflow = _slice_model("workflow")
+    evaluation = _slice_model("eval")
+    payload: dict[str, object] = {
+        "generated_at": "2026-08-22T00:00:00Z",
+        "window": {
+            "selection": {"mode": "last", "requested_last": 1},
+            "change_ids": ["CH-DEMO-001"],
+        },
+        "issue_slice": issue.model_dump(mode="json"),
+        "workflow_slice": workflow.model_dump(mode="json"),
+        "eval_slice": evaluation.model_dump(mode="json"),
+        "issue_signals": _ok_signals("issue", artifact_digest(issue)),
+        "workflow_signals": _ok_signals("workflow", artifact_digest(workflow)),
+        "eval_signals": _ok_signals("eval", artifact_digest(evaluation)),
+        "issue_slice_sha256": artifact_digest(issue),
+        "workflow_slice_sha256": artifact_digest(workflow),
+        "eval_slice_sha256": artifact_digest(evaluation),
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_assemble_rejects_unauthenticated_slice_digest() -> None:
+    payload = _assemble_payload(issue_slice_sha256=HEX_A)
+    outcome = await execute_task(AssembleRetroContextHandler(), json_value(payload))
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+
+
+@pytest.mark.asyncio
+async def test_assemble_rejects_signal_domain_mismatch() -> None:
+    payload = _assemble_payload()
+    issue_signals = as_object(payload["issue_signals"])
+    issue_signals["domain"] = "workflow"
+    payload["issue_signals"] = issue_signals
+    outcome = await execute_task(AssembleRetroContextHandler(), json_value(payload))
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+
+
+@pytest.mark.asyncio
+async def test_assemble_rejects_mixed_retro_ids() -> None:
+    payload = _assemble_payload()
+    workflow = as_object(payload["workflow_slice"])
+    workflow["retro_id"] = "RET-OTHER"
+    signals = as_object(payload["workflow_signals"])
+    signals["retro_id"] = "RET-OTHER"
+    payload["workflow_slice"] = workflow
+    payload["workflow_signals"] = signals
+    payload["workflow_slice_sha256"] = artifact_digest(WorkflowEvidenceSlice.model_validate(workflow))
+    signals["slice_sha256"] = payload["workflow_slice_sha256"]
+    payload["workflow_signals"] = signals
+    outcome = await execute_task(AssembleRetroContextHandler(), json_value(payload))
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+
+
+@pytest.mark.asyncio
+async def test_collect_rejects_mismatched_slice_retro_id() -> None:
+    window = {"selection": {"mode": "last", "requested_last": 1}, "change_ids": ["CH-DEMO-001"]}
+    workflow = _empty_slice("workflow")
+    workflow["retro_id"] = "RET-OTHER"
+    outcome = await execute_task(
+        RetroCollectHandler(),
+        json_value(
+            {
+                "retro_id": RETRO_ID,
+                "window": window,
+                "issue_slice": _empty_slice("issue"),
+                "workflow_slice": workflow,
+                "eval_slice": _empty_slice("eval"),
+            }
+        ),
+    )
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_persists_knowledge_delta_and_supersedes() -> None:
+    assembled = await execute_task(AssembleRetroContextHandler(), json_value(_assemble_payload()))
+    assert assembled.status == "succeeded"
+    context = as_object(assembled.output)
+    predecessor_id = "IMP-OLD"
+    current = {
+        "schema_version": "1",
+        "last_seq": 1,
+        "improvements": {
+            predecessor_id: improvement_projection(
+                state="proposed",
+                delivery="change_draft",
+                improvement_id=predecessor_id,
+            )
+        },
+        "by_fingerprint": {},
+    }
+    delta = {
+        "schema_version": "1",
+        "mode": "delta",
+        "entities": {"dept": {"required_fields": ["name"]}},
+    }
+    candidate = candidate_payload(
+        kind="domain_knowledge",
+        delivery="knowledge_delta",
+        target=".aa/data-knowledge.yaml",
+        knowledge_delta=delta,
+        supersedes=predecessor_id,
+    )
+    outcome = await execute_task(
+        ReconcileImprovementsHandler(),
+        json_value(
+            {
+                "context": context,
+                "candidates": [candidate],
+                "current": current,
+                "ts": "2026-08-22T00:00:00Z",
+            }
+        ),
+    )
+    assert outcome.status == "succeeded"
+    payload = as_object(outcome.output)
+    improvements = as_object(payload["improvements"])
+    new_id = payload["improvement_ids"][0]
+    assert as_object(improvements[new_id])["knowledge_delta"]["mode"] == "delta"
+    assert as_object(improvements[new_id])["knowledge_delta"]["entities"]["dept"]["required_fields"] == [
+        "name"
+    ]
+    assert as_object(improvements[predecessor_id])["state"] == ImprovementState.SUPERSEDED.value
+    assert any(event["type"] == "improvement_superseded" for event in payload["events"])
+    assert as_object(improvements[new_id])["kind"] == ImprovementKind.DOMAIN_KNOWLEDGE.value

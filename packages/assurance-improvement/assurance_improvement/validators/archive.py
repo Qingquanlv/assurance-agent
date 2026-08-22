@@ -6,6 +6,7 @@ from collections.abc import Mapping
 
 from graph_engine.plugin_api import CandidateWriteSet, ValidationContext, ValidationResult
 
+from assurance_improvement.validators.documents import bytes_match_digest, load_json, rejected
 from assurance_improvement.validators.paths import canonical_relative, under_root
 
 _ROOTS = ("qa/archive/", "qa/changes/", "qa/cases/", "report/", "review/", "cases/")
@@ -18,6 +19,9 @@ _REQUIRED = {
 }
 _MISSING = {key: f"archive is missing the authenticated {key} document" for key in _REQUIRED}
 _MISMATCH = {key: f"archive {key} digest does not match the authenticated document" for key in _REQUIRED}
+_BYTES = "archive candidate bytes are not authenticated"
+_MEMBER = "archive summary is not a locked manifest member"
+_SUBJECT = "archive subject is not authenticated"
 
 
 class ArchiveIntegrityValidator:
@@ -26,9 +30,11 @@ class ArchiveIntegrityValidator:
         *,
         expected: Mapping[str, str] | None = None,
         path_only: bool = False,
+        file_bytes: Mapping[str, bytes] | None = None,
     ) -> None:
         self._expected = dict(expected or {})
         self._path_only = path_only
+        self._file_bytes = dict(file_bytes or {})
 
     def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
         del context
@@ -48,4 +54,27 @@ class ArchiveIntegrityValidator:
         for key, path in _REQUIRED.items():
             if listed.get(path) != self._expected[key]:
                 return ValidationResult(accepted=False, reason=_MISMATCH[key])
+        return self._validate_documents(listed)
+
+    def _validate_documents(self, listed: Mapping[str, str | None]) -> ValidationResult:
+        if not self._file_bytes:
+            return rejected(_BYTES)
+        for key, path in _REQUIRED.items():
+            raw = self._file_bytes.get(path)
+            if raw is None or not bytes_match_digest(raw, listed.get(path)):
+                return rejected(_BYTES)
+        subject = load_json(self._file_bytes, _REQUIRED["subject"])
+        if not isinstance(subject, dict) or not str(subject.get("change_id") or "").strip():
+            return rejected(_SUBJECT)
+        manifest = load_json(self._file_bytes, _REQUIRED["manifest"])
+        paths: tuple[str, ...]
+        if isinstance(manifest, dict):
+            raw_paths = manifest.get("artifact_paths", ())
+            paths = tuple(str(item) for item in raw_paths) if isinstance(raw_paths, list | tuple) else ()
+        elif isinstance(manifest, list | tuple):
+            paths = tuple(str(item) for item in manifest)
+        else:
+            return rejected(_MEMBER)
+        if _REQUIRED["summary"] not in paths:
+            return rejected(_MEMBER)
         return ValidationResult(accepted=True)

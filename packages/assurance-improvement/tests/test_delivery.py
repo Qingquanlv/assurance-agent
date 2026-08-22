@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import canonical_json_bytes
+from graph_engine.plugin_api import TaskHandler
 from tests.phase4.conformance import execute_task
 
 from assurance_improvement.contracts.agent import ArchiveResultV1
@@ -12,6 +13,8 @@ from assurance_improvement.operations.agent import ArchiveFinalizeHandler, Archi
 from assurance_improvement.operations.archive import ProjectArchiveHandler
 from assurance_improvement.operations.delivery import (
     ApplyMemoryImprovementHandler,
+    EvaluateMemoryImprovementHandler,
+    ExportChangeImprovementHandler,
     LoadImprovementDeliveryHandler,
     RollbackMemoryImprovementHandler,
 )
@@ -25,8 +28,9 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     IMPROVEMENT_ID,
     archive_result,
     as_object,
-    fake_agent_result,
+    improvement_projection,
     json_value,
+    locked_archive_input,
     quality_report_payload,
     skill_input,
     validation_context,
@@ -35,25 +39,7 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
 
 
 def _projection(*, state: str = "approved", delivery: str = "memory_patch") -> dict[str, object]:
-    return {
-        "improvement_id": IMPROVEMENT_ID,
-        "fingerprint": "f" * 64,
-        "kind": "prompt_improvement" if delivery == "memory_patch" else "workflow_improvement",
-        "delivery": delivery,
-        "source_refs": {"problem_ids": ["PROB-1"], "occurrence_ids": ["OCC-1"]},
-        "target": ".aa/memory/aa-api-plan.md"
-        if delivery == "memory_patch"
-        else "schemas/workflow-schema.yaml",
-        "rationale": "gap",
-        "proposed_change": "register adapters",
-        "verification": {"suites": [], "required_cases": [], "success_criteria": "review"},
-        "risk": "low",
-        "confidence": "high",
-        "state": state,
-        "version": 1,
-        "proposed_by_retro_ids": ["RET-1"],
-        "last_event_id": "IMPEVT-1",
-    }
+    return improvement_projection(state=state, delivery=delivery)
 
 
 def _eval_receipt() -> dict[str, object]:
@@ -181,7 +167,7 @@ async def test_archive_prepare_locks_archiver_persona(tmp_path: Path) -> None:
 async def test_archive_finalize_rejects_non_clear_risk_without_warning_status(tmp_path: Path) -> None:
     outcome = await execute_task(
         ArchiveFinalizeHandler(),
-        fake_agent_result(archive_result(issue_risk="high", archive_status="archived")),
+        locked_archive_input(archive_result(issue_risk="high", archive_status="archived")),
         tmp_path,
     )
     assert outcome.failure is not None
@@ -193,7 +179,7 @@ async def test_archive_finalize_rejects_non_clear_risk_without_warning_status(tm
 async def test_archive_finalize_accepts_warning_status(tmp_path: Path) -> None:
     outcome = await execute_task(
         ArchiveFinalizeHandler(),
-        fake_agent_result(archive_result(issue_risk="high", archive_status="archived_with_warnings")),
+        locked_archive_input(archive_result(issue_risk="high", archive_status="archived_with_warnings")),
         tmp_path,
     )
     assert outcome.status == "succeeded"
@@ -205,6 +191,164 @@ def test_archive_result_contract_bytes_equal_typed_model() -> None:
     assert resource_bytes("result-contracts/archive.v1.schema.json") == canonical_json_bytes(
         ArchiveResultV1.model_json_schema()
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler", "payload"),
+    (
+        (
+            EvaluateMemoryImprovementHandler(),
+            {
+                "projection": _projection(state="proposed"),
+                "eval_run_id": "eval-1",
+                "outcome": "passed",
+                "report_sha256": "r",
+                "staged_sha256": "s",
+                "target_digest": HEX_A,
+            },
+        ),
+        (
+            ApplyMemoryImprovementHandler(),
+            {
+                "projection": _projection(state="proposed"),
+                "eval_receipt": _eval_receipt(),
+                "before_sha256": "b",
+                "after_sha256": "a",
+                "receipt_sha256": "r",
+                "target_digest": HEX_A,
+            },
+        ),
+        (
+            RollbackMemoryImprovementHandler(),
+            {
+                "projection": _projection(state="proposed"),
+                "reason": "regressed",
+                "restored_sha256": "x",
+                "target_digest": HEX_A,
+            },
+        ),
+        (
+            ExportChangeImprovementHandler(),
+            {
+                "projection": _projection(state="proposed", delivery="change_draft"),
+                "artifact_path": "qa/improvements/drafts/IMP-1.yaml",
+                "sha256": "x",
+                "created": True,
+                "target_digest": HEX_A,
+            },
+        ),
+    ),
+)
+async def test_delivery_mutations_require_approved_state(
+    handler: TaskHandler, payload: dict[str, object], tmp_path: Path
+) -> None:
+    outcome = await execute_task(handler, json_value(payload), tmp_path)
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert "approved" in (outcome.failure.message or "")
+
+
+@pytest.mark.asyncio
+async def test_archive_finalize_rejects_risk_mismatch(tmp_path: Path) -> None:
+    from assurance_improvement.contracts.delivery import artifact_digest, digest_hex
+    from assurance_quality.contracts.report import QualityReport
+
+    report = quality_report_payload(issue_risk="high")
+    outcome = await execute_task(
+        ArchiveFinalizeHandler(),
+        locked_archive_input(
+            archive_result(issue_risk="clear", archive_status="archived"),
+            quality_report=report,
+            quality_report_digest=digest_hex(artifact_digest(QualityReport.model_validate(report))),
+        ),
+        tmp_path,
+    )
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+
+
+def test_delivery_validator_rejects_proposed_injected_document() -> None:
+    import hashlib
+    import json
+
+    from assurance_improvement.contracts.delivery import ImprovementDeliveryDocument
+    from assurance_improvement.contracts.improvements import ImprovementProjection
+
+    document = ImprovementDeliveryDocument.model_validate(
+        {
+            "schema_version": "1",
+            "improvement_id": IMPROVEMENT_ID,
+            "expected_improvement_version": 1,
+            "delivery": "memory_patch",
+            "memory_eval": _eval_receipt(),
+        }
+    ).model_dump(mode="json")
+    projection = ImprovementProjection.model_validate(_projection(state="proposed"))
+    files = {
+        "improvements/delivery.json": json.dumps(document, sort_keys=True).encode(),
+        "improvements/target-digest": HEX_A.encode(),
+    }
+    listed = {path: hashlib.sha256(raw).hexdigest() for path, raw in files.items()}
+    write = write_set(*files).model_copy(
+        update={
+            "files": tuple(
+                item.model_copy(update={"after_sha256": listed[item.path]})
+                for item in write_set(*files).files
+            )
+        }
+    )
+    result = DeliveryValidator(
+        expected={
+            "delivery": listed["improvements/delivery.json"],
+            "target": listed["improvements/target-digest"],
+        },
+        file_bytes=files,
+        projection=projection,
+    ).validate(write, validation_context())
+    assert result.accepted is False
+    assert "approved" in (result.reason or "")
+
+
+def test_delivery_validator_accepts_approved_injected_document() -> None:
+    import hashlib
+    import json
+
+    from assurance_improvement.contracts.delivery import ImprovementDeliveryDocument
+    from assurance_improvement.contracts.improvements import ImprovementProjection
+
+    document = ImprovementDeliveryDocument.model_validate(
+        {
+            "schema_version": "1",
+            "improvement_id": IMPROVEMENT_ID,
+            "expected_improvement_version": 1,
+            "delivery": "memory_patch",
+            "memory_eval": _eval_receipt(),
+        }
+    ).model_dump(mode="json")
+    projection = ImprovementProjection.model_validate(_projection())
+    files = {
+        "improvements/delivery.json": json.dumps(document, sort_keys=True).encode(),
+        "improvements/target-digest": HEX_A.encode(),
+    }
+    listed = {path: hashlib.sha256(raw).hexdigest() for path, raw in files.items()}
+    write = write_set(*files).model_copy(
+        update={
+            "files": tuple(
+                item.model_copy(update={"after_sha256": listed[item.path]})
+                for item in write_set(*files).files
+            )
+        }
+    )
+    result = DeliveryValidator(
+        expected={
+            "delivery": listed["improvements/delivery.json"],
+            "target": listed["improvements/target-digest"],
+        },
+        file_bytes=files,
+        projection=projection,
+    ).validate(write, validation_context())
+    assert result.accepted is True
 
 
 def test_delivery_validator_default_fails_closed() -> None:
@@ -245,6 +389,162 @@ def test_archive_integrity_requires_all_four_authenticated_inputs() -> None:
 def test_archive_integrity_path_only_rejects_src() -> None:
     result = ArchiveIntegrityValidator(path_only=True).validate(write_set("src/app.py"), validation_context())
     assert result.accepted is False
+
+
+def test_delivery_validator_requires_injected_bytes() -> None:
+    result = DeliveryValidator(
+        expected={"delivery": HEX_A, "target": HEX_A},
+    ).validate(
+        write_set("improvements/delivery.json", "improvements/target-digest"),
+        validation_context(),
+    )
+    assert result.accepted is False
+    assert "candidate bytes" in (result.reason or "")
+
+
+def test_candidates_validator_requires_manifest_membership() -> None:
+    import hashlib
+    import json
+
+    from assurance_improvement.contracts.delivery import artifact_digest
+    from assurance_improvement.contracts.retro import (
+        EvalEvidenceSlice,
+        IssueEvidenceSlice,
+        WorkflowEvidenceSlice,
+    )
+    from assurance_improvement.operations.retro import AssembleRetroInput, assemble_context
+
+    window = {"selection": {"mode": "last", "requested_last": 1}, "change_ids": ["CH-DEMO-001"]}
+    source = {
+        "kind": "project_problem_ledger",
+        "change_id": None,
+        "head_event_id": "evt-1",
+        "sha256": "abc",
+        "evidence_ids": ["PROB-1", "OCC-1"],
+    }
+
+    def _slice(domain: str) -> dict[str, object]:
+        return {
+            "schema_version": "3",
+            "retro_id": "RET-1",
+            "domain": domain,
+            "window": window,
+            "sources": [source] if domain == "issue" else [],
+            "integrity": {"status": "complete", "reasons": []},
+            "deterministic_signals": [],
+            "entries": [],
+        }
+
+    issue = IssueEvidenceSlice.model_validate(_slice("issue"))
+    workflow = WorkflowEvidenceSlice.model_validate(_slice("workflow"))
+    evaluation = EvalEvidenceSlice.model_validate(_slice("eval"))
+    assembled = assemble_context(
+        AssembleRetroInput.model_validate(
+            {
+                "generated_at": "2026-08-22T00:00:00Z",
+                "window": window,
+                "issue_slice": issue.model_dump(mode="json"),
+                "workflow_slice": workflow.model_dump(mode="json"),
+                "eval_slice": evaluation.model_dump(mode="json"),
+                "issue_signals": {
+                    "schema_version": "3",
+                    "retro_id": "RET-1",
+                    "domain": "issue",
+                    "analysis_status": "ok",
+                    "failure_reason": None,
+                    "analyzer": "aa-retro-issue-analysis",
+                    "signals": [],
+                    "slice_sha256": artifact_digest(issue),
+                },
+                "workflow_signals": {
+                    "schema_version": "3",
+                    "retro_id": "RET-1",
+                    "domain": "workflow",
+                    "analysis_status": "ok",
+                    "failure_reason": None,
+                    "analyzer": "aa-retro-workflow-analysis",
+                    "signals": [],
+                    "slice_sha256": artifact_digest(workflow),
+                },
+                "eval_signals": {
+                    "schema_version": "3",
+                    "retro_id": "RET-1",
+                    "domain": "eval",
+                    "analysis_status": "ok",
+                    "failure_reason": None,
+                    "analyzer": "aa-retro-eval-analysis",
+                    "signals": [],
+                    "slice_sha256": artifact_digest(evaluation),
+                },
+                "issue_slice_sha256": artifact_digest(issue),
+                "workflow_slice_sha256": artifact_digest(workflow),
+                "eval_slice_sha256": artifact_digest(evaluation),
+            }
+        )
+    )
+    document = {
+        "schema_version": "3",
+        "retro_id": assembled.retro_id,
+        "context_sha256": artifact_digest(assembled),
+        "candidates": [],
+    }
+    files = {
+        "retro/proposal-candidates.json": json.dumps(document, sort_keys=True).encode(),
+        "retro/context.json": json.dumps(assembled.model_dump(mode="json"), sort_keys=True).encode(),
+        "retro/source-manifest.json": json.dumps(
+            assembled.source_manifest.model_dump(mode="json"), sort_keys=True
+        ).encode(),
+    }
+    listed = {path: hashlib.sha256(raw).hexdigest() for path, raw in files.items()}
+    write = write_set(*files).model_copy(
+        update={
+            "files": tuple(
+                item.model_copy(update={"after_sha256": listed[item.path]})
+                for item in write_set(*files).files
+            )
+        }
+    )
+    accepted = CandidatesValidator(
+        expected={
+            "candidates": listed["retro/proposal-candidates.json"],
+            "context": listed["retro/context.json"],
+            "manifest": listed["retro/source-manifest.json"],
+        },
+        file_bytes=files,
+    ).validate(write, validation_context())
+    assert accepted.accepted is True
+
+
+def test_archive_integrity_requires_summary_in_manifest() -> None:
+    import hashlib
+    import json
+
+    files = {
+        "qa/archive/subject.json": json.dumps({"change_id": "CH-DEMO-001"}).encode(),
+        "qa/archive/artifact-manifest.json": json.dumps({"artifact_paths": ["qa/archive/other.md"]}).encode(),
+        "qa/archive/archive-summary.md": b"# summary\n",
+        "qa/changes/pre-archive-tree.json": json.dumps({"tree": "ok"}).encode(),
+    }
+    listed = {path: hashlib.sha256(raw).hexdigest() for path, raw in files.items()}
+    write = write_set(*files).model_copy(
+        update={
+            "files": tuple(
+                item.model_copy(update={"after_sha256": listed[item.path]})
+                for item in write_set(*files).files
+            )
+        }
+    )
+    result = ArchiveIntegrityValidator(
+        expected={
+            "subject": listed["qa/archive/subject.json"],
+            "manifest": listed["qa/archive/artifact-manifest.json"],
+            "summary": listed["qa/archive/archive-summary.md"],
+            "pre_archive": listed["qa/changes/pre-archive-tree.json"],
+        },
+        file_bytes=files,
+    ).validate(write, validation_context())
+    assert result.accepted is False
+    assert "manifest" in (result.reason or "")
 
 
 def test_plugin_validators_are_path_only() -> None:

@@ -42,7 +42,11 @@ from assurance_improvement.contracts.improvements import (
     LastAutoReview,
     is_valid_memory_patch_target,
 )
-from assurance_improvement.contracts.knowledge import DataKnowledgeProposal, PersistedDataKnowledgeProposal
+from assurance_improvement.contracts.knowledge import (
+    DataKnowledgeProposal,
+    PersistedDataKnowledgeProposal,
+    to_persisted_data_knowledge_proposal,
+)
 from assurance_improvement.contracts.promotion import (
     PromotionMapping,
     PromotionReceipt,
@@ -139,4 +143,5 @@ __all__ = [
     "TestPromotionManifest",
     "WriteSetEntry",
     "is_valid_memory_patch_target",
+    "to_persisted_data_knowledge_proposal",
 ]

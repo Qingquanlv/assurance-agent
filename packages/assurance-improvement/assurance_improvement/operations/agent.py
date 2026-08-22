@@ -21,6 +21,7 @@ from assurance_improvement.contracts.agent import (
     ImprovementSkillInputV1,
     RetroAnalysisResultV3,
 )
+from assurance_improvement.contracts.delivery import artifact_digest, digest_hex
 from assurance_improvement.contracts.retro import ImprovementCandidateDocumentV3
 from assurance_improvement.operations.common import (
     InputError,
@@ -261,8 +262,16 @@ class ImprovementReviewFinalizeHandler:
                 document = ImprovementReviewResultV1.model_validate(_structured(payload))
             except ValidationError as error:
                 raise OutputError(str(error)) from error
-            if not payload.subject_digest:
-                raise InputError("subject_digest must authenticate the review subject")
+            if payload.subject is None or payload.projection is None:
+                raise InputError("review finalize requires the authenticated subject and projection")
+            if payload.subject.improvement_id != payload.improvement_id:
+                raise OutputError("review subject improvement_id does not match")
+            if payload.projection.improvement_id != payload.improvement_id:
+                raise OutputError("review projection improvement_id does not match")
+            if payload.projection.version != payload.expected_improvement_version:
+                raise OutputError("review version does not match the current improvement")
+            if digest_hex(artifact_digest(payload.subject)) != payload.subject_digest:
+                raise OutputError("review subject digest does not match")
             if document.decision == "pass" and document.evidence_traceability != "complete":
                 raise OutputError("pass review requires complete evidence traceability")
             return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
@@ -287,6 +296,22 @@ class ArchiveFinalizeHandler:
                 raise OutputError("archive invocation is not locked")
             if document.archive_digest != payload.archive_digest:
                 raise OutputError("archive digest is not closed against the locked tree")
+            if payload.quality_report is None:
+                raise InputError("archive finalize requires the authenticated quality report")
+            if digest_hex(artifact_digest(payload.quality_report)) != payload.quality_report_digest:
+                raise OutputError("quality report digest does not match")
+            if payload.quality_report.change_id != payload.change_id:
+                raise OutputError("quality report change_id does not match")
+            issues = payload.quality_report.issues
+            locked_risk = issues.issue_risk if issues is not None else None
+            locked_rationale = issues.issue_risk_rationale if issues is not None else None
+            if document.issue_risk != locked_risk:
+                raise OutputError("archive issue_risk does not match the locked quality report")
+            if document.issue_risk_rationale != locked_rationale:
+                raise OutputError("archive issue_risk_rationale does not match the locked quality report")
+            locked_paths = frozenset(payload.artifact_paths)
+            if any(path not in locked_paths for path in document.artifact_paths):
+                raise OutputError("archive artifact path is outside the locked manifest")
             if (
                 document.issue_risk not in {None, "clear"}
                 and document.archive_status != "archived_with_warnings"

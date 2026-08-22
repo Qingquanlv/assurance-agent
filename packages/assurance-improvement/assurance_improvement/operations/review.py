@@ -14,6 +14,7 @@ from assurance_improvement.contracts.improvements import (
     ImprovementReviewAdvice,
     ImprovementReviewContext,
     ImprovementState,
+    LastAutoReview,
 )
 from assurance_improvement.contracts.review import (
     AutoReviewBatchError,
@@ -23,6 +24,7 @@ from assurance_improvement.contracts.review import (
     ImprovementAutoReviewStatus,
     ImprovementReviewSubject,
 )
+from assurance_improvement.contracts.delivery import artifact_digest
 from assurance_improvement.operations.common import InputError, failed_input, succeeded, validate_input
 from assurance_improvement.operations.keys import improvement_event_id
 
@@ -93,6 +95,7 @@ class ValidateAssessmentInput(BaseModel):
 
     assessment: ImprovementAutoReviewAssessmentAuthoring
     subject: ImprovementReviewSubject
+    current: ImprovementProjection
     review_id: str = Field(min_length=1)
 
 
@@ -183,12 +186,14 @@ class ValidateImprovementReviewAssessmentHandler:
         del context
         try:
             payload = validate_input(ValidateAssessmentInput, request.input)
+            if payload.subject.improvement_id != payload.current.improvement_id:
+                raise InputError("assessment subject does not match the current improvement")
             bound = ImprovementAutoReviewAssessment.model_validate(
                 {
                     **payload.assessment.model_dump(mode="json"),
                     "review_id": payload.review_id,
                     "improvement_id": payload.subject.improvement_id,
-                    "expected_improvement_version": 1,
+                    "expected_improvement_version": payload.current.version,
                     "subject_sha256": payload.subject.provenance.context_sha256,
                 }
             )
@@ -217,13 +222,13 @@ class ApplyImprovementAutoReviewHandler:
                     "approval_source": "automatic"
                     if result == "approved"
                     else payload.current.approval_source,
-                    "last_auto_review": {
-                        "review_id": payload.assessment.review_id,
-                        "subject_sha256": payload.assessment.subject_sha256,
-                        "assessment_sha256": payload.assessment.subject_sha256,
-                        "policy_version": "1",
-                        "verdict": "auto_approved" if result == "approved" else "needs_human_review",
-                    },
+                    "last_auto_review": LastAutoReview(
+                        review_id=payload.assessment.review_id,
+                        subject_sha256=payload.assessment.subject_sha256,
+                        assessment_sha256=artifact_digest(payload.assessment),
+                        policy_version="1",
+                        verdict="auto_approved" if result == "approved" else "needs_human_review",
+                    ),
                 }
             )
             status = ImprovementAutoReviewStatus(

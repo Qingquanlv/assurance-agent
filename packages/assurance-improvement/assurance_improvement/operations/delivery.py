@@ -44,6 +44,20 @@ _STAGE_RECEIPTS: dict[str, tuple[str, ...]] = {
     "export_change": ("change_export",),
     "export_knowledge": ("knowledge_export",),
 }
+_STAGE_KIND: dict[str, DeliveryKind] = {
+    "evaluate": DeliveryKind.MEMORY_PATCH,
+    "apply": DeliveryKind.MEMORY_PATCH,
+    "rollback": DeliveryKind.MEMORY_PATCH,
+    "export_change": DeliveryKind.CHANGE_DRAFT,
+    "export_knowledge": DeliveryKind.KNOWLEDGE_DELTA,
+}
+_INTENT_RECEIPT_FIELD = {
+    "change_export": "change_export",
+    "knowledge_export": "knowledge_export",
+    "memory_eval": "memory_eval",
+    "memory_apply": "memory_apply",
+    "memory_rollback": "memory_rollback",
+}
 
 
 class LoadDeliveryInput(BaseModel):
@@ -140,16 +154,31 @@ def _present_receipts(payload: LoadDeliveryInput) -> tuple[str, ...]:
     )
 
 
+def assert_delivery_gate(projection: ImprovementProjection, kind: DeliveryKind) -> None:
+    if projection.state is not ImprovementState.APPROVED:
+        raise InputError("delivery requires an approved improvement")
+    if projection.delivery is not kind:
+        raise InputError(f"delivery requires {kind.value}")
+    if not projection.target:
+        raise InputError("delivery requires an exact target")
+
+
 def _delivery_intent(
     *,
     kind: str,
     projection: ImprovementProjection,
     target_kind: str,
     target_digest: str,
+    receipt: ChangeExportReceipt
+    | KnowledgeExportReceipt
+    | MemoryEvalReceipt
+    | MemoryApplyReceipt
+    | MemoryRollbackReceipt,
     target: str | None = None,
     artifact_path: str | None = None,
     reason: str | None = None,
 ) -> EffectIntent:
+    field = _INTENT_RECEIPT_FIELD[kind]
     payload = ImprovementEffectIntentV1.model_validate(
         {
             "schema_version": "1",
@@ -161,6 +190,7 @@ def _delivery_intent(
             "target": target,
             "artifact_path": artifact_path,
             "reason": reason,
+            field: receipt.model_dump(mode="json"),
         }
     )
     return EffectIntent(
@@ -174,8 +204,7 @@ class LoadImprovementDeliveryHandler:
         del context
         try:
             payload = validate_input(LoadDeliveryInput, request.input)
-            if payload.projection.state is not ImprovementState.APPROVED:
-                raise InputError("delivery requires an approved improvement")
+            assert_delivery_gate(payload.projection, _STAGE_KIND[payload.stage])
             present = _present_receipts(payload)
             expected = _STAGE_RECEIPTS[payload.stage]
             if present != expected:
@@ -213,8 +242,7 @@ class EvaluateMemoryImprovementHandler:
         del context
         try:
             payload = validate_input(EvaluateMemoryInput, request.input)
-            if payload.projection.delivery is not DeliveryKind.MEMORY_PATCH:
-                raise InputError("evaluate-memory requires memory_patch delivery")
+            assert_delivery_gate(payload.projection, DeliveryKind.MEMORY_PATCH)
             receipt = MemoryEvalReceipt(
                 eval_run_id=payload.eval_run_id,
                 outcome=payload.outcome,
@@ -228,6 +256,7 @@ class EvaluateMemoryImprovementHandler:
                 target_kind="memory_eval",
                 target_digest=payload.target_digest,
                 target=payload.projection.target,
+                receipt=receipt,
             )
             return succeeded(cast(dict[str, object], receipt.model_dump(mode="json")), effects=(intent,))
         except InputError as error:
@@ -239,6 +268,7 @@ class ApplyMemoryImprovementHandler:
         del context
         try:
             payload = validate_input(ApplyMemoryInput, request.input)
+            assert_delivery_gate(payload.projection, DeliveryKind.MEMORY_PATCH)
             if payload.eval_receipt.outcome != "passed":
                 raise InputError("memory apply requires a passed evaluation")
             receipt = MemoryApplyReceipt(
@@ -253,6 +283,7 @@ class ApplyMemoryImprovementHandler:
                 target_kind="memory_apply",
                 target_digest=payload.target_digest,
                 target=payload.projection.target,
+                receipt=receipt,
             )
             return succeeded(cast(dict[str, object], receipt.model_dump(mode="json")), effects=(intent,))
         except InputError as error:
@@ -264,6 +295,7 @@ class RollbackMemoryImprovementHandler:
         del context
         try:
             payload = validate_input(RollbackMemoryInput, request.input)
+            assert_delivery_gate(payload.projection, DeliveryKind.MEMORY_PATCH)
             receipt = MemoryRollbackReceipt(
                 target=payload.projection.target,
                 restored_sha256=payload.restored_sha256,
@@ -276,6 +308,7 @@ class RollbackMemoryImprovementHandler:
                 target_digest=payload.target_digest,
                 target=payload.projection.target,
                 reason=payload.reason,
+                receipt=receipt,
             )
             return succeeded(cast(dict[str, object], receipt.model_dump(mode="json")), effects=(intent,))
         except InputError as error:
@@ -287,6 +320,7 @@ class ExportChangeImprovementHandler:
         del context
         try:
             payload = validate_input(ExportChangeInput, request.input)
+            assert_delivery_gate(payload.projection, DeliveryKind.CHANGE_DRAFT)
             receipt = ChangeExportReceipt(
                 sha256=payload.sha256,
                 created=payload.created,
@@ -298,6 +332,7 @@ class ExportChangeImprovementHandler:
                 target_kind="change_export",
                 target_digest=payload.target_digest,
                 artifact_path=payload.artifact_path,
+                receipt=receipt,
             )
             return succeeded(cast(dict[str, object], receipt.model_dump(mode="json")), effects=(intent,))
         except InputError as error:
@@ -326,6 +361,7 @@ class ExportKnowledgeImprovementHandler:
         del context
         try:
             payload = validate_input(ExportKnowledgeInput, request.input)
+            assert_delivery_gate(payload.projection, DeliveryKind.KNOWLEDGE_DELTA)
             receipt = KnowledgeExportReceipt(
                 sha256=payload.sha256,
                 created=payload.created,
@@ -337,6 +373,7 @@ class ExportKnowledgeImprovementHandler:
                 target_kind="knowledge_export",
                 target_digest=payload.target_digest,
                 artifact_path=payload.artifact_path,
+                receipt=receipt,
             )
             return succeeded(cast(dict[str, object], receipt.model_dump(mode="json")), effects=(intent,))
         except InputError as error:
@@ -377,6 +414,7 @@ class ApplyTestPromotionHandler:
                     "version": payload.projection.version,
                     "promotion_digest": payload.promotion_digest,
                     "candidate_id": payload.manifest.candidate_id,
+                    "promotion": payload.receipt.model_dump(mode="json"),
                 }
             )
             key = promotion_effect_key(intent_payload)

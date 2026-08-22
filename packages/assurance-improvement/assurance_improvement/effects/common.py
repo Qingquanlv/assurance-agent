@@ -90,7 +90,13 @@ async def apply_effect(
             status="transient",
             failure=TaskFailure(kind="transient", message="effect state is pending", retryable=True),
         )
-    receipt = build_receipt(payload)
+    try:
+        receipt = build_receipt(payload)
+    except (ValidationError, ValueError) as error:
+        return EffectApplyResult(
+            status="permanent",
+            failure=TaskFailure(kind="invalid_input", message=str(error), retryable=False),
+        )
     try:
         await store.commit(idempotency_key, receipt, dumped)
     except StoreCrash:

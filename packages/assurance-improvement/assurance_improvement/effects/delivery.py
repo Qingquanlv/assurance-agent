@@ -2,14 +2,6 @@
 
 from __future__ import annotations
 
-from assurance_improvement.contracts.delivery import (
-    ChangeExportReceipt,
-    KnowledgeExportReceipt,
-    MemoryApplyReceipt,
-    MemoryEvalReceipt,
-    MemoryRollbackReceipt,
-)
-from assurance_improvement.contracts.declarations import DeclarationProposalReceipt
 from assurance_improvement.contracts.effects import ImprovementEffectIntentV1, ImprovementEffectReceiptV1
 from assurance_improvement.effects.common import apply_effect, reconcile_effect
 from assurance_improvement.effects.store import ImprovementStore
@@ -47,64 +39,29 @@ class ImprovementDeliveryEffect:
         )
 
 
+_RECEIPT_FIELDS = {
+    "change_export": "change_export",
+    "knowledge_export": "knowledge_export",
+    "memory_eval": "memory_eval",
+    "memory_apply": "memory_apply",
+    "memory_rollback": "memory_rollback",
+    "declaration_write": "declaration",
+}
+
+
 def _delivery_receipt(payload: ImprovementEffectIntentV1) -> dict[str, object]:
-    target = payload.target or payload.artifact_path or payload.improvement_id
-    digest = payload.target_digest or "sha256:" + ("0" * 64)
-    kind_payloads: dict[str, object] = {
-        "change_export": ChangeExportReceipt(
-            sha256=digest, created=True, artifact_path=payload.artifact_path or target
-        ).model_dump(mode="json")
-        if payload.kind == "change_export"
-        else None,
-        "knowledge_export": KnowledgeExportReceipt(
-            sha256=digest, created=True, artifact_path=payload.artifact_path or target
-        ).model_dump(mode="json")
-        if payload.kind == "knowledge_export"
-        else None,
-        "memory_eval": MemoryEvalReceipt(
-            eval_run_id=payload.candidate_id or payload.improvement_id,
-            outcome="passed",
-            report_sha256=digest,
-            staged_sha256=digest,
-            baseline_sha256=None,
-        ).model_dump(mode="json")
-        if payload.kind == "memory_eval"
-        else None,
-        "memory_apply": MemoryApplyReceipt(
-            target=target,
-            before_sha256=digest,
-            after_sha256=digest,
-            receipt_sha256=digest,
-        ).model_dump(mode="json")
-        if payload.kind == "memory_apply"
-        else None,
-        "memory_rollback": MemoryRollbackReceipt(
-            target=target,
-            restored_sha256=digest,
-            reason=payload.reason or "rollback",
-        ).model_dump(mode="json")
-        if payload.kind == "memory_rollback"
-        else None,
-        "declaration": DeclarationProposalReceipt(
-            improvement_id=payload.improvement_id,
-            path=payload.artifact_path or target,
-            digest=digest,
-            status="accepted",
-        ).model_dump(mode="json")
-        if payload.kind == "declaration_write"
-        else None,
-    }
+    field = _RECEIPT_FIELDS.get(payload.kind)
+    if field is None:
+        raise ValueError(f"delivery effect does not persist {payload.kind}")
+    document = getattr(payload, field)
+    if document is None:
+        raise ValueError(f"delivery intent is missing the {payload.kind} receipt")
     receipt = ImprovementEffectReceiptV1.model_validate(
         {
             "schema_version": "1",
             "kind": payload.kind,
             "improvement_id": payload.improvement_id,
-            "change_export": kind_payloads["change_export"],
-            "knowledge_export": kind_payloads["knowledge_export"],
-            "memory_eval": kind_payloads["memory_eval"],
-            "memory_apply": kind_payloads["memory_apply"],
-            "memory_rollback": kind_payloads["memory_rollback"],
-            "declaration": kind_payloads["declaration"],
+            field: document.model_dump(mode="json"),
         }
     )
     return receipt.model_dump(mode="json")

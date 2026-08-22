@@ -160,3 +160,11 @@ class PersistedDataKnowledgeProposal(BaseModel):
     discovered_candidates: list[dict[str, Any]] = Field(default_factory=list)
     needs_review: list[str] = Field(default_factory=list)
     promotion_checklist: list[str] = Field(default_factory=list)
+
+
+def to_persisted_data_knowledge_proposal(
+    proposal: DataKnowledgeProposal | None,
+) -> PersistedDataKnowledgeProposal | None:
+    if proposal is None:
+        return None
+    return PersistedDataKnowledgeProposal.model_validate(proposal.model_dump(mode="python"))

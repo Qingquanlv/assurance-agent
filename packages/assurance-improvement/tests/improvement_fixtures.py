@@ -19,8 +19,11 @@ from graph_engine.plugin_api import (
 )
 from tests.phase4.agent_harness import FakeAgentAdapter
 
+from assurance_improvement.contracts.delivery import artifact_digest, digest_hex
 from assurance_improvement.contracts.effects import ImprovementEffectIntentV1
 from assurance_improvement.contracts.retro import RetroSourceManifestV3
+from assurance_improvement.contracts.review import ImprovementReviewSubject
+from assurance_quality.contracts.report import QualityReport
 
 CHANGE_ID = "CH-DEMO-001"
 RETRO_ID = "RET-1"
@@ -170,16 +173,168 @@ def fake_agent_result(structured_result: JSONValue, **locks: JSONValue) -> JSONV
 
 
 def archive_result(**overrides: object) -> dict[str, object]:
+    risk = overrides.get("issue_risk", "clear")
     payload: dict[str, object] = {
         "schema_version": "1",
         "change_id": CHANGE_ID,
         "archive_status": "archived",
         "issue_risk": "clear",
-        "issue_risk_rationale": None,
+        "issue_risk_rationale": "no active issues" if risk in {None, "clear"} else "1 active issue",
         "summary": f"# Archive {CHANGE_ID}\n",
         "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
         "invocation_id": INVOCATION_ID,
         "archive_digest": ARCHIVE_DIGEST,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def improvement_projection(
+    *,
+    state: str = "approved",
+    delivery: str = "memory_patch",
+    version: int = 1,
+    improvement_id: str = IMPROVEMENT_ID,
+    kind: str | None = None,
+    target: str | None = None,
+) -> dict[str, object]:
+    resolved_kind = kind or (
+        "prompt_improvement"
+        if delivery == "memory_patch"
+        else "domain_knowledge"
+        if delivery == "knowledge_delta"
+        else "workflow_improvement"
+    )
+    resolved_target = target or (
+        ".aa/memory/aa-api-plan.md" if delivery == "memory_patch" else "schemas/workflow-schema.yaml"
+    )
+    return {
+        "improvement_id": improvement_id,
+        "fingerprint": "f" * 64,
+        "kind": resolved_kind,
+        "delivery": delivery,
+        "source_refs": REFS,
+        "target": resolved_target,
+        "rationale": "gap",
+        "proposed_change": "register adapters",
+        "verification": {"suites": [], "required_cases": [], "success_criteria": "review"},
+        "risk": "low",
+        "confidence": "high",
+        "state": state,
+        "version": version,
+        "proposed_by_retro_ids": [RETRO_ID],
+        "last_event_id": "IMPEVT-1",
+    }
+
+
+def review_subject(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "1",
+        "improvement_id": IMPROVEMENT_ID,
+        "kind": "workflow_improvement",
+        "delivery": "change_draft",
+        "target": "schemas/workflow-schema.yaml",
+        "rationale": "gap",
+        "proposed_change": "register adapters",
+        "verification": {"suites": [], "required_cases": [], "success_criteria": "review"},
+        "risk": "low",
+        "confidence": "high",
+        "source_refs": REFS,
+        "signal_evidence": [issue_signal()],
+        "source_manifest": authenticated_manifest(),
+        "pipeline_failures": [],
+        "provenance": {
+            "retro_id": RETRO_ID,
+            "candidate_id": "C-1",
+            "context_sha256": EVIDENCE_REF,
+            "candidate_batch_digest": EVIDENCE_REF,
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def locked_review_input(structured_result: JSONValue, **locks: JSONValue) -> JSONValue:
+    subject = review_subject()
+    projection = improvement_projection(state="proposed", delivery="change_draft")
+    digest = digest_hex(artifact_digest(ImprovementReviewSubject.model_validate(subject)))
+    payload = fake_agent_result(
+        structured_result,
+        subject=cast(JSONValue, subject),
+        projection=cast(JSONValue, projection),
+        subject_digest=digest,
+        expected_improvement_version=1,
+        improvement_id=IMPROVEMENT_ID,
+    )
+    if isinstance(payload, dict):
+        payload.update(locks)
+    return payload
+
+
+def locked_archive_input(structured_result: JSONValue, **locks: JSONValue) -> JSONValue:
+    report = quality_report_payload(issue_risk=str(as_object(structured_result).get("issue_risk") or "clear"))
+    digest = digest_hex(artifact_digest(QualityReport.model_validate(report)))
+    payload = fake_agent_result(
+        structured_result,
+        quality_report=cast(JSONValue, report),
+        quality_report_digest=digest,
+        artifact_paths=["qa/archive/CH-DEMO-001/archive-summary.md"],
+    )
+    if isinstance(payload, dict):
+        payload.update(locks)
+    return payload
+
+
+def memory_eval_receipt(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "eval_run_id": "eval-1",
+        "outcome": "passed",
+        "report_sha256": "r",
+        "staged_sha256": "s",
+        "baseline_sha256": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def memory_apply_receipt(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "target": ".aa/memory/aa-api-plan.md",
+        "before_sha256": "b",
+        "after_sha256": "a",
+        "receipt_sha256": "r",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def memory_rollback_receipt(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "target": ".aa/memory/aa-api-plan.md",
+        "restored_sha256": "x",
+        "reason": "regressed",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def promotion_receipt_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "1",
+        "receipt_id": "promo-1",
+        "improvement_id": IMPROVEMENT_ID,
+        "candidate_id": "C-1",
+        "applied_at": "2026-08-21T12:00:00Z",
+        "write_set": [
+            {
+                "path": "tests/api/test_example.py",
+                "before_sha256": None,
+                "after_sha256": PROMOTION_DIGEST,
+            }
+        ],
+        "status": "applied",
+        "source_digests": {"manifest": PROMOTION_DIGEST},
+        "write_authorization": ["tests/api/test_example.py"],
     }
     payload.update(overrides)
     return payload
@@ -260,8 +415,9 @@ def delivery_payload(
     version: int = 1,
     target_kind: str = TARGET_KIND,
     target_digest: str = TARGET_DIGEST,
+    include_receipt: bool = True,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "schema_version": "1",
         "kind": kind,
         "improvement_id": improvement_id,
@@ -270,6 +426,14 @@ def delivery_payload(
         "target_digest": target_digest,
         "target": ".aa/memory/aa-api-plan.md",
     }
+    if include_receipt:
+        if kind == "memory_eval":
+            payload["memory_eval"] = memory_eval_receipt()
+        elif kind == "memory_apply":
+            payload["memory_apply"] = memory_apply_receipt()
+        elif kind == "memory_rollback":
+            payload["memory_rollback"] = memory_rollback_receipt()
+    return payload
 
 
 def delivery_intent(**overrides: object) -> EffectIntent:
@@ -283,8 +447,9 @@ def promotion_payload(
     improvement_id: str = IMPROVEMENT_ID,
     version: int = 1,
     promotion_digest: str = PROMOTION_DIGEST,
+    include_receipt: bool = True,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "schema_version": "1",
         "kind": "test_promotion",
         "improvement_id": improvement_id,
@@ -292,6 +457,19 @@ def promotion_payload(
         "promotion_digest": promotion_digest,
         "candidate_id": "C-1",
     }
+    if include_receipt:
+        payload["promotion"] = promotion_receipt_payload(
+            improvement_id=improvement_id,
+            source_digests={"manifest": promotion_digest},
+            write_set=[
+                {
+                    "path": "tests/api/test_example.py",
+                    "before_sha256": None,
+                    "after_sha256": promotion_digest,
+                }
+            ],
+        )
+    return payload
 
 
 def promotion_intent(**overrides: object) -> EffectIntent:

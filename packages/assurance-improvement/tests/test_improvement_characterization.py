@@ -37,6 +37,12 @@ from assurance_improvement.operations.keys import (
     improvement_id_for_fingerprint,
     promotion_effect_key,
 )
+from assurance_improvement.contracts.delivery import artifact_digest
+from assurance_improvement.contracts.retro import (
+    EvalEvidenceSlice,
+    IssueEvidenceSlice,
+    WorkflowEvidenceSlice,
+)
 from assurance_improvement.operations.retro import AssembleRetroInput, assemble_context
 from assurance_improvement.operations.review import REVIEW_ACTIONS, apply_review
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
@@ -140,12 +146,15 @@ def test_assembled_context_and_signals_match_legacy(tmp_path: Path) -> None:
     (retro_dir / "evidence").mkdir(parents=True)
     (retro_dir / "signals").mkdir(parents=True)
     (retro_dir / "window.json").write_bytes(legacy_canonical_json_bytes(window))
-    digests: dict[str, str] = {}
+    models = {
+        "issue": IssueEvidenceSlice.model_validate(slices["issue"]),
+        "workflow": WorkflowEvidenceSlice.model_validate(slices["workflow"]),
+        "eval": EvalEvidenceSlice.model_validate(slices["eval"]),
+    }
+    current_digests = {domain: artifact_digest(model) for domain, model in models.items()}
     for domain, payload in slices.items():
         slice_bytes = legacy_canonical_json_bytes(payload)
         (retro_dir / "evidence" / f"{domain}-slice.json").write_bytes(slice_bytes)
-        digest = legacy_sha256_bytes(slice_bytes)
-        digests[domain] = digest
         signal = {
             "schema_version": "3",
             "retro_id": RETRO_ID,
@@ -154,7 +163,7 @@ def test_assembled_context_and_signals_match_legacy(tmp_path: Path) -> None:
             "failure_reason": None,
             "analyzer": f"aa-retro-{domain}-analysis",
             "signals": [],
-            "slice_sha256": digest,
+            "slice_sha256": legacy_sha256_bytes(slice_bytes),
         }
         (retro_dir / "signals" / f"{domain}.json").write_bytes(legacy_canonical_json_bytes(signal))
     generated_at = datetime(2026, 8, 22, tzinfo=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -175,7 +184,7 @@ def test_assembled_context_and_signals_match_legacy(tmp_path: Path) -> None:
                     "failure_reason": None,
                     "analyzer": "aa-retro-issue-analysis",
                     "signals": [],
-                    "slice_sha256": digests["issue"],
+                    "slice_sha256": current_digests["issue"],
                 },
                 "workflow_signals": {
                     "schema_version": "3",
@@ -185,7 +194,7 @@ def test_assembled_context_and_signals_match_legacy(tmp_path: Path) -> None:
                     "failure_reason": None,
                     "analyzer": "aa-retro-workflow-analysis",
                     "signals": [],
-                    "slice_sha256": digests["workflow"],
+                    "slice_sha256": current_digests["workflow"],
                 },
                 "eval_signals": {
                     "schema_version": "3",
@@ -195,11 +204,11 @@ def test_assembled_context_and_signals_match_legacy(tmp_path: Path) -> None:
                     "failure_reason": None,
                     "analyzer": "aa-retro-eval-analysis",
                     "signals": [],
-                    "slice_sha256": digests["eval"],
+                    "slice_sha256": current_digests["eval"],
                 },
-                "issue_slice_sha256": digests["issue"],
-                "workflow_slice_sha256": digests["workflow"],
-                "eval_slice_sha256": digests["eval"],
+                "issue_slice_sha256": current_digests["issue"],
+                "workflow_slice_sha256": current_digests["workflow"],
+                "eval_slice_sha256": current_digests["eval"],
             }
         )
     )
@@ -265,6 +274,7 @@ async def test_rollback_output_is_explicit_delivery_memory_rollback() -> None:
     )
     assert applied.status == "applied"
     assert as_object(applied.receipt)["kind"] == "memory_rollback"
+    assert as_object(as_object(applied.receipt)["memory_rollback"])["restored_sha256"] == "x"
 
 
 def test_archive_summary_warns_on_non_clear_issue_risk() -> None:

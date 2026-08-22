@@ -66,6 +66,13 @@ class ImprovementEffectIntentV1(BaseModel):
     promotion_digest: NonEmptyStr | None = None
     invocation_id: NonEmptyStr | None = None
     archive_digest: NonEmptyStr | None = None
+    change_export: ChangeExportReceipt | None = None
+    knowledge_export: KnowledgeExportReceipt | None = None
+    memory_eval: MemoryEvalReceipt | None = None
+    memory_apply: MemoryApplyReceipt | None = None
+    memory_rollback: MemoryRollbackReceipt | None = None
+    promotion: PromotionReceipt | None = None
+    declaration: DeclarationProposalReceipt | None = None
 
     @model_validator(mode="after")
     def validate_key_fields(self) -> Self:

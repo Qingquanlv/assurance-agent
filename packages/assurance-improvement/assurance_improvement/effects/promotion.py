@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from assurance_improvement.contracts.effects import ImprovementEffectIntentV1, ImprovementEffectReceiptV1
-from assurance_improvement.contracts.promotion import PromotionReceipt, WriteSetEntry
 from assurance_improvement.effects.common import apply_effect, reconcile_effect
 from assurance_improvement.effects.store import ImprovementStore
 from assurance_improvement.operations.keys import promotion_effect_key
@@ -41,24 +40,14 @@ class ImprovementPromotionEffect:
 
 
 def _promotion_receipt(payload: ImprovementEffectIntentV1) -> dict[str, object]:
-    digest = payload.promotion_digest or "sha256:" + ("0" * 64)
-    target = "tests/api/test_promoted.py"
+    if payload.promotion is None:
+        raise ValueError("promotion intent is missing the promotion receipt")
     receipt = ImprovementEffectReceiptV1.model_validate(
         {
             "schema_version": "1",
             "kind": "test_promotion",
             "improvement_id": payload.improvement_id,
-            "promotion": PromotionReceipt(
-                schema_version="1",
-                receipt_id=payload.candidate_id or payload.improvement_id,
-                improvement_id=payload.improvement_id,
-                candidate_id=payload.candidate_id or payload.improvement_id,
-                applied_at="2026-08-22T00:00:00Z",
-                write_set=(WriteSetEntry(path=target, before_sha256=None, after_sha256=digest),),
-                status="applied",
-                source_digests={"manifest": digest},
-                write_authorization=(target,),
-            ).model_dump(mode="json"),
+            "promotion": payload.promotion.model_dump(mode="json"),
         }
     )
     return receipt.model_dump(mode="json")

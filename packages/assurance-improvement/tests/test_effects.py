@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from graph_engine import RegistryPorts
 from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import EffectPolicy
-from tests.phase4.conformance import assert_effect_idempotent
+from tests.phase4.conformance import assert_effect_idempotent, execute_task
 
 from assurance_improvement.effects.archive import ImprovementArchiveEffect
 from assurance_improvement.effects.delivery import ImprovementDeliveryEffect
@@ -15,6 +17,7 @@ from assurance_improvement.operations.keys import (
     delivery_effect_key,
     promotion_effect_key,
 )
+from assurance_improvement.operations.delivery import EvaluateMemoryImprovementHandler
 from assurance_improvement.plugin import ImprovementPlugin
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     ARCHIVE_KEY,
@@ -22,9 +25,13 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     PROMOTION_KEY,
     FaultingDeliveryStore,
     _attempt_and_reconcile,
+    HEX_A,
+    IMPROVEMENT_ID,
     archive_intent,
     as_object,
     delivery_intent,
+    improvement_projection,
+    json_value,
     promotion_intent,
 )
 
@@ -44,6 +51,35 @@ async def test_delivery_effect_retries_crash_before_mutation() -> None:
     result = await _attempt_and_reconcile(handler, delivery_intent())
     assert result.status == "applied"
     assert store.delivery_count == 1
+
+
+@pytest.mark.asyncio
+async def test_regressed_eval_effect_does_not_store_passed(tmp_path: Path) -> None:
+    outcome = await execute_task(
+        EvaluateMemoryImprovementHandler(),
+        json_value(
+            {
+                "projection": improvement_projection(),
+                "eval_run_id": "eval-regressed",
+                "outcome": "regressed",
+                "report_sha256": "report-regressed",
+                "staged_sha256": "staged-regressed",
+                "target_digest": HEX_A,
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.status == "succeeded"
+    assert as_object(outcome.output)["outcome"] == "regressed"
+    applied = await ImprovementDeliveryEffect(store=InMemoryImprovementStore()).apply(
+        outcome.effects[0],
+        f"{IMPROVEMENT_ID}:1:memory_eval:{HEX_A}",
+    )
+    assert applied.status == "applied"
+    stored = as_object(as_object(applied.receipt)["memory_eval"])
+    assert stored["outcome"] == "regressed"
+    assert stored["eval_run_id"] == "eval-regressed"
+    assert stored["outcome"] != "passed"
 
 
 @pytest.mark.asyncio
@@ -82,6 +118,9 @@ async def test_promotion_and_archive_keys_match_exact_formulas() -> None:
     assert applied_promotion.status == "applied"
     assert applied_archive.status == "applied"
     assert as_object(applied_promotion.receipt)["kind"] == "test_promotion"
+    promotion_body = as_object(as_object(applied_promotion.receipt)["promotion"])
+    assert promotion_body["applied_at"] == "2026-08-21T12:00:00Z"
+    assert as_object(promotion_body["write_set"][0])["path"] == "tests/api/test_example.py"
     assert as_object(applied_archive.receipt)["kind"] == "archive"
     assert as_object(applied_archive.receipt)["archive"]["invocation_id"] == "inv-archive-1"
 

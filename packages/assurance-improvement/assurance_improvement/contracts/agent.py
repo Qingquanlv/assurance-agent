@@ -10,9 +10,11 @@ from pydantic import Field, field_validator, model_validator
 from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_improvement.contracts.improvements import ImprovementCandidateV3
+from assurance_quality.contracts.report import QualityReport
+
+from assurance_improvement.contracts.improvements import ImprovementCandidateV3, ImprovementProjection
 from assurance_improvement.contracts.retro import RetroSourceManifestV3, Signal
-from assurance_improvement.contracts.review import AutoReviewFinding
+from assurance_improvement.contracts.review import AutoReviewFinding, ImprovementReviewSubject
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _DIGEST_REF = r"^(?:sha256:)?[0-9a-f]{64}$"
@@ -80,6 +82,9 @@ class ImprovementSkillInputV1(FrozenModel):
 
 class AgentFinalizeInputV1(ImprovementSkillInputV1):
     agent_result: AgentRunResult
+    subject: ImprovementReviewSubject | None = None
+    projection: ImprovementProjection | None = None
+    quality_report: QualityReport | None = None
 
 
 class RetroAnalysisResultV3(FrozenModel):

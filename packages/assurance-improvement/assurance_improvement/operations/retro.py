@@ -8,14 +8,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
-from assurance_improvement.contracts.delivery import ImprovementOutboxEntry, artifact_digest
+from assurance_improvement.contracts.delivery import ImprovementOutboxEntry, artifact_digest, same_digest
 from assurance_improvement.contracts.improvements import (
     ImprovementCandidateV3,
+    ImprovementKind,
     ImprovementLedgerProjection,
     ImprovementProjection,
     ImprovementSourceRefs,
     ImprovementState,
 )
+from assurance_improvement.contracts.knowledge import to_persisted_data_knowledge_proposal
 from assurance_improvement.contracts.retro import (
     ContextSignalSet,
     CoverageGapEvidenceSlice,
@@ -151,6 +153,27 @@ def _merge_domain_signals(domain: str, sources: tuple[tuple[Signal, ...], ...]) 
     return tuple(ordered.values())
 
 
+def _assert_collect_identity(payload: RetroCollectInput) -> None:
+    slices = (
+        payload.issue_slice,
+        payload.workflow_slice,
+        payload.eval_slice,
+        payload.discovery_slice,
+        payload.coverage_gap_slice,
+    )
+    retro_ids: set[str] = set()
+    for slice_ in slices:
+        if slice_ is None:
+            continue
+        if slice_.retro_id != payload.retro_id:
+            raise InputError("slice retro_id does not match")
+        if slice_.window != payload.window:
+            raise InputError("slice window does not match")
+        retro_ids.add(slice_.retro_id)
+    if len(retro_ids) != 1:
+        raise InputError("collect requires a single retro_id")
+
+
 def assemble_context(payload: AssembleRetroInput) -> RetroContextV3:
     required = {
         "issue": (payload.issue_slice, payload.issue_signals, payload.issue_slice_sha256),
@@ -176,19 +199,22 @@ def assemble_context(payload: AssembleRetroInput) -> RetroContextV3:
     reasons: list[str] = []
     slices: dict[str, IssueEvidenceSlice | WorkflowEvidenceSlice | EvalEvidenceSlice] = {}
     slice_digests: dict[str, str] = {}
+    retro_ids: set[str] = set()
     for domain, (slice_, signal_doc, digest) in required.items():
         if slice_.window != payload.window or slice_.retro_id != signal_doc.retro_id:
             raise InputError(f"{domain} assembly identity mismatch")
+        if getattr(slice_, "domain", domain) != domain or signal_doc.domain != domain:
+            raise InputError(f"{domain} signal domain does not match")
+        actual = artifact_digest(slice_)
+        if not same_digest(actual, digest) or not same_digest(actual, signal_doc.slice_sha256):
+            raise InputError(f"{domain} slice digest is not authenticated")
+        retro_ids.add(slice_.retro_id)
         slices[domain] = slice_
         slice_digests[domain] = digest
         for reason in slice_.integrity.reasons:
             if reason not in reasons:
                 reasons.append(reason)
-        if signal_doc.slice_sha256 != digest:
-            statuses[domain] = DomainAnalysisStatus(status="failed", failure_reason="slice_digest_mismatch")
-            signals[domain] = slice_.deterministic_signals
-            reasons.append(f"{domain}_signal_analysis_failed")
-        elif signal_doc.analysis_status == "failed":
+        if signal_doc.analysis_status == "failed":
             statuses[domain] = DomainAnalysisStatus(status="failed", failure_reason=signal_doc.failure_reason)
             signals[domain] = slice_.deterministic_signals
             reasons.append(f"{domain}_signal_analysis_failed")
@@ -197,6 +223,8 @@ def assemble_context(payload: AssembleRetroInput) -> RetroContextV3:
             signals[domain] = _merge_domain_signals(
                 domain, (slice_.deterministic_signals, signal_doc.signals)
             )
+    if len(retro_ids) != 1:
+        raise InputError("assembly requires a single retro_id")
     integrity = (
         RetroIntegrity(status="incomplete", reasons=tuple(dict.fromkeys(reasons)))
         if reasons
@@ -318,6 +346,8 @@ def reconcile_improvements(payload: ReconcileInput) -> dict[str, object]:
             )
             improvement_ids.append(existing_id)
             continue
+        if candidate.kind is ImprovementKind.DOMAIN_KNOWLEDGE and not payload.context.allows_domain_knowledge:
+            raise InputError("domain_knowledge requires complete retro integrity")
         last_seq += 1
         event_id = improvement_event_id(payload.context.retro_id, "improvement_proposed", ordinal)
         projection = ImprovementProjection(
@@ -329,7 +359,7 @@ def reconcile_improvements(payload: ReconcileInput) -> dict[str, object]:
             target=candidate.target,
             rationale=candidate.rationale,
             proposed_change=candidate.proposed_change,
-            knowledge_delta=None,
+            knowledge_delta=to_persisted_data_knowledge_proposal(candidate.knowledge_delta),
             verification=candidate.verification,
             risk=candidate.risk,
             confidence=candidate.confidence,
@@ -349,6 +379,26 @@ def reconcile_improvements(payload: ReconcileInput) -> dict[str, object]:
                 "seq": last_seq,
             }
         )
+        if candidate.supersedes and candidate.supersedes in improvements:
+            predecessor = improvements[candidate.supersedes]
+            last_seq += 1
+            supersede_id = improvement_event_id(payload.context.retro_id, "improvement_superseded", ordinal)
+            improvements[candidate.supersedes] = predecessor.model_copy(
+                update={
+                    "state": ImprovementState.SUPERSEDED,
+                    "version": predecessor.version + 1,
+                    "last_event_id": supersede_id,
+                }
+            )
+            events.append(
+                {
+                    "type": "improvement_superseded",
+                    "event_id": supersede_id,
+                    "improvement_id": candidate.supersedes,
+                    "seq": last_seq,
+                    "superseded_by": improvement_id,
+                }
+            )
         improvement_ids.append(improvement_id)
     return {
         "schema_version": "1",
@@ -365,8 +415,7 @@ class RetroCollectHandler:
         del context
         try:
             payload = validate_input(RetroCollectInput, request.input)
-            if payload.issue_slice.retro_id != payload.retro_id:
-                raise InputError("issue slice retro_id does not match")
+            _assert_collect_identity(payload)
             return succeeded(
                 {
                     "retro_id": payload.retro_id,

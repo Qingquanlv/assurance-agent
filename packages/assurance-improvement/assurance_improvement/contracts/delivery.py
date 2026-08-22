@@ -24,6 +24,14 @@ def artifact_digest(model: BaseModel) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def digest_hex(value: str) -> str:
+    return value.removeprefix("sha256:")
+
+
+def same_digest(left: str, right: str) -> bool:
+    return digest_hex(left) == digest_hex(right)
+
+
 class ChangeExportReceipt(BaseModel):
     model_config = _FROZEN
 

@@ -14,10 +14,13 @@ from assurance_improvement.operations.review import ApplyImprovementReviewHandle
 from assurance_improvement.validators.review import ReviewValidator
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
+    HEX_A,
     IMPROVEMENT_ID,
     as_object,
-    fake_agent_result,
+    improvement_projection,
     json_value,
+    locked_review_input,
+    review_subject,
     skill_input,
     validation_context,
     write_set,
@@ -77,7 +80,7 @@ async def test_review_finalize_rejects_pass_without_complete_evidence(tmp_path: 
     structured = {**REVIEW_RESULT, "evidence_traceability": "incomplete"}
     outcome = await execute_task(
         ImprovementReviewFinalizeHandler(),
-        fake_agent_result(structured),
+        locked_review_input(structured),
         tmp_path,
     )
     assert outcome.failure is not None
@@ -90,7 +93,7 @@ async def test_review_finalize_accepts_complete_pass(tmp_path: Path) -> None:
 
     outcome = await execute_task(
         ImprovementReviewFinalizeHandler(),
-        fake_agent_result(REVIEW_RESULT),
+        locked_review_input(REVIEW_RESULT),
         tmp_path,
     )
     assert outcome.status == "succeeded"
@@ -164,6 +167,128 @@ def test_review_result_contract_bytes_equal_typed_model() -> None:
     assert resource_bytes("result-contracts/improvement-review.v1.schema.json") == canonical_json_bytes(
         ImprovementReviewResultV1.model_json_schema()
     )
+
+
+@pytest.mark.asyncio
+async def test_review_finalize_rejects_subject_mismatch(tmp_path: Path) -> None:
+    from assurance_improvement.operations.agent import ImprovementReviewFinalizeHandler
+
+    outcome = await execute_task(
+        ImprovementReviewFinalizeHandler(),
+        locked_review_input(REVIEW_RESULT, improvement_id="IMP-OTHER"),
+        tmp_path,
+    )
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+
+
+@pytest.mark.asyncio
+async def test_validate_assessment_stamps_projection_version(tmp_path: Path) -> None:
+    from assurance_improvement.operations.review import ValidateImprovementReviewAssessmentHandler
+
+    outcome = await execute_task(
+        ValidateImprovementReviewAssessmentHandler(),
+        json_value(
+            {
+                "assessment": REVIEW_RESULT,
+                "subject": review_subject(),
+                "current": improvement_projection(state="proposed", delivery="change_draft", version=3),
+                "review_id": "REV-1",
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.status == "succeeded"
+    payload = as_object(outcome.output)
+    assert payload["expected_improvement_version"] == 3
+    assert payload["improvement_id"] == IMPROVEMENT_ID
+
+
+@pytest.mark.asyncio
+async def test_apply_auto_review_hashes_assessment_body(tmp_path: Path) -> None:
+    from assurance_improvement.contracts.delivery import artifact_digest
+    from assurance_improvement.contracts.review import ImprovementAutoReviewAssessment
+    from assurance_improvement.operations.review import ApplyImprovementAutoReviewHandler
+
+    assessment = ImprovementAutoReviewAssessment.model_validate(
+        {
+            **REVIEW_RESULT,
+            "review_id": "REV-1",
+            "improvement_id": IMPROVEMENT_ID,
+            "expected_improvement_version": 1,
+            "subject_sha256": f"sha256:{HEX_A}",
+        }
+    )
+    outcome = await execute_task(
+        ApplyImprovementAutoReviewHandler(),
+        json_value(
+            {
+                "assessment": assessment.model_dump(mode="json"),
+                "current": improvement_projection(state="proposed", delivery="change_draft"),
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.status == "succeeded"
+    stored = as_object(as_object(outcome.output)["projection"])["last_auto_review"]
+    assert stored["assessment_sha256"] == artifact_digest(assessment)
+    assert stored["assessment_sha256"] != stored["subject_sha256"]
+
+
+def _hashed_write(files: dict[str, bytes]):
+    import hashlib
+
+    listed = {path: hashlib.sha256(raw).hexdigest() for path, raw in files.items()}
+    write = write_set(*files).model_copy(
+        update={
+            "files": tuple(
+                item.model_copy(update={"after_sha256": listed[item.path]})
+                for item in write_set(*files).files
+            )
+        }
+    )
+    return write, listed
+
+
+def test_review_validator_requires_matching_subject_and_version() -> None:
+    import json
+
+    from assurance_improvement.contracts.review import ImprovementAutoReviewAssessment
+
+    subject = review_subject()
+    assessment = ImprovementAutoReviewAssessment.model_validate(
+        {
+            **REVIEW_RESULT,
+            "review_id": "REV-1",
+            "improvement_id": IMPROVEMENT_ID,
+            "expected_improvement_version": 1,
+            "subject_sha256": f"sha256:{HEX_A}",
+        }
+    ).model_dump(mode="json")
+    files = {
+        "improvements/review-subjects/subject.json": json.dumps(subject, sort_keys=True).encode(),
+        "improvements/reviews/assessment.json": json.dumps(assessment, sort_keys=True).encode(),
+    }
+    write, listed = _hashed_write(files)
+    accepted = ReviewValidator(
+        expected={
+            "subject": listed["improvements/review-subjects/subject.json"],
+            "assessment": listed["improvements/reviews/assessment.json"],
+        },
+        file_bytes=files,
+    ).validate(write, validation_context())
+    assert accepted.accepted is True
+    mismatched = {**assessment, "improvement_id": "IMP-OTHER", "expected_improvement_version": 2}
+    files["improvements/reviews/assessment.json"] = json.dumps(mismatched, sort_keys=True).encode()
+    write, listed = _hashed_write(files)
+    result = ReviewValidator(
+        expected={
+            "subject": listed["improvements/review-subjects/subject.json"],
+            "assessment": listed["improvements/reviews/assessment.json"],
+        },
+        file_bytes=files,
+    ).validate(write, validation_context())
+    assert result.accepted is False
 
 
 def test_apply_review_helper_matches_legacy_transition_graph() -> None:
