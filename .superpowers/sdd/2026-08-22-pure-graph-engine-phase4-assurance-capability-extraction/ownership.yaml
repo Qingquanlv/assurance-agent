@@ -2443,8 +2443,8 @@ items:
   disposition: migrate
   owner: assurance.execution
   new_id: assurance.execution.skill.aa-execute.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-execution/tests/test_agent_skills.py::test_execute_prepare_is_canonical_and_provider_neutral
 - kind: skill
   legacy_id: aa-explore
   disposition: migrate
@@ -2583,8 +2583,8 @@ items:
   disposition: migrate
   owner: assurance.execution
   new_id: assurance.execution.skill.aa-run.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-execution/tests/test_agent_skills.py::test_run_finalize_rejects_result_outside_mapping
 - kind: skill
   legacy_id: aa-workflow
   disposition: replace_phase5

@@ -1,7 +1,10 @@
 {
   "descriptor": {
     "bindings": [],
-    "commit_validators": [],
+    "commit_validators": [
+      "assurance.execution.validator.closed-mapping.v1",
+      "assurance.execution.validator.evidence.v1"
+    ],
     "dependencies": [
       {
         "plugin_id": "assurance.intake",
@@ -16,7 +19,12 @@
     "engine_api": "2.0",
     "plugin_id": "assurance.execution",
     "plugin_version": "0.1.0",
-    "resources": [],
+    "resources": [
+      "assurance.execution.persona.executor.v1",
+      "assurance.execution.result.execution.v1",
+      "assurance.execution.skill.aa-execute.v1",
+      "assurance.execution.skill.aa-run.v1"
+    ],
     "schema_version": "1",
     "schemas": [
       "assurance.execution.schema.closed-mapping.v1",
@@ -35,7 +43,16 @@
       ],
       "version": "0.1.0"
     },
-    "task_handlers": []
+    "task_handlers": [
+      "assurance.execution.execute.finalize",
+      "assurance.execution.execute.prepare",
+      "assurance.execution.normalize",
+      "assurance.execution.run-tests",
+      "assurance.execution.run-tests-and-collect-pr-metrics",
+      "assurance.execution.run.finalize",
+      "assurance.execution.run.prepare",
+      "assurance.execution.select"
+    ]
   },
   "kind": "plugin",
   "schema_version": "1",

@@ -1,0 +1,19 @@
+{
+  "selected": ["tests/generated_test.py"],
+  "exit_code": 1,
+  "report": {
+    "exitcode": 1,
+    "summary": {"collected": 1, "passed": 0, "failed": 1, "skipped": 0},
+    "tests": [
+      {
+        "nodeid": "tests/generated_test.py::test_tc_a_001__ok",
+        "outcome": "failed",
+        "call": {
+          "outcome": "failed",
+          "duration": 0.02,
+          "longrepr": "AssertionError: 200 != 500"
+        }
+      }
+    ]
+  }
+}

@@ -8,7 +8,14 @@ import pytest
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.plugin_api import PluginDependency, PluginDescriptor, ProviderSource
 
-from assurance_execution.plugin import EXECUTION_SCHEMA_IDS, EXECUTION_SOURCE, ExecutionPlugin
+from assurance_execution.plugin import (
+    EXECUTION_HANDLER_IDS,
+    EXECUTION_RESOURCE_IDS,
+    EXECUTION_SCHEMA_IDS,
+    EXECUTION_SOURCE,
+    EXECUTION_VALIDATOR_IDS,
+    ExecutionPlugin,
+)
 from assurance_execution.resource_loader import resource_bytes
 from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
 
@@ -54,9 +61,12 @@ def test_execution_source_identity() -> None:
     assert ExecutionPlugin.descriptor().engine_api == ENGINE_API_VERSION
     assert ExecutionPlugin.descriptor().schemas == EXECUTION_SCHEMA_IDS
     assert tuple(EXECUTION_SCHEMA_IDS) == tuple(sorted(EXECUTION_SCHEMA_IDS))
-    assert ExecutionPlugin.descriptor().task_handlers == ()
-    assert ExecutionPlugin.descriptor().commit_validators == ()
-    assert ExecutionPlugin.descriptor().resources == ()
+    assert ExecutionPlugin.descriptor().task_handlers == EXECUTION_HANDLER_IDS
+    assert ExecutionPlugin.descriptor().commit_validators == EXECUTION_VALIDATOR_IDS
+    assert ExecutionPlugin.descriptor().resources == EXECUTION_RESOURCE_IDS
+    assert tuple(EXECUTION_HANDLER_IDS) == tuple(sorted(EXECUTION_HANDLER_IDS))
+    assert tuple(EXECUTION_VALIDATOR_IDS) == tuple(sorted(EXECUTION_VALIDATOR_IDS))
+    assert tuple(EXECUTION_RESOURCE_IDS) == tuple(sorted(EXECUTION_RESOURCE_IDS))
     assert ExecutionPlugin.descriptor().effects == ()
     assert ExecutionPlugin.descriptor().bindings == ()
 

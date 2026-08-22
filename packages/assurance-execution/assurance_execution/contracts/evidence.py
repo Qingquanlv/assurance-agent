@@ -33,7 +33,11 @@ class ExecutionEvidenceV1(BaseModel):
     @model_validator(mode="after")
     def _results_must_be_selected(self) -> Self:
         allowed = frozenset(self.mapping.selected)
+        seen: list[str] = []
         for result in self.results:
             if result.test not in allowed:
                 raise ValueError("execution evidence contains a test outside the closed mapping")
+            seen.append(result.test)
+        if len(seen) != len(set(seen)) or set(seen) != set(allowed):
+            raise ValueError("execution evidence must uniquely cover the closed mapping")
         return self
