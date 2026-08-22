@@ -40,6 +40,7 @@ def _workflow() -> WorkflowDef:
                             "kind": "task",
                             "capability": RUN_CAPABILITY_ID,
                             "input": request.model_dump(mode="json"),
+                            "input_projection": {"type": "config_pointer", "pointer": ""},
                             "retry": "once",
                             "timeout": "short",
                             "resources": {"writes": ["result.json"]},
