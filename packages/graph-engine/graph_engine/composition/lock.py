@@ -33,6 +33,7 @@ from graph_engine.composition.models import (
 from graph_engine.composition.dependencies import DependencyConflict, resolve_dependency_order
 from graph_engine.frozen_json import FrozenJSONValue, thaw_json
 from graph_engine.graph.compiler import CompiledWorkflow
+from graph_engine.graph.schema import WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel, PluginDescriptor, ProviderSource
 
@@ -874,14 +875,23 @@ def _source_identity_projection(identity: SourceIdentity) -> dict[str, JSONValue
     return projection
 
 
+def _workflow_lock_projection(workflow: WorkflowDef) -> JSONValue:
+    dumped = workflow.model_dump(mode="json", by_alias=True, exclude_defaults=True)
+    for graph_id, graph in workflow.graphs.items():
+        dumped_nodes = dumped["graphs"][graph_id]["nodes"]
+        for node_id, node in graph.nodes.items():
+            if node.input_projection is not None:
+                dumped_nodes[node_id]["input_projection"] = node.input_projection.model_dump(
+                    mode="json",
+                    by_alias=True,
+                )
+    return cast(JSONValue, dumped)
+
+
 def _manifest_projection(manifest: ProductManifest) -> JSONValue:
     projection = manifest.model_dump(mode="json", by_alias=True)
     if manifest.workflow is not None:
-        projection["workflow"] = manifest.workflow.model_dump(
-            mode="json",
-            by_alias=True,
-            exclude_defaults=True,
-        )
+        projection["workflow"] = _workflow_lock_projection(manifest.workflow)
     return cast(JSONValue, projection)
 
 
