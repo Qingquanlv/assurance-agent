@@ -81,6 +81,7 @@ class ConstraintCoverageEvidence(BaseModel):
     declared: MetricScope | None
     touched: MetricScope | None = None
     value: float | None = None
+    source_digest: NonEmptyStr
     collection_gaps: tuple[MetricCollectionGap, ...] = ()
     shortboards: tuple[MetricShortboard, ...] = ()
 
@@ -112,6 +113,7 @@ class AuthMatrixEvidence(BaseModel):
     touched: MetricScope | None = None
     value: float | None = None
     cells: tuple[AuthMatrixCellResult, ...] = ()
+    source_digest: NonEmptyStr
     collection_gaps: tuple[MetricCollectionGap, ...] = ()
     shortboards: tuple[MetricShortboard, ...] = ()
 
@@ -148,6 +150,7 @@ class JourneyCoverageEvidence(BaseModel):
     touched: MetricScope | None = None
     value: float | None = None
     items: tuple[JourneyCoverageItem, ...] = ()
+    source_digest: NonEmptyStr
     collection_gaps: tuple[MetricCollectionGap, ...] = ()
     shortboards: tuple[MetricShortboard, ...] = ()
 
@@ -175,6 +178,7 @@ class PerfSlackEvidence(BaseModel):
     value: float | None
     slack_band: float = 10.0
     scenarios: tuple[PerfSlackScenario, ...] = ()
+    source_digest: NonEmptyStr
     collection_gaps: tuple[MetricCollectionGap, ...] = ()
     shortboards: tuple[MetricShortboard, ...] = ()
 

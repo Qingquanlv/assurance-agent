@@ -10,9 +10,9 @@ from pydantic import ValidationError
 
 from graph_engine.plugin_api import CandidateWriteSet, ValidationContext, ValidationResult
 
-from assurance_quality.contracts.issue_events import CHANGE_ISSUE_EVENT_ADAPTER
+from assurance_quality.contracts.issue_events import CHANGE_ISSUE_EVENT_ADAPTER, PROBLEM_EVENT_ADAPTER
 from assurance_quality.contracts.issues import IssueCandidateDocument, Problem
-from assurance_quality.operations.identity import problem_fingerprint
+from assurance_quality.operations.identity import problem_fingerprint, review_id
 from assurance_quality.validators.paths import canonical_relative, under_root
 
 _ISSUE_ROOTS = ("issues/", "inspect/", "issue-review/")
@@ -23,6 +23,7 @@ _EVIDENCE = "issue evidence is not a frozen catalog member"
 _FINGERPRINT = "canonical fingerprint does not match evidence"
 _TRANSITION = "issue event transition is not allowed"
 _APPLY_CLOSED = "problem apply candidate is not authenticated"
+_NOT_CHANGE_ISSUE = "not a change-issue transition"
 _ALLOWED_AFTER: dict[str, frozenset[str]] = {
     "observation_recorded": frozenset(),
     "issue_analysis_completed": frozenset({"observation_recorded"}),
@@ -41,10 +42,12 @@ class IssueValidator:
         *,
         evidence_refs: frozenset[str] | None = None,
         file_bytes: Mapping[str, bytes] | None = None,
+        event_history: tuple[str, ...] = (),
         path_only: bool = False,
     ) -> None:
         self._evidence_refs = evidence_refs
         self._file_bytes = dict(file_bytes or {})
+        self._event_history = event_history
         self._path_only = path_only
 
     def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
@@ -64,13 +67,17 @@ class IssueValidator:
                 raw = json.loads(payload.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as error:
                 return ValidationResult(accepted=False, reason=str(error))
-            reason = _check_issue_payload(raw, self._evidence_refs)
+            reason = _check_issue_payload(raw, self._evidence_refs, self._event_history)
             if reason is not None:
                 return ValidationResult(accepted=False, reason=reason)
         return ValidationResult(accepted=True)
 
 
-def _check_issue_payload(raw: object, evidence_refs: frozenset[str] | None) -> str | None:
+def _check_issue_payload(
+    raw: object,
+    evidence_refs: frozenset[str] | None,
+    event_history: tuple[str, ...] = (),
+) -> str | None:
     if not isinstance(raw, dict):
         return _EVIDENCE
     if "candidates" in raw:
@@ -79,35 +86,21 @@ def _check_issue_payload(raw: object, evidence_refs: frozenset[str] | None) -> s
         except ValidationError as error:
             return str(error)
         for candidate in document.candidates:
-            expected = problem_fingerprint(
-                affected_surface=candidate.affected_surface,
-                fingerprint_inputs=candidate.fingerprint_inputs,
-            )
-            if candidate.possible_problem_ids and expected.digest not in {
-                item if item.startswith("sha256:") else expected.digest
-                for item in candidate.possible_problem_ids
-            }:
-                del expected
             try:
-                recomputed = problem_fingerprint(
+                expected = problem_fingerprint(
                     affected_surface=candidate.affected_surface,
                     fingerprint_inputs=candidate.fingerprint_inputs,
                 )
             except ValueError:
                 return _FINGERPRINT
-            del recomputed
+            claimed = set(candidate.possible_problem_ids)
+            if claimed and expected.digest not in claimed:
+                return _FINGERPRINT
         if evidence_refs is not None and document.evidence_bundle_digest not in evidence_refs:
             return _EVIDENCE
         return None
     if "type" in raw:
-        try:
-            event = CHANGE_ISSUE_EVENT_ADAPTER.validate_python(raw)
-        except ValidationError as error:
-            return str(error)
-        event_type = getattr(event, "type", "")
-        if event_type not in _ALLOWED_AFTER:
-            return _TRANSITION
-        return None
+        return _check_event_transition(raw, event_history)
     if "fingerprint" in raw:
         try:
             Problem.model_validate(raw)
@@ -123,6 +116,29 @@ def _check_issue_payload(raw: object, evidence_refs: frozenset[str] | None) -> s
             return _EVIDENCE
         if not values:
             return _EVIDENCE
+    return None
+
+
+def _check_event_transition(raw: dict[str, Any], event_history: tuple[str, ...]) -> str | None:
+    try:
+        event = CHANGE_ISSUE_EVENT_ADAPTER.validate_python(raw)
+    except ValidationError as error:
+        try:
+            PROBLEM_EVENT_ADAPTER.validate_python(raw)
+        except ValidationError:
+            return str(error)
+        return _NOT_CHANGE_ISSUE
+    event_type = str(getattr(event, "type", ""))
+    allowed = _ALLOWED_AFTER.get(event_type)
+    if allowed is None:
+        return _TRANSITION
+    predecessor = event_history[-1] if event_history else raw.get("predecessor_type")
+    if predecessor is None or predecessor == "":
+        if allowed:
+            return _TRANSITION
+        return None
+    if predecessor not in allowed:
+        return _TRANSITION
     return None
 
 
@@ -159,11 +175,17 @@ class ProblemApplyValidator:
         )
         if not receipt or not saved:
             return ValidationResult(accepted=False, reason=_APPLY_CLOSED)
-        if receipt.get("problem_id") != saved.get("problem_id"):
+        problem_id = receipt.get("problem_id")
+        if not isinstance(problem_id, str) or problem_id != saved.get("problem_id"):
             return ValidationResult(accepted=False, reason=_APPLY_CLOSED)
-        if receipt.get("review_id") != saved.get("review_id") and receipt.get("review_id") != saved.get(
-            "review_id", receipt.get("review_id")
-        ):
+        version = receipt.get("expected_problem_version", saved.get("expected_problem_version"))
+        if version is None or receipt.get("review_id") is None or saved.get("review_id") is None:
+            return ValidationResult(accepted=False, reason=_APPLY_CLOSED)
+        try:
+            expected = review_id(problem_id, int(version))
+        except (TypeError, ValueError):
+            return ValidationResult(accepted=False, reason=_APPLY_CLOSED)
+        if receipt.get("review_id") != expected or saved.get("review_id") != expected:
             return ValidationResult(accepted=False, reason=_APPLY_CLOSED)
         if not receipt.get("action"):
             return ValidationResult(accepted=False, reason=_APPLY_CLOSED)

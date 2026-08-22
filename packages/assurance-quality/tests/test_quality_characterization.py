@@ -1,22 +1,42 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from tests.phase4.conformance import execute_task
 
+from assurance_kernel.artifacts.models.metrics import MetricEntry as LegacyMetricEntry
+from assurance_kernel.artifacts.models.metrics import MetricsDocument as LegacyMetricsDocument
+from assurance_kernel.artifacts.models.policy import MetricFloor
+from assurance_kernel.artifacts.models.pr_metric_evidence import (
+    ConstraintCoverageEvidence as LegacyConstraintCoverageEvidence,
+)
 from assurance_kernel.artifacts.models.trace import TraceProjectionV2 as LegacyTraceProjectionV2
 from assurance_kernel.evidence.coverage_gaps import build_coverage_gaps as legacy_build_coverage_gaps
 from assurance_kernel.evidence.issue_identity import (
     ObservationIdentityInput as LegacyObservationIdentityInput,
 )
+from assurance_kernel.evidence.issue_identity import _canonical_sha256, _digest_prefix
 from assurance_kernel.evidence.issue_identity import observation_id as legacy_observation_id
 from assurance_kernel.evidence.issue_identity import problem_fingerprint as legacy_problem_fingerprint
+from assurance_kernel.evidence.metrics import aggregate_pr_metrics
+from assurance_kernel.evidence.metrics_sufficiency import numeric_below_floor_shortboards
+from assurance_kernel.evidence.risk_tier import RiskTierResolution
+from assurance_quality.contracts.pr_metrics import MutationEvidence
 from assurance_quality.contracts.trace import TraceProjectionV2
-from assurance_quality.operations.coverage import build_coverage_gaps
+from assurance_quality.operations.coverage import (
+    ConstraintCoverageInput,
+    build_coverage_gaps,
+    compute_constraint_coverage,
+)
 from assurance_quality.operations.identity import (
     ObservationIdentityInput,
     observation_id,
     problem_fingerprint,
+    review_id,
 )
 from assurance_quality.operations.issues import CollectObservationsHandler, ReconcileIssuesHandler
+from assurance_quality.operations.metrics import PrEvidenceBundle, build_metrics_document
+from assurance_quality.operations.nightly import evaluate_shortboards
 from assurance_quality.operations.trace import MaterializeTraceHandler, project_trace
 from assurance_quality.operations.trace import TraceOperationInput
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
@@ -24,6 +44,7 @@ from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     CASE_ID,
     CHANGE_ID,
     EVIDENCE_REF,
+    HEX_B,
     as_object,
     catalog_leafs,
     issue_input,
@@ -209,3 +230,105 @@ async def test_reconcile_fingerprint_stable_across_title_rewrite() -> None:
         as_object(first.output)["problems"][0]["fingerprint"]["digest"]
         == as_object(second.output)["problems"][0]["fingerprint"]["digest"]
     )
+
+
+def test_pr_constraint_value_matches_kernel_aggregate() -> None:
+    constraint = compute_constraint_coverage(
+        ConstraintCoverageInput(
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            declared_keys=("menus.create",),
+            covered_keys=("menus.create",),
+            source_digest="deadbeef",
+        )
+    )
+    quality = build_metrics_document(
+        PrEvidenceBundle(
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            policy_digest=HEX_B,
+            computed_at=datetime(2026, 8, 22, tzinfo=UTC),
+            constraint=constraint,
+        )
+    )
+    raw = constraint.model_dump(mode="json")
+    raw.pop("source_digest", None)
+    legacy = aggregate_pr_metrics(
+        change_id=CHANGE_ID,
+        computed_at=datetime(2026, 8, 22, tzinfo=UTC),
+        policy_digest=HEX_B,
+        risk=RiskTierResolution(tier="medium", lower_bound="medium", declared=None),
+        coverage_diff=None,
+        constraint_coverage=LegacyConstraintCoverageEvidence.model_validate(raw),
+        auth_matrix=None,
+        journey_coverage=None,
+        perf_slack=None,
+        expected_batch_id=BATCH_ID,
+    )
+    assert quality.metrics["constraint_coverage"].value == legacy.metrics["constraint_coverage"].value
+    # Intentional: kernel marks missing PR keys collection_failed and binds
+    # evidence to the collector filename; quality skips those keys and hashes
+    # the evidence object (now including source_digest).
+
+
+def test_nightly_below_floor_matches_kernel_shortboard() -> None:
+    quality_doc = build_metrics_document(
+        PrEvidenceBundle(
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            policy_digest=HEX_B,
+            cadence="nightly",
+            computed_at=datetime(2026, 8, 22, tzinfo=UTC),
+            mutation=MutationEvidence(
+                schema_version="1",
+                change_id=CHANGE_ID,
+                batch_id=BATCH_ID,
+                status="evaluated",
+                value=0.5,
+                killed=1,
+                survived=1,
+                equivalent=0,
+                tested=2,
+                selected=2,
+                budget_seconds=60,
+                elapsed_seconds=1.0,
+            ),
+        )
+    )
+    quality_boards = {
+        (board.code, board.metric)
+        for board in evaluate_shortboards(quality_doc)
+        if board.code == "below_floor"
+    }
+    legacy_doc = LegacyMetricsDocument.of(
+        risk=RiskTierResolution(tier="medium", lower_bound="medium", declared=None),
+        change_id=CHANGE_ID,
+        cadence="nightly",
+        computed_at=datetime(2026, 8, 22, tzinfo=UTC),
+        metrics={
+            "mutation_score": LegacyMetricEntry(
+                layer="backend",
+                status="evaluated",
+                value=0.5,
+                evidence="mutation.json",
+            )
+        },
+        policy_digest=HEX_B,
+    )
+    legacy_boards = {
+        (board.code, board.metric)
+        for board in numeric_below_floor_shortboards(
+            legacy_doc, {"mutation_score": MetricFloor(target="value", min=1.0)}
+        )
+    }
+    assert quality_boards == {("below_floor", "mutation_score")}
+    assert quality_boards == legacy_boards
+    # Intentional: quality uses a fixed 1.0 threshold; kernel uses policy floors.
+
+
+def test_review_id_matches_kernel_digest_formula() -> None:
+    expected = "REV-" + _digest_prefix(
+        _canonical_sha256({"problem_id": "PROB-1", "expected_problem_version": 1})
+    )
+    assert review_id("PROB-1", 1) == expected
+    assert expected == "REV-d80c51678560d61f"

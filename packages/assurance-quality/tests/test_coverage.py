@@ -18,18 +18,26 @@ from assurance_quality.contracts.pr_metrics import (
 )
 from assurance_quality.contracts.quarantine import QuarantineProjection
 from assurance_quality.operations.coverage import (
+    AuthMatrixInput,
     BuildCoverageGapsHandler,
     CollectDiffCoverageHandler,
     ComputeAuthMatrixHandler,
     ComputeConstraintCoverageHandler,
     ComputeJourneyCoverageHandler,
     ComputeThresholdSlackHandler,
+    ConstraintCoverageInput,
     DerivePlanLayerApplicabilityHandler,
+    JourneyCoverageInput,
     MaterializeCLayerMetricsHandler,
     MaterializeMinimumCoverageHandler,
     MaterializeQuarantineProjectionHandler,
     MaterializeTraceAndCoverageGapsHandler,
     ProbeCoverageRepairNeedHandler,
+    ThresholdSlackInput,
+    compute_auth_matrix,
+    compute_constraint_coverage,
+    compute_journey_coverage,
+    compute_threshold_slack,
     default_c_layer_entry,
 )
 from assurance_quality.operations.trace import MaterializeTraceHandler
@@ -312,3 +320,54 @@ async def test_plan_layer_applicability_from_cases(tmp_path: Path) -> None:
 
 def test_c_layer_now_is_injected() -> None:
     assert datetime(2026, 8, 22, tzinfo=UTC).tzinfo is UTC
+
+
+def test_constraint_auth_journey_slack_persist_source_digest() -> None:
+    constraint = compute_constraint_coverage(
+        ConstraintCoverageInput(
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            declared_keys=("menus.create",),
+            covered_keys=("menus.create",),
+            source_digest="deadbeef",
+        )
+    )
+    other = compute_constraint_coverage(
+        ConstraintCoverageInput(
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            declared_keys=("menus.create",),
+            covered_keys=("menus.create",),
+            source_digest="cafebabe",
+        )
+    )
+    assert constraint.source_digest == "deadbeef"
+    assert constraint.model_dump(mode="json") != other.model_dump(mode="json")
+
+    auth = compute_auth_matrix(
+        AuthMatrixInput(
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            source_digest="deadbeef",
+            cells=(),
+        )
+    )
+    journey = compute_journey_coverage(
+        JourneyCoverageInput(
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            source_digest="deadbeef",
+            items=(),
+        )
+    )
+    slack = compute_threshold_slack(
+        ThresholdSlackInput(
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            source_digest="deadbeef",
+            scenarios=(),
+        )
+    )
+    assert auth.source_digest == "deadbeef"
+    assert journey.source_digest == "deadbeef"
+    assert slack.source_digest == "deadbeef"

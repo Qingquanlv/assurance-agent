@@ -361,6 +361,7 @@ def compute_constraint_coverage(payload: ConstraintCoverageInput) -> ConstraintC
         declared=declared,
         touched=touched_scope,
         value=declared.value,
+        source_digest=payload.source_digest,
     )
 
 
@@ -379,6 +380,7 @@ def compute_auth_matrix(payload: AuthMatrixInput) -> AuthMatrixEvidence:
         touched=declared,
         value=declared.value,
         cells=cells,
+        source_digest=payload.source_digest,
     )
 
 
@@ -398,6 +400,7 @@ def compute_journey_coverage(payload: JourneyCoverageInput) -> JourneyCoverageEv
         touched=declared,
         value=declared.value,
         items=items,
+        source_digest=payload.source_digest,
     )
 
 
@@ -410,6 +413,7 @@ def compute_threshold_slack(payload: ThresholdSlackInput) -> PerfSlackEvidence:
         value=max(slacks) if slacks else None,
         slack_band=payload.slack_band,
         scenarios=payload.scenarios,
+        source_digest=payload.source_digest,
     )
 
 

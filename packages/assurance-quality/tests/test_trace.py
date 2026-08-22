@@ -8,8 +8,10 @@ from graph_engine.plugin_api import CandidateWriteSet
 from tests.phase4.conformance import execute_task
 
 from assurance_quality.contracts.trace import TraceProjectionV2
-from assurance_quality.operations.trace import MaterializeTraceHandler
+from assurance_quality.operations.trace import MaterializeTraceHandler, TraceOperationInput, project_trace
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
+    BATCH_ID,
+    CHANGE_ID,
     HEX_A,
     LEAF,
     catalog_leafs,
@@ -32,6 +34,53 @@ async def test_trace_operation_excludes_unmapped_old_tests(tmp_path: Path) -> No
         context={"capability_leafs": frozenset(catalog_leafs())},
     )
     assert tuple(row.test_path for row in trace.rows) == ("tests/generated.py",)
+
+
+def test_trace_without_execution_evidence_does_not_copy_allowlist_onto_every_case() -> None:
+    payload = TraceOperationInput.model_validate(
+        {
+            "change_id": CHANGE_ID,
+            "batch_id": BATCH_ID,
+            "closed_mapping": ["tests/a.py", "tests/b.py"],
+            "observed": ["tests/a.py", "tests/b.py"],
+            "capability_leafs": catalog_leafs(),
+            "case_ids": ["TC_A", "TC_B"],
+            "cases": [
+                {
+                    "case_id": "TC_A",
+                    "module": "menus",
+                    "case_type": "API",
+                    "automation_required": True,
+                    "capability": LEAF,
+                },
+                {
+                    "case_id": "TC_B",
+                    "module": "menus",
+                    "case_type": "API",
+                    "automation_required": True,
+                    "capability": LEAF,
+                },
+            ],
+        }
+    )
+    projection = project_trace(payload)
+    assert [tuple(ref.file for ref in row.covering_tests) for row in projection.rows] == [(), ()]
+    assert {row.coverage_state for row in projection.rows} == {"uncovered"}
+
+    mapped = project_trace(
+        payload.model_copy(
+            update={
+                "case_covering": {
+                    "TC_A": ("tests/a.py",),
+                    "TC_B": ("tests/b.py",),
+                }
+            }
+        )
+    )
+    assert [tuple(ref.file for ref in row.covering_tests) for row in mapped.rows] == [
+        ("tests/a.py",),
+        ("tests/b.py",),
+    ]
 
 
 @pytest.mark.asyncio

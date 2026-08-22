@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import CandidateWriteSet
@@ -21,7 +23,9 @@ from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     EVIDENCE_REF,
     HEX_A,
     as_object,
+    issue_candidate_document,
     issue_input,
+    occurrence_detected_event,
     validation_context,
     write_set,
 )
@@ -168,6 +172,77 @@ def test_issue_validator_rejects_unknown_evidence() -> None:
         validation_context(),
     )
     assert result.accepted is False
+
+
+def test_issue_validator_rejects_forged_fingerprint_digest() -> None:
+    from assurance_quality.validators.issues import IssueValidator
+
+    payload = issue_candidate_document(possible_problem_ids=["sha256:" + "f" * 64])
+    validator = IssueValidator(
+        evidence_refs=frozenset({EVIDENCE_REF}),
+        file_bytes={"issues/snapshot.json": json.dumps(payload).encode("utf-8")},
+    )
+    result = validator.validate(write_set("issues/snapshot.json"), validation_context())
+    assert result.accepted is False
+    assert result.reason == "canonical fingerprint does not match evidence"
+
+
+def test_issue_validator_rejects_occurrence_without_predecessor() -> None:
+    from assurance_quality.validators.issues import IssueValidator
+
+    payload = occurrence_detected_event()
+    validator = IssueValidator(
+        evidence_refs=frozenset({EVIDENCE_REF}),
+        file_bytes={"issues/event.json": json.dumps(payload).encode("utf-8")},
+    )
+    result = validator.validate(write_set("issues/event.json"), validation_context())
+    assert result.accepted is False
+    assert result.reason == "issue event transition is not allowed"
+
+
+def test_problem_apply_validator_rejects_forged_review_id() -> None:
+    from assurance_quality.validators.issues import ProblemApplyValidator
+
+    validator = ProblemApplyValidator(
+        receipt={
+            "problem_id": "PROB-1",
+            "review_id": "REV-FORGED",
+            "action": "confirm_assessment",
+            "expected_problem_version": 1,
+        },
+        context={
+            "problem_id": "PROB-1",
+            "review_id": "REV-FORGED",
+            "expected_problem_version": 1,
+        },
+    )
+    result = validator.validate(
+        write_set("issue-review/rev-1/apply-receipt.json"),
+        validation_context(),
+    )
+    assert result.accepted is False
+    assert result.reason
+
+
+def test_problem_apply_validator_rejects_missing_context_review_id() -> None:
+    from assurance_quality.operations.identity import review_id
+    from assurance_quality.validators.issues import ProblemApplyValidator
+
+    validator = ProblemApplyValidator(
+        receipt={
+            "problem_id": "PROB-1",
+            "review_id": review_id("PROB-1", 1),
+            "action": "confirm_assessment",
+            "expected_problem_version": 1,
+        },
+        context={"problem_id": "PROB-1", "expected_problem_version": 1},
+    )
+    result = validator.validate(
+        write_set("issue-review/rev-1/apply-receipt.json"),
+        validation_context(),
+    )
+    assert result.accepted is False
+    assert result.reason
 
 
 def test_problem_apply_validator_default_fails_closed() -> None:

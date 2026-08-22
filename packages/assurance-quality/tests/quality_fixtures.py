@@ -75,6 +75,65 @@ def issue_input(*, message: str, change_id: str = CHANGE_ID, batch_id: str = BAT
     }
 
 
+def issue_candidate_document(*, possible_problem_ids: list[str]) -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "batch_id": BATCH_ID,
+        "evidence_bundle_digest": EVIDENCE_REF,
+        "candidates": [
+            {
+                "candidate_id": "CAND-1",
+                "observation_ids": ["OBS-1"],
+                "proposed": {
+                    "title": "boom",
+                    "classification": "product_bug",
+                    "severity": "high",
+                    "root_cause_hypothesis": "x",
+                },
+                "affected_surface": {"kind": "module", "value": "Menus Service"},
+                "fingerprint_inputs": {"surface": "menus", "symptom": "boom"},
+                "possible_problem_ids": possible_problem_ids,
+                "confidence": 0.8,
+                "recommended_action": "triage",
+            }
+        ],
+    }
+
+
+def occurrence_detected_event() -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "seq": 1,
+        "event_id": "EVT-1",
+        "idempotency_key": "k1",
+        "ts": "2026-08-22T00:00:00Z",
+        "evidence_digest": EVIDENCE_REF,
+        "change_id": CHANGE_ID,
+        "batch_id": BATCH_ID,
+        "type": "occurrence_detected",
+        "occurrence": {
+            "occurrence_id": "OCC-1",
+            "change_id": CHANGE_ID,
+            "batch_id": BATCH_ID,
+            "observation_ids": ["OBS-1"],
+            "problem_id": "PROB-1",
+            "provisional_assessment": {
+                "classification": "product_bug",
+                "severity": "high",
+                "authority": "llm_provisional",
+                "root_cause_hypothesis": "x",
+            },
+            "analysis": {
+                "evidence_bundle_digest": EVIDENCE_REF,
+                "analyzer": "assurance.quality",
+                "prompt_version": "1",
+                "candidate_digest": EVIDENCE_REF,
+            },
+        },
+    }
+
+
 def write_set(*paths: str, digest: str = HEX_A) -> CandidateWriteSet:
     return CandidateWriteSet(
         baseline_tree_id=HEX_B,

@@ -59,6 +59,7 @@ class TraceOperationInput(BaseModel):
     closed_mapping: tuple[str, ...]
     observed: tuple[str, ...] = ()
     cases: tuple[TraceCaseInput, ...] = ()
+    case_covering: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     capability_leafs: tuple[str, ...]
     case_ids: tuple[str, ...] = ()
     plan_ids: tuple[str, ...] = ()
@@ -99,6 +100,26 @@ def _status_for(path: str, payload: TraceOperationInput) -> Literal["passed", "f
     return "passed"
 
 
+def _mapped_paths(
+    case: TraceCaseInput,
+    payload: TraceOperationInput,
+    allowed: frozenset[str],
+    cases: tuple[TraceCaseInput, ...],
+) -> tuple[str, ...]:
+    if payload.execution_evidence is not None:
+        return tuple(
+            entry.test
+            for entry in payload.execution_evidence.mapping.mappings
+            if entry.case_id == case.case_id
+        )
+    explicit = tuple(path for path in payload.case_covering.get(case.case_id, ()) if path in allowed)
+    if explicit:
+        return explicit
+    if len(cases) == 1:
+        return tuple(path for path in payload.closed_mapping if path in allowed)
+    return ()
+
+
 def project_trace(payload: TraceOperationInput) -> TraceProjectionV2:
     allowed = payload.closed_paths()
     observed = _observed_in_mapping(payload)
@@ -107,18 +128,8 @@ def project_trace(payload: TraceOperationInput) -> TraceProjectionV2:
         TraceCaseInput(case_id=payload.case_ids[0] if payload.case_ids else "TC_UNBOUND", module="unknown"),
     )
     rows: list[TraceRow] = []
-    for index, case in enumerate(cases):
-        mapped = (
-            tuple(path for path in payload.closed_mapping if path in allowed)
-            if not payload.execution_evidence
-            else tuple(
-                entry.test
-                for entry in payload.execution_evidence.mapping.mappings
-                if entry.case_id == case.case_id
-            )
-        )
-        if not mapped and index == 0:
-            mapped = tuple(sorted(allowed))
+    for case in cases:
+        mapped = _mapped_paths(case, payload, allowed, cases)
         covering = tuple(
             TraceTestRef(file=path, test_name=_test_name(path)) for path in mapped if path in observed_set
         )
