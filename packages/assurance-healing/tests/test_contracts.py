@@ -65,6 +65,7 @@ def valid_override_token(
         "policy_digest": policy_digest,
         "candidate_digest": candidate_digest,
         "token_digest": override_token_digest(
+            change_id="CH-DEMO-001",
             policy_digest=policy_digest,
             candidate_digest=candidate_digest,
         ),
@@ -72,11 +73,12 @@ def valid_override_token(
 
 
 def valid_heal_apply_receipt(*, idempotency_key: str | None = None) -> dict[str, object]:
+    from assurance_healing.contracts.wire import heal_apply_intent_digest
+
     record_key = "heal-apply-CH-DEMO-001-api"
-    return {
+    payload: dict[str, object] = {
         "schema_version": "2",
         "record_key": record_key,
-        "idempotency_key": record_key if idempotency_key is None else idempotency_key,
         "change_id": "CH-DEMO-001",
         "owner_id": "assurance.healing",
         "target": "api",
@@ -85,12 +87,14 @@ def valid_heal_apply_receipt(*, idempotency_key: str | None = None) -> dict[str,
         "candidate_digest": _HEX_A,
         "baseline_digest": _HEX_B,
         "policy_digest": _HEX_C,
-        "intent_digest": _HEX_D,
         "write_set_id": "ws-1",
         "proposal_ids": ["P1"],
         "claimed_modified_paths": ["tests/api/test_users.py"],
         "safety_payload_digest": _HEX_E,
     }
+    payload["intent_digest"] = heal_apply_intent_digest(payload)
+    payload["idempotency_key"] = record_key if idempotency_key is None else idempotency_key
+    return payload
 
 
 def forged_receipt() -> dict[str, object]:
@@ -171,6 +175,13 @@ def test_override_token_accepts_matching_policy_and_candidate_digest() -> None:
     assert token.candidate_digest == _HEX_B
 
 
+def test_override_token_rejects_rewritten_change_id() -> None:
+    token = valid_override_token()
+    token["change_id"] = "CH-OTHER"
+    with pytest.raises(ValidationError, match="override token digest"):
+        HealingOverrideTokenV1.model_validate(token)
+
+
 def test_effect_receipt_rejects_wrong_idempotency_key() -> None:
     with pytest.raises(ValidationError, match="idempotency key"):
         HealApplyReceiptV2.model_validate(forged_receipt())
@@ -179,6 +190,13 @@ def test_effect_receipt_rejects_wrong_idempotency_key() -> None:
 def test_effect_receipt_accepts_matching_idempotency_key() -> None:
     receipt = HealApplyReceiptV2.model_validate(valid_heal_apply_receipt())
     assert receipt.idempotency_key == receipt.record_key
+
+
+def test_effect_receipt_rejects_unbound_intent_digest() -> None:
+    payload = valid_heal_apply_receipt()
+    payload["intent_digest"] = _HEX_D
+    with pytest.raises(ValidationError, match="intent digest"):
+        HealApplyReceiptV2.model_validate(payload)
 
 
 def test_test_change_policy_rejects_extra_keys() -> None:

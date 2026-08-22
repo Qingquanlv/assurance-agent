@@ -110,6 +110,7 @@ class HealingOverrideTokenV1(FrozenContract):
     @model_validator(mode="after")
     def validate_token_digest(self) -> Self:
         expected = override_token_digest(
+            change_id=self.change_id,
             policy_digest=self.policy_digest,
             candidate_digest=self.candidate_digest,
         )

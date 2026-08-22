@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Annotated
+from collections.abc import Mapping, Sequence
+from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -56,8 +56,24 @@ def validate_canonical_strings(values: Sequence[str], *, label: str) -> None:
         raise ValueError(f"{label} must be canonically sorted")
 
 
-def override_token_digest(*, policy_digest: str, candidate_digest: str) -> str:
-    return canonical_digest({"candidate_digest": candidate_digest, "policy_digest": policy_digest})
+def override_token_digest(
+    *,
+    policy_digest: str,
+    candidate_digest: str,
+    change_id: str,
+) -> str:
+    return canonical_digest(
+        {
+            "candidate_digest": candidate_digest,
+            "change_id": change_id,
+            "policy_digest": policy_digest,
+        }
+    )
+
+
+def heal_apply_intent_digest(payload: Mapping[str, Any]) -> str:
+    body = {key: value for key, value in payload.items() if key not in {"idempotency_key", "intent_digest"}}
+    return canonical_digest(body)
 
 
 def execution_evidence_binding_digest(

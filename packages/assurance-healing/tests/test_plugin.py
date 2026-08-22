@@ -68,9 +68,18 @@ def test_healing_source_identity() -> None:
     assert tuple(HEALING_SCHEMA_IDS) == tuple(sorted(HEALING_SCHEMA_IDS))
     assert HealingPlugin.descriptor().resources == HEALING_RESOURCE_IDS
     assert tuple(HEALING_RESOURCE_IDS) == tuple(sorted(HEALING_RESOURCE_IDS))
-    assert HealingPlugin.descriptor().task_handlers == ()
-    assert HealingPlugin.descriptor().commit_validators == ()
-    assert HealingPlugin.descriptor().effects == ()
+    from assurance_healing.plugin import (
+        HEALING_EFFECT_IDS,
+        HEALING_HANDLER_IDS,
+        HEALING_VALIDATOR_IDS,
+    )
+
+    assert HealingPlugin.descriptor().task_handlers == HEALING_HANDLER_IDS
+    assert HealingPlugin.descriptor().commit_validators == HEALING_VALIDATOR_IDS
+    assert HealingPlugin.descriptor().effects == HEALING_EFFECT_IDS
+    assert tuple(HEALING_HANDLER_IDS) == tuple(sorted(HEALING_HANDLER_IDS))
+    assert tuple(HEALING_VALIDATOR_IDS) == tuple(sorted(HEALING_VALIDATOR_IDS))
+    assert tuple(HEALING_EFFECT_IDS) == tuple(sorted(HEALING_EFFECT_IDS))
     assert HealingPlugin.descriptor().bindings == ()
 
 

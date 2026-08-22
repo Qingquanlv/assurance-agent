@@ -6,7 +6,12 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from assurance_healing.contracts.wire import FrozenContract, HexDigest, validate_repo_path
+from assurance_healing.contracts.wire import (
+    FrozenContract,
+    HexDigest,
+    heal_apply_intent_digest,
+    validate_repo_path,
+)
 from assurance_intake.contracts import NonEmptyStr
 
 
@@ -124,4 +129,7 @@ class HealApplyReceiptV2(HealApplyIntentV2):
     def validate_idempotency_key(self) -> Self:
         if self.idempotency_key != self.record_key:
             raise ValueError("idempotency key does not match record_key")
+        expected = heal_apply_intent_digest(self.model_dump(mode="json"))
+        if self.intent_digest != expected:
+            raise ValueError("intent digest does not match intent")
         return self

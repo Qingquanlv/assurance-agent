@@ -2471,8 +2471,8 @@ items:
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.skill.aa-coverage-repair.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-healing/tests/test_proposal.py::test_coverage_repair_prepare_and_finalize
 - kind: skill
   legacy_id: aa-dashboard
   disposition: migrate
@@ -2534,8 +2534,8 @@ items:
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.skill.aa-fix-proposal.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-healing/tests/test_proposal.py::test_fix_proposal_prepare_is_deterministic_and_provider_neutral
 - kind: skill
   legacy_id: aa-fuzz-codegen
   disposition: migrate
