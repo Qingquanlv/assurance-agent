@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import ast
-import base64
 import dataclasses
-import hashlib
 import inspect
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import FunctionType
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -16,27 +15,38 @@ from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.contributions import (
     ContributionProjection,
-    ContributionSourceKeyProjection,
-    ResourceContributionProjection,
+    _resource_projection,
 )
-from graph_engine.composition.lock import (
-    InvocationLock,
-    LockedPlugin,
-    LockedProduct,
-    LockedSource,
-    LockedSourceFile,
-    RegistryProjections,
-    _descriptor_projection,
-    _registry_digests_from_projections,
+from graph_engine.composition.dependencies import resolve_dependency_order
+from graph_engine.composition.lock import InvocationLock, build_invocation_lock
+from graph_engine.composition.models import (
+    AuthenticatedContribution,
+    ContributionAuthority,
+    ExecutableAuthority,
+    ExecutableBindingMode,
+    ExecutableKind,
+    ExecutableModuleProvenance,
+    ExecutableProvenance,
+    PluginRequirement,
+    ProductManifest,
+    SourceFile,
+    SourceIdentity,
+    SourceKey,
+    SourceKind,
+    SourceRole,
+    SourceSnapshot,
 )
-from graph_engine.composition.models import SourceFile, SourceKind, SourceRole, SourceSnapshot
+from graph_engine.composition.provenance import StandardLoader
+from graph_engine.composition.registries import _build_registries
+from graph_engine.graph.compiler import compile_workflow
+from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
     EffectIntent,
     PluginContribution,
     PluginDescriptor,
-    ProviderSource,
+    PluginProvider,
     ResourceClaims,
     ValidationContext,
 )
@@ -53,7 +63,10 @@ from assurance_healing.operations.keys import (
     derive_heal_record_key,
 )
 from assurance_healing.operations.status import ProjectEpisodeHandler
-from assurance_healing.plugin import HEALING_EFFECT_IDS, HEALING_SOURCE, HealingPlugin
+from assurance_execution.plugin import ExecutionPlugin
+from assurance_generation.plugin import GenerationPlugin
+from assurance_healing.plugin import HEALING_EFFECT_IDS, HealingPlugin
+from assurance_intake.plugin import IntakePlugin
 from assurance_healing.resource_loader import resource_bytes
 from assurance_healing.validators.override import OverrideValidator
 from assurance_healing.validators.test_tree import TestTreeValidator
@@ -102,6 +115,14 @@ _PREFIXED_C = f"sha256:{_HEX_C}"
 _PREFIXED_D = f"sha256:{_HEX_D}"
 _PREFIXED_E = f"sha256:{_HEX_E}"
 _POLICY_RESOURCE = "policy/test-change-policy.v1.json"
+_POLICY_RESOURCE_ID = "assurance.healing.policy.test-change-policy.v1"
+_PIN_PRODUCT_ID = "toy.assurance"
+_PIN_CHAIN: tuple[tuple[PluginProvider, Path], ...] = (
+    (IntakePlugin(), REPO_ROOT / "packages" / "assurance-intake"),
+    (GenerationPlugin(), REPO_ROOT / "packages" / "assurance-generation"),
+    (ExecutionPlugin(), REPO_ROOT / "packages" / "assurance-execution"),
+    (HealingPlugin(), REPO_ROOT / "packages" / "assurance-healing"),
+)
 _FORBIDDEN_TYPE_NAMES = frozenset({"Hooks", "HookRegistry", "ProductRuntime", "SemanticPins"})
 _REGISTRY_KINDS = frozenset(
     {
@@ -1228,32 +1249,44 @@ def _compare_semantic_pins(_tmp_path: Path) -> None:
     assert pins.owner is None
     assert "semantic_pins" not in contributed_ids
     assert not any("semantic_pin" in item for item in contributed_ids)
-    baseline = _phase2_digests()
-    mutated = _phase2_digests(mutate_resource=True)
-    assert mutated["source_digest"] != baseline["source_digest"]
-    assert mutated["composition_digest"] != baseline["composition_digest"]
-    assert mutated["lock_digest"] != baseline["lock_digest"]
+    baseline_snapshot = _healing_source_snapshot()
+    mutated_snapshot = _healing_source_snapshot(mutate_policy=True)
+    assert mutated_snapshot.digest != baseline_snapshot.digest
+    baseline = _phase2_digests(source_snapshot=baseline_snapshot, lock_snapshot=baseline_snapshot)
+    moved = _phase2_digests(
+        source_snapshot=baseline_snapshot,
+        lock_snapshot=baseline_snapshot,
+        mutate_contribute=True,
+    )
+    counter = _phase2_digests(source_snapshot=mutated_snapshot, lock_snapshot=baseline_snapshot)
+    assert moved["source_digest"] == baseline["source_digest"] == baseline_snapshot.digest
+    assert moved["policy_sha256"] != baseline["policy_sha256"]
+    assert moved["contribution_digest"] != baseline["contribution_digest"]
+    assert moved["composition_digest"] != baseline["composition_digest"]
+    assert moved["lock_digest"] != baseline["lock_digest"]
+    assert counter["source_digest"] == mutated_snapshot.digest
+    assert counter["policy_sha256"] == baseline["policy_sha256"]
+    assert counter["contribution_digest"] == baseline["contribution_digest"]
+    assert counter["composition_digest"] == baseline["composition_digest"]
+    assert counter["lock_digest"] == baseline["lock_digest"]
 
 
-def _phase2_digests(*, mutate_resource: bool = False) -> dict[str, str]:
-    root = REPO_ROOT / "packages" / "assurance-healing"
-    files: list[SourceFile] = []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
-            continue
-        rel = path.relative_to(root).as_posix()
-        content = path.read_bytes()
-        if mutate_resource and rel.endswith(_POLICY_RESOURCE):
-            content = content + b"\n"
-        files.append(SourceFile.from_bytes(rel, content))
-    snapshot = SourceSnapshot.from_files(SourceKind.EDITABLE_PLUGIN, root.resolve(), tuple(files))
-    contribution = _contributed(mutate_resource=mutate_resource)
-    projection = _contribution_projection(contribution, snapshot.digest)
-    composition = canonical_digest(cast(JSONValue, projection.model_json_projection()))
-    lock = _invocation_lock_for_projection(projection, snapshot)
+def _phase2_digests(
+    *,
+    source_snapshot: SourceSnapshot,
+    lock_snapshot: SourceSnapshot,
+    mutate_contribute: bool = False,
+) -> dict[str, str]:
+    contribution = _contributed(mutate_resource=mutate_contribute)
+    policy = next(item for item in contribution.resources if item.resource_id == _POLICY_RESOURCE_ID)
+    healing = _authenticated_plugin(HealingPlugin.descriptor(), contribution, lock_snapshot)
+    projection = ContributionProjection.from_authority(healing.authority)
+    lock = _invocation_lock_for_healing(healing, lock_snapshot)
     return {
-        "source_digest": snapshot.digest,
-        "composition_digest": composition,
+        "source_digest": source_snapshot.digest,
+        "policy_sha256": _resource_projection(policy).content_sha256,
+        "contribution_digest": healing.authority.digest,
+        "composition_digest": canonical_digest(cast(JSONValue, projection.model_json_projection())),
         "lock_digest": lock.digest,
     }
 
@@ -1271,155 +1304,233 @@ def _contributed(*, mutate_resource: bool) -> PluginContribution:
         return HealingPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
 
 
-def _contribution_projection(contribution: PluginContribution, source_digest: str) -> ContributionProjection:
-    resources = tuple(
-        ResourceContributionProjection(
-            resource_id=item.resource_id,
-            media_type=item.media_type,
-            content_base64=base64.b64encode(item.content).decode("ascii"),
-            content_sha256=hashlib.sha256(item.content).hexdigest(),
-        )
-        for item in sorted(contribution.resources, key=lambda item: item.resource_id)
-    )
-    return ContributionProjection(
-        owner_id="assurance.healing",
-        source_key=ContributionSourceKeyProjection(role=SourceRole.PLUGIN, owner_id="assurance.healing"),
-        source_digest=source_digest,
-        task_handlers=(),
-        commit_validators=(),
-        schemas=(),
-        resources=resources,
-        effects=(),
-        bindings=(),
-    )
+def _healing_source_snapshot(*, mutate_policy: bool = False) -> SourceSnapshot:
+    root = REPO_ROOT / "packages" / "assurance-healing"
+    files: list[SourceFile] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
+            continue
+        rel = path.relative_to(root).as_posix()
+        content = path.read_bytes()
+        if mutate_policy and rel.endswith(_POLICY_RESOURCE):
+            content = content + b"\n"
+        files.append(SourceFile.from_bytes(rel, content))
+    return _plugin_snapshot(HealingPlugin.descriptor(), root, tuple(files))
 
 
-def _invocation_lock_for_projection(
-    projection: ContributionProjection,
-    snapshot: SourceSnapshot,
+def _invocation_lock_for_healing(
+    healing: AuthenticatedContribution,
+    healing_snapshot: SourceSnapshot,
 ) -> InvocationLock:
-    contribution = cast(JSONValue, projection.model_json_projection())
-    descriptor = PluginDescriptor(
+    ports = RegistryPorts(engine_api=ENGINE_API_VERSION)
+    authenticated: list[AuthenticatedContribution] = []
+    plugin_snapshots: list[SourceSnapshot] = []
+    descriptors: dict[str, PluginDescriptor] = {}
+    for provider, root in _PIN_CHAIN:
+        descriptor = provider.descriptor()
+        descriptors[descriptor.plugin_id] = descriptor
+        if descriptor.plugin_id == healing.owner_id:
+            plugin_snapshots.append(healing_snapshot)
+            authenticated.append(healing)
+            continue
+        snapshot = _plugin_snapshot(descriptor, root, ())
+        plugin_snapshots.append(snapshot)
+        authenticated.append(_authenticated_plugin(descriptor, provider.contribute(ports), snapshot))
+    workflow = _pin_workflow()
+    manifest = ProductManifest(
         schema_version="1",
-        source=HEALING_SOURCE,
-        plugin_id="assurance.healing",
-        plugin_version="0.1.0",
-        engine_api=ENGINE_API_VERSION,
-        task_handlers=(),
-        commit_validators=(),
-        dependencies=(),
-        resources=tuple(item.resource_id for item in projection.resources),
-    )
-    product_source = ProviderSource(
-        distribution="toy-a",
-        version="1.0.0",
-        entrypoint_group="graph_engine.products",
-        entrypoint_name="toy.a",
-        entrypoint_value="toy_a.product:provider",
-        declaration_path="toy_a/product-declaration.json",
-        import_roots=("",),
-    )
-    manifest = {
-        "schema_version": "1",
-        "source": product_source.model_dump(mode="json"),
-        "product_id": "toy.a",
-        "product_version": "1.0.0",
-        "engine_api": "2.0",
-        "plugins": [{"plugin_id": "assurance.healing", "version_specifier": "==0.1.0"}],
-        "entrypoints": {"start": "root"},
-        "configuration": {},
-        "config_plugin_paths": [],
-        "workflow": None,
-        "workflow_resource_id": "toy.workflow",
-    }
-    product = LockedProduct(
-        product_id="toy.a",
+        source=None,
+        product_id=_PIN_PRODUCT_ID,
         product_version="1.0.0",
-        manifest=manifest,
-        manifest_digest=canonical_digest(cast(JSONValue, manifest)),
-        source=LockedSource(
-            kind=SourceKind.WHEEL_PRODUCT,
-            identity={
-                "distribution": "toy-a",
-                "version": "1.0.0",
-                "entrypoint_group": "graph_engine.products",
-                "entrypoint_name": "toy.a",
-                "entrypoint_value": "toy_a.product:provider",
-                "declaration_path": "toy_a/product-declaration.json",
-                "import_roots": [""],
-            },
-            digest=_HEX_A,
-            files=(LockedSourceFile(path="toy_a/product.py", sha256=_HEX_B),),
-        ),
-    )
-    plugin = LockedPlugin(
-        plugin_id="assurance.healing",
-        plugin_version="0.1.0",
-        descriptor=descriptor,
-        descriptor_digest=canonical_digest(_descriptor_projection(descriptor)),
-        contribution=contribution,
-        contribution_digest=canonical_digest(contribution),
-        dependencies=(),
-        source=LockedSource(
-            kind=SourceKind.WHEEL_PLUGIN,
-            identity={
-                "distribution": HEALING_SOURCE.distribution,
-                "version": HEALING_SOURCE.version,
-                "entrypoint_group": HEALING_SOURCE.entrypoint_group,
-                "entrypoint_name": HEALING_SOURCE.entrypoint_name,
-                "entrypoint_value": HEALING_SOURCE.entrypoint_value,
-                "declaration_path": HEALING_SOURCE.declaration_path,
-                "import_roots": list(HEALING_SOURCE.import_roots),
-                "plugin_id": "assurance.healing",
-                "plugin_version": "0.1.0",
-            },
-            digest=snapshot.digest,
-            files=tuple(LockedSourceFile(path=item.path, sha256=item.sha256) for item in snapshot.files),
-        ),
-    )
-    engine = LockedSource(
-        kind=SourceKind.ENGINE,
-        identity={
-            "distribution": "graph-engine",
-            "version": "1.0.0",
-            "installation": "installed",
-        },
-        digest=_HEX_C,
-        files=(),
-    )
-    registry_projections = RegistryProjections(
-        sources=[
-            {
-                "source_key": {"role": "engine", "owner_id": "graph.engine"},
-                "digest": _HEX_C,
-            }
-        ],
-        capabilities=projection.capability_registry_projection(),
-        schemas=projection.schema_registry_projection(),
-        resources=projection.resource_registry_projection(),
-        effects=projection.effect_registry_projection(),
-    )
-    configuration: dict[str, object] = {}
-    compiled_workflow = {
-        "entrypoints": {"start": "root"},
-        "graphs": {"root": {"start": "node"}},
-        "name": "toy",
-    }
-    return InvocationLock.create(
         engine_api=ENGINE_API_VERSION,
-        engine=engine,
-        engine_digest=_HEX_C,
-        product=product,
-        plugins=(plugin,),
-        dependency_order=("assurance.healing",),
-        registry_projections=registry_projections,
-        registry_digests=_registry_digests_from_projections(registry_projections),
-        configuration=configuration,
-        configuration_digest=canonical_digest(cast(JSONValue, configuration)),
-        capability_bindings=[],
-        capability_bindings_digest=canonical_digest([]),
-        compiled_workflow=compiled_workflow,
-        compiled_workflow_digest=canonical_digest(cast(JSONValue, compiled_workflow)),
+        plugins=tuple(
+            PluginRequirement(plugin_id=plugin_id, version_specifier="==0.1.0") for plugin_id in descriptors
+        ),
+        entrypoints=dict(workflow.entrypoints),
+        configuration={},
+        workflow=workflow,
+    )
+    dependency_order = resolve_dependency_order(descriptors, manifest.plugins)
+    by_owner = {item.owner_id: item for item in authenticated}
+    engine = _engine_snapshot()
+    product = _product_snapshot()
+    registries = _build_registries(
+        sources=(engine, product, *plugin_snapshots),
+        contributions=tuple(by_owner[plugin_id] for plugin_id in dependency_order),
+        dependency_order=dependency_order,
+    )
+    return build_invocation_lock(
+        manifest=manifest,
+        product_snapshot=product,
+        descriptors=descriptors,
+        dependency_order=dependency_order,
+        registries=registries,
+        configuration={},
+        workflow=compile_workflow(workflow, registries),
+        engine_snapshot=engine,
+        contribution_authorities={item.owner_id: item.authority for item in authenticated},
+    )
+
+
+def _authenticated_plugin(
+    descriptor: PluginDescriptor,
+    contribution: PluginContribution,
+    snapshot: SourceSnapshot,
+) -> AuthenticatedContribution:
+    source_key = SourceKey(SourceRole.PLUGIN, descriptor.plugin_id)
+    objects = {
+        **{
+            (ExecutableKind.TASK_HANDLER, registry_id): executable
+            for registry_id, executable in contribution.task_handlers.items()
+        },
+        **{
+            (ExecutableKind.COMMIT_VALIDATOR, registry_id): executable
+            for registry_id, executable in contribution.commit_validators.items()
+        },
+        **{
+            (kind, registration.kind): registration.handler
+            for registration in contribution.effects
+            for kind in (ExecutableKind.EFFECT_APPLY, ExecutableKind.EFFECT_RECONCILE)
+        },
+    }
+    proofs = tuple(
+        sorted(
+            (_executable_proof(snapshot, kind, registry_id) for kind, registry_id in objects),
+            key=lambda item: (item.registry_id, item.kind.value),
+        )
+    )
+    authority = ContributionAuthority(
+        provider_binding=object(),
+        descriptor=descriptor,
+        owner_id=descriptor.plugin_id,
+        source_key=source_key,
+        source_digest=snapshot.digest,
+        contribution=contribution,
+        authorities=tuple(
+            ExecutableAuthority(
+                executable=objects[(proof.kind, proof.registry_id)],
+                function=_slot_function(objects[(proof.kind, proof.registry_id)], proof.kind.slot),
+                bound_self=objects[(proof.kind, proof.registry_id)],
+                descriptor=_slot_function(objects[(proof.kind, proof.registry_id)], proof.kind.slot),
+                provenance=proof,
+            )
+            for proof in proofs
+        ),
+    )
+    return AuthenticatedContribution(
+        owner_id=descriptor.plugin_id,
+        source_key=source_key,
+        source_digest=snapshot.digest,
+        descriptor=descriptor,
+        contribution=contribution,
+        executables=proofs,
+        authority=authority,
+    )
+
+
+def _executable_proof(
+    snapshot: SourceSnapshot,
+    kind: ExecutableKind,
+    registry_id: str,
+) -> ExecutableProvenance:
+    owner_id = snapshot.identity.plugin_id
+    if owner_id is None:
+        raise AssertionError("plugin snapshot must carry a plugin id")
+    return ExecutableProvenance.create(
+        kind=kind,
+        registry_id=registry_id,
+        owner_id=owner_id,
+        source_key=SourceKey(SourceRole.PLUGIN, owner_id),
+        source_digest=snapshot.digest,
+        module=ExecutableModuleProvenance(
+            module_name=f"{owner_id.replace('.', '_')}.implementation",
+            standard_loader=StandardLoader.SOURCE,
+            standard_is_package=False,
+            relative_origin="implementation.py",
+            authenticated_locations=(),
+            physical_sha256="0" * 64,
+            source_digest=snapshot.digest,
+        ),
+        callable_path="implementation:Handler.slot",
+        binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
+    )
+
+
+def _slot_function(executable: object, slot: str) -> FunctionType:
+    for cls in type(executable).__mro__:
+        found = cls.__dict__.get(slot)
+        if isinstance(found, FunctionType):
+            return found
+    raise AssertionError(f"{type(executable).__name__} has no function slot {slot}")
+
+
+def _plugin_snapshot(
+    descriptor: PluginDescriptor,
+    root: Path,
+    files: tuple[SourceFile, ...],
+) -> SourceSnapshot:
+    source = descriptor.source
+    if source is None:
+        raise AssertionError(f"{descriptor.plugin_id} must declare a wheel source")
+    return SourceSnapshot.from_identity(
+        SourceIdentity(
+            kind=SourceKind.WHEEL_PLUGIN,
+            root=root.resolve(),
+            distribution=source.distribution,
+            version=source.version,
+            entrypoint_group=source.entrypoint_group,
+            entrypoint_name=source.entrypoint_name,
+            entrypoint_value=source.entrypoint_value,
+            declaration_path=source.declaration_path,
+            import_roots=tuple(source.import_roots),
+            plugin_id=descriptor.plugin_id,
+            plugin_version=descriptor.plugin_version,
+        ),
+        files,
+    )
+
+
+def _engine_snapshot() -> SourceSnapshot:
+    return SourceSnapshot.from_identity(
+        SourceIdentity(
+            kind=SourceKind.ENGINE,
+            root=Path("/graph-engine"),
+            distribution="graph-engine",
+            version="1.0.0",
+            engine_installation="installed",
+        ),
+        (),
+    )
+
+
+def _product_snapshot() -> SourceSnapshot:
+    return SourceSnapshot.from_identity(
+        SourceIdentity(
+            kind=SourceKind.PRODUCT_FILE,
+            root=Path("/product"),
+            product_id=_PIN_PRODUCT_ID,
+            product_version="1.0.0",
+        ),
+        (),
+    )
+
+
+def _pin_workflow() -> WorkflowDef:
+    return WorkflowDef.model_validate(
+        {
+            "name": "pin-proof",
+            "entrypoints": {"start": "root"},
+            "retry": {},
+            "timeout": {},
+            "graphs": {
+                "root": {
+                    "max_activations": 1,
+                    "start": "done",
+                    "nodes": {"done": {"kind": "end"}},
+                    "edges": [],
+                }
+            },
+        }
     )
 
 
