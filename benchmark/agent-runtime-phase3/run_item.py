@@ -87,7 +87,9 @@ def _load_manifest(path: Path) -> dict[str, Any]:
 
 def _tree_digest(root: Path) -> str:
     files = []
-    for path in sorted(item for item in root.rglob("*") if item.is_file() and "__pycache__" not in item.parts):
+    for path in sorted(
+        item for item in root.rglob("*") if item.is_file() and "__pycache__" not in item.parts
+    ):
         files.append(
             {
                 "path": path.relative_to(root).as_posix(),
@@ -166,7 +168,9 @@ def _attempt_project_scope(*, engine_root: Path, invocation_id: str) -> str:
     act = activation_id("root", "run", 0, (token,))
     tid = task_id(act)
     attempt_dir = attempt_directory_id(invocation_id, tid, act, 1)
-    return str((engine_root / "invocations" / invocation_id / "workspace" / "attempts" / attempt_dir).resolve())
+    return str(
+        (engine_root / "invocations" / invocation_id / "workspace" / "attempts" / attempt_dir).resolve()
+    )
 
 
 def _locked_binding(item: ManifestItem, *, project_scope: str | None, model: str) -> dict[str, Any]:
@@ -459,14 +463,28 @@ def _run_engine(
         engine.close()
 
 
+def _published_workspace_output(workspace_root: Path, expected_path: str) -> Path:
+    head_path = workspace_root / "HEAD.json"
+    if not head_path.is_file():
+        raise SystemExit(f"workspace HEAD is missing: {head_path}")
+    head = json.loads(head_path.read_text(encoding="utf-8"))
+    tree_id = head.get("tree_id") if isinstance(head, dict) else None
+    if not isinstance(tree_id, str) or not tree_id:
+        raise SystemExit("workspace HEAD is missing tree_id")
+    published = workspace_root / "trees" / tree_id / expected_path
+    if not published.is_file():
+        raise SystemExit(
+            f"expected workspace output {expected_path!r} is missing from published tree {tree_id}"
+        )
+    return published
+
+
 def _validate_workspace_output(manifest: dict[str, Any], output: Path, item: ManifestItem) -> None:
     expected_path = manifest["expected_output"]["path"]
     expected_digest = manifest["expected_output"]["digest"]
     workspace_root = output / "engine" / "invocations" / item.item_id / "workspace"
-    matches = list(workspace_root.rglob(expected_path))
-    if len(matches) != 1:
-        raise SystemExit(f"expected workspace output {expected_path!r} not found uniquely under {workspace_root}")
-    actual_digest = canonical_digest(json.loads(matches[0].read_text(encoding="utf-8")))
+    published = _published_workspace_output(workspace_root, expected_path)
+    actual_digest = canonical_digest(json.loads(published.read_text(encoding="utf-8")))
     if actual_digest != expected_digest:
         raise SystemExit(
             f"workspace output digest mismatch: expected {expected_digest}, found {actual_digest}"
@@ -501,10 +519,16 @@ def main(argv: list[str] | None = None) -> int:
         "fixture",
     )
     adapter_meta = manifest["adapters"][arguments.adapter]
-    _require_source_digest(repo, adapter_meta["source_root"], adapter_meta["source_digest"], arguments.adapter)
+    _require_source_digest(
+        repo, adapter_meta["source_root"], adapter_meta["source_digest"], arguments.adapter
+    )
 
     frozen_request = _frozen_request(manifest)
-    project_scope = _attempt_project_scope(engine_root=engine_root, invocation_id=item.item_id) if item.adapter == "opencode" else None
+    project_scope = (
+        _attempt_project_scope(engine_root=engine_root, invocation_id=item.item_id)
+        if item.adapter == "opencode"
+        else None
+    )
     locked_binding = _locked_binding(
         item,
         project_scope=project_scope,
