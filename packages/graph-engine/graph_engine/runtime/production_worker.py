@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import importlib
 import json
 import os
+import signal
 import sys
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +16,6 @@ from typing import Any, cast
 
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import (
-    RecoverableTaskHandler,
     SecretPort,
     TaskActivitySnapshot,
     TaskContext,
@@ -32,13 +35,19 @@ from graph_engine.runtime.host_protocol import (
     encode_authenticated_frame,
 )
 
+_PARENT_ALIVE_ENV = "GRAPH_ENGINE_PARENT_ALIVE_FD"
+_ACTIVITY_RESPONSE_ENV = "GRAPH_ENGINE_ACTIVITY_RESPONSE_FD"
+_CANCEL_ENV = "GRAPH_ENGINE_CANCEL_FD"
+
 
 @dataclass(frozen=True, slots=True)
 class _WorkerJob:
     operation: str
     call: dict[str, JSONValue]
     attempt_root: str
-    python_path: tuple[str, ...]
+    capability_id: str
+    capability_entrypoint: str
+    handler_import_roots: tuple[str, ...]
 
 
 class _ParentActivityPort:
@@ -56,6 +65,33 @@ class _ParentActivityPort:
     def bind(self, reference: JSONValue) -> TaskActivitySnapshot:
         response = self._send({"kind": "activity_rpc", "method": "bind", "args": [reference]})
         return TaskActivitySnapshot.model_validate(response["snapshot"])
+
+
+def _install_parent_death_supervision(parent_alive_fd: int | None) -> None:
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        pr_set_pdeathsig = 1
+        if libc.prctl(pr_set_pdeathsig, signal.SIGTERM) != 0:
+            raise TaskHostProtocolError("failed to install parent-death supervisor")
+
+    def _watch_parent() -> None:
+        if sys.platform == "darwin":
+            while True:
+                time.sleep(0.1)
+                if os.getppid() == 1:
+                    os._exit(1)
+            return
+        if parent_alive_fd is not None:
+            try:
+                while True:
+                    chunk = os.read(parent_alive_fd, 1)
+                    if chunk == b"":
+                        os._exit(1)
+            except OSError:
+                os._exit(1)
+
+    thread = threading.Thread(target=_watch_parent, daemon=True)
+    thread.start()
 
 
 def _load_handler(callable_path: str) -> TaskHandler:
@@ -98,18 +134,6 @@ class _AsyncCallableHandler:
         if asyncio.iscoroutine(result):
             return await result
         return result
-
-
-def _read_exact(stream: Any, size: int) -> bytes:
-    chunks: list[bytes] = []
-    remaining = size
-    while remaining:
-        chunk = stream.read(remaining)
-        if not chunk:
-            raise TaskHostProtocolError("worker control stream closed unexpectedly")
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
 
 
 def _stream_io(stream: object) -> object:
@@ -165,6 +189,15 @@ def _parse_call(
     raise TaskHostProtocolError(f"unsupported worker operation: {operation!r}")
 
 
+def _revoke_secrets(secrets: dict[str, bytes]) -> None:
+    for handle in list(secrets):
+        material = secrets.pop(handle)
+        mutable = bytearray(material)
+        for index in range(len(mutable)):
+            mutable[index] = 0
+        del mutable
+
+
 async def _run_call(
     handler: TaskHandler,
     operation: str,
@@ -210,6 +243,13 @@ def main() -> int:
     call_digest = os.environ.get("GRAPH_ENGINE_WORKER_CALL_DIGEST")
     if not call_digest:
         raise TaskHostProtocolError("worker call digest is missing")
+    parent_alive_raw = os.environ.get(_PARENT_ALIVE_ENV)
+    parent_alive_fd = int(parent_alive_raw) if parent_alive_raw else None
+    activity_response_raw = os.environ.get(_ACTIVITY_RESPONSE_ENV)
+    activity_response_fd = int(activity_response_raw) if activity_response_raw else None
+    cancel_raw = os.environ.get(_CANCEL_ENV)
+    cancel_fd = int(cancel_raw) if cancel_raw else None
+    _install_parent_death_supervision(parent_alive_fd)
     session_key = derive_wire_session_key(
         call_digest=call_digest,
         wire_schema_version=TASK_HOST_WIRE_SCHEMA_VERSION,
@@ -222,65 +262,119 @@ def main() -> int:
     def cancel_requested() -> bool:
         return cancelled["value"]
 
+    activity_response_stream = (
+        os.fdopen(activity_response_fd, "rb", buffering=0) if activity_response_fd is not None else None
+    )
+
+    def _watch_cancel() -> None:
+        if cancel_fd is None:
+            return
+        buffer = b""
+        while True:
+            try:
+                chunk = os.read(cancel_fd, 4096)
+            except OSError:
+                return
+            if not chunk:
+                return
+            buffer += chunk
+            while True:
+                try:
+                    payload, buffer = decode_authenticated_frame(session_key, buffer)
+                except TaskHostProtocolError as error:
+                    if str(error) == "incomplete authenticated wire frame":
+                        break
+                    return
+                document = json.loads(payload.decode("utf-8"))
+                if isinstance(document, dict) and document.get("kind") == "cancel":
+                    cancelled["value"] = True
+
+    if cancel_fd is not None:
+        threading.Thread(target=_watch_cancel, daemon=True).start()
+
     def activity_send(message: dict[str, JSONValue]) -> dict[str, JSONValue]:
         _write_frame(session_key, sys.stdout, message)
-        response = _read_frame(session_key, sys.stdin)
+        if activity_response_stream is None:
+            raise TaskHostProtocolError("activity response channel is unavailable")
+        response = _read_frame(session_key, activity_response_stream)
         if response.get("kind") != "activity_response":
             raise TaskHostProtocolError("expected activity response from parent")
         return response
 
-    while True:
-        frame = _read_frame(session_key, sys.stdin)
-        kind = frame.get("kind")
-        if kind == "job":
-            parsed = _WorkerJob(
-                operation=str(frame["operation"]),
-                call=cast(dict[str, JSONValue], frame["call"]),
-                attempt_root=str(frame["attempt_root"]),
-                python_path=tuple(str(item) for item in frame["python_path"]),
+    try:
+        while True:
+            frame = _read_frame(session_key, sys.stdin)
+            kind = frame.get("kind")
+            if kind == "job":
+                parsed = _WorkerJob(
+                    operation=str(frame["operation"]),
+                    call=cast(dict[str, JSONValue], frame["call"]),
+                    attempt_root=str(frame["attempt_root"]),
+                    capability_id=str(frame["capability_id"]),
+                    capability_entrypoint=str(frame["capability_entrypoint"]),
+                    handler_import_roots=tuple(str(item) for item in frame["handler_import_roots"]),
+                )
+                for entry in parsed.handler_import_roots:
+                    if entry and entry not in sys.path:
+                        sys.path.insert(0, entry)
+                host_call = _parse_call(parsed.operation, parsed.call)
+                continue
+            if kind == "secret":
+                assert host_call is not None
+                handle = str(frame["handle"])
+                if handle not in host_call.authorized_secret_handles:
+                    raise TaskHostProtocolError("secret handle was not authorized for this call")
+                secrets[handle] = bytes.fromhex(str(frame["value_hex"]))
+                continue
+            if kind == "cancel":
+                cancelled["value"] = True
+                continue
+            if kind != "go":
+                raise TaskHostProtocolError("worker expected go frame")
+            assert parsed is not None and host_call is not None
+            secret_port = authorized_secret_port(secrets) if secrets else None
+            handler = _load_handler(parsed.capability_entrypoint)
+            activity_port = (
+                _ParentActivityPort(activity_send)
+                if host_call.activity_rpc.activity_id is not None
+                else None
             )
-            for entry in parsed.python_path:
-                if entry not in sys.path:
-                    sys.path.insert(0, entry)
-            host_call = _parse_call(parsed.operation, parsed.call)
-            continue
-        if kind == "secret":
-            assert host_call is not None
-            handle = str(frame["handle"])
-            if handle not in host_call.authorized_secret_handles:
-                raise TaskHostProtocolError("secret handle was not authorized for this call")
-            secrets[handle] = bytes.fromhex(str(frame["value_hex"]))
-            continue
-        if kind == "cancel":
-            cancelled["value"] = True
-            continue
-        if kind != "go":
-            raise TaskHostProtocolError("worker expected go frame")
-        assert parsed is not None and host_call is not None
-        secret_port = authorized_secret_port(secrets) if secrets else None
-        handler = _load_handler(host_call.capability_entrypoint)
-        activity_port = (
-            _ParentActivityPort(activity_send)
-            if host_call.activity_rpc.activity_id is not None
-            else None
-        )
-        result = asyncio.run(
-            _run_call(
-                handler,
-                parsed.operation,
-                host_call,
-                workspace_root=Path(parsed.attempt_root),
-                secrets=secret_port,
-                activity_port=activity_port,
-                cancel_requested=cancel_requested,
+            result = asyncio.run(
+                _run_call(
+                    handler,
+                    parsed.operation,
+                    host_call,
+                    workspace_root=Path(parsed.attempt_root),
+                    secrets=secret_port,
+                    activity_port=activity_port,
+                    cancel_requested=cancel_requested,
+                )
             )
-        )
-        _write_frame(
-            session_key,
-            sys.stdout,
-            {"kind": "result", "payload": cast(JSONValue, result.model_dump(mode="json"))},
-        )
-        return 0
+            _revoke_secrets(secrets)
+            _write_frame(
+                session_key,
+                sys.stdout,
+                {"kind": "result", "payload": cast(JSONValue, result.model_dump(mode="json"))},
+            )
+            return 0
+    finally:
+        _revoke_secrets(secrets)
+        if parent_alive_fd is not None:
+            try:
+                os.close(parent_alive_fd)
+            except OSError:
+                pass
+        if activity_response_fd is not None:
+            try:
+                if activity_response_stream is not None:
+                    activity_response_stream.close()
+            except OSError:
+                pass
+        if cancel_fd is not None:
+            try:
+                os.close(cancel_fd)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

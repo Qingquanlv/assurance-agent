@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -15,7 +16,13 @@ from typing import cast
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
-from graph_engine.plugin_api import RecoverableTaskHandler, TaskHandler
+from graph_engine.plugin_api import (
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
+    TaskActivitySnapshot,
+    TaskHandler,
+    TaskOutcome,
+)
 from graph_engine.runtime.activity import LedgerTaskActivityPort
 from graph_engine.runtime.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
@@ -34,6 +41,7 @@ from graph_engine.runtime.host_protocol import (
     scan_for_secret_leaks,
 )
 from graph_engine.runtime.host_receipts import (
+    TerminalReceiptError,
     TerminalReceiptStore,
     prove_call_quiescent,
 )
@@ -43,6 +51,13 @@ from graph_engine.runtime.secret_sources import (
     resolve_secret_source,
 )
 from graph_engine.runtime.workspace import SnapshotStore
+
+_CALL_TIMEOUT_SECONDS = 30.0
+_CANCEL_GRACE_SECONDS = 0.25
+_TERMINATE_GRACE_SECONDS = 0.25
+_PARENT_ALIVE_ENV = "GRAPH_ENGINE_PARENT_ALIVE_FD"
+_ACTIVITY_RESPONSE_ENV = "GRAPH_ENGINE_ACTIVITY_RESPONSE_FD"
+_CANCEL_ENV = "GRAPH_ENGINE_CANCEL_FD"
 
 
 class UnsupportedProductionPlatform(GraphEngineError):
@@ -58,6 +73,7 @@ class _BoundRuntime:
     handlers: Mapping[str, TaskHandler]
     store: SnapshotStore | None
     receipts: TerminalReceiptStore | None
+    handler_import_roots: Mapping[str, tuple[str, ...]]
 
 
 class _ProductionTaskExecutionHost:
@@ -71,7 +87,12 @@ class _ProductionTaskExecutionHost:
     ) -> None:
         self._root = Path(root).absolute()
         self._authorization = authorization
-        self._bound = _BoundRuntime(handlers={}, store=None, receipts=None)
+        self._bound = _BoundRuntime(
+            handlers={},
+            store=None,
+            receipts=None,
+            handler_import_roots={},
+        )
         self._read_buffers: dict[int, bytes] = {}
 
     def bind_invocation_runtime(
@@ -80,16 +101,34 @@ class _ProductionTaskExecutionHost:
         handlers: Mapping[str, TaskHandler],
         store: SnapshotStore,
         receipts: TerminalReceiptStore | None = None,
+        handler_import_roots: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
-        self._bound = _BoundRuntime(handlers=handlers, store=store, receipts=receipts)
+        self._bound = _BoundRuntime(
+            handlers=handlers,
+            store=store,
+            receipts=receipts,
+            handler_import_roots=dict(handler_import_roots or {}),
+        )
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
         return await self._invoke("execute", call)
 
     async def reconcile(self, call: TaskHostReconcileCall) -> TaskHostCallResult:
+        promoted = self._result_from_installed_receipt(call.identity)
+        if promoted is not None:
+            return promoted
         return await self._invoke("reconcile", call)
 
     async def cancel(self, call: TaskHostCancelCall) -> TaskHostCallResult:
+        promoted = self._result_from_installed_receipt(call.identity)
+        if promoted is not None and promoted.reconcile_result is not None:
+            return TaskHostCallResult(
+                operation="cancel",
+                cancel_result=TaskActivityCancelResult(
+                    status="terminal",
+                    outcome=promoted.reconcile_result.outcome,
+                ),
+            )
         return await self._invoke("cancel", call)
 
     def read_terminal_receipts(
@@ -98,6 +137,24 @@ class _ProductionTaskExecutionHost:
         if self._bound.receipts is None:
             return ()
         return self._bound.receipts.authenticate(identity)
+
+    def _result_from_installed_receipt(
+        self, identity: TaskHostCallIdentity
+    ) -> TaskHostCallResult | None:
+        if self._bound.receipts is None or identity.activity_id is None:
+            return None
+        for operation in ("execute", "reconcile", "cancel"):
+            check = identity.model_copy(update={"operation": operation})
+            found = self._bound.receipts.authenticate(check)
+            if found:
+                return TaskHostCallResult(
+                    operation="reconcile",
+                    reconcile_result=TaskActivityReconcileResult(
+                        status="terminal",
+                        outcome=found[0].outcome,
+                    ),
+                )
+        return None
 
     async def _invoke(
         self,
@@ -129,6 +186,7 @@ class _ProductionTaskExecutionHost:
                 secrets,
             )
         finally:
+            _revoke_secrets(secrets)
             supervisor.cleanup(process)
 
     def _drive_worker(
@@ -141,6 +199,7 @@ class _ProductionTaskExecutionHost:
         secrets: dict[str, bytes],
     ) -> TaskHostCallResult:
         assert process.stdin is not None and process.stdout is not None
+        import_roots = self._bound.handler_import_roots.get(call.request.capability_id, ())
         self._write_frame(
             process.stdin,
             session_key,
@@ -149,7 +208,9 @@ class _ProductionTaskExecutionHost:
                 "operation": operation,
                 "call": cast(JSONValue, call.model_dump(mode="json")),
                 "attempt_root": str(attempt_root),
-                "python_path": list(_python_path_entries()),
+                "capability_id": call.capability_id,
+                "capability_entrypoint": call.capability_entrypoint,
+                "handler_import_roots": list(import_roots),
             },
         )
         for handle in call.authorized_secret_handles:
@@ -159,51 +220,94 @@ class _ProductionTaskExecutionHost:
                 {"kind": "secret", "handle": handle, "value_hex": secrets[handle].hex()},
             )
         self._write_frame(process.stdin, session_key, {"kind": "go"})
-        if call.activity_rpc.activity_id is None and process.stdin is not None:
+        if process.stdin is not None:
             process.stdin.close()
-        result: TaskHostCallResult | None = None
-        try:
-            while True:
-                frame = self._read_frame(process.stdout, session_key)
-                kind = frame.get("kind")
-                if kind == "activity_rpc":
-                    response = self._handle_activity_rpc(call, frame)
-                    self._write_frame(process.stdin, session_key, response)
-                    continue
-                if kind == "result":
-                    payload = frame.get("payload")
-                    if not isinstance(payload, dict):
-                        raise ProductionHostError("worker returned a malformed result frame")
-                    result = TaskHostCallResult.model_validate(payload)
-                    break
-                raise ProductionHostError(f"unexpected worker frame: {kind!r}")
-        except ProductionHostError as error:
-            detail = process.read_bounded_stderr().decode("utf-8", errors="replace")
-            if detail:
-                raise ProductionHostError(f"{error}: {detail}") from error
-            raise
+
+        result = self._read_worker_result(process, call, session_key, secrets, process)
         stderr = process.read_bounded_stderr()
         scan_for_secret_leaks(stderr, secrets.values())
-        exit_code = process.wait()
+        exit_code = process.wait_with_escalation(session_key, grace_seconds=_TERMINATE_GRACE_SECONDS)
         if exit_code != 0:
             detail = process.read_bounded_stderr().decode("utf-8", errors="replace")
             message = f"worker exited with status {exit_code}"
             if detail:
                 message = f"{message}: {detail}"
             raise ProductionHostError(message)
-        process.prove_quiescent()
-        if call.identity.activity_id is not None and isinstance(
-            self._bound.handlers.get(call.request.capability_id), RecoverableTaskHandler
-        ):
-            self._install_terminal_receipt(call, result)
+        quiescence = process.prove_quiescent(attempt_root=attempt_root)
         scan_for_secret_leaks(canonical_json_bytes(result.model_dump(mode="json")), secrets.values())
+        _revoke_secrets(secrets)
+        self._install_terminal_receipt(call, result, quiescence=quiescence)
         return result
+
+    def _read_worker_result(
+        self,
+        process: "_WorkerProcess",
+        call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
+        session_key: bytes,
+        secrets: dict[str, bytes],
+        worker: "_WorkerProcess",
+    ) -> TaskHostCallResult:
+        assert process.stdout is not None
+        deadline = time.monotonic() + _CALL_TIMEOUT_SECONDS
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                process.send_cancel(session_key)
+                process.terminate_group(grace_seconds=_CANCEL_GRACE_SECONDS)
+                raise ProductionHostError("worker call timed out")
+            try:
+                frame = self._read_frame_with_timeout(
+                    process.stdout,
+                    session_key,
+                    timeout=min(remaining, 0.1),
+                )
+            except ProductionHostError as error:
+                if str(error) == "worker result pending":
+                    continue
+                detail = process.read_bounded_stderr().decode("utf-8", errors="replace")
+                if detail:
+                    raise ProductionHostError(f"{error}: {detail}") from error
+                raise
+            kind = frame.get("kind")
+            if kind == "activity_rpc":
+                response = self._handle_activity_rpc(call, frame)
+                if worker.activity_response_w < 0:
+                    raise ProductionHostError("activity rpc channel is unavailable")
+                response_fd = os.dup(worker.activity_response_w)
+                response_stream = os.fdopen(response_fd, "wb", buffering=0)
+                try:
+                    self._write_frame(response_stream, session_key, response)
+                finally:
+                    response_stream.close()
+                continue
+            if kind == "result":
+                payload = frame.get("payload")
+                if not isinstance(payload, dict):
+                    raise ProductionHostError("worker returned a malformed result frame")
+                return TaskHostCallResult.model_validate(payload)
+            raise ProductionHostError(f"unexpected worker frame: {kind!r}")
+
+    def _read_frame_with_timeout(
+        self,
+        stream: object,
+        session_key: bytes,
+        *,
+        timeout: float,
+    ) -> dict[str, JSONValue]:
+        buffer_obj = self._stream_io(stream)
+        fileno = buffer_obj.fileno()
+        ready, _, _ = select.select([fileno], [], [], timeout)
+        if not ready:
+            raise ProductionHostError("worker result pending")
+        return self._read_frame(stream, session_key)
 
     def _handle_activity_rpc(
         self,
-        call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
+        call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall | None,
         frame: dict[str, JSONValue],
     ) -> dict[str, JSONValue]:
+        if call is None:
+            raise ProductionHostError("activity rpc received without call context")
         if call.activity_rpc.activity_id is None:
             raise ProductionHostError("activity rpc received without activity identity")
         ledger = self._open_ledger(call.identity.invocation_id)
@@ -223,14 +327,32 @@ class _ProductionTaskExecutionHost:
             "snapshot": cast(JSONValue, snapshot.model_dump(mode="json")),
         }
 
+    def _activity_for_receipt(
+        self,
+        call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
+    ) -> TaskActivitySnapshot | None:
+        activity = getattr(call, "activity", None)
+        if activity is not None:
+            return activity
+        if call.identity.activity_id is None:
+            return None
+        ledger = self._open_ledger(call.identity.invocation_id)
+        port = LedgerTaskActivityPort(ledger=ledger, identity=call.activity_rpc)
+        try:
+            return port.snapshot
+        except Exception:
+            return None
+
     def _install_terminal_receipt(
         self,
         call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
         result: TaskHostCallResult,
+        *,
+        quiescence: str,
     ) -> None:
         if self._bound.receipts is None or call.identity.activity_id is None:
             return
-        activity = getattr(call, "activity", None)
+        activity = self._activity_for_receipt(call)
         if activity is None:
             return
         if result.operation == "execute" and result.outcome is not None:
@@ -245,7 +367,6 @@ class _ProductionTaskExecutionHost:
             outcome = result.cancel_result.outcome
         else:
             return
-        quiescence = prove_call_quiescent()
         sink = self._bound.receipts.sink_for(call.identity)
         sink.install(
             TaskHostTerminalReceipt(
@@ -339,7 +460,10 @@ class _WorkerProcess:
     popen: subprocess.Popen[bytes]
     process_group: int
     parent_alive_w: int
+    activity_response_w: int
+    cancel_w: int
     _stderr_chunks: list[bytes]
+    _session_key: bytes | None = None
     _stderr_thread: threading.Thread | None = None
 
     @property
@@ -355,11 +479,36 @@ class _WorkerProcess:
             self._stderr_thread.join(timeout=1.0)
         return b"".join(self._stderr_chunks)[:_MAX_STDERR_BYTES]
 
-    def wait(self) -> int:
-        return self.popen.wait(timeout=30)
+    def send_cancel(self, session_key: bytes) -> None:
+        if self.popen.poll() is not None:
+            return
+        if self.cancel_w < 0:
+            return
+        try:
+            payload = canonical_json_bytes({"kind": "cancel"})
+            data = encode_authenticated_frame(session_key, payload)
+            os.write(self.cancel_w, data)
+        except OSError:
+            return
 
-    def prove_quiescent(self) -> None:
-        prove_call_quiescent()
+    def wait_with_escalation(self, session_key: bytes, *, grace_seconds: float) -> int:
+        deadline = time.monotonic() + _CALL_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            code = self.popen.poll()
+            if code is not None:
+                return code
+            time.sleep(0.01)
+        self.send_cancel(session_key)
+        self.terminate_group(grace_seconds=grace_seconds)
+        return self.popen.wait(timeout=grace_seconds + 1.0)
+
+    def prove_quiescent(self, *, attempt_root: Path) -> str:
+        descendants = _collect_process_group_descendants(
+            process_group=self.process_group,
+            exclude={self.popen.pid},
+        )
+        writers = _collect_workspace_writers(attempt_root)
+        return prove_call_quiescent(writer_identities=writers, descendant_identities=descendants)
 
     def terminate_group(self, *, grace_seconds: float) -> None:
         try:
@@ -391,10 +540,16 @@ class _ProcessSupervisor:
         return cls()
 
     def spawn(self, *, attempt_root: Path, call_digest: str) -> _WorkerProcess:
+        read_fd, write_fd = os.pipe()
+        response_r, response_w = os.pipe()
+        cancel_r, cancel_w = os.pipe()
         command = [sys.executable, "-m", "graph_engine.runtime.production_worker"]
         env = {
             "PYTHONUNBUFFERED": "1",
             "GRAPH_ENGINE_WORKER_CALL_DIGEST": call_digest,
+            _PARENT_ALIVE_ENV: str(read_fd),
+            _ACTIVITY_RESPONSE_ENV: str(response_r),
+            _CANCEL_ENV: str(cancel_r),
             "PATH": os.environ.get("PATH", ""),
         }
         process = subprocess.Popen(
@@ -405,11 +560,17 @@ class _ProcessSupervisor:
             cwd=str(attempt_root),
             env=env,
             start_new_session=True,
+            pass_fds=(read_fd, response_r, cancel_r),
         )
+        os.close(read_fd)
+        os.close(response_r)
+        os.close(cancel_r)
         worker = _WorkerProcess(
             popen=process,
             process_group=process.pid,
-            parent_alive_w=-1,
+            parent_alive_w=write_fd,
+            activity_response_w=response_w,
+            cancel_w=cancel_w,
             _stderr_chunks=[],
         )
         if process.stderr is not None:
@@ -427,8 +588,18 @@ class _ProcessSupervisor:
                 os.close(process.parent_alive_w)
             except OSError:
                 pass
+        if process.activity_response_w >= 0:
+            try:
+                os.close(process.activity_response_w)
+            except OSError:
+                pass
+        if process.cancel_w >= 0:
+            try:
+                os.close(process.cancel_w)
+            except OSError:
+                pass
         if process.popen.poll() is None:
-            process.terminate_group(grace_seconds=0.25)
+            process.terminate_group(grace_seconds=_TERMINATE_GRACE_SECONDS)
 
 
 def _capture_stderr(stream: object, chunks: list[bytes]) -> None:
@@ -441,8 +612,103 @@ def _capture_stderr(stream: object, chunks: list[bytes]) -> None:
         total += len(data)
 
 
-def _python_path_entries() -> tuple[str, ...]:
-    return tuple(path for path in sys.path if path)
+def _revoke_secrets(secrets: dict[str, bytes]) -> None:
+    for handle in list(secrets):
+        material = secrets.pop(handle)
+        mutable = bytearray(material)
+        for index in range(len(mutable)):
+            mutable[index] = 0
+        del mutable
+
+
+def _collect_process_group_descendants(
+    *,
+    process_group: int,
+    exclude: set[int] | None = None,
+) -> tuple[str, ...]:
+    excluded = exclude or set()
+    descendants: list[int] = []
+    if sys.platform.startswith("linux"):
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            if pid in excluded:
+                continue
+            try:
+                with open(f"/proc/{pid}/stat", encoding="ascii") as handle:
+                    stat = handle.read()
+                pgid = int(stat.rpartition(") ")[2].split()[2])
+            except (OSError, ValueError, IndexError):
+                continue
+            if pgid == process_group and pid not in excluded:
+                descendants.append(pid)
+    else:
+        try:
+            completed = subprocess.run(
+                ["ps", "-axo", "pid,pgid"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            raise TerminalReceiptError("cannot enumerate process descendants") from None
+        for line in completed.stdout.splitlines()[1:]:
+            parts = line.strip().split()
+            if len(parts) != 2:
+                continue
+            pid, pgid = int(parts[0]), int(parts[1])
+            if pgid == process_group and pid not in excluded:
+                descendants.append(pid)
+    if descendants:
+        return tuple(str(pid) for pid in sorted(descendants))
+    return ()
+
+
+def _collect_workspace_writers(attempt_root: Path) -> tuple[str, ...]:
+    resolved = attempt_root.resolve()
+    writers: set[str] = set()
+    try:
+        completed = subprocess.run(
+            ["lsof", "-F", "p", "+D", str(resolved)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        if sys.platform.startswith("linux"):
+            writers.update(_linux_workspace_writers(resolved))
+        else:
+            raise TerminalReceiptError("cannot prove workspace writer quiescence") from None
+    else:
+        current: str | None = None
+        for line in completed.stdout.splitlines():
+            if line.startswith("p"):
+                current = line[1:]
+            elif line.startswith("f") and current is not None:
+                writers.add(current)
+    if writers:
+        return tuple(sorted(writers))
+    return ()
+
+
+def _linux_workspace_writers(attempt_root: Path) -> set[str]:
+    writers: set[str] = set()
+    prefix = str(attempt_root)
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        fd_dir = Path("/proc") / entry / "fd"
+        try:
+            for link in fd_dir.iterdir():
+                target = os.readlink(link)
+                if target.startswith(prefix):
+                    writers.add(entry)
+                    break
+        except OSError:
+            continue
+    return writers
 
 
 __all__ = [

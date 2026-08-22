@@ -80,7 +80,6 @@ from graph_engine.runtime.scheduler import (
 )
 from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
 from graph_engine.runtime.seed import InvocationSeed
-from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
 from graph_engine.runtime.workspace import (
     FinalizationRolledBack,
     HeadPublicationIndeterminate,
