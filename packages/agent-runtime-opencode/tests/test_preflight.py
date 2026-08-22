@@ -106,6 +106,28 @@ def _context(*, secrets: SecretPort | None = None, tmp_path: Path | None = None)
     )
 
 
+async def test_fingerprint_ignores_credential_shaped_provider_config() -> None:
+    class _Client:
+        async def get_server_identity(self) -> dict[str, object]:
+            return {"healthy": True, "version": "1.18.4"}
+
+        async def get_profile(self) -> dict[str, object]:
+            return {"provider": {"note": "api_key=unused-provider-field"}}
+
+    fake = OpenCodeFakeServer(profile=_profile())
+    try:
+        config = _config(fake)
+        fingerprint = await OpenCodeHandler()._observe_fingerprint(
+            _Client(),  # type: ignore[arg-type]
+            config,
+            b"runtime-token",
+        )
+    finally:
+        fake.close()
+    assert fingerprint["protocol_profile"] == "opencode-http-v1"
+    assert "api_key=unused-provider-field" not in canonical_json_text(fingerprint)
+
+
 async def test_preflight_authenticates_idempotent_prompt_profile() -> None:
     fake = OpenCodeFakeServer(profile=_profile(prompt_idempotency="conflict-on-body-drift"))
     try:

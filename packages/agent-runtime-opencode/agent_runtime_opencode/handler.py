@@ -614,7 +614,6 @@ class OpenCodeHandler:
             "project_scope": config.project_scope,
         }
         reject_credentials_in_digest_input(identity)
-        reject_credentials_in_digest_input(advertised)
         reject_credentials_in_digest_input(fingerprint)
         text = canonical_json_text(fingerprint)
         secret_text = secret.decode("utf-8")
