@@ -144,3 +144,53 @@ async def test_durable_terminal_survives_new_host_instance(tmp_path: Path) -> No
     restarted = production_process_host(tmp_path)
     restarted.authenticate(process.receipt)
     assert restarted.read_durable_terminal(process.receipt) == terminal
+
+
+async def test_progress_heartbeat_advances_during_long_wait(tmp_path: Path) -> None:
+    host = production_process_host(tmp_path)
+    request = launch_request(
+        tmp_path,
+        argv=(sys.executable, "-c", "import time; time.sleep(2)"),
+    )
+    process = await host.spawn(request)
+    initial = host.read_progress_heartbeat(process.receipt)
+    assert initial is not None
+
+    wait_task = asyncio.create_task(host.wait(process.receipt))
+    try:
+        deadline = time.monotonic() + 1.5
+        advanced = False
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.15)
+            current = host.read_progress_heartbeat(process.receipt)
+            assert current is not None
+            if current > initial + 0.05:
+                advanced = True
+                break
+        assert advanced
+    finally:
+        await wait_task
+
+
+async def test_wait_drains_stderr_concurrently_without_deadlock(tmp_path: Path) -> None:
+    host = production_process_host(tmp_path)
+    script = (
+        "import sys\n"
+        "for _ in range(500):\n"
+        "    sys.stderr.write('x' * 1000)\n"
+        "    sys.stderr.flush()\n"
+        "print('done')\n"
+    )
+    process = await host.spawn(launch_request(tmp_path, argv=(sys.executable, "-c", script)))
+    terminal = await asyncio.wait_for(host.wait(process.receipt), timeout=10.0)
+    assert terminal.exit_code == 0
+    assert b"done" in terminal.stdout
+    assert len(terminal.stderr) > 0
+
+
+async def test_close_reaps_abandoned_child_group(tmp_path: Path) -> None:
+    host = production_process_host(tmp_path)
+    process = await host.spawn(spawning_child_request(tmp_path))
+    host.close()
+    await asyncio.sleep(0.3)
+    assert await no_recorded_pid_survives(process.receipt, host_root=tmp_path)

@@ -9,6 +9,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -235,7 +236,10 @@ _HOST_DIR_NAME = ".cursor-process-host"
 _HOST_STATE_NAME = "host-state.json"
 _SPAWNS_DIR_NAME = "spawns"
 _TERMINALS_DIR_NAME = "terminals"
+_HEARTBEATS_DIR_NAME = "heartbeats"
 _MAX_CAPTURE_BYTES = 16_000_000
+_HEARTBEAT_REFRESH_SECONDS = 0.25
+_STREAM_READ_CHUNK_BYTES = 4096
 _TERMINATE_POLL_SECONDS = 0.01
 
 
@@ -305,6 +309,14 @@ def _load_or_create_host_state(host_dir: Path) -> tuple[str, bytes, str]:
 
 def _receipt_mac(mac_key: bytes, receipt: CursorProcessReceipt) -> str:
     payload = receipt.model_dump(mode="json")
+    return hmac.new(mac_key, canonical_json_bytes(payload), hashlib.sha256).hexdigest()
+
+
+def _heartbeat_mac(mac_key: bytes, receipt: CursorProcessReceipt, updated_at: float) -> str:
+    payload = {
+        "receipt": receipt.model_dump(mode="json"),
+        "updated_at": updated_at,
+    }
     return hmac.new(mac_key, canonical_json_bytes(payload), hashlib.sha256).hexdigest()
 
 
@@ -387,6 +399,69 @@ def _collect_process_tree(root_pid: int) -> tuple[int, ...]:
 
     walk(root_pid)
     return tuple(dict.fromkeys(collected))
+
+
+def _bounded_stream_reader(
+    stream: object | None,
+    chunks: list[bytes],
+    *,
+    max_bytes: int,
+    total: list[int],
+) -> None:
+    if stream is None:
+        return
+    while total[0] < max_bytes:
+        remaining = max_bytes - total[0]
+        data = stream.read(min(_STREAM_READ_CHUNK_BYTES, remaining))  # type: ignore[attr-defined]
+        if not data:
+            break
+        chunks.append(data)
+        total[0] += len(data)
+
+
+def _collect_process_output_bounded(
+    process: subprocess.Popen[bytes],
+    *,
+    max_bytes: int,
+) -> tuple[bytes, bytes, int]:
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    stdout_total = [0]
+    stderr_total = [0]
+
+    def read_stdout() -> None:
+        _bounded_stream_reader(
+            process.stdout,
+            stdout_chunks,
+            max_bytes=max_bytes,
+            total=stdout_total,
+        )
+
+    def read_stderr() -> None:
+        _bounded_stream_reader(
+            process.stderr,
+            stderr_chunks,
+            max_bytes=max_bytes,
+            total=stderr_total,
+        )
+
+    stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+    stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+    exit_code = process.wait()
+    stdout_thread.join(timeout=5.0)
+    stderr_thread.join(timeout=5.0)
+    return b"".join(stdout_chunks), b"".join(stderr_chunks), exit_code
+
+
+def _close_process_handles(process: subprocess.Popen[bytes]) -> None:
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
 
 
 def _any_process_alive(pids: tuple[int, ...]) -> bool:
@@ -526,7 +601,32 @@ class _BaseProductionConfinedProcessHost:
         )
         self._spawn_count += 1
         self._track_process(receipt.process_start_token, process)
+        self._write_progress_heartbeat(receipt)
         return ConfinedProcess(receipt=receipt)
+
+    def read_progress_heartbeat(self, receipt: CursorProcessReceipt) -> float | None:
+        self.authenticate(receipt)
+        heartbeat_path = self._heartbeat_path(receipt.process_start_token)
+        if not heartbeat_path.is_file():
+            return None
+        payload = _read_json(heartbeat_path)
+        updated_at = payload.get("updated_at")
+        stored_mac = payload.get("receipt_mac")
+        if not isinstance(updated_at, (int, float)) or not isinstance(stored_mac, str):
+            raise TaskActivityProtocolViolation("progress heartbeat is not authentic")
+        if _heartbeat_mac(self._mac_key, receipt, float(updated_at)) != stored_mac:
+            raise TaskActivityProtocolViolation("progress heartbeat is not authentic")
+        return float(updated_at)
+
+    def close(self) -> None:
+        for token in list(self._processes):
+            self._reap_tracked_process(token)
+
+    def __enter__(self) -> _BaseProductionConfinedProcessHost:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     async def observe(self, receipt: CursorProcessReceipt) -> ProcessObservation:
         self.authenticate(receipt)
@@ -538,6 +638,7 @@ class _BaseProductionConfinedProcessHost:
             return ProcessObservation(status="unknown")
         code = process.poll()
         if code is None:
+            self._write_progress_heartbeat(receipt)
             return ProcessObservation(status="running")
         return ProcessObservation(status="exited", exit_code=code)
 
@@ -548,18 +649,31 @@ class _BaseProductionConfinedProcessHost:
             return durable
         process = self._require_process(receipt)
         started = receipt.started_at
+        stop_heartbeat = threading.Event()
 
-        def _collect() -> tuple[bytes, bytes, int]:
-            stdout = process.stdout.read() if process.stdout is not None else b""
-            stderr = process.stderr.read() if process.stderr is not None else b""
-            return stdout, stderr, process.wait()
+        def _refresh_heartbeats() -> None:
+            while not stop_heartbeat.wait(_HEARTBEAT_REFRESH_SECONDS):
+                if process.poll() is not None:
+                    return
+                self._write_progress_heartbeat(receipt)
 
-        stdout, stderr, exit_code = await asyncio.to_thread(_collect)
+        heartbeat_thread = threading.Thread(target=_refresh_heartbeats, daemon=True)
+        heartbeat_thread.start()
+        try:
+            stdout, stderr, exit_code = await asyncio.to_thread(
+                _collect_process_output_bounded,
+                process,
+                max_bytes=_MAX_CAPTURE_BYTES,
+            )
+        finally:
+            stop_heartbeat.set()
+            heartbeat_thread.join(timeout=1.0)
+            self._write_progress_heartbeat(receipt)
         elapsed = max(0.0, time.time() - started)
         terminal = HostTerminalResult(
             exit_code=exit_code,
-            stdout=stdout[:_MAX_CAPTURE_BYTES],
-            stderr=stderr[:_MAX_CAPTURE_BYTES],
+            stdout=stdout,
+            stderr=stderr,
             elapsed_seconds=elapsed,
         )
         self._write_durable_terminal(receipt, terminal)
@@ -584,6 +698,7 @@ class _BaseProductionConfinedProcessHost:
                 os.kill(-process_group, sig)
             except (ProcessLookupError, PermissionError):
                 pass
+        self._close_tracked_handles(receipt.process_start_token)
 
     async def _signal_targets(
         self, targets: tuple[int, ...], sig: signal.Signals, grace_seconds: float
@@ -611,6 +726,21 @@ class _BaseProductionConfinedProcessHost:
 
     def _terminal_path(self, token: str) -> Path:
         return self._host_dir / _TERMINALS_DIR_NAME / f"{token}.json"
+
+    def _heartbeat_path(self, token: str) -> Path:
+        return self._host_dir / _HEARTBEATS_DIR_NAME / f"{token}.json"
+
+    def _write_progress_heartbeat(self, receipt: CursorProcessReceipt) -> float:
+        updated_at = time.time()
+        _write_json_atomically(
+            self._heartbeat_path(receipt.process_start_token),
+            {
+                "updated_at": updated_at,
+                "receipt_mac": _heartbeat_mac(self._mac_key, receipt, updated_at),
+                "host_instance_id": self._host_instance_id,
+            },
+        )
+        return updated_at
 
     def _persist_spawn_record(
         self,
@@ -693,6 +823,15 @@ class _BaseProductionConfinedProcessHost:
         return process
 
     def _cleanup_process(self, token: str) -> None:
+        self._reap_tracked_process(token)
+
+    def _close_tracked_handles(self, token: str) -> None:
+        process = self._processes.get(token)
+        if process is None:
+            return
+        _close_process_handles(process)
+
+    def _reap_tracked_process(self, token: str) -> None:
         process = self._processes.pop(token, None)
         if process is None:
             return
@@ -702,6 +841,15 @@ class _BaseProductionConfinedProcessHost:
                     os.kill(pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     continue
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                process.wait(timeout=1.0)
+        _close_process_handles(process)
 
     def _read_start_identity(self, pid: int) -> str:
         raise NotImplementedError
