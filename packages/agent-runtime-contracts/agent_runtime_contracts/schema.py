@@ -294,6 +294,15 @@ _FIXTURE_RESULT_SCHEMAS: tuple[object, ...] = (
         "required": ["ok", "note"],
         "type": "object",
     },
+    {
+        "additionalProperties": False,
+        "properties": {
+            "artifact": {"type": "string"},
+            "status": {"const": "ok", "type": "string"},
+        },
+        "required": ["artifact", "status"],
+        "type": "object",
+    },
 )
 
 

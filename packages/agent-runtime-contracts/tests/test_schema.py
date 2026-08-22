@@ -8,6 +8,7 @@ from agent_runtime_contracts.schema import (
     bound_redacted_diagnostics,
     canonical_digest,
     canonical_json_bytes,
+    resolve_result_schema,
     validate_structured_result,
 )
 
@@ -78,6 +79,23 @@ def test_validate_structured_result_rejects_non_strict_or_open_schema() -> None:
             schema={"$ref": "#/definitions/result"},
             schema_digest=canonical_digest({"$ref": "#/definitions/result"}),
         )
+
+
+_LIVE_FIXTURE_SCHEMA = {
+    "additionalProperties": False,
+    "properties": {
+        "artifact": {"type": "string"},
+        "status": {"const": "ok", "type": "string"},
+    },
+    "required": ["artifact", "status"],
+    "type": "object",
+}
+_LIVE_FIXTURE_SCHEMA_DIGEST = "56e341c9d4dd6ccaac2bc2038dad7539ff03d3895c3d66d02b24172d4ba9141e"
+
+
+def test_resolve_result_schema_includes_phase3_live_fixture() -> None:
+    assert canonical_digest(_LIVE_FIXTURE_SCHEMA) == _LIVE_FIXTURE_SCHEMA_DIGEST
+    assert resolve_result_schema(_LIVE_FIXTURE_SCHEMA_DIGEST) == _LIVE_FIXTURE_SCHEMA
 
 
 def test_result_contract_digest_must_match_schema() -> None:
