@@ -63,10 +63,9 @@ class CanaryTaskHost(SixWheelTaskHost):
         leaking = (
             f"Authorization: Bearer {resolved}",
             f"provider failed with sk-{resolved}",
-            resolved,
+            f"api_key={resolved}",
         )
-        replaced = tuple(item.replace(resolved, "[redacted]") for item in leaking)
-        self.diagnostics = bound_redacted_diagnostics(replaced)
+        self.diagnostics = bound_redacted_diagnostics(leaking)
         agent_request = AgentRunRequest.model_validate(payload)
         self.recorded_request_bytes = agent_request.canonical_bytes()
         result = FakeAgentAdapter(

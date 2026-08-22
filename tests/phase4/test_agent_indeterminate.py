@@ -24,6 +24,13 @@ _CUTS = (
 async def test_finalize_runs_only_after_authenticated_agent_result(wheel: str, cut: str) -> None:
     assert cut in AGENT_CUTS
     executed = await run_finalize_cut(wheel, cut)
+    assert executed.status == "failed"
+    assert executed.effects == ()
+    assert executed.stop_reason is None
+    if cut == "terminal-observed":
+        assert executed.failure_kind == "invalid_output"
+    else:
+        assert executed.failure_kind == "invalid_input"
     assert_indeterminate_is_inert(executed)
 
 
@@ -31,4 +38,6 @@ async def test_finalize_runs_only_after_authenticated_agent_result(wheel: str, c
 async def test_six_wheel_indeterminate_cuts_append_no_business_state(cut: str) -> None:
     observed = await run_six_wheel_cut(cut)
     assert_indeterminate_is_inert(observed)
+    assert observed.effects == ()
+    assert observed.status != "stopped"
     assert observed.finalize_invoked is False or observed.finalize_failed_closed is True

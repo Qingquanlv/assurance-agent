@@ -10,10 +10,13 @@ from graph_engine.plugin_api import EffectApplyResult, EffectIntent, EffectRecon
 
 from assurance_healing.contracts import (
     HealApplyIntentV2,
+    HealApplyReceiptV2,
     HealingAllocationIntentV2,
     HealingAllocationReceiptV2,
     ProposalApprovedIntentV1,
+    ProposalApprovedReceiptV1,
 )
+from assurance_healing.contracts.wire import heal_apply_intent_digest
 from assurance_healing.effects.allocation import HealingAllocationEffect
 from assurance_healing.effects.apply import HealApplyEffect
 from assurance_healing.effects.approval import ProposalApprovedEffect
@@ -24,7 +27,11 @@ from assurance_healing.operations.keys import (
     derive_approval_id,
     derive_heal_record_key,
 )
-from assurance_improvement.contracts.effects import ImprovementEffectIntentV1
+from assurance_improvement.contracts.effects import (
+    ArchiveApplyReceipt,
+    ImprovementEffectIntentV1,
+    ImprovementEffectReceiptV1,
+)
 from assurance_improvement.effects.archive import ImprovementArchiveEffect
 from assurance_improvement.effects.delivery import ImprovementDeliveryEffect
 from assurance_improvement.effects.promotion import ImprovementPromotionEffect
@@ -94,6 +101,8 @@ class EffectCutResult:
     receipt: object
     expected_receipt: object
     external_mutation_count: int
+    apply_returned_applied: bool = False
+    apply_receipt: object = None
 
 
 class FaultingEffectStore:
@@ -114,15 +123,21 @@ class FaultingEffectStore:
         if self.cut == "before_mutation" and not self._faulted:
             self._faulted = True
             raise CrashCut("before_mutation")
-        if not self._faulted:
+        if self.cut == "after_mutation" and not self._faulted:
+            self.external_mutation_count += 1
+            self.records[key] = ImprovementStoreRecord(status="pending", receipt=None, payload=payload)
+            self._faulted = True
+            raise CrashCut("after_mutation")
+        if self.cut == "before_receipt" and not self._faulted:
             self.external_mutation_count += 1
             self.records[key] = ImprovementStoreRecord(status="applied", receipt=receipt, payload=payload)
             self._faulted = True
-            if self.cut in {"after_mutation", "before_receipt"}:
-                raise CrashCut(self.cut)
-            return
-        self.external_mutation_count += 1
-        self.records[key] = ImprovementStoreRecord(status="applied", receipt=receipt, payload=payload)
+            raise CrashCut("before_receipt")
+        existing = self.records.get(key)
+        if existing is None or existing.status != "applied":
+            self.external_mutation_count += 1
+            self.records[key] = ImprovementStoreRecord(status="applied", receipt=receipt, payload=payload)
+        self._faulted = True
 
 
 def _allocation_intent() -> EffectIntent:
@@ -284,21 +299,78 @@ def _intent_for(kind: str) -> tuple[EffectIntent, str]:
     return factory(), key
 
 
+_DELIVERY_RECEIPT_FIELDS = {
+    "change_export": "change_export",
+    "knowledge_export": "knowledge_export",
+    "memory_eval": "memory_eval",
+    "memory_apply": "memory_apply",
+    "memory_rollback": "memory_rollback",
+    "declaration_write": "declaration",
+}
+
+
 def _expected_receipt(kind: str, intent: EffectIntent, key: str) -> object:
     if kind == "assurance.healing.effect.allocation.v2":
         payload = dict(cast(dict[str, object], intent.payload))
         return HealingAllocationReceiptV2.model_validate(
             {**payload, "idempotency_key": payload["operation_id"]}
         ).model_dump(mode="json")
-    if kind.startswith("assurance.improvement."):
-        model = ImprovementEffectIntentV1.model_validate(intent.payload)
-        if kind.endswith("delivery.v1"):
-            assert delivery_effect_key(model) == key
-        elif kind.endswith("promotion.v1"):
-            assert promotion_effect_key(model) == key
-        else:
-            assert archive_effect_key(model) == key
-    return None
+    if kind == "assurance.healing.effect.proposal-approved.v1":
+        model = ProposalApprovedIntentV1.model_validate(intent.payload)
+        assert model.approval_id == key
+        return ProposalApprovedReceiptV1.model_validate(
+            {**model.model_dump(), "idempotency_key": model.approval_id}
+        ).model_dump(mode="json")
+    if kind == "assurance.healing.effect.heal-apply.v2":
+        model = HealApplyIntentV2.model_validate(intent.payload)
+        dumped = model.model_dump(mode="json")
+        assert model.record_key == key
+        return HealApplyReceiptV2.model_validate(
+            {
+                **dumped,
+                "idempotency_key": model.record_key,
+                "intent_digest": heal_apply_intent_digest(dumped),
+            }
+        ).model_dump(mode="json")
+    model = ImprovementEffectIntentV1.model_validate(intent.payload)
+    if kind == "assurance.improvement.effect.delivery.v1":
+        assert delivery_effect_key(model) == key
+        field = _DELIVERY_RECEIPT_FIELDS[model.kind]
+        document = getattr(model, field)
+        return ImprovementEffectReceiptV1.model_validate(
+            {
+                "schema_version": "1",
+                "kind": model.kind,
+                "improvement_id": model.improvement_id,
+                field: document.model_dump(mode="json"),
+            }
+        ).model_dump(mode="json")
+    if kind == "assurance.improvement.effect.promotion.v1":
+        assert promotion_effect_key(model) == key
+        assert model.promotion is not None
+        return ImprovementEffectReceiptV1.model_validate(
+            {
+                "schema_version": "1",
+                "kind": "test_promotion",
+                "improvement_id": model.improvement_id,
+                "promotion": model.promotion.model_dump(mode="json"),
+            }
+        ).model_dump(mode="json")
+    if kind == "assurance.improvement.effect.archive.v1":
+        assert archive_effect_key(model) == key
+        return ImprovementEffectReceiptV1.model_validate(
+            {
+                "schema_version": "1",
+                "kind": "archive",
+                "improvement_id": model.improvement_id,
+                "archive": ArchiveApplyReceipt(
+                    invocation_id=model.invocation_id or model.improvement_id,
+                    archive_digest=model.archive_digest or "0" * 64,
+                    summary_path=model.artifact_path,
+                ).model_dump(mode="json"),
+            }
+        ).model_dump(mode="json")
+    raise ValueError(kind)
 
 
 async def drive_effect_cut(kind: str, cut: str) -> EffectCutResult:
@@ -309,44 +381,32 @@ async def drive_effect_cut(kind: str, cut: str) -> EffectCutResult:
     reconcile = getattr(handler, "reconcile")
     expected_receipt = _expected_receipt(kind, intent, key)
     applied: EffectApplyResult | None = None
+    apply_returned_applied = False
     try:
         applied = await apply(intent, key)
-        if cut == "after_receipt" and isinstance(applied, EffectApplyResult) and applied.status == "applied":
-            pass
+        if isinstance(applied, EffectApplyResult) and applied.status == "applied":
+            apply_returned_applied = True
+        if cut == "after_receipt":
+            raise CrashCut("after_receipt")
     except CrashCut:
-        applied = None
+        pass
     try:
         reconciled = await reconcile(intent, key)
     except CrashCut:
         reconciled = await reconcile(intent, key)
     if not isinstance(reconciled, EffectReconcileResult):
         raise TypeError("reconcile must return EffectReconcileResult")
-    if reconciled.status == "not_applied":
-        try:
-            applied = await apply(intent, key)
-        except CrashCut:
-            applied = None
-        if not isinstance(applied, EffectApplyResult) or applied.status != "applied":
-            return EffectCutResult(
-                status="pending",
-                idempotency_key=key,
-                expected_key=key,
-                receipt=None,
-                expected_receipt=expected_receipt,
-                external_mutation_count=store.external_mutation_count,
-            )
-        reconciled = await reconcile(intent, key)
     status = reconciled.status
-    if status not in {"applied", "pending", "not_applied"}:
+    if status not in {"applied", "pending", "not_applied", "indeterminate", "permanently_failed"}:
         status = "indeterminate"
-    receipt = reconciled.receipt
-    if expected_receipt is None:
-        expected_receipt = receipt
+    apply_receipt = applied.receipt if apply_returned_applied and applied is not None else None
     return EffectCutResult(
         status=status,
         idempotency_key=key,
         expected_key=key,
-        receipt=receipt,
+        receipt=reconciled.receipt,
         expected_receipt=expected_receipt,
         external_mutation_count=store.external_mutation_count,
+        apply_returned_applied=apply_returned_applied,
+        apply_receipt=apply_receipt,
     )

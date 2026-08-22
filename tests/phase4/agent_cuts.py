@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
 
+from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskOutcome
 
@@ -100,17 +101,21 @@ class CuttingTaskHost(SixWheelTaskHost):
                     outcome=TaskOutcome.succeeded({"schema_version": "1", "structured_result": {}}),
                 )
             if self.cut == "terminal-observed":
+                structured: JSONValue = {"ok": True}
                 return TaskHostCallResult(
                     operation="execute",
                     outcome=TaskOutcome.succeeded(
-                        {
-                            "schema_version": "1",
-                            "structured_result": {"ok": True},
-                            "result_digest": "0" * 64,
-                            "evidence_digest": "a" * 64,
-                            "adapter_id": "test.fake",
-                            "adapter_version": "1.0.0",
-                        }
+                        cast(
+                            JSONValue,
+                            {
+                                "schema_version": "1",
+                                "structured_result": structured,
+                                "result_digest": canonical_digest(structured),
+                                "evidence_digest": "a" * 64,
+                                "adapter_id": "test.fake",
+                                "adapter_version": "1.0.0",
+                            },
+                        )
                     ),
                 )
         return await super().execute(call)
@@ -132,7 +137,16 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
         base.update(
             {
                 "change_id": "CH-DEMO-001",
+                "batch_id": "batch-1",
                 "case_ids": ["TC-1"],
+                "selected_targets": {
+                    "api": False,
+                    "e2e": False,
+                    "fuzz": False,
+                    "performance": False,
+                },
+                "baseline_tree_id": _HEX,
+                "runner_profile_digest": _HEX,
                 "mapping": {
                     "schema_version": "1",
                     "selected": [],
@@ -141,29 +155,35 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
             }
         )
     if wheel == "healing":
+        prepare = {
+            "change_id": "CH-DEMO-001",
+            "owner_id": "assurance.healing",
+            "capability_leafs": list(base["capability_leafs"]),
+            "allowed_paths": ["tests/api/test_users.py"],
+            "allowed_roots": ["tests/"],
+            "baseline_digest": _HEX,
+            "candidate_digest": _HEX,
+            "policy_digest": _HEX,
+            "mapping_paths": ["tests/api/test_users.py"],
+            "require_approval": False,
+            "execution_evidence_digest": _HEX,
+            "claimed_capabilities": [],
+        }
         base.update(
             {
-                "change_id": "CH-DEMO-001",
-                "owner_id": "assurance.healing",
-                "baseline_digest": _HEX,
-                "candidate_digest": _HEX,
-                "policy_digest": _HEX,
-                "execution_evidence_digest": _HEX,
-                "require_approval": False,
-                "claimed_capabilities": [],
-                "allowed_paths": [],
-                "mapping_paths": [],
-                "allowed_roots": ["tests/"],
-                "mapping": {"schema_version": "1", "entries": []},
-                "prepare": {
-                    "change_id": "CH-DEMO-001",
-                    "owner_id": "assurance.healing",
-                    "baseline_digest": _HEX,
-                    "candidate_digest": _HEX,
-                    "policy_digest": _HEX,
-                    "execution_evidence_digest": _HEX,
-                    "require_approval": False,
+                **prepare,
+                "mapping": {
+                    "schema_version": "1",
+                    "layer": "api",
+                    "entries": [
+                        {
+                            "case_id": "TC-1",
+                            "symbol": "test_users",
+                            "target_file": "tests/api/test_users.py",
+                        }
+                    ],
                 },
+                "prepare": prepare,
             }
         )
     if wheel == "quality":
@@ -183,6 +203,7 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
             }
         )
     if wheel == "improvement":
+        base.pop("capability_leafs", None)
         base.update(
             {
                 "change_id": "CH-DEMO-001",
@@ -219,10 +240,11 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
     if cut == "result-truncated":
         base["agent_result"] = {"schema_version": "1", "structured_result": {}}
         return cast(JSONValue, base)
+    structured = {"ok": True}
     base["agent_result"] = {
         "schema_version": "1",
-        "structured_result": {"ok": True},
-        "result_digest": "0" * 64,
+        "structured_result": structured,
+        "result_digest": canonical_digest(structured),
         "evidence_digest": _HEX,
         "adapter_id": "test.fake",
         "adapter_version": "1.0.0",
@@ -266,8 +288,8 @@ async def run_six_wheel_cut(cut: str) -> IndeterminateObservation:
     return IndeterminateObservation(
         status=result.status,
         failure_kind=None,
-        effects=(),
-        stop_reason=None,
+        effects=tuple(result.projection.effects),
+        stop_reason=result.terminal_reason,
         workspace_bytes=workspace_bytes,
         finalize_invoked=host.finalize_calls > 0,
         finalize_failed_closed=failed_closed,
@@ -279,9 +301,10 @@ def assert_indeterminate_is_inert(observed: IndeterminateObservation) -> None:
     if isinstance(observed, ExecutedTask):
         raise TypeError("expected IndeterminateObservation")
     assert observed.effects == ()
-    assert observed.stop_reason is None
+    assert observed.status != "succeeded"
+    assert observed.status != "stopped"
     if observed.failure_kind is not None:
-        assert observed.failure_kind == "invalid_input"
+        assert observed.failure_kind in {"invalid_input", "invalid_output"}
         assert observed.status == "failed"
     business = [
         name

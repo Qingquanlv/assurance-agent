@@ -33,7 +33,7 @@ async def test_effect_crash_cuts_are_at_most_once_and_typed(kind: str, cut: str)
     result = await drive_effect_cut(kind, cut)
     assert result.external_mutation_count <= 1
     assert result.idempotency_key == result.expected_key
-    assert result.status in {"applied", "pending", "not_applied", "indeterminate"}
+    assert result.status in {"applied", "pending", "not_applied", "indeterminate", "permanently_failed"}
     if result.status == "applied":
         assert result.receipt == result.expected_receipt
         assert result.external_mutation_count == 1
@@ -41,3 +41,22 @@ async def test_effect_crash_cuts_are_at_most_once_and_typed(kind: str, cut: str)
         assert result.status in {"pending", "not_applied", "indeterminate"}
         if cut == "before_mutation":
             assert result.external_mutation_count == 0
+    if cut == "before_mutation":
+        assert result.status in {"not_applied", "pending"}
+        assert result.external_mutation_count == 0
+        assert result.apply_returned_applied is False
+    elif cut == "after_mutation":
+        assert result.status == "pending"
+        assert result.external_mutation_count == 1
+        assert result.apply_returned_applied is False
+    elif cut == "before_receipt":
+        assert result.status == "applied"
+        assert result.receipt == result.expected_receipt
+        assert result.apply_returned_applied is False
+    elif cut == "after_receipt":
+        assert result.status == "applied"
+        assert result.receipt == result.expected_receipt
+        assert result.apply_returned_applied is True
+        assert result.apply_receipt == result.expected_receipt
+    elif cut == "reconcile_error":
+        assert result.status in {"applied", "pending", "not_applied", "indeterminate"}

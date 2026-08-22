@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import inspect
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -21,11 +22,9 @@ from assurance_generation.validators.generated_files import GeneratedFilesValida
 from assurance_healing.operations.agent import _workspace_file as healing_workspace_file
 from assurance_healing.validators.test_tree import TestTreeValidator
 from assurance_improvement.validators.delivery import DeliveryValidator
-from assurance_improvement.validators.paths import authenticate_workspace_path as improvement_workspace_path
 from assurance_improvement.validators.paths import canonical_relative as improvement_canonical
 from assurance_intake.operations.finalize import _workspace_file as intake_workspace_file
 from assurance_intake.validators.cases import CaseCandidateValidator
-from assurance_quality.validators.paths import authenticate_workspace_path as quality_workspace_path
 from assurance_quality.validators.paths import canonical_relative as quality_canonical
 from assurance_quality.validators.report import ReportValidator
 
@@ -47,6 +46,10 @@ WHEELS = (
     "quality",
     "improvement",
 )
+STRING_CASES = frozenset({"absolute", "parent-dotdot", "windows-drive", "undeclared-write-root"})
+FILESYSTEM_CASES = frozenset({"symlink-file", "symlink-parent", "hard-link", "path-swap"})
+WORKSPACE_OPEN_WHEELS = frozenset({"intake", "generation", "execution", "healing"})
+NO_WORKSPACE_OPEN_WHEELS = frozenset({"quality", "improvement"})
 
 _SHA = "a" * 64
 _STRING_PATHS = {
@@ -58,17 +61,63 @@ _STRING_PATHS = {
 
 
 @dataclass
+class PathProceedHook:
+    """Spawn/effect fire only after a production validator or open helper accepts."""
+
+    spawned: bool = False
+    effect_emitted: bool = False
+
+    def on_production_accept(self) -> None:
+        self.spawned = True
+        self.effect_emitted = True
+
+
+@dataclass
 class PathObservation:
     rejected: bool
     spawned: bool
     effect_emitted: bool
     workspace: Path
     outside: Path
+    outside_before: frozenset[str]
+    seam: str
+    _lifetime: TemporaryDirectory | None = field(default=None, repr=False, compare=False)
 
 
 def assert_no_write_outside_workspace(observed: PathObservation) -> None:
-    leftovers = [path for path in observed.outside.rglob("*") if path.is_file()]
-    assert leftovers == []
+    after = {
+        path.relative_to(observed.outside).as_posix()
+        for path in observed.outside.rglob("*")
+        if path.is_file()
+    }
+    leftovers = after - observed.outside_before
+    assert leftovers == set()
+
+
+def assert_no_workspace_open_seam(wheel: str) -> None:
+    if wheel == "quality":
+        from assurance_quality.operations import agent_skills
+        from assurance_quality.validators import paths
+
+        assert not hasattr(paths, "authenticate_workspace_path")
+        module_source = inspect.getsource(agent_skills)
+        assert "_workspace_file" not in module_source
+        finalize = inspect.getsource(agent_skills.InspectFinalizeHandler.execute)
+        assert "del context" in finalize
+        assert "workspace_root" not in finalize
+        return
+    if wheel == "improvement":
+        from assurance_improvement.operations import agent as improvement_agent
+        from assurance_improvement.validators import paths
+
+        assert not hasattr(paths, "authenticate_workspace_path")
+        module_source = inspect.getsource(improvement_agent)
+        assert "_workspace_file" not in module_source
+        finalize = inspect.getsource(improvement_agent.RetroFinalizeHandler.execute)
+        assert "del context" in finalize
+        assert "workspace_root" not in finalize
+        return
+    raise AssertionError(f"{wheel} is expected to have a workspace-open seam")
 
 
 def _candidate(*paths: str) -> CandidateWriteSet:
@@ -89,38 +138,45 @@ def _context() -> ValidationContext:
     )
 
 
-def _string_rejected(wheel: str, path: str) -> bool:
+def _file_snapshot(root: Path) -> frozenset[str]:
+    if not root.exists():
+        return frozenset()
+    return frozenset(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file())
+
+
+def _string_rejected(wheel: str, path: str, hook: PathProceedHook) -> bool:
     if wheel == "intake":
-        return CaseCandidateValidator().validate(_candidate(path), _context()).accepted is False
-    if wheel == "generation":
+        accepted = CaseCandidateValidator().validate(_candidate(path), _context()).accepted
+    elif wheel == "generation":
         try:
             canonical_relative_path(path)
-            string_ok = True
         except ValueError:
-            string_ok = False
-        if not string_ok:
             return True
-        return GeneratedFilesValidator().validate(_candidate(path), _context()).accepted is False
-    if wheel == "execution":
+        accepted = GeneratedFilesValidator().validate(_candidate(path), _context()).accepted
+    elif wheel == "execution":
         try:
             _safe_project_relative_path(path)
         except ValueError:
             return True
-        return ClosedMappingValidator().validate(_candidate(path), _context()).accepted is False
-    if wheel == "healing":
-        return TestTreeValidator(path_only=True).validate(_candidate(path), _context()).accepted is False
-    if wheel == "quality":
+        accepted = ClosedMappingValidator().validate(_candidate(path), _context()).accepted
+    elif wheel == "healing":
+        accepted = TestTreeValidator(path_only=True).validate(_candidate(path), _context()).accepted
+    elif wheel == "quality":
         if not quality_canonical(path):
             return True
-        return ReportValidator(path_only=True).validate(_candidate(path), _context()).accepted is False
-    if wheel == "improvement":
+        accepted = ReportValidator(path_only=True).validate(_candidate(path), _context()).accepted
+    elif wheel == "improvement":
         if not improvement_canonical(path):
             return True
-        return DeliveryValidator(path_only=True).validate(_candidate(path), _context()).accepted is False
-    raise ValueError(wheel)
+        accepted = DeliveryValidator(path_only=True).validate(_candidate(path), _context()).accepted
+    else:
+        raise ValueError(wheel)
+    if accepted:
+        hook.on_production_accept()
+    return accepted is False
 
 
-def _workspace_rejected(wheel: str, workspace: Path, relative: str) -> bool:
+def _workspace_rejected(wheel: str, workspace: Path, relative: str, hook: PathProceedHook) -> bool:
     try:
         if wheel == "intake":
             intake_workspace_file(workspace, relative)
@@ -133,46 +189,59 @@ def _workspace_rejected(wheel: str, workspace: Path, relative: str) -> bool:
             resolve_selected_file(workspace, relative)
         elif wheel == "healing":
             healing_workspace_file(workspace, relative)
-        elif wheel == "quality":
-            quality_workspace_path(workspace, relative)
-        elif wheel == "improvement":
-            improvement_workspace_path(workspace, relative)
         else:
             raise ValueError(wheel)
     except (ValueError, OSError, FileNotFoundError):
         return True
+    hook.on_production_accept()
     return False
 
 
 async def exercise_path_case(wheel: str, case: str) -> PathObservation:
-    with TemporaryDirectory(prefix="phase4-path-") as temporary:
-        root = Path(temporary)
-        workspace = root / "workspace"
-        outside = root / "outside"
-        workspace.mkdir()
-        outside.mkdir()
-        spawned = False
-        effect_emitted = False
-        if case in _STRING_PATHS:
-            rejected = _string_rejected(wheel, _STRING_PATHS[case])
-            return PathObservation(
-                rejected=rejected,
-                spawned=spawned,
-                effect_emitted=effect_emitted,
-                workspace=workspace,
-                outside=outside,
-            )
-        relative = _prepare_filesystem(case, workspace, outside)
-        rejected = _workspace_rejected(wheel, workspace, relative)
-        if case in {"absolute", "parent-dotdot", "windows-drive"} or not rejected:
-            rejected = rejected or _string_rejected(wheel, relative)
+    lifetime = TemporaryDirectory(prefix="phase4-path-")
+    root = Path(lifetime.name)
+    workspace = root / "workspace"
+    outside = root / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    hook = PathProceedHook()
+    if case in _STRING_PATHS:
+        outside_before = _file_snapshot(outside)
+        rejected = _string_rejected(wheel, _STRING_PATHS[case], hook)
         return PathObservation(
             rejected=rejected,
-            spawned=spawned,
-            effect_emitted=effect_emitted,
+            spawned=hook.spawned,
+            effect_emitted=hook.effect_emitted,
             workspace=workspace,
             outside=outside,
+            outside_before=outside_before,
+            seam="validator",
+            _lifetime=lifetime,
         )
+    relative = _prepare_filesystem(case, workspace, outside)
+    outside_before = _file_snapshot(outside)
+    if wheel in NO_WORKSPACE_OPEN_WHEELS:
+        return PathObservation(
+            rejected=False,
+            spawned=hook.spawned,
+            effect_emitted=hook.effect_emitted,
+            workspace=workspace,
+            outside=outside,
+            outside_before=outside_before,
+            seam="uncovered",
+            _lifetime=lifetime,
+        )
+    rejected = _workspace_rejected(wheel, workspace, relative, hook)
+    return PathObservation(
+        rejected=rejected,
+        spawned=hook.spawned,
+        effect_emitted=hook.effect_emitted,
+        workspace=workspace,
+        outside=outside,
+        outside_before=outside_before,
+        seam="workspace-open",
+        _lifetime=lifetime,
+    )
 
 
 def _prepare_filesystem(case: str, workspace: Path, outside: Path) -> str:
