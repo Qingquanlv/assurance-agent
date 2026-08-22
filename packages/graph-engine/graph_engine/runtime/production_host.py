@@ -242,7 +242,7 @@ class _ProductionTaskExecutionHost:
         worker: "_WorkerProcess",
     ) -> TaskHostCallResult:
         assert process.stdout is not None
-        deadline = time.monotonic() + _CALL_TIMEOUT_SECONDS
+        deadline = time.monotonic() + float(call.timeout_seconds)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:

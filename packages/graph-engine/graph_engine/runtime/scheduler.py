@@ -290,9 +290,7 @@ class Scheduler:
         self._receipts = receipts
         self._cancel_timeout_seconds = cancel_timeout_seconds
         self._runtime_authorization = (
-            runtime_authorization
-            if runtime_authorization is not None
-            else empty_runtime_authorization()
+            runtime_authorization if runtime_authorization is not None else empty_runtime_authorization()
         )
         self._same_attempt_execute: set[tuple[str, int]] = set()
         bind_runtime = getattr(host, "bind_invocation_runtime", None)
@@ -1219,6 +1217,7 @@ class Scheduler:
                 activity_id=activity_id,
             ),
             authorized_secret_handles=self._authorized_secret_handles(task),
+            timeout_seconds=task.timeout_seconds,
         )
 
     def _host_call_identity(
@@ -1263,6 +1262,7 @@ class Scheduler:
                 activity_id=activity.activity_id,
             ),
             "authorized_secret_handles": self._authorized_secret_handles(task),
+            "timeout_seconds": task.timeout_seconds,
             "activity": activity,
         }
 

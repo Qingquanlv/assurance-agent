@@ -116,6 +116,7 @@ class _TaskHostCallBase(FrozenModel):
     attempt_root: AttemptRootDescriptor
     activity_rpc: TaskActivityRpcIdentity
     authorized_secret_handles: tuple[str, ...] = ()
+    timeout_seconds: float = Field(default=30.0, gt=0, le=3600)
 
     @field_validator("capability_id")
     @classmethod

@@ -120,6 +120,7 @@ def _execute_call(
     capability_id: str = "test.echo.run",
     entrypoint: str = "echo_handler:EchoHandler.execute",
     activity_id: str | None = None,
+    timeout_seconds: float = 30.0,
 ) -> TaskHostExecuteCall:
     host = pinned_execution_host_lock()
     return TaskHostExecuteCall(
@@ -147,6 +148,7 @@ def _execute_call(
             activity_id=activity_id,
         ),
         authorized_secret_handles=(),
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -414,7 +416,36 @@ def test_production_host_cancel_escalates_on_timeout(tmp_path: Path, monkeypatch
         handler_import_roots={"test.echo.run": roots},
     )
     with pytest.raises(ProductionHostError, match="timed out"):
-        asyncio.run(host.execute(_execute_call(entrypoint=entrypoint)))
+        asyncio.run(host.execute(_execute_call(entrypoint=entrypoint, timeout_seconds=0.2)))
+
+
+def test_production_host_honors_call_timeout_longer_than_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from graph_engine.runtime import production_host as module
+
+    monkeypatch.setattr(module, "_CALL_TIMEOUT_SECONDS", 0.2)
+    store = SnapshotStore.create(tmp_path / "workspace", {})
+    store.create_attempt("attempt-1")
+    entrypoint, roots = _write_handler(
+        tmp_path,
+        class_name="PauseHandler",
+        body=(
+            "async def execute(self, request, context):\n"
+            "    import asyncio\n"
+            "    await asyncio.sleep(0.4)\n"
+            "    return TaskOutcome.succeeded({'ok': True})\n"
+        ),
+    )
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    host.bind_invocation_runtime(
+        handlers={"test.echo.run": _EchoHandler()},
+        store=store,
+        handler_import_roots={"test.echo.run": roots},
+    )
+    result = asyncio.run(host.execute(_execute_call(entrypoint=entrypoint, timeout_seconds=2.0)))
+    assert result.outcome is not None
+    assert result.outcome.status == "succeeded"
 
 
 def test_production_host_crash_after_receipt_leaves_durable_receipt(tmp_path: Path) -> None:
