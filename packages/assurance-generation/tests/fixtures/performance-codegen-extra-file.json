@@ -1,0 +1,31 @@
+{
+  "change_id": "CH-DEMO-001",
+  "extra_file": "tests/unmapped_test.py",
+  "files": [
+    {
+      "case_ids": [
+        "TC_PERFORMANCE_001"
+      ],
+      "content_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "disposition": "generated",
+      "repo_path": "tests/perf/test_users.py",
+      "role": "test_entry"
+    }
+  ],
+  "layer": "performance",
+  "mapping": {
+    "entries": [
+      {
+        "case_id": "TC_PERFORMANCE_001",
+        "symbol": "test_tc_performance_001__happy_path",
+        "target_file": "tests/perf/test_users.py"
+      }
+    ],
+    "layer": "performance",
+    "schema_version": "1"
+  },
+  "required_capabilities": [
+    "entities.item.create"
+  ],
+  "schema_version": "1"
+}

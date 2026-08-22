@@ -11,9 +11,15 @@ from graph_engine.plugin_api import (
     SchemaContribution,
 )
 
-from assurance_generation.operations import planning_handlers
+from assurance_generation.operations import generation_handlers
 from assurance_generation.resource_loader import resource_bytes
-from assurance_generation.validators import FamilyPlanValidator, PlanMechanicalValidator
+from assurance_generation.validators import (
+    CodegenFixCandidateValidator,
+    CodegenMappingValidator,
+    FamilyPlanValidator,
+    GeneratedFilesValidator,
+    PlanMechanicalValidator,
+)
 
 GENERATION_SOURCE = ProviderSource(
     distribution="assurance-generation",
@@ -36,18 +42,30 @@ GENERATION_SCHEMA_IDS: tuple[str, ...] = (
 GENERATION_DEPENDENCIES: tuple[PluginDependency, ...] = (PluginDependency("assurance.intake", "==0.1.0"),)
 
 GENERATION_HANDLER_IDS: tuple[str, ...] = (
+    "assurance.generation.api.codegen-fix.finalize",
+    "assurance.generation.api.codegen-fix.prepare",
+    "assurance.generation.api.codegen.finalize",
+    "assurance.generation.api.codegen.prepare",
     "assurance.generation.api.plan-review.finalize",
     "assurance.generation.api.plan-review.prepare",
     "assurance.generation.api.plan.finalize",
     "assurance.generation.api.plan.prepare",
+    "assurance.generation.e2e.codegen-fix.finalize",
+    "assurance.generation.e2e.codegen-fix.prepare",
+    "assurance.generation.e2e.codegen.finalize",
+    "assurance.generation.e2e.codegen.prepare",
     "assurance.generation.e2e.plan-review.finalize",
     "assurance.generation.e2e.plan-review.prepare",
     "assurance.generation.e2e.plan.finalize",
     "assurance.generation.e2e.plan.prepare",
+    "assurance.generation.fuzz.codegen.finalize",
+    "assurance.generation.fuzz.codegen.prepare",
     "assurance.generation.fuzz.plan-review.finalize",
     "assurance.generation.fuzz.plan-review.prepare",
     "assurance.generation.fuzz.plan.finalize",
     "assurance.generation.fuzz.plan.prepare",
+    "assurance.generation.performance.codegen.finalize",
+    "assurance.generation.performance.codegen.prepare",
     "assurance.generation.performance.plan-review.finalize",
     "assurance.generation.performance.plan-review.prepare",
     "assurance.generation.performance.plan.finalize",
@@ -56,8 +74,11 @@ GENERATION_HANDLER_IDS: tuple[str, ...] = (
 
 GENERATION_VALIDATOR_IDS: tuple[str, ...] = (
     "assurance.generation.validator.api-plan.v1",
+    "assurance.generation.validator.codegen-fix-candidate.v1",
+    "assurance.generation.validator.codegen-mapping.v1",
     "assurance.generation.validator.e2e-plan.v1",
     "assurance.generation.validator.fuzz-plan.v1",
+    "assurance.generation.validator.generated-files.v1",
     "assurance.generation.validator.performance-plan.v1",
     "assurance.generation.validator.plan-mechanical.v1",
 )
@@ -65,14 +86,22 @@ GENERATION_VALIDATOR_IDS: tuple[str, ...] = (
 GENERATION_RESOURCE_FILES: dict[str, str] = {
     "assurance.generation.persona.reviewer.v1": "personas/reviewer.md",
     "assurance.generation.persona.test-author.v1": "personas/test-author.md",
+    "assurance.generation.result.codegen-fix.v1": "result-contracts/codegen-fix.v1.schema.json",
+    "assurance.generation.result.codegen.v1": "result-contracts/codegen.v1.schema.json",
     "assurance.generation.result.plan-review.v1": "result-contracts/plan-review.v1.schema.json",
     "assurance.generation.result.plan.v1": "result-contracts/plan.v1.schema.json",
+    "assurance.generation.skill.aa-api-codegen-fixer.v1": "skills/aa-api-codegen-fixer/SKILL.md",
+    "assurance.generation.skill.aa-api-codegen.v1": "skills/aa-api-codegen/SKILL.md",
     "assurance.generation.skill.aa-api-plan-reviewer.v1": "skills/aa-api-plan-reviewer/SKILL.md",
     "assurance.generation.skill.aa-api-plan.v1": "skills/aa-api-plan/SKILL.md",
+    "assurance.generation.skill.aa-e2e-codegen-fixer.v1": "skills/aa-e2e-codegen-fixer/SKILL.md",
+    "assurance.generation.skill.aa-e2e-codegen.v1": "skills/aa-e2e-codegen/SKILL.md",
     "assurance.generation.skill.aa-e2e-plan-reviewer.v1": "skills/aa-e2e-plan-reviewer/SKILL.md",
     "assurance.generation.skill.aa-e2e-plan.v1": "skills/aa-e2e-plan/SKILL.md",
+    "assurance.generation.skill.aa-fuzz-codegen.v1": "skills/aa-fuzz-codegen/SKILL.md",
     "assurance.generation.skill.aa-fuzz-plan-reviewer.v1": "skills/aa-fuzz-plan-reviewer/SKILL.md",
     "assurance.generation.skill.aa-fuzz-plan.v1": "skills/aa-fuzz-plan/SKILL.md",
+    "assurance.generation.skill.aa-performance-codegen.v1": "skills/aa-performance-codegen/SKILL.md",
     "assurance.generation.skill.aa-performance-plan-reviewer.v1": "skills/aa-performance-plan-reviewer/SKILL.md",
     "assurance.generation.skill.aa-performance-plan.v1": "skills/aa-performance-plan/SKILL.md",
 }
@@ -93,6 +122,9 @@ _VALIDATORS = {
     "assurance.generation.validator.fuzz-plan.v1": FamilyPlanValidator("fuzz"),
     "assurance.generation.validator.performance-plan.v1": FamilyPlanValidator("performance"),
     "assurance.generation.validator.plan-mechanical.v1": PlanMechanicalValidator(),
+    "assurance.generation.validator.generated-files.v1": GeneratedFilesValidator(require_mapping=False),
+    "assurance.generation.validator.codegen-mapping.v1": CodegenMappingValidator(),
+    "assurance.generation.validator.codegen-fix-candidate.v1": CodegenFixCandidateValidator(),
 }
 
 
@@ -145,7 +177,7 @@ class GenerationPlugin:
         if ports.engine_api != ENGINE_API_VERSION:
             raise ValueError(f"unsupported engine API: {ports.engine_api!r}")
         return PluginContribution(
-            task_handlers=planning_handlers(),
+            task_handlers=generation_handlers(),
             commit_validators=_VALIDATORS,
             schemas=_schema_contributions(),
             resources=_resource_contributions(),

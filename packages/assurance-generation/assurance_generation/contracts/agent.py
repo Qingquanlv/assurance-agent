@@ -101,6 +101,8 @@ class AgentFinalizeInputV1(FrozenModel):
     agent_result: AgentRunResult
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
+    allowed_paths: tuple[str, ...] = ()
+    baseline_tree_id: str | None = Field(default=None, pattern=_SHA256)
 
     @field_validator("capability_leafs")
     @classmethod
@@ -111,6 +113,61 @@ class AgentFinalizeInputV1(FrozenModel):
     @classmethod
     def _artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _canonical_relative_paths(value)
+
+    @field_validator("allowed_paths")
+    @classmethod
+    def _allowed_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_relative_paths(value)
+
+
+class CodegenInputV1(FrozenModel):
+    change_id: str = Field(min_length=1)
+    capability_leafs: tuple[str, ...]
+    reviewed_plan: dict[str, Any]
+    reviewed_cases: dict[str, Any]
+    family_constraints: FamilyConstraintsV1
+    baseline_tree_id: str = Field(pattern=_SHA256)
+
+    @field_validator("capability_leafs")
+    @classmethod
+    def _capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _sorted_unique(value, label="capability leaf")
+
+    @field_validator("reviewed_plan")
+    @classmethod
+    def _reviewed_plan(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not value:
+            raise ValueError("reviewed_plan must be a mapping")
+        return value
+
+    @field_validator("reviewed_cases")
+    @classmethod
+    def _reviewed_cases(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not value:
+            raise ValueError("reviewed_cases must be a mapping")
+        return value
+
+
+class CodegenFixInputV1(CodegenInputV1):
+    allowed_paths: tuple[str, ...]
+    approved_proposal: dict[str, Any]
+
+    @field_validator("allowed_paths")
+    @classmethod
+    def _allowed_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        paths = _canonical_relative_paths(value)
+        if not paths:
+            raise ValueError("allowed_paths must be non-empty")
+        return paths
+
+    @field_validator("approved_proposal")
+    @classmethod
+    def _approved_proposal(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not value:
+            raise ValueError("approved_proposal must be a mapping")
+        if value.get("status") != "approved":
+            raise ValueError("approved_proposal.status must be approved")
+        return value
 
 
 def under_write_root(path: str, roots: tuple[str, ...]) -> bool:

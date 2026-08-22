@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from assurance_generation.contracts.codegen import (
+    CodegenAuthoringV1,
+    CodegenFixCandidateV1,
     CodegenGeneratedFileAuthoring,
     CodegenGeneratedFilesAuthoring,
     CodegenMapping,
     CodegenMappingEntry,
+    CodegenResultV1,
 )
 from assurance_generation.contracts.discovery import CampaignResult, CampaignSpec, Counterexample
 from assurance_generation.contracts.families import (
@@ -36,10 +39,13 @@ __all__ = [
     "CampaignSpec",
     "CaseType",
     "CheckEvidence",
+    "CodegenAuthoringV1",
+    "CodegenFixCandidateV1",
     "CodegenGeneratedFileAuthoring",
     "CodegenGeneratedFilesAuthoring",
     "CodegenMapping",
     "CodegenMappingEntry",
+    "CodegenResultV1",
     "Counterexample",
     "E2eGeneratedFilesV1",
     "Finding",

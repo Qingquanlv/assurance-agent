@@ -2324,15 +2324,15 @@ items:
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-api-codegen.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-api-codegen-fixer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-api-codegen-fixer.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_fix_prepare_includes_allowed_paths
 - kind: skill
   legacy_id: aa-api-plan
   disposition: migrate
@@ -2387,15 +2387,15 @@ items:
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-e2e-codegen.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-e2e-codegen-fixer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-e2e-codegen-fixer.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_fix_prepare_includes_allowed_paths
 - kind: skill
   legacy_id: aa-e2e-plan
   disposition: migrate
@@ -2443,8 +2443,8 @@ items:
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-fuzz-codegen.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-fuzz-plan
   disposition: migrate
@@ -2499,8 +2499,8 @@ items:
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-performance-codegen.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-performance-plan
   disposition: migrate

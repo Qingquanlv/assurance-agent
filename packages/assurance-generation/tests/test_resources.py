@@ -7,7 +7,7 @@ from typing import cast
 
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 
-from assurance_generation.contracts import PlanReviewAuthoring
+from assurance_generation.contracts import CodegenFixCandidateV1, CodegenResultV1, PlanReviewAuthoring
 from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.resource_loader import resource_bytes
 
@@ -21,10 +21,18 @@ _REQUIRED = (
     "skills/aa-fuzz-plan-reviewer/SKILL.md",
     "skills/aa-performance-plan/SKILL.md",
     "skills/aa-performance-plan-reviewer/SKILL.md",
+    "skills/aa-api-codegen/SKILL.md",
+    "skills/aa-api-codegen-fixer/SKILL.md",
+    "skills/aa-e2e-codegen/SKILL.md",
+    "skills/aa-e2e-codegen-fixer/SKILL.md",
+    "skills/aa-fuzz-codegen/SKILL.md",
+    "skills/aa-performance-codegen/SKILL.md",
     "personas/test-author.md",
     "personas/reviewer.md",
     "result-contracts/plan.v1.schema.json",
     "result-contracts/plan-review.v1.schema.json",
+    "result-contracts/codegen.v1.schema.json",
+    "result-contracts/codegen-fix.v1.schema.json",
 )
 _FORBIDDEN = (
     "assurance_agent",
@@ -66,4 +74,10 @@ def test_result_contracts_match_capability_schemas() -> None:
     )
     assert resource_bytes("result-contracts/plan-review.v1.schema.json") == canonical_json_bytes(
         cast(JSONValue, PlanReviewAuthoring.model_json_schema())
+    )
+    assert resource_bytes("result-contracts/codegen.v1.schema.json") == canonical_json_bytes(
+        cast(JSONValue, CodegenResultV1.model_json_schema())
+    )
+    assert resource_bytes("result-contracts/codegen-fix.v1.schema.json") == canonical_json_bytes(
+        cast(JSONValue, CodegenFixCandidateV1.model_json_schema())
     )
