@@ -9,8 +9,13 @@ from agent_runtime_cursor.process import (
     ConfinedProcessHost,
     ConfinementIdentity,
     CursorProcessReceipt,
+    HostTerminalResult,
+    LinuxProcessSupervisorHost,
+    MacOSProcessGroupHost,
     ProcessLaunchRequest,
     ProcessObservation,
+    UnsupportedCursorPlatform,
+    production_process_host,
 )
 
 __all__ = [
@@ -23,6 +28,11 @@ __all__ = [
     "CursorHandler",
     "CursorPlugin",
     "CursorProcessReceipt",
+    "HostTerminalResult",
+    "LinuxProcessSupervisorHost",
+    "MacOSProcessGroupHost",
     "ProcessLaunchRequest",
     "ProcessObservation",
+    "UnsupportedCursorPlatform",
+    "production_process_host",
 ]
