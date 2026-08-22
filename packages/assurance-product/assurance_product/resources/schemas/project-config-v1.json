@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assurance.product/schemas/project-config-v1.json",
+  "title": "ProjectConfigV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "product_policy",
+    "data_knowledge",
+    "capability_catalog"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "product_policy": true,
+    "data_knowledge": true,
+    "capability_catalog": true,
+    "node_policy_values": {
+      "type": "object"
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["resource_id", "schema_id", "media_type", "content"],
+        "properties": {
+          "resource_id": { "type": "string", "minLength": 1 },
+          "schema_id": { "type": "string", "minLength": 1 },
+          "media_type": {
+            "enum": ["application/json", "application/yaml", "text/markdown"]
+          },
+          "content": true
+        }
+      }
+    }
+  },
+  "not": {
+    "anyOf": [
+      { "required": ["model"] },
+      { "required": ["endpoint"] },
+      { "required": ["executable"] },
+      { "required": ["permission_profile"] },
+      { "required": ["secret"] },
+      { "required": ["adapter"] },
+      { "required": ["python"] },
+      { "required": ["entrypoint_group"] },
+      { "required": ["bindings"] },
+      { "required": ["task_handlers"] },
+      { "required": ["host"] },
+      { "required": ["resource_port"] }
+    ]
+  }
+}

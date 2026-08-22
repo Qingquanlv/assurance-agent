@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from pydantic import AnyHttpUrl, ConfigDict, Field, field_validator, model_validator
 
+from graph_engine.frozen_json import FrozenJSONValue
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel
 
@@ -16,6 +17,8 @@ ENGINE_API = "2.0"
 AdapterName = Literal["opencode", "cursor"]
 PLUGIN_ID = "assurance.product.bindings"
 PLUGIN_VERSION = "1.0.0"
+CONFIGURATION_PLUGIN_ID = "assurance.product.configuration"
+CONFIGURATION_PLUGIN_VERSION = "1.0.0"
 
 PREPARE_IDS: tuple[str, ...] = (
     "assurance.intake.case-design.prepare",
@@ -344,6 +347,40 @@ class DeploymentBindingsV1(FrozenModel):
         if tuple(self.secret_handles) != expected_handles:
             raise ValueError("secret_handles must equal the adapter binding handle union")
         return self
+
+
+class ConfiguredResourceV1(FrozenModel):
+    resource_id: str
+    schema_id: str
+    media_type: Literal["application/json", "application/yaml", "text/markdown"]
+    content: FrozenJSONValue | str
+
+    @field_validator("resource_id")
+    @classmethod
+    def _resource_id(cls, value: str) -> str:
+        return _qualified_id(value, "resource_id")
+
+    @field_validator("schema_id")
+    @classmethod
+    def _schema_id(cls, value: str) -> str:
+        return _qualified_id(value, "schema_id")
+
+
+class ProjectConfigV1(FrozenModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1"]
+    product_policy: FrozenJSONValue
+    data_knowledge: FrozenJSONValue
+    capability_catalog: FrozenJSONValue
+    node_policy_values: Mapping[str, FrozenJSONValue] = Field(default_factory=dict)
+    resources: tuple[ConfiguredResourceV1, ...] = ()
+
+    @field_validator("node_policy_values")
+    @classmethod
+    def _node_policy_keys(cls, value: Mapping[str, FrozenJSONValue]) -> Mapping[str, FrozenJSONValue]:
+        for key in value:
+            _qualified_id(key, "node policy id")
+        return value
 
 
 class BuiltDeploymentWheel(FrozenModel):

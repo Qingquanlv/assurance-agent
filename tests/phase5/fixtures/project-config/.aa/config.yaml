@@ -1,0 +1,12 @@
+schema_version: "1"
+product_policy:
+  schema_version: "1"
+  organization: example
+data_knowledge:
+  schema_version: "1"
+  notes: []
+capability_catalog:
+  schema_version: "1"
+  families:
+    - api
+node_policy_values: {}
