@@ -1,0 +1,70 @@
+{
+  "descriptor": {
+    "bindings": [],
+    "commit_validators": [],
+    "dependencies": [
+      {
+        "plugin_id": "assurance.intake",
+        "version_specifier": "==0.1.0"
+      },
+      {
+        "plugin_id": "assurance.generation",
+        "version_specifier": "==0.1.0"
+      },
+      {
+        "plugin_id": "assurance.execution",
+        "version_specifier": "==0.1.0"
+      },
+      {
+        "plugin_id": "assurance.healing",
+        "version_specifier": "==0.1.0"
+      },
+      {
+        "plugin_id": "assurance.quality",
+        "version_specifier": "==0.1.0"
+      }
+    ],
+    "effects": [],
+    "engine_api": "2.0",
+    "plugin_id": "assurance.improvement",
+    "plugin_version": "0.1.0",
+    "resources": [],
+    "schema_version": "1",
+    "schemas": [
+      "assurance.improvement.schema.declaration-proposal.v1",
+      "assurance.improvement.schema.improvement-candidates.v3",
+      "assurance.improvement.schema.improvement-delivery.v1",
+      "assurance.improvement.schema.improvement-effect-intent.v1",
+      "assurance.improvement.schema.improvement-effect-receipt.v1",
+      "assurance.improvement.schema.improvement-review.v1",
+      "assurance.improvement.schema.promotion.v1",
+      "assurance.improvement.schema.retro-context.v3",
+      "assurance.improvement.schema.retro-signals.v3"
+    ],
+    "source": {
+      "declaration_path": "assurance_improvement/plugin-declaration.json",
+      "distribution": "assurance-improvement",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "improvement",
+      "entrypoint_value": "assurance_improvement.plugin:ImprovementPlugin",
+      "import_roots": [
+        ""
+      ],
+      "version": "0.1.0"
+    },
+    "task_handlers": []
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "assurance_improvement/plugin-declaration.json",
+    "distribution": "assurance-improvement",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "improvement",
+    "entrypoint_value": "assurance_improvement.plugin:ImprovementPlugin",
+    "import_roots": [
+      ""
+    ],
+    "version": "0.1.0"
+  }
+}

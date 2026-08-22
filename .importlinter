@@ -7,6 +7,7 @@ root_packages =
     assurance_execution
     assurance_healing
     assurance_quality
+    assurance_improvement
     graph_engine
     graph_engine_toy_a
     graph_engine_toy_b
@@ -136,6 +137,43 @@ forbidden_modules =
     assurance_healing.validators
     assurance_healing.resource_loader
     assurance_healing.effects
+
+[importlinter:contract:improvement-no-legacy]
+name = improvement must not import legacy Assurance packages
+type = forbidden
+source_modules =
+    assurance_improvement
+forbidden_modules =
+    assurance_agent
+    assurance_kernel
+
+[importlinter:contract:improvement-assurance-contracts-only]
+name = improvement may import only intake, generation, execution, healing, and quality contracts
+type = forbidden
+source_modules =
+    assurance_improvement
+forbidden_modules =
+    assurance_intake.plugin
+    assurance_intake.operations
+    assurance_intake.validators
+    assurance_intake.resource_loader
+    assurance_generation.plugin
+    assurance_generation.operations
+    assurance_generation.validators
+    assurance_generation.resource_loader
+    assurance_execution.plugin
+    assurance_execution.operations
+    assurance_execution.validators
+    assurance_execution.resource_loader
+    assurance_healing.plugin
+    assurance_healing.operations
+    assurance_healing.validators
+    assurance_healing.resource_loader
+    assurance_healing.effects
+    assurance_quality.plugin
+    assurance_quality.operations
+    assurance_quality.validators
+    assurance_quality.resource_loader
 
 [importlinter:contract:graph-engine-independent]
 name = graph engine must not import products or the old runtime
