@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import hashlib
+import hmac
+import struct
+from collections.abc import Iterable, Mapping
 from pathlib import PureWindowsPath
 from typing import Literal, Protocol, runtime_checkable
 
@@ -218,6 +221,52 @@ class TaskHostProtocolError(GraphEngineError):
     """Raised when a host call violates the closed engine-owned transport."""
 
 
+TASK_HOST_WIRE_MAGIC = b"GEHOST01"
+_MAX_WIRE_FRAME_BYTES = 16 * 1024 * 1024
+_MAX_STDERR_BYTES = 64 * 1024
+
+
+def derive_wire_session_key(*, call_digest: str, wire_schema_version: str) -> bytes:
+    material = f"{wire_schema_version}:{call_digest}".encode("utf-8")
+    return hashlib.sha256(material).digest()
+
+
+def encode_authenticated_frame(session_key: bytes, payload: bytes) -> bytes:
+    if len(payload) > _MAX_WIRE_FRAME_BYTES:
+        raise TaskHostProtocolError("wire frame exceeds the bounded payload limit")
+    digest = hmac.new(session_key, payload, hashlib.sha256).digest()
+    return TASK_HOST_WIRE_MAGIC + struct.pack(">I", len(payload)) + digest + payload
+
+
+def decode_authenticated_frame(session_key: bytes, buffer: bytes) -> tuple[bytes, bytes]:
+    header_size = len(TASK_HOST_WIRE_MAGIC) + 4 + hashlib.sha256().digest_size
+    if len(buffer) < header_size:
+        raise TaskHostProtocolError("incomplete authenticated wire frame")
+    if not buffer.startswith(TASK_HOST_WIRE_MAGIC):
+        raise TaskHostProtocolError("wire frame magic mismatch")
+    (length,) = struct.unpack(">I", buffer[len(TASK_HOST_WIRE_MAGIC) : len(TASK_HOST_WIRE_MAGIC) + 4])
+    if length > _MAX_WIRE_FRAME_BYTES:
+        raise TaskHostProtocolError("wire frame exceeds the bounded payload limit")
+    digest_offset = len(TASK_HOST_WIRE_MAGIC) + 4
+    digest = buffer[digest_offset : digest_offset + hashlib.sha256().digest_size]
+    payload_offset = digest_offset + hashlib.sha256().digest_size
+    if len(buffer) < payload_offset + length:
+        raise TaskHostProtocolError("incomplete authenticated wire frame")
+    payload = buffer[payload_offset : payload_offset + length]
+    expected = hmac.new(session_key, payload, hashlib.sha256).digest()
+    if not hmac.compare_digest(digest, expected):
+        raise TaskHostProtocolError("wire frame authentication failed")
+    remainder = buffer[payload_offset + length :]
+    return payload, remainder
+
+
+def scan_for_secret_leaks(content: str | bytes, secrets: Iterable[bytes]) -> None:
+    haystack = content if isinstance(content, bytes) else content.encode("utf-8")
+    for secret in secrets:
+        if secret and secret in haystack:
+            raise TaskHostProtocolError("authorized secret material leaked into host output")
+
+
 __all__ = [
     "ATTEMPT_ROOT_CAPABILITY_ID",
     "AttemptRootDescriptor",
@@ -233,5 +282,10 @@ __all__ = [
     "TaskHostProtocolError",
     "TaskHostReconcileCall",
     "TaskHostTerminalReceipt",
+    "TASK_HOST_WIRE_MAGIC",
     "authorized_secret_port",
+    "decode_authenticated_frame",
+    "derive_wire_session_key",
+    "encode_authenticated_frame",
+    "scan_for_secret_leaks",
 ]

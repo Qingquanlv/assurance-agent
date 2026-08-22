@@ -78,6 +78,7 @@ from graph_engine.runtime.scheduler import (
     Scheduler,
     SystemClock,
 )
+from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
 from graph_engine.runtime.seed import InvocationSeed
 from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
 from graph_engine.runtime.workspace import (
@@ -231,6 +232,26 @@ class Engine:
         self._host = host
         self._invocations_fd = _open_or_create_namespace(self._root)
         self._closed = False
+
+    @classmethod
+    def production(
+        cls,
+        root: Path,
+        *,
+        authorization: InvocationRuntimeAuthorization,
+        clock: Clock | None = None,
+    ) -> Engine:
+        from graph_engine.runtime.production_host import (
+            UnsupportedProductionPlatform,
+            _ProductionTaskExecutionHost,
+        )
+
+        if sys.platform == "win32":
+            raise UnsupportedProductionPlatform(
+                "production task execution supports Linux and macOS only"
+            )
+        host = _ProductionTaskExecutionHost(root=Path(root), authorization=authorization)
+        return cls(root, host=host, clock=clock)
 
     def close(self) -> None:
         if self._closed:

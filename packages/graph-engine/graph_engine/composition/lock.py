@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import hashlib
 import re
+from pathlib import Path
 from typing import Literal, Self, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
@@ -312,9 +313,24 @@ class ExecutionHostLock(FrozenModel):
 
 
 def pinned_execution_host_lock() -> ExecutionHostLock:
+    runtime_dir = Path(__file__).resolve().parent.parent / "runtime"
+    source_files = []
+    for relative_path in (
+        "production_host.py",
+        "production_worker.py",
+        "host_protocol.py",
+        "host_receipts.py",
+    ):
+        path = runtime_dir / relative_path
+        source_files.append(
+            {
+                "path": f"graph_engine/runtime/{relative_path}",
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
     projection: JSONValue = {
         "implementation_id": TASK_HOST_IMPLEMENTATION_ID,
-        "operations": ["cancel", "execute", "read_terminal_receipts", "reconcile"],
+        "source_files": source_files,
         "wire_schema_version": TASK_HOST_WIRE_SCHEMA_VERSION,
     }
     return ExecutionHostLock(
