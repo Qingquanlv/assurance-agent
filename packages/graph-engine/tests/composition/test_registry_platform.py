@@ -80,6 +80,7 @@ from graph_engine.plugin_api import (
     ValidationContext,
     ValidationResult,
 )
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.invocation_lock import InvocationDrift
@@ -3159,7 +3160,7 @@ def test_engine_open_rejects_each_independently_reresolved_lock_facet_without_cl
     original = platform.resolve(request)
     engine_root = tmp_path / "engine"
     with Engine(engine_root) as engine:
-        engine.start(original, entrypoint="hello", invocation_id="facet-drift", seed=empty_invocation_seed()).close()
+        engine.start(original, entrypoint="hello", invocation_id="facet-drift", seed=empty_invocation_seed(), authorization=empty_runtime_authorization()).close()
     invocation = engine_root / "invocations" / "facet-drift"
     before_ledger = b"".join(
         path.read_bytes() for path in sorted((invocation / "ledger").glob("[0-9]*.json"))
@@ -3301,7 +3302,7 @@ def test_engine_open_rejects_each_independently_reresolved_lock_facet_without_cl
 
     monkeypatch.setattr(Engine, "_acquire_runner_claim", reject_claim)
     with Engine(engine_root) as engine, pytest.raises(InvocationDrift):
-        engine.open("facet-drift", drifted)
+        engine.open("facet-drift", drifted, authorization=empty_runtime_authorization())
 
     assert claims == 0
     assert (

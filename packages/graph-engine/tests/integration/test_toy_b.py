@@ -18,6 +18,7 @@ from graph_engine.composition import (
     ResolutionRequest,
 )
 from graph_engine.plugin_api import TaskContext, TaskHandler
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine, EngineError, RunResult
 from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostExecuteCall
@@ -270,7 +271,7 @@ def _run_to_completion(
     invocation_id: str,
 ) -> tuple[str, tuple[EventIDSignature, ...], str, JSONValue]:
     with Engine(root, host=_InProcessTestHost()) as engine:
-        with engine.start(composition, entrypoint="review", invocation_id=invocation_id, seed=empty_invocation_seed()) as handle:
+        with engine.start(composition, entrypoint="review", invocation_id=invocation_id, seed=empty_invocation_seed(), authorization=empty_runtime_authorization()) as handle:
             blocked = engine.run_until_blocked(handle)
             assert blocked.status == "interrupted"
             with engine.resume(
@@ -313,7 +314,7 @@ def test_toy_b_recovers_then_interrupts_and_resumes(
     assert set(left_claims.writes).isdisjoint(child_subgraph_claims.writes)
 
     with Engine(tmp_path / "engine", host=_InProcessTestHost()) as engine:
-        with engine.start(resolved, entrypoint="review", invocation_id="toy-b-1", seed=empty_invocation_seed()) as handle:
+        with engine.start(resolved, entrypoint="review", invocation_id="toy-b-1", seed=empty_invocation_seed(), authorization=empty_runtime_authorization()) as handle:
             blocked = engine.run_until_blocked(handle)
             assert blocked.status == "interrupted"
             assert blocked.actions == ("approve", "reject")
@@ -363,7 +364,7 @@ def test_toy_b_recovers_then_interrupts_and_resumes(
                     assert workspace.read_head("left.txt") == b"left\n"
                     assert workspace.read_head("child.txt") == b"child\n"
 
-            with engine.open("toy-b-1", resolved) as replayed_handle:
+            with engine.open("toy-b-1", resolved, authorization=empty_runtime_authorization()) as replayed_handle:
                 replayed = engine.run_until_blocked(replayed_handle)
                 assert replayed.status == "succeeded"
                 assert replayed.output == completed.output

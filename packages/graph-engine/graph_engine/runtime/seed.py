@@ -10,12 +10,12 @@ from pydantic import ValidationError
 from pydantic_core import InitErrorDetails
 
 from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.runtime.secret_sources import (
+    EMPTY_RUNTIME_AUTHORIZATION,
+    EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
+)
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-
-# Canonical digest of an empty runtime authorization binding set until Task 5.
-EMPTY_RUNTIME_AUTHORIZATION: JSONValue = {"schema_version": "1", "bindings": []}
-EMPTY_RUNTIME_AUTHORIZATION_DIGEST = canonical_digest(EMPTY_RUNTIME_AUTHORIZATION)
 
 
 def _validation_error(title: str, loc: tuple[str | int, ...], message: str, value: object) -> ValidationError:

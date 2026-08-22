@@ -898,6 +898,7 @@ def test_every_selected_plugin_retains_one_six_category_contribution_authority()
             "capability_id": "toy.runtime.bound",
             "data": {"mode": "strict"},
             "resource_ids": ["toy.runtime.prompt"],
+            "secret_handles": [],
             "target_capability_id": "toy.runtime.execute",
         }
     ]

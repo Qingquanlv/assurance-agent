@@ -59,6 +59,7 @@ from graph_engine.runtime.host_protocol import (
     TaskHostTerminalReceipt,
 )
 from graph_engine.runtime.host_receipts import TerminalReceiptStore, prove_call_quiescent
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import (
     Engine,
@@ -665,7 +666,7 @@ def _leave_unfinalized_terminal_observed(
     product = _recoverable_task_product(handler)
     host = _ReceiptInstallingTestHost()
     engine = Engine(tmp_path, clock=FakeClock(10.0), host=host)
-    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     try:
         host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
 
@@ -799,7 +800,7 @@ def _forge_unrelated_failed_sibling(
     product = _sibling_task_product()
     invocation_id = f"unrelated-sibling-{terminal_status}"
     engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     structural = plan_next(product.workflow, fold_events(envelopes))
@@ -919,7 +920,7 @@ def _parallel_task_ledger(
 ) -> tuple[FrozenComposition, Path, dict[str, str]]:
     product = _parallel_task_product(activation_bound=activation_bound)
     with Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as engine:
-        with engine.start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed()) as handle:
+        with engine.start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed(), authorization=empty_runtime_authorization()) as handle:
             ledger_root = handle.invocation_root / "ledger"
             ledger = Ledger(ledger_root)
             initial = ledger.read_all()
@@ -1129,13 +1130,13 @@ def resolved_interrupt_product() -> FrozenComposition:
 def test_engine_has_no_default_product(tmp_path: Path) -> None:
     engine = Engine(tmp_path)
     with pytest.raises(TypeError, match="composition"):
-        engine.start(entrypoint="main", invocation_id="missing-product", seed=empty_invocation_seed())  # type: ignore[call-arg]
+        engine.start(entrypoint="main", invocation_id="missing-product", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())  # type: ignore[call-arg]
 
 
 def test_subgraph_completion_returns_to_parent(
     engine: Engine, resolved_subgraph_product: FrozenComposition
 ) -> None:
-    handle = engine.start(resolved_subgraph_product, entrypoint="main", invocation_id="inv-sub", seed=empty_invocation_seed())
+    handle = engine.start(resolved_subgraph_product, entrypoint="main", invocation_id="inv-sub", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     result = engine.run_until_blocked(handle)
     assert result.status == "succeeded"
     assert result.output == {"child": "done"}
@@ -1144,7 +1145,7 @@ def test_subgraph_completion_returns_to_parent(
 def test_interrupt_requires_explicit_resume(
     engine: Engine, resolved_interrupt_product: FrozenComposition
 ) -> None:
-    handle = engine.start(resolved_interrupt_product, entrypoint="main", invocation_id="inv-int", seed=empty_invocation_seed())
+    handle = engine.start(resolved_interrupt_product, entrypoint="main", invocation_id="inv-int", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     blocked = engine.run_until_blocked(handle)
     assert blocked.status == "interrupted"
     assert blocked.actions == ("approve", "reject")
@@ -1192,7 +1193,7 @@ def test_multilevel_subgraphs_have_canonical_instances_and_return_in_order(tmp_p
         }
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="nested", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="nested", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
 
     result = engine.run_until_blocked(handle)
 
@@ -1242,7 +1243,7 @@ def test_nested_interrupt_blocks_root_and_records_exact_location(tmp_path: Path)
         }
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="nested-int", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="nested-int", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
 
     blocked = engine.run_until_blocked(handle)
 
@@ -1280,7 +1281,7 @@ def test_resume_mismatch_repeat_and_payload_freezing_do_not_append(tmp_path: Pat
         }
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="resume", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="resume", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     engine.run_until_blocked(handle)
     ledger = Ledger(handle.invocation_root / "ledger")
     before = ledger.read_all()
@@ -1304,7 +1305,7 @@ def test_concurrent_resume_commits_only_one_atomic_sequence(
     tmp_path: Path, resolved_interrupt_product: FrozenComposition
 ) -> None:
     engine = Engine(tmp_path)
-    handle = engine.start(resolved_interrupt_product, entrypoint="main", invocation_id="resume-race", seed=empty_invocation_seed())
+    handle = engine.start(resolved_interrupt_product, entrypoint="main", invocation_id="resume-race", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     engine.run_until_blocked(handle)
 
     def attempt() -> object:
@@ -1341,7 +1342,7 @@ def test_invocation_id_is_confined(tmp_path: Path, invocation_id: str) -> None:
         }
     )
     with pytest.raises(EngineError, match="invalid invocation id"):
-        Engine(tmp_path).start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed())
+        Engine(tmp_path).start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_lock_digest_mismatch_without_appending(tmp_path: Path) -> None:
@@ -1377,12 +1378,12 @@ def test_open_rejects_lock_digest_mismatch_without_appending(tmp_path: Path) -> 
             },
         }
     )
-    handle = Engine(tmp_path).start(first, entrypoint="main", invocation_id="digest", seed=empty_invocation_seed())
+    handle = Engine(tmp_path).start(first, entrypoint="main", invocation_id="digest", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     ledger = Ledger(handle.invocation_root / "ledger")
     before = ledger.read_all()
 
     with pytest.raises(InvocationDrift, match="lock|composition"):
-        Engine(tmp_path).open("digest", second)
+        Engine(tmp_path).open("digest", second, authorization=empty_runtime_authorization())
 
     assert ledger.read_all() == before
 
@@ -1396,7 +1397,7 @@ def test_duplicate_start_rejects_digest_mismatch_without_replacing_invocation(
         resolved_interrupt_product,
         entrypoint="main",
         invocation_id="duplicate",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     ledger = Ledger(handle.invocation_root / "ledger")
     before = ledger.read_all()
@@ -1418,7 +1419,7 @@ def test_duplicate_start_rejects_digest_mismatch_without_replacing_invocation(
     )
 
     with pytest.raises(InvocationDrift, match="lock|composition"):
-        engine.start(mismatched, entrypoint="main", invocation_id="duplicate", seed=empty_invocation_seed())
+        engine.start(mismatched, entrypoint="main", invocation_id="duplicate", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
 
     assert ledger.read_all() == before
     assert handle.workspace.head_tree_id()
@@ -1434,7 +1435,7 @@ def test_missing_host_fails_closed_without_calling_handler(tmp_path: Path) -> No
 
     product = _task_product(handler)
     engine = Engine(tmp_path, clock=FakeClock(10.0))
-    handle = engine.start(product, entrypoint="main", invocation_id="no-host", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="no-host", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
 
     result = engine.run_until_blocked(handle)
 
@@ -1449,15 +1450,17 @@ def test_explicit_host_runs_task_and_terminal_invocation_reopens(tmp_path: Path)
     product = _task_product(handler)
     clock = FakeClock(10.0)
     engine = Engine(tmp_path, clock=clock, host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="hosted", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="hosted", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     result = engine.run_until_blocked(handle)
 
     assert result.status == "succeeded"
     assert result.output == {"ran": True}
-    reopened = Engine(tmp_path, clock=clock, host=_InProcessTestHost()).open("hosted", product)
+    reopened = Engine(tmp_path, clock=clock, host=_InProcessTestHost()).open(
+        "hosted", product, authorization=empty_runtime_authorization()
+    )
     assert (
         Engine(tmp_path, clock=clock, host=_InProcessTestHost())
-        .open("hosted", product)
+        .open("hosted", product, authorization=empty_runtime_authorization())
         .workspace.head_tree_id()
         == reopened.workspace.head_tree_id()
     )
@@ -1477,7 +1480,7 @@ def test_engine_settles_effects_before_task_and_node_success(tmp_path: Path) -> 
 
     product = _task_product(handler, effect_handlers={"test.empty.audit": effect})
     engine = Engine(tmp_path, clock=FakeClock(10.0), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="effectful", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="effectful", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     result = engine.run_until_blocked(handle)
 
     assert result.status == "succeeded"
@@ -1506,7 +1509,7 @@ def test_engine_returns_generic_effect_pending_result(tmp_path: Path) -> None:
 
     product = _task_product(handler, effect_handlers={"test.empty.audit": effect})
     engine = Engine(tmp_path, clock=FakeClock(10.0), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="effect-pending", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="effect-pending", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     result = engine.run_until_blocked(handle)
 
     assert result.status == "interrupted"
@@ -1566,7 +1569,7 @@ def test_engine_non_last_effect_failure_returns_typed_failed_without_rerun(
         effect_policy=effect_policy,
     )
     engine = Engine(tmp_path, clock=FakeClock(10.0), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="effect-multi-fail", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="effect-multi-fail", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     result = engine.run_until_blocked(handle)
 
     assert result.status == "failed"
@@ -1607,7 +1610,7 @@ def test_engine_permanent_effect_failure_does_not_rerun_handler_or_roll_back_hea
 
     product = _task_product(handler, effect_handlers={"test.empty.audit": effect})
     engine = Engine(tmp_path, clock=FakeClock(10.0), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="effect-permanent", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="effect-permanent", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     result = engine.run_until_blocked(handle)
 
     assert result.status == "failed"
@@ -1633,7 +1636,7 @@ def test_open_applies_heartbeat_heavy_history_linearly(
     product = _task_product(unused)
     clock = FakeClock(100.0)
     with Engine(tmp_path, clock=clock, host=_InProcessTestHost()) as bootstrap:
-        with bootstrap.start(product, entrypoint="main", invocation_id="heartbeat-heavy", seed=empty_invocation_seed()) as handle:
+        with bootstrap.start(product, entrypoint="main", invocation_id="heartbeat-heavy", seed=empty_invocation_seed(), authorization=empty_runtime_authorization()) as handle:
             ledger = Ledger(handle.invocation_root / "ledger")
             initial = ledger.read_all()
             planned = plan_next(product.workflow, fold_events(initial))
@@ -1694,7 +1697,7 @@ def test_open_applies_heartbeat_heavy_history_linearly(
 
     monkeypatch.setattr(EventEnvelope, "has_valid_digest", count_processed_envelope)
     with Engine(tmp_path, clock=clock, host=_InProcessTestHost()) as engine:
-        with engine.open("heartbeat-heavy", product):
+        with engine.open("heartbeat-heavy", product, authorization=empty_runtime_authorization()):
             pass
 
     assert processed_envelopes <= 12 * len(envelopes)
@@ -1706,7 +1709,7 @@ def test_child_task_failure_and_stop_propagate_to_root(tmp_path: Path) -> None:
 
     failed_product = _task_product(fail, nested=True)
     failed_engine = Engine(tmp_path / "failed", clock=FakeClock(10), host=_InProcessTestHost())
-    failed_handle = failed_engine.start(failed_product, entrypoint="main", invocation_id="child-failed", seed=empty_invocation_seed())
+    failed_handle = failed_engine.start(failed_product, entrypoint="main", invocation_id="child-failed", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     failed = failed_engine.run_until_blocked(failed_handle)
     assert failed.status == "failed"
     assert all(graph.status == "failed" for graph in failed.projection.graph_instances)
@@ -1716,7 +1719,7 @@ def test_child_task_failure_and_stop_propagate_to_root(tmp_path: Path) -> None:
 
     stopped_product = _task_product(stop, nested=True)
     stopped_engine = Engine(tmp_path / "stopped", clock=FakeClock(10), host=_InProcessTestHost())
-    stopped_handle = stopped_engine.start(stopped_product, entrypoint="main", invocation_id="child-stopped", seed=empty_invocation_seed())
+    stopped_handle = stopped_engine.start(stopped_product, entrypoint="main", invocation_id="child-stopped", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     stopped = stopped_engine.run_until_blocked(stopped_handle)
     assert stopped.status == "stopped"
     assert stopped.reason == "operator_stop"
@@ -1741,11 +1744,11 @@ def test_corrupt_checkpoint_is_ignored_in_favor_of_ledger(tmp_path: Path) -> Non
         }
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="checkpoint", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="checkpoint", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     (handle.invocation_root / "checkpoint.json").write_bytes(b"not-json")
 
-    reopened = Engine(tmp_path).open("checkpoint", product)
-    result = Engine(tmp_path).open("checkpoint", product)
+    reopened = Engine(tmp_path).open("checkpoint", product, authorization=empty_runtime_authorization())
+    result = Engine(tmp_path).open("checkpoint", product, authorization=empty_runtime_authorization())
 
     assert reopened.workspace.head_tree_id() == result.workspace.head_tree_id()
 
@@ -1757,7 +1760,7 @@ def test_open_reclaims_expired_lease_before_running(tmp_path: Path) -> None:
     product = _task_product(handler)
     first_clock = FakeClock(10.0)
     engine = Engine(tmp_path, clock=first_clock, host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="expired", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="expired", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     plan = plan_next(product.workflow, fold_events(envelopes))
@@ -1785,7 +1788,7 @@ def test_open_reclaims_expired_lease_before_running(tmp_path: Path) -> None:
     )
 
     reopened_engine = Engine(tmp_path, clock=FakeClock(21.0), host=_InProcessTestHost())
-    reopened = reopened_engine.open("expired", product)
+    reopened = reopened_engine.open("expired", product, authorization=empty_runtime_authorization())
     result = reopened_engine.run_until_blocked(reopened)
 
     assert result.status == "failed"
@@ -1830,7 +1833,7 @@ def test_open_does_not_reclaim_expired_recoverable_activity(tmp_path: Path) -> N
     product = _task_product(unused)
     start_clock = FakeClock(10.0)
     engine = Engine(tmp_path, clock=start_clock, host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="expired-recoverable", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="expired-recoverable", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     plan = plan_next(product.workflow, fold_events(envelopes))
@@ -1861,7 +1864,7 @@ def test_open_does_not_reclaim_expired_recoverable_activity(tmp_path: Path) -> N
     engine.close()
 
     reopened_engine = Engine(tmp_path, clock=FakeClock(21.0), host=_InProcessTestHost())
-    reopened = reopened_engine.open("expired-recoverable", product)
+    reopened = reopened_engine.open("expired-recoverable", product, authorization=empty_runtime_authorization())
     try:
         kinds = [item.event.kind for item in ledger.read_all()]
         assert "task_attempt_failed" not in kinds
@@ -1881,7 +1884,7 @@ def test_run_until_blocked_publishes_task_attempt_succeeded_for_recoverable_succ
     product = _recoverable_task_product(_SucceedingRecoverableHandler())
     host = _ReceiptInstallingTestHost()
     engine = Engine(tmp_path, clock=FakeClock(10.0), host=host)
-    handle = engine.start(product, entrypoint="main", invocation_id="recoverable-success", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="recoverable-success", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
     result = engine.run_until_blocked(handle)
     kinds = [item.event.kind for item in Ledger(handle.invocation_root / "ledger").read_all()]
@@ -1903,7 +1906,7 @@ def test_recover_publishes_task_attempt_succeeded_for_expired_succeeded_terminal
     )
     host = _ReceiptInstallingTestHost()
     engine = Engine(tmp_path, clock=FakeClock(41.0), host=host)
-    handle = engine.open("expired-observed-success", product)
+    handle = engine.open("expired-observed-success", product, authorization=empty_runtime_authorization())
     try:
         host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
         asyncio.run(handle.recover())
@@ -1943,7 +1946,7 @@ def test_recover_publishes_matching_outcome_for_expired_failed_or_stopped_termin
     )
     host = _ReceiptInstallingTestHost()
     engine = Engine(tmp_path, clock=FakeClock(41.0), host=host)
-    handle = engine.open(f"expired-observed-{mode}", product)
+    handle = engine.open(f"expired-observed-{mode}", product, authorization=empty_runtime_authorization())
     try:
         host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
         try:
@@ -1979,7 +1982,7 @@ def test_concurrent_open_reclaim_has_one_winner_and_one_engine_conflict(
         product,
         entrypoint="main",
         invocation_id="reclaim-race",
-        seed=empty_invocation_seed(),
+        seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
@@ -2024,6 +2027,7 @@ def test_concurrent_open_reclaim_has_one_winner_and_one_engine_conflict(
             return Engine(tmp_path, clock=FakeClock(21), host=_InProcessTestHost()).open(
                 "reclaim-race",
                 product,
+                authorization=empty_runtime_authorization(),
             )
         except EngineError as error:
             return error
@@ -2094,7 +2098,7 @@ def test_concurrent_reopeners_execute_one_live_persisted_attempt_exclusively(
     product = _task_product(task_handler)
     root = tmp_path / "exclusive-recovery"
     bootstrap = Engine(root, clock=FakeClock(10), host=BlockingHost())
-    initial = bootstrap.start(product, entrypoint="main", invocation_id="exclusive", seed=empty_invocation_seed())
+    initial = bootstrap.start(product, entrypoint="main", invocation_id="exclusive", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
 
     def stop_after_attempt_started(phase: str, events: object) -> None:
         if phase == "after" and any(
@@ -2111,8 +2115,8 @@ def test_concurrent_reopeners_execute_one_live_persisted_attempt_exclusively(
     host = BlockingHost()
     first_engine = Engine(root, clock=FakeClock(10), host=host)
     second_engine = Engine(root, clock=FakeClock(10), host=host)
-    first_handle = first_engine.open("exclusive", product)
-    second_handle = second_engine.open("exclusive", product)
+    first_handle = first_engine.open("exclusive", product, authorization=empty_runtime_authorization())
+    second_handle = second_engine.open("exclusive", product, authorization=empty_runtime_authorization())
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(first_engine.run_until_blocked, first_handle)
         assert entered.wait(timeout=5)
@@ -2149,26 +2153,26 @@ def _finish_interrupt_invocation(
     engine: Engine = Engine(root) if cut is None else _CrashAfterAppendEngine(root, cut)
     handle = None
     try:
-        handle = engine.start(product, entrypoint="main", invocation_id="crash-test", seed=empty_invocation_seed())
+        handle = engine.start(product, entrypoint="main", invocation_id="crash-test", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     except RuntimeError:
         engine = Engine(root)
         try:
-            handle = engine.open("crash-test", product)
+            handle = engine.open("crash-test", product, authorization=empty_runtime_authorization())
         except EngineError:
-            handle = engine.start(product, entrypoint="main", invocation_id="crash-test", seed=empty_invocation_seed())
+            handle = engine.start(product, entrypoint="main", invocation_id="crash-test", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert handle is not None
     try:
         blocked = engine.run_until_blocked(handle)
     except RuntimeError:
         engine = Engine(root)
-        handle = engine.open("crash-test", product)
+        handle = engine.open("crash-test", product, authorization=empty_runtime_authorization())
         blocked = engine.run_until_blocked(handle)
     if blocked.status == "interrupted":
         try:
             handle = engine.resume(handle, action="approve", payload={"durable": True})
         except RuntimeError:
             engine = Engine(root)
-            handle = engine.open("crash-test", product)
+            handle = engine.open("crash-test", product, authorization=empty_runtime_authorization())
             projection = fold_events(Ledger(handle.invocation_root / "ledger").read_all())
             if projection.pending_interrupt is not None:
                 handle = engine.resume(handle, action="approve", payload={"durable": True})
@@ -2176,7 +2180,7 @@ def _finish_interrupt_invocation(
             final = engine.run_until_blocked(handle)
         except RuntimeError:
             engine = Engine(root)
-            handle = engine.open("crash-test", product)
+            handle = engine.open("crash-test", product, authorization=empty_runtime_authorization())
             final = engine.run_until_blocked(handle)
     else:
         final = blocked
@@ -2204,9 +2208,9 @@ def _finish_crash_matrix_invocation(
 ) -> tuple[str, str]:
     engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
     try:
-        handle = engine.open("matrix", product)
+        handle = engine.open("matrix", product, authorization=empty_runtime_authorization())
     except EngineError:
-        handle = engine.start(product, entrypoint="main", invocation_id="matrix", seed=empty_invocation_seed())
+        handle = engine.start(product, entrypoint="main", invocation_id="matrix", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     result = engine.run_until_blocked(handle)
     if result.status == "interrupted":
         handle = engine.resume(handle, action="approve", payload={"durable": True})
@@ -2244,7 +2248,7 @@ def test_fresh_open_after_exact_facade_crash_matrix_has_identical_digests(
         product,
         entrypoint="main",
         invocation_id="matrix",
-        seed=empty_invocation_seed(),
+        seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     process_id = os.fork()
     if process_id == 0:
@@ -2258,7 +2262,7 @@ def test_fresh_open_after_exact_facade_crash_matrix_has_identical_digests(
 
         ledger_runtime._validated_append_boundary = crash_boundary
         child_engine = Engine(crash_root, clock=FakeClock(10), host=_InProcessTestHost())
-        child_handle = child_engine.open("matrix", product)
+        child_handle = child_engine.open("matrix", product, authorization=empty_runtime_authorization())
         child_result = child_engine.run_until_blocked(child_handle)
         if child_result.status == "interrupted":
             child_handle = child_engine.resume(
@@ -2295,7 +2299,7 @@ def test_open_durably_syncs_linked_success_before_clearing_head_journal(
         product,
         entrypoint="main",
         invocation_id="durability",
-        seed=empty_invocation_seed(),
+        seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     process_id = os.fork()
     if process_id == 0:
@@ -2306,7 +2310,7 @@ def test_open_durably_syncs_linked_success_before_clearing_head_journal(
 
         ledger_runtime._append_boundary = crash_after_link
         child_engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-        child_handle = child_engine.open("durability", product)
+        child_handle = child_engine.open("durability", product, authorization=empty_runtime_authorization())
         child_engine.run_until_blocked(child_handle)
         os._exit(0)
 
@@ -2334,6 +2338,7 @@ def test_open_durably_syncs_linked_success_before_clearing_head_journal(
     reopened = Engine(root, clock=FakeClock(10), host=_InProcessTestHost()).open(
         "durability",
         product,
+        authorization=empty_runtime_authorization(),
     )
 
     assert (
@@ -2359,7 +2364,7 @@ def test_open_authenticates_before_head_recovery_and_leaves_workspace_unchanged_
     composition = _nested_task_interrupt_product(handler)
     root = tmp_path / "head-recovery-guard"
     with Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as bootstrap:
-        bootstrap.start(composition, entrypoint="main", invocation_id="guarded", seed=empty_invocation_seed()).close()
+        bootstrap.start(composition, entrypoint="main", invocation_id="guarded", seed=empty_invocation_seed(), authorization=empty_runtime_authorization()).close()
     process_id = os.fork()
     if process_id == 0:
 
@@ -2369,7 +2374,7 @@ def test_open_authenticates_before_head_recovery_and_leaves_workspace_unchanged_
 
         ledger_runtime._append_boundary = crash_after_success_link
         child_engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-        child_handle = child_engine.open("guarded", composition)
+        child_handle = child_engine.open("guarded", composition, authorization=empty_runtime_authorization())
         child_engine.run_until_blocked(child_handle)
         os._exit(0)
 
@@ -2395,7 +2400,7 @@ def test_open_authenticates_before_head_recovery_and_leaves_workspace_unchanged_
         Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as engine,
         pytest.raises(InvocationDrift),
     ):
-        engine.open("guarded", composition)
+        engine.open("guarded", composition, authorization=empty_runtime_authorization())
 
     assert journal.read_bytes() == before_journal
     assert head.read_bytes() == before_head
@@ -2425,7 +2430,7 @@ def test_post_success_journal_clear_fault_stops_before_successor_and_recovers(
     invocation_id = f"post-success-clear-{cut}"
     root = tmp_path / cut
     engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     workspace_root = handle.invocation_root / "workspace"
     journal = workspace_root / ".HEAD-transaction.json"
     workspace_identity = workspace_root.stat()
@@ -2477,7 +2482,7 @@ def test_post_success_journal_clear_fault_stops_before_successor_and_recovers(
     handle.close()
     engine.close()
     with Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as reopened_engine:
-        with reopened_engine.open(invocation_id, product) as reopened:
+        with reopened_engine.open(invocation_id, product, authorization=empty_runtime_authorization()) as reopened:
             assert not journal.exists()
             result = reopened_engine.run_until_blocked(reopened)
 
@@ -2506,7 +2511,7 @@ def test_open_cannot_recover_head_from_projection_stale_to_live_runner(
     product = _nested_task_interrupt_product(handler)
     root = tmp_path / "open-runner-race"
     bootstrap = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-    initial = bootstrap.start(product, entrypoint="main", invocation_id="race", seed=empty_invocation_seed())
+    initial = bootstrap.start(product, entrypoint="main", invocation_id="race", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     journal = initial.invocation_root / "workspace" / ".HEAD-transaction.json"
     real_sync = Ledger.ensure_durable
     real_clear = SnapshotStore._clear_head_transaction
@@ -2538,7 +2543,9 @@ def test_open_cannot_recover_head_from_projection_stale_to_live_runner(
     def open_during_run() -> None:
         try:
             opener_outcome.append(
-                Engine(root, clock=FakeClock(10), host=_InProcessTestHost()).open("race", product)
+                Engine(root, clock=FakeClock(10), host=_InProcessTestHost()).open(
+                    "race", product, authorization=empty_runtime_authorization()
+                )
             )
         except BaseException as error:
             opener_outcome.append(error)
@@ -2569,7 +2576,7 @@ def test_open_cannot_recover_head_from_projection_stale_to_live_runner(
     projection = fold_events(Ledger(initial.invocation_root / "ledger").read_all())
     assert projection.head_tree_id is not None
     reopened_engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-    reopened = reopened_engine.open("race", product)
+    reopened = reopened_engine.open("race", product, authorization=empty_runtime_authorization())
     assert reopened.workspace.head_tree_id() == projection.head_tree_id
     assert not journal.exists()
 
@@ -2587,7 +2594,7 @@ def test_open_cannot_reclaim_expired_lease_from_active_claimed_runner(tmp_path: 
     clock = FakeClock(10)
     product = _task_product(handler)
     engine = Engine(tmp_path, clock=clock, host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="active-expired", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="active-expired", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
 
     def run() -> None:
         try:
@@ -2604,6 +2611,7 @@ def test_open_cannot_reclaim_expired_lease_from_active_claimed_runner(tmp_path: 
             Engine(tmp_path, clock=clock, host=_InProcessTestHost()).open(
                 "active-expired",
                 product,
+                authorization=empty_runtime_authorization(),
             )
         assert not any(
             envelope.event.kind == "task_attempt_failed"
@@ -2627,7 +2635,7 @@ def test_runner_claim_rejects_directory_entry_replacement_after_lock(
         resolved_interrupt_product,
         entrypoint="main",
         invocation_id="replaced-runner-claim",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     ledger = Ledger(handle.invocation_root / "ledger")
     before = ledger.read_all()
@@ -2660,7 +2668,7 @@ def test_open_rejects_workspace_head_without_authoritative_head_advance(
         resolved_interrupt_product,
         entrypoint="main",
         invocation_id="orphan-head",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     attempt = handle.workspace.create_attempt("orphan")
     (attempt.root / "orphan.txt").write_bytes(b"not authoritative")
@@ -2668,7 +2676,7 @@ def test_open_rejects_workspace_head_without_authoritative_head_advance(
     handle.workspace.commit_candidate(candidate, ResourceClaims(writes=("orphan.txt",)))
 
     with pytest.raises(EngineError, match="HEAD.*authoritative ledger"):
-        Engine(tmp_path).open("orphan-head", resolved_interrupt_product)
+        Engine(tmp_path).open("orphan-head", resolved_interrupt_product, authorization=empty_runtime_authorization())
 
 
 def test_distinct_authenticated_handler_sources_have_distinct_lock_bound_handles(
@@ -2684,8 +2692,8 @@ def test_distinct_authenticated_handler_sources_have_distinct_lock_bound_handles
     second_product = _task_product(second)
     assert first_product.lock_digest != second_product.lock_digest
     engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
-    first_handle = engine.start(first_product, entrypoint="main", invocation_id="first-binding", seed=empty_invocation_seed())
-    second_handle = engine.start(second_product, entrypoint="main", invocation_id="second-binding", seed=empty_invocation_seed())
+    first_handle = engine.start(first_product, entrypoint="main", invocation_id="first-binding", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
+    second_handle = engine.start(second_product, entrypoint="main", invocation_id="second-binding", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
 
     assert engine.run_until_blocked(first_handle).output == "first"
     assert engine.run_until_blocked(second_handle).output == "second"
@@ -2705,10 +2713,10 @@ def test_open_rejects_a_distinct_authenticated_handler_source(tmp_path: Path) ->
         original_product,
         entrypoint="main",
         invocation_id="open-binding-reopened",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     with pytest.raises(InvocationDrift):
-        engine.open("open-binding-reopened", reopened_product)
+        engine.open("open-binding-reopened", reopened_product, authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(original_handle).output == "original"
 
 
@@ -2730,7 +2738,7 @@ def test_open_requires_the_exact_lock_for_the_compiled_workflow(tmp_path: Path) 
         }
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="terminal-validation", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="terminal-validation", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "succeeded"
     adversarial = _resolved(
         {
@@ -2750,7 +2758,7 @@ def test_open_requires_the_exact_lock_for_the_compiled_workflow(tmp_path: Path) 
     )
 
     with pytest.raises(InvocationDrift):
-        Engine(tmp_path).open("terminal-validation", adversarial)
+        Engine(tmp_path).open("terminal-validation", adversarial, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_self_digested_success_with_terminal_reason(tmp_path: Path) -> None:
@@ -2762,7 +2770,7 @@ def test_open_rejects_self_digested_success_with_terminal_reason(tmp_path: Path)
         maximum=1,
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="success-reason", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="success-reason", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     result = engine.run_until_blocked(handle)
     assert (
         RunResult(
@@ -2788,7 +2796,7 @@ def test_open_rejects_self_digested_success_with_terminal_reason(tmp_path: Path)
     _rewrite_ledger(ledger_root, forged_events)
 
     with pytest.raises(LedgerIntegrityError, match="successful invocation"):
-        Engine(tmp_path).open("success-reason", product)
+        Engine(tmp_path).open("success-reason", product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_terminal_history_with_omitted_fanout_branch(tmp_path: Path) -> None:
@@ -2807,7 +2815,7 @@ def test_open_rejects_terminal_history_with_omitted_fanout_branch(tmp_path: Path
         maximum=3,
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="omitted-fanout", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="omitted-fanout", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "succeeded"
     ledger_root = handle.invocation_root / "ledger"
     events = tuple(envelope.event for envelope in Ledger(ledger_root).read_all())
@@ -2830,7 +2838,7 @@ def test_open_rejects_terminal_history_with_omitted_fanout_branch(tmp_path: Path
     assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
 
     with pytest.raises(EngineError, match="event history"):
-        Engine(tmp_path).open("omitted-fanout", product)
+        Engine(tmp_path).open("omitted-fanout", product, authorization=empty_runtime_authorization())
 
 
 @pytest.mark.parametrize("mutation", ["token_id", "payload"])
@@ -2850,7 +2858,7 @@ def test_open_rejects_changed_canonical_edge_token(
         maximum=2,
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id=invocation_id, seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "succeeded"
     ledger_root = handle.invocation_root / "ledger"
     events = tuple(envelope.event for envelope in Ledger(ledger_root).read_all())
@@ -2893,7 +2901,7 @@ def test_open_rejects_changed_canonical_edge_token(
     assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
 
     with pytest.raises(EngineError, match="event history"):
-        Engine(tmp_path).open(invocation_id, product)
+        Engine(tmp_path).open(invocation_id, product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_token_from_false_condition(tmp_path: Path) -> None:
@@ -2912,7 +2920,7 @@ def test_open_rejects_token_from_false_condition(tmp_path: Path) -> None:
         maximum=3,
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="false-condition-token", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="false-condition-token", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "succeeded"
     ledger_root = handle.invocation_root / "ledger"
     events = tuple(envelope.event for envelope in Ledger(ledger_root).read_all())
@@ -2958,7 +2966,7 @@ def test_open_rejects_token_from_false_condition(tmp_path: Path) -> None:
     assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
 
     with pytest.raises(EngineError, match="event history"):
-        Engine(tmp_path).open("false-condition-token", product)
+        Engine(tmp_path).open("false-condition-token", product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_extra_duplicate_edge_token(tmp_path: Path) -> None:
@@ -2973,7 +2981,7 @@ def test_open_rejects_extra_duplicate_edge_token(tmp_path: Path) -> None:
         maximum=3,
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="extra-edge-token", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="extra-edge-token", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "succeeded"
     ledger_root = handle.invocation_root / "ledger"
     events = tuple(envelope.event for envelope in Ledger(ledger_root).read_all())
@@ -2999,7 +3007,7 @@ def test_open_rejects_extra_duplicate_edge_token(tmp_path: Path) -> None:
     assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
 
     with pytest.raises(EngineError, match="event history"):
-        Engine(tmp_path).open("extra-edge-token", product)
+        Engine(tmp_path).open("extra-edge-token", product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_non_earliest_available_token_consumption(tmp_path: Path) -> None:
@@ -3021,7 +3029,7 @@ def test_open_rejects_non_earliest_available_token_consumption(tmp_path: Path) -
         maximum=6,
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="non-earliest-token", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="non-earliest-token", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     ledger_root = handle.invocation_root / "ledger"
     initial = Ledger(ledger_root).read_all()
     planned = plan_next(product.workflow, fold_events(initial))
@@ -3057,7 +3065,7 @@ def test_open_rejects_non_earliest_available_token_consumption(tmp_path: Path) -
     assert fold_events(Ledger(ledger_root).read_all()).status == "running"
 
     with pytest.raises(EngineError, match="event history"):
-        Engine(tmp_path).open("non-earliest-token", product)
+        Engine(tmp_path).open("non-earliest-token", product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_non_earliest_token_for_all_join_predecessor(tmp_path: Path) -> None:
@@ -3080,7 +3088,7 @@ def test_open_rejects_non_earliest_token_for_all_join_predecessor(tmp_path: Path
         maximum=4,
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="non-earliest-all-join", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="non-earliest-all-join", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     ledger_root = handle.invocation_root / "ledger"
     initial = Ledger(ledger_root).read_all()
     planned = plan_next(product.workflow, fold_events(initial))
@@ -3124,7 +3132,7 @@ def test_open_rejects_non_earliest_token_for_all_join_predecessor(tmp_path: Path
     assert fold_events(Ledger(ledger_root).read_all()).status == "running"
 
     with pytest.raises(EngineError, match="event history"):
-        Engine(tmp_path).open("non-earliest-all-join", product)
+        Engine(tmp_path).open("non-earliest-all-join", product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_terminal_task_completed_without_committed_attempt(tmp_path: Path) -> None:
@@ -3133,7 +3141,7 @@ def test_open_rejects_terminal_task_completed_without_committed_attempt(tmp_path
 
     product = _task_product(handler)
     engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="forged-task", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="forged-task", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "succeeded"
     ledger_root = handle.invocation_root / "ledger"
     removed_kinds = {
@@ -3164,6 +3172,7 @@ def test_open_rejects_terminal_task_completed_without_committed_attempt(tmp_path
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             "forged-task",
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3188,7 +3197,7 @@ def test_open_rejects_completed_graph_without_completed_end_activation(tmp_path:
         }
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="forged-empty-terminal", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="forged-empty-terminal", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     ledger_root = handle.invocation_root / "ledger"
     initial = Ledger(ledger_root).read_all()
     projection = fold_events(initial)
@@ -3208,7 +3217,7 @@ def test_open_rejects_completed_graph_without_completed_end_activation(tmp_path:
     assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
 
     with pytest.raises(EngineError, match="completed end activation"):
-        Engine(tmp_path).open("forged-empty-terminal", product)
+        Engine(tmp_path).open("forged-empty-terminal", product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_forged_root_input_even_with_matching_start_token(tmp_path: Path) -> None:
@@ -3229,7 +3238,7 @@ def test_open_rejects_forged_root_input_even_with_matching_start_token(tmp_path:
         }
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="forged-root-input", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="forged-root-input", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "succeeded"
     ledger_root = handle.invocation_root / "ledger"
     forged_events = tuple(
@@ -3244,7 +3253,7 @@ def test_open_rejects_forged_root_input_even_with_matching_start_token(tmp_path:
     assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
 
     with pytest.raises(EngineError, match="root graph input"):
-        Engine(tmp_path).open("forged-root-input", product)
+        Engine(tmp_path).open("forged-root-input", product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_forged_terminal_structural_output(tmp_path: Path) -> None:
@@ -3265,7 +3274,7 @@ def test_open_rejects_forged_terminal_structural_output(tmp_path: Path) -> None:
         }
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="forged-structural-output", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="forged-structural-output", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "succeeded"
     ledger_root = handle.invocation_root / "ledger"
     forged_events = tuple(
@@ -3278,7 +3287,7 @@ def test_open_rejects_forged_terminal_structural_output(tmp_path: Path) -> None:
     assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
 
     with pytest.raises(EngineError, match="non-canonical output"):
-        Engine(tmp_path).open("forged-structural-output", product)
+        Engine(tmp_path).open("forged-structural-output", product, authorization=empty_runtime_authorization())
 
 
 @pytest.mark.parametrize("status", ["failed", "stopped"])
@@ -3292,7 +3301,7 @@ def test_open_rejects_terminal_status_without_compiled_causal_proof(
         resolved_interrupt_product,
         entrypoint="main",
         invocation_id=f"forged-{status}",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     ledger = Ledger(handle.invocation_root / "ledger")
     existing = ledger.read_all()
@@ -3309,7 +3318,7 @@ def test_open_rejects_terminal_status_without_compiled_causal_proof(
     assert fold_events(ledger.read_all()).status == status
 
     with pytest.raises(EngineError, match="causal proof"):
-        Engine(tmp_path).open(f"forged-{status}", resolved_interrupt_product)
+        Engine(tmp_path).open(f"forged-{status}", resolved_interrupt_product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_stopped_child_without_compiled_failure_propagation(tmp_path: Path) -> None:
@@ -3318,7 +3327,7 @@ def test_open_rejects_stopped_child_without_compiled_failure_propagation(tmp_pat
 
     product = _task_product(stop, nested=True)
     engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="forged-stop-propagation", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="forged-stop-propagation", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "stopped"
     ledger_root = handle.invocation_root / "ledger"
     forged_events = tuple(
@@ -3333,6 +3342,7 @@ def test_open_rejects_stopped_child_without_compiled_failure_propagation(tmp_pat
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             "forged-stop-propagation",
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3342,7 +3352,7 @@ def test_open_rejects_failed_child_without_compiled_failure_propagation(tmp_path
 
     product = _task_product(fail, nested=True)
     engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="forged-failure-propagation", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="forged-failure-propagation", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     result = engine.run_until_blocked(handle)
     assert result.status == "failed"
     root_graph_id = next(
@@ -3366,6 +3376,7 @@ def test_open_rejects_failed_child_without_compiled_failure_propagation(tmp_path
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             "forged-failure-propagation",
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3376,6 +3387,7 @@ def test_open_rejects_task_failure_with_unrelated_failed_sibling(tmp_path: Path)
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             invocation_id,
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3386,6 +3398,7 @@ def test_open_rejects_stop_with_unrelated_failed_sibling(tmp_path: Path) -> None
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             invocation_id,
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3434,6 +3447,7 @@ def test_open_rejects_task_failure_with_omitted_exhausted_sibling_settlement(
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             "omitted-exhausted-settlement",
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3471,6 +3485,7 @@ def test_open_rejects_terminal_task_without_canonical_lease_binding(
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             invocation_id,
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3516,6 +3531,7 @@ def test_open_rejects_terminal_with_retryable_sibling_missing_canonical_lease(
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             invocation_id,
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3561,6 +3577,7 @@ def test_open_rejects_terminal_task_with_earlier_attempt_missing_canonical_lease
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             invocation_id,
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3606,6 +3623,7 @@ def test_open_rejects_task_failure_with_forged_retryable_sibling_settlement(
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             "forged-retryable-task-failure",
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3641,6 +3659,7 @@ def test_open_rejects_stop_with_forged_retryable_sibling_settlement(tmp_path: Pa
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             "forged-retryable-stop",
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3683,6 +3702,7 @@ def test_open_rejects_activation_bound_with_forged_retryable_task_settlement(
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             "forged-retryable-activation-bound",
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3725,7 +3745,7 @@ def test_open_accepts_exact_terminal_with_unsettled_retryable_sibling(
     )
 
     with Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()) as engine:
-        with engine.open(invocation_id, product) as handle:
+        with engine.open(invocation_id, product, authorization=empty_runtime_authorization()) as handle:
             result = engine.run_until_blocked(handle)
     sibling = next(
         activation
@@ -3759,7 +3779,7 @@ def test_open_rejects_activation_bound_failure_without_next_ready_activation(
         }
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="no-ready-at-bound", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="no-ready-at-bound", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "succeeded"
     ledger_root = handle.invocation_root / "ledger"
     reason = "max_activations_exceeded:root"
@@ -3779,7 +3799,7 @@ def test_open_rejects_activation_bound_failure_without_next_ready_activation(
     assert fold_events(Ledger(ledger_root).read_all()).status == "failed"
 
     with pytest.raises(EngineError, match="causal proof"):
-        Engine(tmp_path).open("no-ready-at-bound", product)
+        Engine(tmp_path).open("no-ready-at-bound", product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_task_failure_relabelled_as_activation_bound(tmp_path: Path) -> None:
@@ -3811,7 +3831,7 @@ def test_open_rejects_task_failure_relabelled_as_activation_bound(tmp_path: Path
         {"test.empty.run": _FunctionHandler(fail)},
     )
     engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="task-failure-at-bound", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="task-failure-at-bound", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "failed"
     ledger_root = handle.invocation_root / "ledger"
     reason = "max_activations_exceeded:root"
@@ -3830,6 +3850,7 @@ def test_open_rejects_task_failure_relabelled_as_activation_bound(tmp_path: Path
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             "task-failure-at-bound",
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3851,13 +3872,13 @@ def test_open_accepts_exact_planner_derived_activation_bound_failure(tmp_path: P
         }
     )
     engine = Engine(tmp_path)
-    handle = engine.start(product, entrypoint="main", invocation_id="real-activation-bound", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="real-activation-bound", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     failed = engine.run_until_blocked(handle)
     assert failed.status == "failed"
     assert failed.reason == "max_activations_exceeded:root"
 
     reopened_engine = Engine(tmp_path)
-    reopened = reopened_engine.open("real-activation-bound", product)
+    reopened = reopened_engine.open("real-activation-bound", product, authorization=empty_runtime_authorization())
     replayed = reopened_engine.run_until_blocked(reopened)
     assert replayed.status == "failed"
     assert replayed.reason == "max_activations_exceeded:root"
@@ -3887,7 +3908,7 @@ def test_open_rejects_activation_bound_failure_missing_deterministic_settlement(
         product,
         entrypoint="main",
         invocation_id="incomplete-activation-bound",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     assert engine.run_until_blocked(handle).status == "failed"
     ledger_root = handle.invocation_root / "ledger"
@@ -3901,7 +3922,7 @@ def test_open_rejects_activation_bound_failure_missing_deterministic_settlement(
     assert fold_events(Ledger(ledger_root).read_all()).status == "failed"
 
     with pytest.raises(EngineError, match="causal proof"):
-        Engine(tmp_path).open("incomplete-activation-bound", product)
+        Engine(tmp_path).open("incomplete-activation-bound", product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_a_different_compiled_activation_bound_by_lock(tmp_path: Path) -> None:
@@ -3930,7 +3951,7 @@ def test_open_rejects_a_different_compiled_activation_bound_by_lock(tmp_path: Pa
         source_product,
         entrypoint="main",
         invocation_id="over-bound-history",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     assert engine.run_until_blocked(handle).status == "failed"
     ledger_root = handle.invocation_root / "ledger"
@@ -3939,7 +3960,7 @@ def test_open_rejects_a_different_compiled_activation_bound_by_lock(tmp_path: Pa
     assert projection.status == "failed"
 
     with pytest.raises(InvocationDrift):
-        Engine(tmp_path).open("over-bound-history", compiled_product)
+        Engine(tmp_path).open("over-bound-history", compiled_product, authorization=empty_runtime_authorization())
 
 
 def test_open_rejects_noncanonical_task_id_in_terminal_ledger(tmp_path: Path) -> None:
@@ -3948,7 +3969,7 @@ def test_open_rejects_noncanonical_task_id_in_terminal_ledger(tmp_path: Path) ->
 
     product = _task_product(handler)
     engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="forged-task-id", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="forged-task-id", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(handle).status == "succeeded"
     ledger_root = handle.invocation_root / "ledger"
     forged_events = tuple(
@@ -3970,6 +3991,7 @@ def test_open_rejects_noncanonical_task_id_in_terminal_ledger(tmp_path: Path) ->
         Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost()).open(
             "forged-task-id",
             product,
+            authorization=empty_runtime_authorization(),
         )
 
 
@@ -3982,7 +4004,7 @@ def test_open_rejects_forged_child_input_even_with_matching_start_token(
         resolved_subgraph_product,
         entrypoint="main",
         invocation_id="forged-child-input",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     assert engine.run_until_blocked(handle).status == "succeeded"
     ledger_root = handle.invocation_root / "ledger"
@@ -4003,7 +4025,7 @@ def test_open_rejects_forged_child_input_even_with_matching_start_token(
     assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
 
     with pytest.raises(EngineError, match="parent binding"):
-        Engine(tmp_path).open("forged-child-input", resolved_subgraph_product)
+        Engine(tmp_path).open("forged-child-input", resolved_subgraph_product, authorization=empty_runtime_authorization())
 
 
 def test_interrupt_runtime_metadata_is_required() -> None:
@@ -4040,7 +4062,7 @@ def test_open_translates_reclaim_conflict_to_engine_conflict(
     resolved_interrupt_product: FrozenComposition,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    Engine(tmp_path).start(resolved_interrupt_product, entrypoint="main", invocation_id="open-conflict", seed=empty_invocation_seed())
+    Engine(tmp_path).start(resolved_interrupt_product, entrypoint="main", invocation_id="open-conflict", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
 
     def conflict(_scheduler: Scheduler) -> tuple[str, ...]:
         from graph_engine.runtime.ledger import LedgerConflictError
@@ -4049,7 +4071,7 @@ def test_open_translates_reclaim_conflict_to_engine_conflict(
 
     monkeypatch.setattr(Scheduler, "reclaim_expired", conflict)
     with pytest.raises(EngineConflictError, match="advanced"):
-        Engine(tmp_path).open("open-conflict", resolved_interrupt_product)
+        Engine(tmp_path).open("open-conflict", resolved_interrupt_product, authorization=empty_runtime_authorization())
 
 
 def test_run_translates_unreadable_success_reconciliation_to_engine_indeterminate(
@@ -4079,7 +4101,7 @@ def test_run_translates_unreadable_success_reconciliation_to_engine_indeterminat
 
     product = _task_product(handler)
     engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
-    handle = engine.start(product, entrypoint="main", invocation_id="indeterminate-success", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="indeterminate-success", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     monkeypatch.setattr(ledger_runtime, "_append_boundary", fail_after_final_install)
     monkeypatch.setattr(Ledger, "read_all", fail_reconciliation_read)
 
@@ -4099,7 +4121,7 @@ def test_initialization_failure_before_ledger_leaves_exactly_recoverable_identit
     monkeypatch.setattr(engine_runtime, "_initialization_boundary", crash, raising=False)
     engine = Engine(tmp_path)
     with pytest.raises(OSError, match="pre-ledger"):
-        engine.start(resolved_interrupt_product, entrypoint="main", invocation_id="retryable", seed=empty_invocation_seed())
+        engine.start(resolved_interrupt_product, entrypoint="main", invocation_id="retryable", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     invocation_root = tmp_path / "invocations" / "retryable"
     assert (invocation_root / "invocation.lock.json").read_bytes() == (
         resolved_interrupt_product.lock.canonical_bytes
@@ -4108,7 +4130,7 @@ def test_initialization_failure_before_ledger_leaves_exactly_recoverable_identit
 
     monkeypatch.setattr(engine_runtime, "_initialization_boundary", lambda _name: None, raising=False)
     assert (
-        engine.start(resolved_interrupt_product, entrypoint="main", invocation_id="retryable", seed=empty_invocation_seed()).invocation_id
+        engine.start(resolved_interrupt_product, entrypoint="main", invocation_id="retryable", seed=empty_invocation_seed(), authorization=empty_runtime_authorization()).invocation_id
         == "retryable"
     )
 
@@ -4124,7 +4146,7 @@ def test_symlinked_invocation_namespace_is_rejected_without_external_write(
     (root / "invocations").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(EngineError, match="namespace|symlink|trusted"):
-        Engine(root).start(resolved_interrupt_product, entrypoint="main", invocation_id="escape", seed=empty_invocation_seed())
+        Engine(root).start(resolved_interrupt_product, entrypoint="main", invocation_id="escape", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert tuple(outside.iterdir()) == ()
 
 
@@ -4153,7 +4175,7 @@ def test_namespace_swap_after_handle_binding_fails_closed_without_external_write
         resolved_interrupt_product,
         entrypoint="main",
         invocation_id="pinned",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     trusted = root / "invocations"
     held = root / "held-invocations"
@@ -4176,7 +4198,7 @@ def test_leaf_swap_after_handle_binding_is_rejected_as_stale(
         resolved_interrupt_product,
         entrypoint="main",
         invocation_id="leaf",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     invocation = tmp_path / "invocations" / "leaf"
     invocation.rename(tmp_path / "invocations" / "held-leaf")
@@ -4199,7 +4221,7 @@ def test_engine_and_handle_lifecycle_is_context_managed_idempotent_and_fail_clos
             resolved_subgraph_product,
             entrypoint="main",
             invocation_id="lifecycle",
-        seed=empty_invocation_seed(),
+        seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
         )
         with handle:
             assert engine.run_until_blocked(handle).status == "succeeded"
@@ -4211,7 +4233,7 @@ def test_engine_and_handle_lifecycle_is_context_managed_idempotent_and_fail_clos
 
     engine.close()
     with pytest.raises(EngineError, match="closed"):
-        engine.open("lifecycle", resolved_subgraph_product)
+        engine.open("lifecycle", resolved_subgraph_product, authorization=empty_runtime_authorization())
 
 
 def test_repeated_open_close_does_not_grow_invocation_descriptors(
@@ -4223,14 +4245,14 @@ def test_repeated_open_close_does_not_grow_invocation_descriptors(
         resolved_subgraph_product,
         entrypoint="main",
         invocation_id="descriptor-growth",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     assert engine.run_until_blocked(initial).status == "succeeded"
     initial.close()
     baseline = len(os.listdir("/dev/fd"))
 
     for _index in range(50):
-        with engine.open("descriptor-growth", resolved_subgraph_product):
+        with engine.open("descriptor-growth", resolved_subgraph_product, authorization=empty_runtime_authorization()):
             pass
 
     assert len(os.listdir("/dev/fd")) <= baseline + 1
@@ -4250,8 +4272,8 @@ def test_workspace_store_remains_bound_after_handle_descriptor_is_reused(tmp_pat
     first_product = _nested_task_interrupt_product(first_handler)
     second_product = _nested_task_interrupt_product(second_handler)
     engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-    first = engine.start(first_product, entrypoint="main", invocation_id="first", seed=empty_invocation_seed())
-    second = engine.start(second_product, entrypoint="main", invocation_id="second", seed=empty_invocation_seed())
+    first = engine.start(first_product, entrypoint="main", invocation_id="first", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
+    second = engine.start(second_product, entrypoint="main", invocation_id="second", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     assert engine.run_until_blocked(first).status == "interrupted"
     assert engine.run_until_blocked(second).status == "interrupted"
     store = first.workspace
@@ -4287,7 +4309,7 @@ def test_workspace_store_lifecycle_is_idempotent_and_does_not_grow_descriptors(
         resolved_subgraph_product,
         entrypoint="main",
         invocation_id="workspace-store-lifecycle",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     assert engine.run_until_blocked(handle).status == "succeeded"
     baseline = len(os.listdir("/dev/fd"))
@@ -4325,7 +4347,7 @@ def test_repeated_failed_initialization_closes_internal_workspace_with_retained_
                     resolved_subgraph_product,
                     entrypoint="main",
                     invocation_id="retained-start-failure",
-                seed=empty_invocation_seed(),
+                seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
                 )
             except RuntimeError as error:
                 failures.append(error)
@@ -4348,7 +4370,7 @@ def test_repeated_failed_open_closes_internal_workspace_with_retained_tracebacks
         resolved_interrupt_product,
         entrypoint="main",
         invocation_id=f"retained-open-{failure_stage}",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     handle.close()
     bootstrap.close()
@@ -4381,7 +4403,7 @@ def test_repeated_failed_open_closes_internal_workspace_with_retained_tracebacks
     try:
         for _index in range(24):
             try:
-                opener.open(f"retained-open-{failure_stage}", resolved_interrupt_product)
+                opener.open(f"retained-open-{failure_stage}", resolved_interrupt_product, authorization=empty_runtime_authorization())
             except RuntimeError as error:
                 failures.append(error)
         assert len(failures) == 24
@@ -4401,7 +4423,7 @@ def test_repeated_failed_run_closes_internal_workspace_with_retained_tracebacks(
         resolved_interrupt_product,
         entrypoint="main",
         invocation_id="retained-run-failure",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     failures: list[BaseException] = []
 
@@ -4434,7 +4456,7 @@ def test_open_rejects_interrupt_metadata_that_differs_from_compiled_definition(
         resolved_interrupt_product,
         entrypoint="main",
         invocation_id="interrupt-metadata",
-    seed=empty_invocation_seed(),
+    seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
     )
     assert engine.run_until_blocked(handle).status == "interrupted"
     handle = engine.resume(handle, action="approve", payload={"reviewed": True})
@@ -4456,4 +4478,4 @@ def test_open_rejects_interrupt_metadata_that_differs_from_compiled_definition(
             break
 
     with pytest.raises(EngineError, match="workflow|interrupt|reason"):
-        Engine(tmp_path).open("interrupt-metadata", resolved_interrupt_product)
+        Engine(tmp_path).open("interrupt-metadata", resolved_interrupt_product, authorization=empty_runtime_authorization())

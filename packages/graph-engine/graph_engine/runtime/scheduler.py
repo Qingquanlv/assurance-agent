@@ -67,6 +67,12 @@ from graph_engine.runtime.events import (
     TaskLeaseHeartbeat,
 )
 from graph_engine.runtime.frozen_json import thaw_json
+from graph_engine.runtime.secret_sources import (
+    InvocationRuntimeAuthorization,
+    RuntimeAuthorizationError,
+    authorize_binding_secret_handles,
+    empty_runtime_authorization,
+)
 from graph_engine.runtime.json_schema import match_json_schema, validate_json_schema
 from graph_engine.runtime.ledger import (
     Ledger,
@@ -247,6 +253,7 @@ class Scheduler:
         resources: object | None = None,
         receipts: TerminalReceiptStore | None = None,
         cancel_timeout_seconds: float = 5.0,
+        runtime_authorization: InvocationRuntimeAuthorization | None = None,
     ) -> None:
         if not owner_id:
             raise ValueError("owner_id must not be empty")
@@ -273,6 +280,11 @@ class Scheduler:
         self._resources = resources
         self._receipts = receipts
         self._cancel_timeout_seconds = cancel_timeout_seconds
+        self._runtime_authorization = (
+            runtime_authorization
+            if runtime_authorization is not None
+            else empty_runtime_authorization()
+        )
         self._same_attempt_execute: set[tuple[str, int]] = set()
         bind_runtime = getattr(host, "bind_invocation_runtime", None)
         if callable(bind_runtime):
@@ -1151,6 +1163,18 @@ class Scheduler:
             prior_failure=task.prior_failure,
         )
 
+    def _authorized_secret_handles(self, task: PlannedTask) -> tuple[str, ...]:
+        binding = getattr(self._registry, "bindings", {}).get(task.capability_id)
+        if binding is None:
+            return ()
+        try:
+            return authorize_binding_secret_handles(
+                binding.secret_handles,
+                self._runtime_authorization,
+            )
+        except RuntimeAuthorizationError as error:
+            raise SchedulerStateError(str(error)) from error
+
     def _host_execute_call(
         self,
         task: PlannedTask,
@@ -1185,7 +1209,7 @@ class Scheduler:
                 attempt=task.attempt,
                 activity_id=activity_id,
             ),
-            authorized_secret_handles=(),
+            authorized_secret_handles=self._authorized_secret_handles(task),
         )
 
     def _host_call_identity(
@@ -1229,7 +1253,7 @@ class Scheduler:
                 attempt=task.attempt,
                 activity_id=activity.activity_id,
             ),
-            "authorized_secret_handles": (),
+            "authorized_secret_handles": self._authorized_secret_handles(task),
             "activity": activity,
         }
 

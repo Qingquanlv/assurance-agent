@@ -20,6 +20,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine, EngineConflictError
 from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostTerminalReceipt
@@ -235,7 +236,7 @@ async def _crashed_recoverable_attempt(
     )
     start_clock = FakeClock(10.0)
     engine = Engine(tmp_path, clock=start_clock, host=host)
-    handle = engine.start(product, entrypoint="main", invocation_id="recover-1", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="recover-1", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     plan = plan_next(product.workflow, fold_events(envelopes))
@@ -275,7 +276,7 @@ async def _crashed_recoverable_attempt(
     try:
         reopen_clock = FakeClock(21.0 if expired else 11.0)
         reopened_engine = Engine(tmp_path, clock=reopen_clock, host=host)
-        reopened = reopened_engine.open("recover-1", product)
+        reopened = reopened_engine.open("recover-1", product, authorization=empty_runtime_authorization())
         calls.order.clear()
         return _RecoveryFixture(
             handle=reopened,
@@ -485,7 +486,7 @@ async def _assert_open_after_recovery_defers_compiled_events(tmp_path: Path) -> 
     host = _RecordingHost(status="running", calls=calls)
     start_clock = FakeClock(10.0)
     engine = Engine(tmp_path, clock=start_clock, host=host)
-    handle = engine.start(product, entrypoint="main", invocation_id="adopt-defer", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="adopt-defer", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     structural = plan_next(product.workflow, fold_events(envelopes))
@@ -554,7 +555,7 @@ async def _assert_open_after_recovery_defers_compiled_events(tmp_path: Path) -> 
         handle.close()
         engine.close()
         reopened_engine = Engine(tmp_path, clock=FakeClock(11.0), host=host)
-        reopened = reopened_engine.open("adopt-defer", product)
+        reopened = reopened_engine.open("adopt-defer", product, authorization=empty_runtime_authorization())
         reopened.close()
         reopened_engine.close()
     finally:
@@ -656,7 +657,7 @@ async def _assert_cancel_terminal_does_not_adopt(tmp_path: Path) -> None:
     host = _TerminalCancelHost(status="running", calls=calls)
     start_clock = FakeClock(10.0)
     engine = Engine(tmp_path, clock=start_clock, host=host)
-    handle = engine.start(product, entrypoint="main", invocation_id="cancel-term", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="cancel-term", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     plan = plan_next(product.workflow, fold_events(envelopes))
@@ -699,7 +700,7 @@ async def _assert_cancel_terminal_does_not_adopt(tmp_path: Path) -> None:
     reopened = None
     try:
         reopened_engine = Engine(tmp_path, clock=FakeClock(11.0), host=host)
-        reopened = reopened_engine.open("cancel-term", product)
+        reopened = reopened_engine.open("cancel-term", product, authorization=empty_runtime_authorization())
         calls.order.clear()
         result = await reopened.recover()
         decisions = getattr(result, "decisions", ())

@@ -261,6 +261,7 @@ class BindingContributionProjection(FrozenModel):
     target_capability_id: str
     data: FrozenJSONValue
     resource_ids: tuple[str, ...]
+    secret_handles: tuple[str, ...] = ()
 
 
 class ContributionProjection(FrozenModel):
@@ -433,6 +434,7 @@ class ContributionProjection(FrozenModel):
                     target_capability_id=item.target_capability_id,
                     data=freeze_json(item.data),
                     resource_ids=tuple(item.resource_ids),
+                    secret_handles=tuple(item.secret_handles),
                 )
                 for item in sorted(contribution.bindings, key=lambda item: item.capability_id)
             ),
@@ -476,6 +478,7 @@ class ContributionProjection(FrozenModel):
                         target_capability_id=entry.target_capability_id,
                         data=entry.data,
                         resource_ids=entry.resource_ids,
+                        secret_handles=entry.secret_handles,
                     )
                 )
         effects = []
@@ -598,6 +601,7 @@ class ContributionProjection(FrozenModel):
                     "target_capability_id": item.target_capability_id,
                     "data": cast(JSONValue, thaw_json(item.data)),
                     "resource_ids": list(item.resource_ids),
+                    "secret_handles": list(item.secret_handles),
                 }
                 for item in self.bindings
             ),

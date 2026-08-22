@@ -180,6 +180,21 @@ def test_plugin_binding_contribution_deep_freezes_data() -> None:
     assert binding.model_dump(mode="json")["data"] == {"steps": ["one", "two"]}
 
 
+def test_plugin_binding_contribution_validates_secret_handles() -> None:
+    with pytest.raises(ValidationError, match="unique"):
+        CapabilityBindingContribution(
+            capability_id="toy.flow.run",
+            target_capability_id="toy.runtime.execute",
+            secret_handles=("dup.handle", "dup.handle"),
+        )
+    binding = CapabilityBindingContribution(
+        capability_id="toy.flow.run",
+        target_capability_id="toy.runtime.execute",
+        secret_handles=("beta.token", "alpha.token"),
+    )
+    assert binding.secret_handles == ("alpha.token", "beta.token")
+
+
 def test_plugin_provider_exposes_only_the_phase_two_execution_methods() -> None:
     assert "contribute" in PluginProvider.__dict__
     assert "bind" not in PluginProvider.__dict__

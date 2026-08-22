@@ -596,6 +596,7 @@ def compute_registry_projections(registries: RegistrySet) -> RegistryProjections
                     "target_capability_id": entry.target_capability_id,
                     "data": cast(JSONValue, thaw_json(entry.data)),
                     "resource_ids": list(entry.resource_ids),
+                    "secret_handles": list(entry.secret_handles),
                     "target_implementation": entry.target_provenance.projection(),
                     "implementation_digest": entry.target_provenance.digest,
                 }

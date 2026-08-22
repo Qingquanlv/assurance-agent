@@ -25,6 +25,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 from graph_engine.runtime.activity import LedgerTaskActivityPort, write_set_digest
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.host_protocol import (
@@ -201,7 +202,7 @@ class _CutFixture:
     async def reopen_and_recover(self) -> "_Recovered":
         self.host.provider_calls = 0
         engine = Engine(self.engine_root, clock=FakeClock(21.0), host=self.host)
-        handle = engine.open("receipt-1", self.product)
+        handle = engine.open("receipt-1", self.product, authorization=empty_runtime_authorization())
         try:
             await handle.recover()
             events = [
@@ -451,7 +452,7 @@ def _load_product() -> Any:
 async def _cut_terminal_call(cut: _Cut, tmp_path: Path) -> _CutFixture:
     product = _load_product()
     engine = Engine(tmp_path, clock=FakeClock(10.0))
-    handle = engine.start(product, entrypoint="main", invocation_id="receipt-1", seed=empty_invocation_seed())
+    handle = engine.start(product, entrypoint="main", invocation_id="receipt-1", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     plan = plan_next(product.workflow, fold_events(envelopes))

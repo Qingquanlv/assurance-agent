@@ -78,7 +78,8 @@ from graph_engine.runtime.scheduler import (
     Scheduler,
     SystemClock,
 )
-from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, InvocationSeed
+from graph_engine.runtime.seed import InvocationSeed
+from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
 from graph_engine.runtime.workspace import (
     FinalizationRolledBack,
     HeadPublicationIndeterminate,
@@ -107,6 +108,7 @@ class InvocationHandle:
     _composition: FrozenComposition = field(repr=False, compare=False)
     _invocation_fd: int = field(repr=False, compare=False)
     _engine: Engine = field(repr=False, compare=False)
+    _authorization: InvocationRuntimeAuthorization = field(repr=False, compare=False)
     _closed: bool = field(default=False, init=False, repr=False, compare=False)
 
     @property
@@ -259,6 +261,7 @@ class Engine:
         entrypoint: str,
         invocation_id: str,
         seed: InvocationSeed,
+        authorization: InvocationRuntimeAuthorization,
     ) -> InvocationHandle:
         self._assert_namespace_path_current()
         self._invocation_root(invocation_id)
@@ -266,8 +269,10 @@ class Engine:
             raise TypeError("engine start requires a FrozenComposition")
         if not isinstance(seed, InvocationSeed):
             raise TypeError("engine start requires an InvocationSeed")
+        if not isinstance(authorization, InvocationRuntimeAuthorization):
+            raise TypeError("engine start requires an InvocationRuntimeAuthorization")
         if _entry_exists(self._invocations_fd, invocation_id):
-            return self._continue_start(invocation_id, composition, entrypoint, seed)
+            return self._continue_start(invocation_id, composition, entrypoint, seed, authorization)
         if entrypoint not in composition.workflow.entrypoints:
             raise EngineError(f"unknown entrypoint {entrypoint!r}")
         staging_name = f".{invocation_id}.invocation-init-{uuid.uuid4().hex}"
@@ -287,7 +292,7 @@ class Engine:
                 staging_fd,
                 lock_digest=composition.lock_digest,
                 entrypoint=entrypoint,
-                runtime_authorization_digest=EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
+                runtime_authorization_digest=authorization.digest,
                 root_input_digest=seed.root_input_digest,
                 initial_tree_id=seed.workspace.tree_id,
             )
@@ -303,7 +308,9 @@ class Engine:
                     name=staging_name,
                     descriptor=cleanup_fd,
                 )
-                return self._continue_start(invocation_id, composition, entrypoint, seed)
+                return self._continue_start(
+                    invocation_id, composition, entrypoint, seed, authorization
+                )
             installed = True
             return self._complete_start_at(
                 invocation_id,
@@ -311,6 +318,7 @@ class Engine:
                 entrypoint,
                 staging_fd,
                 seed,
+                authorization,
             )
         except BaseException as error:
             if staging_fd is not None and not installed:
@@ -338,10 +346,18 @@ class Engine:
                     descriptors=((staging_fd, "invocation initialization staging descriptor"),),
                 )
 
-    def open(self, invocation_id: str, composition: FrozenComposition) -> InvocationHandle:
+    def open(
+        self,
+        invocation_id: str,
+        composition: FrozenComposition,
+        *,
+        authorization: InvocationRuntimeAuthorization,
+    ) -> InvocationHandle:
         self._assert_namespace_path_current()
         if not isinstance(composition, FrozenComposition):
             raise TypeError("engine open requires a FrozenComposition")
+        if not isinstance(authorization, InvocationRuntimeAuthorization):
+            raise TypeError("engine open requires an InvocationRuntimeAuthorization")
         invocation_root = self._invocation_root(invocation_id)
         invocation_fd = self._open_invocation(invocation_id)
         claim_fd: int | None = None
@@ -353,6 +369,7 @@ class Engine:
                 None,
                 invocation_fd,
             )
+            self._validate_authorization_against_intent(authorization, intent)
             preclaim_ledger = Ledger.at(
                 invocation_fd,
                 "ledger",
@@ -435,6 +452,7 @@ class Engine:
                     invocation_fd,
                     store,
                     ledger,
+                    authorization,
                 )
                 self._authenticate_transition_identity(
                     invocation_id,
@@ -514,6 +532,7 @@ class Engine:
                 composition,
                 invocation_fd,
                 self,
+                authorization,
             )
         except BaseException as error:
             _close_preserving_primary(invocation_fd, error, "invocation descriptor")
@@ -525,6 +544,7 @@ class Engine:
         composition: FrozenComposition,
         entrypoint: str,
         seed: InvocationSeed,
+        authorization: InvocationRuntimeAuthorization,
     ) -> InvocationHandle:
         invocation_fd = self._open_invocation(invocation_id)
         try:
@@ -534,6 +554,7 @@ class Engine:
                 entrypoint,
                 invocation_fd,
                 seed,
+                authorization,
             )
         finally:
             _cleanup_runtime_resources(
@@ -549,6 +570,7 @@ class Engine:
         entrypoint: str,
         invocation_fd: int,
         seed: InvocationSeed,
+        authorization: InvocationRuntimeAuthorization,
     ) -> InvocationHandle:
         invocation_root = self._invocation_root(invocation_id)
         intent = self._authenticate_invocation_records(
@@ -557,7 +579,7 @@ class Engine:
             entrypoint,
             invocation_fd,
         )
-        self._validate_seed_against_intent(seed, intent)
+        self._validate_seed_against_intent(seed, intent, authorization)
         _initialization_boundary("before_recovery_root_fsync")
         os.fsync(self._invocations_fd)
         _initialization_boundary("after_recovery_root_fsync")
@@ -649,7 +671,9 @@ class Engine:
                 if store.head_tree_id() != seed.workspace.tree_id:
                     raise EngineError("unbootstrapped invocation workspace does not match the seed")
                 _initialization_boundary("workspace_ready")
-                bootstrap = self._bootstrap_events(invocation_id, composition, entrypoint, seed)
+                bootstrap = self._bootstrap_events(
+                    invocation_id, composition, entrypoint, seed, authorization
+                )
                 _initialization_boundary("before_ledger_bootstrap")
                 envelopes = self._append_authenticated(
                     context="bootstrap",
@@ -702,6 +726,7 @@ class Engine:
             composition,
             os.dup(invocation_fd),
             self,
+            authorization,
         )
 
     def _authenticate_bootstrap(
@@ -760,6 +785,7 @@ class Engine:
         composition: FrozenComposition,
         entrypoint: str,
         seed: InvocationSeed,
+        authorization: InvocationRuntimeAuthorization,
     ) -> tuple[RuntimeEvent, ...]:
         graph_id = composition.workflow.entrypoints[entrypoint]
         graph = composition.workflow.graphs[graph_id]
@@ -770,7 +796,7 @@ class Engine:
                 lock_digest=composition.lock_digest,
                 entrypoint=entrypoint,
                 event_schema_version="2",
-                runtime_authorization_digest=EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
+                runtime_authorization_digest=authorization.digest,
                 root_input_digest=seed.root_input_digest,
                 initial_tree_id=seed.workspace.tree_id,
             ),
@@ -809,14 +835,24 @@ class Engine:
         self,
         seed: InvocationSeed,
         intent: InvocationStartIntent,
+        authorization: InvocationRuntimeAuthorization,
     ) -> None:
         if (
             seed.root_input_digest != intent.root_input_digest
             or seed.workspace.tree_id != intent.initial_tree_id
         ):
             raise InvocationDrift("invocation seed differs from its start intent")
-        if intent.runtime_authorization_digest != EMPTY_RUNTIME_AUTHORIZATION_DIGEST:
-            raise InvocationDrift("invocation start intent authorization differs from the engine default")
+        self._validate_authorization_against_intent(authorization, intent)
+
+    def _validate_authorization_against_intent(
+        self,
+        authorization: InvocationRuntimeAuthorization,
+        intent: InvocationStartIntent,
+    ) -> None:
+        if authorization.digest != intent.runtime_authorization_digest:
+            raise InvocationDrift(
+                "invocation start intent authorization differs from the selected authorization"
+            )
 
     def run_until_blocked(self, handle: InvocationHandle) -> RunResult:
         _composition, _invocation_root, invocation_fd = self._validated_handle(handle)
@@ -863,6 +899,7 @@ class Engine:
             invocation_fd,
             store,
             ledger,
+            handle._authorization,
         )
         executor = EffectExecutor(
             composition.registries.effects,
@@ -1122,6 +1159,7 @@ class Engine:
             composition,
             os.dup(invocation_fd),
             self,
+            handle._authorization,
         )
 
     def _scheduler(
@@ -1133,6 +1171,7 @@ class Engine:
         invocation_fd: int,
         store: SnapshotStore,
         ledger: Ledger,
+        authorization: InvocationRuntimeAuthorization,
     ) -> Scheduler:
         owner_id = canonical_digest(
             {
@@ -1167,6 +1206,7 @@ class Engine:
             schemas=composition.registries.schemas,
             resources=composition.registries.resources,
             receipts=receipts,
+            runtime_authorization=authorization,
         )
 
     async def _recover_invocation(self, handle: InvocationHandle) -> RecoveryResult:
@@ -1197,6 +1237,7 @@ class Engine:
                 invocation_fd,
                 store,
                 ledger,
+                handle._authorization,
             )
             envelopes = ledger.read_all()
             projection = fold_events(envelopes)

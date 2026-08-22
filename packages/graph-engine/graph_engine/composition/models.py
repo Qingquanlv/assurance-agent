@@ -682,10 +682,12 @@ class _BoundTaskHandler:
     data: object
     resource_ids: tuple[str, ...]
     target: TaskHandler
+    secret_handles: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "data", freeze_json(self.data))
         object.__setattr__(self, "resource_ids", tuple(self.resource_ids))
+        object.__setattr__(self, "secret_handles", tuple(sorted(self.secret_handles)))
         if not callable(getattr(self.target, "execute", None)):
             raise TypeError("bound task target must provide execute")
 
@@ -722,6 +724,7 @@ class CapabilityBindingEntry:
     resource_ids: tuple[str, ...]
     handler: TaskHandler
     target_provenance: ExecutableProvenance
+    secret_handles: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.capability_id, self.owner_id, "binding")
@@ -737,6 +740,12 @@ class CapabilityBindingEntry:
         if len(resource_ids) != len(set(resource_ids)):
             raise ValueError("binding resource ids must be unique")
         object.__setattr__(self, "resource_ids", resource_ids)
+        secret_handles = tuple(self.secret_handles)
+        for handle in secret_handles:
+            _validate_registry_id(handle, "binding secret handle")
+        if len(secret_handles) != len(set(secret_handles)):
+            raise ValueError("binding secret handles must be unique")
+        object.__setattr__(self, "secret_handles", tuple(sorted(secret_handles)))
         if not isinstance(self.handler, _BoundTaskHandler):
             raise TypeError("binding handler must be an engine-derived bound adapter")
         if (
@@ -744,6 +753,7 @@ class CapabilityBindingEntry:
             or self.handler.target_capability_id != self.target_capability_id
             or self.handler.data != frozen_data
             or self.handler.resource_ids != resource_ids
+            or self.handler.secret_handles != secret_handles
         ):
             raise ValueError("bound adapter disagrees with binding entry")
         _validate_entry_provenance(
@@ -762,6 +772,7 @@ class CapabilityBindingEntry:
         target_capability_id: str,
         data: object,
         resource_ids: tuple[str, ...],
+        secret_handles: tuple[str, ...] = (),
         target: TaskHandler,
         target_provenance: ExecutableProvenance,
     ) -> CapabilityBindingEntry:
@@ -770,6 +781,7 @@ class CapabilityBindingEntry:
             target_capability_id=target_capability_id,
             data=data,
             resource_ids=resource_ids,
+            secret_handles=secret_handles,
             target=target,
         )
         return cls(
@@ -778,6 +790,7 @@ class CapabilityBindingEntry:
             target_capability_id=target_capability_id,
             data=handler.data,
             resource_ids=handler.resource_ids,
+            secret_handles=handler.secret_handles,
             handler=handler,
             target_provenance=target_provenance,
         )

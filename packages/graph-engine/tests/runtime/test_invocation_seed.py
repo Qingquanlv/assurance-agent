@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from graph_engine.canonical import canonical_digest
+from graph_engine.runtime.secret_sources import empty_runtime_authorization, runtime_authorization_digest
 from graph_engine.runtime.seed import (
     EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
     InvocationSeed,
@@ -58,6 +59,5 @@ def test_empty_invocation_seed_is_canonical() -> None:
     seed = empty_invocation_seed(root_input={"hello": "world"})
     assert seed.root_input_digest == canonical_digest({"hello": "world"})
     assert seed.workspace.tree_id == workspace_tree_id({})
-    assert EMPTY_RUNTIME_AUTHORIZATION_DIGEST == canonical_digest(
-        {"schema_version": "1", "bindings": []}
-    )
+    assert EMPTY_RUNTIME_AUTHORIZATION_DIGEST == runtime_authorization_digest(())
+    assert EMPTY_RUNTIME_AUTHORIZATION_DIGEST == empty_runtime_authorization().digest

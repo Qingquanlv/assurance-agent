@@ -520,10 +520,12 @@ class _BindingView:
         target_capability_id: str,
         data: object,
         resource_ids: tuple[str, ...],
+        secret_handles: tuple[str, ...] = (),
     ) -> None:
         self.target_capability_id = target_capability_id
         self.data = data
         self.resource_ids = resource_ids
+        self.secret_handles = secret_handles
 
 
 class _ResourceView:

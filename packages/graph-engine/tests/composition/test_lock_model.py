@@ -186,6 +186,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
                 "target_capability_id": "toy.runtime.greet",
                 "data": {"locale": "zh-CN"},
                 "resource_ids": ["toy.runtime.prompt"],
+                "secret_handles": [],
             }
         ],
     }
@@ -214,6 +215,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
                 "kind": "binding",
                 "owner_id": "toy.runtime",
                 "resource_ids": ["toy.runtime.prompt"],
+                "secret_handles": [],
                 "target_capability_id": "toy.runtime.greet",
                 "target_implementation": task_provenance.projection(),
             },
@@ -254,6 +256,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
                     "kind": "binding",
                     "owner_id": "toy.runtime",
                     "resource_ids": ["toy.runtime.prompt"],
+                    "secret_handles": [],
                     "target_capability_id": "toy.runtime.greet",
                     "target_implementation": task_provenance.projection(),
                 },
@@ -288,6 +291,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
             "kind": "binding",
             "owner_id": "toy.runtime",
             "resource_ids": ["toy.runtime.prompt"],
+            "secret_handles": [],
             "target_capability_id": "toy.runtime.greet",
             "target_implementation": task_provenance.projection(),
         }

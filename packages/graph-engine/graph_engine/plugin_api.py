@@ -601,6 +601,7 @@ class CapabilityBindingContribution(FrozenModel):
     target_capability_id: str
     data: FrozenJSONValue = None
     resource_ids: tuple[str, ...] = ()
+    secret_handles: tuple[str, ...] = ()
 
     @field_validator("capability_id", "target_capability_id")
     @classmethod
@@ -614,6 +615,14 @@ class CapabilityBindingContribution(FrozenModel):
     @classmethod
     def _validate_resource_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(_validate_contract_id(value, "binding resource id") for value in values)
+
+    @field_validator("secret_handles")
+    @classmethod
+    def _validate_secret_handles(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        validated = tuple(_validate_contract_id(value, "binding secret handle") for value in values)
+        if len(validated) != len(set(validated)):
+            raise ValueError("binding secret handles must be unique")
+        return tuple(sorted(validated))
 
 
 @dataclass(frozen=True, slots=True)

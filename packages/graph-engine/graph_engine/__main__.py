@@ -27,6 +27,7 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
 )
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine, RunResult
 from graph_engine.runtime.host_protocol import (
@@ -288,7 +289,7 @@ def _run_document(
             composition,
             entrypoint=entrypoint,
             invocation_id=invocation_id,
-            seed=empty_invocation_seed(),
+            seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
         ) as handle:
             result = engine.run_until_blocked(handle)
             envelopes = Ledger(handle.invocation_root / "ledger").read_all()

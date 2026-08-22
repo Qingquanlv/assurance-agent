@@ -22,6 +22,7 @@ from graph_engine.composition import (
 from graph_engine.runtime.engine import Engine, EngineError
 from graph_engine.runtime.events import GraphStarted, InvocationStarted, TokenOffered
 from graph_engine.runtime.ledger import Ledger
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
 
 
@@ -130,16 +131,16 @@ def test_start_recovers_to_one_authenticated_bootstrap_prefix(
 ) -> None:
     engine = engine_factory(fail_after_bootstrap_append=boundary)
     with contextlib.suppress(InjectedCrash):
-        engine.start(composition, entrypoint="full", invocation_id="inv-1", seed=seed)
+        engine.start(composition, entrypoint="full", invocation_id="inv-1", seed=seed, authorization=empty_runtime_authorization())
     recovered_engine = engine_factory()
     try:
-        recovered = recovered_engine.open("inv-1", composition)
+        recovered = recovered_engine.open("inv-1", composition, authorization=empty_runtime_authorization())
     except EngineError:
         recovered = recovered_engine.start(
             composition,
             entrypoint="full",
             invocation_id="inv-1",
-            seed=seed,
+            seed=seed, authorization=empty_runtime_authorization(),
         )
     events = recovered.ledger.read_all()
     assert [item.event.kind for item in events[:3]] == [
@@ -168,7 +169,7 @@ def test_open_rejects_schema_v1_prototype_invocation(
 ) -> None:
     root = tmp_path / "engine"
     with Engine(root) as engine:
-        engine.start(composition, entrypoint="full", invocation_id="legacy", seed=seed).close()
+        engine.start(composition, entrypoint="full", invocation_id="legacy", seed=seed, authorization=empty_runtime_authorization()).close()
     invocation = root / "invocations" / "legacy"
     intent_path = invocation / "invocation.start.json"
     os.chmod(intent_path, 0o600)
@@ -180,4 +181,4 @@ def test_open_rejects_schema_v1_prototype_invocation(
     intent_path.write_bytes(canonical_json_bytes(legacy_intent))
     intent_path.chmod(0o400)
     with Engine(root) as engine, pytest.raises(Exception, match="schema-v1 prototype"):
-        engine.open("legacy", composition)
+        engine.open("legacy", composition, authorization=empty_runtime_authorization())
