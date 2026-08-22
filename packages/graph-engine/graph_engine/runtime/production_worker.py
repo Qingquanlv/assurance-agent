@@ -9,6 +9,7 @@ import signal
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,7 @@ from graph_engine.runtime.host_protocol import (
     decode_authenticated_frame,
     derive_wire_session_key,
     encode_authenticated_frame,
+    write_all_bytes,
 )
 
 _PARENT_ALIVE_ENV = "GRAPH_ENGINE_PARENT_ALIVE_FD"
@@ -128,7 +130,9 @@ class _AsyncCallableHandler:
             return await result
         return cast(TaskOutcome, result)
 
-    async def reconcile(self, request: object, context: TaskContext, activity: TaskActivitySnapshot) -> object:
+    async def reconcile(
+        self, request: object, context: TaskContext, activity: TaskActivitySnapshot
+    ) -> object:
         result = self._callable(request, context, activity)
         if asyncio.iscoroutine(result):
             return await result
@@ -148,13 +152,23 @@ def _stream_io(stream: object) -> object:
 _READ_BUFFER = b""
 
 
+def _read_chunk(stream: object, size: int) -> bytes:
+    stream_io = _stream_io(stream)
+    fileno = getattr(stream_io, "fileno", None)
+    if callable(fileno):
+        fd = fileno()
+        if fd >= 0:
+            return os.read(fd, size)
+    chunk = stream_io.read(size)
+    return chunk if chunk else b""
+
+
 def _read_frame(session_key: bytes, stream: object) -> dict[str, JSONValue]:
     global _READ_BUFFER
-    buffer_obj = _stream_io(stream)
     buffer = _READ_BUFFER
     while True:
         if len(buffer) < 40:
-            chunk = buffer_obj.read(max(4096, 40 - len(buffer)))
+            chunk = _read_chunk(stream, max(4096, 40 - len(buffer)))
             if not chunk:
                 raise TaskHostProtocolError("worker control stream closed unexpectedly")
             buffer += chunk
@@ -165,7 +179,7 @@ def _read_frame(session_key: bytes, stream: object) -> dict[str, JSONValue]:
         except TaskHostProtocolError as error:
             if str(error) != "incomplete authenticated wire frame":
                 raise
-            chunk = buffer_obj.read(4096)
+            chunk = _read_chunk(stream, 4096)
             if not chunk:
                 raise TaskHostProtocolError("worker control stream closed unexpectedly") from error
             buffer += chunk
@@ -177,8 +191,13 @@ def _read_frame(session_key: bytes, stream: object) -> dict[str, JSONValue]:
 
 def _write_frame(session_key: bytes, stream: object, message: dict[str, JSONValue]) -> None:
     payload = canonical_json_bytes(message)
+    data = encode_authenticated_frame(session_key, payload)
     stream_io = _stream_io(stream)
-    stream_io.write(encode_authenticated_frame(session_key, payload))
+    fileno = getattr(stream_io, "fileno", None)
+    if callable(fileno):
+        write_all_bytes(fileno(), data)
+        return
+    stream_io.write(data)
     stream_io.flush()
 
 
@@ -298,13 +317,17 @@ def main() -> int:
         threading.Thread(target=_watch_cancel, daemon=True).start()
 
     def activity_send(message: dict[str, JSONValue]) -> dict[str, JSONValue]:
-        _write_frame(session_key, sys.stdout, message)
-        if activity_response_stream is None:
-            raise TaskHostProtocolError("activity response channel is unavailable")
-        response = _read_frame(session_key, activity_response_stream)
-        if response.get("kind") != "activity_response":
+        request_id = uuid.uuid4().hex
+        _write_frame(session_key, sys.stdout, {**message, "id": request_id})
+        document = _read_frame(session_key, sys.stdin)
+        kind = document.get("kind")
+        if kind == "activity_error":
+            raise TaskHostProtocolError(str(document.get("message") or "activity rpc failed"))
+        if kind != "activity_response":
             raise TaskHostProtocolError("expected activity response from parent")
-        return response
+        if str(document.get("id") or "") not in {"", request_id}:
+            raise TaskHostProtocolError("activity response id mismatch")
+        return document
 
     try:
         while True:
@@ -340,9 +363,7 @@ def main() -> int:
             secret_port = authorized_secret_port(secrets) if secrets else None
             handler = _load_handler(parsed.capability_entrypoint)
             activity_port = (
-                _ParentActivityPort(activity_send)
-                if host_call.activity_rpc.activity_id is not None
-                else None
+                _ParentActivityPort(activity_send) if host_call.activity_rpc.activity_id is not None else None
             )
             result = asyncio.run(
                 _run_call(

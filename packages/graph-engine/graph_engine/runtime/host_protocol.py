@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import struct
 from collections.abc import Iterable, Mapping
 from pathlib import PureWindowsPath
@@ -229,6 +230,13 @@ _MAX_STDERR_BYTES = 64 * 1024
 def derive_wire_session_key(*, call_digest: str, wire_schema_version: str) -> bytes:
     material = f"{wire_schema_version}:{call_digest}".encode("utf-8")
     return hashlib.sha256(material).digest()
+
+
+def write_all_bytes(fd: int, data: bytes) -> None:
+    """Write every byte to a pipe or socket even when the OS returns a short count."""
+    written = 0
+    while written < len(data):
+        written += os.write(fd, data[written:])
 
 
 def encode_authenticated_frame(session_key: bytes, payload: bytes) -> bytes:

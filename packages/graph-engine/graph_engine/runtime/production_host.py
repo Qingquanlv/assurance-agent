@@ -21,7 +21,6 @@ from graph_engine.plugin_api import (
     TaskActivityReconcileResult,
     TaskActivitySnapshot,
     TaskHandler,
-    TaskOutcome,
 )
 from graph_engine.runtime.activity import LedgerTaskActivityPort
 from graph_engine.runtime.host_protocol import (
@@ -39,6 +38,7 @@ from graph_engine.runtime.host_protocol import (
     derive_wire_session_key,
     encode_authenticated_frame,
     scan_for_secret_leaks,
+    write_all_bytes,
 )
 from graph_engine.runtime.host_receipts import (
     TerminalReceiptError,
@@ -131,16 +131,12 @@ class _ProductionTaskExecutionHost:
             )
         return await self._invoke("cancel", call)
 
-    def read_terminal_receipts(
-        self, identity: TaskHostCallIdentity
-    ) -> tuple[TaskHostTerminalReceipt, ...]:
+    def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[TaskHostTerminalReceipt, ...]:
         if self._bound.receipts is None:
             return ()
         return self._bound.receipts.authenticate(identity)
 
-    def _result_from_installed_receipt(
-        self, identity: TaskHostCallIdentity
-    ) -> TaskHostCallResult | None:
+    def _result_from_installed_receipt(self, identity: TaskHostCallIdentity) -> TaskHostCallResult | None:
         if self._bound.receipts is None or identity.activity_id is None:
             return None
         for operation in ("execute", "reconcile", "cancel"):
@@ -220,8 +216,6 @@ class _ProductionTaskExecutionHost:
                 {"kind": "secret", "handle": handle, "value_hex": secrets[handle].hex()},
             )
         self._write_frame(process.stdin, session_key, {"kind": "go"})
-        if process.stdin is not None:
-            process.stdin.close()
 
         result = self._read_worker_result(process, call, session_key, secrets, process)
         stderr = process.read_bounded_stderr()
@@ -270,15 +264,24 @@ class _ProductionTaskExecutionHost:
                 raise
             kind = frame.get("kind")
             if kind == "activity_rpc":
-                response = self._handle_activity_rpc(call, frame)
-                if worker.activity_response_w < 0:
-                    raise ProductionHostError("activity rpc channel is unavailable")
-                response_fd = os.dup(worker.activity_response_w)
-                response_stream = os.fdopen(response_fd, "wb", buffering=0)
+                request_id = str(frame.get("id") or "")
+                if not request_id:
+                    raise ProductionHostError("activity rpc is missing a request id")
+                assert process.stdin is not None
                 try:
-                    self._write_frame(response_stream, session_key, response)
-                finally:
-                    response_stream.close()
+                    response = self._handle_activity_rpc(call, frame)
+                except Exception as error:
+                    self._write_frame(
+                        process.stdin,
+                        session_key,
+                        {
+                            "kind": "activity_error",
+                            "id": request_id,
+                            "message": str(error),
+                        },
+                    )
+                    raise
+                self._write_frame(process.stdin, session_key, {**response, "id": request_id})
                 continue
             if kind == "result":
                 payload = frame.get("payload")
@@ -392,9 +395,7 @@ class _ProductionTaskExecutionHost:
             )
         )
 
-    def _attempt_root(
-        self, call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall
-    ) -> Path:
+    def _attempt_root(self, call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall) -> Path:
         assert self._bound.store is not None
         expected = self._bound.store.root / "attempts" / call.attempt_root.attempt_directory_id
         resolved = expected.resolve()
@@ -427,8 +428,22 @@ class _ProductionTaskExecutionHost:
         payload = canonical_json_bytes(message)
         data = encode_authenticated_frame(session_key, payload)
         buffer = self._stream_io(stream)
+        fileno = getattr(buffer, "fileno", None)
+        if callable(fileno):
+            write_all_bytes(fileno(), data)
+            return
         buffer.write(data)
         buffer.flush()
+
+    def _read_chunk(self, stream: object, size: int) -> bytes:
+        buffer_obj = self._stream_io(stream)
+        fileno = getattr(buffer_obj, "fileno", None)
+        if callable(fileno):
+            fd = fileno()
+            if fd >= 0:
+                return os.read(fd, size)
+        chunk = buffer_obj.read(size)
+        return chunk if chunk else b""
 
     def _read_frame(self, stream: object, session_key: bytes) -> dict[str, JSONValue]:
         buffer_obj = self._stream_io(stream)
@@ -436,7 +451,7 @@ class _ProductionTaskExecutionHost:
         buffer = self._read_buffers.pop(key, b"")
         while True:
             if len(buffer) < 40:
-                chunk = buffer_obj.read(max(4096, 40 - len(buffer)))
+                chunk = self._read_chunk(stream, max(4096, 40 - len(buffer)))
                 if not chunk:
                     raise ProductionHostError("worker control stream closed unexpectedly")
                 buffer += chunk
@@ -447,7 +462,7 @@ class _ProductionTaskExecutionHost:
             except TaskHostProtocolError as error:
                 if str(error) != "incomplete authenticated wire frame":
                     raise ProductionHostError(str(error)) from error
-                chunk = buffer_obj.read(4096)
+                chunk = self._read_chunk(stream, 4096)
                 if not chunk:
                     raise ProductionHostError("worker control stream closed unexpectedly") from error
                 buffer += chunk
@@ -532,13 +547,9 @@ class _ProcessSupervisor:
     @classmethod
     def for_platform(cls) -> _ProcessSupervisor:
         if sys.platform == "win32":
-            raise UnsupportedProductionPlatform(
-                "production task execution supports Linux and macOS only"
-            )
+            raise UnsupportedProductionPlatform("production task execution supports Linux and macOS only")
         if sys.platform not in {"darwin"} and not sys.platform.startswith("linux"):
-            raise UnsupportedProductionPlatform(
-                "production task execution supports Linux and macOS only"
-            )
+            raise UnsupportedProductionPlatform("production task execution supports Linux and macOS only")
         return cls()
 
     def spawn(self, *, attempt_root: Path, call_digest: str) -> _WorkerProcess:

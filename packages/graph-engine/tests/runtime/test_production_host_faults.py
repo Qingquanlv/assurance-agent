@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from bootstrap_fixtures import synthetic_invocation_started
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
@@ -16,7 +17,6 @@ from graph_engine.plugin_api import (
     TaskActivityReconcileResult,
     TaskActivitySnapshot,
     TaskContext,
-    TaskHandler,
     TaskOutcome,
     TaskRequest,
 )
@@ -29,7 +29,21 @@ from graph_engine.runtime.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.runtime.host_receipts import TerminalReceiptError, TerminalReceiptStore, prove_call_quiescent
+from graph_engine.runtime.events import (
+    GraphStarted,
+    NodeActivated,
+    TaskActivityPrepared,
+    TaskAttemptStarted,
+    TaskLeaseAcquired,
+    TokenConsumed,
+    TokenOffered,
+)
+from graph_engine.runtime.host_receipts import (
+    TerminalReceiptError,
+    TerminalReceiptStore,
+    prove_call_quiescent,
+)
+from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.production_host import ProductionHostError, _ProductionTaskExecutionHost
 from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.workspace import SnapshotStore
@@ -121,7 +135,9 @@ def _execute_call(
         ),
         capability_id=capability_id,
         capability_entrypoint=entrypoint,
-        request=_request().model_copy(update={"capability_id": capability_id, "target_capability_id": capability_id}),
+        request=_request().model_copy(
+            update={"capability_id": capability_id, "target_capability_id": capability_id}
+        ),
         attempt_root=AttemptRootDescriptor(attempt_directory_id=attempt_directory_id),
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
@@ -375,9 +391,7 @@ def test_production_host_parent_alive_pipe_is_wired(tmp_path: Path, monkeypatch:
     assert captured["parent_alive_w"] >= 0
 
 
-def test_production_host_cancel_escalates_on_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_production_host_cancel_escalates_on_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from graph_engine.runtime import production_host as module
 
     monkeypatch.setattr(module, "_CALL_TIMEOUT_SECONDS", 0.2)
@@ -442,3 +456,85 @@ def test_production_host_crash_after_receipt_leaves_durable_receipt(tmp_path: Pa
     promoted = receipts.authenticate(reconcile.identity.model_copy(update={"operation": "execute"}))
     assert len(promoted) == 1
     assert promoted[0].outcome == outcome
+
+
+def _prepare_activity_ledger(root: Path) -> None:
+    workspace = AttemptWorkspaceIdentity(
+        attempt_directory_id="attempt-1",
+        baseline_tree_id="0" * 64,
+        attempt_identity_digest="1" * 64,
+    )
+    ledger = Ledger(root / "invocations" / "inv-1" / "ledger")
+    ledger.append_batch(
+        (
+            synthetic_invocation_started(),
+            GraphStarted(graph_instance_id="root", graph_id="root"),
+            TokenOffered(
+                token_id="tok-1",
+                graph_instance_id="root",
+                source=None,
+                target="run",
+                payload=None,
+            ),
+            TokenConsumed(token_id="tok-1", graph_instance_id="root", node_id="run"),
+            NodeActivated(
+                activation_id="activation-run",
+                graph_instance_id="root",
+                node_id="run",
+                token_ids=("tok-1",),
+            ),
+            TaskAttemptStarted(activation_id="activation-run", attempt=1, lease_expires_at="11"),
+            TaskLeaseAcquired(
+                task_id="task-1",
+                activation_id="activation-run",
+                attempt=1,
+                owner_id="worker-1",
+                acquired_at=1.0,
+                heartbeat_at=1.0,
+                expires_at=11.0,
+            ),
+            TaskActivityPrepared(
+                activity_id="activity-1",
+                task_id="task-1",
+                activation_id="activation-run",
+                attempt=1,
+                request_digest="2" * 64,
+                workspace_identity=workspace,
+            ),
+        ),
+        expected_next_seq=1,
+    )
+
+
+def test_production_host_activity_snapshot_rpc_completes(tmp_path: Path) -> None:
+    _prepare_activity_ledger(tmp_path)
+    store = SnapshotStore.create(tmp_path / "workspace", {})
+    store.create_attempt("attempt-1")
+    entrypoint, roots = _write_handler(
+        tmp_path,
+        class_name="SnapshotHandler",
+        body=(
+            "async def execute(self, request, context):\n"
+            "    if context.activity is None:\n"
+            "        raise ValueError('activity port is required')\n"
+            "    snapshot = context.activity.snapshot\n"
+            "    (context.workspace_root / 'after.txt').write_text(snapshot.activity_id, encoding='utf-8')\n"
+            "    return TaskOutcome.succeeded({'ok': True})\n"
+        ),
+    )
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    host.bind_invocation_runtime(
+        handlers={"test.echo.run": _EchoHandler()},
+        store=store,
+        handler_import_roots={"test.echo.run": roots},
+    )
+    result = asyncio.run(
+        asyncio.wait_for(
+            host.execute(_execute_call(entrypoint=entrypoint, activity_id="activity-1")),
+            timeout=5.0,
+        )
+    )
+    assert result.outcome is not None
+    assert result.outcome.status == "succeeded"
+    attempt = tmp_path / "workspace" / "attempts" / "attempt-1"
+    assert (attempt / "after.txt").read_text(encoding="utf-8") == "activity-1"
