@@ -4,7 +4,7 @@
 **Branch:** `codex/pure-graph-engine-phase3-spec`
 **HEAD before:** `00b444a`
 **Close commit:** `0fd03a6fb204ffc2eace0eca2bde85d8c5da3e07` — `docs: close phase 4 capability extraction`
-**Fix commit:** `fix(assurance): prove Task 22 operation and artifact rows` (this commit; SHA recorded after `git rev-parse HEAD`)
+**Fix commit:** `b4be45ec93be5584eb1fef93b3f18cc9ada509d9` — `fix(assurance): prove Task 22 operation and artifact rows`
 
 ## What was implemented
 
