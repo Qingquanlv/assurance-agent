@@ -40,16 +40,20 @@ def test_composition_selects_exact_plugin_and_product_identity(adapter, installe
     assert composition.manifest.source is not None
     assert composition.manifest.source.entrypoint_name == f"assurance-{adapter}"
     assert composition.manifest.source.distribution == "assurance-product"
-    assert composition.lock.product.source.kind.value in {"editable_product", "wheel_product"}
+    assert composition.lock.product.source.kind.value == "wheel_product"
 
 
 def test_wrong_runtime_deployment_fails_closed(installed_sources):
-    from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
+    from assurance_product.product import (
+        AssuranceCompositionError,
+        AssuranceCompositionRequest,
+        resolve_assurance_composition,
+    )
 
     request = AssuranceCompositionRequest(
         product_entrypoint="assurance-cursor",
         deployment_source=installed_sources.deployments["opencode"],
         configuration_tree=installed_sources.configuration_tree,
     )
-    with pytest.raises((DependencyConflict, ResolutionError, ValueError)):
+    with pytest.raises((DependencyConflict, ResolutionError, AssuranceCompositionError)):
         resolve_assurance_composition(request)

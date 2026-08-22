@@ -2949,6 +2949,31 @@ def test_installed_engine_lock_identity_is_relocatable(tmp_path: Path) -> None:
     assert "root" not in thaw_json(_locked_source(first).identity)
 
 
+def test_wheel_product_plus_explicit_config_tree_resolves_without_baked_config_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_root = tmp_path / "config"
+    _write_lock_matrix_config_plugin(config_root)
+    product = _ProductProvider(_manifest())
+    platform, plugins, product_source = _platform(
+        tmp_path / "wheels",
+        monkeypatch,
+        product=product,
+        plugins={"toy.runtime": _PluginProvider("toy.runtime")},
+    )
+    assert product_source is not None
+    assert product.manifest().config_plugin_paths == ()
+    composition = platform.resolve(
+        ResolutionRequest(
+            product=product_source,
+            plugins=(plugins["toy.runtime"], ConfigTreePluginSource(path=config_root)),
+        )
+    )
+    assert composition.lock.product.source.kind.value == "wheel_product"
+    assert composition.manifest.config_plugin_paths == (str(config_root.resolve()),)
+    assert "toy.config" in {requirement.plugin_id for requirement in composition.manifest.plugins}
+
+
 def _write_lock_matrix_config_plugin(path: Path) -> None:
     path.mkdir()
     (path / "plugin.yaml").write_text(
@@ -3160,7 +3185,13 @@ def test_engine_open_rejects_each_independently_reresolved_lock_facet_without_cl
     original = platform.resolve(request)
     engine_root = tmp_path / "engine"
     with Engine(engine_root) as engine:
-        engine.start(original, entrypoint="hello", invocation_id="facet-drift", seed=empty_invocation_seed(), authorization=empty_runtime_authorization()).close()
+        engine.start(
+            original,
+            entrypoint="hello",
+            invocation_id="facet-drift",
+            seed=empty_invocation_seed(),
+            authorization=empty_runtime_authorization(),
+        ).close()
     invocation = engine_root / "invocations" / "facet-drift"
     before_ledger = b"".join(
         path.read_bytes() for path in sorted((invocation / "ledger").glob("[0-9]*.json"))

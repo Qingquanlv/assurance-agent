@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import importlib
-from pathlib import Path
-import shutil
-
-from graph_engine.composition import EditableWheelPluginSource, WheelPluginSource
+from graph_engine.composition import WheelPluginSource
 from graph_engine.plugin_api import ProviderSource
 
 from assurance_product.models import AdapterName
@@ -111,34 +107,4 @@ def wheel_plugin_source(source: ProviderSource) -> WheelPluginSource:
         distribution=source.distribution,
         entrypoint_name=source.entrypoint_name,
         declaration_path=source.declaration_path,
-    )
-
-
-def editable_plugin_source(source: ProviderSource, scratch_root: Path) -> EditableWheelPluginSource:
-    if source.entrypoint_group != "graph_engine.plugins":
-        raise ValueError("product catalog source must be a graph_engine.plugins coordinate")
-    module_name = source.entrypoint_value.split(":", 1)[0].split(".", 1)[0]
-    module = importlib.import_module(module_name)
-    if module.__file__ is None:
-        raise ValueError(f"catalog module has no file: {module_name}")
-    live_package = Path(module.__file__).resolve().parent
-    destination = scratch_root / "plugins" / source.distribution
-    package_destination = destination / live_package.name
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(
-        live_package,
-        package_destination,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".DS_Store"),
-    )
-    source_files = tuple(
-        sorted(path.relative_to(destination).as_posix() for path in destination.rglob("*") if path.is_file())
-    )
-    return EditableWheelPluginSource(
-        distribution=source.distribution,
-        entrypoint_name=source.entrypoint_name,
-        declaration_path=source.declaration_path,
-        source_root=destination,
-        source_files=source_files,
     )

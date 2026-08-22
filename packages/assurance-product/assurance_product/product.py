@@ -3,30 +3,29 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
-import shutil
 import sys
-import tempfile
 from types import ModuleType
-from typing import Annotated, Literal, cast
-
-from pydantic import Field
+from typing import Literal, cast
 
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.composition import (
     CapabilityBindingEntry,
     ConfigTreePluginSource,
-    EditableWheelPluginSource,
-    EditableWheelProductSource,
     FrozenComposition,
     PluginRequirement,
     ProductManifest,
     RegistryPlatform,
-    ResolutionError,
     ResolutionRequest,
+    SourceKey,
+    SourceKind,
+    SourceRole,
     WheelPluginSource,
+    WheelProductSource,
 )
 from graph_engine.composition.sources import WheelProductDeclaration
+from graph_engine.frozen_json import thaw_json
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import FrozenModel, ProviderSource
 
@@ -39,14 +38,16 @@ from assurance_product.models import (
     PREPARE_IDS,
     PRODUCT_ID,
     AdapterName,
+    CursorBindingV1,
+    OpenCodeBindingV1,
+    adapter_secret_handles,
     alias_ids_for_prepare,
     all_binding_ids,
-    finalize_aliases,
 )
 from assurance_product.source_catalog import (
     adapter_for_entrypoint,
-    editable_plugin_source,
     product_source_catalog,
+    wheel_plugin_source,
 )
 
 _PRODUCT_VERSION = "0.1.0"
@@ -89,6 +90,10 @@ _PROVIDERS: dict[AdapterName, str] = {
     "opencode": "AssuranceOpenCodeProductProvider",
     "cursor": "AssuranceCursorProductProvider",
 }
+_PREPARE_DATA_FIELDS = frozenset({"execution", "request_policy_digest", "request_config_digest"})
+_PREPARE_EXECUTION_FIELDS = frozenset(
+    {"provider_model", "worker_profile", "permission_profile_digest", "limits"}
+)
 _SNAPSHOT_MODULE_PREFIXES: tuple[str, ...] = (
     "assurance_product",
     "assurance_intake",
@@ -109,10 +114,7 @@ class AssuranceCompositionError(ValueError):
 
 class AssuranceCompositionRequest(FrozenModel):
     product_entrypoint: Literal["assurance-opencode", "assurance-cursor"]
-    deployment_source: Annotated[
-        WheelPluginSource | EditableWheelPluginSource,
-        Field(discriminator="kind"),
-    ]
+    deployment_source: WheelPluginSource
     configuration_tree: ConfigTreePluginSource
 
 
@@ -133,6 +135,14 @@ def _product_source(adapter: AdapterName) -> ProviderSource:
         entrypoint_value=f"assurance_product.product:{_PROVIDERS[adapter]}",
         declaration_path=_declaration_path(adapter),
         import_roots=("",),
+    )
+
+
+def _wheel_product_source(adapter: AdapterName, entrypoint: str) -> WheelProductSource:
+    return WheelProductSource(
+        distribution="assurance-product",
+        entrypoint_name=entrypoint,
+        declaration_path=_declaration_path(adapter),
     )
 
 
@@ -205,48 +215,132 @@ class AssuranceCursorProductProvider:
         return _load_declared_manifest("cursor")
 
 
-def _scratch_root(request: AssuranceCompositionRequest) -> Path:
-    config_path = str(request.configuration_tree.path.resolve(strict=True))
-    digest = hashlib.sha256(f"{request.product_entrypoint}\0{config_path}".encode("utf-8")).hexdigest()
-    return Path(tempfile.gettempdir()).resolve() / "assurance-product-composition" / digest
+def _capability_bindings(composition: FrozenComposition) -> dict[str, CapabilityBindingEntry]:
+    return {
+        key: value
+        for key, value in composition.registries.capabilities.entries.items()
+        if isinstance(value, CapabilityBindingEntry)
+    }
 
 
-def _materialize_product_source(request: AssuranceCompositionRequest) -> EditableWheelProductSource:
-    adapter = adapter_for_entrypoint(request.product_entrypoint)
-    config_path = str(request.configuration_tree.path.resolve(strict=True))
-    source_root = _scratch_root(request) / "product"
-    dest = source_root / "assurance_product"
-    if dest.exists():
-        shutil.rmtree(dest)
-    source_root.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(
-        Path(__file__).resolve().parent,
-        dest,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".DS_Store"),
-    )
-    document = product_declaration_document(adapter, (config_path,))
-    (dest / _declaration_filename(adapter)).write_bytes(canonical_json_bytes(document) + b"\n")
-    source_files = tuple(
-        sorted(path.relative_to(source_root).as_posix() for path in source_root.rglob("*") if path.is_file())
-    )
-    return EditableWheelProductSource(
-        distribution="assurance-product",
-        entrypoint_name=request.product_entrypoint,
-        declaration_path=_declaration_path(adapter),
-        source_root=source_root,
-        source_files=source_files,
-    )
+def _lock_binding_ids(composition: FrozenComposition) -> set[str]:
+    projection = thaw_json(composition.lock.capability_bindings)
+    if not isinstance(projection, list):
+        raise AssuranceCompositionError("lock binding projection is not a list")
+    ids: set[str] = set()
+    for item in projection:
+        if not isinstance(item, Mapping):
+            raise AssuranceCompositionError("lock binding projection entry is not a mapping")
+        capability_id = item.get("capability_id")
+        if not isinstance(capability_id, str):
+            raise AssuranceCompositionError("lock binding projection is missing capability_id")
+        ids.add(capability_id)
+    return ids
+
+
+def _graph_binding_ids(composition: FrozenComposition) -> set[str]:
+    return {
+        node.definition.capability
+        for graph in composition.workflow.graphs.values()
+        for node in graph.nodes.values()
+        if node.definition.capability is not None
+    }
+
+
+def _prepare_data_is_assignment(value: object) -> bool:
+    data = thaw_json(value)
+    if not isinstance(data, Mapping):
+        return False
+    if not _PREPARE_DATA_FIELDS.issubset(data):
+        return False
+    execution = data.get("execution")
+    return isinstance(execution, Mapping) and _PREPARE_EXECUTION_FIELDS.issubset(execution)
+
+
+def _execute_secret_handles(adapter: AdapterName, data: object) -> tuple[str, ...]:
+    raw = thaw_json(data)
+    if adapter == "opencode":
+        binding = OpenCodeBindingV1.model_validate(raw)
+    else:
+        binding = CursorBindingV1.model_validate(raw)
+    return adapter_secret_handles(binding)
 
 
 def _authenticate_assurance_composition(
     composition: FrozenComposition,
     adapter: AdapterName,
 ) -> FrozenComposition:
-    entries = composition.registries.capabilities.entries
-    bindings = {key: value for key, value in entries.items() if isinstance(value, CapabilityBindingEntry)}
+    expected_plugins = set(_required_plugin_ids(adapter))
     expected_bindings = set(all_binding_ids())
+    descriptor_ids = {descriptor.plugin_id for descriptor in composition.descriptors}
+    manifest_ids = set(composition.manifest.required_plugin_ids)
+    authority_owners = set(composition.contribution_authorities)
+    if (
+        descriptor_ids != expected_plugins
+        or manifest_ids != expected_plugins
+        or authority_owners != expected_plugins
+    ):
+        raise AssuranceCompositionError("composition plugin set is not the exact product closure")
+
+    bindings = _capability_bindings(composition)
     if set(bindings) != expected_bindings or len(bindings) != 99:
         raise AssuranceCompositionError("composition binding set is not the exact 99 aliases")
+    if _lock_binding_ids(composition) != expected_bindings:
+        raise AssuranceCompositionError("lock binding projection is not the exact 99 aliases")
+    if _graph_binding_ids(composition):
+        raise AssuranceCompositionError(
+            "placeholder workflow must have an empty graph binding set; Tasks 14-18 will tighten this"
+        )
+
+    source = composition.manifest.source
+    if source is None or source.entrypoint_name != f"assurance-{adapter}":
+        raise AssuranceCompositionError("product entry-point coordinate does not match the selected adapter")
+    if source.distribution != "assurance-product" or source.version != _PRODUCT_VERSION:
+        raise AssuranceCompositionError("product distribution identity drifted")
+    if source.declaration_path != _declaration_path(adapter):
+        raise AssuranceCompositionError("product declaration path drifted")
+    product_entry = composition.registries.sources.entries.get(
+        SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
+    )
+    if product_entry is None:
+        raise AssuranceCompositionError("product snapshot is missing")
+    identity = product_entry.snapshot.identity
+    if (
+        identity.distribution != "assurance-product"
+        or identity.version != _PRODUCT_VERSION
+        or identity.entrypoint_name != f"assurance-{adapter}"
+        or identity.declaration_path != _declaration_path(adapter)
+        or not identity.import_roots
+    ):
+        raise AssuranceCompositionError("product snapshot identity drifted")
+    if composition.lock.product.source.kind is not SourceKind.WHEEL_PRODUCT:
+        raise AssuranceCompositionError("product source kind is not an installed wheel")
+    declaration_file = next(
+        (item for item in product_entry.snapshot.files if item.path == source.declaration_path),
+        None,
+    )
+    if declaration_file is None:
+        raise AssuranceCompositionError("product declaration bytes are missing from the snapshot")
+
+    deployment = next(
+        (descriptor for descriptor in composition.descriptors if descriptor.plugin_id == PLUGIN_ID),
+        None,
+    )
+    if deployment is None or deployment.plugin_id != PLUGIN_ID or deployment.plugin_version != PLUGIN_VERSION:
+        raise AssuranceCompositionError("deployment descriptor identity drifted")
+    authority = composition.contribution_authorities.get(PLUGIN_ID)
+    if authority is None:
+        raise AssuranceCompositionError("deployment contribution authority is missing")
+    contribution_binding_ids = {item.capability_id for item in authority.contribution.bindings}
+    if contribution_binding_ids != expected_bindings:
+        raise AssuranceCompositionError("deployment contribution binding set drifted")
+    for resource in authority.contribution.resources:
+        entry = composition.registries.resources.entries.get(resource.resource_id)
+        if entry is None:
+            raise AssuranceCompositionError(f"binding resource is not registered: {resource.resource_id}")
+        if entry.sha256 != hashlib.sha256(entry.content).hexdigest():
+            raise AssuranceCompositionError(f"resource digest drifted: {resource.resource_id}")
+
     runtime_execute = f"{_RUNTIME_PLUGIN_IDS[adapter]}.execute"
     for prepare_id in PREPARE_IDS:
         prepare_alias, execute_alias, finalize_alias = alias_ids_for_prepare(prepare_id)
@@ -260,30 +354,21 @@ def _authenticate_assurance_composition(
             raise AssuranceCompositionError(f"execute alias target drifted: {execute_alias}")
         if finalize.target_capability_id != f"{prepare_id.removesuffix('.prepare')}.finalize":
             raise AssuranceCompositionError(f"finalize alias target drifted: {finalize_alias}")
-        if prepare.data is None or prepare.secret_handles != ():
+        if not _prepare_data_is_assignment(prepare.data) or prepare.secret_handles != ():
             raise AssuranceCompositionError(
                 f"prepare alias is not an AgentBindingDataV1 assignment: {prepare_alias}"
             )
         if execute.data is None:
             raise AssuranceCompositionError(f"execute alias is missing adapter binding data: {execute_alias}")
+        if tuple(execute.secret_handles) != _execute_secret_handles(adapter, execute.data):
+            raise AssuranceCompositionError(f"execute alias secret handles drifted: {execute_alias}")
         if finalize.data is not None or finalize.secret_handles != ():
             raise AssuranceCompositionError(f"finalize alias must be null with no secrets: {finalize_alias}")
         for resource_id in resource_ids:
             if resource_id not in composition.registries.resources.entries:
                 raise AssuranceCompositionError(f"binding resource is not registered: {resource_id}")
-    expected_plugins = set(_required_plugin_ids(adapter))
-    actual_plugins = {descriptor.plugin_id for descriptor in composition.descriptors}
-    if actual_plugins != expected_plugins:
-        raise AssuranceCompositionError("composition plugin set is not the exact product closure")
-    source = composition.manifest.source
-    if source is None or source.entrypoint_name != f"assurance-{adapter}":
-        raise AssuranceCompositionError("product entry-point coordinate does not match the selected adapter")
-    if source.distribution != "assurance-product" or source.version != _PRODUCT_VERSION:
-        raise AssuranceCompositionError("product distribution identity drifted")
     if composition.lock.engine_api != ENGINE_API:
         raise AssuranceCompositionError("invocation lock engine API drifted")
-    if set(finalize_aliases()) - set(bindings):
-        raise AssuranceCompositionError("finalize aliases are missing from the composition")
     return composition
 
 
@@ -291,35 +376,27 @@ def _evict_snapshot_modules() -> dict[str, ModuleType]:
     evicted: dict[str, ModuleType] = {}
     for name in tuple(sys.modules):
         if any(name == prefix or name.startswith(prefix) for prefix in _SNAPSHOT_MODULE_PREFIXES):
-            module = sys.modules.pop(name)
-            evicted[name] = module
+            evicted[name] = sys.modules.pop(name)
     importlib.invalidate_caches()
     return evicted
 
 
 def resolve_assurance_composition(request: AssuranceCompositionRequest) -> FrozenComposition:
     adapter = adapter_for_entrypoint(request.product_entrypoint)
-    catalog = product_source_catalog(adapter)
-    try:
-        product_source = _materialize_product_source(request)
-        plugin_scratch = _scratch_root(request) / "catalog"
-        plugin_sources = tuple(editable_plugin_source(source, plugin_scratch) for source in catalog)
-    except FileNotFoundError as error:
-        raise AssuranceCompositionError("configuration tree is not an explicit existing path") from error
+    if not request.configuration_tree.path.is_dir():
+        raise AssuranceCompositionError("configuration tree is not an explicit existing path")
     evicted = _evict_snapshot_modules()
     try:
         composition = RegistryPlatform().resolve(
             ResolutionRequest(
-                product=product_source,
+                product=_wheel_product_source(adapter, request.product_entrypoint),
                 plugins=(
-                    *plugin_sources,
+                    *(wheel_plugin_source(source) for source in product_source_catalog(adapter)),
                     request.deployment_source,
                     request.configuration_tree,
                 ),
             )
         )
-    except ResolutionError as error:
-        raise AssuranceCompositionError(str(error)) from error
     finally:
         sys.modules.update(evicted)
     return _authenticate_assurance_composition(composition, adapter)

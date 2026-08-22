@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -29,19 +32,27 @@ def test_unknown_product_entrypoint_is_rejected(installed_sources):
 
 
 def test_missing_configuration_tree_fails_closed(installed_sources, tmp_path: Path):
-    from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
+    from assurance_product.product import (
+        AssuranceCompositionError,
+        AssuranceCompositionRequest,
+        resolve_assurance_composition,
+    )
 
     request = AssuranceCompositionRequest(
         product_entrypoint="assurance-opencode",
         deployment_source=installed_sources.deployments["opencode"],
         configuration_tree=ConfigTreePluginSource(path=tmp_path / "missing-config"),
     )
-    with pytest.raises((FileNotFoundError, ResolutionError, SourceSnapshotError, ValueError)):
+    with pytest.raises((AssuranceCompositionError, SourceSnapshotError, ResolutionError)):
         resolve_assurance_composition(request)
 
 
 def test_extra_config_file_fails_closed(installed_sources, tmp_path: Path):
-    from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
+    from assurance_product.product import (
+        AssuranceCompositionError,
+        AssuranceCompositionRequest,
+        resolve_assurance_composition,
+    )
 
     tree = copy_config_tree(tmp_path / "extra-config")
     (tree.path / "undeclared.txt").write_text("no", encoding="utf-8")
@@ -50,12 +61,16 @@ def test_extra_config_file_fails_closed(installed_sources, tmp_path: Path):
         deployment_source=installed_sources.deployments["opencode"],
         configuration_tree=tree,
     )
-    with pytest.raises((DeclarativePluginRejected, ResolutionError, SourceSnapshotError, ValueError)):
+    with pytest.raises((DeclarativePluginRejected, ResolutionError, AssuranceCompositionError)):
         resolve_assurance_composition(request)
 
 
 def test_forged_deployment_declaration_fails_closed(installed_sources, tmp_path: Path):
-    from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
+    from assurance_product.product import (
+        AssuranceCompositionError,
+        AssuranceCompositionRequest,
+        resolve_assurance_composition,
+    )
 
     extract = installed_sources.extract_roots["opencode"]
     declaration = next(extract.rglob("assurance-deployment-plugin.json"))
@@ -76,7 +91,7 @@ def test_forged_deployment_declaration_fails_closed(installed_sources, tmp_path:
     )
     _swap_sys_path(extract, forged)
     try:
-        with pytest.raises((ResolutionError, SourceSnapshotError, ValueError)):
+        with pytest.raises((ResolutionError, SourceSnapshotError, AssuranceCompositionError)):
             resolve_assurance_composition(request)
     finally:
         _swap_sys_path(forged, extract)
@@ -101,15 +116,119 @@ def test_mutated_config_tree_changes_lock(installed_sources, tmp_path: Path):
 
 
 def test_wrong_runtime_is_rejected_before_fallback(installed_sources):
-    from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
+    from assurance_product.product import (
+        AssuranceCompositionError,
+        AssuranceCompositionRequest,
+        resolve_assurance_composition,
+    )
 
     request = AssuranceCompositionRequest(
         product_entrypoint="assurance-opencode",
         deployment_source=installed_sources.deployments["cursor"],
         configuration_tree=installed_sources.configuration_tree,
     )
-    with pytest.raises((DependencyConflict, ResolutionError, ValueError)):
+    with pytest.raises((DependencyConflict, ResolutionError, AssuranceCompositionError)):
         resolve_assurance_composition(request)
+
+
+def test_missing_binding_fails_closed(installed_sources, tmp_path: Path):
+    from assurance_product.product import AssuranceCompositionError, resolve_assurance_composition
+
+    request, original, mutated = _mutated_deployment_request(
+        installed_sources,
+        tmp_path,
+        lambda document: document["bindings"].pop(),
+    )
+    _swap_sys_path(original, mutated)
+    try:
+        with pytest.raises((AssuranceCompositionError, ResolutionError)):
+            resolve_assurance_composition(request)
+    finally:
+        _swap_sys_path(mutated, original)
+
+
+def test_extra_owned_binding_fails_closed(installed_sources, tmp_path: Path):
+    from assurance_product.product import AssuranceCompositionError, resolve_assurance_composition
+
+    def add_extra(document: dict[str, object]) -> None:
+        bindings = document["bindings"]
+        assert isinstance(bindings, list)
+        extra = dict(bindings[0])
+        extra["capability_id"] = "assurance.product.agent.extra.prepare"
+        bindings.append(extra)
+
+    request, original, mutated = _mutated_deployment_request(installed_sources, tmp_path, add_extra)
+    _swap_sys_path(original, mutated)
+    try:
+        with pytest.raises((AssuranceCompositionError, ResolutionError)):
+            resolve_assurance_composition(request)
+    finally:
+        _swap_sys_path(mutated, original)
+
+
+def test_duplicate_binding_id_fails_closed(installed_sources, tmp_path: Path):
+    from assurance_product.product import AssuranceCompositionError, resolve_assurance_composition
+
+    def duplicate(document: dict[str, object]) -> None:
+        bindings = document["bindings"]
+        assert isinstance(bindings, list)
+        bindings.append(dict(bindings[0]))
+
+    request, original, mutated = _mutated_deployment_request(installed_sources, tmp_path, duplicate)
+    _swap_sys_path(original, mutated)
+    try:
+        with pytest.raises((AssuranceCompositionError, ResolutionError)):
+            resolve_assurance_composition(request)
+    finally:
+        _swap_sys_path(mutated, original)
+
+
+def _mutated_deployment_request(installed_sources, tmp_path: Path, mutate):
+    from assurance_product.product import AssuranceCompositionRequest
+
+    extract = installed_sources.extract_roots["opencode"]
+    contribution_path = next(extract.rglob("assurance-deployment-contribution.json"))
+    document = json.loads(contribution_path.read_text(encoding="utf-8"))
+    mutate(document)
+    mutated = tmp_path / "mutated-extract"
+    _copy_extract(extract, mutated)
+    mutated_contribution = next(mutated.rglob("assurance-deployment-contribution.json"))
+    payload = json.dumps(document).encode("utf-8")
+    mutated_contribution.write_bytes(payload)
+    _rewrite_record_hash(
+        mutated,
+        mutated_contribution.relative_to(mutated).as_posix(),
+        payload,
+    )
+    return (
+        AssuranceCompositionRequest(
+            product_entrypoint="assurance-opencode",
+            deployment_source=WheelPluginSource(
+                distribution=installed_sources.deployments["opencode"].distribution,
+                entrypoint_name="deployment",
+                declaration_path=installed_sources.deployments["opencode"].declaration_path,
+            ),
+            configuration_tree=installed_sources.configuration_tree,
+        ),
+        extract,
+        mutated,
+    )
+
+
+def _rewrite_record_hash(extract: Path, relative_path: str, content: bytes) -> None:
+    record = next(extract.rglob("*.dist-info/RECORD"))
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode("ascii")
+    with record.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.reader(stream))
+    rewritten = False
+    for index, row in enumerate(rows):
+        if row and row[0] == relative_path:
+            rows[index] = [relative_path, f"sha256={encoded}", str(len(content))]
+            rewritten = True
+    if not rewritten:
+        raise AssertionError(f"RECORD is missing {relative_path}")
+    with record.open("w", encoding="utf-8", newline="") as stream:
+        csv.writer(stream, lineterminator="\n").writerows(rows)
 
 
 def _copy_extract(source: Path, destination: Path) -> None:

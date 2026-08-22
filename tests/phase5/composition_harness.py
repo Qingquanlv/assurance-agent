@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+import importlib
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 from typing import Literal, cast
 import zipfile
@@ -24,6 +26,18 @@ from tests.phase5.conformance import ALL_BINDING_IDS, EVIDENCE_ROOT
 _FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 _DEPLOYMENT_FIXTURES = _FIXTURE_ROOT / "deployment"
 _CONFIG_FIXTURE = _FIXTURE_ROOT / "project-config"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_WORKSPACE_WHEELS: tuple[tuple[str, str], ...] = (
+    ("assurance-product", "packages/assurance-product"),
+    ("assurance-intake", "packages/assurance-intake"),
+    ("assurance-generation", "packages/assurance-generation"),
+    ("assurance-execution", "packages/assurance-execution"),
+    ("assurance-healing", "packages/assurance-healing"),
+    ("assurance-quality", "packages/assurance-quality"),
+    ("assurance-improvement", "packages/assurance-improvement"),
+    ("agent-runtime-opencode", "packages/agent-runtime-opencode"),
+    ("agent-runtime-cursor", "packages/agent-runtime-cursor"),
+)
 COVERAGE_PATH = EVIDENCE_ROOT / "binding-coverage.json"
 
 
@@ -70,6 +84,7 @@ def build_installed_sources(root: Path) -> InstalledSources:
             entrypoint_name="deployment",
             declaration_path=built.declaration_path,
         )
+    _extract_workspace_wheels(root, extract_roots)
     return InstalledSources(
         deployments=deployments,
         configuration_tree=ConfigTreePluginSource(path=_CONFIG_FIXTURE.resolve()),
@@ -104,6 +119,22 @@ def project_binding_coverage(composition: FrozenComposition) -> dict[str, dict[s
 
 def coverage_bytes(projection: dict[str, dict[str, JSONValue]]) -> bytes:
     return canonical_json_bytes(cast(JSONValue, projection)) + b"\n"
+
+
+def _extract_workspace_wheels(root: Path, extract_roots: dict[str, Path]) -> None:
+    for name, project in _WORKSPACE_WHEELS:
+        output = root / f"workspace-build-{name}"
+        output.mkdir()
+        subprocess.run(
+            ["uv", "build", "--wheel", "--out-dir", str(output), str(_REPO_ROOT / project)],
+            check=True,
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        wheel = next(output.glob("*.whl"))
+        extract_roots[name] = _extract_wheel(wheel, root / f"workspace-extract-{name}")
+    importlib.invalidate_caches()
 
 
 def _extract_wheel(wheel: Path, destination: Path) -> Path:

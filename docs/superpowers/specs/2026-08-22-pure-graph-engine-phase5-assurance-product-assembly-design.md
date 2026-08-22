@@ -664,7 +664,9 @@ Both products require all six Phase 4 plugins at exact `0.1.0` versions.
 
 Both products also require:
 
-- `assurance.product.bindings==1.0.0`.
+- `assurance.product.agent==1.0.0`.
+
+Earlier drafts used `assurance.product.bindings`; the authenticatable identity is `assurance.product.agent==1.0.0` because engine ownership prefixes must match the frozen §14.2 alias owner.
 
 The OpenCode product additionally requires:
 
@@ -688,7 +690,7 @@ Neither product requires or resolves the unselected adapter. The selected deploy
 - declaration path; and
 - supported version specifier.
 
-The catalog declares one external deployment-binding slot with exact plugin ID `assurance.product.bindings`, exact plugin version `1.0.0`, entry-point group `graph_engine.plugins`, and entry-point name `deployment`. Its distribution and declaration coordinates are supplied explicitly to `aa-next`; the catalog contains no ambient discovery rule for that slot.
+The catalog declares one external deployment-binding slot with exact plugin ID `assurance.product.agent`, exact plugin version `1.0.0`, entry-point group `graph_engine.plugins`, and entry-point name `deployment`. Its distribution and declaration coordinates are supplied explicitly to `aa-next`; the catalog contains no ambient discovery rule for that slot.
 
 `aa-next` reads only this authenticated product resource and the exact CLI coordinates. It then constructs an explicit `ResolutionRequest`. It does not discover all installed plugins and choose by convention.
 
@@ -719,7 +721,7 @@ These sources are not interchangeable. The Phase 2 declarative loader rejects ex
 
 The selected source must resolve to:
 
-- plugin ID `assurance.product.bindings`;
+- plugin ID `assurance.product.agent`;
 - plugin version `1.0.0`;
 - entry-point group `graph_engine.plugins`;
 - entry-point name `deployment`;

@@ -155,8 +155,8 @@ class RegistryPlatform:
         captured = self._snapshot_sources(request, seed)
 
         # 3. Normalize only the authenticated, data-only product declaration.
-        manifest = self._declared_product_manifest(seed, captured)
-        manifest = self._extend_manifest_with_explicit_configs(manifest, captured.plugins)
+        declared_manifest = self._declared_product_manifest(seed, captured)
+        manifest = self._extend_manifest_with_explicit_configs(declared_manifest, captured.plugins)
 
         # 4. Validate the complete exact dependency closure and canonical topology
         # before importing any wheel provider code.
@@ -164,8 +164,9 @@ class RegistryPlatform:
         dependency_order = resolve_dependency_order(descriptors, manifest.plugins)
 
         # 5-6. Load only providers selected by the already-validated topology and
-        # require their live declarations to equal the authenticated static data.
-        product_provider = self._load_product_provider(seed, captured.product, manifest)
+        # require their live declarations to equal the pre-extend static data.
+        # The extended manifest still drives lock, dependency order, and FrozenComposition.
+        product_provider = self._load_product_provider(seed, captured.product, declared_manifest)
         loaded = self._load_plugin_descriptors(
             captured.plugins,
             descriptors,
