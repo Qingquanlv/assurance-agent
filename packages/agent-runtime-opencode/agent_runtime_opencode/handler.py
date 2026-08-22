@@ -42,6 +42,7 @@ from agent_runtime_opencode.observation import (
     parse_sse_frames,
     prompt_admission_body,
     reduce_sse_frames,
+    user_prompt_already_admitted,
 )
 from agent_runtime_opencode.protocol import (
     OpenCodeHttpClient,
@@ -408,6 +409,9 @@ class OpenCodeHandler:
         except httpx.HTTPStatusError as error:
             if error.response.status_code != 404:
                 raise
+            messages = await client.list_messages(session_id)
+            if user_prompt_already_admitted(messages, expected_body):
+                return None
         else:
             if classify_admission(record, expected_body) == "conflict":
                 return TaskActivityReconcileResult(

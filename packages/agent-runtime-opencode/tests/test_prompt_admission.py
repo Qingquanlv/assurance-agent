@@ -31,6 +31,18 @@ async def test_prompt_crashes_converge_to_one_admission(cut: str) -> None:
         fixture.close()
 
 
+async def test_does_not_repost_when_provider_assigns_a_different_message_id() -> None:
+    fixture = _bound_fixture(terminal_mode="busy")
+    try:
+        expected = prompt_admission_body(fixture.request, fixture.reference.expected_message_id)
+        fixture.fake.plant_message(fixture.reference.session_id, "msg_provider_rewritten", expected)
+        result = await fixture.reconcile()
+        assert result.status == "running"
+        assert fixture.fake.prompt_posts == 0
+    finally:
+        fixture.close()
+
+
 async def test_same_message_id_with_changed_body_fails_closed() -> None:
     fixture = _bound_fixture(existing_message_body={"changed": True})
     try:

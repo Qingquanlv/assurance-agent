@@ -205,6 +205,32 @@ def classify_admission(record: object, expected: Mapping[str, object]) -> Litera
     return "conflict"
 
 
+def _text_parts(parts: object) -> tuple[str, ...]:
+    if not isinstance(parts, list | tuple):
+        return ()
+    texts: list[str] = []
+    for part in parts:
+        if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str):
+            texts.append(part["text"])
+    return tuple(texts)
+
+
+def user_prompt_already_admitted(messages: Sequence[object], expected: Mapping[str, object]) -> bool:
+    expected_texts = _text_parts(expected.get("parts"))
+    if not expected_texts:
+        return False
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        info = message.get("info")
+        role = info.get("role") if isinstance(info, dict) else message.get("role")
+        if role != "user":
+            continue
+        if _text_parts(message.get("parts")) == expected_texts:
+            return True
+    return False
+
+
 def classify_provider_state(
     *,
     session_id: str,
