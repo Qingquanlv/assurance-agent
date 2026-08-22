@@ -1,0 +1,308 @@
+"""Indeterminate agent-cut helpers for capability finalize handlers."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any, cast
+
+from graph_engine.canonical import JSONValue
+from graph_engine.plugin_api import TaskOutcome
+
+from tests.phase4.conformance import ExecutedTask, execute_task
+from tests.phase4.six_wheel_harness import (
+    ADAPTER_IDS,
+    SixWheelTaskHost,
+    _engine_call,
+    _import_activation,
+    _start_until_blocked,
+    resolve_fixture,
+)
+
+from assurance_execution.operations.agent_skills import ExecuteFinalizeHandler
+from assurance_generation.operations.planning import PlanFinalizeHandler
+from assurance_healing.operations.agent import FixProposalFinalizeHandler
+from assurance_improvement.operations.agent import RetroFinalizeHandler
+from assurance_intake.operations.finalize import CaseReviewFinalizeHandler
+from assurance_quality.operations.agent_skills import InspectFinalizeHandler
+
+AGENT_CUTS = (
+    "prepare-complete",
+    "dispatch-unknown",
+    "bound-running",
+    "result-truncated",
+    "terminal-observed",
+)
+WHEEL_FINALIZERS = {
+    "intake": CaseReviewFinalizeHandler,
+    "generation": lambda: PlanFinalizeHandler("api"),
+    "execution": ExecuteFinalizeHandler,
+    "healing": FixProposalFinalizeHandler,
+    "quality": InspectFinalizeHandler,
+    "improvement": RetroFinalizeHandler,
+}
+
+_HEX = "a" * 64
+
+
+@dataclass
+class IndeterminateObservation:
+    status: str
+    failure_kind: str | None
+    effects: tuple[object, ...]
+    stop_reason: str | None
+    workspace_bytes: dict[str, bytes]
+    finalize_invoked: bool
+    finalize_failed_closed: bool
+    spawned: bool = False
+
+
+class CuttingTaskHost(SixWheelTaskHost):
+    def __init__(self, *, adapter_id: str, provider_state_dir: Path, cut: str) -> None:
+        super().__init__(adapter_id=adapter_id, provider_state_dir=provider_state_dir)
+        self.cut = cut
+        self.finalize_calls = 0
+        self.spawned = False
+
+    async def execute(self, call: Any) -> Any:
+        capability = str(call.capability_id)
+        if capability.endswith(".finalize"):
+            self.finalize_calls += 1
+            if self.cut != "terminal-observed":
+                from graph_engine.runtime.host_protocol import TaskHostCallResult
+
+                return TaskHostCallResult(
+                    operation="execute",
+                    outcome=TaskOutcome.failed(
+                        "invalid_input",
+                        f"finalize blocked at {self.cut}",
+                        retryable=False,
+                    ),
+                )
+        if capability in {"runtime.opencode.execute", "runtime.cursor.execute"}:
+            self.spawned = True
+            from graph_engine.runtime.host_protocol import TaskHostCallResult
+
+            if self.cut == "prepare-complete":
+                return TaskHostCallResult(
+                    operation="execute",
+                    outcome=TaskOutcome.failed("invalid_input", "prepare-complete cut", retryable=False),
+                )
+            if self.cut in {"dispatch-unknown", "bound-running"}:
+                return TaskHostCallResult(
+                    operation="execute",
+                    outcome=TaskOutcome.failed("transient", f"{self.cut} cut", retryable=True),
+                )
+            if self.cut == "result-truncated":
+                return TaskHostCallResult(
+                    operation="execute",
+                    outcome=TaskOutcome.succeeded({"schema_version": "1", "structured_result": {}}),
+                )
+            if self.cut == "terminal-observed":
+                return TaskHostCallResult(
+                    operation="execute",
+                    outcome=TaskOutcome.succeeded(
+                        {
+                            "schema_version": "1",
+                            "structured_result": {"ok": True},
+                            "result_digest": "0" * 64,
+                            "evidence_digest": "a" * 64,
+                            "adapter_id": "test.fake",
+                            "adapter_version": "1.0.0",
+                        }
+                    ),
+                )
+        return await super().execute(call)
+
+
+def _handler(wheel: str) -> object:
+    factory = WHEEL_FINALIZERS[wheel]
+    return factory() if callable(factory) and not isinstance(factory, type) else factory()
+
+
+def _cut_payload(wheel: str, cut: str) -> JSONValue:
+    base: dict[str, Any] = {
+        "capability_leafs": ["auth.session.create", "entities.item.create"],
+        "artifact_paths": [],
+    }
+    if wheel == "generation":
+        base["allowed_paths"] = []
+    if wheel == "execution":
+        base.update(
+            {
+                "change_id": "CH-DEMO-001",
+                "case_ids": ["TC-1"],
+                "mapping": {
+                    "schema_version": "1",
+                    "selected": [],
+                    "mappings": [],
+                },
+            }
+        )
+    if wheel == "healing":
+        base.update(
+            {
+                "change_id": "CH-DEMO-001",
+                "owner_id": "assurance.healing",
+                "baseline_digest": _HEX,
+                "candidate_digest": _HEX,
+                "policy_digest": _HEX,
+                "execution_evidence_digest": _HEX,
+                "require_approval": False,
+                "claimed_capabilities": [],
+                "allowed_paths": [],
+                "mapping_paths": [],
+                "allowed_roots": ["tests/"],
+                "mapping": {"schema_version": "1", "entries": []},
+                "prepare": {
+                    "change_id": "CH-DEMO-001",
+                    "owner_id": "assurance.healing",
+                    "baseline_digest": _HEX,
+                    "candidate_digest": _HEX,
+                    "policy_digest": _HEX,
+                    "execution_evidence_digest": _HEX,
+                    "require_approval": False,
+                },
+            }
+        )
+    if wheel == "quality":
+        base.update(
+            {
+                "change_id": "CH-DEMO-001",
+                "batch_id": "batch-1",
+                "execution_digest": _HEX,
+                "healing_digest": _HEX,
+                "trace_digest": _HEX,
+                "coverage_digest": _HEX,
+                "metrics_digest": _HEX,
+                "case_digest": _HEX,
+                "plan_digest": _HEX,
+                "mapping_digest": _HEX,
+                "issue_digest": _HEX,
+            }
+        )
+    if wheel == "improvement":
+        base.update(
+            {
+                "change_id": "CH-DEMO-001",
+                "retro_id": "RET-1",
+                "owned_evidence_ids": ["PROB-1"],
+                "source_manifest": {
+                    "issue_slice_sha256": "a",
+                    "workflow_slice_sha256": "b",
+                    "eval_slice_sha256": "c",
+                    "issue_sources": [],
+                    "workflow_sources": [],
+                    "eval_sources": [],
+                },
+                "context_digest": _HEX,
+                "quality_report_digest": _HEX,
+                "metrics_digest": _HEX,
+                "issue_digest": _HEX,
+                "subject_digest": _HEX,
+                "expected_improvement_version": 1,
+                "improvement_id": "IMP-1",
+                "invocation_id": "inv-1",
+                "archive_digest": _HEX,
+                "locked_signal_ids": [],
+            }
+        )
+    if cut == "prepare-complete":
+        return cast(JSONValue, base)
+    if cut == "dispatch-unknown":
+        base["agent_result"] = None
+        return cast(JSONValue, base)
+    if cut == "bound-running":
+        base["agent_result"] = {"status": "running", "adapter_id": "test.fake"}
+        return cast(JSONValue, base)
+    if cut == "result-truncated":
+        base["agent_result"] = {"schema_version": "1", "structured_result": {}}
+        return cast(JSONValue, base)
+    base["agent_result"] = {
+        "schema_version": "1",
+        "structured_result": {"ok": True},
+        "result_digest": "0" * 64,
+        "evidence_digest": _HEX,
+        "adapter_id": "test.fake",
+        "adapter_version": "1.0.0",
+    }
+    return cast(JSONValue, base)
+
+
+async def run_finalize_cut(wheel: str, cut: str) -> IndeterminateObservation:
+    handler = _handler(wheel)
+    with TemporaryDirectory(prefix="phase4-indeterminate-") as temporary:
+        workspace = Path(temporary)
+        marker = workspace / "outside-must-not-appear.txt"
+        executed = await execute_task(cast(Any, handler), _cut_payload(wheel, cut), workspace)
+        return _from_executed(executed, workspace, marker.exists())
+
+
+async def run_six_wheel_cut(cut: str) -> IndeterminateObservation:
+    resolved = resolve_fixture("phase4-opencode")
+    host = CuttingTaskHost(
+        adapter_id=ADAPTER_IDS["phase4-opencode"],
+        provider_state_dir=resolved.workspace / f"cut-{cut}-provider",
+        cut=cut,
+    )
+    engine_root = resolved.workspace / f"cut-{cut}-engine"
+    with _import_activation(resolved.product_root, resolved.workspace):
+        result, invocation_root = _engine_call(
+            _start_until_blocked,
+            engine_root,
+            host,
+            resolved.composition,
+            f"phase4-cut-{cut}",
+        )
+    workspace_bytes = {
+        path.relative_to(invocation_root).as_posix(): path.read_bytes()
+        for path in invocation_root.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    }
+    failed_closed = result.status != "succeeded" and host.finalize_calls == 0
+    if host.finalize_calls and result.status != "succeeded":
+        failed_closed = True
+    return IndeterminateObservation(
+        status=result.status,
+        failure_kind=None,
+        effects=(),
+        stop_reason=None,
+        workspace_bytes=workspace_bytes,
+        finalize_invoked=host.finalize_calls > 0,
+        finalize_failed_closed=failed_closed,
+        spawned=host.spawned and cut != "prepare-complete",
+    )
+
+
+def assert_indeterminate_is_inert(observed: IndeterminateObservation) -> None:
+    if isinstance(observed, ExecutedTask):
+        raise TypeError("expected IndeterminateObservation")
+    assert observed.effects == ()
+    assert observed.stop_reason is None
+    if observed.failure_kind is not None:
+        assert observed.failure_kind == "invalid_input"
+        assert observed.status == "failed"
+    business = [
+        name
+        for name in observed.workspace_bytes
+        if name.endswith(("review.json", "proposal.json", "report.json"))
+        or "effect" in name
+        or name.endswith(".stop")
+    ]
+    assert business == []
+
+
+def _from_executed(executed: ExecutedTask, workspace: Path, leaked: bool) -> IndeterminateObservation:
+    del workspace
+    assert leaked is False
+    failure = executed.failure
+    return IndeterminateObservation(
+        status=executed.status,
+        failure_kind=None if failure is None else failure.kind,
+        effects=tuple(executed.effects),
+        stop_reason=executed.stop_reason,
+        workspace_bytes=dict(executed.workspace_bytes),
+        finalize_invoked=True,
+        finalize_failed_closed=executed.status == "failed",
+    )

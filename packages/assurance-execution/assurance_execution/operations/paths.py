@@ -22,6 +22,8 @@ def resolve_selected_file(workspace: Path, relative: str) -> Path:
         raise InputError(f"selected test is not a regular workspace file: {relative}")
     if not path.is_file() or path.is_symlink():
         raise InputError(f"selected test is not a regular workspace file: {relative}")
+    if path.stat().st_nlink != 1:
+        raise InputError(f"selected test is not a regular single-link file: {relative}")
     try:
         resolved = path.resolve()
         resolved.relative_to(workspace.resolve())

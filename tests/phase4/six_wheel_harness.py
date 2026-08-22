@@ -28,6 +28,7 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
+from graph_engine.composition.lock import InvocationLock
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import (
     TaskActivityCancelResult,
@@ -217,6 +218,14 @@ def refresh_product_declarations(product_root: Path) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class _InvocationLockView:
+    lock: InvocationLock
+
+    def canonical_bytes(self) -> bytes:
+        return self.lock.canonical_bytes
+
+
+@dataclass(frozen=True, slots=True)
 class SixWheelComposition:
     composition: FrozenComposition
     product_name: str
@@ -236,6 +245,10 @@ class SixWheelComposition:
     @property
     def lock_digest(self) -> str:
         return self.composition.lock_digest
+
+    @property
+    def invocation_lock(self) -> _InvocationLockView:
+        return _InvocationLockView(self.composition.lock)
 
 
 @dataclass
@@ -340,7 +353,11 @@ class SixWheelTaskHost:
         return ()
 
 
-def resolve_fixture(product_name: str) -> SixWheelComposition:
+def resolve_fixture(
+    product_name: str,
+    *,
+    mutate: Callable[[Path, Path, Path], None] | None = None,
+) -> SixWheelComposition:
     require_six_wheel_fixtures()
     if product_name not in PRODUCT_NAMES:
         raise ValueError(f"unknown phase4 product: {product_name}")
@@ -350,6 +367,12 @@ def resolve_fixture(product_name: str) -> SixWheelComposition:
     bindings_root = _bindings_for(product_name, fixtures)
     plugins = _editable_wheel_plugins(workspace)
     _scrub_generated(product_root)
+    if mutate is not None:
+        mutate(workspace, product_root, fixtures)
+        plugins = _editable_wheel_plugins(workspace)
+        refresh_product_declarations(product_root)
+        _scrub_generated(product_root)
+        bindings_root = _bindings_for(product_name, fixtures)
     overlay = _product_metadata(workspace)
     if product_name == "phase4-opencode":
         plugins = tuple(plugin for plugin in plugins if plugin.distribution != "agent-runtime-cursor")

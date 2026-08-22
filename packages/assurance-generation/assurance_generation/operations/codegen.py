@@ -150,6 +150,8 @@ def _workspace_regular_file(workspace: Path, relative: str) -> Path:
         raise OutputError(f"output file path must be canonical and relative: {relative}") from error
     if not path.is_file() or path.is_symlink():
         raise OutputError(f"declared output file is missing: {relative}")
+    if path.stat().st_nlink != 1:
+        raise OutputError(f"declared output file is not a regular single-link file: {relative}")
     return path
 
 

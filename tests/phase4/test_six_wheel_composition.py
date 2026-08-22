@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import tomllib
+from typing import Any, cast
 import zipfile
 
 import yaml
@@ -63,7 +64,8 @@ def test_adapter_selections_have_different_composition_and_lock_digests() -> Non
 
 def test_binding_digests_recompute_from_checked_in_bytes() -> None:
     expected = binding_data_template()
-    assert expected["execution"]["permission_profile_digest"] == hashlib_sha256(FIXTURE_PERMISSION_BYTES)
+    execution = cast(dict[str, Any], expected["execution"])
+    assert execution["permission_profile_digest"] == hashlib_sha256(FIXTURE_PERMISSION_BYTES)
     assert expected["request_policy_digest"] == hashlib_sha256(
         (BINDINGS_ROOTS["phase4-opencode"] / "model-policy.json").read_bytes()
     )
@@ -71,7 +73,7 @@ def test_binding_digests_recompute_from_checked_in_bytes() -> None:
         policy_bytes = (root / "model-policy.json").read_bytes()
         assert hashlib_sha256(policy_bytes) == expected["request_policy_digest"]
         document = _load_yaml(root / "plugin.yaml")
-        for binding in document["bindings"]:
+        for binding in cast(list[dict[str, Any]], document["bindings"]):
             assert binding["data"] == expected
 
 
@@ -80,12 +82,16 @@ def test_checked_in_declarations_bind_distinct_entrypoints() -> None:
         PRODUCT_ROOT / "test_assurance_phase4_product" / "product-opencode-declaration.json"
     )
     cursor = _load_json(PRODUCT_ROOT / "test_assurance_phase4_product" / "product-cursor-declaration.json")
-    assert opencode["source"]["entrypoint_name"] == "phase4-opencode"
-    assert cursor["source"]["entrypoint_name"] == "phase4-cursor"
-    assert opencode["source"]["entrypoint_value"].endswith("Phase4OpenCodeProduct")
-    assert cursor["source"]["entrypoint_value"].endswith("Phase4CursorProduct")
-    assert opencode["source"]["distribution"] == cursor["source"]["distribution"] == PRODUCT_DISTRIBUTION
-    assert opencode["manifest"]["entrypoints"] == cursor["manifest"]["entrypoints"] == {"fixture": "root"}
+    opencode_source = cast(dict[str, Any], opencode["source"])
+    cursor_source = cast(dict[str, Any], cursor["source"])
+    opencode_manifest = cast(dict[str, Any], opencode["manifest"])
+    cursor_manifest = cast(dict[str, Any], cursor["manifest"])
+    assert opencode_source["entrypoint_name"] == "phase4-opencode"
+    assert cursor_source["entrypoint_name"] == "phase4-cursor"
+    assert str(opencode_source["entrypoint_value"]).endswith("Phase4OpenCodeProduct")
+    assert str(cursor_source["entrypoint_value"]).endswith("Phase4CursorProduct")
+    assert opencode_source["distribution"] == cursor_source["distribution"] == PRODUCT_DISTRIBUTION
+    assert opencode_manifest["entrypoints"] == cursor_manifest["entrypoints"] == {"fixture": "root"}
 
 
 def test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entrypoints() -> None:
@@ -110,7 +116,9 @@ def test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entr
     assert "test_assurance_phase4_product" not in hatch_packages
     assert fixture_rel not in (REPO_ROOT / "scripts" / "packaging_smoke_test.sh").read_text(encoding="utf-8")
     installed_names = {
-        dist.metadata["Name"] for dist in metadata.distributions() if dist.metadata.get("Name")
+        str(dist.metadata["Name"])
+        for dist in metadata.distributions()
+        if "Name" in dist.metadata and dist.metadata["Name"]
     }
     assert PRODUCT_DISTRIBUTION not in installed_names
     built = resolve_fixture("phase4-opencode")

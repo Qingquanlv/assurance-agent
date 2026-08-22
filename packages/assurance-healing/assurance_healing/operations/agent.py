@@ -80,6 +80,7 @@ def _canonical_relative(path: str) -> bool:
     return not (
         posix.is_absolute()
         or "\\" in path
+        or (len(path) >= 2 and path[1] == ":")
         or posix.as_posix() != path
         or any(part in {"", ".", ".."} for part in posix.parts)
     )
@@ -106,6 +107,8 @@ def _workspace_file(workspace: Path, relative: str) -> Path:
         raise OutputError(f"output file path must be canonical and relative: {relative}") from error
     if not path.is_file() or path.is_symlink():
         raise OutputError(f"declared output file is missing: {relative}")
+    if path.stat().st_nlink != 1:
+        raise OutputError(f"declared output file is not a regular single-link file: {relative}")
     return path
 
 

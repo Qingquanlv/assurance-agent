@@ -24,7 +24,11 @@ def _sorted_unique(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
 
 
 def _canonical_relative_paths(values: tuple[str, ...]) -> tuple[str, ...]:
-    return tuple(canonical_relative_path(path) for path in _sorted_unique(values, label="artifact path"))
+    paths = tuple(canonical_relative_path(path) for path in _sorted_unique(values, label="artifact path"))
+    for path in paths:
+        if len(path) >= 2 and path[1] == ":":
+            raise ValueError("artifact path must be canonical and relative")
+    return paths
 
 
 def _canonical_write_root(path: str) -> str:

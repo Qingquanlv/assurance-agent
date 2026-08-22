@@ -140,6 +140,7 @@ def canonical_relative_path(path: str) -> str:
     if (
         posix.is_absolute()
         or "\\" in path
+        or (len(path) >= 2 and path[1] == ":")
         or posix.as_posix() != path
         or any(part in {"", ".", ".."} for part in posix.parts)
     ):
