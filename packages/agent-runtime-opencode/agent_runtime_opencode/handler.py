@@ -233,7 +233,7 @@ class OpenCodeHandler:
                 expected,
                 allow_create=allow_create and was_prepared,
             )
-        except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError) as error:
+        except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
             if allow_create:
                 raise
             return TaskActivityReconcileResult(

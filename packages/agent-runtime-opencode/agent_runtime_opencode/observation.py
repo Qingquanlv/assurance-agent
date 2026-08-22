@@ -202,6 +202,13 @@ def classify_admission(record: object, expected: Mapping[str, object]) -> Litera
         return "conflict"
     if candidate.get("messageID") == expected.get("messageID"):
         return "exact" if canonical_digest(candidate) == canonical_digest(dict(expected)) else "conflict"
+    info = candidate.get("info")
+    role = info.get("role") if isinstance(info, dict) else candidate.get("role")
+    if role != "user":
+        return "conflict"
+    expected_texts = _text_parts(expected.get("parts"))
+    if expected_texts and _text_parts(candidate.get("parts")) == expected_texts:
+        return "exact"
     return "conflict"
 
 
@@ -239,20 +246,20 @@ def classify_provider_state(
     messages: Sequence[object],
 ) -> ProviderTerminal:
     error_kind = _terminal_error_kind(session, messages)
-    idle = _idle_from_status_map(status_map, session_id)
+    _idle_from_status_map(status_map, session_id)
     has_result = structured_result_from_messages(messages) is not None
     open_tools = _has_open_tool_work(messages)
     if error_kind == "canceled":
         return "canceled"
     if error_kind == "failed":
         return "failed"
-    if idle and has_result and not open_tools:
+    if has_result and not open_tools:
         return "succeeded"
     return "running"
 
 
 def structured_result_from_messages(messages: Sequence[object]) -> dict[str, Any] | None:
-    final: dict[str, object] | None = None
+    found: dict[str, Any] | None = None
     for message in messages:
         if not isinstance(message, dict):
             continue
@@ -263,25 +270,41 @@ def structured_result_from_messages(messages: Sequence[object]) -> dict[str, Any
             continue
         if isinstance(info.get("error"), dict):
             continue
-        final = message
-    if final is None:
-        return None
-    parts = final.get("parts")
-    if not isinstance(parts, list):
-        return None
-    for part in parts:
-        if not isinstance(part, dict) or part.get("type") != "text":
+        parts = message.get("parts")
+        if not isinstance(parts, list):
             continue
-        text = part.get("text")
-        if not isinstance(text, str):
+        for part in parts:
+            if not isinstance(part, dict) or part.get("type") != "text":
+                continue
+            text = part.get("text")
+            if not isinstance(text, str):
+                continue
+            parsed = _json_object_from_text(text)
+            if parsed is not None:
+                found = parsed
+    return found
+
+
+def _json_object_from_text(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
+    decoder = json.JSONDecoder()
+    found: dict[str, Any] | None = None
+    for index, char in enumerate(text):
+        if char != "{":
             continue
         try:
-            parsed = json.loads(text)
+            candidate, _end = decoder.raw_decode(text[index:])
         except json.JSONDecodeError:
             continue
-        if isinstance(parsed, dict):
-            return parsed
-    return None
+        if isinstance(candidate, dict):
+            found = candidate
+    return found
 
 
 def provider_error_message(

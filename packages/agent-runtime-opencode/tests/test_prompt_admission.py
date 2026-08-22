@@ -31,6 +31,38 @@ async def test_prompt_crashes_converge_to_one_admission(cut: str) -> None:
         fixture.close()
 
 
+async def test_live_get_message_info_parts_shape_is_already_admitted() -> None:
+    fixture = _bound_fixture(terminal_mode="busy")
+    try:
+        expected = prompt_admission_body(fixture.request, fixture.reference.expected_message_id)
+        fixture.fake.plant_message(
+            fixture.reference.session_id,
+            fixture.reference.expected_message_id,
+            {
+                "info": {
+                    "id": fixture.reference.expected_message_id,
+                    "role": "user",
+                    "sessionID": fixture.reference.session_id,
+                },
+                "parts": [
+                    {
+                        "id": "prt_live",
+                        "messageID": fixture.reference.expected_message_id,
+                        "sessionID": fixture.reference.session_id,
+                        "text": expected["parts"][0]["text"],
+                        "type": "text",
+                    }
+                ],
+            },
+        )
+        result = await fixture.reconcile()
+        assert result.status == "running"
+        assert result.status != "indeterminate"
+        assert fixture.fake.prompt_posts == 0
+    finally:
+        fixture.close()
+
+
 async def test_does_not_repost_when_provider_assigns_a_different_message_id() -> None:
     fixture = _bound_fixture(terminal_mode="busy")
     try:

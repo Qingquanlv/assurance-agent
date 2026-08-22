@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from agent_runtime_contracts import InstructionPart
+from agent_runtime_opencode.observation import (
+    classify_provider_state,
+    structured_result_from_messages,
+)
 from harness import _bound_fixture, agent_run_request  # pyright: ignore[reportMissingImports]
 
 
@@ -137,6 +141,48 @@ async def test_open_tool_work_is_not_terminal() -> None:
         assert _message_gets(fixture, session_id) >= 1
     finally:
         fixture.close()
+
+
+def test_embedded_json_in_assistant_prose_is_the_structured_result() -> None:
+    messages = [
+        {
+            "info": {"id": "msg_user", "role": "user"},
+            "parts": [{"type": "text", "text": 'Write result.json with {"ok": true}.'}],
+        },
+        {
+            "info": {"id": "msg_write", "role": "assistant"},
+            "parts": [
+                {"type": "tool", "state": {"status": "completed"}},
+                {
+                    "type": "text",
+                    "text": 'Done. `result.json` written with `{"ok": true}`.',
+                },
+            ],
+        },
+        {
+            "info": {"id": "msg_done", "role": "assistant"},
+            "parts": [{"type": "text", "text": "Done."}],
+        },
+    ]
+    assert structured_result_from_messages(messages) == {"ok": True}
+
+
+def test_busy_session_with_completed_result_is_succeeded() -> None:
+    messages = [
+        {
+            "info": {"id": "msg_result", "role": "assistant"},
+            "parts": [{"type": "text", "text": '{"ok": true}'}],
+        }
+    ]
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "busy"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "succeeded"
+    )
 
 
 async def test_malformed_identity_bearing_sse_fails_closed() -> None:
