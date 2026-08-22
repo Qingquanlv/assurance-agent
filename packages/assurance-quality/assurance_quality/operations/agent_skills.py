@@ -31,7 +31,11 @@ from assurance_quality.operations.common import (
     failed_output,
     validate_input,
 )
-from assurance_quality.operations.identity import candidate_document_digest, problem_fingerprint
+from assurance_quality.operations.identity import (
+    candidate_document_digest,
+    problem_fingerprint,
+    problem_id,
+)
 from assurance_quality.resource_loader import resource_bytes, resource_text
 
 FACT_BASELINE_SKILL = "skills/aa-fact-baseline/SKILL.md"
@@ -235,20 +239,22 @@ class IssueAnalysisFinalizeHandler:
                 raise OutputError(str(error)) from error
             if document.change_id != payload.change_id or document.batch_id != payload.batch_id:
                 raise OutputError("issue analysis identity does not match the locked change")
-            if (
-                payload.evidence_bundle_digest
-                and document.evidence_bundle_digest != payload.evidence_bundle_digest
-            ):
+            if not payload.evidence_bundle_digest:
+                raise InputError("evidence_bundle_digest must authenticate issue analysis")
+            if document.evidence_bundle_digest != payload.evidence_bundle_digest:
                 raise OutputError("issue analysis evidence bundle is not authenticated")
             owned = frozenset(payload.owned_evidence_ids)
             for candidate in document.candidates:
                 for observation_id in candidate.observation_ids:
                     if observation_id not in owned:
                         raise OutputError(f"issue candidate cites unowned evidence: {observation_id}")
-                problem_fingerprint(
+                fingerprint = problem_fingerprint(
                     affected_surface=candidate.affected_surface,
                     fingerprint_inputs=candidate.fingerprint_inputs,
                 )
+                expected_id = problem_id(fingerprint)
+                if candidate.possible_problem_ids and expected_id not in candidate.possible_problem_ids:
+                    raise OutputError(f"issue candidate possible_problem_ids does not contain {expected_id}")
             candidates_doc = IssueCandidateDocument(
                 schema_version="1.0",
                 change_id=document.change_id,
@@ -282,10 +288,8 @@ class IssueTriageFinalizeHandler:
             locked = payload.locked_evidence_digests
             if not locked:
                 raise InputError("locked_evidence_digests must authenticate triage evidence")
-            for path, digest in document.evidence_digests.items():
-                expected = locked.get(path)
-                if expected is None or expected != digest:
-                    raise OutputError(f"issue triage evidence digest is not authenticated: {path}")
+            if dict(document.evidence_digests) != dict(locked):
+                raise OutputError("issue triage evidence_digests must equal locked_evidence_digests")
             return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)

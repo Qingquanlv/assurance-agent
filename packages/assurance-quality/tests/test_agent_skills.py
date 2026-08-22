@@ -71,7 +71,7 @@ BINDING: dict[str, JSONValue] = {
 }
 
 
-def issue_candidate(*, evidence_ids: list[str]) -> JSONValue:
+def issue_candidate(*, evidence_ids: list[str], possible_problem_ids: list[str] | None = None) -> JSONValue:
     return cast(
         JSONValue,
         {
@@ -93,7 +93,7 @@ def issue_candidate(*, evidence_ids: list[str]) -> JSONValue:
                     },
                     "affected_surface": {"kind": "module", "value": "Menus Service"},
                     "fingerprint_inputs": {"surface": "menus", "symptom": "boom"},
-                    "possible_problem_ids": [],
+                    "possible_problem_ids": possible_problem_ids or [],
                     "confidence": 0.8,
                     "recommended_action": "triage",
                 }
@@ -321,6 +321,60 @@ async def test_issue_triage_finalize_rejects_unauthenticated_evidence_digest(tmp
     )
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_output"
+
+
+@pytest.mark.asyncio
+async def test_issue_triage_finalize_rejects_empty_or_subset_evidence_digests(tmp_path: Path) -> None:
+    locked = {
+        "inspect/observations.json": EVIDENCE_REF,
+        "issues/snapshot.json": EVIDENCE_REF,
+    }
+    empty = {
+        "schema_version": "1.0",
+        "problem_id": "PROB-1",
+        "expected_problem_version": 1,
+        "review_id": "REV-1",
+        "change_id": CHANGE_ID,
+        "evidence_digests": {},
+        "recommended_action": "confirm_assessment",
+        "reason": "x",
+        "summary": "y",
+        "reasoning": "z",
+    }
+    subset = {
+        **empty,
+        "evidence_digests": {"inspect/observations.json": EVIDENCE_REF},
+    }
+    for structured in (empty, subset):
+        outcome = await execute_task(
+            IssueTriageFinalizeHandler(),
+            fake_agent_result(cast(JSONValue, structured), locked_evidence_digests=locked),
+            tmp_path,
+        )
+        assert outcome.failure is not None
+        assert outcome.failure.kind == "invalid_output"
+
+
+@pytest.mark.asyncio
+async def test_issue_analysis_finalize_rejects_forged_problem_id(tmp_path: Path) -> None:
+    outcome = await execute_task(
+        IssueAnalysisFinalizeHandler(),
+        fake_agent_result(issue_candidate(evidence_ids=[_OWNED], possible_problem_ids=["PROB-FORGED"])),
+        tmp_path,
+    )
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+
+
+@pytest.mark.asyncio
+async def test_issue_analysis_finalize_requires_evidence_bundle_lock(tmp_path: Path) -> None:
+    outcome = await execute_task(
+        IssueAnalysisFinalizeHandler(),
+        fake_agent_result(issue_candidate(evidence_ids=[_OWNED]), evidence_bundle_digest=None),
+        tmp_path,
+    )
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
 
 
 @pytest.mark.asyncio

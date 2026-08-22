@@ -55,11 +55,9 @@ class ReportValidator:
             return ValidationResult(
                 accepted=False, reason="quality report source digests are not authenticated"
             )
-        for key, digest in self._expected.items():
-            path = _SOURCE_PATHS.get(key)
-            if path is None:
-                continue
-            actual = listed.get(path)
-            if actual != digest:
-                return ValidationResult(accepted=False, reason=_MISMATCH.get(key, _OUTSIDE))
+        if any(key not in self._expected for key in _SOURCE_PATHS):
+            return ValidationResult(accepted=False, reason="quality report expected digest map is incomplete")
+        for key, path in _SOURCE_PATHS.items():
+            if listed.get(path) != self._expected[key]:
+                return ValidationResult(accepted=False, reason=_MISMATCH[key])
         return ValidationResult(accepted=True)

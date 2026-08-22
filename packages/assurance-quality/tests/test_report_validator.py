@@ -7,6 +7,7 @@ from assurance_quality.plugin import QualityPlugin
 from assurance_quality.validators.report import ReportValidator
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     HEX_A,
+    HEX_B,
     validation_context,
     write_set,
 )
@@ -51,7 +52,9 @@ def test_report_validator_default_fails_closed_without_expected_digests() -> Non
 
 
 def test_report_validator_rejects_digest_mismatch() -> None:
-    validator = ReportValidator(expected={"metrics": "b" * 64})
+    expected = {key: HEX_A for key in SOURCE_PATHS}
+    expected["metrics"] = HEX_B
+    validator = ReportValidator(expected=expected)
     files = write_set(
         "report/quality-report.json",
         *SOURCE_PATHS.values(),
@@ -62,6 +65,23 @@ def test_report_validator_rejects_digest_mismatch() -> None:
         accepted=False,
         reason="quality report source digest does not match the authenticated metrics projection",
     )
+
+
+def test_report_validator_rejects_incomplete_expected_digest_map() -> None:
+    validator = ReportValidator(expected={"metrics": HEX_A})
+    result = validator.validate(candidate_report(), validation_context())
+    assert result.accepted is False
+    assert "incomplete" in (result.reason or "")
+
+
+def test_report_validator_compares_every_authenticated_source() -> None:
+    expected = {key: HEX_A for key in SOURCE_PATHS}
+    result = ReportValidator(expected=expected).validate(candidate_report(), validation_context())
+    assert result.accepted is True
+    mismatched = {**expected, "case": HEX_B}
+    rejected = ReportValidator(expected=mismatched).validate(candidate_report(), validation_context())
+    assert rejected.accepted is False
+    assert "case" in (rejected.reason or "")
 
 
 def test_plugin_report_validator_is_path_only() -> None:
