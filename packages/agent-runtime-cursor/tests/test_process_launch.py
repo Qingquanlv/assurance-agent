@@ -192,6 +192,10 @@ async def test_cursor_launch_is_exact_and_shell_free(tmp_path: Path) -> None:
     assert launch.shell is False
     assert launch.cwd == tmp_path.resolve()
     assert set(launch.environment) == {"PATH", "CURSOR_API_KEY"}
+    path_entries = launch.environment["PATH"].split(os.pathsep)
+    assert path_entries[0] == str(Path(config.executable).resolve().parent)
+    assert "/usr/bin" in path_entries
+    assert "/bin" in path_entries
 
 
 async def test_launch_rejects_host_without_descendant_confinement(tmp_path: Path) -> None:
@@ -222,7 +226,10 @@ async def test_launch_does_not_inherit_ambient_environment(
     launch = host.launches[0]
     assert launch.environment["CURSOR_API_KEY"] == _SECRET_TEXT
     assert launch.environment["CURSOR_API_KEY"] != "ambient-leak"
-    assert launch.environment["PATH"] == str(Path(config.executable).parent)
+    path_entries = launch.environment["PATH"].split(os.pathsep)
+    assert path_entries[0] == str(Path(config.executable).resolve().parent)
+    assert "/usr/bin" in path_entries
+    assert "/bin" in path_entries
     assert launch.environment["PATH"] != os.environ["PATH"]
     assert "HTTP_PROXY" not in launch.environment
     assert set(launch.environment) == {"PATH", "CURSOR_API_KEY"}

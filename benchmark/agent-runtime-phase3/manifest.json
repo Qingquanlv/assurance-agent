@@ -102,7 +102,7 @@
     "cursor": {
       "adapter_id": "runtime.cursor.execute",
       "source_root": "packages/agent-runtime-cursor/agent_runtime_cursor",
-      "source_digest": "15cd676a2cf562f85627041ec44b66b1db1679f555100e96323fd08189246080",
+      "source_digest": "fd72c4b6689131a365bd7e8b6060eb1900b72128bd75f1681e53bc0f64b650bd",
       "adapter_version": "0.1.0",
       "protocol_profile": "confined_process",
       "executable": "/Users/lvqingquan/.local/share/cursor-agent/versions/2026.08.11-e8db854/cursor-agent",

@@ -34,6 +34,7 @@ from agent_runtime_cursor.config import PROTOCOL_PROFILE, CursorAdapterConfig
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _ACCEPTABLE_CONFINEMENT = frozenset({"process-group", "job-object", "cgroup", "container"})
 _PINNED_ARGV = ("agent", "--print", "--output-format", "stream-json", "--force")
+_SHEBANG_PATH = ("/usr/bin", "/bin")
 
 
 class ConfinementIdentity(FrozenModel):
@@ -189,7 +190,7 @@ def _resolve_environment(
     resolved: dict[str, str] = {}
     for name in config.environment_names:
         if name == "PATH":
-            resolved[name] = str(executable.parent)
+            resolved[name] = os.pathsep.join((str(executable.parent), *_SHEBANG_PATH))
             continue
         if name != "CURSOR_API_KEY" or config.secret_handle is None:
             raise ValueError("environment_names contains an unresolvable entry")
