@@ -40,6 +40,7 @@ SseMode = Literal[
     "cursor",
     "malformed_identity",
     "wrong_session",
+    "drip",
 ]
 _SUPPORTED_CUTS: tuple[CutName, ...] = (
     "before_request",
@@ -587,6 +588,10 @@ class OpenCodeFakeServer:
                         f'"properties":{{"sessionID":{json.dumps(session_id)}}}}}\n\n'
                     )
                 handler.wfile.write(payload.encode("utf-8"))
+            elif mode == "drip":
+                while not self._sse_release.wait(timeout=0.05):
+                    handler.wfile.write(b"event: server.heartbeat\ndata: {}\n\n")
+                    handler.wfile.flush()
             elif mode == "fast_idle":
                 payload = (
                     f'id: cursor-1\ndata: {{"type":"session.idle",'

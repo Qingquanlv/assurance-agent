@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from collections.abc import Mapping
 from typing import Any, Literal, Self
 from urllib.parse import urljoin
@@ -36,9 +38,7 @@ _LOCKED_PROMPT_IDEMPOTENCY = "conflict-on-body-drift"
 
 
 def locked_opencode_profile(config: OpenCodeAdapterConfig) -> AcceptedOpenCodeProfile:
-    defaults = OpenCodeProtocolProfile.model_validate(
-        {"prompt_idempotency": _LOCKED_PROMPT_IDEMPOTENCY}
-    )
+    defaults = OpenCodeProtocolProfile.model_validate({"prompt_idempotency": _LOCKED_PROMPT_IDEMPOTENCY})
     return AcceptedOpenCodeProfile(
         protocol_profile=config.protocol_profile,
         prompt_admission=defaults.prompt_admission,
@@ -153,7 +153,13 @@ class OpenCodeHttpClient:
 
     async def open_sse(self, *, cursor: str | None = None) -> bytes:
         extra = {"cursor": cursor} if cursor else None
-        return await self._read("GET", "/event", accept="text/event-stream", extra_params=extra)
+        return await self._read(
+            "GET",
+            "/event",
+            accept="text/event-stream",
+            extra_params=extra,
+            stream_deadline_seconds=self._config.request_timeout_seconds,
+        )
 
     async def abort(self, session_id: str) -> dict[str, Any]:
         path = f"/session/{_path_segment(session_id, 'session id')}/abort"
@@ -196,42 +202,60 @@ class OpenCodeHttpClient:
         body: Mapping[str, object] | None = None,
         accept: str,
         extra_params: Mapping[str, str] | None = None,
+        stream_deadline_seconds: float | None = None,
         _redirects: int = 0,
     ) -> bytes:
         params: dict[str, str] = {"directory": self._config.project_scope}
         if extra_params:
             params.update(extra_params)
-        response = await self._client.request(
+        deadline = time.monotonic() + stream_deadline_seconds if stream_deadline_seconds is not None else None
+        async with self._client.stream(
             method,
             path,
             headers={"Accept": accept},
             params=params,
             json=None if body is None else dict(body),
-        )
-        if response.status_code in {301, 302, 303, 307, 308}:
-            if _redirects >= 1:
-                raise ValueError("redirect hop bound exceeded")
-            location = response.headers.get("location")
-            if not location:
-                raise ValueError("redirect is missing a location")
-            absolute = urljoin(str(response.url), location)
-            _RedirectTarget.model_validate({"location": absolute, "origin": self._origin})
-            await response.aclose()
-            return await self._read(
-                method,
-                absolute,
-                body=body,
-                accept=accept,
-                extra_params=extra_params,
-                _redirects=_redirects + 1,
-            )
-        response.raise_for_status()
-        chunks: list[bytes] = []
-        total = 0
-        async for chunk in response.aiter_bytes():
-            total += len(chunk)
-            if total > self._config.max_response_bytes:
-                await response.aclose()
-                raise ValueError("response exceeds max_response_bytes")
-            chunks.append(chunk)
-        return b"".join(chunks)
+        ) as response:
+            if response.status_code in {301, 302, 303, 307, 308}:
+                if _redirects >= 1:
+                    raise ValueError("redirect hop bound exceeded")
+                location = response.headers.get("location")
+                if not location:
+                    raise ValueError("redirect is missing a location")
+                absolute = urljoin(str(response.url), location)
+                _RedirectTarget.model_validate({"location": absolute, "origin": self._origin})
+                return await self._read(
+                    method,
+                    absolute,
+                    body=body,
+                    accept=accept,
+                    extra_params=extra_params,
+                    stream_deadline_seconds=stream_deadline_seconds,
+                    _redirects=_redirects + 1,
+                )
+            response.raise_for_status()
+            chunks: list[bytes] = []
+            total = 0
+            try:
+                if deadline is None:
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > self._config.max_response_bytes:
+                            raise ValueError("response exceeds max_response_bytes")
+                        chunks.append(chunk)
+                else:
+                    async with asyncio.timeout(max(0.01, deadline - time.monotonic())):
+                        async for chunk in response.aiter_bytes():
+                            total += len(chunk)
+                            if total > self._config.max_response_bytes:
+                                raise ValueError("response exceeds max_response_bytes")
+                            chunks.append(chunk)
+                            if time.monotonic() >= deadline:
+                                break
+            except TimeoutError:
+                if stream_deadline_seconds is None:
+                    raise
+            except httpx.TimeoutException:
+                if stream_deadline_seconds is None:
+                    raise
+            return b"".join(chunks)

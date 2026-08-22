@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from agent_runtime_contracts import InstructionPart
 from agent_runtime_opencode.observation import (
     classify_provider_state,
@@ -15,6 +17,23 @@ def _message_gets(fixture: object, session_id: str) -> int:
         for item in fake.records
         if item.method == "GET" and item.path.startswith(f"/session/{session_id}/message")
     )
+
+
+async def test_continuous_sse_does_not_block_observation() -> None:
+    fixture = _bound_fixture(
+        terminal_mode="success",
+        sse_mode="drip",
+        request_timeout_seconds=0.4,
+    )
+    try:
+        started = time.monotonic()
+        result = await fixture.reconcile()
+        assert time.monotonic() - started < 3.0
+        assert result.status == "terminal"
+        assert result.outcome is not None
+        assert result.outcome.status == "succeeded"
+    finally:
+        fixture.close()
 
 
 async def test_fast_terminal_transition_is_observed() -> None:
