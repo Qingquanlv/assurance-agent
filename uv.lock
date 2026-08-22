@@ -20,6 +20,7 @@ members = [
     "assurance-healing",
     "assurance-intake",
     "assurance-kernel",
+    "assurance-quality",
     "graph-engine",
     "graph-engine-toy-a",
     "graph-engine-toy-b",
@@ -149,6 +150,7 @@ dev = [
     { name = "assurance-generation" },
     { name = "assurance-healing" },
     { name = "assurance-intake" },
+    { name = "assurance-quality" },
     { name = "graph-engine" },
     { name = "graph-engine-toy-a" },
     { name = "graph-engine-toy-b" },
@@ -181,6 +183,7 @@ dev = [
     { name = "assurance-generation", editable = "packages/assurance-generation" },
     { name = "assurance-healing", editable = "packages/assurance-healing" },
     { name = "assurance-intake", editable = "packages/assurance-intake" },
+    { name = "assurance-quality", editable = "packages/assurance-quality" },
     { name = "graph-engine", editable = "packages/graph-engine" },
     { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },
     { name = "graph-engine-toy-b", editable = "examples/graph-engine-toy-b" },
@@ -290,6 +293,31 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
+]
+
+[[package]]
+name = "assurance-quality"
+version = "0.1.0"
+source = { editable = "packages/assurance-quality" }
+dependencies = [
+    { name = "agent-runtime-contracts" },
+    { name = "assurance-execution" },
+    { name = "assurance-generation" },
+    { name = "assurance-healing" },
+    { name = "assurance-intake" },
+    { name = "graph-engine" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
+    { name = "assurance-execution", editable = "packages/assurance-execution" },
+    { name = "assurance-generation", editable = "packages/assurance-generation" },
+    { name = "assurance-healing", editable = "packages/assurance-healing" },
+    { name = "assurance-intake", editable = "packages/assurance-intake" },
+    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "pydantic", specifier = ">=2.7" },
 ]
 
 [[package]]

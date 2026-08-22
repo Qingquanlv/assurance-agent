@@ -1,0 +1,79 @@
+{
+  "descriptor": {
+    "bindings": [],
+    "commit_validators": [],
+    "dependencies": [
+      {
+        "plugin_id": "assurance.intake",
+        "version_specifier": "==0.1.0"
+      },
+      {
+        "plugin_id": "assurance.generation",
+        "version_specifier": "==0.1.0"
+      },
+      {
+        "plugin_id": "assurance.execution",
+        "version_specifier": "==0.1.0"
+      },
+      {
+        "plugin_id": "assurance.healing",
+        "version_specifier": "==0.1.0"
+      }
+    ],
+    "effects": [],
+    "engine_api": "2.0",
+    "plugin_id": "assurance.quality",
+    "plugin_version": "0.1.0",
+    "resources": [],
+    "schema_version": "1",
+    "schemas": [
+      "assurance.quality.schema.adversarial-yield.v1",
+      "assurance.quality.schema.assertion-strength.v1",
+      "assurance.quality.schema.auth-matrix.v1",
+      "assurance.quality.schema.baseline-drift.v1",
+      "assurance.quality.schema.c-layer.v1",
+      "assurance.quality.schema.constraint-coverage.v1",
+      "assurance.quality.schema.coverage-diff.v1",
+      "assurance.quality.schema.coverage-gaps.v1",
+      "assurance.quality.schema.fact-baseline.v1",
+      "assurance.quality.schema.issue-events.v1",
+      "assurance.quality.schema.issues.v1",
+      "assurance.quality.schema.journey-coverage.v1",
+      "assurance.quality.schema.metrics.v1",
+      "assurance.quality.schema.minimum-coverage.v1",
+      "assurance.quality.schema.mutation.v1",
+      "assurance.quality.schema.perf-slack.v1",
+      "assurance.quality.schema.quality-gate.v2",
+      "assurance.quality.schema.quarantine.v1",
+      "assurance.quality.schema.report.v1",
+      "assurance.quality.schema.sufficiency.v2",
+      "assurance.quality.schema.trace-sufficiency.v1",
+      "assurance.quality.schema.trace.v2"
+    ],
+    "source": {
+      "declaration_path": "assurance_quality/plugin-declaration.json",
+      "distribution": "assurance-quality",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "quality",
+      "entrypoint_value": "assurance_quality.plugin:QualityPlugin",
+      "import_roots": [
+        ""
+      ],
+      "version": "0.1.0"
+    },
+    "task_handlers": []
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "assurance_quality/plugin-declaration.json",
+    "distribution": "assurance-quality",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "quality",
+    "entrypoint_value": "assurance_quality.plugin:QualityPlugin",
+    "import_roots": [
+      ""
+    ],
+    "version": "0.1.0"
+  }
+}

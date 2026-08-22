@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+from pathlib import Path
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.plugin_api import (
@@ -15,7 +17,16 @@ from assurance_execution.plugin import ExecutionPlugin
 from assurance_execution.validators.evidence import ExecutionEvidenceValidator
 from assurance_execution.validators.mapping import ClosedMappingValidator
 from execution_fixtures import closed_mapping  # pyright: ignore[reportMissingImports]
-from test_contracts import valid_evidence, valid_result  # pyright: ignore[reportMissingImports]
+
+_CONTRACTS_SPEC = importlib.util.spec_from_file_location(
+    "assurance_execution_test_contracts",
+    Path(__file__).with_name("test_contracts.py"),
+)
+assert _CONTRACTS_SPEC is not None and _CONTRACTS_SPEC.loader is not None
+_CONTRACTS = importlib.util.module_from_spec(_CONTRACTS_SPEC)
+_CONTRACTS_SPEC.loader.exec_module(_CONTRACTS)
+valid_evidence = _CONTRACTS.valid_evidence
+valid_result = _CONTRACTS.valid_result
 
 _EVIDENCE_PATH = "qa/changes/CH-DEMO-001/execution-evidence.json"
 
