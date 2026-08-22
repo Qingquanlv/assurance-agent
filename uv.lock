@@ -21,6 +21,7 @@ members = [
     "assurance-improvement",
     "assurance-intake",
     "assurance-kernel",
+    "assurance-product",
     "assurance-quality",
     "graph-engine",
     "graph-engine-toy-a",
@@ -152,6 +153,7 @@ dev = [
     { name = "assurance-healing" },
     { name = "assurance-improvement" },
     { name = "assurance-intake" },
+    { name = "assurance-product" },
     { name = "assurance-quality" },
     { name = "graph-engine" },
     { name = "graph-engine-toy-a" },
@@ -186,6 +188,7 @@ dev = [
     { name = "assurance-healing", editable = "packages/assurance-healing" },
     { name = "assurance-improvement", editable = "packages/assurance-improvement" },
     { name = "assurance-intake", editable = "packages/assurance-intake" },
+    { name = "assurance-product", editable = "packages/assurance-product" },
     { name = "assurance-quality", editable = "packages/assurance-quality" },
     { name = "graph-engine", editable = "packages/graph-engine" },
     { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },
@@ -324,6 +327,42 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
 ]
+
+[[package]]
+name = "assurance-product"
+version = "0.1.0"
+source = { editable = "packages/assurance-product" }
+dependencies = [
+    { name = "assurance-execution" },
+    { name = "assurance-generation" },
+    { name = "assurance-healing" },
+    { name = "assurance-improvement" },
+    { name = "assurance-intake" },
+    { name = "assurance-quality" },
+    { name = "graph-engine" },
+]
+
+[package.optional-dependencies]
+cursor = [
+    { name = "agent-runtime-cursor" },
+]
+opencode = [
+    { name = "agent-runtime-opencode" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-runtime-cursor", marker = "extra == 'cursor'", editable = "packages/agent-runtime-cursor" },
+    { name = "agent-runtime-opencode", marker = "extra == 'opencode'", editable = "packages/agent-runtime-opencode" },
+    { name = "assurance-execution", editable = "packages/assurance-execution" },
+    { name = "assurance-generation", editable = "packages/assurance-generation" },
+    { name = "assurance-healing", editable = "packages/assurance-healing" },
+    { name = "assurance-improvement", editable = "packages/assurance-improvement" },
+    { name = "assurance-intake", editable = "packages/assurance-intake" },
+    { name = "assurance-quality", editable = "packages/assurance-quality" },
+    { name = "graph-engine", editable = "packages/graph-engine" },
+]
+provides-extras = ["opencode", "cursor"]
 
 [[package]]
 name = "assurance-quality"
