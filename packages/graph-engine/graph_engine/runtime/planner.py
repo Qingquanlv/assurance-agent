@@ -8,6 +8,7 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.graph.compiler import CompiledGraph, CompiledNode, CompiledWorkflow
 from graph_engine.graph.expressions import evaluate_expression
+from graph_engine.graph.input_projection import InputProjectionError, project_task_input
 from graph_engine.plugin_api import TaskFailure
 from graph_engine.runtime.events import (
     EffectApplyStarted,
@@ -713,10 +714,7 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
         node = compiled.graphs[graph_record.graph_id].nodes[activation.node_id]
         expected_input = cast(
             JSONValue,
-            {
-                "config": thaw_json(node.definition.input),
-                "tokens": [thaw_json(token_by_id[token_id_].payload) for token_id_ in activation.token_ids],
-            },
+            _expected_activation_input(graphs, token_by_id, node, activation),
         )
         if (
             node.definition.kind != "interrupt"
@@ -1378,13 +1376,59 @@ def _activate(
 
 
 def _activation_input(state: _PlannerState, node: CompiledNode, activation: ActivationRecord) -> JSONValue:
-    return cast(
-        JSONValue,
-        {
-            "config": thaw_json(node.definition.input),
-            "tokens": [thaw_json(state.tokens[token_id_].payload) for token_id_ in activation.token_ids],
-        },
-    )
+    return _expected_activation_input(state.graphs, state.tokens, node, activation)
+
+
+def _expected_activation_input(
+    graphs: dict[str, GraphInstanceRecord],
+    tokens: dict[str, TokenRecord],
+    node: CompiledNode,
+    activation: ActivationRecord,
+) -> JSONValue:
+    if node.definition.input_projection is None:
+        return cast(
+            JSONValue,
+            {
+                "config": thaw_json(node.definition.input),
+                "tokens": [thaw_json(tokens[token_id_].payload) for token_id_ in activation.token_ids],
+            },
+        )
+    try:
+        return cast(
+            JSONValue,
+            thaw_json(
+                project_task_input(
+                    node.definition.input_projection,
+                    root_input=_root_input_value(graphs),
+                    node_config=node.definition.input,
+                    predecessor_tokens=_predecessor_token_payloads(tokens, activation),
+                )
+            ),
+        )
+    except InputProjectionError as error:
+        raise PlanningError(f"invalid_input: {error}") from error
+
+
+def _root_input_value(graphs: dict[str, GraphInstanceRecord]) -> object:
+    roots = [graph for graph in graphs.values() if graph.parent_graph_instance_id is None]
+    if len(roots) != 1:
+        raise PlanningError("invalid_input: root graph input is unavailable")
+    return roots[0].input
+
+
+def _predecessor_token_payloads(
+    tokens: dict[str, TokenRecord],
+    activation: ActivationRecord,
+) -> dict[str, object]:
+    payloads: dict[str, object] = {}
+    for token_id_ in activation.token_ids:
+        token = tokens[token_id_]
+        if token.source is None:
+            continue
+        if token.source in payloads:
+            raise PlanningError(f"invalid_input: duplicate predecessor token {token.source!r}")
+        payloads[token.source] = token.payload
+    return payloads
 
 
 def _planned_task(state: _PlannerState, node: CompiledNode, activation: ActivationRecord) -> PlannedTask:

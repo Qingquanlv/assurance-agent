@@ -17,6 +17,7 @@ from pydantic import (
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
+from graph_engine.graph.input_projection import InputProjectionDef, validate_input_projection_compile
 from graph_engine.graph.schema import (
     EdgeDef,
     GraphDef,
@@ -87,6 +88,7 @@ class CompiledNodeDefinition(_CompiledModel):
     reason: str | None = None
     actions: tuple[str, ...] = ()
     input: FrozenJSONMap = Field(default_factory=lambda: MappingProxyType({}))
+    input_projection: InputProjectionDef | None = None
     retry: str | None = None
     timeout: str | None = None
     resources: ResourceClaims = Field(default_factory=ResourceClaims)
@@ -243,6 +245,14 @@ def _validate_workflow(
 
         for node_id, node in graph.nodes.items():
             _validate_node_references(workflow, capabilities, graph_id, node_id, node)
+            if node.input_projection is not None:
+                validate_input_projection_compile(
+                    node.input_projection,
+                    node_kind=node.kind,
+                    join_kind=node.join,
+                    direct_predecessors=frozenset(incoming_sources[node_id]),
+                    location=f"{graph_id}/{node_id}",
+                )
             if node.kind == "end" and outgoing[node_id]:
                 raise CompileError(f"end node {graph_id}/{node_id} has outgoing edge")
             if node.kind == "join" and node.join == "all" and len(incoming_sources[node_id]) < 2:

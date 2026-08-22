@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal, Self, cast
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from graph_engine.graph.input_projection import InputProjectionDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FailureKind, ResourceClaims
 
@@ -47,11 +48,11 @@ _REQUIRED_NODE_FIELDS: dict[NodeKind, tuple[str, ...]] = {
 }
 
 _ALLOWED_NODE_FIELDS: dict[NodeKind, frozenset[str]] = {
-    "task": frozenset({"capability", "input", "retry", "timeout", "resources", "validators"}),
-    "subgraph": frozenset({"graph", "input", "resources"}),
-    "join": frozenset({"join"}),
-    "gate": frozenset({"expression"}),
-    "interrupt": frozenset({"reason", "actions"}),
+    "task": frozenset({"capability", "input", "input_projection", "retry", "timeout", "resources", "validators"}),
+    "subgraph": frozenset({"graph", "input", "input_projection", "resources"}),
+    "join": frozenset({"join", "input_projection"}),
+    "gate": frozenset({"expression", "input_projection"}),
+    "interrupt": frozenset({"reason", "actions", "input_projection"}),
     "end": frozenset(),
 }
 
@@ -88,6 +89,7 @@ class NodeDef(FrozenModel):
     reason: str | None = None
     actions: tuple[str, ...] = ()
     input: dict[str, JSONValue] = Field(default_factory=dict)
+    input_projection: InputProjectionDef | None = None
     retry: str | None = None
     timeout: str | None = None
     resources: ResourceClaims = Field(default_factory=ResourceClaims)
