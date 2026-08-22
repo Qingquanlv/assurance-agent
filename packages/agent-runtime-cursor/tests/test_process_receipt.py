@@ -153,15 +153,16 @@ def _spawned_receipt() -> CursorProcessReceipt:
             secrets=_ExactSecretPort(),
         )
         asyncio.run(handler.execute(_request(config), context))
-        return CursorProcessReceipt.model_validate(thaw_json(port.snapshot.reference))
+        return CursorProcessReceipt.model_validate(thaw_json(port.snapshot.reference)), root.resolve()
 
 
 def test_process_receipt_binds_non_reusable_identity() -> None:
-    receipt = _spawned_receipt()
+    receipt, cwd = _spawned_receipt()
     assert receipt.host_boot_identity_digest == BOOT_DIGEST
     assert receipt.confinement_identity
     assert receipt.process_start_token
-    assert receipt.workspace_identity_digest == _WORKSPACE_DIGEST
+    assert receipt.workspace_identity_digest == canonical_digest({"cwd": str(cwd)})
+    assert receipt.workspace_identity_digest != _WORKSPACE_DIGEST
     assert "api-key" not in receipt.model_dump_json()
 
 

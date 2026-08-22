@@ -154,8 +154,6 @@ def argv_policy_document(argv: tuple[str, ...], environment_names: tuple[str, ..
 
 
 def workspace_identity_digest_for(context: TaskContext) -> str:
-    if context.activity is not None:
-        return canonical_digest(context.activity.snapshot.workspace_identity.model_dump(mode="json"))
     return canonical_digest({"cwd": str(context.workspace_root.resolve())})
 
 

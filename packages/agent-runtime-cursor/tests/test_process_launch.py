@@ -171,6 +171,18 @@ def _context(
     )
 
 
+def test_bound_activity_launch_passes_production_workspace_check(tmp_path: Path) -> None:
+    from agent_runtime_cursor.process import (
+        authenticate_executable,
+        build_launch_request,
+        production_process_host,
+    )
+
+    config = _config(tmp_path)
+    launch = build_launch_request(config, _agent_run(), _context(tmp_path), authenticate_executable(config))
+    production_process_host(tmp_path / "host-state").preflight(launch)
+
+
 async def test_cursor_launch_is_exact_and_shell_free(tmp_path: Path) -> None:
     host = FakeConfinedProcessHost()
     config = _config(tmp_path)
