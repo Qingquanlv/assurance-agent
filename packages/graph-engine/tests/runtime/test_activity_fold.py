@@ -30,12 +30,13 @@ from graph_engine.runtime.events import (
 )
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import FoldCursor, ProjectionError, fold_events
-from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
+from graph_engine.runtime.seed import empty_invocation_seed
+
+from bootstrap_fixtures import synthetic_invocation_started
 
 
 _LOCK = "a" * 64
 _EMPTY_TREE = empty_invocation_seed().workspace.tree_id
-_ROOT_INPUT = empty_invocation_seed().root_input_digest
 _BASELINE = _EMPTY_TREE
 _CANDIDATE = "c" * 64
 _WRITE_SET = "d" * 64
@@ -82,15 +83,7 @@ def _envelopes(*events: object) -> tuple[EventEnvelope, ...]:
 
 
 def _invocation_started() -> InvocationStarted:
-    return InvocationStarted(
-        invocation_id="inv-1",
-        lock_digest=_LOCK,
-        entrypoint="main",
-        event_schema_version="2",
-        runtime_authorization_digest=EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
-        root_input_digest=_ROOT_INPUT,
-        initial_tree_id=_EMPTY_TREE,
-    )
+    return synthetic_invocation_started(lock_digest=_LOCK, initial_tree_id=_EMPTY_TREE)
 
 
 def _running_prefix() -> tuple[object, ...]:

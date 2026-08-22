@@ -132,7 +132,7 @@ EventIDFields = tuple[tuple[str, EventIDValue], ...]
 EventIDSignature = tuple[int, str, EventIDFields]
 
 _ID_FIELDS_BY_EVENT_KIND: dict[str, tuple[str, ...]] = {
-    "invocation_started": ("invocation_id",),
+    "invocation_started": ("invocation_id", "initial_tree_id"),
     "graph_started": (
         "graph_instance_id",
         "graph_id",

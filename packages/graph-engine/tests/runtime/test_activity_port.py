@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bootstrap_fixtures import synthetic_invocation_started
 from pathlib import Path
 
 import pytest
@@ -57,7 +58,7 @@ def _rpc_identity(*, activity_id: str = "activity-1", attempt: int = 1) -> TaskA
 
 def _prepared_events() -> tuple[object, ...]:
     return (
-        InvocationStarted(invocation_id="inv-1", lock_digest=_LOCK, entrypoint="main"),
+        synthetic_invocation_started(lock_digest=_LOCK),
         GraphStarted(graph_instance_id="root", graph_id="root"),
         TokenOffered(
             token_id="tok-1",

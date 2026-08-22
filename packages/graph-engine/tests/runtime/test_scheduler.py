@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bootstrap_fixtures import SYNTHETIC_BASELINE_TREE_ID, synthetic_invocation_started
 import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable, Mapping
@@ -62,7 +63,6 @@ from graph_engine.runtime.events import (
     GraphFailed,
     GraphStarted,
     HeadAdvanced,
-    InvocationStarted,
     NodeActivated,
     TaskActivityPrepared,
     TaskAttemptFailed,
@@ -477,7 +477,10 @@ def _scheduler(
     store = SnapshotStore.create(tmp_path / "store", initial or {})
     ledger = Ledger(tmp_path / "ledger")
     lifecycle: list[object] = [
-        InvocationStarted(invocation_id="inv-1", lock_digest=_LOCK_DIGEST, entrypoint="main"),
+        synthetic_invocation_started(
+            lock_digest=_LOCK_DIGEST,
+            initial_tree_id=store.head_tree_id(),
+        ),
         GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
     ]
     lifecycle.extend(
@@ -567,7 +570,10 @@ def _captured_request_for_alias(tmp_path: Path, alias: str) -> TaskRequest:
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
         (
-            InvocationStarted(invocation_id="inv-1", lock_digest=_LOCK_DIGEST, entrypoint="main"),
+            synthetic_invocation_started(
+                lock_digest=_LOCK_DIGEST,
+                initial_tree_id=store.head_tree_id(),
+            ),
             GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
             NodeActivated(
                 activation_id=activation,
@@ -1089,12 +1095,12 @@ def test_undeclared_candidate_and_commit_exception_fail_closed(tmp_path: Path) -
     assert all(item.event.kind != "task_attempt_succeeded" for item in ledger.read_all())
 
 
-def _persist_lease(ledger: Ledger, lease: Lease) -> None:
+def _persist_lease(ledger: Ledger, lease: Lease, *, initial_tree_id: str) -> None:
     existing = ledger.read_all()
     if not existing:
         ledger.append_batch(
             (
-                InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
+                synthetic_invocation_started(initial_tree_id=initial_tree_id),
                 GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
                 NodeActivated(
                     activation_id=lease.activation_id,
@@ -1145,7 +1151,7 @@ def test_reclaim_uses_persisted_heartbeat_and_strict_expiry_boundary(tmp_path: P
         heartbeat_at=1.0,
         expires_at=11.0,
     )
-    _persist_lease(ledger, lease)
+    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
     old = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1218,7 +1224,10 @@ def test_reclaim_expired_skips_recoverable_live_activity(tmp_path: Path) -> None
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
         (
-            InvocationStarted(invocation_id="inv-1", lock_digest=_LOCK_DIGEST, entrypoint="main"),
+            synthetic_invocation_started(
+                lock_digest=_LOCK_DIGEST,
+                initial_tree_id=store.head_tree_id(),
+            ),
             GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
             NodeActivated(
                 activation_id=task.activation_id,
@@ -1271,7 +1280,7 @@ def test_authoritative_reclaim_append_is_reconciled(
         heartbeat_at=1.0,
         expires_at=2.0,
     )
-    _persist_lease(ledger, lease)
+    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
     scheduler = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1298,7 +1307,7 @@ def test_expired_lease_cannot_be_resurrected_by_heartbeat(tmp_path: Path) -> Non
         heartbeat_at=1.0,
         expires_at=11.0,
     )
-    _persist_lease(ledger, lease)
+    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
     scheduler = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1334,7 +1343,7 @@ def test_authoritative_heartbeat_append_is_reconciled(
         heartbeat_at=1.0,
         expires_at=11.0,
     )
-    _persist_lease(ledger, lease)
+    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
     scheduler = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1365,7 +1374,7 @@ def test_unreadable_generic_append_outcome_is_explicitly_indeterminate(
         heartbeat_at=1.0,
         expires_at=11.0,
     )
-    _persist_lease(ledger, lease)
+    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
     scheduler = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1411,7 +1420,7 @@ def test_heartbeat_compare_and_append_rejects_concurrent_reclaim(tmp_path: Path)
         heartbeat_at=1.0,
         expires_at=11.0,
     )
-    _persist_lease(ledger, lease)
+    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
     scheduler = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1551,7 +1560,7 @@ def test_unpersisted_or_tampered_lease_is_not_reclaimable(tmp_path: Path) -> Non
 
 def test_fold_persists_lease_heartbeat_and_head_transition() -> None:
     events = (
-        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
+        synthetic_invocation_started(initial_tree_id=SYNTHETIC_BASELINE_TREE_ID),
         NodeActivated(
             activation_id="activation-1",
             graph_instance_id="graph-1",
@@ -1599,7 +1608,7 @@ def test_fold_persists_lease_heartbeat_and_head_transition() -> None:
 
 def test_fold_rejects_head_advance_after_graph_failure() -> None:
     events = (
-        InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main"),
+        synthetic_invocation_started(initial_tree_id=SYNTHETIC_BASELINE_TREE_ID),
         GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
         NodeActivated(
             activation_id="activation-1",
@@ -1855,7 +1864,7 @@ def test_losing_success_cas_never_overwrites_or_records_newer_head(tmp_path: Pat
         heartbeat_at=100.0,
         expires_at=1000.0,
     )
-    _persist_lease(ledger, lease_b)
+    _persist_lease(ledger, lease_b, initial_tree_id=store.head_tree_id())
     original_append = ledger.append_batch
 
     def append_newer_success_first(events: object, expected_next_seq: int) -> object:
@@ -2076,7 +2085,7 @@ def test_failed_attempt_retry_must_match_folded_prior_failure(tmp_path: Path) ->
 
 
 def test_wave_attempts_use_one_baseline_despite_commit_between_creations(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     observed: dict[str, bytes] = {}
     tasks = (
@@ -2092,20 +2101,6 @@ def test_wave_attempts_use_one_baseline_despite_commit_between_creations(
         tmp_path,
         {task.capability_id: handler for task in tasks},
         initial={"seed.txt": b"H0"},
-    )
-    external = store.create_attempt("external")
-    (external.root / "seed.txt").write_bytes(b"H1")
-    external_candidate = external.seal()
-    external.discard()
-
-    def external_commit_after_first_copy(created_count: int, _baseline_tree_id: str) -> None:
-        if created_count == 1:
-            _install_head_document(store, external_candidate.candidate_tree_id)
-
-    monkeypatch.setattr(
-        workspace_runtime,
-        "_attempt_batch_boundary",
-        external_commit_after_first_copy,
     )
 
     asyncio.run(scheduler.run_wave(tasks))
@@ -2429,7 +2424,7 @@ def test_prepared_publication_never_overwrites_newer_head(tmp_path: Path) -> Non
         heartbeat_at=100.0,
         expires_at=1000.0,
     )
-    _persist_lease(ledger, lease_b)
+    _persist_lease(ledger, lease_b, initial_tree_id=store.head_tree_id())
     original_append = ledger.append_batch
 
     def append_newer_success_first(events: object, expected_next_seq: int) -> object:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bootstrap_fixtures import synthetic_invocation_started
 import asyncio
 from pathlib import Path
 from typing import Any
@@ -195,7 +196,7 @@ def _scheduler(
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
         (
-            InvocationStarted(invocation_id="inv-1", lock_digest=_LOCK, entrypoint="main"),
+            synthetic_invocation_started(lock_digest=_LOCK),
             GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
             NodeActivated(
                 activation_id=task.activation_id,

@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from bootstrap_fixtures import synthetic_invocation_started
+
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition import (
     CapabilityRegistry,
@@ -198,7 +200,7 @@ def _projection_after(events: tuple[object, ...], plan_events: tuple[object, ...
 
 
 def _invocation() -> InvocationStarted:
-    return InvocationStarted(invocation_id="inv-1", lock_digest="a" * 64, entrypoint="main")
+    return synthetic_invocation_started()
 
 
 def _root() -> GraphStarted:
@@ -1148,7 +1150,7 @@ def test_successful_task_completion_is_routed_structurally() -> None:
     activation = activation_id("root", "work", 0, (start_token.token_id,))
     identifier = task_id(activation)
     events = (
-        _invocation(),
+        synthetic_invocation_started(initial_tree_id="a" * 64),
         _root(),
         *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
@@ -1200,7 +1202,7 @@ def test_completed_end_is_rechecked_after_later_task_settlement() -> None:
     identifier = task_id(work_activation)
     assert end_activation < work_activation
     events = (
-        _invocation(),
+        synthetic_invocation_started(initial_tree_id="a" * 64),
         _root(),
         TokenOffered(
             token_id="end-token",

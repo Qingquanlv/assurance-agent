@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bootstrap_fixtures import synthetic_invocation_started
 import asyncio
 from collections.abc import Sequence
 from pathlib import Path
@@ -366,7 +367,7 @@ def _effect_executor(
     )
     ledger = Ledger(tmp_path / "ledger")
     events: list[object] = [
-        InvocationStarted(invocation_id="inv-1", lock_digest=_LOCK, entrypoint="main"),
+        synthetic_invocation_started(lock_digest=_LOCK),
         GraphStarted(graph_instance_id="root", graph_id="root"),
     ]
     previous_tree_id = _EMPTY
