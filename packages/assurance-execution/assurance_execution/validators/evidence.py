@@ -16,6 +16,7 @@ from assurance_execution.contracts.selection import ClosedMappingV1
 _OUTSIDE_REASON = "execution candidate may write only tests and change execution paths"
 _UNMAPPED_REASON = "execution evidence contains a test outside the closed mapping"
 _COVER_REASON = "execution evidence must uniquely cover the closed mapping"
+_MAPPING_MISMATCH_REASON = "execution evidence mapping does not match the locked mapping"
 _ALLOWED_PREFIXES = ("tests/", "qa/changes/")
 
 
@@ -40,6 +41,15 @@ def _is_test_module(path: str) -> bool:
     return posix.stem.startswith("test_") or posix.stem.endswith("_test")
 
 
+class _EvidenceLoadError(ValueError):
+    """Present evidence bytes failed to parse or validate."""
+
+
+def _is_evidence_name(path: str) -> bool:
+    name = PurePosixPath(path).name
+    return name == "execution-evidence.json" or name.endswith("-execution-evidence.json")
+
+
 def _load_evidence(
     file_bytes: Mapping[str, bytes],
     *,
@@ -52,14 +62,13 @@ def _load_evidence(
         if value is not None
     }
     for path, payload in file_bytes.items():
-        name = PurePosixPath(path).name
-        if name not in {"execution-evidence.json"} and not name.endswith("-execution-evidence.json"):
+        if not _is_evidence_name(path):
             continue
         try:
             raw = json.loads(payload.decode("utf-8"))
             return ExecutionEvidenceV1.model_validate(raw, context=context or None)
-        except (UnicodeDecodeError, json.JSONDecodeError, ValidationError):
-            continue
+        except (UnicodeDecodeError, json.JSONDecodeError, ValidationError) as error:
+            raise _EvidenceLoadError(str(error)) from error
     return None
 
 
@@ -97,13 +106,18 @@ class ExecutionEvidenceValidator:
                     return ValidationResult(accepted=False, reason=_UNMAPPED_REASON)
         if not self._file_bytes:
             return ValidationResult(accepted=True)
-        evidence = _load_evidence(
-            self._file_bytes,
-            capability_leafs=self._capability_leafs,
-            case_ids=self._case_ids,
-        )
+        try:
+            evidence = _load_evidence(
+                self._file_bytes,
+                capability_leafs=self._capability_leafs,
+                case_ids=self._case_ids,
+            )
+        except _EvidenceLoadError as error:
+            return ValidationResult(accepted=False, reason=str(error))
         if evidence is None:
             return ValidationResult(accepted=True)
+        if self._mapping is not None and evidence.mapping != self._mapping:
+            return ValidationResult(accepted=False, reason=_MAPPING_MISMATCH_REASON)
         mapped = frozenset(evidence.mapping.selected)
         result_tests = tuple(item.test for item in evidence.results)
         if any(test not in mapped for test in result_tests):
