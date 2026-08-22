@@ -9,7 +9,12 @@ from graph_engine.canonical import JSONValue
 
 from tests.phase4.conformance import execute_task
 
-from assurance_quality.contracts.coverage import CoverageGapsDocument, MinimumCoverageResult
+from assurance_quality.contracts.coverage import (
+    CoverageGap,
+    CoverageGapLocator,
+    CoverageGapsDocument,
+    MinimumCoverageResult,
+)
 from assurance_quality.contracts.c_layer import CLayerMetricsDocument
 from assurance_quality.contracts.pr_metrics import (
     AuthMatrixEvidence,
@@ -17,6 +22,7 @@ from assurance_quality.contracts.pr_metrics import (
     JourneyCoverageEvidence,
 )
 from assurance_quality.contracts.quarantine import QuarantineProjection
+from assurance_healing.contracts.coverage_repair import CoverageRepairBrief
 from assurance_quality.operations.coverage import (
     AuthMatrixInput,
     BuildCoverageGapsHandler,
@@ -38,6 +44,7 @@ from assurance_quality.operations.coverage import (
     compute_constraint_coverage,
     compute_journey_coverage,
     compute_threshold_slack,
+    coverage_gap_to_repair_brief,
     default_c_layer_entry,
 )
 from assurance_quality.operations.trace import MaterializeTraceHandler
@@ -371,3 +378,27 @@ def test_constraint_auth_journey_slack_persist_source_digest() -> None:
     assert auth.source_digest == "deadbeef"
     assert journey.source_digest == "deadbeef"
     assert slack.source_digest == "deadbeef"
+
+
+def test_coverage_gap_converts_to_healing_repair_brief() -> None:
+    document = CoverageGapsDocument(
+        schema_version="1",
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        projection_digest=f"sha256:{HEX_A}",
+        gaps=(
+            CoverageGap(
+                kind="uncovered_required_case",
+                locator=CoverageGapLocator(case_id=CASE_ID),
+                layer="execution",
+                batch_id=BATCH_ID,
+                evidence_refs=(f"sha256:{HEX_A}",),
+            ),
+        ),
+    )
+    brief = coverage_gap_to_repair_brief(document)
+    assert isinstance(brief, CoverageRepairBrief)
+    assert brief.change_id == CHANGE_ID
+    assert brief.batch_id == BATCH_ID
+    assert brief.eligible is False
+    assert brief.repair_items[0].kind == "uncovered_required_case"

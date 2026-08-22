@@ -1,5 +1,6 @@
 # Phase 4 capability ownership ledger. Migration authority; not loaded at runtime.
 # Task 16: improvement agent/effects extracted; operation/validator/module/hook rows stay planned.
+# Task 17: cross-wheel catalog/handoff/registry closure. No legacy row flips this task.
 schema_version: '1'
 dependencies:
   assurance.intake: []

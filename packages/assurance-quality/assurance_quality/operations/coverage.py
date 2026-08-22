@@ -16,6 +16,13 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.plans import LayerApplicability
+from assurance_healing.contracts.coverage_repair import (
+    CoverageRepairBrief,
+    DeferredItem,
+    RepairItem,
+    RepairLocator,
+    RepairableGapKind,
+)
 from assurance_quality.contracts.coverage import (
     CoverageGap,
     CoverageGapFeedstock,
@@ -458,6 +465,63 @@ def derive_layer_applicability(
         applicable=bool(ordered),
         reason_code="automated_cases_present" if ordered else "no_automated_cases",
         case_ids=ordered,
+    )
+
+
+_REPAIRABLE_GAP_KINDS: frozenset[str] = frozenset(
+    {
+        "uncovered_required_case",
+        "stale_required_case",
+        "constraint_without_property",
+        "matrix_cell_unasserted",
+    }
+)
+_GAP_METRICS: dict[str, str] = {
+    "uncovered_required_case": "coverage",
+    "stale_required_case": "coverage",
+    "constraint_without_property": "constraint_coverage",
+    "matrix_cell_unasserted": "auth_matrix",
+}
+
+
+def coverage_gap_to_repair_brief(document: CoverageGapsDocument) -> CoverageRepairBrief:
+    """Convert a quality-owned gap document into a healing-owned repair brief."""
+
+    repair_items: list[RepairItem] = []
+    deferred: list[DeferredItem] = []
+    for gap in document.gaps:
+        locator = RepairLocator(
+            case_id=gap.locator.case_id,
+            constraint_key=gap.locator.constraint_key,
+            cell=gap.locator.cell,
+            cluster_key=gap.locator.cluster_key,
+        )
+        if gap.layer == "declaration":
+            deferred.append(DeferredItem(kind=gap.kind, locator=locator, reason="declaration_layer"))
+            continue
+        if gap.kind == "unmapped_test_cluster":
+            deferred.append(DeferredItem(kind=gap.kind, locator=locator, reason="unmapped_cluster"))
+            continue
+        if gap.kind in _REPAIRABLE_GAP_KINDS:
+            repair_items.append(
+                RepairItem(
+                    kind=cast(RepairableGapKind, gap.kind),
+                    locator=locator,
+                    metric=_GAP_METRICS[gap.kind],
+                )
+            )
+            continue
+        deferred.append(DeferredItem(kind=gap.kind, locator=locator, reason="not_repairable_metric"))
+    return CoverageRepairBrief(
+        schema_version="1",
+        change_id=document.change_id,
+        batch_id=document.batch_id,
+        probe_verdict="needs_human" if repair_items else "skipped",
+        eligible=False,
+        allowed_test_files=(),
+        shortboards=(),
+        repair_items=tuple(repair_items),
+        deferred_to_intake=tuple(deferred),
     )
 
 
