@@ -3,6 +3,18 @@ from types import MappingProxyType
 
 from graph_engine.plugin_api import TaskHandler
 
+from assurance_quality.operations.agent_skills import (
+    FactBaselineFinalizeHandler,
+    FactBaselinePrepareHandler,
+    InspectFinalizeHandler,
+    InspectPrepareHandler,
+    IssueAnalysisFinalizeHandler,
+    IssueAnalysisPrepareHandler,
+    IssueTriageFinalizeHandler,
+    IssueTriagePrepareHandler,
+    ReportFinalizeHandler,
+    ReportPrepareHandler,
+)
 from assurance_quality.operations.coverage import (
     BuildCoverageGapsHandler,
     CollectDiffCoverageHandler,
@@ -17,6 +29,7 @@ from assurance_quality.operations.coverage import (
     MaterializeTraceAndCoverageGapsHandler,
     ProbeCoverageRepairNeedHandler,
 )
+from assurance_quality.operations.inspect import InspectHandler
 from assurance_quality.operations.issues import (
     ApplyProblemReviewHandler,
     CollectObservationsHandler,
@@ -40,6 +53,7 @@ from assurance_quality.operations.nightly import (
     EvaluateRetrospectiveShortboardsHandler,
     RunNightlyMetricsPipelineHandler,
 )
+from assurance_quality.operations.report import DashboardHandler, GenerateReportHandler
 from assurance_quality.operations.trace import MaterializeTraceHandler
 
 
@@ -59,8 +73,19 @@ def quality_handlers() -> Mapping[str, TaskHandler]:
             "assurance.quality.compute-constraint-coverage": ComputeConstraintCoverageHandler(),
             "assurance.quality.compute-journey-coverage": ComputeJourneyCoverageHandler(),
             "assurance.quality.compute-threshold-slack": ComputeThresholdSlackHandler(),
+            "assurance.quality.dashboard": DashboardHandler(),
             "assurance.quality.derive-plan-layer-applicability": DerivePlanLayerApplicabilityHandler(),
             "assurance.quality.evaluate-retrospective-shortboards": EvaluateRetrospectiveShortboardsHandler(),
+            "assurance.quality.fact-baseline.finalize": FactBaselineFinalizeHandler(),
+            "assurance.quality.fact-baseline.prepare": FactBaselinePrepareHandler(),
+            "assurance.quality.generate-report": GenerateReportHandler(),
+            "assurance.quality.inspect": InspectHandler(),
+            "assurance.quality.inspect.finalize": InspectFinalizeHandler(),
+            "assurance.quality.inspect.prepare": InspectPrepareHandler(),
+            "assurance.quality.issue-analysis.finalize": IssueAnalysisFinalizeHandler(),
+            "assurance.quality.issue-analysis.prepare": IssueAnalysisPrepareHandler(),
+            "assurance.quality.issue-triage.finalize": IssueTriageFinalizeHandler(),
+            "assurance.quality.issue-triage.prepare": IssueTriagePrepareHandler(),
             "assurance.quality.load-latest-pr-metrics": LoadLatestPrMetricsHandler(),
             "assurance.quality.load-problem-review-context": LoadProblemReviewContextHandler(),
             "assurance.quality.materialize-c-layer-metrics": MaterializeCLayerMetricsHandler(),
@@ -74,6 +99,8 @@ def quality_handlers() -> Mapping[str, TaskHandler]:
             "assurance.quality.record-empty-issue-analysis": RecordEmptyIssueAnalysisHandler(),
             "assurance.quality.record-issue-analysis-failure": RecordIssueAnalysisFailureHandler(),
             "assurance.quality.record-project-sync-pending": RecordProjectSyncPendingHandler(),
+            "assurance.quality.report.finalize": ReportFinalizeHandler(),
+            "assurance.quality.report.prepare": ReportPrepareHandler(),
             "assurance.quality.run-mutation-sample": RunMutationSampleHandler(),
             "assurance.quality.run-nightly-metrics-pipeline": RunNightlyMetricsPipelineHandler(),
         }
@@ -94,7 +121,18 @@ __all__ = [
     "ComputeConstraintCoverageHandler",
     "ComputeJourneyCoverageHandler",
     "ComputeThresholdSlackHandler",
+    "DashboardHandler",
     "DerivePlanLayerApplicabilityHandler",
+    "FactBaselineFinalizeHandler",
+    "FactBaselinePrepareHandler",
+    "GenerateReportHandler",
+    "InspectFinalizeHandler",
+    "InspectHandler",
+    "InspectPrepareHandler",
+    "IssueAnalysisFinalizeHandler",
+    "IssueAnalysisPrepareHandler",
+    "IssueTriageFinalizeHandler",
+    "IssueTriagePrepareHandler",
     "EvaluateRetrospectiveShortboardsHandler",
     "LoadLatestPrMetricsHandler",
     "LoadProblemReviewContextHandler",
@@ -109,6 +147,8 @@ __all__ = [
     "RecordEmptyIssueAnalysisHandler",
     "RecordIssueAnalysisFailureHandler",
     "RecordProjectSyncPendingHandler",
+    "ReportFinalizeHandler",
+    "ReportPrepareHandler",
     "RunMutationSampleHandler",
     "RunNightlyMetricsPipelineHandler",
     "quality_handlers",

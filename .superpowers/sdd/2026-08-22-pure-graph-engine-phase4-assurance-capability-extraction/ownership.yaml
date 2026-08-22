@@ -1,5 +1,5 @@
 # Phase 4 capability ownership ledger. Migration authority; not loaded at runtime.
-# Task 13: quality operations and validators extracted; operation/validator rows stay planned.
+# Task 14: quality agent/report capabilities extracted; operation/validator rows stay planned.
 schema_version: '1'
 dependencies:
   assurance.intake: []
@@ -2633,8 +2633,8 @@ items:
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-dashboard.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-quality/tests/test_agent_skills.py::test_quality_resources_forbid_legacy_and_provider_names
 - kind: skill
   legacy_id: aa-e2e-codegen
   disposition: migrate
@@ -2682,8 +2682,8 @@ items:
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-fact-baseline.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-quality/tests/test_agent_skills.py::test_each_prepare_locks_skill_persona_and_execution
 - kind: skill
   legacy_id: aa-fix-proposal
   disposition: migrate
@@ -2724,8 +2724,8 @@ items:
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-inspect.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-quality/tests/test_inspect.py::test_inspect_classifies_locator_failure
 - kind: skill
   legacy_id: aa-intake
   disposition: migrate
@@ -2738,15 +2738,15 @@ items:
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-issue-analyzer.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-quality/tests/test_agent_skills.py::test_issue_finalize_rejects_candidate_without_owned_evidence
 - kind: skill
   legacy_id: aa-issue-triage-advisor
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-issue-triage-advisor.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-quality/tests/test_agent_skills.py::test_issue_triage_finalize_rejects_unauthenticated_evidence_digest
 - kind: skill
   legacy_id: aa-performance-codegen
   disposition: migrate
@@ -2773,8 +2773,8 @@ items:
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-report-generator.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-quality/tests/test_report.py::test_generate_report_uses_gate_status_not_issue_risk
 - kind: skill
   legacy_id: aa-retro
   disposition: migrate
@@ -2857,8 +2857,8 @@ items:
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.persona.reporter.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-quality/tests/test_agent_skills.py::test_quality_resources_forbid_legacy_and_provider_names
 - kind: persona
   legacy_id: aa-reviewer
   disposition: migrate

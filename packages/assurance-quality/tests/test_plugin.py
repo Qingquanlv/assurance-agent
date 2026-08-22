@@ -69,9 +69,11 @@ def test_quality_source_identity() -> None:
     assert QualityPlugin.descriptor().commit_validators == QUALITY_VALIDATOR_IDS
     assert tuple(QUALITY_HANDLER_IDS) == tuple(sorted(QUALITY_HANDLER_IDS))
     assert tuple(QUALITY_VALIDATOR_IDS) == tuple(sorted(QUALITY_VALIDATOR_IDS))
-    assert "assurance.quality.inspect" not in QUALITY_HANDLER_IDS
-    assert "assurance.quality.generate-report" not in QUALITY_HANDLER_IDS
-    assert QualityPlugin.descriptor().resources == ()
+    assert "assurance.quality.inspect" in QUALITY_HANDLER_IDS
+    assert "assurance.quality.generate-report" in QUALITY_HANDLER_IDS
+    assert "assurance.quality.dashboard" in QUALITY_HANDLER_IDS
+    assert "assurance.quality.validator.report.v1" in QUALITY_VALIDATOR_IDS
+    assert QualityPlugin.descriptor().resources
     assert QualityPlugin.descriptor().effects == ()
     assert QualityPlugin.descriptor().bindings == ()
 
