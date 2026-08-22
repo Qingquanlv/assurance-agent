@@ -26,6 +26,31 @@ def test_capture_rejects_file_size_limit(tmp_path: Path) -> None:
         capture_workspace_seed(source, policy=policy)
 
 
+def test_capture_rejects_oversize_file_without_full_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "sut"
+    source.mkdir()
+    limit = 16
+    (source / "large.bin").write_bytes(b"x" * (64 * 1024))
+    policy = SeedCapturePolicy(maximum_file_bytes=limit)
+
+    bytes_read = 0
+    original_read = os.read
+
+    def tracking_read(fd: int, size: int) -> bytes:
+        nonlocal bytes_read
+        data = original_read(fd, size)
+        bytes_read += len(data)
+        return data
+
+    monkeypatch.setattr(os, "read", tracking_read)
+    with pytest.raises(SeedCaptureError, match="maximum_file_bytes"):
+        capture_workspace_seed(source, policy=policy)
+    assert bytes_read == 0
+
+
 def test_capture_rejects_total_size_limit(tmp_path: Path) -> None:
     source = tmp_path / "sut"
     source.mkdir()

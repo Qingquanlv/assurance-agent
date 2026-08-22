@@ -41,6 +41,12 @@ _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_
 _FILE_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 
 
+@dataclass
+class _CaptureState:
+    total_bytes: int = 0
+    file_count: int = 0
+
+
 class SeedCaptureError(GraphEngineError):
     """Raised when a workspace tree cannot be captured exactly."""
 
@@ -174,16 +180,9 @@ def _capture_regular_files_beneath(source: Path, policy: SeedCapturePolicy) -> I
     _require_posix_primitives()
     root_fd = _open_absolute_directory(source.absolute())
     captured: list[SeedFile] = []
-    total_bytes = 0
+    state = _CaptureState()
     try:
-        for seed_file in _walk_capture(root_fd, policy, prefix=""):
-            if len(captured) + 1 > policy.maximum_file_count:
-                raise SeedCaptureError("capture exceeds maximum_file_count")
-            total_bytes += len(seed_file.content)
-            if len(seed_file.content) > policy.maximum_file_bytes:
-                raise SeedCaptureError("capture exceeds maximum_file_bytes")
-            if total_bytes > policy.maximum_total_bytes:
-                raise SeedCaptureError("capture exceeds maximum_total_bytes")
+        for seed_file in _walk_capture(root_fd, policy, prefix="", state=state):
             captured.append(seed_file)
     except WorkspaceViolation as error:
         message = str(error)
@@ -201,6 +200,7 @@ def _walk_capture(
     policy: SeedCapturePolicy,
     *,
     prefix: str,
+    state: _CaptureState,
 ) -> Iterator[SeedFile]:
     root_stat = os.fstat(directory_fd)
     if not stat.S_ISDIR(root_stat.st_mode):
@@ -224,7 +224,7 @@ def _walk_capture(
         if stat.S_ISDIR(entry.st_mode):
             child_fd, child_stat = _open_directory_at(directory_fd, name, "capture directory")
             try:
-                yield from _walk_capture(child_fd, policy, prefix=relative_path)
+                yield from _walk_capture(child_fd, policy, prefix=relative_path, state=state)
                 child_final = os.fstat(child_fd)
             finally:
                 os.close(child_fd)
@@ -233,7 +233,9 @@ def _walk_capture(
             continue
         if not stat.S_ISREG(entry.st_mode):
             raise SeedCaptureError(f"path is not a regular file: {relative_path}")
-        yield _capture_regular_file(directory_fd, name, relative_path)
+        if state.file_count + 1 > policy.maximum_file_count:
+            raise SeedCaptureError("capture exceeds maximum_file_count")
+        yield _capture_regular_file(directory_fd, name, relative_path, policy, state)
         final_entries[name] = _entry_state(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
     final_root = os.fstat(directory_fd)
     if (final_root.st_dev, final_root.st_ino) != (root_stat.st_dev, root_stat.st_ino):
@@ -251,14 +253,42 @@ def _walk_capture(
             raise SeedCaptureError(f"capture entry state changed during walk: {name}")
 
 
-def _capture_regular_file(parent_fd: int, name: str, relative_path: str) -> SeedFile:
+def _capture_regular_file(
+    parent_fd: int,
+    name: str,
+    relative_path: str,
+    policy: SeedCapturePolicy,
+    state: _CaptureState,
+) -> SeedFile:
     file_fd, file_stat = _open_file_at(parent_fd, name, relative_path, immutable=False)
     try:
+        if file_stat.st_size > policy.maximum_file_bytes:
+            raise SeedCaptureError("capture exceeds maximum_file_bytes")
+        if state.total_bytes + file_stat.st_size > policy.maximum_total_bytes:
+            raise SeedCaptureError("capture exceeds maximum_total_bytes")
+
         digest = hashlib.sha256()
         chunks: list[bytes] = []
-        while chunk := os.read(file_fd, _COPY_BUFFER_SIZE):
+        current_size = 0
+        while True:
+            remaining_file = policy.maximum_file_bytes - current_size
+            remaining_total = policy.maximum_total_bytes - state.total_bytes - current_size
+            read_size = min(_COPY_BUFFER_SIZE, remaining_file, remaining_total)
+            if read_size <= 0:
+                if remaining_file <= 0:
+                    raise SeedCaptureError("capture exceeds maximum_file_bytes")
+                raise SeedCaptureError("capture exceeds maximum_total_bytes")
+            chunk = os.read(file_fd, read_size)
+            if not chunk:
+                break
+            current_size += len(chunk)
+            if current_size > policy.maximum_file_bytes:
+                raise SeedCaptureError("capture exceeds maximum_file_bytes")
+            if state.total_bytes + current_size > policy.maximum_total_bytes:
+                raise SeedCaptureError("capture exceeds maximum_total_bytes")
             chunks.append(chunk)
             digest.update(chunk)
+
         content = b"".join(chunks)
         _assert_open_file_stable(
             file_fd,
@@ -271,6 +301,8 @@ def _capture_regular_file(parent_fd: int, name: str, relative_path: str) -> Seed
         sha256 = digest.hexdigest()
         if hashlib.sha256(content).hexdigest() != sha256:
             raise SeedCaptureError(f"capture digest mismatch before close: {relative_path}")
+        state.total_bytes += len(content)
+        state.file_count += 1
         return SeedFile(path=relative_path, sha256=sha256, content=content)
     except WorkspaceViolation as error:
         raise SeedCaptureError(str(error)) from error
