@@ -32,6 +32,38 @@ class AcceptedOpenCodeProfile(FrozenModel):
     poll_fallback_supported: bool = True
 
 
+_LOCKED_PROMPT_IDEMPOTENCY = "conflict-on-body-drift"
+
+
+def locked_opencode_profile(config: OpenCodeAdapterConfig) -> AcceptedOpenCodeProfile:
+    defaults = OpenCodeProtocolProfile.model_validate(
+        {"prompt_idempotency": _LOCKED_PROMPT_IDEMPOTENCY}
+    )
+    return AcceptedOpenCodeProfile(
+        protocol_profile=config.protocol_profile,
+        prompt_admission=defaults.prompt_admission,
+        prompt_idempotency=_LOCKED_PROMPT_IDEMPOTENCY,
+        metadata_supported=True,
+        sse_supported=True,
+        poll_fallback_supported=defaults.poll_fallback_supported,
+    )
+
+
+def resolve_advertised_profile(
+    advertised: Mapping[str, Any],
+    config: OpenCodeAdapterConfig,
+) -> AcceptedOpenCodeProfile:
+    if "protocol_profile" not in advertised:
+        return locked_opencode_profile(config)
+    profile = AcceptedOpenCodeProfile.model_validate(advertised)
+    if profile.protocol_profile != config.protocol_profile:
+        raise ValueError(
+            f"advertised protocol profile {profile.protocol_profile!r} "
+            f"does not match locked binding {config.protocol_profile!r}"
+        )
+    return profile
+
+
 class _RedirectTarget(FrozenModel):
     location: str
     origin: str
@@ -57,12 +89,15 @@ class OpenCodeHttpClient:
     def __init__(self, config: OpenCodeAdapterConfig, *, secret: bytes) -> None:
         self._config = config
         self._origin = config.origin
+        headers: dict[str, str] = {}
+        if secret:
+            headers["Authorization"] = f"Bearer {secret.decode('utf-8')}"
         self._client = httpx.AsyncClient(
             base_url=self._origin,
             timeout=httpx.Timeout(config.request_timeout_seconds),
             follow_redirects=False,
             trust_env=False,
-            headers={"Authorization": f"Bearer {secret.decode('utf-8')}"},
+            headers=headers,
         )
 
     async def aclose(self) -> None:

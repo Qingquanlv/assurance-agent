@@ -370,6 +370,8 @@ def _validate_launch_request(request: ProcessLaunchRequest) -> None:
 def _spawn_environment(request: ProcessLaunchRequest) -> Mapping[str, str]:
     resolved = dict(request.environment)
     resolved["PYTHONUNBUFFERED"] = "1"
+    if "HOME" not in resolved:
+        resolved["HOME"] = str(request.cwd.resolve())
     return MappingProxyType(resolved)
 
 

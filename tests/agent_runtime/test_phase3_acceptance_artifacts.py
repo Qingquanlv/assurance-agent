@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -150,6 +151,7 @@ def test_run_item_fails_closed_when_cursor_secret_is_unset(
     executable.write_text(f"#!/bin/sh\necho '{version}'\n", encoding="utf-8")
     executable.chmod(0o755)
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    monkeypatch.setattr(driver, "_load_cursor_api_key_from_keychain", lambda: None)
     code = driver._check_cursor(
         {
             "executable": str(executable),
@@ -161,17 +163,49 @@ def test_run_item_fails_closed_when_cursor_secret_is_unset(
     assert code == 1
 
 
-def test_run_item_fails_closed_when_opencode_profile_is_missing(
+def test_run_item_allows_opencode_without_token_when_session_is_reachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _load_run_item()
+    monkeypatch.delenv("OPENCODE_PHASE3_TOKEN", raising=False)
+
+    def _fetch_json(url: str) -> object:
+        if url.endswith("/global/health"):
+            return {"version": "1.18.4"}
+        if url.endswith("/config"):
+            return {"model": "provider_default", "mcp": {}, "tools": []}
+        if url.endswith("/session"):
+            return []
+        raise ValueError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(driver, "_fetch_json", _fetch_json)
+    code = driver._check_opencode(
+        {
+            "endpoint": "http://127.0.0.1:4096",
+            "external_tool_version": "1.18.4",
+            "protocol_profile": "opencode-http-v1",
+            "secret_env": "OPENCODE_PHASE3_TOKEN",
+        }
+    )
+    assert code == 0
+    assert os.environ.get("OPENCODE_PHASE3_TOKEN") == ""
+
+
+def test_run_item_fails_closed_when_opencode_session_is_unreachable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     driver = _load_run_item()
 
-    def _json_get(url: str) -> dict[str, object]:
+    def _fetch_json(url: str) -> object:
         if url.endswith("/global/health"):
             return {"version": "1.18.4"}
-        return {"name": "not-the-pinned-profile"}
+        if url.endswith("/config"):
+            return {"model": "provider_default"}
+        if url.endswith("/session"):
+            raise OSError("connection refused")
+        raise ValueError(f"unexpected url: {url}")
 
-    monkeypatch.setattr(driver, "_json_get", _json_get)
+    monkeypatch.setattr(driver, "_fetch_json", _fetch_json)
     monkeypatch.delenv("OPENCODE_PHASE3_TOKEN", raising=False)
     code = driver._check_opencode(
         {

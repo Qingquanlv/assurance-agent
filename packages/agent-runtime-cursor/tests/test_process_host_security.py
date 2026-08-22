@@ -82,8 +82,10 @@ async def test_spawn_rejects_ambient_environment(tmp_path: Path, monkeypatch: py
     await host.spawn(request)
     env = captured["kwargs"]["env"]  # type: ignore[index]
     assert isinstance(env, dict)
-    assert set(env) <= {"PATH", "PYTHONUNBUFFERED"}
+    assert set(env) <= {"PATH", "PYTHONUNBUFFERED", "HOME"}
+    assert env["HOME"] == str(tmp_path.resolve())
     assert "CURSOR_SHOULD_NOT_LEAK" not in env
+    assert set(request.environment) == {"PATH"}
 
 
 async def test_spawn_rejects_shell_execution(tmp_path: Path) -> None:
@@ -173,7 +175,8 @@ def test_macos_spawn_uses_new_process_group(tmp_path: Path, monkeypatch: pytest.
     assert kwargs.get("shell") is False
     env = kwargs["env"]
     assert isinstance(env, dict)
-    assert set(env) <= {"PATH", "PYTHONUNBUFFERED"}
+    assert set(env) <= {"PATH", "PYTHONUNBUFFERED", "HOME"}
+    assert env["HOME"] == str(tmp_path.resolve())
 
 
 def test_linux_spawn_records_supervised_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

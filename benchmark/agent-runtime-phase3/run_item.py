@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import importlib
 import json
@@ -23,9 +22,7 @@ from urllib.request import Request, urlopen
 from agent_runtime_contracts import AgentRunRequest
 from agent_runtime_contracts.schema import canonical_digest
 from agent_runtime_cursor.config import CursorAdapterConfig
-from agent_runtime_fixture import RUN_CAPABILITY_ID
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
-from agent_runtime_opencode.protocol import AcceptedOpenCodeProfile
 from graph_engine.canonical import canonical_digest as engine_digest
 from graph_engine.composition import (
     EditableWheelPluginSource,
@@ -34,7 +31,6 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.plugin_api import CapabilityBindingContribution, PluginContribution, RegistryPorts
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.models import attempt_directory_id
 from graph_engine.runtime.planner import _start_token_id, activation_id, task_id
@@ -263,35 +259,42 @@ def _activate_editable_imports(request: ResolutionRequest) -> None:
     importlib.invalidate_caches()
 
 
-def _patch_binding_plugins(
+def _patch_copied_binding_plugin(
     *,
+    copies: dict[str, tuple[Path, tuple[str, ...]]],
     adapter: str,
     binding_data: dict[str, Any],
     secret_handle: str,
 ) -> None:
-    bindings_mod = importlib.import_module("agent_runtime_fixture.bindings")
+    cached = copies.get("agent-runtime-fixture")
+    if cached is None:
+        raise SystemExit("fixture copy is required to patch locked binding data")
+    root, _files = cached
+    bindings_path = root / "agent_runtime_fixture" / "bindings.py"
     target = "runtime.opencode.execute" if adapter == "opencode" else "runtime.cursor.execute"
+    plugin_class = "OpenCodeBindingPlugin" if adapter == "opencode" else "CursorBindingPlugin"
+    payload = json.dumps(binding_data, indent=4, sort_keys=True)
+    secret = json.dumps(secret_handle)
+    appendix = f"""
 
-    def contribute(ports: RegistryPorts) -> PluginContribution:
-        from graph_engine import ENGINE_API_VERSION
-
-        if ports.engine_api != ENGINE_API_VERSION:
-            raise ValueError(f"unsupported engine API: {ports.engine_api!r}")
-        return PluginContribution(
-            bindings=(
-                CapabilityBindingContribution(
-                    capability_id=RUN_CAPABILITY_ID,
-                    target_capability_id=target,
-                    data=binding_data,
-                    secret_handles=(secret_handle,),
-                ),
+def _phase3_locked_binding_contribute(ports: RegistryPorts) -> PluginContribution:
+    if ports.engine_api != ENGINE_API_VERSION:
+        raise ValueError(f"unsupported engine API: {{ports.engine_api!r}}")
+    return PluginContribution(
+        bindings=(
+            CapabilityBindingContribution(
+                capability_id=RUN_CAPABILITY_ID,
+                target_capability_id={json.dumps(target)},
+                data={payload},
+                secret_handles=({secret},),
             ),
-        )
+        ),
+    )
 
-    if adapter == "opencode":
-        bindings_mod.OpenCodeBindingPlugin.contribute = staticmethod(contribute)  # type: ignore[method-assign]
-    else:
-        bindings_mod.CursorBindingPlugin.contribute = staticmethod(contribute)  # type: ignore[method-assign]
+
+{plugin_class}.contribute = staticmethod(_phase3_locked_binding_contribute)
+"""
+    bindings_path.write_text(bindings_path.read_text(encoding="utf-8") + appendix, encoding="utf-8")
 
 
 def _resolve_composition(
@@ -309,16 +312,17 @@ def _resolve_composition(
         if plugin.get("kind") != "wheel_plugin":
             raise SystemExit(f"unsupported manifest plugin kind: {plugin.get('kind')!r}")
         plugins.append(_editable_plugin(plugin, repo, stack, copies))
+    _patch_copied_binding_plugin(
+        copies=copies,
+        adapter=item.adapter,
+        binding_data={key: value for key, value in locked_binding.items() if key != "model"},
+        secret_handle=item.secret_handle,
+    )
     request = ResolutionRequest(
         product=_editable_product(document["product"], repo, stack, copies),
         plugins=tuple(plugins),
     )
     _activate_editable_imports(request)
-    _patch_binding_plugins(
-        adapter=item.adapter,
-        binding_data={key: value for key, value in locked_binding.items() if key != "model"},
-        secret_handle=item.secret_handle,
-    )
     return RegistryPlatform().resolve(request)
 
 
@@ -338,12 +342,32 @@ def _runtime_authorization(item: ManifestItem) -> InvocationRuntimeAuthorization
 
 
 def _json_get(url: str) -> dict[str, Any]:
-    request = Request(url, headers={"Accept": "application/json"}, method="GET")
-    with urlopen(request, timeout=5) as response:  # noqa: S310 - pinned local/release endpoint
-        payload = json.loads(response.read().decode("utf-8"))
+    payload = _fetch_json(url)
     if not isinstance(payload, dict):
         raise ValueError("response is not a JSON object")
     return payload
+
+
+def _fetch_json(url: str) -> Any:
+    request = Request(url, headers={"Accept": "application/json"}, method="GET")
+    with urlopen(request, timeout=5) as response:  # noqa: S310 - pinned local/release endpoint
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _load_cursor_api_key_from_keychain() -> str | None:
+    try:
+        completed = subprocess.run(  # noqa: S603
+            ["security", "find-generic-password", "-s", "cursor-access-token", "-w"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    token = completed.stdout.strip()
+    return token or None
 
 
 def _check_opencode(adapter: dict[str, Any]) -> int:
@@ -358,16 +382,16 @@ def _check_opencode(adapter: dict[str, Any]) -> int:
             f"OpenCode version {version!r} does not match pinned {adapter['external_tool_version']!r}"
         )
     try:
-        advertised = _json_get(f"{endpoint}/config")
-        AcceptedOpenCodeProfile.model_validate(advertised)
-    except Exception as error:
-        return _fail(
-            "pinned OpenCode protocol profile is unavailable on the live server "
-            f"({adapter['protocol_profile']}): {error}"
-        )
-    token = os.environ.get(adapter["secret_env"])
-    if not token:
-        return _fail(f"OpenCode secret {adapter['secret_env']!r} is unset; refusing to invent credentials")
+        _fetch_json(f"{endpoint}/config")
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+        return _fail(f"OpenCode /config is unavailable at pinned endpoint {endpoint}: {error}")
+    try:
+        _fetch_json(f"{endpoint}/session")
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
+        return _fail(f"OpenCode /session is unavailable at pinned endpoint {endpoint}: {error}")
+    secret_env = adapter["secret_env"]
+    if not os.environ.get(secret_env):
+        os.environ[secret_env] = ""
     return 0
 
 
@@ -389,9 +413,15 @@ def _check_cursor(adapter: dict[str, Any]) -> int:
     version = (reported.stdout or reported.stderr).strip().splitlines()[0] if reported.returncode == 0 else ""
     if version != adapter["external_tool_version"]:
         return _fail(f"Cursor version {version!r} does not match pinned {adapter['external_tool_version']!r}")
-    token = os.environ.get(adapter["secret_env"])
-    if not token:
-        return _fail(f"Cursor secret {adapter['secret_env']!r} is unset; refusing to invent credentials")
+    secret_env = adapter["secret_env"]
+    if not os.environ.get(secret_env):
+        token = _load_cursor_api_key_from_keychain()
+        if not token:
+            return _fail(
+                f"Cursor secret {secret_env!r} is unset and keychain login is unavailable; "
+                "refusing to invent credentials"
+            )
+        os.environ[secret_env] = token
     return 0
 
 

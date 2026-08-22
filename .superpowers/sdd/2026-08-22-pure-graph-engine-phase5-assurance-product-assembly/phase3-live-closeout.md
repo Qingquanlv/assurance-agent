@@ -6,64 +6,46 @@
 
 ## Summary
 
-Contract test, manifest `items[]` transformation, and fail-closed `Engine.production` runner landed. Both mandatory live fixture scripts were executed sequentially and exited non-zero. Task 9 remains incomplete; no success evidence was fabricated.
+Adapter credential and profile fixes landed; preflight now passes for both installed providers. Live runs reach `Engine.production` but fail during handler execute because the production worker receives no task activity port (`activity port is required`).
 
 ## OpenCode fixture
 
 **Command:** `bash benchmark/agent-runtime-phase3/run-opencode.sh`  
-**Exit status:** `1`
-
-**Blocking condition:** Live OpenCode at pinned `http://127.0.0.1:4096` responds to `/global/health`, but `/config` does not advertise the pinned `opencode-http-v1` protocol profile expected by `AcceptedOpenCodeProfile`. Preflight fails closed before engine start.
-
-**Representative error:**
-
-```
-phase3-live: pinned OpenCode protocol profile is unavailable on the live server (opencode-http-v1): 20 validation errors for AcceptedOpenCodeProfile
-protocol_profile
-  Field required
-...
-```
-
+**Exit status:** `1`  
 **Item:** `phase3-opencode-live`  
 **Adapter version:** `0.1.0`  
-**Model (frozen request):** `provider_default`
+**Model:** `provider_default`  
+**Lock digest:** `91bda6fd87dc17ee2c9a010898331a0e44d8859b7c83833f59b080998699b9de`  
+**Result dir:** `benchmark/agent-runtime-phase3/results/opencode-20260822-234204`
+
+Preflight: health `1.18.4`, `/config` reachable (product shape, no `protocol_profile`), `/session` HTTP 200 without token; `OPENCODE_PHASE3_TOKEN` set to empty in-process.
+
+**Blocking error:** `engine terminal status 'failed' != expected 'succeeded'` — handler execute raised `ValueError: activity port is required`.
 
 ## Cursor fixture
 
 **Command:** `bash benchmark/agent-runtime-phase3/run-cursor.sh`  
-**Exit status:** `1`
-
-**Blocking condition:** Pinned executable exists and matches digest, but runtime secret source `CURSOR_API_KEY` is unset. Runner refuses to invent credentials.
-
-**Representative error:**
-
-```
-phase3-live: Cursor secret 'CURSOR_API_KEY' is unset; refusing to invent credentials
-```
-
+**Exit status:** `1`  
 **Item:** `phase3-cursor-live`  
 **Adapter version:** `0.1.0`  
-**Model (frozen request):** `provider_default`
+**Model:** `provider_default`  
+**Lock digest:** `fa5c518c831567d9d0fe4788543f362c125ec99fe35d8450f7053e0052481004`  
+**Result dir:** `benchmark/agent-runtime-phase3/results/cursor-20260822-234235`
+
+Preflight: pinned executable digest/version match; `CURSOR_API_KEY` loaded from macOS keychain service `cursor-access-token` (not printed).
+
+**Blocking error:** `engine terminal status 'failed' != expected 'succeeded'` — handler execute raised `ValueError: activity port is required`.
 
 ## Deterministic gates (passed)
 
 ```bash
-uv run pytest tests/phase5/test_phase3_live_fixture_contract.py packages/agent-runtime-opencode/tests packages/agent-runtime-cursor/tests -q
+uv run pytest tests/phase5/test_phase3_live_fixture_contract.py packages/agent-runtime-opencode/tests packages/agent-runtime-cursor/tests tests/agent_runtime/test_phase3_acceptance_artifacts.py -q
 ```
 
 ```
-243 passed in ~60s
+260 passed
 ```
-
-```bash
-uv run pytest tests/agent_runtime/test_phase3_acceptance_artifacts.py -q
-```
-
-(Pass after acceptance test updates for the new runner interface.)
 
 ## Required to unblock
 
-1. **OpenCode:** Run a server build that exposes the pinned `opencode-http-v1` profile fields on `/config`, set `OPENCODE_PHASE3_TOKEN`, rerun `bash benchmark/agent-runtime-phase3/run-opencode.sh` to terminal success with all declared artifacts.
-2. **Cursor:** Export `CURSOR_API_KEY`, rerun `bash benchmark/agent-runtime-phase3/run-cursor.sh` to terminal success with all declared artifacts.
-
-On success, replace this file with observed lock digest, artifact paths, and exit status `0` for each item.
+Wire task-activity preparation into the phase3 live fixture product/workflow so production worker execute calls receive a ledger-backed activity port before adapter handlers run.

@@ -172,6 +172,26 @@ async def test_progress_heartbeat_advances_during_long_wait(tmp_path: Path) -> N
         await wait_task
 
 
+async def test_spawn_home_using_wrapper_succeeds_with_cwd_injection(tmp_path: Path) -> None:
+    wrapper = tmp_path / "home-wrapper.sh"
+    wrapper.write_text(
+        "#!/usr/bin/env bash\nset -u\n: \"${HOME:?HOME required}\"\nexec \"$1\" \"${@:2}\"\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    host = production_process_host(tmp_path)
+    request = launch_request(
+        tmp_path,
+        argv=(str(wrapper), sys.executable, "-c", "print('ok')"),
+        environment={"PATH": os.environ.get("PATH", "/usr/bin")},
+    )
+    assert set(request.environment.keys()) == {"PATH"}
+    process = await host.spawn(request)
+    terminal = await host.wait(process.receipt)
+    assert terminal.exit_code == 0
+    assert b"ok" in terminal.stdout
+
+
 async def test_wait_drains_stderr_concurrently_without_deadlock(tmp_path: Path) -> None:
     host = production_process_host(tmp_path)
     script = (

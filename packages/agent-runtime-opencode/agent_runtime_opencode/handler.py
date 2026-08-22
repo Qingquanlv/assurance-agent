@@ -44,11 +44,16 @@ from agent_runtime_opencode.observation import (
     reduce_sse_frames,
 )
 from agent_runtime_opencode.protocol import (
-    AcceptedOpenCodeProfile,
     OpenCodeHttpClient,
     canonical_json_text,
+    resolve_advertised_profile,
 )
 from agent_runtime_opencode.reducer import reduce_terminal
+
+
+def _secret_canaries(secret: bytes) -> tuple[str, ...]:
+    text = secret.decode("utf-8")
+    return (text,) if text else ()
 
 
 class OpenCodeHandler:
@@ -139,7 +144,7 @@ class OpenCodeHandler:
                     reason=bound.reason or "bound reference is not authentic",
                 )
             reference, record = bound
-            canaries = (secret.decode("utf-8"),)
+            canaries = _secret_canaries(secret)
             observed = await self._observe_bound(
                 client, request, context, reference, record, canaries=canaries
             )
@@ -204,7 +209,7 @@ class OpenCodeHandler:
                 raise ValueError(mismatch)
             return TaskActivityReconcileResult(status="indeterminate", reason=mismatch)
         secret = context.secrets.resolve(config.secret_handle)
-        canaries = (secret.decode("utf-8"),)
+        canaries = _secret_canaries(secret)
         client = OpenCodeHttpClient(config, secret=secret)
         try:
             context.heartbeat()
@@ -598,7 +603,7 @@ class OpenCodeHandler:
     ) -> dict[str, Any]:
         identity = await client.get_server_identity()
         advertised = await client.get_profile()
-        profile = AcceptedOpenCodeProfile.model_validate(advertised)
+        profile = resolve_advertised_profile(advertised, config)
         fingerprint = {
             "endpoint_origin": config.origin,
             "tls_identity_digest": config.tls_identity_digest,
@@ -613,7 +618,7 @@ class OpenCodeHandler:
         reject_credentials_in_digest_input(fingerprint)
         text = canonical_json_text(fingerprint)
         secret_text = secret.decode("utf-8")
-        if secret_text in text:
+        if secret_text and secret_text in text:
             raise ValueError("credentials must not enter dispatch fingerprint")
         return fingerprint
 
