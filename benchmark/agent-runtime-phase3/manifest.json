@@ -1,5 +1,54 @@
 {
   "schema_version": "1",
+  "items": [
+    {
+      "id": "phase3-opencode-live",
+      "adapter": "opencode",
+      "adapter_version": "0.1.0",
+      "binding_manifest": {
+        "schema_version": "1",
+        "endpoint": "http://127.0.0.1:4096",
+        "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003",
+        "secret_handle": "opencode.token",
+        "protocol_profile": "opencode-http-v1",
+        "request_timeout_seconds": 30,
+        "observation_horizon_seconds": 120,
+        "poll_interval_seconds": 1,
+        "cancel_timeout_seconds": 30,
+        "max_response_bytes": 65536,
+        "adapter_configuration_digest": "b3d9b0bcc55c4a3e64b252b6353c6133dfea0955b31b6e4015a0040134b1995d"
+      },
+      "expected_artifacts": [
+        "engine/invocations/phase3-opencode-live/invocation.lock.json",
+        "engine/invocations/phase3-opencode-live/checkpoint.json",
+        "engine/invocations/phase3-opencode-live/workspace/HEAD.json"
+      ]
+    },
+    {
+      "id": "phase3-cursor-live",
+      "adapter": "cursor",
+      "adapter_version": "0.1.0",
+      "binding_manifest": {
+        "schema_version": "1",
+        "executable": "/Users/lvqingquan/.local/share/cursor-agent/versions/2026.08.11-e8db854/cursor-agent",
+        "executable_digest": "eed61c5224668c9236334c4c68936a16aecc37374b592f59e31eb50433817831",
+        "expected_version": "2026.08.11-e8db854",
+        "protocol_profile": "confined_process",
+        "secret_handle": "cursor.api-key",
+        "environment_names": ["PATH", "CURSOR_API_KEY"],
+        "graceful_cancel_seconds": 5,
+        "forced_cancel_seconds": 10,
+        "max_output_bytes": 65536,
+        "max_line_bytes": 4096,
+        "adapter_configuration_digest": "2dc92bee6649105e02d8259a951f5c701b0ead2d62a23393541be31e1c492561"
+      },
+      "expected_artifacts": [
+        "engine/invocations/phase3-cursor-live/invocation.lock.json",
+        "engine/invocations/phase3-cursor-live/checkpoint.json",
+        "engine/invocations/phase3-cursor-live/workspace/HEAD.json"
+      ]
+    }
+  ],
   "fixture": {
     "distribution": "agent-runtime-fixture",
     "version": "1.0.0",
@@ -39,7 +88,7 @@
     "opencode": {
       "adapter_id": "runtime.opencode.execute",
       "source_root": "packages/agent-runtime-opencode/agent_runtime_opencode",
-      "source_digest": "d2cee676fd6ca906692be505e07f172da8bae1a5096e4c4aa57c8ba85445424c",
+      "source_digest": "6bad95bd766b4a928c4736a287a694806224d71318ea0c783762c2536849a7a5",
       "adapter_version": "0.1.0",
       "protocol_profile": "opencode-http-v1",
       "prompt_admission": "caller-message-id-v1",
@@ -53,7 +102,7 @@
     "cursor": {
       "adapter_id": "runtime.cursor.execute",
       "source_root": "packages/agent-runtime-cursor/agent_runtime_cursor",
-      "source_digest": "22d65265309ac9d9ca587eeb8aadd9153e5c80de55bdba761c629ab3851e431c",
+      "source_digest": "b0857357e502a778d18ba87d145ba00f9acf9a28785f88809758037cb109091c",
       "adapter_version": "0.1.0",
       "protocol_profile": "confined_process",
       "executable": "/Users/lvqingquan/.local/share/cursor-agent/versions/2026.08.11-e8db854/cursor-agent",

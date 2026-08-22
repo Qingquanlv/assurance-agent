@@ -55,6 +55,8 @@ def test_committed_live_manifest_pins_the_required_release_fields() -> None:
     assert adapters["cursor"]["external_tool_version"]
     assert adapters["cursor"]["executable"].startswith("/")
     assert document["success"]["status"] == "succeeded"
+    items = document["items"]
+    assert {item["adapter"] for item in items} == {"opencode", "cursor"}
 
 
 @pytest.mark.parametrize("name", ["run-opencode.sh", "run-cursor.sh"])
@@ -74,6 +76,9 @@ def _load_run_item() -> ModuleType:
     spec = importlib.util.spec_from_file_location("phase3_run_item", _RUN_ITEM)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    import sys
+
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -99,20 +104,26 @@ def test_packaging_smoke_forbids_contracts_and_graph_engine_as_aa_runtime_deps()
     assert "graph_engine" in script
 
 
-def test_run_item_driver_has_no_success_or_fallback_path() -> None:
+def test_run_item_driver_rejects_fallback_and_invented_credentials() -> None:
     source = _RUN_ITEM.read_text(encoding="utf-8")
     assert "manifest.json" in source
     assert "fallback" not in source.lower()
     assert "pytest.skip" not in source
-    assert "return 0" not in source
-    assert "sys.exit(0)" not in source
+    assert "invent credentials" in source.lower()
     assert "fail-closed" in source.lower()
+    assert "_reject_credentials_in_text" in source
 
 
 def test_run_item_fails_closed_when_manifest_is_missing(tmp_path: Path) -> None:
     driver = _load_run_item()
     missing = tmp_path / "manifest.json"
-    _assert_driver_fail_closed(lambda: driver.main(["--adapter", "opencode", "--manifest", str(missing)]))
+    output = tmp_path / "output"
+    output.mkdir()
+    _assert_driver_fail_closed(
+        lambda: driver.main(
+            ["--adapter", "opencode", "--manifest", str(missing), "--output", str(output)]
+        )
+    )
 
 
 def test_run_item_fails_closed_when_source_digest_drifted(tmp_path: Path) -> None:
@@ -121,7 +132,13 @@ def test_run_item_fails_closed_when_source_digest_drifted(tmp_path: Path) -> Non
     document["fixture"]["source_digest"] = "0" * 64
     drifted = tmp_path / "manifest.json"
     drifted.write_text(json.dumps(document), encoding="utf-8")
-    _assert_driver_fail_closed(lambda: driver.main(["--adapter", "cursor", "--manifest", str(drifted)]))
+    output = tmp_path / "output"
+    output.mkdir()
+    _assert_driver_fail_closed(
+        lambda: driver.main(
+            ["--adapter", "cursor", "--manifest", str(drifted), "--output", str(output)]
+        )
+    )
 
 
 def test_run_item_fails_closed_when_cursor_secret_is_unset(
