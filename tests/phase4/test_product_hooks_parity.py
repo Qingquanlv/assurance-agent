@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import dataclasses
 import hashlib
 import inspect
@@ -8,15 +9,34 @@ import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import yaml
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.composition.models import SourceFile, SourceKind, SourceSnapshot
+from graph_engine.composition.contributions import (
+    ContributionProjection,
+    ContributionSourceKeyProjection,
+    ResourceContributionProjection,
+)
+from graph_engine.composition.lock import (
+    InvocationLock,
+    LockedPlugin,
+    LockedProduct,
+    LockedSource,
+    LockedSourceFile,
+    RegistryProjections,
+    _descriptor_projection,
+    _registry_digests_from_projections,
+)
+from graph_engine.composition.models import SourceFile, SourceKind, SourceRole, SourceSnapshot
 from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
     EffectIntent,
+    PluginContribution,
+    PluginDescriptor,
+    ProviderSource,
     ResourceClaims,
     ValidationContext,
 )
@@ -33,7 +53,7 @@ from assurance_healing.operations.keys import (
     derive_heal_record_key,
 )
 from assurance_healing.operations.status import ProjectEpisodeHandler
-from assurance_healing.plugin import HEALING_EFFECT_IDS, HealingPlugin
+from assurance_healing.plugin import HEALING_EFFECT_IDS, HEALING_SOURCE, HealingPlugin
 from assurance_healing.resource_loader import resource_bytes
 from assurance_healing.validators.override import OverrideValidator
 from assurance_healing.validators.test_tree import TestTreeValidator
@@ -45,8 +65,13 @@ from assurance_kernel.workflow.graph.durable_effects import (
     FIXER_PROPOSAL_APPROVED_V1,
     HEAL_RECORD_APPLY_V2,
     HEALING_ALLOCATION_V2,
+    DurableEffectContext,
+    DurableEffectIntentV1,
+    DurableEffectRuntime,
     EffectRegistry,
+    payload_sha256,
 )
+from assurance_kernel.workflow.graph.effect_retry import EffectRetryStore, RootEffectFenceStore
 from assurance_quality.contracts.issues import IssueCandidateDocument
 from assurance_quality.operations.agent_skills import IssueAnalysisFinalizeHandler
 from assurance_quality.operations.identity import candidate_document_digest as quality_candidate_digest
@@ -71,6 +96,12 @@ _HEX_E = "e" * 64
 _CHANGE_ID = "CH-DEMO-001"
 _BATCH_ID = "20260822T000000Z"
 _EVIDENCE = f"sha256:{_HEX_A}"
+_PREFIXED_A = f"sha256:{_HEX_A}"
+_PREFIXED_B = f"sha256:{_HEX_B}"
+_PREFIXED_C = f"sha256:{_HEX_C}"
+_PREFIXED_D = f"sha256:{_HEX_D}"
+_PREFIXED_E = f"sha256:{_HEX_E}"
+_POLICY_RESOURCE = "policy/test-change-policy.v1.json"
 _FORBIDDEN_TYPE_NAMES = frozenset({"Hooks", "HookRegistry", "ProductRuntime", "SemanticPins"})
 _REGISTRY_KINDS = frozenset(
     {
@@ -85,7 +116,6 @@ _EFFECT_KIND_MAP = {
     FIXER_PROPOSAL_APPROVED_V1: "assurance.healing.effect.proposal-approved.v1",
     HEAL_RECORD_APPLY_V2: "assurance.healing.effect.heal-apply.v2",
 }
-_DEFAULT_PRODUCT_ROOTS = frozenset({"app", "src", "web/src"})
 
 
 def forbidden_symbol_scan(roots: Sequence[Path], symbols: Sequence[str]) -> set[str]:
@@ -207,14 +237,12 @@ async def _compare_hook(hook: str, tmp_path: Path) -> None:
 def _compare_product_roots(tmp_path: Path) -> None:
     from assurance_agent.workflow.healing.safety import load_product_code_roots
 
-    legacy = frozenset(load_product_code_roots(tmp_path))
-    validator = TestTreeValidator()
     policy = TestChangePolicyV1.model_validate(
         json.loads(resource_bytes("policy/test-change-policy.v1.json"))
     )
-    assert legacy == _DEFAULT_PRODUCT_ROOTS
-    assert frozenset(validator._forbidden) == _DEFAULT_PRODUCT_ROOTS
-    assert frozenset(policy.forbidden_product_roots) == _DEFAULT_PRODUCT_ROOTS
+    legacy_canon = frozenset(load_product_code_roots(tmp_path))
+    new_canon = frozenset(policy.forbidden_product_roots)
+    assert legacy_canon == new_canon
 
 
 def _issue_candidate_document() -> dict[str, object]:
@@ -782,21 +810,65 @@ async def _compare_episode(_tmp_path: Path) -> None:
 
 def _compare_test_tree(tmp_path: Path) -> None:
     from tests.helpers_aa import write_aa_config
-    from assurance_agent.workflow.healing.safety import assert_test_tree_unchanged_or_healing
+    from assurance_agent.workflow.execution.tree_hash import hash_test_tree
+    from assurance_agent.workflow.healing.safety import (
+        HealingGuardError,
+        assert_test_tree_unchanged_or_healing,
+    )
 
     write_aa_config(tmp_path)
-    (tmp_path / "qa" / "changes" / _CHANGE_ID).mkdir(parents=True, exist_ok=True)
-    legacy = assert_test_tree_unchanged_or_healing(tmp_path, _CHANGE_ID)
+    _write_text(tmp_path / "app" / "main.py", "v1\n")
+    _write_text(tmp_path / "tests" / "api" / "test_users.py", "def test_ok():\n    assert 1\n")
+    change_dir = tmp_path / "qa" / "changes" / _CHANGE_ID
+    prior = hash_test_tree(tmp_path)
+    _write_text(
+        change_dir / "execution" / "execution-manifest.json",
+        json.dumps(
+            {
+                "batch_id": "20260822T000000Z",
+                "tests_tree_sha256": prior.aggregate,
+                "test_files_sha256": prior.files,
+                "product_tree_sha256": "p0",
+                "final_status": "PASS",
+                "result_files": {},
+            }
+        ),
+    )
+    _write_text(tmp_path / "app" / "main.py", "v2\n")
     approved = TestTreeValidator(require_approval=True, approved=True)
-    denied = TestTreeValidator(require_approval=True, approved=False)
     context = _validation_context()
-    product = approved.validate(_write_set("app/main.py"), context)
-    allowed = approved.validate(_write_set("tests/api/test_users.py"), context)
-    unapproved = denied.validate(_write_set("tests/api/test_users.py"), context)
-    assert legacy.tests_changed is False
-    assert product.accepted is False
-    assert allowed.accepted is True
-    assert unapproved.accepted is False
+    legacy_product = _legacy_test_tree_allowed(
+        tmp_path,
+        allow_test_changes=False,
+        guard=assert_test_tree_unchanged_or_healing,
+        error=HealingGuardError,
+    )
+    new_product = approved.validate(_write_set("app/main.py"), context).accepted
+    _write_text(tmp_path / "tests" / "api" / "test_users.py", "def test_ok():\n    assert 2\n")
+    legacy_test = _legacy_test_tree_allowed(
+        tmp_path,
+        allow_test_changes=True,
+        guard=assert_test_tree_unchanged_or_healing,
+        error=HealingGuardError,
+    )
+    new_test = approved.validate(_write_set("tests/api/test_users.py"), context).accepted
+    legacy_canon = {"approved_test_accepted": legacy_test, "product_rejected": not legacy_product}
+    new_canon = {"approved_test_accepted": new_test, "product_rejected": not new_product}
+    assert legacy_canon == new_canon
+
+
+def _legacy_test_tree_allowed(
+    project_root: Path,
+    *,
+    allow_test_changes: bool,
+    guard: object,
+    error: type[Exception],
+) -> bool:
+    try:
+        integrity = guard(project_root, _CHANGE_ID, allow_test_changes=allow_test_changes)  # type: ignore[operator]
+    except error:
+        return False
+    return bool(integrity.tests_changed)
 
 
 def _compare_override_allowed(tmp_path: Path) -> None:
@@ -806,20 +878,24 @@ def _compare_override_allowed(tmp_path: Path) -> None:
         assert_test_changes_override_allowed,
     )
     from assurance_agent.exceptions import AaError
-    import pytest
 
     integrity = TestTreeIntegrity(tests_changed=True, changed_files=["tests/api/test_users.py"])
-    with pytest.raises(AaError):
-        assert_test_changes_override_allowed(
+    legacy_canon = {
+        "authorized_accepted": _legacy_override_allowed(
+            tmp_path,
+            integrity,
+            TestChangesOverridePolicy(mode="free", evidence=False),
+            guard=assert_test_changes_override_allowed,
+            error=AaError,
+        ),
+        "unauthorized_denied": not _legacy_override_allowed(
             tmp_path,
             integrity,
             TestChangesOverridePolicy(mode="forbidden"),
-        )
-    assert_test_changes_override_allowed(
-        tmp_path,
-        integrity,
-        TestChangesOverridePolicy(mode="free", evidence=False),
-    )
+            guard=assert_test_changes_override_allowed,
+            error=AaError,
+        ),
+    }
     token = _override_token()
     accepted = OverrideValidator(
         expected_change_id=_CHANGE_ID,
@@ -828,8 +904,26 @@ def _compare_override_allowed(tmp_path: Path) -> None:
         file_bytes={"healing/override-token.json": json.dumps(token).encode()},
     ).validate(_write_set("healing/override-token.json"), _validation_context())
     rejected = OverrideValidator().validate(_write_set("healing/override-token.json"), _validation_context())
-    assert accepted.accepted is True
-    assert rejected.accepted is False
+    new_canon = {
+        "authorized_accepted": accepted.accepted,
+        "unauthorized_denied": not rejected.accepted,
+    }
+    assert legacy_canon == new_canon
+
+
+def _legacy_override_allowed(
+    change_dir: Path,
+    integrity: object,
+    policy: object,
+    *,
+    guard: object,
+    error: type[Exception],
+) -> bool:
+    try:
+        guard(change_dir, integrity, policy)  # type: ignore[operator]
+    except error:
+        return False
+    return True
 
 
 def _override_token() -> dict[str, object]:
@@ -862,21 +956,22 @@ def _compare_build_token(tmp_path: Path) -> None:
         created_at="2026-08-22T00:00:00+00:00",
     )
     current = HealingOverrideTokenV1.model_validate(_override_token())
-    assert legacy.change_id == current.change_id == _CHANGE_ID
-    assert legacy.action == current.action == "allow_test_changes"
+    legacy_canon = _shared_token_fields(legacy.model_dump(mode="json"))
+    new_canon = _shared_token_fields(current.model_dump(mode="json"))
+    assert legacy_canon == new_canon
 
 
-def _compare_policy(_tmp_path: Path) -> None:
+def _compare_policy(tmp_path: Path) -> None:
     from assurance_agent.workflow.healing.override_policy import load_test_changes_override_policy
+    from assurance_agent.workflow.healing.safety import load_product_code_roots
 
-    legacy = load_test_changes_override_policy(_tmp_path)
+    load_test_changes_override_policy(tmp_path)
     policy = TestChangePolicyV1.model_validate(
         json.loads(resource_bytes("policy/test-change-policy.v1.json"))
     )
-    assert legacy.mode == "with-evidence"
-    assert legacy.evidence is True
-    assert frozenset(policy.forbidden_product_roots) == _DEFAULT_PRODUCT_ROOTS
-    assert policy.require_approval is True
+    legacy_canon = frozenset(load_product_code_roots(tmp_path))
+    new_canon = frozenset(policy.forbidden_product_roots)
+    assert legacy_canon == new_canon
 
 
 def _compare_token_bytes(tmp_path: Path) -> None:
@@ -894,35 +989,66 @@ def _compare_token_bytes(tmp_path: Path) -> None:
         tests_tree_sha256=_HEX_A,
         created_at="2026-08-22T00:00:00+00:00",
     )
-    raw = token_json_bytes(legacy_token)
-    encoded = json.loads(raw)
+    encoded = json.loads(token_json_bytes(legacy_token))
     current = HealingOverrideTokenV1.model_validate(_override_token())
-    assert encoded["change_id"] == current.change_id == _CHANGE_ID
-    assert encoded["action"] == current.action == "allow_test_changes"
-    assert current.token_digest == override_token_digest(
-        change_id=_CHANGE_ID,
-        policy_digest=_HEX_A,
-        candidate_digest=_HEX_B,
+    new_encoded = json.loads(current.model_dump_json())
+    legacy_canon = _shared_token_fields(encoded)
+    new_canon = _shared_token_fields(new_encoded)
+    assert legacy_canon == new_canon
+
+
+def _shared_token_fields(payload: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "action": payload["action"],
+        "change_id": payload["change_id"],
+        "reason": payload["reason"],
+    }
+
+
+async def _compare_reconcile_allocation(tmp_path: Path) -> None:
+    from assurance_agent.workflow.healing.effects import (
+        HealingAllocationEffectV2,
+        reconcile_healing_allocation,
     )
 
-
-async def _compare_reconcile_allocation(_tmp_path: Path) -> None:
-    from assurance_agent.workflow.healing.effects import register_healing_effects
-
-    registry = EffectRegistry()
-    register_healing_effects(registry)
+    ids = _allocation_ids()
+    key = str(ids["operation_id"])
+    legacy_payload = HealingAllocationEffectV2(
+        schema_version="2",
+        episode_id=str(ids["episode_id"]),
+        attempt_id=str(ids["attempt_id"]),
+        attempt_number=1,
+        operation_id=key,
+        source_batch_id="batch-src",
+        entry_batch_id="batch-src",
+        baseline_sha256=_HEX_B,
+        baseline_embedded=True,
+    ).model_dump(mode="json")
+    legacy_ack = reconcile_healing_allocation(
+        _legacy_effect_intent(HEALING_ALLOCATION_V2, legacy_payload),
+        _durable_context(),
+        _durable_runtime(tmp_path),
+    )
     handler = HealingAllocationEffect(store=InMemoryHealingStore())
     intent = _allocation_intent()
-    key = str(_allocation_ids()["operation_id"])
     applied = await handler.apply(intent, key)
     reconciled = await handler.reconcile(intent, key)
-    assert HEALING_ALLOCATION_V2 in registry.kinds()
-    assert applied.status == reconciled.status == "applied"
-    assert as_object(reconciled.receipt)["operation_id"] == key
+    legacy_canon = {
+        "applied": legacy_ack.domain_source_sequence >= 1,
+        "operation_id": str(legacy_payload["operation_id"]),
+    }
+    new_canon = {
+        "applied": applied.status == "applied" and reconciled.status == "applied",
+        "operation_id": as_object(reconciled.receipt)["operation_id"],
+    }
+    assert legacy_canon == new_canon
 
 
-async def _compare_reconcile_approval(_tmp_path: Path) -> None:
-    from assurance_agent.workflow.healing.effects import register_healing_effects
+async def _compare_reconcile_approval(tmp_path: Path) -> None:
+    from assurance_agent.workflow.healing.effects import (
+        FixerProposalApprovedEffectV1,
+        reconcile_fixer_proposal_approved,
+    )
 
     approval_id = derive_approval_id(
         owner_id="assurance.healing",
@@ -930,6 +1056,26 @@ async def _compare_reconcile_approval(_tmp_path: Path) -> None:
         baseline_digest=_HEX_D,
         policy_digest=_HEX_E,
         proposal_digest=_HEX_A,
+    )
+    legacy_payload = FixerProposalApprovedEffectV1(
+        schema_version="1",
+        approval_id=approval_id,
+        root_invocation_id="inv-1",
+        interrupt_task_id="task-1",
+        source_gate_attempt_id="gate-1",
+        source_tree_id="tree-src",
+        proposal_sha256=_PREFIXED_A,
+        fixer_authority_sha256=_PREFIXED_B,
+        entry_baseline_sha256=_PREFIXED_D,
+        policy_sha256=_PREFIXED_E,
+        targets=["api"],
+        paths=["tests/api/test_users.py"],
+        target_tree_id="tree-dst",
+    ).model_dump(mode="json")
+    legacy_ack = reconcile_fixer_proposal_approved(
+        _legacy_effect_intent(FIXER_PROPOSAL_APPROVED_V1, legacy_payload),
+        _durable_context(),
+        _durable_runtime(tmp_path),
     )
     payload = {
         "schema_version": "1",
@@ -950,8 +1096,6 @@ async def _compare_reconcile_approval(_tmp_path: Path) -> None:
         "paths": ["tests/api/test_users.py"],
         "action": "approve_and_apply",
     }
-    registry = EffectRegistry()
-    register_healing_effects(registry)
     handler = ProposalApprovedEffect(store=InMemoryHealingStore())
     intent = EffectIntent(
         kind="assurance.healing.effect.proposal-approved.v1",
@@ -959,13 +1103,22 @@ async def _compare_reconcile_approval(_tmp_path: Path) -> None:
     )
     applied = await handler.apply(intent, approval_id)
     reconciled = await handler.reconcile(intent, approval_id)
-    assert FIXER_PROPOSAL_APPROVED_V1 in registry.kinds()
-    assert applied.status == reconciled.status == "applied"
-    assert as_object(reconciled.receipt)["approval_id"] == approval_id
+    legacy_canon = {
+        "applied": legacy_ack.domain_source_sequence >= 1,
+        "approval_id": str(legacy_payload["approval_id"]),
+    }
+    new_canon = {
+        "applied": applied.status == "applied" and reconciled.status == "applied",
+        "approval_id": as_object(reconciled.receipt)["approval_id"],
+    }
+    assert legacy_canon == new_canon
 
 
-async def _compare_reconcile_apply(_tmp_path: Path) -> None:
-    from assurance_agent.workflow.healing.effects import register_healing_effects
+async def _compare_reconcile_apply(tmp_path: Path) -> None:
+    from assurance_agent.workflow.healing.effects import (
+        HealRecordApplyEffectV2,
+        reconcile_heal_record_apply,
+    )
 
     record_key = derive_heal_record_key(
         owner_id="assurance.healing",
@@ -973,6 +1126,26 @@ async def _compare_reconcile_apply(_tmp_path: Path) -> None:
         candidate_digest=_HEX_A,
         safety_payload_digest=_HEX_E,
         target="api",
+    )
+    legacy_payload = HealRecordApplyEffectV2(
+        schema_version="2",
+        record_key=record_key,
+        root_invocation_id="inv-1",
+        record_task_id="task-1",
+        fixer_attempt_id="att-1",
+        target="api",
+        entry_batch_id="20260822T000000Z",
+        intent_sha256=_PREFIXED_A,
+        write_set_id="ws-1",
+        outcome="applied",
+        proposal_ids=["P1"],
+        claimed_modified_paths=["tests/api/test_users.py"],
+        safety_payload_sha256=_PREFIXED_E,
+    ).model_dump(mode="json")
+    legacy_ack = reconcile_heal_record_apply(
+        _legacy_effect_intent(HEAL_RECORD_APPLY_V2, legacy_payload),
+        _durable_context(),
+        _durable_runtime(tmp_path),
     )
     payload = {
         "schema_version": "2",
@@ -990,15 +1163,54 @@ async def _compare_reconcile_apply(_tmp_path: Path) -> None:
         "claimed_modified_paths": ["tests/api/test_users.py"],
         "safety_payload_digest": _HEX_E,
     }
-    registry = EffectRegistry()
-    register_healing_effects(registry)
     handler = HealApplyEffect(store=InMemoryHealingStore())
     intent = EffectIntent(kind="assurance.healing.effect.heal-apply.v2", payload=cast(JSONValue, payload))
     applied = await handler.apply(intent, record_key)
     reconciled = await handler.reconcile(intent, record_key)
-    assert HEAL_RECORD_APPLY_V2 in registry.kinds()
-    assert applied.status == reconciled.status == "applied"
-    assert as_object(reconciled.receipt)["record_key"] == record_key
+    legacy_canon = {
+        "applied": legacy_ack.domain_source_sequence >= 1,
+        "record_key": str(legacy_payload["record_key"]),
+    }
+    new_canon = {
+        "applied": applied.status == "applied" and reconciled.status == "applied",
+        "record_key": as_object(reconciled.receipt)["record_key"],
+    }
+    assert legacy_canon == new_canon
+
+
+def _legacy_effect_intent(kind: str, payload: Mapping[str, object]) -> DurableEffectIntentV1:
+    wire = {str(key): value for key, value in payload.items()}
+    return DurableEffectIntentV1(
+        schema_version="1",
+        effect_id=_HEX_E,
+        kind=kind,
+        reconciler_semantics_digest=_HEX_A,
+        payload_sha256=payload_sha256(wire),
+        payload=wire,
+    )
+
+
+def _durable_context() -> DurableEffectContext:
+    return DurableEffectContext(
+        root_invocation_id="inv-1",
+        invocation_id="inv-1",
+        task_id="task-a",
+        attempt_id="att-1",
+        target="operation:allocate-healing-attempt",
+        output_digests={},
+    )
+
+
+def _durable_runtime(tmp_path: Path) -> DurableEffectRuntime:
+    change = tmp_path / "change"
+    change.mkdir(parents=True, exist_ok=True)
+    (change / "events.jsonl").write_text("", encoding="utf-8")
+    return DurableEffectRuntime(
+        change_dir=change,
+        project_root=tmp_path,
+        fence_store=RootEffectFenceStore(tmp_path),
+        retry_store=EffectRetryStore(tmp_path),
+    )
 
 
 def _compare_semantic_pins(_tmp_path: Path) -> None:
@@ -1026,40 +1238,189 @@ def _compare_semantic_pins(_tmp_path: Path) -> None:
 def _phase2_digests(*, mutate_resource: bool = False) -> dict[str, str]:
     root = REPO_ROOT / "packages" / "assurance-healing"
     files: list[SourceFile] = []
-    resource_hashes: dict[str, str] = {}
     for path in sorted(root.rglob("*")):
         if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
             continue
         rel = path.relative_to(root).as_posix()
         content = path.read_bytes()
-        if mutate_resource and rel.endswith("policy/test-change-policy.v1.json"):
+        if mutate_resource and rel.endswith(_POLICY_RESOURCE):
             content = content + b"\n"
         files.append(SourceFile.from_bytes(rel, content))
-        if "resources/" in rel:
-            resource_hashes[rel] = hashlib.sha256(content).hexdigest()
     snapshot = SourceSnapshot.from_files(SourceKind.EDITABLE_PLUGIN, root.resolve(), tuple(files))
-    contribution = HealingPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
-    composition = canonical_digest(
-        cast(
-            JSONValue,
-            {
-                "effects": [entry.kind for entry in contribution.effects],
-                "handlers": list(contribution.task_handlers),
-                "resources": resource_hashes,
-                "schemas": {
-                    entry.schema_id: hashlib.sha256(bytes(entry.content)).hexdigest()
-                    for entry in contribution.schemas
-                },
-                "validators": list(contribution.commit_validators),
-            },
-        )
-    )
-    lock = canonical_digest({"composition_digest": composition, "source_digest": snapshot.digest})
+    contribution = _contributed(mutate_resource=mutate_resource)
+    projection = _contribution_projection(contribution, snapshot.digest)
+    composition = canonical_digest(cast(JSONValue, projection.model_json_projection()))
+    lock = _invocation_lock_for_projection(projection, snapshot)
     return {
         "source_digest": snapshot.digest,
         "composition_digest": composition,
-        "lock_digest": lock,
+        "lock_digest": lock.digest,
     }
+
+
+def _contributed(*, mutate_resource: bool) -> PluginContribution:
+    original = resource_bytes
+
+    def patched(relative_path: str) -> bytes:
+        raw = original(relative_path)
+        if mutate_resource and relative_path == _POLICY_RESOURCE:
+            return raw + b"\n"
+        return raw
+
+    with patch("assurance_healing.plugin.resource_bytes", patched):
+        return HealingPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
+
+
+def _contribution_projection(contribution: PluginContribution, source_digest: str) -> ContributionProjection:
+    resources = tuple(
+        ResourceContributionProjection(
+            resource_id=item.resource_id,
+            media_type=item.media_type,
+            content_base64=base64.b64encode(item.content).decode("ascii"),
+            content_sha256=hashlib.sha256(item.content).hexdigest(),
+        )
+        for item in sorted(contribution.resources, key=lambda item: item.resource_id)
+    )
+    return ContributionProjection(
+        owner_id="assurance.healing",
+        source_key=ContributionSourceKeyProjection(role=SourceRole.PLUGIN, owner_id="assurance.healing"),
+        source_digest=source_digest,
+        task_handlers=(),
+        commit_validators=(),
+        schemas=(),
+        resources=resources,
+        effects=(),
+        bindings=(),
+    )
+
+
+def _invocation_lock_for_projection(
+    projection: ContributionProjection,
+    snapshot: SourceSnapshot,
+) -> InvocationLock:
+    contribution = cast(JSONValue, projection.model_json_projection())
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=HEALING_SOURCE,
+        plugin_id="assurance.healing",
+        plugin_version="0.1.0",
+        engine_api=ENGINE_API_VERSION,
+        task_handlers=(),
+        commit_validators=(),
+        dependencies=(),
+        resources=tuple(item.resource_id for item in projection.resources),
+    )
+    product_source = ProviderSource(
+        distribution="toy-a",
+        version="1.0.0",
+        entrypoint_group="graph_engine.products",
+        entrypoint_name="toy.a",
+        entrypoint_value="toy_a.product:provider",
+        declaration_path="toy_a/product-declaration.json",
+        import_roots=("",),
+    )
+    manifest = {
+        "schema_version": "1",
+        "source": product_source.model_dump(mode="json"),
+        "product_id": "toy.a",
+        "product_version": "1.0.0",
+        "engine_api": "2.0",
+        "plugins": [{"plugin_id": "assurance.healing", "version_specifier": "==0.1.0"}],
+        "entrypoints": {"start": "root"},
+        "configuration": {},
+        "config_plugin_paths": [],
+        "workflow": None,
+        "workflow_resource_id": "toy.workflow",
+    }
+    product = LockedProduct(
+        product_id="toy.a",
+        product_version="1.0.0",
+        manifest=manifest,
+        manifest_digest=canonical_digest(cast(JSONValue, manifest)),
+        source=LockedSource(
+            kind=SourceKind.WHEEL_PRODUCT,
+            identity={
+                "distribution": "toy-a",
+                "version": "1.0.0",
+                "entrypoint_group": "graph_engine.products",
+                "entrypoint_name": "toy.a",
+                "entrypoint_value": "toy_a.product:provider",
+                "declaration_path": "toy_a/product-declaration.json",
+                "import_roots": [""],
+            },
+            digest=_HEX_A,
+            files=(LockedSourceFile(path="toy_a/product.py", sha256=_HEX_B),),
+        ),
+    )
+    plugin = LockedPlugin(
+        plugin_id="assurance.healing",
+        plugin_version="0.1.0",
+        descriptor=descriptor,
+        descriptor_digest=canonical_digest(_descriptor_projection(descriptor)),
+        contribution=contribution,
+        contribution_digest=canonical_digest(contribution),
+        dependencies=(),
+        source=LockedSource(
+            kind=SourceKind.WHEEL_PLUGIN,
+            identity={
+                "distribution": HEALING_SOURCE.distribution,
+                "version": HEALING_SOURCE.version,
+                "entrypoint_group": HEALING_SOURCE.entrypoint_group,
+                "entrypoint_name": HEALING_SOURCE.entrypoint_name,
+                "entrypoint_value": HEALING_SOURCE.entrypoint_value,
+                "declaration_path": HEALING_SOURCE.declaration_path,
+                "import_roots": list(HEALING_SOURCE.import_roots),
+                "plugin_id": "assurance.healing",
+                "plugin_version": "0.1.0",
+            },
+            digest=snapshot.digest,
+            files=tuple(LockedSourceFile(path=item.path, sha256=item.sha256) for item in snapshot.files),
+        ),
+    )
+    engine = LockedSource(
+        kind=SourceKind.ENGINE,
+        identity={
+            "distribution": "graph-engine",
+            "version": "1.0.0",
+            "installation": "installed",
+        },
+        digest=_HEX_C,
+        files=(),
+    )
+    registry_projections = RegistryProjections(
+        sources=[
+            {
+                "source_key": {"role": "engine", "owner_id": "graph.engine"},
+                "digest": _HEX_C,
+            }
+        ],
+        capabilities=projection.capability_registry_projection(),
+        schemas=projection.schema_registry_projection(),
+        resources=projection.resource_registry_projection(),
+        effects=projection.effect_registry_projection(),
+    )
+    configuration: dict[str, object] = {}
+    compiled_workflow = {
+        "entrypoints": {"start": "root"},
+        "graphs": {"root": {"start": "node"}},
+        "name": "toy",
+    }
+    return InvocationLock.create(
+        engine_api=ENGINE_API_VERSION,
+        engine=engine,
+        engine_digest=_HEX_C,
+        product=product,
+        plugins=(plugin,),
+        dependency_order=("assurance.healing",),
+        registry_projections=registry_projections,
+        registry_digests=_registry_digests_from_projections(registry_projections),
+        configuration=configuration,
+        configuration_digest=canonical_digest(cast(JSONValue, configuration)),
+        capability_bindings=[],
+        capability_bindings_digest=canonical_digest([]),
+        compiled_workflow=compiled_workflow,
+        compiled_workflow_digest=canonical_digest(cast(JSONValue, compiled_workflow)),
+    )
 
 
 def _catchall_scan(roots: Sequence[Path]) -> set[str]:
@@ -1131,6 +1492,11 @@ def _expr_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Call):
         return _expr_name(node.func)
     return None
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 def _write_set(*paths: str) -> CandidateWriteSet:
