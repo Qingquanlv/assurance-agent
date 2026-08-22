@@ -49,11 +49,11 @@ async def test_prompt_body_forwards_exact_selection_without_extras() -> None:
         body = fixture.fake.prompt_bodies[0]
         expected = prompt_admission_body(fixture.request, fixture.reference.expected_message_id)
         assert body == expected
-        assert set(body) <= {"messageID", "parts", "model", "agent"}
+        assert set(body) <= {"messageID", "parts", "model"}
         assert "system" not in body
         assert "tools" not in body
         assert "fallback" not in body
-        assert body["agent"] == "fixture-v1"
+        assert "agent" not in body
         assert "model" not in body
     finally:
         fixture.close()

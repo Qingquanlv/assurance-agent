@@ -40,7 +40,7 @@ class OpenCodeModelSelection(FrozenModel):
 class OpenCodePromptAdmissionBody(FrozenModel):
     messageID: str = Field(min_length=1)
     parts: tuple[OpenCodeTextPart, ...] = Field(min_length=1)
-    agent: str = Field(min_length=1)
+    agent: str | None = None
     model: OpenCodeModelSelection | None = None
 
 
@@ -88,7 +88,6 @@ def prompt_admission_body(agent_run: AgentRunRequest, message_id: str) -> dict[s
     typed = OpenCodePromptAdmissionBody(
         messageID=message_id,
         parts=tuple(parts),
-        agent=agent_run.execution.worker_profile,
         model=model,
     )
     return typed.model_dump(mode="json", exclude_none=True)

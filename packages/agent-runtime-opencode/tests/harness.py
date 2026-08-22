@@ -420,7 +420,6 @@ def prompt_admission_body(request: TaskRequest, message_id: str) -> dict[str, ob
     body: dict[str, object] = {
         "messageID": message_id,
         "parts": parts,
-        "agent": agent_run.execution.worker_profile,
     }
     model = agent_run.execution.provider_model
     if model != "provider_default":
