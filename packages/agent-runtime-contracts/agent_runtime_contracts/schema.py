@@ -276,3 +276,29 @@ def bound_redacted_diagnostics(messages: Sequence[str]) -> tuple[str, ...]:
             text = text[:MAX_DIAGNOSTIC_LENGTH]
         redacted.append(text)
     return tuple(redacted)
+
+
+_FIXTURE_RESULT_SCHEMAS: tuple[object, ...] = (
+    {
+        "additionalProperties": False,
+        "properties": {"ok": {"const": True, "type": "boolean"}},
+        "required": ["ok"],
+        "type": "object",
+    },
+    {
+        "additionalProperties": False,
+        "properties": {
+            "ok": {"const": True, "type": "boolean"},
+            "note": {"type": "string"},
+        },
+        "required": ["ok", "note"],
+        "type": "object",
+    },
+)
+
+
+def resolve_result_schema(schema_digest: str) -> object:
+    for schema in _FIXTURE_RESULT_SCHEMAS:
+        if canonical_digest(schema) == schema_digest:
+            return schema
+    raise ValueError("result schema is missing")

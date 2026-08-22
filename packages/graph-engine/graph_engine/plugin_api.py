@@ -40,7 +40,13 @@ class SecretHandleUnauthorized(GraphEngineError):
 
 
 FailureKind = Literal[
-    "transient", "timeout", "invalid_input", "invalid_output", "external_effect", "internal"
+    "transient",
+    "timeout",
+    "invalid_input",
+    "invalid_output",
+    "external_effect",
+    "internal",
+    "configuration",
 ]
 TaskStatus = Literal["succeeded", "failed", "stopped"]
 
