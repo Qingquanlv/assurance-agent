@@ -36,6 +36,7 @@ async def apply_effect(
     intent_model: type[_Model],
     derived_key: Callable[[_Model], str],
     build_receipt: Callable[[_Model], dict[str, object]],
+    payload_key: Callable[[_Model], str] | None = None,
 ) -> EffectApplyResult:
     if intent.kind != expected_kind:
         return EffectApplyResult(
@@ -54,7 +55,8 @@ async def apply_effect(
             failure=TaskFailure(kind="invalid_input", message=str(error), retryable=False),
         )
     expected = derived_key(payload)
-    if idempotency_key != expected:
+    identity = payload_key(payload) if payload_key is not None else expected
+    if idempotency_key != expected or identity != expected:
         return EffectApplyResult(
             status="permanent",
             failure=TaskFailure(
@@ -111,6 +113,7 @@ async def reconcile_effect(
     expected_kind: str,
     intent_model: type[_Model],
     derived_key: Callable[[_Model], str],
+    payload_key: Callable[[_Model], str] | None = None,
 ) -> EffectReconcileResult:
     if intent.kind != expected_kind:
         return EffectReconcileResult(
@@ -128,7 +131,9 @@ async def reconcile_effect(
             status="permanently_failed",
             failure=TaskFailure(kind="invalid_input", message=str(error), retryable=False),
         )
-    if idempotency_key != derived_key(payload):
+    expected = derived_key(payload)
+    identity = payload_key(payload) if payload_key is not None else expected
+    if idempotency_key != expected or identity != expected:
         return EffectReconcileResult(
             status="permanently_failed",
             failure=TaskFailure(

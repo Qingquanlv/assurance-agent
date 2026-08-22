@@ -159,10 +159,24 @@ class ProjectEpisodeHandler:
             return failed_input(InputError(str(error)))
 
 
+def _event_seq(event: Mapping[str, Any]) -> int:
+    seq = event.get("seq")
+    return seq if isinstance(seq, int) else 0
+
+
+def _as_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item) for item in value)
+
+
 def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
-    ordered = sorted(events, key=lambda item: int(item.get("seq") or 0))
+    ordered = sorted(events, key=_event_seq)
     allocations: list[dict[str, object]] = []
+    approvals: list[dict[str, object]] = []
+    records: list[dict[str, object]] = []
     baseline: dict[str, object] | None = None
+    allocation_floor = 0
     for event in ordered:
         event_type = event.get("type")
         if event_type == "healing_attempt_allocated_v2":
@@ -177,6 +191,7 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
                     "baseline_sha256": event.get("baseline_sha256"),
                 }
             )
+            allocation_floor = max(allocation_floor, _event_seq(event))
             if event.get("baseline_embedded") and baseline is None:
                 baseline = {
                     "episode_id": event.get("episode_id"),
@@ -184,6 +199,19 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
                     "artifact_sha256": event.get("baseline_sha256"),
                     "form": "v2",
                 }
+        elif event_type == "healing_attempt_allocated":
+            allocations.append(
+                {
+                    "operation_id": event.get("operation_id"),
+                    "episode_id": event.get("episode_id"),
+                    "attempt_id": event.get("attempt_id"),
+                    "attempt_number": event.get("attempt_number"),
+                    "source_batch_id": event.get("source_batch_id"),
+                    "entry_batch_id": event.get("entry_batch_id"),
+                    "baseline_sha256": event.get("baseline_sha256"),
+                }
+            )
+            allocation_floor = max(allocation_floor, _event_seq(event))
         elif event_type == "healing_entry_baseline_pinned" and baseline is None:
             baseline = {
                 "episode_id": event.get("episode_id"),
@@ -191,14 +219,69 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
                 "artifact_sha256": event.get("artifact_sha256"),
                 "form": "legacy",
             }
+        elif event_type == "fixer_proposal_approved":
+            approvals.append(
+                {
+                    "approval_id": event.get("approval_id"),
+                    "root_invocation_id": event.get("root_invocation_id"),
+                    "interrupt_task_id": event.get("interrupt_task_id"),
+                    "source_gate_attempt_id": event.get("source_gate_attempt_id"),
+                    "source_tree_id": event.get("source_tree_id"),
+                    "proposal_sha256": event.get("proposal_sha256") or event.get("proposal_digest"),
+                    "fixer_authority_sha256": event.get("fixer_authority_sha256")
+                    or event.get("fixer_authority_digest"),
+                    "entry_baseline_sha256": event.get("entry_baseline_sha256")
+                    or event.get("baseline_digest"),
+                    "policy_sha256": event.get("policy_sha256") or event.get("policy_digest"),
+                    "targets": list(_as_tuple(event.get("targets"))),
+                    "paths": list(_as_tuple(event.get("paths"))),
+                    "target_tree_id": event.get("target_tree_id"),
+                    "source_seq": _event_seq(event),
+                }
+            )
+        elif event_type == "heal_record_apply_v2" and _event_seq(event) > allocation_floor:
+            claimed = _as_tuple(event.get("claimed_modified_paths"))
+            records.append(
+                {
+                    "record_key": event.get("record_key"),
+                    "target": event.get("target"),
+                    "outcome": event.get("outcome"),
+                    "proposal_ids": list(_as_tuple(event.get("proposal_ids"))),
+                    "claimed_modified_paths": list(claimed),
+                    "intent_sha256": event.get("intent_sha256"),
+                    "write_set_id": event.get("write_set_id"),
+                    "safety_payload_sha256": event.get("safety_payload_sha256")
+                    or event.get("safety_payload_digest"),
+                    "files_modified": list(claimed),
+                    "source_seq": _event_seq(event),
+                    "form": "v2",
+                }
+            )
+        elif event_type == "heal_record_apply" and _event_seq(event) > allocation_floor:
+            modified = _as_tuple(event.get("files_modified"))
+            records.append(
+                {
+                    "record_key": event.get("attempt_key") or f"legacy:{_event_seq(event)}",
+                    "target": event.get("target"),
+                    "outcome": "applied" if modified else "no_op",
+                    "proposal_ids": [],
+                    "claimed_modified_paths": list(modified),
+                    "intent_sha256": None,
+                    "write_set_id": None,
+                    "safety_payload_sha256": None,
+                    "files_modified": list(modified),
+                    "source_seq": _event_seq(event),
+                    "form": "legacy",
+                }
+            )
     episode_id = baseline.get("episode_id") if baseline is not None else None
     if episode_id is None and allocations:
         episode_id = allocations[-1].get("episode_id")
     return {
         "baseline": baseline,
         "allocations": allocations,
-        "approvals": [],
-        "records": [],
+        "approvals": approvals,
+        "records": records,
         "attempts_used": len(allocations),
         "episode_id": episode_id,
     }

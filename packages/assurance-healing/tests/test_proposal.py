@@ -90,6 +90,65 @@ def valid_proposal() -> dict[str, Any]:
     }
 
 
+def _mapping_for(structured: dict[str, Any]) -> dict[str, Any]:
+    files: list[str] = []
+    for item in structured.get("proposals", []):
+        if isinstance(item, dict):
+            files.extend(str(path) for path in item.get("files_to_modify") or [])
+    if not files:
+        files = ["tests/api/test_users.py"]
+    unique = sorted(set(files))
+    return {
+        "schema_version": "1",
+        "layer": "api",
+        "entries": [
+            {"case_id": f"TC_{index}", "symbol": "test_ok", "target_file": path}
+            for index, path in enumerate(unique, start=1)
+        ],
+    }
+
+
+def _approval_for(prepare: dict[str, Any], structured: dict[str, Any]) -> dict[str, Any]:
+    from graph_engine.canonical import canonical_digest
+
+    from assurance_healing.contracts.agent import FixProposalResultV1
+    from assurance_healing.operations.keys import derive_approval_id
+
+    document = FixProposalResultV1.model_validate(structured)
+    proposal_digest = canonical_digest(document.model_dump(mode="json"))
+    paths = [
+        str(path)
+        for item in structured.get("proposals", [])
+        if isinstance(item, dict)
+        for path in item.get("files_to_modify") or []
+    ] or ["tests/api/test_users.py"]
+    return {
+        "schema_version": "1",
+        "approval_id": derive_approval_id(
+            owner_id=str(prepare["owner_id"]),
+            candidate_digest=str(prepare["candidate_digest"]),
+            baseline_digest=str(prepare["baseline_digest"]),
+            policy_digest=str(prepare["policy_digest"]),
+            proposal_digest=proposal_digest,
+        ),
+        "change_id": prepare["change_id"],
+        "owner_id": prepare["owner_id"],
+        "root_invocation_id": "inv-1",
+        "interrupt_task_id": "task-1",
+        "source_gate_attempt_id": "gate-1",
+        "source_tree_id": "tree-src",
+        "target_tree_id": "tree-dst",
+        "proposal_digest": proposal_digest,
+        "fixer_authority_digest": "b" * 64,
+        "candidate_digest": prepare["candidate_digest"],
+        "baseline_digest": prepare["baseline_digest"],
+        "policy_digest": prepare["policy_digest"],
+        "targets": ["api"],
+        "paths": paths,
+        "action": "approve_and_apply",
+    }
+
+
 def fake_agent_result(structured: dict[str, Any], **extra: Any) -> dict[str, Any]:
     from agent_runtime_contracts import AgentRunResult
     from agent_runtime_contracts.schema import canonical_digest
@@ -103,10 +162,14 @@ def fake_agent_result(structured: dict[str, Any], **extra: Any) -> dict[str, Any
         adapter_id="test.fake",
         adapter_version="1.0.0",
     )
+    prepare = proposal_input()
     body = {
         "agent_result": result.model_dump(mode="json"),
-        **proposal_input(),
+        **prepare,
         "artifact_paths": [],
+        "prepare": prepare,
+        "mapping": _mapping_for(structured),
+        "approval": _approval_for(prepare, structured),
     }
     body.update(extra)
     return body
@@ -160,6 +223,19 @@ async def test_fix_proposal_finalize_accepts_typed_proposal(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_fix_proposal_finalize_rejects_rewritten_baseline_digest(tmp_path: Path) -> None:
+    (tmp_path / "tests/api").mkdir(parents=True)
+    (tmp_path / "tests/api/test_users.py").write_text("def test_ok():\n    assert True\n")
+    extra = fake_agent_result(valid_proposal())
+    extra["baseline_digest"] = "f" * 64
+    outcome = await execute_task(FixProposalFinalizeHandler(), extra, tmp_path)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert outcome.failure.retryable is False
+
+
+@pytest.mark.asyncio
 async def test_allocate_returns_effect_intent_without_writing(tmp_path: Path) -> None:
     payload = {
         "change_id": "CH-DEMO-001",
@@ -186,7 +262,6 @@ async def test_record_approval_and_apply_emit_intents_only(tmp_path: Path) -> No
     approval = await execute_task(
         RecordFixerApprovalHandler(),
         {
-            "approval_id": "apr-1",
             "change_id": "CH-DEMO-001",
             "owner_id": "assurance.healing",
             "root_invocation_id": "inv-1",
@@ -209,7 +284,6 @@ async def test_record_approval_and_apply_emit_intents_only(tmp_path: Path) -> No
     apply = await execute_task(
         RecordCodegenFixApplyHandler(),
         {
-            "record_key": "rec-1",
             "change_id": "CH-DEMO-001",
             "owner_id": "assurance.healing",
             "target": "api",
@@ -281,6 +355,12 @@ async def test_coverage_repair_prepare_and_finalize(tmp_path: Path) -> None:
         adapter_id="test.fake",
         adapter_version="1.0.0",
     )
+    repair_prepare = {
+        "change_id": "CH-DEMO-001",
+        "brief": brief,
+        "baseline_digest": "b" * 64,
+        "allowed_roots": ["tests/"],
+    }
     finalized = await execute_task(
         CoverageRepairFinalizeHandler(),
         {
@@ -290,10 +370,75 @@ async def test_coverage_repair_prepare_and_finalize(tmp_path: Path) -> None:
             "baseline_digest": "b" * 64,
             "allowed_roots": ["tests/"],
             "artifact_paths": ["tests/api/test_users.py"],
+            "prepare": repair_prepare,
         },
         tmp_path,
     )
     assert finalized.status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_coverage_repair_finalize_rejects_unknown_locator(tmp_path: Path) -> None:
+    brief = {
+        "schema_version": "1",
+        "change_id": "CH-DEMO-001",
+        "batch_id": "batch-1",
+        "probe_verdict": "pass",
+        "eligible": True,
+        "allowed_test_files": ["tests/api/test_users.py"],
+        "repair_items": [
+            {
+                "kind": "uncovered_required_case",
+                "locator": {"case_id": "TC_A"},
+                "metric": "case_coverage",
+            }
+        ],
+    }
+    summary = {
+        "schema_version": "1",
+        "change_id": "CH-DEMO-001",
+        "attempt": 1,
+        "attempt_token": "token-1",
+        "applied": True,
+        "files_modified": ["tests/api/test_users.py"],
+        "addressed_items": ["NOT_IN_BRIEF"],
+    }
+    (tmp_path / "tests/api").mkdir(parents=True)
+    (tmp_path / "tests/api/test_users.py").write_text("def test_ok():\n    assert True\n")
+    from agent_runtime_contracts import AgentRunResult
+    from agent_runtime_contracts.schema import canonical_digest
+    from tests.phase4.agent_harness import FakeAgentAdapter
+
+    payload = cast(JSONValue, summary)
+    result = AgentRunResult(
+        structured_result=payload,
+        result_digest=canonical_digest(payload),
+        evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
+        adapter_id="test.fake",
+        adapter_version="1.0.0",
+    )
+    finalized = await execute_task(
+        CoverageRepairFinalizeHandler(),
+        {
+            "agent_result": result.model_dump(mode="json"),
+            "change_id": "CH-DEMO-001",
+            "brief": brief,
+            "baseline_digest": "b" * 64,
+            "allowed_roots": ["tests/"],
+            "artifact_paths": ["tests/api/test_users.py"],
+            "prepare": {
+                "change_id": "CH-DEMO-001",
+                "brief": brief,
+                "baseline_digest": "b" * 64,
+                "allowed_roots": ["tests/"],
+            },
+        },
+        tmp_path,
+    )
+    assert finalized.status == "failed"
+    assert finalized.failure is not None
+    assert finalized.failure.kind == "invalid_output"
+    assert finalized.failure.retryable is True
 
 
 def test_healing_resources_forbid_legacy_and_provider_names() -> None:

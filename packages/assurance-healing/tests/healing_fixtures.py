@@ -13,6 +13,11 @@ from assurance_healing.contracts import (
     HealingAllocationReceiptV2,
     ProposalApprovedIntentV1,
 )
+from assurance_healing.operations.keys import (
+    derive_allocation_ids,
+    derive_approval_id,
+    derive_heal_record_key,
+)
 
 _HEX_A = "a" * 64
 _HEX_B = "b" * 64
@@ -24,9 +29,28 @@ _WHEEL_ROOT = Path(__file__).resolve().parent.parent
 ALLOCATION_KIND = "assurance.healing.effect.allocation.v2"
 APPROVAL_KIND = "assurance.healing.effect.proposal-approved.v1"
 HEAL_APPLY_KIND = "assurance.healing.effect.heal-apply.v2"
-ALLOCATION_KEY = "allocation-key"
-APPROVAL_KEY = "approval-key"
-HEAL_APPLY_KEY = "heal-apply-key"
+_ALLOCATION_IDS = derive_allocation_ids(
+    change_id="CH-DEMO-001",
+    source_batch_id="batch-src",
+    entry_batch_id="batch-entry",
+    candidate_digest=_HEX_A,
+    attempt_number=1,
+)
+ALLOCATION_KEY = str(_ALLOCATION_IDS["operation_id"])
+APPROVAL_KEY = derive_approval_id(
+    owner_id="assurance.healing",
+    candidate_digest=_HEX_C,
+    baseline_digest=_HEX_D,
+    policy_digest=_HEX_E,
+    proposal_digest=_HEX_A,
+)
+HEAL_APPLY_KEY = derive_heal_record_key(
+    owner_id="assurance.healing",
+    write_set_id="ws-1",
+    candidate_digest=_HEX_A,
+    safety_payload_digest=_HEX_E,
+    target="api",
+)
 
 
 class CrashCut(RuntimeError):
@@ -109,8 +133,8 @@ class FaultingHealStore:
 def allocation_payload(*, operation_id: str = ALLOCATION_KEY) -> dict[str, object]:
     return {
         "schema_version": "2",
-        "episode_id": "ep-1",
-        "attempt_id": "ha-ep1-1",
+        "episode_id": str(_ALLOCATION_IDS["episode_id"]),
+        "attempt_id": str(_ALLOCATION_IDS["attempt_id"]),
         "attempt_number": 1,
         "operation_id": operation_id,
         "change_id": "CH-DEMO-001",

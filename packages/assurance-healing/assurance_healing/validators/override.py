@@ -16,6 +16,7 @@ from assurance_healing.validators.paths import canonical_relative, under_root
 _ALLOWED = ("healing/", "qa/changes/")
 _OUTSIDE = "override candidate may write only healing token paths"
 _TOKEN = "override token does not match policy and candidate"
+_MISSING = "override token is required"
 
 
 class OverrideValidator:
@@ -39,16 +40,20 @@ class OverrideValidator:
         for item in candidate.files:
             if not canonical_relative(item.path) or not under_root(item.path, _ALLOWED):
                 return ValidationResult(accepted=False, reason=_OUTSIDE)
-        if self._path_only or not self._file_bytes:
+        if self._path_only:
             return ValidationResult(accepted=True)
-        if self._change_id is None or self._policy_digest is None or self._candidate_digest is None:
-            return ValidationResult(accepted=True)
+        if not self._file_bytes:
+            return ValidationResult(accepted=False, reason=_MISSING)
         for path, payload in self._file_bytes.items():
             del path
             try:
                 token = HealingOverrideTokenV1.model_validate(json.loads(payload.decode("utf-8")))
             except (UnicodeDecodeError, json.JSONDecodeError, ValidationError) as error:
                 return ValidationResult(accepted=False, reason=str(error))
+            if self._change_id is None and self._policy_digest is None and self._candidate_digest is None:
+                continue
+            if self._change_id is None or self._policy_digest is None or self._candidate_digest is None:
+                return ValidationResult(accepted=False, reason=_TOKEN)
             expected = override_token_digest(
                 change_id=self._change_id,
                 policy_digest=self._policy_digest,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-from graph_engine.canonical import canonical_digest
+from typing import cast
+
+from graph_engine.canonical import JSONValue, canonical_digest
 from tests.phase4.conformance import execute_task
 
 from assurance_agent.workflow.healing.operations import derive_allocation_ids as legacy_derive_allocation_ids
@@ -253,6 +255,62 @@ async def test_proposal_completion_dispatch_and_episode_projection() -> None:
     )
     assert as_object(projected.output)["episode_id"] == "ep-1"
     assert as_object(projected.output)["attempts_used"] == 1
+
+
+async def test_episode_projection_matches_legacy_on_allocation_approval_apply() -> None:
+    from assurance_agent.workflow.healing.projection import project_healing_episode_from_events
+
+    events = [
+        {
+            "type": "healing_attempt_allocated_v2",
+            "seq": 1,
+            "episode_id": "ep-1",
+            "attempt_id": "ha-1",
+            "attempt_number": 1,
+            "operation_id": "op-1",
+            "source_batch_id": "batch-1",
+            "entry_batch_id": "batch-1",
+            "baseline_sha256": _HEX_A,
+            "baseline_embedded": True,
+        },
+        {
+            "type": "fixer_proposal_approved",
+            "seq": 2,
+            "approval_id": "apr-1",
+            "root_invocation_id": "inv-1",
+            "interrupt_task_id": "task-1",
+            "source_gate_attempt_id": "gate-1",
+            "source_tree_id": "tree-src",
+            "target_tree_id": "tree-dst",
+            "proposal_sha256": _HEX_A,
+            "fixer_authority_sha256": _HEX_B,
+            "entry_baseline_sha256": _HEX_A,
+            "policy_sha256": _HEX_C,
+            "targets": ["api"],
+            "paths": ["tests/api/test_users.py"],
+        },
+        {
+            "type": "heal_record_apply_v2",
+            "seq": 3,
+            "record_key": "rec-1",
+            "target": "api",
+            "outcome": "applied",
+            "proposal_ids": ["P1"],
+            "claimed_modified_paths": ["tests/api/test_users.py"],
+            "intent_sha256": _HEX_A,
+            "write_set_id": "ws-1",
+            "safety_payload_sha256": _HEX_B,
+        },
+    ]
+    projected = await execute_task(ProjectEpisodeHandler(), cast(JSONValue, {"events": events}))
+    legacy = project_healing_episode_from_events(events)
+    output = as_object(projected.output)
+    assert output["episode_id"] == legacy.episode_id
+    assert output["attempts_used"] == legacy.attempts_used
+    assert len(output["approvals"]) == 1
+    assert len(output["records"]) == 1
+    assert output["approvals"][0]["approval_id"] == legacy.approvals[0].approval_id
+    assert output["records"][0]["record_key"] == legacy.records[0].record_key
 
 
 async def test_repair_status_and_attempt_token_match_independent_rules() -> None:

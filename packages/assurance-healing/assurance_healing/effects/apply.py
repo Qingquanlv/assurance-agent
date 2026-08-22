@@ -6,6 +6,7 @@ from assurance_healing.contracts.effects import HealApplyIntentV2, HealApplyRece
 from assurance_healing.contracts.wire import heal_apply_intent_digest
 from assurance_healing.effects.common import apply_effect, reconcile_effect
 from assurance_healing.effects.store import HealingStore
+from assurance_healing.operations.keys import derive_heal_record_key
 from graph_engine.plugin_api import EffectApplyResult, EffectIntent, EffectReconcileResult
 
 HEAL_APPLY_KIND = "assurance.healing.effect.heal-apply.v2"
@@ -24,7 +25,8 @@ class HealApplyEffect:
             idempotency_key=idempotency_key,
             expected_kind=HEAL_APPLY_KIND,
             intent_model=HealApplyIntentV2,
-            derived_key=lambda payload: payload.record_key,
+            derived_key=_heal_formula,
+            payload_key=lambda payload: payload.record_key,
             build_receipt=_heal_receipt,
         )
 
@@ -35,8 +37,19 @@ class HealApplyEffect:
             idempotency_key=idempotency_key,
             expected_kind=HEAL_APPLY_KIND,
             intent_model=HealApplyIntentV2,
-            derived_key=lambda payload: payload.record_key,
+            derived_key=_heal_formula,
+            payload_key=lambda payload: payload.record_key,
         )
+
+
+def _heal_formula(payload: HealApplyIntentV2) -> str:
+    return derive_heal_record_key(
+        owner_id=payload.owner_id,
+        write_set_id=payload.write_set_id,
+        candidate_digest=payload.candidate_digest,
+        safety_payload_digest=payload.safety_payload_digest,
+        target=payload.target,
+    )
 
 
 def _heal_receipt(payload: HealApplyIntentV2) -> dict[str, object]:

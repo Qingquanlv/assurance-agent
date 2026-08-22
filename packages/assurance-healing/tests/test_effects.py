@@ -31,6 +31,16 @@ async def test_allocation_apply_is_idempotent_and_reconcilable() -> None:
     assert reconciled.receipt == first.receipt
 
 
+@pytest.mark.asyncio
+async def test_allocation_rejects_well_typed_intent_with_non_formula_key() -> None:
+    handler = HealingAllocationEffect(store=FakeAllocationStore())
+    intent = allocation_intent(operation_id="not-a-derived-key")
+    result = await handler.apply(intent, "not-a-derived-key")
+    assert result.status == "permanent"
+    assert result.failure is not None
+    assert result.failure.kind == "invalid_input"
+
+
 def test_effect_policies_are_frozen_and_identity_bound() -> None:
     contribution = HealingPlugin.contribute(RegistryPorts(engine_api="2.0"))
     policies = {item.kind: item.policy for item in contribution.effects}

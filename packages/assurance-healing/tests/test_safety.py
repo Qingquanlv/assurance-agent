@@ -94,6 +94,58 @@ def test_override_validator_checks_exact_token() -> None:
     assert rejected.accepted is False
 
 
+def test_default_repair_and_override_validators_fail_closed() -> None:
+    context = validation_context()
+    repair = RepairCandidateValidator().validate(candidate("tests/api/x.py"), context)
+    assert repair.accepted is False
+    override = OverrideValidator().validate(candidate("healing/token.json"), context)
+    assert override.accepted is False
+
+
+def test_override_token_parse_failure_is_rejected() -> None:
+    rejected = OverrideValidator(file_bytes={"healing/token.json": b"not-json"}).validate(
+        candidate("healing/token.json"), validation_context()
+    )
+    assert rejected.accepted is False
+
+
+def test_repair_candidate_authenticates_apply_summary() -> None:
+    proposal = {
+        "status": "approved",
+        "proposals": [
+            {
+                "proposal_id": "P1",
+                "files_to_modify": ["tests/api/test_other.py", "tests/api/test_users.py"],
+            }
+        ],
+    }
+    summary = {
+        "schema_version": "1",
+        "outcome": "applied",
+        "proposal_ids": ["P1"],
+        "claimed_modified_paths": ["tests/api/test_users.py"],
+        "intent_sha256": f"sha256:{_HEX_A}",
+        "write_set_id": "ws-1",
+        "applied": True,
+    }
+    validator = RepairCandidateValidator(approved_proposal=proposal, apply_summary=summary)
+    context = validation_context()
+    assert validator.validate(candidate("tests/api/test_users.py"), context).accepted is True
+    extra = validator.validate(candidate("tests/api/test_other.py"), context)
+    assert extra.accepted is False
+
+
+def test_repair_apply_summary_parse_failure_is_rejected() -> None:
+    rejected = RepairCandidateValidator(
+        approved_proposal={
+            "status": "approved",
+            "proposals": [{"proposal_id": "P1", "files_to_modify": ["tests/api/test_users.py"]}],
+        },
+        file_bytes={"healing/apply-summary.json": b"{"},
+    ).validate(candidate("tests/api/test_users.py"), validation_context())
+    assert rejected.accepted is False
+
+
 def test_repair_candidate_requires_named_proposal_files() -> None:
     proposal = {
         "status": "approved",

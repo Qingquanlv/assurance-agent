@@ -76,13 +76,15 @@ class RecordFixerApprovalHandler:
         del context
         try:
             payload = validate_input(RecordApprovalInputV1, request.input)
-            approval_id = payload.approval_id or derive_approval_id(
+            approval_id = derive_approval_id(
                 owner_id=payload.owner_id,
                 candidate_digest=payload.candidate_digest,
                 baseline_digest=payload.baseline_digest,
                 policy_digest=payload.policy_digest,
                 proposal_digest=payload.proposal_digest,
             )
+            if payload.approval_id is not None and payload.approval_id != approval_id:
+                raise InputError("approval_id does not match the derived key")
             intent = ProposalApprovedIntentV1(
                 schema_version="1",
                 approval_id=approval_id,
@@ -116,13 +118,15 @@ class RecordCodegenFixApplyHandler:
         del context
         try:
             payload = validate_input(RecordApplyInputV1, request.input)
-            record_key = payload.record_key or derive_heal_record_key(
+            record_key = derive_heal_record_key(
                 owner_id=payload.owner_id,
                 write_set_id=payload.write_set_id,
                 candidate_digest=payload.candidate_digest,
                 safety_payload_digest=payload.safety_payload_digest,
                 target=payload.target,
             )
+            if payload.record_key is not None and payload.record_key != record_key:
+                raise InputError("record_key does not match the derived key")
             intent = HealApplyIntentV2(
                 schema_version="2",
                 record_key=record_key,
