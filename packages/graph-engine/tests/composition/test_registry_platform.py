@@ -80,6 +80,7 @@ from graph_engine.plugin_api import (
     ValidationContext,
     ValidationResult,
 )
+from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.invocation_lock import InvocationDrift
 
@@ -3158,7 +3159,7 @@ def test_engine_open_rejects_each_independently_reresolved_lock_facet_without_cl
     original = platform.resolve(request)
     engine_root = tmp_path / "engine"
     with Engine(engine_root) as engine:
-        engine.start(original, entrypoint="hello", invocation_id="facet-drift").close()
+        engine.start(original, entrypoint="hello", invocation_id="facet-drift", seed=empty_invocation_seed()).close()
     invocation = engine_root / "invocations" / "facet-drift"
     before_ledger = b"".join(
         path.read_bytes() for path in sorted((invocation / "ledger").glob("[0-9]*.json"))

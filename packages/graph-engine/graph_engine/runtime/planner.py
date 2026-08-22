@@ -252,15 +252,24 @@ def validate_event_history(
         raise PlanningError(f"event history uses unknown entrypoint {started.entrypoint!r}")
     root_graph_id = compiled.entrypoints[started.entrypoint]
     root_graph = compiled.graphs[root_graph_id]
+    if not isinstance(envelopes[1].event, GraphStarted) or not isinstance(envelopes[2].event, TokenOffered):
+        raise PlanningError("event history lacks the canonical invocation bootstrap")
+    root_input = envelopes[1].event.input
+    if envelopes[1].event.input != envelopes[2].event.payload:
+        raise PlanningError("event history bootstrap root input is not canonical")
     bootstrap: tuple[RuntimeEvent, ...] = (
         started,
-        GraphStarted(graph_instance_id=root_graph_id, graph_id=root_graph_id),
+        GraphStarted(
+            graph_instance_id=root_graph_id,
+            graph_id=root_graph_id,
+            input=root_input,
+        ),
         TokenOffered(
             token_id=_start_token_id(root_graph_id, root_graph.start),
             graph_instance_id=root_graph_id,
             source=None,
             target=root_graph.start,
-            payload=None,
+            payload=root_input,
         ),
     )
     _require_exact_history_events(envelopes, 0, bootstrap)
@@ -498,8 +507,6 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
     expected_root_graph_id = compiled.entrypoints[entrypoint]
     if roots and roots[0].graph_id != expected_root_graph_id:
         raise PlanningError("root graph does not match the invocation entrypoint")
-    if roots and roots[0].input is not None:
-        raise PlanningError("root graph input must be absent")
     for graph in projection.graph_instances:
         if graph.graph_id not in compiled.graphs:
             raise PlanningError(f"unknown graph {graph.graph_id!r}")

@@ -35,8 +35,12 @@ class InvocationStartIntent(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     schema_version: Literal["1"] = "1"
+    event_schema_version: Literal["2"] = "2"
     lock_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     entrypoint: str = Field(min_length=1)
+    runtime_authorization_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    root_input_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    initial_tree_id: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @property
     def canonical_bytes(self) -> bytes:
@@ -66,10 +70,21 @@ def install_invocation_start_intent_at(
     *,
     lock_digest: str,
     entrypoint: str,
+    runtime_authorization_digest: str,
+    root_input_digest: str,
+    initial_tree_id: str,
+    event_schema_version: Literal["2"] = "2",
 ) -> InvocationStartIntent:
     """Install the immutable selected entrypoint before publishing the invocation."""
 
-    intent = InvocationStartIntent(lock_digest=lock_digest, entrypoint=entrypoint)
+    intent = InvocationStartIntent(
+        lock_digest=lock_digest,
+        entrypoint=entrypoint,
+        runtime_authorization_digest=runtime_authorization_digest,
+        root_input_digest=root_input_digest,
+        initial_tree_id=initial_tree_id,
+        event_schema_version=event_schema_version,
+    )
     _install_immutable_record_at(
         invocation_fd,
         _START_INTENT_NAME,
@@ -242,7 +257,9 @@ def authenticate_invocation_start_intent(
     try:
         intent = InvocationStartIntent.model_validate_json(actual, strict=True)
     except ValidationError as error:
-        raise InvocationDrift("invocation start intent is corrupt") from error
+        raise InvocationDrift("schema-v1 prototype invocation start intent is not supported") from error
+    if intent.event_schema_version != "2":
+        raise InvocationDrift("schema-v1 prototype invocation start intent is not supported")
     if intent.canonical_bytes != actual:
         raise InvocationDrift("invocation start intent is not canonical")
     if intent.lock_digest != lock_digest:

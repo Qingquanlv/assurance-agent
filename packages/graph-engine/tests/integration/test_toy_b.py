@@ -18,6 +18,7 @@ from graph_engine.composition import (
     ResolutionRequest,
 )
 from graph_engine.plugin_api import TaskContext, TaskHandler
+from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine, EngineError, RunResult
 from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostExecuteCall
 from graph_engine.runtime.events import (
@@ -269,7 +270,7 @@ def _run_to_completion(
     invocation_id: str,
 ) -> tuple[str, tuple[EventIDSignature, ...], str, JSONValue]:
     with Engine(root, host=_InProcessTestHost()) as engine:
-        with engine.start(composition, entrypoint="review", invocation_id=invocation_id) as handle:
+        with engine.start(composition, entrypoint="review", invocation_id=invocation_id, seed=empty_invocation_seed()) as handle:
             blocked = engine.run_until_blocked(handle)
             assert blocked.status == "interrupted"
             with engine.resume(
@@ -312,7 +313,7 @@ def test_toy_b_recovers_then_interrupts_and_resumes(
     assert set(left_claims.writes).isdisjoint(child_subgraph_claims.writes)
 
     with Engine(tmp_path / "engine", host=_InProcessTestHost()) as engine:
-        with engine.start(resolved, entrypoint="review", invocation_id="toy-b-1") as handle:
+        with engine.start(resolved, entrypoint="review", invocation_id="toy-b-1", seed=empty_invocation_seed()) as handle:
             blocked = engine.run_until_blocked(handle)
             assert blocked.status == "interrupted"
             assert blocked.actions == ("approve", "reject")

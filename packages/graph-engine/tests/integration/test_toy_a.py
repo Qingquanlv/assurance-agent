@@ -16,6 +16,7 @@ from graph_engine.composition import (
     ResolutionRequest,
 )
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome
+from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostExecuteCall
 
@@ -117,7 +118,7 @@ def test_toy_a_runs_without_assurance_packages(
     resolved = _toy_a_composition(tmp_path / "composition", monkeypatch)
 
     with Engine(tmp_path / "engine", host=_InProcessTestHost()) as engine:
-        with engine.start(resolved, entrypoint="hello", invocation_id="toy-a-1") as handle:
+        with engine.start(resolved, entrypoint="hello", invocation_id="toy-a-1", seed=empty_invocation_seed()) as handle:
             result = engine.run_until_blocked(handle)
             assert result.status == "succeeded", result
             assert result.output == {"message": "hello Ada"}
@@ -133,7 +134,7 @@ def test_toy_a_retries_a_transient_first_greet_attempt(
     host = _InProcessTestHost(fail_first_greet=True)
 
     with Engine(tmp_path / "engine", host=host) as engine:
-        with engine.start(resolved, entrypoint="hello", invocation_id="toy-a-retry") as handle:
+        with engine.start(resolved, entrypoint="hello", invocation_id="toy-a-retry", seed=empty_invocation_seed()) as handle:
             result = engine.run_until_blocked(handle)
             assert result.status == "succeeded", result
             assert result.output == {"message": "hello Ada"}

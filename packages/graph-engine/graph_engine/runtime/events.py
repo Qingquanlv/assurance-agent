@@ -35,9 +35,13 @@ RuntimeFailure = TaskFailure
 
 class InvocationStarted(RuntimeEventModel):
     kind: Literal["invocation_started"] = "invocation_started"
+    event_schema_version: Literal["2"] = "2"
     invocation_id: str
     lock_digest: str = Field(pattern=_SHA256_PATTERN)
     entrypoint: str
+    runtime_authorization_digest: str = Field(pattern=_SHA256_PATTERN)
+    root_input_digest: str = Field(pattern=_SHA256_PATTERN)
+    initial_tree_id: str = Field(pattern=_SHA256_PATTERN)
 
 
 class GraphStarted(RuntimeEventModel):

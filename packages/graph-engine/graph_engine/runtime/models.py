@@ -588,6 +588,7 @@ def _advance_fold(
                     "invocation_id": event.invocation_id,
                     "lock_digest": event.lock_digest,
                     "entrypoint": event.entrypoint,
+                    "head_tree_id": event.initial_tree_id,
                 }
             )
             continue

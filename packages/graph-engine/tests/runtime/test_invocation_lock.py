@@ -25,6 +25,7 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
+from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
 from graph_engine.runtime.engine import Engine, EngineError, EnginePublicationIndeterminate
 from graph_engine.runtime.events import (
     EventEnvelope,
@@ -49,6 +50,40 @@ from graph_engine.runtime.workspace import SnapshotStore
 
 _LOCK_NAME = "invocation.lock.json"
 _START_INTENT_NAME = "invocation.start.json"
+
+
+def _empty_seed():
+    return empty_invocation_seed()
+
+
+def _start_intent_document(composition: FrozenComposition, entrypoint: str) -> dict[str, object]:
+    seed = _empty_seed()
+    return {
+        "schema_version": "1",
+        "event_schema_version": "2",
+        "lock_digest": composition.lock_digest,
+        "entrypoint": entrypoint,
+        "runtime_authorization_digest": EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
+        "root_input_digest": seed.root_input_digest,
+        "initial_tree_id": seed.workspace.tree_id,
+    }
+
+
+def _install_start_intent_at(
+    invocation_fd: int,
+    *,
+    lock_digest: str,
+    entrypoint: str,
+) -> object:
+    seed = _empty_seed()
+    return install_invocation_start_intent_at(
+        invocation_fd,
+        lock_digest=lock_digest,
+        entrypoint=entrypoint,
+        runtime_authorization_digest=EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
+        root_input_digest=seed.root_input_digest,
+        initial_tree_id=seed.workspace.tree_id,
+    )
 
 
 def _lock() -> InvocationLock:
@@ -225,13 +260,7 @@ def _replace_start_intent(
     intent_path = invocation / _START_INTENT_NAME
     intent_path.unlink()
     intent_path.write_bytes(
-        canonical_json_bytes(
-            {
-                "entrypoint": entrypoint,
-                "lock_digest": composition.lock_digest,
-                "schema_version": "1",
-            }
-        )
+        canonical_json_bytes(_start_intent_document(composition, entrypoint))
     )
     intent_path.chmod(0o400)
 
@@ -331,7 +360,7 @@ def test_start_intent_fault_cuts_are_exactly_recoverable(
     try:
         monkeypatch.setattr(invocation_lock_runtime, "_invocation_start_intent_boundary", cut)
         with pytest.raises(OSError, match=f"intent {phase}"):
-            install_invocation_start_intent_at(
+            _install_start_intent_at(
                 invocation_fd,
                 lock_digest=expected.digest,
                 entrypoint="hello",
@@ -343,7 +372,7 @@ def test_start_intent_fault_cuts_are_exactly_recoverable(
             "_invocation_start_intent_boundary",
             lambda _phase: None,
         )
-        install_invocation_start_intent_at(
+        _install_start_intent_at(
             invocation_fd,
             lock_digest=expected.digest,
             entrypoint="hello",
@@ -476,17 +505,13 @@ def test_engine_persists_lock_before_bootstrap(
     root = tmp_path / "engine"
 
     with Engine(root) as engine:
-        with engine.start(composition, entrypoint="hello", invocation_id="run-1") as handle:
+        with engine.start(composition, entrypoint="hello", invocation_id="run-1", seed=empty_invocation_seed()) as handle:
             assert handle.lock_digest == composition.lock_digest
 
     invocation = root / "invocations" / "run-1"
     assert (invocation / _LOCK_NAME).read_bytes() == composition.lock.canonical_bytes
     assert (invocation / _START_INTENT_NAME).read_bytes() == canonical_json_bytes(
-        {
-            "entrypoint": "hello",
-            "lock_digest": composition.lock_digest,
-            "schema_version": "1",
-        }
+        _start_intent_document(composition, "hello")
     )
     first = Ledger(invocation / "ledger").read_all()[0].event
     assert isinstance(first, InvocationStarted)
@@ -507,13 +532,13 @@ def test_repeated_start_recovers_the_exact_lock_after_a_prebootstrap_cut(
     with Engine(root) as engine:
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", cut)
         with pytest.raises(OSError, match="pre-bootstrap"):
-            engine.start(composition, entrypoint="hello", invocation_id="recoverable")
+            engine.start(composition, entrypoint="hello", invocation_id="recoverable", seed=empty_invocation_seed())
         invocation = root / "invocations" / "recoverable"
         assert (invocation / _LOCK_NAME).read_bytes() == composition.lock.canonical_bytes
         assert _ledger_bytes(root, "recoverable") == b""
 
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", lambda _phase: None)
-        with engine.start(composition, entrypoint="hello", invocation_id="recoverable") as handle:
+        with engine.start(composition, entrypoint="hello", invocation_id="recoverable", seed=empty_invocation_seed()) as handle:
             assert handle.lock_digest == composition.lock_digest
 
     events = Ledger(root / "invocations" / "recoverable" / "ledger").read_all()
@@ -534,7 +559,7 @@ def test_repeated_start_reconciles_an_authoritative_bootstrap_after_the_append_c
     with Engine(root) as engine:
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", cut)
         with pytest.raises(OSError, match="post-bootstrap"):
-            engine.start(composition, entrypoint="hello", invocation_id="reconcile-bootstrap")
+            engine.start(composition, entrypoint="hello", invocation_id="reconcile-bootstrap", seed=empty_invocation_seed())
         assert _ledger_bytes(root, "reconcile-bootstrap")
 
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", lambda _phase: None)
@@ -542,6 +567,7 @@ def test_repeated_start_reconciles_an_authoritative_bootstrap_after_the_append_c
             composition,
             entrypoint="hello",
             invocation_id="reconcile-bootstrap",
+        seed=empty_invocation_seed(),
         ).close()
 
     events = Ledger(root / "invocations" / "reconcile-bootstrap" / "ledger").read_all()
@@ -574,7 +600,7 @@ def test_invocation_publication_fault_cuts_are_exactly_recoverable(
     with Engine(root) as engine:
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", cut)
         with pytest.raises(OSError, match=phase):
-            engine.start(composition, entrypoint="hello", invocation_id="publication-cut")
+            engine.start(composition, entrypoint="hello", invocation_id="publication-cut", seed=empty_invocation_seed())
         assert invocation.exists() is published
         if published:
             assert (invocation / _LOCK_NAME).read_bytes() == composition.lock.canonical_bytes
@@ -582,7 +608,7 @@ def test_invocation_publication_fault_cuts_are_exactly_recoverable(
             assert _ledger_bytes(root, "publication-cut") == b""
 
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", lambda _phase: None)
-        engine.start(composition, entrypoint="hello", invocation_id="publication-cut").close()
+        engine.start(composition, entrypoint="hello", invocation_id="publication-cut", seed=empty_invocation_seed()).close()
 
     events = Ledger(invocation / "ledger").read_all()
     assert sum(isinstance(item.event, InvocationStarted) for item in events) == 1
@@ -607,7 +633,7 @@ def test_invocation_publication_never_replaces_a_racing_destination(
     with Engine(root) as engine:
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", inject_destination)
         with pytest.raises(InvocationDrift, match="lock|missing"):
-            engine.start(composition, entrypoint="hello", invocation_id="publication-race")
+            engine.start(composition, entrypoint="hello", invocation_id="publication-race", seed=empty_invocation_seed())
 
     assert raced_inode is not None
     current = raced.stat()
@@ -629,7 +655,7 @@ def test_recovery_fsyncs_a_published_invocation_before_claim_or_bootstrap(
     with Engine(root) as engine:
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", cut_after_rename)
         with pytest.raises(OSError, match="post-rename"):
-            engine.start(composition, entrypoint="hello", invocation_id="durable-recovery")
+            engine.start(composition, entrypoint="hello", invocation_id="durable-recovery", seed=empty_invocation_seed())
 
         namespace_fsyncs = 0
         real_fsync = os.fsync
@@ -648,7 +674,7 @@ def test_recovery_fsyncs_a_published_invocation_before_claim_or_bootstrap(
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", lambda _phase: None)
         monkeypatch.setattr(engine_runtime.os, "fsync", count_fsync)
         monkeypatch.setattr(Engine, "_acquire_runner_claim", require_durable_claim)
-        engine.start(composition, entrypoint="hello", invocation_id="durable-recovery").close()
+        engine.start(composition, entrypoint="hello", invocation_id="durable-recovery", seed=empty_invocation_seed()).close()
 
     assert namespace_fsyncs >= 1
 
@@ -665,7 +691,7 @@ def test_namespace_lock_must_have_one_stable_link_before_publication(
         os.link(namespace_lock, root / "namespace-lock-alias")
 
         with pytest.raises(EngineError, match="namespace lock|stable"):
-            engine.start(composition, entrypoint="hello", invocation_id="unsafe-lock")
+            engine.start(composition, entrypoint="hello", invocation_id="unsafe-lock", seed=empty_invocation_seed())
 
     assert not (root / "invocations" / "unsafe-lock").exists()
 
@@ -690,7 +716,7 @@ def test_start_reauthenticates_exact_intent_immediately_before_bootstrap(
     with Engine(root) as engine:
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", replace_intent)
         with pytest.raises(InvocationDrift, match="entrypoint|intent"):
-            engine.start(composition, entrypoint="hello", invocation_id="intent-race")
+            engine.start(composition, entrypoint="hello", invocation_id="intent-race", seed=empty_invocation_seed())
 
     assert _ledger_bytes(root, "intent-race") == b""
 
@@ -706,17 +732,11 @@ def test_handle_actions_reauthenticate_the_exact_selected_entrypoint_before_clai
     )
     root = tmp_path / "engine"
     with Engine(root) as engine:
-        handle = engine.start(composition, entrypoint="hello", invocation_id="handle-intent")
+        handle = engine.start(composition, entrypoint="hello", invocation_id="handle-intent", seed=empty_invocation_seed())
         intent_path = handle.invocation_root / _START_INTENT_NAME
         intent_path.unlink()
         intent_path.write_bytes(
-            canonical_json_bytes(
-                {
-                    "entrypoint": "alternate",
-                    "lock_digest": composition.lock_digest,
-                    "schema_version": "1",
-                }
-            )
+            canonical_json_bytes(_start_intent_document(composition, "alternate"))
         )
         intent_path.chmod(0o400)
         before = _ledger_bytes(root, "handle-intent")
@@ -748,7 +768,7 @@ def test_handle_actions_reject_ledger_entrypoint_drift_before_claim_or_append(
     )
     root = tmp_path / "engine"
     with Engine(root) as engine:
-        handle = engine.start(composition, entrypoint="hello", invocation_id="ledger-entrypoint")
+        handle = engine.start(composition, entrypoint="hello", invocation_id="ledger-entrypoint", seed=empty_invocation_seed())
         first_batch = next(iter(sorted((handle.invocation_root / "ledger").glob("[0-9]*.json"))))
         raw = json.loads(first_batch.read_bytes())
         started = InvocationStarted.model_validate(raw[0]["event"])
@@ -826,7 +846,7 @@ def test_bootstrap_cleanup_preserves_primary_and_closes_store_and_claim(
         faults.setattr(engine_runtime.os, "close", fail_claim_close)
         faults.setattr(engine_runtime, "_initialization_boundary", fail_bootstrap)
         with pytest.raises(RuntimeError, match="primary bootstrap failure") as captured:
-            engine.start(composition, entrypoint="hello", invocation_id="cleanup-fault")
+            engine.start(composition, entrypoint="hello", invocation_id="cleanup-fault", seed=empty_invocation_seed())
 
     assert store_closed
     assert claim_closed
@@ -842,7 +862,7 @@ def test_open_cleanup_preserves_primary_and_closes_store_and_claim(
     composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
     root = tmp_path / "engine"
     with Engine(root) as bootstrap:
-        bootstrap.start(composition, entrypoint="hello", invocation_id="open-cleanup").close()
+        bootstrap.start(composition, entrypoint="hello", invocation_id="open-cleanup", seed=empty_invocation_seed()).close()
     claim_fd: int | None = None
     store_closed = False
     claim_closed = False
@@ -906,7 +926,7 @@ def test_lock_only_recovery_rejects_a_different_selected_entrypoint_without_clai
     with Engine(root) as engine:
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", cut)
         with pytest.raises(OSError, match="pre-bootstrap"):
-            engine.start(composition, entrypoint="hello", invocation_id="entrypoint-drift")
+            engine.start(composition, entrypoint="hello", invocation_id="entrypoint-drift", seed=empty_invocation_seed())
 
     claims = 0
     appends = 0
@@ -927,7 +947,7 @@ def test_lock_only_recovery_rejects_a_different_selected_entrypoint_without_clai
     monkeypatch.setattr(Engine, "_acquire_runner_claim", count_claim)
     monkeypatch.setattr(Engine, "_append_authenticated", count_append)
     with Engine(root) as engine, pytest.raises(InvocationDrift, match="entrypoint|intent"):
-        engine.start(composition, entrypoint="alternate", invocation_id="entrypoint-drift")
+        engine.start(composition, entrypoint="alternate", invocation_id="entrypoint-drift", seed=empty_invocation_seed())
 
     assert claims == 0
     assert appends == 0
@@ -943,7 +963,7 @@ def test_start_intent_drift_fails_before_claim_or_append(
     composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
     root = tmp_path / "engine"
     with Engine(root) as engine:
-        engine.start(composition, entrypoint="hello", invocation_id="intent-drift").close()
+        engine.start(composition, entrypoint="hello", invocation_id="intent-drift", seed=empty_invocation_seed()).close()
     invocation = root / "invocations" / "intent-drift"
     intent_path = invocation / _START_INTENT_NAME
     if damage == "missing":
@@ -979,7 +999,7 @@ def test_start_intent_drift_fails_before_claim_or_append(
     monkeypatch.setattr(Engine, "_acquire_runner_claim", reject_claim)
     monkeypatch.setattr(Engine, "_append_authenticated", reject_append)
     with Engine(root) as engine, pytest.raises(InvocationDrift):
-        engine.start(composition, entrypoint="hello", invocation_id="intent-drift")
+        engine.start(composition, entrypoint="hello", invocation_id="intent-drift", seed=empty_invocation_seed())
 
     assert claims == 0
     assert appends == 0
@@ -995,7 +1015,7 @@ def test_engine_open_rejects_lock_drift_before_claim_or_append(
     composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
     root = tmp_path / "engine"
     with Engine(root) as engine:
-        engine.start(composition, entrypoint="hello", invocation_id="drift").close()
+        engine.start(composition, entrypoint="hello", invocation_id="drift", seed=empty_invocation_seed()).close()
     lock_path = root / "invocations" / "drift" / _LOCK_NAME
     if damage == "missing":
         lock_path.unlink()
@@ -1041,7 +1061,7 @@ def test_repeated_start_preserves_primary_failure_when_invocation_close_also_fai
     composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
     root = tmp_path / "engine"
     with Engine(root) as engine:
-        engine.start(composition, entrypoint="hello", invocation_id="close-masking").close()
+        engine.start(composition, entrypoint="hello", invocation_id="close-masking", seed=empty_invocation_seed()).close()
         real_open_invocation = Engine._open_invocation
         real_close = os.close
         invocation_fd: int | None = None
@@ -1068,7 +1088,7 @@ def test_repeated_start_preserves_primary_failure_when_invocation_close_also_fai
         monkeypatch.setattr(Engine, "_complete_start_at", fail_completion)
         monkeypatch.setattr(engine_runtime.os, "close", fail_close)
         with pytest.raises(RuntimeError, match="primary repeated-start failure") as captured:
-            engine.start(composition, entrypoint="hello", invocation_id="close-masking")
+            engine.start(composition, entrypoint="hello", invocation_id="close-masking", seed=empty_invocation_seed())
 
     assert failed_close
     assert any("close" in note for note in getattr(captured.value, "__notes__", ()))
@@ -1081,7 +1101,7 @@ def test_engine_open_rejects_bootstrap_lock_digest_mismatch_before_claim(
     composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
     root = tmp_path / "engine"
     with Engine(root) as engine:
-        engine.start(composition, entrypoint="hello", invocation_id="bootstrap-drift").close()
+        engine.start(composition, entrypoint="hello", invocation_id="bootstrap-drift", seed=empty_invocation_seed()).close()
     ledger_root = root / "invocations" / "bootstrap-drift" / "ledger"
     first_batch = next(iter(sorted(ledger_root.glob("[0-9]*.json"))))
     raw = json.loads(first_batch.read_bytes())
@@ -1122,6 +1142,7 @@ def test_open_reauthenticates_identity_inside_expired_lease_reclaim_before_appen
             composition,
             entrypoint="hello",
             invocation_id="reclaim-intent",
+        seed=empty_invocation_seed(),
         )
         handle.close()
     invocation = root / "invocations" / "reclaim-intent"
@@ -1159,13 +1180,7 @@ def test_open_reauthenticates_identity_inside_expired_lease_reclaim_before_appen
     ) -> tuple[str, ...]:
         intent_path.unlink()
         intent_path.write_bytes(
-            canonical_json_bytes(
-                {
-                    "entrypoint": "alternate",
-                    "lock_digest": composition.lock_digest,
-                    "schema_version": "1",
-                }
-            )
+            canonical_json_bytes(_start_intent_document(composition, "alternate"))
         )
         intent_path.chmod(0o400)
         return real_reclaim(scheduler, leases)  # type: ignore[arg-type]
@@ -1201,7 +1216,7 @@ def test_start_rejects_a_replaced_final_invocation_directory_before_bootstrap(
     with Engine(root) as engine:
         monkeypatch.setattr(engine_runtime, "_initialization_boundary", replace_final_name)
         with pytest.raises(InvocationDrift, match="anchor|directory|identity"):
-            engine.start(composition, entrypoint="hello", invocation_id="replaced-start")
+            engine.start(composition, entrypoint="hello", invocation_id="replaced-start", seed=empty_invocation_seed())
 
     assert _ledger_bytes(root, "replaced-start") == b""
     assert not (displaced / "ledger").exists()
@@ -1214,7 +1229,7 @@ def test_open_rejects_a_final_directory_replaced_after_open_without_claim(
     composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
     root = tmp_path / "engine"
     with Engine(root) as bootstrap:
-        bootstrap.start(composition, entrypoint="hello", invocation_id="replaced-open").close()
+        bootstrap.start(composition, entrypoint="hello", invocation_id="replaced-open", seed=empty_invocation_seed()).close()
     invocation = root / "invocations" / "replaced-open"
     displaced = root / "invocations" / "replaced-open.displaced"
     before = _ledger_bytes(root, "replaced-open")
@@ -1274,6 +1289,7 @@ def test_start_reanchors_the_final_invocation_name_at_every_acknowledgement_boun
                 composition,
                 entrypoint="hello",
                 invocation_id="replaced-at-boundary",
+            seed=empty_invocation_seed(),
             )
 
     assert replaced
@@ -1287,7 +1303,7 @@ def test_open_reanchors_the_final_invocation_name_immediately_before_return(
     composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
     root = tmp_path / "engine"
     with Engine(root) as bootstrap:
-        bootstrap.start(composition, entrypoint="hello", invocation_id="open-return").close()
+        bootstrap.start(composition, entrypoint="hello", invocation_id="open-return", seed=empty_invocation_seed()).close()
     invocation = root / "invocations" / "open-return"
     displaced = root / "invocations" / "open-return.displaced"
     before = _ledger_bytes(root, "open-return")
@@ -1317,7 +1333,7 @@ def test_terminal_open_guards_noop_head_recovery_before_checkpoint_or_return(
     )
     root = tmp_path / "engine"
     with Engine(root) as bootstrap:
-        handle = bootstrap.start(composition, entrypoint="hello", invocation_id="terminal-head")
+        handle = bootstrap.start(composition, entrypoint="hello", invocation_id="terminal-head", seed=empty_invocation_seed())
         assert bootstrap.run_until_blocked(handle).status in {"succeeded", "failed", "stopped"}
         handle.close()
     invocation = root / "invocations" / "terminal-head"
@@ -1350,7 +1366,7 @@ def test_planner_append_reauthenticates_after_fault_seam_before_publication(
     root = tmp_path / "engine"
     invocation = root / "invocations" / "planner-guard"
     with Engine(root) as engine:
-        handle = engine.start(composition, entrypoint="hello", invocation_id="planner-guard")
+        handle = engine.start(composition, entrypoint="hello", invocation_id="planner-guard", seed=empty_invocation_seed())
         before = _ledger_bytes(root, "planner-guard")
 
         def drift(context: str) -> None:
@@ -1380,7 +1396,7 @@ def test_resume_append_reauthenticates_after_fault_seam_before_publication(
     root = tmp_path / "engine"
     invocation = root / "invocations" / "resume-guard"
     with Engine(root) as engine:
-        handle = engine.start(composition, entrypoint="hello", invocation_id="resume-guard")
+        handle = engine.start(composition, entrypoint="hello", invocation_id="resume-guard", seed=empty_invocation_seed())
         assert engine.run_until_blocked(handle).status == "interrupted"
         before = _ledger_bytes(root, "resume-guard")
 
@@ -1434,7 +1450,7 @@ def test_repeated_start_repairs_visible_bootstrap_after_final_install_process_cr
 
         ledger_runtime._append_boundary = crash_after_final_install
         child_engine = Engine(root)
-        child_engine.start(composition, entrypoint="hello", invocation_id="durable-bootstrap")
+        child_engine.start(composition, entrypoint="hello", invocation_id="durable-bootstrap", seed=empty_invocation_seed())
         os._exit(0)
 
     _child, status = os.waitpid(process_id, 0)
@@ -1455,6 +1471,7 @@ def test_repeated_start_repairs_visible_bootstrap_after_final_install_process_cr
             composition,
             entrypoint="hello",
             invocation_id="durable-bootstrap",
+        seed=empty_invocation_seed(),
         ).close()
 
     assert durability_barriers >= 1
@@ -1468,7 +1485,7 @@ def test_repeated_start_durability_failure_is_indeterminate_before_claim(
     composition = _toy_a_composition(tmp_path / "composition", monkeypatch)
     root = tmp_path / "engine"
     with Engine(root) as bootstrap:
-        bootstrap.start(composition, entrypoint="hello", invocation_id="durability-failure").close()
+        bootstrap.start(composition, entrypoint="hello", invocation_id="durability-failure", seed=empty_invocation_seed()).close()
     before = _ledger_bytes(root, "durability-failure")
     claims = 0
 
@@ -1488,6 +1505,7 @@ def test_repeated_start_durability_failure_is_indeterminate_before_claim(
             composition,
             entrypoint="hello",
             invocation_id="durability-failure",
+        seed=empty_invocation_seed(),
         )
 
     assert claims == 0
@@ -1505,7 +1523,7 @@ def test_existing_invocation_authenticates_drift_before_requested_entrypoint_loo
     )
     root = tmp_path / "engine"
     with Engine(root) as bootstrap:
-        bootstrap.start(original, entrypoint="alternate", invocation_id="ordering").close()
+        bootstrap.start(original, entrypoint="alternate", invocation_id="ordering", seed=empty_invocation_seed()).close()
     drifted = _toy_a_composition(tmp_path / "drifted", monkeypatch)
     before = _ledger_bytes(root, "ordering")
     claims = 0
@@ -1518,7 +1536,7 @@ def test_existing_invocation_authenticates_drift_before_requested_entrypoint_loo
 
     monkeypatch.setattr(Engine, "_acquire_runner_claim", reject_claim)
     with Engine(root) as engine, pytest.raises(InvocationDrift):
-        engine.start(drifted, entrypoint="alternate", invocation_id="ordering")
+        engine.start(drifted, entrypoint="alternate", invocation_id="ordering", seed=empty_invocation_seed())
 
     assert claims == 0
     assert _ledger_bytes(root, "ordering") == before
@@ -1581,7 +1599,7 @@ def test_staging_cleanup_preserves_primary_and_attempts_close_remove_and_parent_
         monkeypatch.setattr(engine_runtime.os, "close", fail_staging_close)
         monkeypatch.setattr(engine_runtime.os, "fsync", fail_cleanup_fsync)
         with pytest.raises(RuntimeError) as captured:
-            engine.start(composition, entrypoint="hello", invocation_id="cleanup-staging")
+            engine.start(composition, entrypoint="hello", invocation_id="cleanup-staging", seed=empty_invocation_seed())
 
     assert captured.value is primary
     assert close_attempted
@@ -1620,7 +1638,7 @@ def test_direct_actions_preserve_primary_when_claim_close_fails(
     real_close = os.close
 
     with Engine(root) as engine:
-        handle = engine.start(composition, entrypoint="hello", invocation_id=operation)
+        handle = engine.start(composition, entrypoint="hello", invocation_id=operation, seed=empty_invocation_seed())
         if operation == "resume":
             assert engine.run_until_blocked(handle).status == "interrupted"
 

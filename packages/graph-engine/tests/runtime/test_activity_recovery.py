@@ -20,6 +20,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
+from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine, EngineConflictError
 from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostTerminalReceipt
 from graph_engine.runtime.host_receipts import TerminalReceiptStore, prove_call_quiescent
@@ -234,7 +235,7 @@ async def _crashed_recoverable_attempt(
     )
     start_clock = FakeClock(10.0)
     engine = Engine(tmp_path, clock=start_clock, host=host)
-    handle = engine.start(product, entrypoint="main", invocation_id="recover-1")
+    handle = engine.start(product, entrypoint="main", invocation_id="recover-1", seed=empty_invocation_seed())
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     plan = plan_next(product.workflow, fold_events(envelopes))
@@ -484,7 +485,7 @@ async def _assert_open_after_recovery_defers_compiled_events(tmp_path: Path) -> 
     host = _RecordingHost(status="running", calls=calls)
     start_clock = FakeClock(10.0)
     engine = Engine(tmp_path, clock=start_clock, host=host)
-    handle = engine.start(product, entrypoint="main", invocation_id="adopt-defer")
+    handle = engine.start(product, entrypoint="main", invocation_id="adopt-defer", seed=empty_invocation_seed())
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     structural = plan_next(product.workflow, fold_events(envelopes))
@@ -655,7 +656,7 @@ async def _assert_cancel_terminal_does_not_adopt(tmp_path: Path) -> None:
     host = _TerminalCancelHost(status="running", calls=calls)
     start_clock = FakeClock(10.0)
     engine = Engine(tmp_path, clock=start_clock, host=host)
-    handle = engine.start(product, entrypoint="main", invocation_id="cancel-term")
+    handle = engine.start(product, entrypoint="main", invocation_id="cancel-term", seed=empty_invocation_seed())
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     plan = plan_next(product.workflow, fold_events(envelopes))

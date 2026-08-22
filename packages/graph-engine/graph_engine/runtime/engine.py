@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
-from typing import Literal, Self
+from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -37,7 +37,7 @@ from graph_engine.runtime.events import (
     RuntimeEvent,
     TokenOffered,
 )
-from graph_engine.runtime.frozen_json import FrozenJSONValue
+from graph_engine.runtime.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.runtime.invocation_lock import (
     InvocationStartIntent,
     InvocationDrift,
@@ -78,6 +78,7 @@ from graph_engine.runtime.scheduler import (
     Scheduler,
     SystemClock,
 )
+from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, InvocationSeed
 from graph_engine.runtime.workspace import (
     FinalizationRolledBack,
     HeadPublicationIndeterminate,
@@ -107,6 +108,16 @@ class InvocationHandle:
     _invocation_fd: int = field(repr=False, compare=False)
     _engine: Engine = field(repr=False, compare=False)
     _closed: bool = field(default=False, init=False, repr=False, compare=False)
+
+    @property
+    def ledger(self) -> Ledger:
+        if self._closed:
+            raise EngineError("invocation handle is closed")
+        return Ledger.at(
+            self._invocation_fd,
+            "ledger",
+            display_root=self.invocation_root / "ledger",
+        )
 
     @property
     def workspace(self) -> SnapshotStore:
@@ -247,13 +258,16 @@ class Engine:
         *,
         entrypoint: str,
         invocation_id: str,
+        seed: InvocationSeed,
     ) -> InvocationHandle:
         self._assert_namespace_path_current()
         self._invocation_root(invocation_id)
         if not isinstance(composition, FrozenComposition):
             raise TypeError("engine start requires a FrozenComposition")
+        if not isinstance(seed, InvocationSeed):
+            raise TypeError("engine start requires an InvocationSeed")
         if _entry_exists(self._invocations_fd, invocation_id):
-            return self._continue_start(invocation_id, composition, entrypoint)
+            return self._continue_start(invocation_id, composition, entrypoint, seed)
         if entrypoint not in composition.workflow.entrypoints:
             raise EngineError(f"unknown entrypoint {entrypoint!r}")
         staging_name = f".{invocation_id}.invocation-init-{uuid.uuid4().hex}"
@@ -273,6 +287,9 @@ class Engine:
                 staging_fd,
                 lock_digest=composition.lock_digest,
                 entrypoint=entrypoint,
+                runtime_authorization_digest=EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
+                root_input_digest=seed.root_input_digest,
+                initial_tree_id=seed.workspace.tree_id,
             )
             _initialization_boundary("lock_installed")
             installed_now = self._install_invocation(staging_name, invocation_id, staging_fd)
@@ -286,13 +303,14 @@ class Engine:
                     name=staging_name,
                     descriptor=cleanup_fd,
                 )
-                return self._continue_start(invocation_id, composition, entrypoint)
+                return self._continue_start(invocation_id, composition, entrypoint, seed)
             installed = True
             return self._complete_start_at(
                 invocation_id,
                 composition,
                 entrypoint,
                 staging_fd,
+                seed,
             )
         except BaseException as error:
             if staging_fd is not None and not installed:
@@ -506,6 +524,7 @@ class Engine:
         invocation_id: str,
         composition: FrozenComposition,
         entrypoint: str,
+        seed: InvocationSeed,
     ) -> InvocationHandle:
         invocation_fd = self._open_invocation(invocation_id)
         try:
@@ -514,6 +533,7 @@ class Engine:
                 composition,
                 entrypoint,
                 invocation_fd,
+                seed,
             )
         finally:
             _cleanup_runtime_resources(
@@ -528,6 +548,7 @@ class Engine:
         composition: FrozenComposition,
         entrypoint: str,
         invocation_fd: int,
+        seed: InvocationSeed,
     ) -> InvocationHandle:
         invocation_root = self._invocation_root(invocation_id)
         intent = self._authenticate_invocation_records(
@@ -536,6 +557,7 @@ class Engine:
             entrypoint,
             invocation_fd,
         )
+        self._validate_seed_against_intent(seed, intent)
         _initialization_boundary("before_recovery_root_fsync")
         os.fsync(self._invocations_fd)
         _initialization_boundary("after_recovery_root_fsync")
@@ -594,10 +616,11 @@ class Engine:
                     display_root=invocation_root / "workspace",
                 )
             else:
+                initial_files = {item.path: item.content for item in seed.workspace.files}
                 store = SnapshotStore.create_at(
                     invocation_fd,
                     "workspace",
-                    {},
+                    initial_files,
                     display_root=invocation_root / "workspace",
                 )
             intent = self._authenticate_invocation_records(
@@ -623,26 +646,10 @@ class Engine:
                 if store.head_tree_id() != expected_tree_id:
                     raise EngineError("workspace HEAD disagrees with the authoritative ledger")
             else:
-                if store.head_tree_id() != _EMPTY_TREE_ID:
-                    raise EngineError("unbootstrapped invocation workspace is not empty")
+                if store.head_tree_id() != seed.workspace.tree_id:
+                    raise EngineError("unbootstrapped invocation workspace does not match the seed")
                 _initialization_boundary("workspace_ready")
-                graph_id = composition.workflow.entrypoints[entrypoint]
-                graph = composition.workflow.graphs[graph_id]
-                bootstrap: tuple[RuntimeEvent, ...] = (
-                    InvocationStarted(
-                        invocation_id=invocation_id,
-                        lock_digest=composition.lock_digest,
-                        entrypoint=entrypoint,
-                    ),
-                    GraphStarted(graph_instance_id=graph_id, graph_id=graph_id),
-                    TokenOffered(
-                        token_id=_start_token_id(graph_id, graph.start),
-                        graph_instance_id=graph_id,
-                        source=None,
-                        target=graph.start,
-                        payload=None,
-                    ),
-                )
+                bootstrap = self._bootstrap_events(invocation_id, composition, entrypoint, seed)
                 _initialization_boundary("before_ledger_bootstrap")
                 envelopes = self._append_authenticated(
                     context="bootstrap",
@@ -709,6 +716,8 @@ class Engine:
         started = envelopes[0].event
         if not isinstance(started, InvocationStarted):
             raise EngineError("invocation ledger lacks its canonical bootstrap")
+        if started.event_schema_version != "2":
+            raise EngineError("schema-v1 prototype invocation bootstrap is not supported")
         if started.invocation_id != invocation_id:
             raise EngineError("invocation ledger identity does not match its path")
         if started.lock_digest != composition.lock_digest:
@@ -717,22 +726,97 @@ class Engine:
             raise InvocationDrift("invocation ledger bootstrap entrypoint differs from its start intent")
         if started.entrypoint not in composition.workflow.entrypoints:
             raise EngineError("invocation ledger bootstrap uses an unknown entrypoint")
+        if (
+            started.runtime_authorization_digest != intent.runtime_authorization_digest
+            or started.root_input_digest != intent.root_input_digest
+            or started.initial_tree_id != intent.initial_tree_id
+        ):
+            raise InvocationDrift("invocation ledger bootstrap seed identity differs from its start intent")
         if len(envelopes) < 3:
             raise EngineError("invocation ledger lacks its canonical bootstrap")
         graph_id = composition.workflow.entrypoints[started.entrypoint]
         graph = composition.workflow.graphs[graph_id]
-        expected_graph = GraphStarted(graph_instance_id=graph_id, graph_id=graph_id)
+        root_input = self._root_input_payload(started.root_input_digest, envelopes[1], envelopes[2])
+        expected_graph = GraphStarted(
+            graph_instance_id=graph_id,
+            graph_id=graph_id,
+            input=root_input,
+        )
         expected_token = TokenOffered(
             token_id=_start_token_id(graph_id, graph.start),
             graph_instance_id=graph_id,
             source=None,
             target=graph.start,
-            payload=None,
+            payload=root_input,
         )
         if envelopes[1].event != expected_graph:
             raise EngineError("invocation ledger bootstrap root graph input is not canonical")
         if envelopes[2].event != expected_token:
             raise EngineError("invocation ledger bootstrap root graph input is not canonical")
+
+    def _bootstrap_events(
+        self,
+        invocation_id: str,
+        composition: FrozenComposition,
+        entrypoint: str,
+        seed: InvocationSeed,
+    ) -> tuple[RuntimeEvent, ...]:
+        graph_id = composition.workflow.entrypoints[entrypoint]
+        graph = composition.workflow.graphs[graph_id]
+        root_input = freeze_json(seed.root_input)
+        return (
+            InvocationStarted(
+                invocation_id=invocation_id,
+                lock_digest=composition.lock_digest,
+                entrypoint=entrypoint,
+                event_schema_version="2",
+                runtime_authorization_digest=EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
+                root_input_digest=seed.root_input_digest,
+                initial_tree_id=seed.workspace.tree_id,
+            ),
+            GraphStarted(
+                graph_instance_id=graph_id,
+                graph_id=graph_id,
+                input=root_input,
+            ),
+            TokenOffered(
+                token_id=_start_token_id(graph_id, graph.start),
+                graph_instance_id=graph_id,
+                source=None,
+                target=graph.start,
+                payload=root_input,
+            ),
+        )
+
+    def _root_input_payload(
+        self,
+        root_input_digest: str,
+        graph_envelope: EventEnvelope,
+        token_envelope: EventEnvelope,
+    ) -> FrozenJSONValue:
+        graph_event = graph_envelope.event
+        token_event = token_envelope.event
+        if not isinstance(graph_event, GraphStarted) or not isinstance(token_event, TokenOffered):
+            raise EngineError("invocation ledger bootstrap root graph input is not canonical")
+        if graph_event.input != token_event.payload:
+            raise EngineError("invocation ledger bootstrap root graph input is not canonical")
+        expected = canonical_digest(cast(JSONValue, thaw_json(graph_event.input)))
+        if root_input_digest != expected:
+            raise EngineError("invocation ledger bootstrap root graph input is not canonical")
+        return graph_event.input
+
+    def _validate_seed_against_intent(
+        self,
+        seed: InvocationSeed,
+        intent: InvocationStartIntent,
+    ) -> None:
+        if (
+            seed.root_input_digest != intent.root_input_digest
+            or seed.workspace.tree_id != intent.initial_tree_id
+        ):
+            raise InvocationDrift("invocation seed differs from its start intent")
+        if intent.runtime_authorization_digest != EMPTY_RUNTIME_AUTHORIZATION_DIGEST:
+            raise InvocationDrift("invocation start intent authorization differs from the engine default")
 
     def run_until_blocked(self, handle: InvocationHandle) -> RunResult:
         _composition, _invocation_root, invocation_fd = self._validated_handle(handle)

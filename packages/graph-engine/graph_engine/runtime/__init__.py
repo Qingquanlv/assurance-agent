@@ -114,6 +114,13 @@ from graph_engine.runtime.scheduler import (
     SystemClock,
     select_wave,
 )
+from graph_engine.runtime.seed import (
+    EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
+    InvocationSeed,
+    SeedFile,
+    WorkspaceSeed,
+    empty_invocation_seed,
+)
 
 __all__ = [
     "ActivationRecord",
@@ -175,6 +182,7 @@ __all__ = [
     "RuntimeFailure",
     "Scheduler",
     "SchedulerStateError",
+    "SeedFile",
     "SystemClock",
     "TaskActivityBound",
     "TaskActivityCancelRequested",
@@ -207,6 +215,10 @@ __all__ = [
     "TokenConsumed",
     "TokenOffered",
     "TokenRecord",
+    "EMPTY_RUNTIME_AUTHORIZATION_DIGEST",
+    "InvocationSeed",
+    "WorkspaceSeed",
+    "empty_invocation_seed",
     "activation_id",
     "authenticate_invocation_lock",
     "authorized_secret_port",
