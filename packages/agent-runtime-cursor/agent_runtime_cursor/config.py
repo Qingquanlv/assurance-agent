@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
-from graph_engine.plugin_api import FrozenModel
+from graph_engine.plugin_api import FrozenModel, TaskRequest
+
+from agent_runtime_cursor.redaction import redact_validation_error
+
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _SHELL_FRAGMENTS = (
@@ -31,6 +34,10 @@ _ALLOWED_ENVIRONMENT_NAMES = frozenset({"PATH", "CURSOR_API_KEY"})
 PROTOCOL_PROFILE = "confined_process"
 
 
+class AdapterConfigurationError(ValueError):
+    """Raised when locked adapter binding data is missing or invalid."""
+
+
 def _reject_shell_fragments(value: str, label: str) -> str:
     if value != value.strip() or any(character.isspace() for character in value):
         raise ValueError(f"{label} must be a single token")
@@ -44,12 +51,14 @@ class CursorAdapterConfig(FrozenModel):
     executable: str
     executable_digest: str = Field(pattern=_SHA256_PATTERN)
     expected_version: str = Field(min_length=1)
+    protocol_profile: Literal["confined_process"] = PROTOCOL_PROFILE
     secret_handle: str | None = None
     environment_names: tuple[str, ...]
     graceful_cancel_seconds: float = Field(gt=0, le=60)
     forced_cancel_seconds: float = Field(gt=0, le=60)
     max_output_bytes: int = Field(gt=0, le=16_000_000)
     max_line_bytes: int = Field(gt=0, le=1_000_000)
+    adapter_configuration_digest: str = Field(pattern=_SHA256_PATTERN)
 
     @field_validator("executable")
     @classmethod
@@ -93,3 +102,10 @@ class CursorAdapterConfig(FrozenModel):
         if injects_key != (self.secret_handle is not None):
             raise ValueError("CURSOR_API_KEY injection requires secret_handle and nothing else")
         return self
+
+    @classmethod
+    def from_request(cls, request: TaskRequest) -> Self:
+        try:
+            return cls.model_validate(request.binding_data)
+        except ValidationError as error:
+            raise AdapterConfigurationError(redact_validation_error(error)) from error

@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from urllib.parse import quote
 
+from pydantic import ValidationError
+
 from agent_runtime_contracts.schema import bound_redacted_diagnostics, thaw_json
 
 
@@ -119,6 +121,18 @@ def failure_message(message: str, *, canaries: Sequence[str | bytes] = ()) -> st
     if not text:
         text = "provider error"
     return redact_text(text, canaries=canaries, limit=_DEFAULT_LIMIT)
+
+
+def redact_validation_error(error: ValidationError) -> str:
+    messages = [
+        f"{'.'.join(str(part) for part in item.get('loc', ()))}: {item.get('msg', 'validation error')}"
+        if item.get("loc")
+        else str(item.get("msg", "validation error"))
+        for item in error.errors()
+    ]
+    if not messages:
+        return "adapter binding is invalid"
+    return "; ".join(bound_redacted_diagnostics(messages))
 
 
 def stderr_projection(stderr: bytes, *, canaries: Sequence[str | bytes] = ()) -> str:

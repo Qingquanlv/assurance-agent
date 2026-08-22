@@ -67,7 +67,7 @@ async def test_canaries_are_absent_from_argv_receipt_result_and_durables(tmp_pat
     host = FakeConfinedProcessHost(stdout=complete_stream(str(tmp_path.resolve())), stderr=b"transient")
     fixture = execute_fixture(tmp_path, host)
     fixture.context, fixture.port = context(tmp_path, port=fixture.port, secrets=secrets)
-    fixture.handler = fixture.handler.__class__(fixture.config, fixture.host)
+    fixture.handler = fixture.handler.__class__(fixture.host)
     try:
         outcome = await fixture.handler.execute(fixture.request, fixture.context)
         secrets.revoke()

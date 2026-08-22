@@ -72,9 +72,15 @@ def config(root: Path, **overrides: object) -> CursorAdapterConfig:
         "forced_cancel_seconds": 10,
         "max_output_bytes": 65536,
         "max_line_bytes": 4096,
+        "protocol_profile": "confined_process",
+        "adapter_configuration_digest": SHA,
     }
     payload.update(overrides)
     return CursorAdapterConfig.model_validate(payload)
+
+
+def binding_data(config: CursorAdapterConfig) -> dict[str, object]:
+    return config.model_dump(mode="json")
 
 
 def agent_run(**overrides: object) -> AgentRunRequest:
@@ -116,7 +122,7 @@ def request(**overrides: object) -> TaskRequest:
         ),
         "attempt": 1,
         "input": run.model_dump(mode="json"),
-        "binding_data": {"result_schema": RESULT_SCHEMA},
+        "binding_data": {},
     }
     payload.update(overrides)
     return TaskRequest.model_validate(payload)
@@ -124,7 +130,11 @@ def request(**overrides: object) -> TaskRequest:
 
 class ExactSecretPort:
     def __init__(self, authorized: dict[str, bytes] | None = None) -> None:
-        self._authorized = dict(authorized or {"cursor.api-key": CANARY})
+        self._authorized = (
+            dict(authorized)
+            if authorized is not None
+            else {"cursor.api-key": CANARY}
+        )
 
     def resolve(self, handle: str) -> bytes:
         try:
@@ -135,7 +145,11 @@ class ExactSecretPort:
 
 class RevocableSecretPort:
     def __init__(self, authorized: dict[str, bytes] | None = None) -> None:
-        self._authorized = dict(authorized or {"cursor.api-key": CANARY})
+        self._authorized = (
+            dict(authorized)
+            if authorized is not None
+            else {"cursor.api-key": CANARY}
+        )
         self.revoked = False
         self.resolved_handles: list[str] = []
 
@@ -266,7 +280,7 @@ class CursorFixture:
             return
 
     async def reconcile_after_restart(self) -> TaskActivityReconcileResult:
-        restarted = CursorHandler(self.config, self.host)
+        restarted = CursorHandler(self.host)
         result = await restarted.reconcile(self.request, self.context, self.activity)
         assert isinstance(result, TaskActivityReconcileResult)
         return result
@@ -278,11 +292,12 @@ def execute_fixture(root: Path, host: FakeConfinedProcessHost | None = None) -> 
     if process_host.stdout is None:
         process_host.stdout = complete_stream(str(root.resolve()))
     task_context, port = context(root)
+    task = request(binding_data=binding_data(cfg))
     return CursorFixture(
-        handler=CursorHandler(cfg, process_host),
+        handler=CursorHandler(process_host),
         host=process_host,
         port=port,
-        request=request(),
+        request=task,
         context=task_context,
         config=cfg,
     )

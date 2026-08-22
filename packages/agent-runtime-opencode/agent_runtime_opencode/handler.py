@@ -21,7 +21,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 
-from agent_runtime_opencode.config import OpenCodeAdapterConfig
+from agent_runtime_opencode.config import AdapterConfigurationError, OpenCodeAdapterConfig
 from agent_runtime_opencode.discovery import (
     ADAPTER_VERSION,
     OpenCodeActivityReference,
@@ -52,26 +52,27 @@ from agent_runtime_opencode.reducer import reduce_terminal
 
 
 class OpenCodeHandler:
-    def __init__(self, config: OpenCodeAdapterConfig | None = None) -> None:
-        self._config = config
-
     async def preflight(self, request: TaskRequest, context: TaskContext) -> dict[str, Any]:
-        del request
-        config = self._require_config()
+        config = OpenCodeAdapterConfig.from_request(request)
         if context.secrets is None:
             raise SecretHandleUnauthorized("secret port is required")
         secret = context.secrets.resolve(config.secret_handle)
         client = OpenCodeHttpClient(config, secret=secret)
         try:
-            return await self._observe_fingerprint(client, secret)
+            return await self._observe_fingerprint(client, config, secret)
         finally:
             await client.aclose()
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        config = self._require_config()
+        try:
+            config = OpenCodeAdapterConfig.from_request(request)
+        except AdapterConfigurationError as error:
+            return self._configuration_outcome(str(error))
         deadline = time.monotonic() + config.observation_horizon_seconds
         while True:
-            result = await self._reconcile_session(request, context, allow_create=True)
+            result = await self._reconcile_session(request, context, config, allow_create=True)
+            if isinstance(result, TaskOutcome):
+                return result
             if result.status == "terminal":
                 if result.outcome is None:
                     raise OpenCodeDispatchIncomplete("terminal observation is missing an outcome")
@@ -88,6 +89,10 @@ class OpenCodeHandler:
         context: TaskContext,
         activity: TaskActivitySnapshot,
     ) -> TaskActivityReconcileResult:
+        try:
+            config = OpenCodeAdapterConfig.from_request(request)
+        except AdapterConfigurationError as error:
+            return TaskActivityReconcileResult(status="indeterminate", reason=str(error))
         port = context.activity
         if port is None:
             raise ValueError("activity port is required")
@@ -96,7 +101,7 @@ class OpenCodeHandler:
                 status="indeterminate",
                 reason="activity snapshot does not match the live port",
             )
-        return await self._reconcile_session(request, context, allow_create=False)
+        return await self._reconcile_session(request, context, config, allow_create=False)
 
     async def cancel(
         self,
@@ -104,7 +109,10 @@ class OpenCodeHandler:
         context: TaskContext,
         activity: TaskActivitySnapshot,
     ) -> TaskActivityCancelResult:
-        config = self._require_config()
+        try:
+            config = OpenCodeAdapterConfig.from_request(request)
+        except AdapterConfigurationError as error:
+            return TaskActivityCancelResult(status="indeterminate", reason=str(error))
         if context.secrets is None:
             raise SecretHandleUnauthorized("secret port is required")
         port = context.activity
@@ -122,7 +130,7 @@ class OpenCodeHandler:
         client = OpenCodeHttpClient(config, secret=secret)
         try:
             context.heartbeat()
-            fingerprint = await self._observe_fingerprint(client, secret)
+            fingerprint = await self._observe_fingerprint(client, config, secret)
             expected = self._expected_reference_fields(request, port.snapshot, fingerprint)
             bound = await self._load_bound_session(client, port.snapshot, expected)
             if isinstance(bound, TaskActivityReconcileResult):
@@ -169,10 +177,10 @@ class OpenCodeHandler:
         self,
         request: TaskRequest,
         context: TaskContext,
+        config: OpenCodeAdapterConfig,
         *,
         allow_create: bool,
-    ) -> TaskActivityReconcileResult:
-        config = self._require_config()
+    ) -> TaskActivityReconcileResult | TaskOutcome:
         if context.secrets is None:
             raise SecretHandleUnauthorized("secret port is required")
         port = context.activity
@@ -189,7 +197,7 @@ class OpenCodeHandler:
         client = OpenCodeHttpClient(config, secret=secret)
         try:
             context.heartbeat()
-            fingerprint = await self._observe_fingerprint(client, secret)
+            fingerprint = await self._observe_fingerprint(client, config, secret)
             expected = self._expected_reference_fields(request, snapshot, fingerprint)
             if snapshot.reference is not None:
                 return await self._reconcile_bound(
@@ -571,8 +579,12 @@ class OpenCodeHandler:
             return "frozen request is invalid"
         return None
 
-    async def _observe_fingerprint(self, client: OpenCodeHttpClient, secret: bytes) -> dict[str, Any]:
-        config = self._require_config()
+    async def _observe_fingerprint(
+        self,
+        client: OpenCodeHttpClient,
+        config: OpenCodeAdapterConfig,
+        secret: bytes,
+    ) -> dict[str, Any]:
         identity = await client.get_server_identity()
         advertised = await client.get_profile()
         profile = AcceptedOpenCodeProfile.model_validate(advertised)
@@ -594,7 +606,6 @@ class OpenCodeHandler:
             raise ValueError("credentials must not enter dispatch fingerprint")
         return fingerprint
 
-    def _require_config(self) -> OpenCodeAdapterConfig:
-        if self._config is None:
-            raise ValueError("OpenCode adapter config is required")
-        return self._config
+    @staticmethod
+    def _configuration_outcome(message: str) -> TaskOutcome:
+        return TaskOutcome.failed("configuration", message, retryable=False)

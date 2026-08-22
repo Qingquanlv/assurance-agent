@@ -63,9 +63,15 @@ def _config(tmp_path: Path, **overrides: object) -> CursorAdapterConfig:
         "forced_cancel_seconds": 10,
         "max_output_bytes": 65536,
         "max_line_bytes": 4096,
+        "protocol_profile": "confined_process",
+        "adapter_configuration_digest": _SHA,
     }
     payload.update(overrides)
     return CursorAdapterConfig.model_validate(payload)
+
+
+def _binding_data(config: CursorAdapterConfig) -> dict[str, object]:
+    return config.model_dump(mode="json")
 
 
 def _agent_run(**overrides: object) -> AgentRunRequest:
@@ -90,7 +96,11 @@ def _agent_run(**overrides: object) -> AgentRunRequest:
     return AgentRunRequest.model_validate(payload)
 
 
-def _request(tmp_path: Path | None = None, **overrides: object) -> TaskRequest:
+def _request(
+    tmp_path: Path | None = None,
+    config: CursorAdapterConfig | None = None,
+    **overrides: object,
+) -> TaskRequest:
     del tmp_path
     agent_run = overrides.pop("agent_run", _agent_run())
     assert isinstance(agent_run, AgentRunRequest)
@@ -108,7 +118,7 @@ def _request(tmp_path: Path | None = None, **overrides: object) -> TaskRequest:
         ),
         "attempt": 1,
         "input": agent_run.model_dump(mode="json"),
-        "binding_data": {"result_schema": _RESULT_SCHEMA},
+        "binding_data": _binding_data(config) if config is not None else {},
     }
     payload.update(overrides)
     return TaskRequest.model_validate(payload)
@@ -164,7 +174,7 @@ def _context(
 async def test_cursor_launch_is_exact_and_shell_free(tmp_path: Path) -> None:
     host = FakeConfinedProcessHost()
     config = _config(tmp_path)
-    await CursorHandler(config, host).execute(_request(), _context(tmp_path))
+    await CursorHandler(host).execute(_request(config=config), _context(tmp_path))
     launch = host.launches[0]
     assert launch.argv[:3] == (config.executable, "agent", "--print")
     assert launch.shell is False
@@ -173,16 +183,18 @@ async def test_cursor_launch_is_exact_and_shell_free(tmp_path: Path) -> None:
 
 
 async def test_launch_rejects_host_without_descendant_confinement(tmp_path: Path) -> None:
+    config = _config(tmp_path)
     with pytest.raises(TaskActivityProtocolViolation, match="confinement"):
-        await CursorHandler(_config(tmp_path), FakeConfinedProcessHost(available=False)).execute(
-            _request(), _context(tmp_path)
+        await CursorHandler(FakeConfinedProcessHost(available=False)).execute(
+            _request(config=config), _context(tmp_path)
         )
 
 
 async def test_pid_plus_finally_kill_fails_preflight(tmp_path: Path) -> None:
+    config = _config(tmp_path)
     host = FakeConfinedProcessHost(mechanism="pid-kill", descendant_inheritance=False)
     with pytest.raises(TaskActivityProtocolViolation, match="confinement"):
-        await CursorHandler(_config(tmp_path), host).execute(_request(), _context(tmp_path))
+        await CursorHandler(host).execute(_request(config=config), _context(tmp_path))
     assert host.launches == []
 
 
@@ -194,7 +206,7 @@ async def test_launch_does_not_inherit_ambient_environment(
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
     host = FakeConfinedProcessHost()
     config = _config(tmp_path)
-    await CursorHandler(config, host).execute(_request(), _context(tmp_path))
+    await CursorHandler(host).execute(_request(config=config), _context(tmp_path))
     launch = host.launches[0]
     assert launch.environment["CURSOR_API_KEY"] == _SECRET_TEXT
     assert launch.environment["CURSOR_API_KEY"] != "ambient-leak"
@@ -207,8 +219,8 @@ async def test_launch_does_not_inherit_ambient_environment(
 async def test_launch_keeps_secrets_out_of_argv_and_fingerprint(tmp_path: Path) -> None:
     host = FakeConfinedProcessHost()
     config = _config(tmp_path)
-    handler = CursorHandler(config, host)
-    await handler.execute(_request(), _context(tmp_path))
+    handler = CursorHandler(host)
+    await handler.execute(_request(config=config), _context(tmp_path))
     launch = host.launches[0]
     assert _SECRET_TEXT not in launch.argv
     fingerprint_text = json.dumps(handler.dispatch_fingerprint, sort_keys=True)
@@ -240,10 +252,10 @@ async def test_launch_identity_binds_attempt_workspace(tmp_path: Path) -> None:
     config = _config(tmp_path)
     first_host = FakeConfinedProcessHost()
     second_host = FakeConfinedProcessHost()
-    first_handler = CursorHandler(config, first_host)
-    second_handler = CursorHandler(config, second_host)
-    await first_handler.execute(_request(), _context(first_root))
-    await second_handler.execute(_request(), _context(second_root))
+    first_handler = CursorHandler(first_host)
+    second_handler = CursorHandler(second_host)
+    await first_handler.execute(_request(config=config), _context(first_root))
+    await second_handler.execute(_request(config=config), _context(second_root))
     first = first_host.launches[0]
     second = second_host.launches[0]
     policy_only = canonical_digest({"cwd_policy": "attempt-workspace"})
@@ -270,7 +282,7 @@ async def test_launch_rejects_digest_mismatch_before_spawn(tmp_path: Path) -> No
     host = FakeConfinedProcessHost()
     config = _config(tmp_path, executable_digest="e" * 64)
     with pytest.raises(ValueError, match="digest"):
-        await CursorHandler(config, host).execute(_request(), _context(tmp_path))
+        await CursorHandler(host).execute(_request(config=config), _context(tmp_path))
     assert host.launches == []
 
 
@@ -281,24 +293,26 @@ async def test_launch_rejects_relative_executable_search(tmp_path: Path) -> None
 
 
 async def test_launch_rejects_unsupported_selection_fields(tmp_path: Path) -> None:
+    config = _config(tmp_path)
     dumped = _agent_run().model_dump(mode="json")
     dumped["execution"]["fallback_model"] = "auto"
     with pytest.raises(ValidationError):
         AgentRunRequest.model_validate(dumped)
     host = FakeConfinedProcessHost()
     with pytest.raises(ValidationError):
-        await CursorHandler(_config(tmp_path), host).execute(
-            _request(agent_run=_agent_run(), input={**dumped}),
+        await CursorHandler(host).execute(
+            _request(config=config, agent_run=_agent_run(), input={**dumped}),
             _context(tmp_path),
         )
     assert host.launches == []
 
 
 async def test_launch_rejects_undeclared_secret_handle(tmp_path: Path) -> None:
+    config = _config(tmp_path)
     host = FakeConfinedProcessHost()
     with pytest.raises(SecretHandleUnauthorized):
-        await CursorHandler(_config(tmp_path), host).execute(
-            _request(),
+        await CursorHandler(host).execute(
+            _request(config=config),
             _context(tmp_path, secrets=_ExactSecretPort({})),
         )
     assert host.launches == []

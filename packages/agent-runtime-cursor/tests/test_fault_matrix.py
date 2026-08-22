@@ -56,7 +56,7 @@ async def test_dead_host_is_indeterminate_never_absent() -> None:
 async def test_different_host_cannot_adopt_a_process_receipt(tmp_path: Path) -> None:
     fixture = await bind_spawned_fixture(tmp_path)
     foreign = FakeConfinedProcessHost(boot_identity_digest=BOOT_DIGEST)
-    restarted = CursorHandler(fixture.config, foreign)
+    restarted = CursorHandler(foreign)
     result = _reconcile(await restarted.reconcile(fixture.request, fixture.context, fixture.activity))
     assert result.status == "indeterminate"
     assert result.status != "absent"

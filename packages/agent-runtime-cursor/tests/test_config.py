@@ -34,6 +34,8 @@ def _valid_config_payload(**overrides: object) -> dict[str, object]:
         "forced_cancel_seconds": 10,
         "max_output_bytes": 65536,
         "max_line_bytes": 4096,
+        "protocol_profile": "confined_process",
+        "adapter_configuration_digest": _SHA,
     }
     payload.update(overrides)
     return payload

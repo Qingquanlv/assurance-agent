@@ -51,13 +51,17 @@ def _config(fake: OpenCodeFakeServer, **overrides: object) -> OpenCodeAdapterCon
         "project_scope": fake.project_scope,
         "request_timeout_seconds": 5,
         "observation_horizon_seconds": 30,
+        "poll_interval_seconds": 0.5,
+        "cancel_timeout_seconds": 5,
         "max_response_bytes": 65536,
+        "adapter_configuration_digest": _SHA,
     }
     payload.update(overrides)
     return OpenCodeAdapterConfig.model_validate(payload)
 
 
-def _request() -> TaskRequest:
+def _task_request(fake: OpenCodeFakeServer, **config_overrides: object) -> TaskRequest:
+    config = _config(fake, **config_overrides)
     return TaskRequest(
         invocation_id="inv-1",
         task_id="task-1",
@@ -72,6 +76,7 @@ def _request() -> TaskRequest:
         ),
         attempt=1,
         input={"schema_version": "1"},
+        binding_data=config.model_dump(mode="json"),
     )
 
 
@@ -104,7 +109,7 @@ def _context(*, secrets: SecretPort | None = None, tmp_path: Path | None = None)
 async def test_preflight_authenticates_idempotent_prompt_profile() -> None:
     fake = OpenCodeFakeServer(profile=_profile(prompt_idempotency="conflict-on-body-drift"))
     try:
-        fingerprint = await OpenCodeHandler(_config(fake)).preflight(_request(), _context())
+        fingerprint = await OpenCodeHandler().preflight(_task_request(fake), _context())
         assert fingerprint["prompt_admission"] == "caller-message-id-v1"
         assert "secret" not in canonical_json_text(fingerprint)
         assert _SECRET_TEXT not in canonical_json_text(fingerprint)
@@ -122,8 +127,8 @@ async def test_preflight_rejects_undeclared_secret_handle() -> None:
     fake = OpenCodeFakeServer(profile=_profile())
     try:
         with pytest.raises(SecretHandleUnauthorized):
-            await OpenCodeHandler(_config(fake)).preflight(
-                _request(),
+            await OpenCodeHandler().preflight(
+                _task_request(fake),
                 _context(secrets=_ExactSecretPort({})),
             )
         assert fake.records == ()
@@ -206,7 +211,7 @@ async def test_preflight_rejects_cross_origin_redirect() -> None:
     )
     try:
         with pytest.raises(ValidationError, match="origin"):
-            await OpenCodeHandler(_config(fake)).preflight(_request(), _context())
+            await OpenCodeHandler().preflight(_task_request(fake), _context())
     finally:
         fake.close()
 
@@ -215,7 +220,7 @@ async def test_preflight_rejects_unsupported_prompt_admission() -> None:
     fake = OpenCodeFakeServer(profile=_profile(prompt_idempotency="accepts-message-id-only"))
     try:
         with pytest.raises(ValidationError, match="prompt"):
-            await OpenCodeHandler(_config(fake)).preflight(_request(), _context())
+            await OpenCodeHandler().preflight(_task_request(fake), _context())
     finally:
         fake.close()
 

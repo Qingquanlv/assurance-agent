@@ -18,7 +18,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 
-from agent_runtime_cursor.config import CursorAdapterConfig
+from agent_runtime_cursor.config import AdapterConfigurationError, CursorAdapterConfig
 from agent_runtime_cursor.parser import (
     CursorProtocolError,
     StreamInput,
@@ -35,6 +35,7 @@ from agent_runtime_cursor.process import (
     authenticate_executable,
     build_launch_request,
     cursor_dispatch_fingerprint,
+    production_process_host,
     workspace_identity_digest_for,
 )
 from agent_runtime_cursor.redaction import failure_message, stderr_projection
@@ -45,23 +46,26 @@ class CursorDispatchIncomplete(ValueError):
 
 
 class CursorHandler:
-    def __init__(
-        self,
-        config: CursorAdapterConfig | None = None,
-        host: ConfinedProcessHost | None = None,
-    ) -> None:
-        self._config = config
+    def __init__(self, host: ConfinedProcessHost | None = None) -> None:
         self._host = host
         self.dispatch_fingerprint: dict[str, Any] = {}
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        try:
+            config = CursorAdapterConfig.from_request(request)
+        except AdapterConfigurationError as error:
+            return self._configuration_outcome(str(error))
         port = context.activity
         if port is None:
             raise ValueError("activity port is required")
         try:
-            result = await self._reconcile_process(request, context, port.snapshot, allow_spawn=True)
+            result = await self._reconcile_process(
+                request, context, config, port.snapshot, allow_spawn=True
+            )
         except CursorProtocolError as error:
-            raise CursorDispatchIncomplete(self._redacted_reason(error, context)) from error
+            raise CursorDispatchIncomplete(self._redacted_reason(error, context, config)) from error
+        if isinstance(result, TaskOutcome):
+            return result
         if result.status == "terminal" and result.outcome is not None:
             return result.outcome
         raise CursorDispatchIncomplete(result.reason or result.status)
@@ -72,20 +76,26 @@ class CursorHandler:
         context: TaskContext,
         activity: TaskActivitySnapshot,
     ) -> TaskActivityReconcileResult:
+        try:
+            config = CursorAdapterConfig.from_request(request)
+        except AdapterConfigurationError as error:
+            return self._indeterminate(str(error))
         port = context.activity
         if port is None:
             raise ValueError("activity port is required")
         if activity.activity_id != port.snapshot.activity_id:
             return self._indeterminate("activity snapshot does not match the live port")
         try:
-            return await self._reconcile_process(request, context, activity, allow_spawn=False)
+            return await self._reconcile_process(
+                request, context, config, activity, allow_spawn=False
+            )
         except (
             CursorProtocolError,
             TaskActivityProtocolViolation,
             ValidationError,
             ValueError,
         ) as error:
-            return self._indeterminate(self._redacted_reason(error, context))
+            return self._indeterminate(self._redacted_reason(error, context, config))
 
     async def cancel(
         self,
@@ -93,8 +103,11 @@ class CursorHandler:
         context: TaskContext,
         activity: TaskActivitySnapshot,
     ) -> TaskActivityCancelResult:
-        config = self._require_config()
-        host = self._require_host()
+        try:
+            config = CursorAdapterConfig.from_request(request)
+        except AdapterConfigurationError as error:
+            return TaskActivityCancelResult(status="indeterminate", reason=str(error))
+        host = self._require_host(context)
         port = context.activity
         if port is None:
             raise ValueError("activity port is required")
@@ -109,7 +122,7 @@ class CursorHandler:
         except (ValidationError, TaskActivityProtocolViolation, ValueError) as error:
             return TaskActivityCancelResult(
                 status="indeterminate",
-                reason=self._redacted_reason(error, context) or "process receipt is not authentic",
+                reason=self._redacted_reason(error, context, config) or "process receipt is not authentic",
             )
         policy = CancelPolicy(
             graceful_seconds=config.graceful_cancel_seconds,
@@ -121,7 +134,7 @@ class CursorHandler:
         except TaskActivityProtocolViolation as error:
             return TaskActivityCancelResult(
                 status="indeterminate",
-                reason=self._redacted_reason(error, context),
+                reason=self._redacted_reason(error, context, config),
             )
         if observation.status == "unknown":
             return TaskActivityCancelResult(
@@ -132,7 +145,7 @@ class CursorHandler:
             return TaskActivityCancelResult(status="acknowledged")
         terminal = await host.wait(receipt)
         try:
-            outcome = self._outcome_from_terminal(request, context, receipt, terminal)
+            outcome = self._outcome_from_terminal(request, context, config, receipt, terminal)
         except (CursorProtocolError, ValidationError, ValueError):
             return TaskActivityCancelResult(
                 status="indeterminate",
@@ -144,10 +157,11 @@ class CursorHandler:
         self,
         request: TaskRequest,
         context: TaskContext,
+        config: CursorAdapterConfig,
         activity: TaskActivitySnapshot,
         *,
         allow_spawn: bool,
-    ) -> TaskActivityReconcileResult:
+    ) -> TaskActivityReconcileResult | TaskOutcome:
         port = context.activity
         if port is None:
             raise ValueError("activity port is required")
@@ -159,29 +173,31 @@ class CursorHandler:
                 raise ValueError(mismatch)
             return self._indeterminate(mismatch)
         if snapshot.reference is not None:
-            return await self._reconcile_bound(request, context, agent_run, snapshot, allow_spawn=allow_spawn)
+            return await self._reconcile_bound(
+                request, context, config, agent_run, snapshot, allow_spawn=allow_spawn
+            )
         if snapshot.dispatch_fingerprint is not None:
             fingerprint = thaw_json(snapshot.dispatch_fingerprint)
             if not isinstance(fingerprint, dict):
                 return self._blocked("dispatch fingerprint is not authentic", allow_spawn)
-            state = self._require_host().unbound_spawn_state(fingerprint)
+            state = self._require_host(context).unbound_spawn_state(fingerprint)
             if state != "not_spawned":
                 return self._blocked("spawn may have occurred", allow_spawn)
             if not allow_spawn:
                 return TaskActivityReconcileResult(status="not_dispatched")
-            return await self._dispatch(request, context, agent_run)
+            return await self._dispatch(request, context, config, agent_run)
         if not allow_spawn:
             return TaskActivityReconcileResult(status="not_dispatched")
-        return await self._dispatch(request, context, agent_run)
+        return await self._dispatch(request, context, config, agent_run)
 
     async def _dispatch(
         self,
         request: TaskRequest,
         context: TaskContext,
+        config: CursorAdapterConfig,
         agent_run: AgentRunRequest,
     ) -> TaskActivityReconcileResult:
-        config = self._require_config()
-        host = self._require_host()
+        host = self._require_host(context)
         port = context.activity
         if port is None:
             raise ValueError("activity port is required")
@@ -208,7 +224,7 @@ class CursorHandler:
         port.bind(cast(JSONValue, receipt_payload))
         context.heartbeat()
         terminal = await host.wait(process.receipt)
-        outcome = self._outcome_from_terminal(request, context, process.receipt, terminal)
+        outcome = self._outcome_from_terminal(request, context, config, process.receipt, terminal)
         return TaskActivityReconcileResult(
             status="terminal",
             reference=cast(JSONValue, receipt_payload),
@@ -219,19 +235,20 @@ class CursorHandler:
         self,
         request: TaskRequest,
         context: TaskContext,
+        config: CursorAdapterConfig,
         agent_run: AgentRunRequest,
         snapshot: TaskActivitySnapshot,
         *,
         allow_spawn: bool,
     ) -> TaskActivityReconcileResult:
         del agent_run
-        host = self._require_host()
+        host = self._require_host(context)
         try:
             receipt = CursorProcessReceipt.model_validate(thaw_json(snapshot.reference))
             host.authenticate(receipt)
         except (ValidationError, TaskActivityProtocolViolation, ValueError) as error:
             return self._blocked(
-                self._redacted_reason(error, context) or "process receipt does not match this host",
+                self._redacted_reason(error, context, config) or "process receipt does not match this host",
                 allow_spawn,
             )
         if receipt.request_digest != canonical_digest(
@@ -242,11 +259,11 @@ class CursorHandler:
             return self._blocked("workspace identity drifted", allow_spawn)
         durable = host.read_durable_terminal(receipt)
         if durable is not None:
-            return self._promote_or_block(request, context, receipt, durable, snapshot, allow_spawn)
+            return self._promote_or_block(request, context, config, receipt, durable, snapshot, allow_spawn)
         try:
             observation = await host.observe(receipt)
         except TaskActivityProtocolViolation as error:
-            return self._blocked(self._redacted_reason(error, context), allow_spawn)
+            return self._blocked(self._redacted_reason(error, context, config), allow_spawn)
         if observation.status == "running":
             return TaskActivityReconcileResult(
                 status="running",
@@ -255,21 +272,22 @@ class CursorHandler:
         if observation.status != "exited" or observation.exit_code is None:
             return self._blocked("unknown process state", allow_spawn)
         terminal = await host.wait(receipt)
-        return self._promote_or_block(request, context, receipt, terminal, snapshot, allow_spawn)
+        return self._promote_or_block(request, context, config, receipt, terminal, snapshot, allow_spawn)
 
     def _promote_or_block(
         self,
         request: TaskRequest,
         context: TaskContext,
+        config: CursorAdapterConfig,
         receipt: CursorProcessReceipt,
         terminal: HostTerminalResult,
         snapshot: TaskActivitySnapshot,
         allow_spawn: bool,
     ) -> TaskActivityReconcileResult:
         try:
-            outcome = self._outcome_from_terminal(request, context, receipt, terminal)
+            outcome = self._outcome_from_terminal(request, context, config, receipt, terminal)
         except CursorProtocolError as error:
-            return self._blocked(self._redacted_reason(error, context), allow_spawn)
+            return self._blocked(self._redacted_reason(error, context, config), allow_spawn)
         return TaskActivityReconcileResult(
             status="terminal",
             reference=snapshot.reference,
@@ -280,12 +298,12 @@ class CursorHandler:
         self,
         request: TaskRequest,
         context: TaskContext,
+        config: CursorAdapterConfig,
         receipt: CursorProcessReceipt,
         terminal: HostTerminalResult,
     ) -> TaskOutcome:
-        config = self._require_config()
         agent_run = AgentRunRequest.model_validate(thaw_json(request.input))
-        canaries = self._canaries(context)
+        canaries = self._canaries(context, config)
         _ = stderr_projection(terminal.stderr, canaries=canaries)
         parsed = parse_stream(
             self._stream_input(terminal, cwd=str(context.workspace_root.resolve()), config=config),
@@ -328,8 +346,7 @@ class CursorHandler:
             reason=reason or "process observation is indeterminate",
         )
 
-    def _canaries(self, context: TaskContext) -> tuple[str, ...]:
-        config = self._require_config()
+    def _canaries(self, context: TaskContext, config: CursorAdapterConfig) -> tuple[str, ...]:
         if config.secret_handle is None or context.secrets is None:
             return ()
         try:
@@ -337,9 +354,14 @@ class CursorHandler:
         except SecretHandleUnauthorized:
             return ()
 
-    def _redacted_reason(self, error: BaseException, context: TaskContext) -> str:
+    def _redacted_reason(
+        self,
+        error: BaseException,
+        context: TaskContext,
+        config: CursorAdapterConfig,
+    ) -> str:
         return failure_message(
-            str(error) or "process observation is indeterminate", canaries=self._canaries(context)
+            str(error) or "process observation is indeterminate", canaries=self._canaries(context, config)
         )
 
     def _stream_input(
@@ -368,12 +390,11 @@ class CursorHandler:
             max_elapsed_seconds=float(agent_run.execution.limits.max_seconds),
         )
 
-    def _require_config(self) -> CursorAdapterConfig:
-        if self._config is None:
-            raise ValueError("Cursor adapter config is required")
-        return self._config
+    def _require_host(self, context: TaskContext) -> ConfinedProcessHost:
+        if self._host is not None:
+            return self._host
+        return production_process_host(context.workspace_root.parent)
 
-    def _require_host(self) -> ConfinedProcessHost:
-        if self._host is None:
-            raise ValueError("confined process host is required")
-        return self._host
+    @staticmethod
+    def _configuration_outcome(message: str) -> TaskOutcome:
+        return TaskOutcome.failed("configuration", message, retryable=False)

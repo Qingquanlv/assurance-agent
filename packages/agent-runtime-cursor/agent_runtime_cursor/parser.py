@@ -9,6 +9,7 @@ from agent_runtime_contracts import AgentRunRequest, AgentRunResult, ResultContr
 from agent_runtime_contracts.schema import (
     canonical_digest,
     reject_credentials_in_digest_input,
+    resolve_result_schema,
     thaw_json,
     validate_structured_result,
 )
@@ -241,13 +242,8 @@ def _structured_result(terminal: Mapping[str, Any]) -> object:
 
 
 def _result_schema(request: TaskRequest, contract: ResultContract) -> object:
-    binding = thaw_json(request.binding_data)
-    if not isinstance(binding, dict) or "result_schema" not in binding:
-        raise ValueError("result schema is missing")
-    schema = binding["result_schema"]
-    if canonical_digest(schema) != contract.schema_digest:
-        raise ValueError("schema digest is not canonical")
-    return schema
+    del request
+    return resolve_result_schema(contract.schema_digest)
 
 
 def _provider_error_message(terminal: Mapping[str, Any]) -> str:

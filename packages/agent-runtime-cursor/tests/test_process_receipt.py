@@ -63,8 +63,14 @@ def _config(root: Path) -> CursorAdapterConfig:
             "forced_cancel_seconds": 10,
             "max_output_bytes": 65536,
             "max_line_bytes": 4096,
+            "protocol_profile": "confined_process",
+            "adapter_configuration_digest": _SHA,
         }
     )
+
+
+def _binding_data(config: CursorAdapterConfig) -> dict[str, object]:
+    return config.model_dump(mode="json")
 
 
 def _agent_run() -> AgentRunRequest:
@@ -89,7 +95,7 @@ def _agent_run() -> AgentRunRequest:
     )
 
 
-def _request() -> TaskRequest:
+def _request(config: CursorAdapterConfig) -> TaskRequest:
     agent_run = _agent_run()
     return TaskRequest.model_validate(
         {
@@ -106,7 +112,7 @@ def _request() -> TaskRequest:
             ),
             "attempt": 1,
             "input": agent_run.model_dump(mode="json"),
-            "binding_data": {"result_schema": _RESULT_SCHEMA},
+            "binding_data": _binding_data(config),
         }
     )
 
@@ -131,7 +137,8 @@ def _spawned_receipt() -> CursorProcessReceipt:
         root = Path(raw)
         port = FakeActivityPort(_prepared_snapshot())
         host = FakeConfinedProcessHost()
-        handler = CursorHandler(_config(root), host)
+        config = _config(root)
+        handler = CursorHandler(host)
         context = TaskContext(
             workspace_root=root.resolve(),
             heartbeat=lambda: None,
@@ -145,7 +152,7 @@ def _spawned_receipt() -> CursorProcessReceipt:
             activity=port,
             secrets=_ExactSecretPort(),
         )
-        asyncio.run(handler.execute(_request(), context))
+        asyncio.run(handler.execute(_request(config), context))
         return CursorProcessReceipt.model_validate(thaw_json(port.snapshot.reference))
 
 
@@ -169,7 +176,8 @@ def test_process_receipt_is_bound_before_stream_consumption() -> None:
             states.append(port.snapshot.state)
 
         host = FakeConfinedProcessHost(wait_hook=_on_wait)
-        handler = CursorHandler(_config(root), host)
+        config = _config(root)
+        handler = CursorHandler(host)
         context = TaskContext(
             workspace_root=root.resolve(),
             heartbeat=lambda: None,
@@ -183,7 +191,7 @@ def test_process_receipt_is_bound_before_stream_consumption() -> None:
             activity=port,
             secrets=_ExactSecretPort(),
         )
-        asyncio.run(handler.execute(_request(), context))
+        asyncio.run(handler.execute(_request(config), context))
         assert states == ["bound"]
         assert port.bind_calls
         bound = json.dumps(thaw_json(port.snapshot.reference))

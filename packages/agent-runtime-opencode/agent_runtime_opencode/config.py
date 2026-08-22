@@ -1,15 +1,21 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 from urllib.parse import urlparse
 
-from pydantic import AnyHttpUrl, Field, field_validator
+from pydantic import AnyHttpUrl, Field, ValidationError, field_validator
 
-from graph_engine.plugin_api import FrozenModel
+from graph_engine.plugin_api import FrozenModel, TaskRequest
+
+from agent_runtime_opencode.redaction import redact_validation_error
 
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _PROTOCOL_PROFILE = "opencode-http-v1"
+
+
+class AdapterConfigurationError(ValueError):
+    """Raised when locked adapter binding data is missing or invalid."""
 
 
 def endpoint_origin(url: str) -> str:
@@ -33,7 +39,10 @@ class OpenCodeAdapterConfig(FrozenModel):
     project_scope: str = Field(min_length=1)
     request_timeout_seconds: float = Field(gt=0, le=300)
     observation_horizon_seconds: float = Field(gt=0, le=3600)
+    poll_interval_seconds: float = Field(gt=0, le=60)
+    cancel_timeout_seconds: float = Field(gt=0, le=300)
     max_response_bytes: int = Field(gt=0, le=4_000_000)
+    adapter_configuration_digest: str = Field(pattern=_SHA256_PATTERN)
 
     @field_validator("endpoint")
     @classmethod
@@ -70,3 +79,10 @@ class OpenCodeAdapterConfig(FrozenModel):
     @property
     def origin(self) -> str:
         return endpoint_origin(str(self.endpoint))
+
+    @classmethod
+    def from_request(cls, request: TaskRequest) -> Self:
+        try:
+            return cls.model_validate(request.binding_data)
+        except ValidationError as error:
+            raise AdapterConfigurationError(redact_validation_error(error)) from error

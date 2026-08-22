@@ -259,7 +259,7 @@ def task_request(agent_run: AgentRunRequest | None = None, **overrides: object) 
         ),
         "attempt": 1,
         "input": payload.model_dump(mode="json"),
-        "binding_data": {"result_schema": FIXTURE_RESULT_SCHEMA},
+        "binding_data": {},
     }
     fields.update(overrides)
     return TaskRequest.model_validate(fields)
@@ -292,10 +292,17 @@ def _config(fake: OpenCodeFakeServer, **overrides: object) -> OpenCodeAdapterCon
         "project_scope": fake.project_scope,
         "request_timeout_seconds": 5,
         "observation_horizon_seconds": 30,
+        "poll_interval_seconds": 0.5,
+        "cancel_timeout_seconds": 5,
         "max_response_bytes": 65536,
+        "adapter_configuration_digest": _SHA,
     }
     payload.update(overrides)
     return OpenCodeAdapterConfig.model_validate(payload)
+
+
+def _binding_data(config: OpenCodeAdapterConfig) -> dict[str, object]:
+    return config.model_dump(mode="json")
 
 
 def _open_code_fixture(
@@ -315,23 +322,24 @@ def _open_code_fixture(
     workspace_root.mkdir()
     schema = result_schema if result_schema is not None else FIXTURE_RESULT_SCHEMA
     run = agent_run if agent_run is not None else agent_run_request(result_schema=schema)
-    request = task_request(run, binding_data={"result_schema": schema})
+    fake = OpenCodeFakeServer(
+        profile=profile(**(profile_overrides or {})),
+        create_cut=create_cut,  # type: ignore[arg-type]
+        hide_sessions=hide_sessions,
+        prompt_cut=prompt_cut,  # type: ignore[arg-type]
+    )
+    config = _config(fake, **(config_overrides or {}))
+    request = task_request(run, binding_data=_binding_data(config))
     snapshot = prepared_snapshot(request)
     metadata = discovery_metadata(
         request=request,
         snapshot=snapshot,
         adapter_source_digest=adapter_source_digest(),
     )
-    fake = OpenCodeFakeServer(
-        profile=profile(**(profile_overrides or {})),
-        create_cut=create_cut,  # type: ignore[arg-type]
-        existing_matches=existing_matches,
-        metadata=metadata.model_dump(mode="json"),
-        hide_sessions=hide_sessions,
-        prompt_cut=prompt_cut,  # type: ignore[arg-type]
-    )
+    fake.metadata = metadata.model_dump(mode="json")
+    for index in range(existing_matches):
+        fake.add_session(session_id=f"ses_existing_{index + 1}", metadata=fake.metadata)
     port = FakeActivityPort(snapshot)
-    config = _config(fake, **(config_overrides or {}))
     heartbeats: list[int] = []
 
     def _heartbeat() -> None:
@@ -347,7 +355,7 @@ def _open_code_fixture(
     )
     return OpenCodeFixture(
         fake=fake,
-        handler=OpenCodeHandler(config),
+        handler=OpenCodeHandler(),
         config=config,
         request=request,
         context=context,
