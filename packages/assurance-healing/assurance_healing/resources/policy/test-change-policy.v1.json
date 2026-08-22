@@ -1,0 +1,1 @@
+{"allowed_test_roots":["tests"],"forbidden_product_roots":["app","src","web/src"],"max_files":16,"require_approval":true}

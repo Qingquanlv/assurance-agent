@@ -1,0 +1,65 @@
+{
+  "descriptor": {
+    "bindings": [],
+    "commit_validators": [],
+    "dependencies": [
+      {
+        "plugin_id": "assurance.intake",
+        "version_specifier": "==0.1.0"
+      },
+      {
+        "plugin_id": "assurance.generation",
+        "version_specifier": "==0.1.0"
+      },
+      {
+        "plugin_id": "assurance.execution",
+        "version_specifier": "==0.1.0"
+      }
+    ],
+    "effects": [],
+    "engine_api": "2.0",
+    "plugin_id": "assurance.healing",
+    "plugin_version": "0.1.0",
+    "resources": [
+      "assurance.healing.policy.test-change-policy.v1"
+    ],
+    "schema_version": "1",
+    "schemas": [
+      "assurance.healing.schema.allocation-intent.v2",
+      "assurance.healing.schema.allocation-receipt.v2",
+      "assurance.healing.schema.coverage-repair.v1",
+      "assurance.healing.schema.fix-proposal.v1",
+      "assurance.healing.schema.heal-apply-intent.v2",
+      "assurance.healing.schema.heal-apply-receipt.v2",
+      "assurance.healing.schema.healing-safety.v1",
+      "assurance.healing.schema.healing-status.v1",
+      "assurance.healing.schema.proposal-approved-intent.v1",
+      "assurance.healing.schema.proposal-approved-receipt.v1"
+    ],
+    "source": {
+      "declaration_path": "assurance_healing/plugin-declaration.json",
+      "distribution": "assurance-healing",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "healing",
+      "entrypoint_value": "assurance_healing.plugin:HealingPlugin",
+      "import_roots": [
+        ""
+      ],
+      "version": "0.1.0"
+    },
+    "task_handlers": []
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "assurance_healing/plugin-declaration.json",
+    "distribution": "assurance-healing",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "healing",
+    "entrypoint_value": "assurance_healing.plugin:HealingPlugin",
+    "import_roots": [
+      ""
+    ],
+    "version": "0.1.0"
+  }
+}
