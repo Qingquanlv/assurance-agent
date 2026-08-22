@@ -1,6 +1,6 @@
 # Phase 4 capability ownership ledger. Migration authority; not loaded at runtime.
 # Task 22: extracted kinds (operation/skill/persona/validator/effect/hook/artifact/schema/resource)
-# are verified except semantic_pins (delete_phase6) and unshipped quality leftovers (delete_phase6).
+# are verified except semantic_pins (delete_phase6) and unshipped leftovers (delete_phase6).
 # Module and callable migrate rows stay planned (Task 1 freeze).
 schema_version: '1'
 dependencies:
@@ -2146,308 +2146,308 @@ items:
   owner: assurance.quality
   new_id: assurance.quality.aggregate-nightly-metrics
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:aggregate-nightly-metrics]
 - kind: operation
   legacy_id: operation:allocate-coverage-repair-attempt
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.allocate-coverage-repair-attempt
   status: verified
-  verification: packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:allocate-coverage-repair-attempt]
 - kind: operation
   legacy_id: operation:allocate-healing-attempt
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.allocate-healing-attempt
   status: verified
-  verification: packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:allocate-healing-attempt]
 - kind: operation
   legacy_id: operation:apply-improvement-auto-review
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.apply-improvement-auto-review
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:apply-improvement-auto-review]
 - kind: operation
   legacy_id: operation:apply-improvement-review
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.apply-improvement-review
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:apply-improvement-review]
 - kind: operation
   legacy_id: operation:apply-memory-improvement
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.apply-memory-improvement
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:apply-memory-improvement]
 - kind: operation
   legacy_id: operation:apply-problem-review
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.apply-problem-review
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:apply-problem-review]
 - kind: operation
   legacy_id: operation:assemble-retro-context-v3
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.assemble-retro-context-v3
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:assemble-retro-context-v3]
 - kind: operation
   legacy_id: operation:build-coverage-gap-signals
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.build-coverage-gap-signals
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:build-coverage-gap-signals]
 - kind: operation
   legacy_id: operation:collect-adversarial-yield
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.collect-adversarial-yield
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:collect-adversarial-yield]
 - kind: operation
   legacy_id: operation:collect-diff-coverage
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.collect-diff-coverage
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:collect-diff-coverage]
 - kind: operation
   legacy_id: operation:collect-observations
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.collect-observations
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:collect-observations]
 - kind: operation
   legacy_id: operation:collect-pr-metrics-batch
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.collect-pr-metrics-batch
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:collect-pr-metrics-batch]
 - kind: operation
   legacy_id: operation:combine-fixer-safety
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.combine-fixer-safety
   status: verified
-  verification: packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:combine-fixer-safety]
 - kind: operation
   legacy_id: operation:compute-assertion-strength
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.compute-assertion-strength
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:compute-assertion-strength]
 - kind: operation
   legacy_id: operation:compute-auth-matrix
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.compute-auth-matrix
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:compute-auth-matrix]
 - kind: operation
   legacy_id: operation:compute-baseline-drift
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.compute-baseline-drift
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:compute-baseline-drift]
 - kind: operation
   legacy_id: operation:compute-constraint-coverage
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.compute-constraint-coverage
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:compute-constraint-coverage]
 - kind: operation
   legacy_id: operation:compute-coverage-repair-safety
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.compute-coverage-repair-safety
   status: verified
-  verification: packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:compute-coverage-repair-safety]
 - kind: operation
   legacy_id: operation:compute-journey-coverage
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.compute-journey-coverage
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:compute-journey-coverage]
 - kind: operation
   legacy_id: operation:compute-threshold-slack
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.compute-threshold-slack
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:compute-threshold-slack]
 - kind: operation
   legacy_id: operation:derive-plan-layer-applicability
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.derive-plan-layer-applicability
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:derive-plan-layer-applicability]
 - kind: operation
   legacy_id: operation:drain-improvement-outbox
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.drain-improvement-outbox
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:drain-improvement-outbox]
 - kind: operation
   legacy_id: operation:evaluate-memory-improvement
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.evaluate-memory-improvement
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:evaluate-memory-improvement]
 - kind: operation
   legacy_id: operation:evaluate-retrospective-shortboards
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.evaluate-retrospective-shortboards
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:evaluate-retrospective-shortboards]
 - kind: operation
   legacy_id: operation:export-change-improvement
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.export-change-improvement
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:export-change-improvement]
 - kind: operation
   legacy_id: operation:export-knowledge-improvement
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.export-knowledge-improvement
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:export-knowledge-improvement]
 - kind: operation
   legacy_id: operation:finalize-retro-status
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.finalize-retro-status
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:finalize-retro-status]
 - kind: operation
   legacy_id: operation:fixer-authority-ready
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.fixer-authority-ready
   status: verified
-  verification: packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:fixer-authority-ready]
 - kind: operation
   legacy_id: operation:fixer-dispatch
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.fixer-dispatch
   status: verified
-  verification: packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:fixer-dispatch]
 - kind: operation
   legacy_id: operation:generate-report
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.generate-report
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:generate-report]
 - kind: operation
   legacy_id: operation:inspect
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.inspect
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:inspect]
 - kind: operation
   legacy_id: operation:load-improvement-delivery
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.load-improvement-delivery
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:load-improvement-delivery]
 - kind: operation
   legacy_id: operation:load-improvement-review-context
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.load-improvement-review-context
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:load-improvement-review-context]
 - kind: operation
   legacy_id: operation:load-latest-pr-metrics
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.load-latest-pr-metrics
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:load-latest-pr-metrics]
 - kind: operation
   legacy_id: operation:load-problem-review-context
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.load-problem-review-context
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:load-problem-review-context]
 - kind: operation
   legacy_id: operation:load-review-subject
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.load-review-subject
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:load-review-subject]
 - kind: operation
   legacy_id: operation:materialize-c-layer-metrics
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.materialize-c-layer-metrics
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:materialize-c-layer-metrics]
 - kind: operation
   legacy_id: operation:materialize-empty-retro-analysis
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.materialize-empty-retro-analysis
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:materialize-empty-retro-analysis]
 - kind: operation
   legacy_id: operation:materialize-minimum-coverage
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.materialize-minimum-coverage
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:materialize-minimum-coverage]
 - kind: operation
   legacy_id: operation:materialize-pr-metrics
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.materialize-pr-metrics
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:materialize-pr-metrics]
 - kind: operation
   legacy_id: operation:materialize-quarantine-projection
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.materialize-quarantine-projection
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:materialize-quarantine-projection]
 - kind: operation
   legacy_id: operation:materialize-trace-and-coverage-gaps
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.materialize-trace-and-coverage-gaps
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:materialize-trace-and-coverage-gaps]
 - kind: operation
   legacy_id: operation:materialize-trace-projection
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.materialize-trace-projection
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:materialize-trace-projection]
 - kind: operation
   legacy_id: operation:no-op
   disposition: replace_phase5
@@ -2461,112 +2461,112 @@ items:
   owner: assurance.quality
   new_id: assurance.quality.probe-coverage-repair-need
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:probe-coverage-repair-need]
 - kind: operation
   legacy_id: operation:reconcile-improvements
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.reconcile-improvements
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:reconcile-improvements]
 - kind: operation
   legacy_id: operation:reconcile-issues
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.reconcile-issues
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:reconcile-issues]
 - kind: operation
   legacy_id: operation:record-analysis-failed
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.record-analysis-failed
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-analysis-failed]
 - kind: operation
   legacy_id: operation:record-auto-review-orchestration-error
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.record-auto-review-orchestration-error
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-auto-review-orchestration-error]
 - kind: operation
   legacy_id: operation:record-change-improvement-applied
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.record-change-improvement-applied
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-change-improvement-applied]
 - kind: operation
   legacy_id: operation:record-codegen-fix-apply
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.record-codegen-fix-apply
   status: verified
-  verification: packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-codegen-fix-apply]
 - kind: operation
   legacy_id: operation:record-coverage-repair-status
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.record-coverage-repair-status
   status: verified
-  verification: packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-coverage-repair-status]
 - kind: operation
   legacy_id: operation:record-empty-issue-analysis
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.record-empty-issue-analysis
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-empty-issue-analysis]
 - kind: operation
   legacy_id: operation:record-fixer-approval
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.record-fixer-approval
   status: verified
-  verification: packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-fixer-approval]
 - kind: operation
   legacy_id: operation:record-healing-status
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.record-healing-status
   status: verified
-  verification: packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-healing-status]
 - kind: operation
   legacy_id: operation:record-improvement-auto-review-error
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.record-improvement-auto-review-error
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-improvement-auto-review-error]
 - kind: operation
   legacy_id: operation:record-issue-analysis-failure
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.record-issue-analysis-failure
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-issue-analysis-failure]
 - kind: operation
   legacy_id: operation:record-knowledge-improvement-applied
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.record-knowledge-improvement-applied
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-knowledge-improvement-applied]
 - kind: operation
   legacy_id: operation:record-project-sync-pending
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.record-project-sync-pending
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-project-sync-pending]
 - kind: operation
   legacy_id: operation:record-retro-pipeline-failure
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.record-retro-pipeline-failure
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:record-retro-pipeline-failure]
 - kind: operation
   legacy_id: operation:retro-accept
   disposition: delete_phase6
@@ -2580,56 +2580,56 @@ items:
   owner: assurance.improvement
   new_id: assurance.improvement.retro-collect-v3
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:retro-collect-v3]
 - kind: operation
   legacy_id: operation:retro-evidence-gap-fallback
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.retro-evidence-gap-fallback
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:retro-evidence-gap-fallback]
 - kind: operation
   legacy_id: operation:rollback-memory-improvement
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.rollback-memory-improvement
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:rollback-memory-improvement]
 - kind: operation
   legacy_id: operation:run-mutation-sample
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.run-mutation-sample
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:run-mutation-sample]
 - kind: operation
   legacy_id: operation:run-nightly-metrics-pipeline
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.run-nightly-metrics-pipeline
   status: verified
-  verification: packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:run-nightly-metrics-pipeline]
 - kind: operation
   legacy_id: operation:run-tests
   disposition: migrate
   owner: assurance.execution
   new_id: assurance.execution.run-tests
   status: verified
-  verification: packages/assurance-execution/tests/test_plugin.py::test_execution_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:run-tests]
 - kind: operation
   legacy_id: operation:run-tests-and-collect-pr-metrics
   disposition: migrate
   owner: assurance.execution
   new_id: assurance.execution.run-tests-and-collect-pr-metrics
   status: verified
-  verification: packages/assurance-execution/tests/test_plugin.py::test_execution_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:run-tests-and-collect-pr-metrics]
 - kind: operation
   legacy_id: operation:select-current-retro-auto-review-items
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.select-current-retro-auto-review-items
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:select-current-retro-auto-review-items]
 - kind: operation
   legacy_id: operation:skill-registry-check
   disposition: replace_phase5
@@ -2650,14 +2650,14 @@ items:
   owner: assurance.improvement
   new_id: assurance.improvement.summarize-auto-review-batch
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:summarize-auto-review-batch]
 - kind: operation
   legacy_id: operation:validate-improvement-review-assessment
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.validate-improvement-review-assessment
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity
+  verification: tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:validate-improvement-review-assessment]
 - kind: skill
   legacy_id: aa-api-codegen
   disposition: migrate
@@ -3150,116 +3150,116 @@ items:
   verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: artifact
   legacy_id: advisory
-  disposition: migrate
-  owner: assurance.quality
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: api_codegen_fix_apply_intent_v1
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[api_codegen_fix_apply_intent_v1]
 - kind: artifact
   legacy_id: api_codegen_fix_apply_summary_v1
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[api_codegen_fix_apply_summary_v1]
 - kind: artifact
   legacy_id: api_codegen_fixer_safety_check_v1
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[api_codegen_fixer_safety_check_v1]
 - kind: artifact
   legacy_id: api_generated_files_v1
   disposition: migrate
   owner: assurance.generation
   new_id: null
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[api_generated_files_v1]
 - kind: artifact
   legacy_id: apply_summary
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[apply_summary]
 - kind: artifact
   legacy_id: c_layer_metrics
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[c_layer_metrics]
 - kind: artifact
   legacy_id: case_yaml
   disposition: migrate
   owner: assurance.intake
   new_id: null
   status: verified
-  verification: packages/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[case_yaml]
 - kind: artifact
   legacy_id: change_issue_snapshot
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[change_issue_snapshot]
 - kind: artifact
   legacy_id: codegen_mapping_v1
   disposition: migrate
   owner: assurance.generation
   new_id: null
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[codegen_mapping_v1]
 - kind: artifact
   legacy_id: coverage_gaps
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[coverage_gaps]
 - kind: artifact
   legacy_id: coverage_repair_apply_summary
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[coverage_repair_apply_summary]
 - kind: artifact
   legacy_id: coverage_repair_baseline
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[coverage_repair_baseline]
 - kind: artifact
   legacy_id: coverage_repair_brief
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[coverage_repair_brief]
 - kind: artifact
   legacy_id: coverage_repair_safety_check
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[coverage_repair_safety_check]
 - kind: artifact
   legacy_id: coverage_repair_status
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[coverage_repair_status]
 - kind: artifact
   legacy_id: data_knowledge_proposal
   disposition: replace_phase5
@@ -3273,105 +3273,105 @@ items:
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[declaration_proposal]
 - kind: artifact
   legacy_id: discovery_campaign_result
   disposition: migrate
   owner: assurance.generation
   new_id: null
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[discovery_campaign_result]
 - kind: artifact
   legacy_id: discovery_campaign_spec
   disposition: migrate
   owner: assurance.generation
   new_id: null
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[discovery_campaign_spec]
 - kind: artifact
   legacy_id: discovery_counterexample
   disposition: migrate
   owner: assurance.generation
   new_id: null
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[discovery_counterexample]
 - kind: artifact
   legacy_id: discovery_generated_manifest
-  disposition: migrate
-  owner: assurance.generation
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: discovery_oracle_set
-  disposition: migrate
-  owner: assurance.generation
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: discovery_promotion_manifest
-  disposition: migrate
-  owner: assurance.improvement
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: discovery_promotion_receipt
   disposition: migrate
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[discovery_promotion_receipt]
 - kind: artifact
   legacy_id: discovery_regression_candidate
   disposition: migrate
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[discovery_regression_candidate]
 - kind: artifact
   legacy_id: discovery_replay_attempt_receipt
-  disposition: migrate
-  owner: assurance.generation
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: discovery_round_decision
-  disposition: migrate
-  owner: assurance.generation
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: e2e_codegen_fix_apply_intent_v1
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[e2e_codegen_fix_apply_intent_v1]
 - kind: artifact
   legacy_id: e2e_codegen_fix_apply_summary_v1
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[e2e_codegen_fix_apply_summary_v1]
 - kind: artifact
   legacy_id: e2e_codegen_fixer_safety_check_v1
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[e2e_codegen_fixer_safety_check_v1]
 - kind: artifact
   legacy_id: e2e_generated_files_v1
   disposition: migrate
   owner: assurance.generation
   new_id: null
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[e2e_generated_files_v1]
 - kind: artifact
   legacy_id: eval_run_projection_v1
   disposition: retain_harness
@@ -3385,301 +3385,301 @@ items:
   owner: assurance.execution
   new_id: null
   status: verified
-  verification: packages/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[execution_manifest]
 - kind: artifact
   legacy_id: fact_baseline
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[fact_baseline]
 - kind: artifact
   legacy_id: failure_analysis
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[failure_analysis]
 - kind: artifact
   legacy_id: fix_proposal
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[fix_proposal]
 - kind: artifact
   legacy_id: fixer_authority_v1
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[fixer_authority_v1]
 - kind: artifact
   legacy_id: fixer_proposal_approval_receipt_v1
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[fixer_proposal_approval_receipt_v1]
 - kind: artifact
   legacy_id: fuzz_generated_files_v1
   disposition: migrate
   owner: assurance.generation
   new_id: null
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[fuzz_generated_files_v1]
 - kind: artifact
   legacy_id: improvement_auto_review_assessment_v1
   disposition: migrate
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[improvement_auto_review_assessment_v1]
 - kind: artifact
   legacy_id: improvement_auto_review_batch_summary_v1
   disposition: migrate
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[improvement_auto_review_batch_summary_v1]
 - kind: artifact
   legacy_id: improvement_auto_review_status_v1
   disposition: migrate
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[improvement_auto_review_status_v1]
 - kind: artifact
   legacy_id: improvement_candidate_document
   disposition: migrate
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[improvement_candidate_document]
 - kind: artifact
   legacy_id: improvement_reconcile_outbox_v1
-  disposition: migrate
-  owner: assurance.improvement
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: improvement_review_subject_v1
   disposition: migrate
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[improvement_review_subject_v1]
 - kind: artifact
   legacy_id: issue_analysis_status
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[issue_analysis_status]
 - kind: artifact
   legacy_id: issue_candidate_document
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[issue_candidate_document]
 - kind: artifact
   legacy_id: issue_evidence_manifest
-  disposition: migrate
-  owner: assurance.quality
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: issue_reconcile_status
-  disposition: migrate
-  owner: assurance.quality
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: issue_triage_advice
-  disposition: migrate
-  owner: assurance.quality
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: metrics_document
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[metrics_document]
 - kind: artifact
   legacy_id: metrics_nightly_document
-  disposition: migrate
-  owner: assurance.quality
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: minimum_coverage_matrix
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[minimum_coverage_matrix]
 - kind: artifact
   legacy_id: minimum_coverage_result
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[minimum_coverage_result]
 - kind: artifact
   legacy_id: observation_document
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[observation_document]
 - kind: artifact
   legacy_id: performance_generated_files_v1
   disposition: migrate
   owner: assurance.generation
   new_id: null
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[performance_generated_files_v1]
 - kind: artifact
   legacy_id: plan_check
   disposition: migrate
   owner: assurance.generation
   new_id: null
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[plan_check]
 - kind: artifact
   legacy_id: qa_yaml
   disposition: migrate
   owner: assurance.intake
   new_id: null
   status: verified
-  verification: packages/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[qa_yaml]
 - kind: artifact
   legacy_id: quality_gate_result
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[quality_gate_result]
 - kind: artifact
   legacy_id: quality_report
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[quality_report]
 - kind: artifact
   legacy_id: quarantine_projection
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[quarantine_projection]
 - kind: artifact
   legacy_id: retro_context_v3
   disposition: migrate
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[retro_context_v3]
 - kind: artifact
   legacy_id: retro_eval_evidence_slice_v3
-  disposition: migrate
-  owner: assurance.improvement
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: retro_eval_signal_v3
-  disposition: migrate
-  owner: assurance.improvement
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: retro_issue_evidence_slice_v3
-  disposition: migrate
-  owner: assurance.improvement
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: retro_issue_signal_v3
-  disposition: migrate
-  owner: assurance.improvement
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: retro_pipeline_failure_v1
   disposition: migrate
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[retro_pipeline_failure_v1]
 - kind: artifact
   legacy_id: retro_run_status_v1
   disposition: migrate
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[retro_run_status_v1]
 - kind: artifact
   legacy_id: retro_window_v3
   disposition: migrate
   owner: assurance.improvement
   new_id: null
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[retro_window_v3]
 - kind: artifact
   legacy_id: retro_workflow_evidence_slice_v3
-  disposition: migrate
-  owner: assurance.improvement
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: retro_workflow_signal_v3
-  disposition: migrate
-  owner: assurance.improvement
+  disposition: delete_phase6
+  owner: null
   new_id: null
-  status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  status: planned
+  verification: null
 - kind: artifact
   legacy_id: review
   disposition: migrate
   owner: assurance.generation
   new_id: null
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[review]
 - kind: artifact
   legacy_id: safety_check
   disposition: migrate
   owner: assurance.healing
   new_id: null
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[safety_check]
 - kind: artifact
   legacy_id: trace_projection
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[trace_projection]
 - kind: artifact
   legacy_id: trace_sufficiency_facts
   disposition: migrate
   owner: assurance.quality
   new_id: null
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: tests/phase4/test_ownership_live.py::test_migrate_artifact_is_live_contract[trace_sufficiency_facts]
 - kind: artifact
   legacy_id: workflow_state
   disposition: replace_phase5

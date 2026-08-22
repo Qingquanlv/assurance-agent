@@ -405,6 +405,38 @@ REPLACE_PHASE5_ARTIFACT_MODULES: tuple[str, ...] = (
     "assurance_agent/artifacts/repo_registry.py",
 )
 
+RESOURCE_LEFTOVER_OVERRIDES: dict[str, tuple[Disposition, str | None]] = {
+    "assurance_agent/_resources/skills/aa-dashboard/scripts/case-center.html": (
+        "delete_phase6",
+        None,
+    ),
+    "assurance_agent/_resources/skills/aa-dashboard/scripts/server.py": ("delete_phase6", None),
+    "assurance_agent/_resources/skills/aa-dashboard/scripts/start-server.sh": ("delete_phase6", None),
+    "assurance_agent/_resources/skills/aa-dashboard/scripts/stop-server.sh": ("delete_phase6", None),
+}
+
+ARTIFACT_LEFTOVER_TYPES = frozenset(
+    {
+        "advisory",
+        "discovery_generated_manifest",
+        "discovery_oracle_set",
+        "discovery_promotion_manifest",
+        "discovery_replay_attempt_receipt",
+        "discovery_round_decision",
+        "improvement_reconcile_outbox_v1",
+        "issue_evidence_manifest",
+        "issue_reconcile_status",
+        "issue_triage_advice",
+        "metrics_nightly_document",
+        "retro_eval_evidence_slice_v3",
+        "retro_eval_signal_v3",
+        "retro_issue_evidence_slice_v3",
+        "retro_issue_signal_v3",
+        "retro_workflow_evidence_slice_v3",
+        "retro_workflow_signal_v3",
+    }
+)
+
 RESOURCE_PATH_HINTS: dict[str, tuple[Disposition, str | None]] = {
     "assurance_agent/_resources/schemas/workflow-schema.yaml": ("replace_phase5", None),
     "assurance_agent/_resources/schemas/execution-contracts.yaml": ("replace_phase5", None),
@@ -739,7 +771,11 @@ def _collect_runtime_resources() -> dict[str, tuple[Disposition, str | None]]:
         for file_path in _iter_files(skill_dir):
             if file_path.name == "SKILL.md":
                 continue
-            _claim_resource(claimed, _posix(file_path), assignment)
+            rel = _posix(file_path)
+            if rel in RESOURCE_LEFTOVER_OVERRIDES:
+                _claim_resource(claimed, rel, RESOURCE_LEFTOVER_OVERRIDES[rel])
+                continue
+            _claim_resource(claimed, rel, assignment)
 
     for parts in _scan_resource_references():
         resolved = _resolve_resource_parts(parts)
@@ -749,6 +785,9 @@ def _collect_runtime_resources() -> dict[str, tuple[Disposition, str | None]]:
             if _excluded_primary_resource(file_path):
                 continue
             rel = _posix(file_path)
+            if rel in RESOURCE_LEFTOVER_OVERRIDES:
+                _claim_resource(claimed, rel, RESOURCE_LEFTOVER_OVERRIDES[rel])
+                continue
             if rel in RESOURCE_PATH_HINTS:
                 _claim_resource(claimed, rel, RESOURCE_PATH_HINTS[rel])
                 continue
@@ -767,6 +806,9 @@ def _collect_runtime_resources() -> dict[str, tuple[Disposition, str | None]]:
     for rel, assignment in RESOURCE_PATH_HINTS.items():
         if (REPO_ROOT / rel).is_file():
             _claim_resource(claimed, rel, assignment)
+    for rel, assignment in RESOURCE_LEFTOVER_OVERRIDES.items():
+        if (REPO_ROOT / rel).is_file():
+            claimed[rel] = assignment
 
     executables: set[str] = set()
     for root in (
@@ -865,6 +907,8 @@ def _model_file_for_type(model: type[object]) -> str:
 
 
 def _artifact_assignment(artifact_type: str) -> tuple[Disposition, str | None]:
+    if artifact_type in ARTIFACT_LEFTOVER_TYPES:
+        return "delete_phase6", None
     specs = [spec for spec in REGISTRY if spec.artifact_type == artifact_type]
     if not specs:
         raise ValueError(f"unknown artifact type: {artifact_type}")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import fields
 from pathlib import Path
 
@@ -190,16 +191,10 @@ EFFECT_NEW_IDS = {
     "heal_record_apply/v2": "assurance.healing.effect.heal-apply.v2",
 }
 
-OPERATION_VERIFICATION: dict[str, str] = {
-    "assurance.execution": (
-        "packages/assurance-execution/tests/test_plugin.py::test_execution_source_identity"
-    ),
-    "assurance.healing": ("packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity"),
-    "assurance.quality": ("packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity"),
-    "assurance.improvement": (
-        "packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity"
-    ),
-}
+
+def _operation_live_pointer(legacy_id: str) -> str:
+    return f"tests/phase4/test_ownership_live.py::test_migrate_operation_is_live_handler[{legacy_id}]"
+
 
 VALIDATOR_VERIFICATION: dict[str, str] = {
     "generated_files_candidate/v1": (
@@ -395,7 +390,7 @@ def test_operation_skill_and_persona_dispositions_are_exact() -> None:
             assert item.owner == owner
             assert item.new_id == f"{owner}.{slug}"
             assert item.status == "verified"
-            assert item.verification == OPERATION_VERIFICATION[owner]
+            assert item.verification == _operation_live_pointer(operation_id)
 
     for operation_id in REPLACE_PHASE5_OPERATIONS:
         item = by_id[("operation", operation_id)]
@@ -636,6 +631,22 @@ _EXTRACTED_KINDS = frozenset(
     }
 )
 
+_VERIFICATION_NODE_RE = re.compile(r"^[\w./-]+\.py::[A-Za-z_][\w]*(?:\[[^\]]+\])?$")
+
+
+def _verification_names_row(item: object) -> bool:
+    pointer = getattr(item, "verification") or ""
+    legacy_id = getattr(item, "legacy_id")
+    new_id = getattr(item, "new_id")
+    if legacy_id in pointer or (new_id is not None and new_id in pointer):
+        return True
+    path, _, _node = pointer.partition("::")
+    source_path = REPO_ROOT / path
+    if not source_path.is_file():
+        return False
+    source = source_path.read_text(encoding="utf-8")
+    return legacy_id in source or (new_id is not None and new_id in source)
+
 
 def test_phase4_ownership_is_fully_verified() -> None:
     ledger = load_ownership_ledger(OWNERSHIP_PATH)
@@ -645,6 +656,9 @@ def test_phase4_ownership_is_fully_verified() -> None:
             assert item.verification
         if item.status == "verified":
             assert item.verification
+            assert _VERIFICATION_NODE_RE.fullmatch(item.verification), (item.kind, item.legacy_id)
+            if item.kind in {"operation", "artifact"}:
+                assert _verification_names_row(item), (item.kind, item.legacy_id, item.verification)
         if item.disposition == "migrate" and item.kind in {"module", "callable"}:
             assert item.status == "planned"
             assert item.verification is None
