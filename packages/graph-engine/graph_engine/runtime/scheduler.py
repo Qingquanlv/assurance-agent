@@ -107,6 +107,15 @@ def _promotion_cut(name: str) -> None:
     del name
 
 
+def _handler_impl_is_recoverable(handler: TaskHandler | None) -> bool:
+    if handler is None:
+        return False
+    target = getattr(handler, "target", None)
+    if target is not None:
+        handler = target
+    return isinstance(handler, RecoverableTaskHandler)
+
+
 class SchedulerStateError(GraphEngineError):
     """Raised when persisted state rejects a requested scheduler transition."""
 
@@ -307,7 +316,7 @@ class Scheduler:
         self, task: PlannedTask
     ) -> tuple[Lease, AttemptWorkspace, AttemptWorkspaceIdentity]:
         handler = self._registry.task_handlers.get(task.capability_id)
-        if not isinstance(handler, RecoverableTaskHandler):
+        if not _handler_impl_is_recoverable(handler):
             raise TaskActivityRecoveryUnsupported(f"task handler is not recoverable: {task.capability_id}")
         envelopes = self._ledger.read_all()
         _validate_start_transition(task, envelopes)
@@ -1637,7 +1646,7 @@ class Scheduler:
 
     def _handler_is_recoverable(self, task: PlannedTask) -> bool:
         handler = self._registry.task_handlers.get(task.capability_id)
-        return isinstance(handler, RecoverableTaskHandler)
+        return _handler_impl_is_recoverable(handler)
 
     def _capability_entrypoint(self, capability_id: str) -> str:
         entries = getattr(self._registry, "entries", {})

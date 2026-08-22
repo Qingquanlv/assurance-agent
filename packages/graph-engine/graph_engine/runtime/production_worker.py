@@ -56,6 +56,11 @@ class _ParentActivityPort:
     def __init__(self, send: Callable[[dict[str, JSONValue]], dict[str, JSONValue]]) -> None:
         self._send = send
 
+    @property
+    def snapshot(self) -> TaskActivitySnapshot:
+        response = self._send({"kind": "activity_rpc", "method": "snapshot", "args": []})
+        return TaskActivitySnapshot.model_validate(response["snapshot"])
+
     def mark_dispatch_started(self, fingerprint: JSONValue) -> TaskActivitySnapshot:
         response = self._send(
             {"kind": "activity_rpc", "method": "mark_dispatch_started", "args": [fingerprint]}

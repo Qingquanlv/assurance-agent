@@ -733,6 +733,131 @@ def test_bound_handler_cannot_mint_unsorted_ids_or_digestless_claims_after_sched
     assert bound.resource_digests == digests
 
 
+class _ExecuteOnlyTarget:
+    async def execute(self, request: TaskRequest, _context: TaskContext) -> TaskOutcome:
+        del request
+        return TaskOutcome.succeeded()
+
+
+def _host_execute_for_bound_alias(
+    tmp_path: Path,
+    *,
+    alias: str,
+    target: TaskHandler,
+) -> TaskHostExecuteCall:
+    captured: list[TaskHostExecuteCall] = []
+
+    class _CallHost:
+        async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+            captured.append(call)
+            return TaskHostCallResult(operation="execute", outcome=TaskOutcome.succeeded())
+
+        async def reconcile(self, call: object) -> TaskHostCallResult:
+            del call
+            raise AssertionError("reconcile must stay unwired")
+
+        async def cancel(self, call: object) -> TaskHostCallResult:
+            del call
+            raise AssertionError("cancel must stay unwired")
+
+        def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[()]:
+            del identity
+            return ()
+
+    handler = _BoundTaskHandler(
+        alias_id=alias,
+        target_capability_id="runtime.recoverable.execute",
+        data={"profile": "fixture-default"},
+        resource_ids=("fixture.instructions", "fixture.result-schema"),
+        target=target,
+    )
+    activation = "activation-run"
+    task = PlannedTask(
+        invocation_id="inv-1",
+        task_id=canonical_digest({"activation_id": activation, "kind": "task"}),
+        activation_id=activation,
+        graph_instance_id="graph-1",
+        node_id="run",
+        capability_id=alias,
+        attempt=1,
+        input={"prompt": "go"},
+        timeout_seconds=1.0,
+        resources=ResourceClaims(reads=("out",)),
+        validators=(),
+        topology_rank=0,
+        declaration_index=0,
+    )
+    store = SnapshotStore.create(tmp_path / "store", {})
+    ledger = Ledger(tmp_path / "ledger")
+    ledger.append_batch(
+        (
+            synthetic_invocation_started(
+                lock_digest=_LOCK_DIGEST,
+                initial_tree_id=store.head_tree_id(),
+            ),
+            GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
+            NodeActivated(
+                activation_id=activation,
+                graph_instance_id="graph-1",
+                node_id="run",
+                token_ids=(),
+            ),
+        ),
+        expected_next_seq=1,
+    )
+    registry = _AliasRegistry(
+        {alias: handler},
+        {
+            alias: _BindingView(
+                "runtime.recoverable.execute",
+                {"profile": "fixture-default"},
+                ("fixture.instructions", "fixture.result-schema"),
+            )
+        },
+    )
+    resources = _ResourceRegistryView(
+        {
+            "fixture.instructions": _ResourceView(_RESOURCE_DIGEST),
+            "fixture.result-schema": _ResourceView(_SCHEMA_DIGEST),
+        }
+    )
+    scheduler = Scheduler(
+        registry,  # type: ignore[arg-type]
+        store,
+        ledger,
+        _CallHost(),  # type: ignore[arg-type]
+        owner_id="worker-1",
+        clock=FakeClock(100.0),
+        lease_seconds=10.0,
+        max_parallel=1,
+        lock_digest=_LOCK_DIGEST,
+        resources=resources,  # type: ignore[arg-type]
+    )
+    asyncio.run(scheduler.run_wave((task,)))
+    assert len(captured) == 1
+    return captured[0]
+
+
+def test_bound_recoverable_alias_prepares_activity_port(tmp_path: Path) -> None:
+    call = _host_execute_for_bound_alias(
+        tmp_path,
+        alias="fixture.agent.run",
+        target=_RecoverableReclaimHandler(),
+    )
+    assert call.activity_rpc.activity_id is not None
+    assert call.identity.activity_id is not None
+
+
+def test_bound_execute_only_alias_stays_non_recoverable(tmp_path: Path) -> None:
+    call = _host_execute_for_bound_alias(
+        tmp_path,
+        alias="fixture.agent.run",
+        target=_ExecuteOnlyTarget(),
+    )
+    assert call.activity_rpc.activity_id is None
+    assert call.identity.activity_id is None
+
+
 def _install_head_document(store: SnapshotStore, tree_id: str) -> None:
     tree_stat = (store.root / "trees" / tree_id).stat()
     payload: dict[str, object] = {

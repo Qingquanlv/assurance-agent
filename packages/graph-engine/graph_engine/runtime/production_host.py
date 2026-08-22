@@ -320,6 +320,8 @@ class _ProductionTaskExecutionHost:
             snapshot = port.mark_dispatch_started(args[0])
         elif method == "bind":
             snapshot = port.bind(args[0])
+        elif method == "snapshot":
+            snapshot = port.snapshot
         else:
             raise ProductionHostError(f"unsupported activity rpc method: {method!r}")
         return {

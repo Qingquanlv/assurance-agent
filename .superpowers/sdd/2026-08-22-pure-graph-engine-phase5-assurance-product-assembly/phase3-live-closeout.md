@@ -6,7 +6,7 @@
 
 ## Summary
 
-Adapter credential and profile fixes landed; preflight now passes for both installed providers. Live runs reach `Engine.production` but fail during handler execute because the production worker receives no task activity port (`activity port is required`).
+Engine fix landed: bound adapter aliases (`fixture.binding.run` → `runtime.opencode.execute` / `runtime.cursor.execute`) now traverse the recoverable wave path, minting a non-None `activity_id` on production host execute calls. Production worker `_ParentActivityPort` now implements `snapshot` RPC. Preflight passes for both providers; live runs reach adapter handlers with a ledger-backed activity port but time out before producing `result.json`.
 
 ## OpenCode fixture
 
@@ -15,12 +15,12 @@ Adapter credential and profile fixes landed; preflight now passes for both insta
 **Item:** `phase3-opencode-live`  
 **Adapter version:** `0.1.0`  
 **Model:** `provider_default`  
-**Lock digest:** `91bda6fd87dc17ee2c9a010898331a0e44d8859b7c83833f59b080998699b9de`  
-**Result dir:** `benchmark/agent-runtime-phase3/results/opencode-20260822-234204`
+**Lock digest:** `26f93741b2df64eea6d01dc98d3a46048da7ca1c3e85e6cf9c9499c8b73d63c4`  
+**Result dir:** `benchmark/agent-runtime-phase3/results/opencode-20260822-235336`
 
-Preflight: health `1.18.4`, `/config` reachable (product shape, no `protocol_profile`), `/session` HTTP 200 without token; `OPENCODE_PHASE3_TOKEN` set to empty in-process.
+Preflight: health `1.18.4`, `/config` reachable (product shape, no `protocol_profile`), `/session` HTTP 200 without token.
 
-**Blocking error:** `engine terminal status 'failed' != expected 'succeeded'` — handler execute raised `ValueError: activity port is required`.
+**Blocking error:** `engine terminal status 'interrupted' != expected 'succeeded'` — task activity prepared (`6dee35fc…`) but scheduler cancelled with `reason=timeout` after ~120s (`max_seconds` limit); no terminal adapter outcome or workspace `result.json`.
 
 ## Cursor fixture
 
@@ -29,23 +29,23 @@ Preflight: health `1.18.4`, `/config` reachable (product shape, no `protocol_pro
 **Item:** `phase3-cursor-live`  
 **Adapter version:** `0.1.0`  
 **Model:** `provider_default`  
-**Lock digest:** `fa5c518c831567d9d0fe4788543f362c125ec99fe35d8450f7053e0052481004`  
-**Result dir:** `benchmark/agent-runtime-phase3/results/cursor-20260822-234235`
+**Lock digest:** `31e989c7c1c55066119acc871209adf90f72e3f59693269e2efb112f29928584`  
+**Result dir:** `benchmark/agent-runtime-phase3/results/cursor-20260822-235540`
 
 Preflight: pinned executable digest/version match; `CURSOR_API_KEY` loaded from macOS keychain service `cursor-access-token` (not printed).
 
-**Blocking error:** `engine terminal status 'failed' != expected 'succeeded'` — handler execute raised `ValueError: activity port is required`.
+**Blocking error:** `engine terminal status 'interrupted' != expected 'succeeded'` — task activity prepared (`916c15a1…`) but scheduler cancelled with `reason=timeout` after ~120s; no terminal adapter outcome or workspace `result.json`.
 
 ## Deterministic gates (passed)
 
 ```bash
-uv run pytest tests/phase5/test_phase3_live_fixture_contract.py packages/agent-runtime-opencode/tests packages/agent-runtime-cursor/tests tests/agent_runtime/test_phase3_acceptance_artifacts.py -q
-```
+uv run pytest packages/graph-engine/tests/runtime/test_scheduler.py packages/graph-engine/tests/runtime/test_production_host.py packages/graph-engine/tests/runtime/test_production_host_faults.py -q
+# 95 passed
 
-```
-260 passed
+uv run pytest tests/phase5/test_phase3_live_fixture_contract.py packages/agent-runtime-opencode/tests packages/agent-runtime-cursor/tests tests/agent_runtime/test_phase3_acceptance_artifacts.py -q
+# 260 passed
 ```
 
 ## Required to unblock
 
-Wire task-activity preparation into the phase3 live fixture product/workflow so production worker execute calls receive a ledger-backed activity port before adapter handlers run.
+Adapter handlers must complete within the fixture `max_seconds` (120) budget and write `result.json` to the attempt workspace, or the fixture timeout / observation horizon must be raised for live provider latency.

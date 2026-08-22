@@ -109,3 +109,35 @@ See updated `phase3-live-closeout.md` for lock digests and artifact dirs.
 260 passed (phase3 contract + adapter packages + acceptance artifacts)
 ```
 
+---
+
+## Bound-alias activity port fix (2026-08-22)
+
+### Fix
+
+| Component | Change |
+|---|---|
+| `graph_engine/runtime/scheduler.py` | `_handler_impl_is_recoverable` unwraps `_BoundTaskHandler.target` before `RecoverableTaskHandler` check; used by `_handler_is_recoverable` and `start_recoverable` |
+| `graph_engine/runtime/production_worker.py` | `_ParentActivityPort.snapshot` RPC for production worker activity reads |
+| `graph_engine/runtime/production_host.py` | Handle `snapshot` activity RPC method |
+| `tests/runtime/test_scheduler.py` | Bound recoverable alias gets non-None `activity_id`; execute-only alias stays non-recoverable |
+
+### Tests
+
+```bash
+uv run pytest packages/graph-engine/tests/runtime/test_scheduler.py packages/graph-engine/tests/runtime/test_production_host.py packages/graph-engine/tests/runtime/test_production_host_faults.py -q
+# 95 passed
+
+uv run pytest tests/phase5/test_phase3_live_fixture_contract.py packages/agent-runtime-opencode/tests packages/agent-runtime-cursor/tests tests/agent_runtime/test_phase3_acceptance_artifacts.py -q
+# 260 passed
+```
+
+### Live result
+
+| Script | Exit | Result |
+|---|---|---|
+| `run-opencode.sh` | 1 | Activity prepared; `interrupted` after ~120s timeout (no `result.json`) |
+| `run-cursor.sh` | 1 | Activity prepared; `interrupted` after ~120s timeout (no `result.json`) |
+
+Prior blocker (`activity port is required`) cleared. See `phase3-live-closeout.md`.
+
