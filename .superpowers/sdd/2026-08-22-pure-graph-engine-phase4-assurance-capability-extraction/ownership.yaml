@@ -3026,113 +3026,113 @@ items:
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.validator.override.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: assert_test_tree_unchanged_or_healing
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.validator.test-tree.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: build_test_changes_override_token
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.validator.override.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: candidate_document_digest
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.candidate-document-digest
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: commit_healing_allocation_ledger
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.effect.allocation.v2
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: complete_candidate_outputs
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.retro.finalize
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: complete_improvement_reviewer_outputs
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.improvement-review.finalize
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: complete_issue_analyzer_outputs
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.issue-analysis.finalize
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: complete_signal_outputs
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.retro.finalize
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: load_product_code_roots
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.validator.test-tree.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: load_test_changes_override_policy
   disposition: migrate
   owner: assurance.healing
-  new_id: assurance.healing.policy.test-change.v1
-  status: planned
-  verification: null
+  new_id: assurance.healing.policy.test-change-policy.v1
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: project_healing_episode
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.project-episode
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: reconcile_fixer_proposal_approved
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.effect.proposal-approved.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: reconcile_heal_record_apply
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.effect.heal-apply.v2
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: reconcile_healing_allocation
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.effect.allocation.v2
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: register_healing_effects
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.effect.allocation.v2
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: hook
   legacy_id: semantic_pins
   disposition: delete_phase6
@@ -3145,8 +3145,8 @@ items:
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.validator.override.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture
 - kind: artifact
   legacy_id: advisory
   disposition: migrate

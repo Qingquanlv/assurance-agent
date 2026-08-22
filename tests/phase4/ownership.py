@@ -364,7 +364,7 @@ HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
     ),
     "load_test_changes_override_policy": (
         "assurance.healing",
-        "assurance.healing.policy.test-change.v1",
+        "assurance.healing.policy.test-change-policy.v1",
     ),
     "token_json_bytes": ("assurance.healing", "assurance.healing.validator.override.v1"),
     "reconcile_healing_allocation": (

@@ -223,7 +223,7 @@ HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
     ),
     "load_test_changes_override_policy": (
         "assurance.healing",
-        "assurance.healing.policy.test-change.v1",
+        "assurance.healing.policy.test-change-policy.v1",
     ),
     "token_json_bytes": ("assurance.healing", "assurance.healing.validator.override.v1"),
     "reconcile_healing_allocation": (
@@ -413,8 +413,10 @@ def test_validator_effect_and_hook_rows_use_declared_ids() -> None:
         assert item.disposition == "migrate"
         assert item.owner == owner
         assert item.new_id == seam
-        assert item.status == "planned"
-        assert item.verification is None
+        assert item.status == "verified"
+        assert item.verification == (
+            "tests/phase4/test_product_hooks_parity.py::test_legacy_and_new_hook_paths_match_on_fixture"
+        )
         assert seam.startswith(f"{owner}.")
 
 

@@ -1,0 +1,110 @@
+schema_version: "1"
+hooks:
+  - hook: load_product_code_roots
+    owner: assurance.healing
+    new_id: assurance.healing.validator.test-tree.v1
+    public: assurance_healing.validators.test_tree.TestTreeValidator
+    input: {kind: empty_project}
+    compare: [product_roots]
+  - hook: candidate_document_digest
+    owner: assurance.quality
+    new_id: assurance.quality.candidate-document-digest
+    public: assurance_quality.operations.identity.candidate_document_digest
+    input: {kind: issue_candidates}
+    compare: [digest]
+  - hook: commit_healing_allocation_ledger
+    owner: assurance.healing
+    new_id: assurance.healing.effect.allocation.v2
+    public: assurance_healing.effects.allocation.HealingAllocationEffect
+    input: {kind: allocation}
+    compare: [operation_id, first_new, replay]
+  - hook: complete_issue_analyzer_outputs
+    owner: assurance.quality
+    new_id: assurance.quality.issue-analysis.finalize
+    public: assurance_quality.operations.agent_skills.IssueAnalysisFinalizeHandler
+    input: {kind: issue_candidates}
+    compare: [candidate_digest]
+  - hook: complete_improvement_reviewer_outputs
+    owner: assurance.improvement
+    new_id: assurance.improvement.improvement-review.finalize
+    public: assurance_improvement.operations.agent.ImprovementReviewFinalizeHandler
+    input: {kind: improvement_review}
+    compare: [decision, improvement_id, version]
+  - hook: complete_signal_outputs
+    owner: assurance.improvement
+    new_id: assurance.improvement.retro.finalize
+    public: assurance_improvement.operations.agent.RetroFinalizeHandler
+    input: {kind: retro_signal}
+    compare: [slice_digest, source_id]
+  - hook: complete_candidate_outputs
+    owner: assurance.improvement
+    new_id: assurance.improvement.retro.finalize
+    public: assurance_improvement.operations.agent.RetroFinalizeHandler
+    input: {kind: retro_candidate}
+    compare: [context_digest, source_id]
+  - hook: register_healing_effects
+    owner: assurance.healing
+    new_id: assurance.healing.effect.allocation.v2
+    public: assurance_healing.plugin.HealingPlugin
+    input: {kind: effect_registry}
+    compare: [effect_kinds]
+  - hook: project_healing_episode
+    owner: assurance.healing
+    new_id: assurance.healing.project-episode
+    public: assurance_healing.operations.status.ProjectEpisodeHandler
+    input: {kind: episode_events}
+    compare: [episode_id, attempts_used, approval_id, record_key]
+  - hook: assert_test_tree_unchanged_or_healing
+    owner: assurance.healing
+    new_id: assurance.healing.validator.test-tree.v1
+    public: assurance_healing.validators.test_tree.TestTreeValidator
+    input: {kind: test_tree}
+    compare: [product_rejected, approved_test_accepted]
+  - hook: assert_test_changes_override_allowed
+    owner: assurance.healing
+    new_id: assurance.healing.validator.override.v1
+    public: assurance_healing.validators.override.OverrideValidator
+    input: {kind: override_policy}
+    compare: [unauthorized_denied, authorized_accepted]
+  - hook: build_test_changes_override_token
+    owner: assurance.healing
+    new_id: assurance.healing.validator.override.v1
+    public: assurance_healing.contracts.safety.HealingOverrideTokenV1
+    input: {kind: override_token}
+    compare: [change_id, action]
+  - hook: load_test_changes_override_policy
+    owner: assurance.healing
+    new_id: assurance.healing.policy.test-change-policy.v1
+    public: assurance_healing.contracts.safety.TestChangePolicyV1
+    input: {kind: test_change_policy}
+    compare: [forbidden_product_roots, require_approval]
+  - hook: token_json_bytes
+    owner: assurance.healing
+    new_id: assurance.healing.validator.override.v1
+    public: assurance_healing.contracts.wire.override_token_digest
+    input: {kind: override_token}
+    compare: [change_id, action, token_digest]
+  - hook: reconcile_healing_allocation
+    owner: assurance.healing
+    new_id: assurance.healing.effect.allocation.v2
+    public: assurance_healing.effects.allocation.HealingAllocationEffect
+    input: {kind: allocation}
+    compare: [status, operation_id]
+  - hook: reconcile_fixer_proposal_approved
+    owner: assurance.healing
+    new_id: assurance.healing.effect.proposal-approved.v1
+    public: assurance_healing.effects.approval.ProposalApprovedEffect
+    input: {kind: approval}
+    compare: [status, approval_id]
+  - hook: reconcile_heal_record_apply
+    owner: assurance.healing
+    new_id: assurance.healing.effect.heal-apply.v2
+    public: assurance_healing.effects.apply.HealApplyEffect
+    input: {kind: heal_apply}
+    compare: [status, record_key]
+  - hook: semantic_pins
+    owner: null
+    new_id: null
+    public: null
+    input: {kind: digest_bytes}
+    compare: [source_digest, composition_digest, lock_digest]
