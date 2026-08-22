@@ -190,6 +190,47 @@ EFFECT_NEW_IDS = {
     "heal_record_apply/v2": "assurance.healing.effect.heal-apply.v2",
 }
 
+OPERATION_VERIFICATION: dict[str, str] = {
+    "assurance.execution": (
+        "packages/assurance-execution/tests/test_plugin.py::test_execution_source_identity"
+    ),
+    "assurance.healing": ("packages/assurance-healing/tests/test_plugin.py::test_healing_source_identity"),
+    "assurance.quality": ("packages/assurance-quality/tests/test_plugin.py::test_quality_source_identity"),
+    "assurance.improvement": (
+        "packages/assurance-improvement/tests/test_plugin.py::test_improvement_source_identity"
+    ),
+}
+
+VALIDATOR_VERIFICATION: dict[str, str] = {
+    "generated_files_candidate/v1": (
+        "packages/assurance-generation/tests/test_generated_files_validator.py"
+        "::test_plugin_contributed_codegen_validators_allowlist_registered_paths"
+    ),
+    "codegen_fix_candidate/v1": (
+        "packages/assurance-generation/tests/test_generated_files_validator.py"
+        "::test_fix_candidate_validator_authenticates_proposal_baseline_and_allowed_set"
+    ),
+    "plan_mechanical_candidate/v1": (
+        "packages/assurance-generation/tests/test_plan_validator.py"
+        "::test_plan_mechanical_dispatches_closed_family_table"
+    ),
+    "archive_integrity/v1": (
+        "packages/assurance-improvement/tests/test_delivery.py"
+        "::test_archive_integrity_requires_all_four_authenticated_inputs"
+    ),
+    "problem_apply_candidate/v1": (
+        "packages/assurance-quality/tests/test_issues.py"
+        "::test_problem_apply_validator_rejects_forged_review_id"
+    ),
+    "cross_artifact_invariants/v1": (
+        "packages/assurance-quality/tests/test_metrics.py::test_metrics_and_cross_artifact_validators"
+    ),
+}
+
+EFFECT_VERIFICATION = (
+    "packages/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound"
+)
+
 HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
     "load_product_code_roots": ("assurance.healing", "assurance.healing.validator.test-tree.v1"),
     "candidate_document_digest": ("assurance.quality", "assurance.quality.candidate-document-digest"),
@@ -353,8 +394,8 @@ def test_operation_skill_and_persona_dispositions_are_exact() -> None:
             assert item.disposition == "migrate"
             assert item.owner == owner
             assert item.new_id == f"{owner}.{slug}"
-            assert item.status == "planned"
-            assert item.verification is None
+            assert item.status == "verified"
+            assert item.verification == OPERATION_VERIFICATION[owner]
 
     for operation_id in REPLACE_PHASE5_OPERATIONS:
         item = by_id[("operation", operation_id)]
@@ -392,14 +433,16 @@ def test_validator_effect_and_hook_rows_use_declared_ids() -> None:
         assert item.disposition == "migrate"
         assert item.owner == ".".join(new_id.split(".")[:2])
         assert item.new_id == new_id
-        assert item.status == "planned"
-        assert item.verification is None
+        assert item.status == "verified"
+        assert item.verification == VALIDATOR_VERIFICATION[validator_id]
 
     for effect_id, new_id in EFFECT_NEW_IDS.items():
         item = by_id[("effect", effect_id)]
         assert item.disposition == "migrate"
         assert item.owner == "assurance.healing"
         assert item.new_id == new_id
+        assert item.status == "verified"
+        assert item.verification == EFFECT_VERIFICATION
 
     pins = by_id[("hook", "semantic_pins")]
     assert pins.disposition == "delete_phase6"
@@ -577,3 +620,38 @@ def test_ledger_schema_version_is_one() -> None:
     ledger = load_ownership_ledger(OWNERSHIP_PATH)
     assert isinstance(ledger, OwnershipLedger)
     assert ledger.schema_version == "1"
+
+
+_EXTRACTED_KINDS = frozenset(
+    {
+        "operation",
+        "skill",
+        "persona",
+        "validator",
+        "effect",
+        "hook",
+        "artifact",
+        "schema",
+        "resource",
+    }
+)
+
+
+def test_phase4_ownership_is_fully_verified() -> None:
+    ledger = load_ownership_ledger(OWNERSHIP_PATH)
+    for item in ledger.items:
+        if item.disposition == "migrate" and item.kind in _EXTRACTED_KINDS:
+            assert item.status == "verified", (item.kind, item.legacy_id)
+            assert item.verification
+        if item.status == "verified":
+            assert item.verification
+        if item.disposition == "migrate" and item.kind in {"module", "callable"}:
+            assert item.status == "planned"
+            assert item.verification is None
+
+    pins = next(item for item in ledger.items if item.kind == "hook" and item.legacy_id == "semantic_pins")
+    assert pins.disposition == "delete_phase6"
+    assert pins.status == "planned"
+    assert pins.owner is None
+    assert pins.new_id is None
+    assert pins.verification is None

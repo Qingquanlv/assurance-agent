@@ -417,16 +417,16 @@ RESOURCE_PATH_HINTS: dict[str, tuple[Disposition, str | None]] = {
         None,
     ),
     "packages/assurance-kernel/assurance_kernel/_resources/rules/failure-classification.yaml": (
-        "migrate",
-        "assurance.quality",
+        "delete_phase6",
+        None,
     ),
     "packages/assurance-kernel/assurance_kernel/_resources/schemas/explore-advisory.schema.json": (
-        "migrate",
-        "assurance.quality",
+        "delete_phase6",
+        None,
     ),
     "packages/assurance-kernel/assurance_kernel/_resources/schemas/explore-context.schema.json": (
-        "migrate",
-        "assurance.quality",
+        "delete_phase6",
+        None,
     ),
     "packages/assurance-kernel/assurance_kernel/_resources/opencode/plugins/aa.mjs": (
         "replace_phase5",

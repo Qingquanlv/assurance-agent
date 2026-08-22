@@ -228,6 +228,14 @@ bash scripts/packaging_smoke_test.sh   # 构建 wheel + 全新环境安装 + 源
 
 分层契约（import-linter）：保障包 `cli → commands → eval → risk → workflow → verification → evidence → artifacts → config → resources`；内核包对迁入的同名层再列一份（`workflow → verification → knowledge|evidence → artifacts → config → resources`），禁止反向依赖。内核不得 `import assurance_agent`。
 
+### Phase 4 capability wheels (no `aa` cutover)
+
+Six independently buildable Assurance wheels exist and pass committed-HEAD isolation via `scripts/assurance_capability_wheel_smoke_test.sh`:
+
+`assurance-intake`, `assurance-generation`, `assurance-execution`, `assurance-healing`, `assurance-quality`, `assurance-improvement`.
+
+`aa` still defaults to the **legacy** product. No production Assurance product manifest or full graph exists yet. Phase 5 assembles that product and compares behavior. Phase 6 performs the hard cut and deletion. Do not treat these wheels as the current `aa` runtime.
+
 核心模块：
 
 | 目录 | 说明 |

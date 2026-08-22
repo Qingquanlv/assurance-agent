@@ -497,6 +497,14 @@ is never bundled into an earlier extraction task merely to shorten the schedule.
 - Enforce acyclic plugin dependencies through the descriptor graph and import
   contracts.
 
+Phase 4 wheels now exist in-repo: `assurance-intake`, `assurance-generation`,
+`assurance-execution`, `assurance-healing`, `assurance-quality`, and
+`assurance-improvement`. They pass committed-HEAD isolation
+(`scripts/assurance_capability_wheel_smoke_test.sh`). `aa` still defaults to the
+legacy product. No production Assurance product manifest or full graph exists
+yet. Phase 5 is the next step. Phase 6 performs the hard cut and deletion. The
+six wheels are not the current `aa` runtime.
+
 ### Phase 5: Product assembly and behavioral comparison
 
 - Build `assurance-product` from explicit plugin requirements and declarative
