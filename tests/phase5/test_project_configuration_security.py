@@ -73,6 +73,35 @@ def test_nested_payload_rejects_runtime_authority(config_document, key):
 
 
 @pytest.mark.parametrize(
+    "key",
+    ["import", "module", "callable", "worker_profile", "command", "installer", "secret_source"],
+)
+def test_nested_payload_rejects_section_13_5_authority_keys(config_document, key):
+    from assurance_product.configuration import ProjectConfigurationError, parse_project_config
+
+    policy = dict(config_document["product_policy"])
+    policy[key] = "forbidden"
+    config_document["product_policy"] = policy
+    with pytest.raises(ProjectConfigurationError):
+        parse_project_config(config_document)
+
+
+def test_parse_project_config_rejects_nonempty_resources(config_document):
+    from assurance_product.configuration import ProjectConfigurationError, parse_project_config
+
+    config_document["resources"] = [
+        {
+            "resource_id": "assurance.config.extra-note",
+            "schema_id": "assurance.config.extra-note.v1",
+            "media_type": "application/yaml",
+            "content": "note",
+        }
+    ]
+    with pytest.raises(ProjectConfigurationError, match="resources"):
+        parse_project_config(config_document)
+
+
+@pytest.mark.parametrize(
     "key", ["python", "entrypoint_group", "bindings", "task_handlers", "host", "resource_port"]
 )
 def test_project_config_rejects_ports_entry_points_and_handlers(config_document, key):

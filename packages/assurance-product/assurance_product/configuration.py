@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import Path
 from typing import cast
 
 from pydantic import ValidationError
@@ -52,6 +51,8 @@ _AUTHORITY_KEYS = frozenset(
         "adapter",
         "binding",
         "bindings",
+        "callable",
+        "command",
         "commit_validators",
         "endpoint",
         "entrypoint",
@@ -62,27 +63,22 @@ _AUTHORITY_KEYS = frozenset(
         "handler",
         "handlers",
         "host",
+        "import",
+        "installer",
         "model",
+        "module",
         "permission_grant",
         "permission_profile",
         "python",
         "resource_port",
         "secret",
         "secret_handle",
+        "secret_source",
         "secret_value",
         "task_handlers",
+        "worker_profile",
     }
 )
-_OWNER_SCHEMA_CANDIDATES: Mapping[str, tuple[tuple[str, str], ...]] = {
-    "product policy": (
-        ("assurance_quality", "resources/schemas/product-policy.v1.schema.json"),
-        ("assurance_intake", "resources/schemas/product-policy.v1.schema.json"),
-    ),
-    "data knowledge": (
-        ("assurance_improvement", "resources/schemas/data-knowledge.v1.schema.json"),
-        ("assurance_intake", "resources/schemas/data-knowledge.v1.schema.json"),
-    ),
-}
 
 
 class ProjectConfigurationError(Exception):
@@ -98,12 +94,12 @@ def parse_project_config(document: Mapping[str, object] | object) -> ProjectConf
         parsed = ProjectConfigV1.model_validate(mapping)
     except ValidationError as error:
         raise ProjectConfigurationError(str(error)) from error
-    _validate_capability_owned_payload("product policy", parsed.product_policy)
-    _validate_capability_owned_payload("data knowledge", parsed.data_knowledge)
+    if parsed.resources:
+        raise ProjectConfigurationError("project configuration resources must be empty")
+    _reject_authority_keys(thaw_json(parsed.product_policy), "product policy")
+    _reject_authority_keys(thaw_json(parsed.data_knowledge), "data knowledge")
     _reject_authority_keys(thaw_json(parsed.capability_catalog), "capability catalog")
     _reject_authority_keys(thaw_json(dict(parsed.node_policy_values)), "node policy values")
-    for resource in parsed.resources:
-        _reject_authority_keys(resource.model_dump(mode="python"), "configured resource")
     return parsed
 
 
@@ -122,8 +118,8 @@ def load_project_configuration(tree: ConfigTree) -> PluginContribution:
     parsed = parse_project_config(_yaml_mapping(files[_CONFIG_PATH], "project configuration"))
     policy = _yaml_mapping(files[_POLICY_PATH], "product policy")
     knowledge = _yaml_mapping(files[_KNOWLEDGE_PATH], "data knowledge")
-    _validate_capability_owned_payload("product policy", policy)
-    _validate_capability_owned_payload("data knowledge", knowledge)
+    _reject_authority_keys(policy, "product policy")
+    _reject_authority_keys(knowledge, "data knowledge")
     if thaw_json(freeze_json(policy)) != thaw_json(parsed.product_policy):
         raise ProjectConfigurationError("product policy file disagrees with project configuration")
     if thaw_json(freeze_json(knowledge)) != thaw_json(parsed.data_knowledge):
@@ -198,26 +194,6 @@ def _yaml_mapping(content: bytes, label: str) -> dict[str, object]:
     if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
         raise ProjectConfigurationError(f"{label} must be a string-keyed mapping")
     return cast(dict[str, object], raw)
-
-
-def _validate_capability_owned_payload(label: str, payload: object) -> None:
-    _owner_schema_path(label)
-    _reject_authority_keys(thaw_json(payload), label)
-
-
-def _owner_schema_path(label: str) -> Path | None:
-    for package_name, relative in _OWNER_SCHEMA_CANDIDATES.get(label, ()):
-        try:
-            module = __import__(package_name, fromlist=["__file__"])
-        except ImportError:
-            continue
-        package_file = getattr(module, "__file__", None)
-        if not isinstance(package_file, str):
-            continue
-        candidate = Path(package_file).resolve().parent / relative
-        if candidate.is_file():
-            return candidate
-    return None
 
 
 def _reject_authority_keys(value: object, label: str, seen: set[int] | None = None) -> None:
