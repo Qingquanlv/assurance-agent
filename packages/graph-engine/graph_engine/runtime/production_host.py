@@ -525,6 +525,10 @@ class _WorkerProcess:
             exclude={self.popen.pid},
         )
         writers = _collect_workspace_writers(attempt_root)
+        call_owned = set(descendants)
+        if self.popen.poll() is None:
+            call_owned.add(str(self.popen.pid))
+        writers = tuple(writer for writer in writers if writer in call_owned)
         return prove_call_quiescent(writer_identities=writers, descendant_identities=descendants)
 
     def terminate_group(self, *, grace_seconds: float) -> None:

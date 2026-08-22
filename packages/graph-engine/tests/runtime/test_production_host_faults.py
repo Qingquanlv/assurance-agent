@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -246,6 +250,76 @@ def test_production_host_rejects_wrong_workspace(tmp_path: Path) -> None:
     call = _execute_call(attempt_directory_id="missing-attempt", entrypoint=entrypoint)
     with pytest.raises(ProductionHostError, match="attempt workspace"):
         asyncio.run(host.execute(call))
+
+
+def test_unrelated_workspace_holder_does_not_block_quiescence(tmp_path: Path) -> None:
+    store = SnapshotStore.create(tmp_path / "workspace", {})
+    attempt = store.create_attempt("attempt-1")
+    held = attempt.root / "held-by-provider.txt"
+    held.write_text("open\n", encoding="utf-8")
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import time; open(r'''" + str(held) + "'''); time.sleep(60)"],
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and holder.poll() is not None:
+            time.sleep(0.05)
+        assert holder.poll() is None
+        entrypoint, roots = _write_handler(
+            tmp_path,
+            class_name="EchoHandler",
+            body="async def execute(self, request, context):\n    return TaskOutcome.succeeded({'ok': True})",
+        )
+        host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+        host.bind_invocation_runtime(
+            handlers={"test.echo.run": _EchoHandler()},
+            store=store,
+            handler_import_roots={"test.echo.run": roots},
+        )
+        result = asyncio.run(host.execute(_execute_call(entrypoint=entrypoint)))
+        assert result.outcome is not None
+        assert result.outcome.status == "succeeded"
+    finally:
+        holder.kill()
+        holder.wait(timeout=2)
+
+
+def test_leftover_process_group_child_still_fails_quiescence(tmp_path: Path) -> None:
+    store = SnapshotStore.create(tmp_path / "workspace", {})
+    store.create_attempt("attempt-1")
+    entrypoint, roots = _write_handler(
+        tmp_path,
+        class_name="OrphanHandler",
+        body=(
+            "async def execute(self, request, context):\n"
+            "    import subprocess, sys, time\n"
+            "    held = context.workspace_root / 'held.txt'\n"
+            "    held.write_text('open\\n', encoding='utf-8')\n"
+            "    child = subprocess.Popen(\n"
+            "        [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+            "    )\n"
+            "    (context.workspace_root / 'orphan.pid').write_text(str(child.pid), encoding='utf-8')\n"
+            "    time.sleep(0.2)\n"
+            "    return TaskOutcome.succeeded({'ok': True})\n"
+        ),
+    )
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    host.bind_invocation_runtime(
+        handlers={"test.echo.run": _EchoHandler()},
+        store=store,
+        handler_import_roots={"test.echo.run": roots},
+    )
+    try:
+        with pytest.raises(TerminalReceiptError, match="not quiescent"):
+            asyncio.run(host.execute(_execute_call(entrypoint=entrypoint)))
+    finally:
+        pid_path = tmp_path / "workspace" / "attempts" / "attempt-1" / "orphan.pid"
+        if pid_path.is_file():
+            try:
+                os.kill(int(pid_path.read_text(encoding="utf-8")), 9)
+            except OSError:
+                pass
 
 
 def test_production_host_rejects_forged_terminal_receipt(tmp_path: Path) -> None:
