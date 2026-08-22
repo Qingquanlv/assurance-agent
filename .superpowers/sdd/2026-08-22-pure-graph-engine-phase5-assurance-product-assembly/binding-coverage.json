@@ -1,0 +1,728 @@
+{
+  "assurance.product.agent.execution.execute.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.execution.execute.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.execution.execute.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.execution.run.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.execution.run.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.execution.run.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.codegen-fix.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.codegen-fix.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.codegen-fix.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.codegen.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.codegen.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.codegen.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.plan-review.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.plan-review.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.plan-review.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.plan.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.plan.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.api.plan.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.codegen-fix.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.codegen-fix.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.codegen-fix.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.codegen.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.codegen.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.codegen.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.plan-review.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.plan-review.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.plan-review.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.plan.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.plan.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.e2e.plan.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.fuzz.codegen.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.fuzz.codegen.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.fuzz.codegen.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.fuzz.plan-review.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.fuzz.plan-review.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.fuzz.plan-review.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.fuzz.plan.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.fuzz.plan.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.fuzz.plan.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.performance.codegen.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.performance.codegen.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.performance.codegen.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.performance.plan-review.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.performance.plan-review.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.performance.plan-review.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.performance.plan.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.performance.plan.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.generation.performance.plan.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.healing.coverage-repair.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.healing.coverage-repair.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.healing.coverage-repair.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.healing.fix-proposal.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.healing.fix-proposal.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.healing.fix-proposal.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.archive.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.archive.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.archive.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.improvement-review.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.improvement-review.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.improvement-review.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro-eval-analysis.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro-eval-analysis.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro-eval-analysis.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro-issue-analysis.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro-issue-analysis.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro-issue-analysis.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro-workflow-analysis.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro-workflow-analysis.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro-workflow-analysis.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.improvement.retro.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.case-design.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.case-design.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.case-design.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.case-review.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.case-review.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.case-review.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.explore.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.explore.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.explore.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.intake.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.intake.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.intake.intake.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.fact-baseline.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.fact-baseline.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.fact-baseline.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.inspect.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.inspect.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.inspect.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.issue-analysis.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.issue-analysis.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.issue-analysis.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.issue-triage.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.issue-triage.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.issue-triage.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.report.execute": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "execute",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.report.finalize": {
+    "data": null,
+    "owner_task": 13,
+    "phase": "finalize",
+    "secret_handles": []
+  },
+  "assurance.product.agent.quality.report.prepare": {
+    "data": {
+      "status": "planned"
+    },
+    "owner_task": 13,
+    "phase": "prepare",
+    "secret_handles": []
+  }
+}

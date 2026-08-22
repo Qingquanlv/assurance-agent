@@ -1,0 +1,76 @@
+cases:
+  - id: full-api-only-success
+    status: planned
+    mode: exact
+  - id: full-e2e-only-success
+    status: planned
+    mode: exact
+  - id: full-fuzz-only-success
+    status: planned
+    mode: exact
+  - id: full-performance-only-success
+    status: planned
+    mode: exact
+  - id: full-all-four-family-success
+    status: planned
+    mode: exact
+  - id: intake-review-needs-fix-then-pass
+    status: planned
+    mode: exact
+  - id: plan-review-invalid-output-bounded-retry
+    status: planned
+    mode: exact
+  - id: codegen-validation-failure-bounded-fix
+    status: planned
+    mode: exact
+  - id: execution-closed-mapping-no-stale-test
+    status: planned
+    mode: exact
+  - id: coverage-insufficient-repair-reexecution-pass
+    status: planned
+    mode: exact
+  - id: coverage-repair-no-progress-exhausted
+    status: planned
+    mode: exact
+  - id: healing-disallowed-business-stop
+    status: planned
+    mode: exact
+  - id: report-generation-required-outputs
+    status: planned
+    mode: exact
+  - id: issue-analysis-reconcile-path
+    status: planned
+    mode: exact
+  - id: archive-durable-effect-replay
+    status: planned
+    mode: exact
+  - id: retro-collect-analyze-propose-reconcile
+    status: planned
+    mode: exact
+  - id: improvement-review-evaluate-export-apply
+    status: planned
+    mode: exact
+  - id: improvement-rollback
+    status: planned
+    mode: exact
+  - id: human-interrupt-exact-resume
+    status: planned
+    mode: exact
+  - id: transient-local-retry
+    status: planned
+    mode: exact
+  - id: opencode-ambiguous-create-recovery
+    status: planned
+    mode: exact
+  - id: cursor-unknown-process-indeterminate
+    status: planned
+    mode: exact
+  - id: engine-crash-after-provider-terminal-receipt
+    status: planned
+    mode: exact
+  - id: config-model-graph-source-drift-rejection
+    status: planned
+    mode: exact
+  - id: replay-after-provider-state-removal
+    status: planned
+    mode: exact

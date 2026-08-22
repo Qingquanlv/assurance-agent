@@ -1,0 +1,45 @@
+entrypoints:
+  full:
+    nodes: []
+    edges: []
+  intake:
+    nodes: []
+    edges: []
+  case:
+    nodes: []
+    edges: []
+  execute:
+    nodes: []
+    edges: []
+  archive:
+    nodes: []
+    edges: []
+  retro:
+    nodes: []
+    edges: []
+  issue-review:
+    nodes: []
+    edges: []
+  issue-analyze:
+    nodes: []
+    edges: []
+  issue-reconcile:
+    nodes: []
+    edges: []
+  improvement-review:
+    nodes: []
+    edges: []
+  improvement-evaluate:
+    nodes: []
+    edges: []
+  improvement-export:
+    nodes: []
+    edges: []
+  improvement-apply:
+    nodes: []
+    edges: []
+  improvement-rollback:
+    nodes: []
+    edges: []
+nodes: []
+edges: []

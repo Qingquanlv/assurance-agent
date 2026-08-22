@@ -1,0 +1,27 @@
+engine_api: "2.0"
+engine_generic:
+  - invocation_seed
+  - input_projection
+  - runtime_authorization
+  - production_task_host
+adapter_owned:
+  - opencode_binding
+  - cursor_binding
+  - cursor_process_host
+product_owned:
+  - source_catalog
+  - composition
+  - workflow
+  - cli
+  - status
+  - export
+external_harness_owned:
+  - behavioral_projection
+  - comparison_matrix
+  - provider_live_benchmarks
+forbidden_bridges:
+  - legacy_import
+  - legacy_state
+  - sut_code_loading
+  - host_plugin
+  - runtime_fallback
