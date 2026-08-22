@@ -7,11 +7,15 @@ import pytest
 from pydantic import ValidationError
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from assurance_healing.contracts.agent import FixProposalInputV1
 from assurance_healing.contracts.coverage_repair import CoverageRepairBrief
+from assurance_healing.operations.proposal import FixProposalFinalizeHandler
 from assurance_quality.operations.coverage import coverage_gap_to_repair_brief
 from tests.phase4.cross_wheel import (
     CAPABILITY_CATALOG,
     CATALOG_PATH,
+    _healing_finalize_payload,
+    _run,
     all_capability_leaf_validators,
     consume_handoff,
     encode_handoff,
@@ -130,6 +134,28 @@ def test_canonical_handoff_rejects_broken_bytes(seam: dict[str, Any], fault: str
             allowed_fields=cast(frozenset[str], seam["allowed"]),
             consumer=seam["consumer"],
         )
+
+
+def test_execution_evidence_handoff_binds_healing_proposal_digest() -> None:
+    seam = next(item for item in handoff_seams() if item["name"] == "execution_evidence")
+    payload = cast(dict[str, Any], seam["payload"])
+    digest = canonical_digest(cast(JSONValue, payload))
+    consumed = consume_handoff(
+        encode_handoff(str(seam["schema_id"]), str(seam["family"]), payload),
+        schema_id=str(seam["schema_id"]),
+        family=str(seam["family"]),
+        catalog=CAPABILITY_CATALOG,
+        allowed_fields=cast(frozenset[str], seam["allowed"]),
+        consumer=seam["consumer"],
+    )
+    assert isinstance(consumed, FixProposalInputV1)
+    assert consumed.execution_evidence_digest == digest
+
+    finalize = _healing_finalize_payload("entities.item.create", CAPABILITY_CATALOG, evidence_digest=digest)
+    finalize["execution_evidence_digest"] = "0" * 64
+    outcome = _run(FixProposalFinalizeHandler(), finalize)
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
 
 
 def _replace_leafs(document: dict[str, Any], leafs: list[str]) -> dict[str, Any]:

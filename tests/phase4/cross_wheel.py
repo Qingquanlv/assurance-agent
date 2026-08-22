@@ -19,8 +19,9 @@ from assurance_generation.contracts.codegen import CodegenMapping
 from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.contracts.reviews import PlanReviewAuthoring
 from assurance_generation.operations.planning import validate_plan_input
+from assurance_healing.contracts.agent import FixProposalInputV1
 from assurance_healing.contracts.status import HealingStatusV1
-from assurance_healing.operations.proposal import FixProposalFinalizeHandler
+from assurance_healing.operations.proposal import FixProposalFinalizeHandler, FixProposalPrepareHandler
 from assurance_improvement.operations.archive import ProjectArchiveInput, project_archive
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_quality.contracts.coverage import CoverageGapsDocument
@@ -48,6 +49,19 @@ _CHANGE_ID = "CH-DEMO-001"
 _BATCH_ID = "20260822T000000Z"
 _CASE_ID = "TC_MENU_001"
 _HEX = "a" * 64
+_PROPOSAL_BINDING = cast(
+    JSONValue,
+    {
+        "execution": {
+            "provider_model": "test-model",
+            "worker_profile": "worker",
+            "permission_profile_digest": _HEX,
+            "limits": {"max_seconds": 5},
+        },
+        "request_policy_digest": _HEX,
+        "request_config_digest": _HEX,
+    },
+)
 _ENVELOPE_KEYS = frozenset({"schema_id", "digest", "family", "payload"})
 _EXACT_LEAFS = (
     "auth.session.create",
@@ -420,7 +434,18 @@ def _consume_evidence(payload: dict[str, Any], leafs: frozenset[str]) -> object:
             }
         )
     )
-    return evidence
+    proposal = FixProposalInputV1.model_validate(
+        _fix_proposal_input(leafs, canonical_digest(cast(JSONValue, payload)))
+    )
+    outcome = _run(
+        FixProposalPrepareHandler(),
+        proposal.model_dump(mode="json"),
+        binding_data=_PROPOSAL_BINDING,
+    )
+    if outcome.status != "succeeded":
+        message = outcome.failure.message if outcome.failure is not None else "fix proposal prepare failed"
+        raise ValueError(message)
+    return proposal
 
 
 def _consume_healing_status(payload: dict[str, Any], leafs: frozenset[str]) -> object:
@@ -705,7 +730,28 @@ def _quality_report_payload() -> dict[str, object]:
     }
 
 
-def _healing_finalize_payload(claimed: str, leafs: frozenset[str]) -> dict[str, Any]:
+def _fix_proposal_input(leafs: frozenset[str], evidence_digest: str) -> dict[str, Any]:
+    return {
+        "change_id": _CHANGE_ID,
+        "owner_id": "assurance.healing",
+        "capability_leafs": list(sorted(leafs)),
+        "allowed_paths": ["tests/api/test_users.py"],
+        "allowed_roots": ["tests/"],
+        "baseline_digest": "b" * 64,
+        "candidate_digest": "c" * 64,
+        "policy_digest": "d" * 64,
+        "mapping_paths": ["tests/api/test_users.py"],
+        "require_approval": True,
+        "execution_evidence_digest": evidence_digest,
+    }
+
+
+def _healing_finalize_payload(
+    claimed: str,
+    leafs: frozenset[str],
+    *,
+    evidence_digest: str | None = None,
+) -> dict[str, Any]:
     from agent_runtime_contracts import AgentRunResult
     from agent_runtime_contracts.schema import canonical_digest as runtime_digest
     from tests.phase4.agent_harness import FakeAgentAdapter
@@ -728,19 +774,7 @@ def _healing_finalize_payload(claimed: str, leafs: frozenset[str]) -> dict[str, 
             }
         ],
     }
-    prepare = {
-        "change_id": _CHANGE_ID,
-        "owner_id": "assurance.healing",
-        "capability_leafs": list(sorted(leafs)),
-        "allowed_paths": ["tests/api/test_users.py"],
-        "allowed_roots": ["tests/"],
-        "baseline_digest": "b" * 64,
-        "candidate_digest": "c" * 64,
-        "policy_digest": "d" * 64,
-        "mapping_paths": ["tests/api/test_users.py"],
-        "require_approval": True,
-        "execution_evidence_digest": "e" * 64,
-    }
+    prepare = _fix_proposal_input(leafs, evidence_digest or ("e" * 64))
     proposal = FixProposalResultV1.model_validate(structured)
     proposal_digest = canonical_digest(cast(JSONValue, proposal.model_dump(mode="json")))
     result = AgentRunResult(
@@ -817,8 +851,8 @@ def _imported_modules(tree: ast.AST) -> tuple[str, ...]:
     return tuple(names)
 
 
-def _run(handler: object, payload: object) -> Any:
-    return asyncio.run(execute_task(handler, cast(JSONValue, payload)))  # type: ignore[arg-type]
+def _run(handler: object, payload: object, *, binding_data: JSONValue = None) -> Any:
+    return asyncio.run(execute_task(handler, cast(JSONValue, payload), binding_data=binding_data))  # type: ignore[arg-type]
 
 
 __all__ = [
