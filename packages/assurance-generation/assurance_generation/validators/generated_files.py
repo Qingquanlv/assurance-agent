@@ -63,9 +63,12 @@ def _canonical_relative(path: str) -> bool:
     return True
 
 
-def _is_generated_test_file(path: str) -> bool:
+def _is_mapping_target_module(path: str) -> bool:
     posix = PurePosixPath(path)
-    return bool(posix.parts) and posix.parts[0] == "tests" and path.endswith(".py")
+    if not posix.parts or posix.parts[0] != "tests" or posix.suffix != ".py":
+        return False
+    stem = posix.stem
+    return stem.startswith("test_") or stem.endswith("_test")
 
 
 def _digest_bytes(payload: bytes) -> str:
@@ -150,7 +153,7 @@ class GeneratedFilesValidator:
         for path in listed:
             if not _canonical_relative(path):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
-            if self._require_mapping and _is_generated_test_file(path) and path not in mapped:
+            if self._require_mapping and _is_mapping_target_module(path) and path not in mapped:
                 return ValidationResult(accepted=False, reason=_UNMAPPED_REASON.format(path=path))
             if not under_write_root(path, self._write_roots):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
@@ -251,7 +254,7 @@ def _mapping_closure(
     for path in mapped:
         if not _canonical_relative(path):
             return ValidationResult(accepted=False, reason=_STALE_REASON.format(path=path))
-        if path not in writes and _is_generated_test_file(path):
+        if path not in writes:
             return ValidationResult(accepted=False, reason=_MISSING_REASON.format(path=path))
         write = writes.get(path)
         if write is not None and path in file_bytes:
@@ -259,7 +262,7 @@ def _mapping_closure(
             if write.after_sha256 != actual:
                 return ValidationResult(accepted=False, reason=_STALE_REASON.format(path=path))
     for path, write in writes.items():
-        if _is_generated_test_file(path) and path not in mapped:
+        if _is_mapping_target_module(path) and path not in mapped:
             return ValidationResult(accepted=False, reason=_EXTRA_REASON.format(path=path))
         del write
     return None

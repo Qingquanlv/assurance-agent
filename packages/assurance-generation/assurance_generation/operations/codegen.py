@@ -170,7 +170,10 @@ def _complete_files(
 ) -> tuple[GeneratedFileEntryV1, ...]:
     locked = set(allowed_paths)
     mapped_targets = {item.target_file for item in mapping.entries}
+    if not files and mapped_targets:
+        raise OutputError("empty files array is invalid when mapping targets exist")
     completed: list[GeneratedFileEntryV1] = []
+    listed_test_entries: set[str] = set()
     for entry in files:
         if locked and entry.repo_path not in locked:
             raise OutputError(f"undeclared generated/modified test file: {entry.repo_path}")
@@ -182,6 +185,8 @@ def _complete_files(
             raise OutputError(f"generated test file is absent from the closed mapping: {entry.repo_path}")
         if entry.role != "test_entry" and entry.case_ids:
             raise OutputError(f"{entry.role} entry cannot claim case_ids: {entry.repo_path}")
+        if entry.role == "test_entry":
+            listed_test_entries.add(entry.repo_path)
         completed.append(
             GeneratedFileEntryV1(
                 repo_path=entry.repo_path,
@@ -192,7 +197,8 @@ def _complete_files(
             )
         )
     for target in sorted(mapped_targets):
-        _workspace_regular_file(workspace, target)
+        if target not in listed_test_entries:
+            raise OutputError(f"codegen mapping is missing: {target}")
     return tuple(sorted(completed, key=lambda item: item.repo_path))
 
 

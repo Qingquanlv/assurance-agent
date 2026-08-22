@@ -84,6 +84,80 @@ async def test_codegen_prepare_uses_reviewed_plan_and_baseline(family: str, tmp_
     assert "assurance_agent" not in encoded
 
 
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_empty_files_when_mapping_is_live(tmp_path: Path) -> None:
+    _write_generated(tmp_path, "tests/api/test_users.py")
+    executed = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(codegen_result(files=[])),
+        tmp_path,
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert executed.failure.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_partial_mapping_listing(tmp_path: Path) -> None:
+    first = "tests/api/test_users.py"
+    second = "tests/api/test_orders.py"
+    _write_generated(tmp_path, first)
+    _write_generated(tmp_path, second)
+    payload = codegen_result(files=[first])
+    payload["mapping"]["entries"] = [
+        payload["mapping"]["entries"][0],
+        {
+            "case_id": "TC_API_002",
+            "symbol": "test_tc_api_002__happy_path",
+            "target_file": second,
+        },
+    ]
+    executed = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(payload),
+        tmp_path,
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert executed.failure.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_codegen_finalize_keeps_support_as_extra_hashed_entry(tmp_path: Path) -> None:
+    mapped = family_test_file("api")
+    support = "tests/api/conftest.py"
+    mapped_digest = _write_generated(tmp_path, mapped)
+    support_digest = _write_generated(tmp_path, support, b"fixture\n")
+    payload = codegen_result(files=[mapped])
+    payload["files"].append(
+        {
+            "repo_path": support,
+            "disposition": "generated",
+            "role": "support",
+            "case_ids": [],
+        }
+    )
+    executed = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(payload),
+        tmp_path,
+    )
+    assert executed.status == "succeeded"
+    output = cast(dict[str, object], executed.output)
+    files = {item["repo_path"]: item for item in cast(list[dict[str, object]], output["files"])}
+    assert files[mapped]["content_sha256"] == mapped_digest
+    assert files[mapped]["role"] == "test_entry"
+    assert files[mapped]["case_ids"] == [family_case_id("api")]
+    assert files[support]["content_sha256"] == support_digest
+    assert files[support]["role"] == "support"
+    assert files[support]["case_ids"] == []
+    mapping = cast(dict[str, object], output["mapping"])
+    targets = [item["target_file"] for item in cast(list[dict[str, object]], mapping["entries"])]
+    assert targets == [mapped]
+
+
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_finalize_authenticates_workspace_bytes(family: str, tmp_path: Path) -> None:

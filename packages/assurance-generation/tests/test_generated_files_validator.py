@@ -45,6 +45,33 @@ def test_generated_files_accept_exact_family_mapping(family: str) -> None:
     assert result == ValidationResult(accepted=True)
 
 
+def test_generated_files_accept_support_write_under_family_root() -> None:
+    mapping = CodegenMapping.model_validate(mapping_document("api"))
+    result = GeneratedFilesValidator(family="api", mapping=mapping).validate(
+        candidate_with("tests/api/test_users.py", "tests/api/conftest.py"),
+        validation_context(),
+    )
+    assert result == ValidationResult(accepted=True)
+
+
+def test_mapping_validator_accepts_support_write_under_family_root() -> None:
+    mapping = CodegenMapping.model_validate(mapping_document("api"))
+    result = CodegenMappingValidator(mapping=mapping).validate(
+        candidate_with("tests/api/test_users.py", "tests/api/conftest.py"),
+        validation_context(),
+    )
+    assert result == ValidationResult(accepted=True)
+
+
+def test_generated_files_accept_shared_builder_under_family_root() -> None:
+    mapping = CodegenMapping.model_validate(mapping_document("api"))
+    result = GeneratedFilesValidator(family="api", mapping=mapping).validate(
+        candidate_with("tests/api/test_users.py", "tests/testdata/domain/users.py"),
+        validation_context(),
+    )
+    assert result == ValidationResult(accepted=True)
+
+
 @pytest.mark.parametrize("family", FAMILIES)
 def test_generated_files_reject_outside_family_root(family: str) -> None:
     mapping = CodegenMapping.model_validate(mapping_document(family, target_file="src/app.py"))
@@ -103,7 +130,7 @@ def test_mapping_validator_rejects_missing_extra_stale_and_duplicate() -> None:
     assert missing.reason is not None
     assert "missing" in missing.reason
     extra = CodegenMappingValidator(mapping=mapping).validate(
-        candidate_with(family_test_file("api"), "tests/api/extra.py"), context
+        candidate_with(family_test_file("api"), "tests/api/test_extra.py"), context
     )
     assert extra.accepted is False
     assert extra.reason is not None
