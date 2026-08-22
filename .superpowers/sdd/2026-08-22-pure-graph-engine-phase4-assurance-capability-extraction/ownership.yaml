@@ -1801,6 +1801,34 @@ items:
   new_id: assurance.generation.schema.plan-review.v1
   status: verified
   verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+- kind: schema
+  legacy_id: assurance.execution.schema.selected-targets.v1
+  disposition: migrate
+  owner: assurance.execution
+  new_id: assurance.execution.schema.selected-targets.v1
+  status: verified
+  verification: packages/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
+- kind: schema
+  legacy_id: assurance.execution.schema.execution-manifest.v1
+  disposition: migrate
+  owner: assurance.execution
+  new_id: assurance.execution.schema.execution-manifest.v1
+  status: verified
+  verification: packages/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
+- kind: schema
+  legacy_id: assurance.execution.schema.closed-mapping.v1
+  disposition: migrate
+  owner: assurance.execution
+  new_id: assurance.execution.schema.closed-mapping.v1
+  status: verified
+  verification: packages/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
+- kind: schema
+  legacy_id: assurance.execution.schema.execution-evidence.v1
+  disposition: migrate
+  owner: assurance.execution
+  new_id: assurance.execution.schema.execution-evidence.v1
+  status: verified
+  verification: packages/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
 - kind: operation
   legacy_id: operation:aggregate-nightly-metrics
   disposition: migrate

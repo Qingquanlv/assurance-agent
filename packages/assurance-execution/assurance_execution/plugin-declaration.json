@@ -1,0 +1,53 @@
+{
+  "descriptor": {
+    "bindings": [],
+    "commit_validators": [],
+    "dependencies": [
+      {
+        "plugin_id": "assurance.intake",
+        "version_specifier": "==0.1.0"
+      },
+      {
+        "plugin_id": "assurance.generation",
+        "version_specifier": "==0.1.0"
+      }
+    ],
+    "effects": [],
+    "engine_api": "2.0",
+    "plugin_id": "assurance.execution",
+    "plugin_version": "0.1.0",
+    "resources": [],
+    "schema_version": "1",
+    "schemas": [
+      "assurance.execution.schema.closed-mapping.v1",
+      "assurance.execution.schema.execution-evidence.v1",
+      "assurance.execution.schema.execution-manifest.v1",
+      "assurance.execution.schema.selected-targets.v1"
+    ],
+    "source": {
+      "declaration_path": "assurance_execution/plugin-declaration.json",
+      "distribution": "assurance-execution",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "execution",
+      "entrypoint_value": "assurance_execution.plugin:ExecutionPlugin",
+      "import_roots": [
+        ""
+      ],
+      "version": "0.1.0"
+    },
+    "task_handlers": []
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "assurance_execution/plugin-declaration.json",
+    "distribution": "assurance-execution",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "execution",
+    "entrypoint_value": "assurance_execution.plugin:ExecutionPlugin",
+    "import_roots": [
+      ""
+    ],
+    "version": "0.1.0"
+  }
+}
