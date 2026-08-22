@@ -1,5 +1,5 @@
 # Phase 4 capability ownership ledger. Migration authority; not loaded at runtime.
-# Task 14: quality agent/report capabilities extracted; operation/validator rows stay planned.
+# Task 16: improvement agent/effects extracted; operation/validator/module/hook rows stay planned.
 schema_version: '1'
 dependencies:
   assurance.intake: []
@@ -2117,6 +2117,27 @@ items:
   new_id: assurance.improvement.schema.retro-signals.v3
   status: verified
   verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+- kind: schema
+  legacy_id: assurance.improvement.result.archive.v1
+  disposition: migrate
+  owner: assurance.improvement
+  new_id: assurance.improvement.result.archive.v1
+  status: verified
+  verification: packages/assurance-improvement/tests/test_delivery.py::test_archive_result_contract_bytes_equal_typed_model
+- kind: schema
+  legacy_id: assurance.improvement.result.improvement-review.v1
+  disposition: migrate
+  owner: assurance.improvement
+  new_id: assurance.improvement.result.improvement-review.v1
+  status: verified
+  verification: packages/assurance-improvement/tests/test_review.py::test_review_result_contract_bytes_equal_typed_model
+- kind: schema
+  legacy_id: assurance.improvement.result.retro-analysis.v3
+  disposition: migrate
+  owner: assurance.improvement
+  new_id: assurance.improvement.result.retro-analysis.v3
+  status: verified
+  verification: packages/assurance-improvement/tests/test_retro.py::test_result_contract_bytes_equal_typed_models
 - kind: operation
   legacy_id: operation:aggregate-nightly-metrics
   disposition: migrate
@@ -2668,8 +2689,8 @@ items:
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-archive.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-improvement/tests/test_delivery.py::test_archive_prepare_locks_archiver_persona
 - kind: skill
   legacy_id: aa-case-design
   disposition: migrate
@@ -2780,8 +2801,8 @@ items:
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-improvement-reviewer.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-improvement/tests/test_review.py::test_review_prepare_locks_improvement_reviewer
 - kind: skill
   legacy_id: aa-inspect
   disposition: migrate
@@ -2843,29 +2864,29 @@ items:
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-retro.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-improvement/tests/test_retro.py::test_prepare_instruction_order_is_skill_persona_business
 - kind: skill
   legacy_id: aa-retro-eval-analysis
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-retro-eval-analysis.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-improvement/tests/test_retro.py::test_each_prepare_locks_skill_persona_and_execution
 - kind: skill
   legacy_id: aa-retro-issue-analysis
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-retro-issue-analysis.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-improvement/tests/test_retro.py::test_each_prepare_locks_skill_persona_and_execution
 - kind: skill
   legacy_id: aa-retro-workflow-analysis
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-retro-workflow-analysis.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-improvement/tests/test_retro.py::test_each_prepare_locks_skill_persona_and_execution
 - kind: skill
   legacy_id: aa-run
   disposition: migrate
@@ -2892,8 +2913,8 @@ items:
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.persona.archiver.v1
-  status: planned
-  verification: null
+  status: verified
+  verification: packages/assurance-improvement/tests/test_delivery.py::test_archive_prepare_locks_archiver_persona
 - kind: persona
   legacy_id: aa-doc-author
   disposition: migrate
@@ -3682,9 +3703,9 @@ items:
   legacy_id: assurance_agent/_resources/skills/aa-archive/archive-summary-template.md
   disposition: migrate
   owner: assurance.improvement
-  new_id: null
-  status: planned
-  verification: null
+  new_id: assurance.improvement.prompt.archive-summary.v1
+  status: verified
+  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_plugin_conforms
 - kind: resource
   legacy_id: assurance_agent/_resources/skills/aa-case-design/case-delta-reviewer-prompt.md
   disposition: migrate

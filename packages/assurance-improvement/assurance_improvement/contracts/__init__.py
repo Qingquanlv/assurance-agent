@@ -19,7 +19,11 @@ from assurance_improvement.contracts.delivery import (
     MemoryEvalReceipt,
     MemoryRollbackReceipt,
 )
-from assurance_improvement.contracts.effects import ImprovementEffectIntentV1, ImprovementEffectReceiptV1
+from assurance_improvement.contracts.effects import (
+    ArchiveApplyReceipt,
+    ImprovementEffectIntentV1,
+    ImprovementEffectReceiptV1,
+)
 from assurance_improvement.contracts.improvements import (
     ALLOWED_DELIVERIES,
     DeliveryKind,
@@ -77,6 +81,7 @@ __all__ = [
     "DECLARATION_EVIDENCE_KIND_ORDER",
     "DECLARATION_PROPOSAL_DIR_REL",
     "DECLARATION_PROPOSAL_GLOB",
+    "ArchiveApplyReceipt",
     "AutoReviewFinding",
     "ChangeExportReceipt",
     "DataKnowledgeProposal",

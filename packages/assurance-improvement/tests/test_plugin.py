@@ -69,10 +69,29 @@ def test_improvement_source_identity() -> None:
     assert ImprovementPlugin.descriptor().schemas == IMPROVEMENT_SCHEMA_IDS
     assert tuple(IMPROVEMENT_SCHEMA_IDS) == tuple(sorted(IMPROVEMENT_SCHEMA_IDS))
     assert len(IMPROVEMENT_SCHEMA_IDS) == 9
-    assert ImprovementPlugin.descriptor().task_handlers == ()
-    assert ImprovementPlugin.descriptor().commit_validators == ()
-    assert ImprovementPlugin.descriptor().resources == ()
-    assert ImprovementPlugin.descriptor().effects == ()
+    from assurance_improvement.plugin import (
+        IMPROVEMENT_EFFECT_IDS,
+        IMPROVEMENT_HANDLER_IDS,
+        IMPROVEMENT_RESOURCE_IDS,
+        IMPROVEMENT_VALIDATOR_IDS,
+    )
+
+    assert ImprovementPlugin.descriptor().task_handlers == IMPROVEMENT_HANDLER_IDS
+    assert ImprovementPlugin.descriptor().commit_validators == IMPROVEMENT_VALIDATOR_IDS
+    assert ImprovementPlugin.descriptor().resources == IMPROVEMENT_RESOURCE_IDS
+    assert ImprovementPlugin.descriptor().effects == IMPROVEMENT_EFFECT_IDS
+    assert tuple(IMPROVEMENT_HANDLER_IDS) == tuple(sorted(IMPROVEMENT_HANDLER_IDS))
+    assert tuple(IMPROVEMENT_VALIDATOR_IDS) == tuple(sorted(IMPROVEMENT_VALIDATOR_IDS))
+    assert tuple(IMPROVEMENT_RESOURCE_IDS) == tuple(sorted(IMPROVEMENT_RESOURCE_IDS))
+    assert tuple(IMPROVEMENT_EFFECT_IDS) == tuple(sorted(IMPROVEMENT_EFFECT_IDS))
+    assert "assurance.improvement.retro.prepare" in IMPROVEMENT_HANDLER_IDS
+    assert "assurance.improvement.improvement-review.finalize" in IMPROVEMENT_HANDLER_IDS
+    assert "assurance.improvement.project-archive" in IMPROVEMENT_HANDLER_IDS
+    assert "assurance.improvement.assemble-retro-context-v3" in IMPROVEMENT_HANDLER_IDS
+    assert "assurance.improvement.rollback-memory-improvement" in IMPROVEMENT_HANDLER_IDS
+    assert "assurance.improvement.validator.archive-integrity.v1" in IMPROVEMENT_VALIDATOR_IDS
+    assert "assurance.improvement.effect.delivery.v1" in IMPROVEMENT_EFFECT_IDS
+    assert "assurance.improvement.persona.reviewer.v1" in IMPROVEMENT_RESOURCE_IDS
     assert ImprovementPlugin.descriptor().bindings == ()
 
 
