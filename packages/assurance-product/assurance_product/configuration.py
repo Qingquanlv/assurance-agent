@@ -29,11 +29,11 @@ _PLUGIN_MANIFEST = "plugin.yaml"
 _CONFIG_PATH = ".aa/config.yaml"
 _POLICY_PATH = ".aa/policy.yaml"
 _KNOWLEDGE_PATH = ".aa/data-knowledge.yaml"
-_ENVELOPE_RESOURCE_ID = "assurance.config.project-config"
-_POLICY_RESOURCE_ID = "assurance.config.product-policy"
-_KNOWLEDGE_RESOURCE_ID = "assurance.config.data-knowledge"
-_CATALOG_RESOURCE_ID = "assurance.config.capability-catalog"
-_NODE_POLICY_RESOURCE_ID = "assurance.config.node-policy-values"
+_ENVELOPE_RESOURCE_ID = "assurance.product.configuration.project-config"
+_POLICY_RESOURCE_ID = "assurance.product.configuration.product-policy"
+_KNOWLEDGE_RESOURCE_ID = "assurance.product.configuration.data-knowledge"
+_CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
+_NODE_POLICY_RESOURCE_ID = "assurance.product.configuration.node-policy-values"
 _REQUIRED_FILES = frozenset({_PLUGIN_MANIFEST, _CONFIG_PATH, _POLICY_PATH, _KNOWLEDGE_PATH})
 _ALLOWED_DECLARED_RESOURCE_IDS = frozenset(
     {_POLICY_RESOURCE_ID, _KNOWLEDGE_RESOURCE_ID, _ENVELOPE_RESOURCE_ID}

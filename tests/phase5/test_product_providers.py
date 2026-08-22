@@ -120,23 +120,31 @@ def test_providers_return_one_minimal_manifest_per_adapter():
     assert ENGINE_API == ENGINE_API_VERSION == "2.0"
     assert opencode.engine_api == cursor.engine_api == ENGINE_API
     assert tuple(requirement.plugin_id for requirement in opencode.plugins) == (
-        "assurance.intake",
-        "assurance.generation",
         "assurance.execution",
+        "assurance.generation",
         "assurance.healing",
-        "assurance.quality",
         "assurance.improvement",
+        "assurance.intake",
+        "assurance.product.agent",
+        "assurance.product.configuration",
+        "assurance.quality",
         "runtime.opencode",
     )
     assert tuple(requirement.plugin_id for requirement in cursor.plugins) == (
-        "assurance.intake",
-        "assurance.generation",
         "assurance.execution",
+        "assurance.generation",
         "assurance.healing",
-        "assurance.quality",
         "assurance.improvement",
+        "assurance.intake",
+        "assurance.product.agent",
+        "assurance.product.configuration",
+        "assurance.quality",
         "runtime.cursor",
     )
+    assert opencode.product_id == cursor.product_id == "assurance.product"
+    assert opencode.source is not None and cursor.source is not None
+    assert opencode.source.declaration_path == "assurance_product/product-declaration-opencode.json"
+    assert cursor.source.declaration_path == "assurance_product/product-declaration-cursor.json"
     assert opencode.entrypoints
     assert opencode.entrypoints == cursor.entrypoints
     assert opencode.configuration == {}

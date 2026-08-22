@@ -113,7 +113,7 @@ def test_builder_rejects_zip_path_escape(tmp_path, opencode_document):
     from assurance_product.models import DeploymentBindingsV1
 
     profiles = dict(opencode_document["permission_profiles"])
-    profiles["../evil"] = profiles["assurance.product.permission.default"]
+    profiles["../evil"] = profiles["assurance.product.agent.permission.default"]
     opencode_document["permission_profiles"] = profiles
     with pytest.raises((ValidationError, BindingBuildError), match="qualified|escape|permission"):
         DeploymentBindingsV1.model_validate(opencode_document)

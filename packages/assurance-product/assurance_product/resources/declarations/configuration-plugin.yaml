@@ -6,10 +6,10 @@ engine_api: "2.0"
 source_kind: config_tree
 contributes:
   resources:
-    - assurance.config.product-policy
-    - assurance.config.data-knowledge
-    - assurance.config.capability-catalog
-    - assurance.config.node-policy-values
+    - assurance.product.configuration.product-policy
+    - assurance.product.configuration.data-knowledge
+    - assurance.product.configuration.capability-catalog
+    - assurance.product.configuration.node-policy-values
   bindings: []
   task_handlers: []
   commit_validators: []

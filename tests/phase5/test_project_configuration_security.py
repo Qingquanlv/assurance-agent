@@ -203,7 +203,7 @@ def test_sut_path_escape_is_rejected(tmp_path):
     files = _object_list(document, "files")
     files[0] = {
         "kind": "resource",
-        "resource_id": "assurance.config.product-policy",
+        "resource_id": "assurance.product.configuration.product-policy",
         "path": "../secret.yaml",
         "media_type": "application/yaml",
     }
@@ -229,11 +229,11 @@ def test_source_mutation_during_reload_changes_bytes(tmp_path, config_tree):
     assert next(
         resource.content
         for resource in first.resources
-        if resource.resource_id == "assurance.config.data-knowledge"
+        if resource.resource_id == "assurance.product.configuration.data-knowledge"
     ) != next(
         resource.content
         for resource in second.resources
-        if resource.resource_id == "assurance.config.data-knowledge"
+        if resource.resource_id == "assurance.product.configuration.data-knowledge"
     )
 
 

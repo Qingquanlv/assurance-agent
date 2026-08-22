@@ -15,7 +15,7 @@ PRODUCT_ID = "assurance"
 ENGINE_API = "2.0"
 
 AdapterName = Literal["opencode", "cursor"]
-PLUGIN_ID = "assurance.product.bindings"
+PLUGIN_ID = "assurance.product.agent"
 PLUGIN_VERSION = "1.0.0"
 CONFIGURATION_PLUGIN_ID = "assurance.product.configuration"
 CONFIGURATION_PLUGIN_VERSION = "1.0.0"
@@ -391,7 +391,7 @@ class BuiltDeploymentWheel(FrozenModel):
     import_package: str
     entry_point_value: str
     declaration_path: str
-    plugin_id: Literal["assurance.product.bindings"]
+    plugin_id: Literal["assurance.product.agent"]
     plugin_version: Literal["1.0.0"]
 
 
@@ -410,6 +410,14 @@ def alias_ids_for_prepare(prepare_id: str) -> tuple[str, str, str]:
         f"assurance.product.agent.{key}.execute",
         f"assurance.product.agent.{key}.finalize",
     )
+
+
+def all_binding_ids() -> tuple[str, ...]:
+    return tuple(alias for prepare_id in PREPARE_IDS for alias in alias_ids_for_prepare(prepare_id))
+
+
+def finalize_aliases() -> tuple[str, ...]:
+    return tuple(alias_ids_for_prepare(prepare_id)[2] for prepare_id in PREPARE_IDS)
 
 
 def expected_finalize_ids() -> frozenset[str]:

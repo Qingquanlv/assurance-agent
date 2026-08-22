@@ -70,6 +70,13 @@ def _document() -> dict[str, object]:
     value = json.loads(raw.decode("utf-8"))
     if not isinstance(value, dict):
         raise ValueError("deployment declaration must be a mapping")
+    contribution_raw = files(__package__).joinpath(
+        "assurance-deployment-contribution.json"
+    ).read_bytes()
+    contribution = json.loads(contribution_raw.decode("utf-8"))
+    if not isinstance(contribution, dict):
+        raise ValueError("deployment contribution must be a mapping")
+    value["contribution"] = contribution
     return value
 
 
@@ -88,7 +95,7 @@ class DeploymentPlugin:
         return PluginDescriptor(
             schema_version="1",
             source=source,
-            plugin_id="assurance.product.bindings",
+            plugin_id="assurance.product.agent",
             plugin_version="1.0.0",
             engine_api=ENGINE_API_VERSION,
             task_handlers=(),
@@ -229,10 +236,13 @@ def _render_wheel_contents(bindings: DeploymentBindingsV1) -> _RenderedWheel:
         declaration_path=declaration_path,
         entry_point_value=entry_point_value,
     )
+    contribution = declaration.pop("contribution")
+    contribution_path = f"{import_package}/assurance-deployment-contribution.json"
     members = {
         f"{import_package}/__init__.py": b'"""Authenticated Assurance deployment bindings."""\n',
         f"{import_package}/provider.py": _PROVIDER_MODULE.encode("utf-8"),
         declaration_path: canonical_json_bytes(cast(JSONValue, declaration)) + b"\n",
+        contribution_path: canonical_json_bytes(cast(JSONValue, contribution)) + b"\n",
         f"{dist_info}/METADATA": _metadata_bytes(distribution),
         f"{dist_info}/WHEEL": (
             "Wheel-Version: 1.0\n"

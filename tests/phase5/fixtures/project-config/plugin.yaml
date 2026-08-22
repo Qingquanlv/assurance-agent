@@ -17,15 +17,15 @@ dependencies:
     version_specifier: "==0.1.0"
 files:
   - kind: resource
-    resource_id: assurance.config.product-policy
+    resource_id: assurance.product.configuration.product-policy
     path: .aa/policy.yaml
     media_type: application/yaml
   - kind: resource
-    resource_id: assurance.config.data-knowledge
+    resource_id: assurance.product.configuration.data-knowledge
     path: .aa/data-knowledge.yaml
     media_type: application/yaml
   - kind: resource
-    resource_id: assurance.config.project-config
+    resource_id: assurance.product.configuration.project-config
     path: .aa/config.yaml
     media_type: application/yaml
 bindings: []

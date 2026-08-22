@@ -154,9 +154,9 @@ def test_generated_provider_contributes_exactly_99_aliases(tmp_path, opencode_ma
         contribution = provider.contribute(RegistryPorts("2.0"))
     finally:
         sys.path.remove(str(installed))
-    assert built.plugin_id == "assurance.product.bindings"
+    assert built.plugin_id == "assurance.product.agent"
     assert built.plugin_version == "1.0.0"
-    assert descriptor.plugin_id == "assurance.product.bindings"
+    assert descriptor.plugin_id == "assurance.product.agent"
     assert descriptor.plugin_version == "1.0.0"
     assert descriptor.task_handlers == ()
     assert descriptor.commit_validators == ()

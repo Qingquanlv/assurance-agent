@@ -14,10 +14,10 @@ from tests.phase5.conformance import load_yaml
 _FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "project-config"
 
 _EXPECTED_RESOURCE_IDS = {
-    "assurance.config.product-policy",
-    "assurance.config.data-knowledge",
-    "assurance.config.capability-catalog",
-    "assurance.config.node-policy-values",
+    "assurance.product.configuration.product-policy",
+    "assurance.product.configuration.data-knowledge",
+    "assurance.product.configuration.capability-catalog",
+    "assurance.product.configuration.node-policy-values",
 }
 
 
@@ -40,10 +40,10 @@ def test_project_config_contributes_business_data_only(config_tree):
     assert contribution.commit_validators == {}
     assert contribution.effects == ()
     assert {resource.resource_id for resource in contribution.resources} == {
-        "assurance.config.product-policy",
-        "assurance.config.data-knowledge",
-        "assurance.config.capability-catalog",
-        "assurance.config.node-policy-values",
+        "assurance.product.configuration.product-policy",
+        "assurance.product.configuration.data-knowledge",
+        "assurance.product.configuration.capability-catalog",
+        "assurance.product.configuration.node-policy-values",
     }
 
 
@@ -78,11 +78,11 @@ def test_project_config_resource_bytes_are_authenticated_source_bytes(config_tre
     contribution = load_project_configuration(config_tree)
     by_id = {resource.resource_id: resource for resource in contribution.resources}
     assert (
-        by_id["assurance.config.product-policy"].content
+        by_id["assurance.product.configuration.product-policy"].content
         == (_FIXTURE_DIR / ".aa" / "policy.yaml").read_bytes()
     )
     assert (
-        by_id["assurance.config.data-knowledge"].content
+        by_id["assurance.product.configuration.data-knowledge"].content
         == (_FIXTURE_DIR / ".aa" / "data-knowledge.yaml").read_bytes()
     )
     assert all(isinstance(resource, ResourceContribution) for resource in contribution.resources)
@@ -121,8 +121,8 @@ def test_same_id_version_different_bytes_change_contribution(tmp_path, config_tr
         encoding="utf-8",
     )
     second = load_project_configuration(ConfigTreePluginSource(path=mutated))
-    first_policy = _resource(first, "assurance.config.product-policy").content
-    second_policy = _resource(second, "assurance.config.product-policy").content
+    first_policy = _resource(first, "assurance.product.configuration.product-policy").content
+    second_policy = _resource(second, "assurance.product.configuration.product-policy").content
     assert first_policy != second_policy
     original = load_config_tree(config_tree)
     changed = load_config_tree(ConfigTreePluginSource(path=mutated))

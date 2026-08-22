@@ -1,6 +1,6 @@
 schema_version: "1"
 kind: plugin
-plugin_id: assurance.product.bindings
+plugin_id: assurance.product.agent
 plugin_version: "1.0.0"
 engine_api: "2.0"
 entrypoint_group: graph_engine.plugins
