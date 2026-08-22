@@ -226,4 +226,7 @@ for name in (
     assert importlib.util.find_spec(name) is None, name
 PY
 
+# Phase 4: committed-HEAD isolation of the six capability wheels.
+bash "$REPO_ROOT/scripts/assurance_capability_wheel_smoke_test.sh"
+
 echo "packaging smoke test: OK"
