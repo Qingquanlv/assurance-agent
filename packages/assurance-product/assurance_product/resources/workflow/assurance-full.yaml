@@ -55,7 +55,7 @@ graphs:
       - from: case-review
         to: done
   full:
-    max_activations: 16
+    max_activations: 128
     start: intake
     nodes:
       intake:
@@ -73,6 +73,85 @@ graphs:
       generation:
         kind: subgraph
         graph: generation
+      execute:
+        kind: subgraph
+        graph: execution-execute
+      execution-pass-gate:
+        kind: gate
+        expression: "status == 'passed'"
+        input_projection:
+          type: object
+          fields:
+            status:
+              type: predecessor_pointer
+              predecessor: execute
+              pointer: /status
+      execution-issue-gate:
+        kind: gate
+        expression: "status == 'failed' or status == 'product_issue'"
+        input_projection:
+          type: object
+          fields:
+            status:
+              type: predecessor_pointer
+              predecessor: execute
+              pointer: /status
+      execution-infra-gate:
+        kind: gate
+        expression: "status == 'infrastructure_failure'"
+        input_projection:
+          type: object
+          fields:
+            status:
+              type: predecessor_pointer
+              predecessor: execute
+              pointer: /status
+      issue-triage:
+        kind: subgraph
+        graph: quality-issue-triage
+      issue-analysis:
+        kind: subgraph
+        graph: quality-issue-analysis
+      fix-proposal:
+        kind: subgraph
+        graph: healing-fix-proposal
+      run:
+        kind: subgraph
+        graph: execution-run
+      quality:
+        kind: subgraph
+        graph: quality
+      coverage-policy-gate:
+        kind: gate
+        expression: "measured < threshold and rounds_used < rounds_budget"
+        input_projection:
+          type: object
+          fields:
+            decision:
+              type: predecessor_pointer
+              predecessor: quality
+              pointer: /coverage/decision
+            measured:
+              type: predecessor_pointer
+              predecessor: quality
+              pointer: /coverage/measured
+            threshold:
+              type: predecessor_pointer
+              predecessor: quality
+              pointer: /coverage/threshold
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: quality
+              pointer: /coverage/rounds_used
+            rounds_budget:
+              type: root_pointer
+              pointer: /budgets/coverage_rounds
+      coverage-repair:
+        kind: subgraph
+        graph: healing-coverage-repair
+      report:
+        kind: subgraph
+        graph: quality-report
       done:
         kind: end
     edges:
@@ -85,6 +164,41 @@ graphs:
       - from: case-review
         to: generation
       - from: generation
+        to: execute
+      - from: execute
+        to: execution-pass-gate
+      - from: execute
+        to: execution-issue-gate
+      - from: execute
+        to: execution-infra-gate
+      - from: execution-pass-gate
+        to: quality
+        condition: 'output.value == true'
+      - from: execution-issue-gate
+        to: issue-triage
+        condition: 'output.value == true'
+      - from: execution-infra-gate
+        to: report
+        condition: 'output.value == true'
+      - from: issue-triage
+        to: issue-analysis
+      - from: issue-analysis
+        to: fix-proposal
+      - from: fix-proposal
+        to: run
+      - from: run
+        to: quality
+      - from: quality
+        to: coverage-policy-gate
+      - from: coverage-policy-gate
+        to: coverage-repair
+        condition: 'output.value == true'
+      - from: coverage-policy-gate
+        to: report
+        condition: 'output.value == false'
+      - from: coverage-repair
+        to: generation
+      - from: report
         to: done
   intake:
     max_activations: 8
@@ -960,6 +1074,338 @@ graphs:
       finalize:
         kind: task
         capability: assurance.product.agent.generation.performance.codegen.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  execution-execute:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.execution.execute.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.execution.execute.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.execution.execute.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  execution-run:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.execution.run.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.execution.run.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.execution.run.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  quality:
+    max_activations: 8
+    start: fact-baseline
+    nodes:
+      fact-baseline:
+        kind: subgraph
+        graph: quality-fact-baseline
+      inspect:
+        kind: subgraph
+        graph: quality-inspect
+      done:
+        kind: end
+    edges:
+      - from: fact-baseline
+        to: inspect
+      - from: inspect
+        to: done
+  quality-fact-baseline:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.quality.fact-baseline.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.quality.fact-baseline.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.quality.fact-baseline.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  quality-inspect:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.quality.inspect.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.quality.inspect.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.quality.inspect.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  quality-issue-triage:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.quality.issue-triage.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.quality.issue-triage.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.quality.issue-triage.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  quality-issue-analysis:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.quality.issue-analysis.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.quality.issue-analysis.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.quality.issue-analysis.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  healing-fix-proposal:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.healing.fix-proposal.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.healing.fix-proposal.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.healing.fix-proposal.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  healing-coverage-repair:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.healing.coverage-repair.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.healing.coverage-repair.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.healing.coverage-repair.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  quality-report:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.quality.report.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.quality.report.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.quality.report.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
