@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assurance.product/schemas/behavioral-projection-v1.json",
+  "title": "BehavioralProjectionV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "input_digest",
+    "runtime_identity",
+    "terminal_class",
+    "terminal_reason_category",
+    "selected_families",
+    "activated_families",
+    "completed_families",
+    "skipped_families",
+    "gate_decisions",
+    "artifact_contract",
+    "changed_files",
+    "execution_evidence",
+    "quality_metrics",
+    "issue_healing_decisions",
+    "durable_effects",
+    "report",
+    "retro",
+    "improvement",
+    "archive",
+    "semantic_counts",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "case_id": { "type": "string", "minLength": 1 },
+    "input_digest": { "type": "string", "minLength": 1 },
+    "runtime_identity": { "type": "string", "minLength": 1 },
+    "terminal_class": { "type": "string", "minLength": 1 },
+    "terminal_reason_category": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+    "selected_families": { "$ref": "#/$defs/familySet" },
+    "activated_families": { "$ref": "#/$defs/familySet" },
+    "completed_families": { "$ref": "#/$defs/familySet" },
+    "skipped_families": { "$ref": "#/$defs/familySet" },
+    "gate_decisions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/gateDecision" }
+    },
+    "artifact_contract": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/artifactObservation" }
+    },
+    "changed_files": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/changedFile" }
+    },
+    "execution_evidence": { "$ref": "#/$defs/executionEvidence" },
+    "quality_metrics": { "$ref": "#/$defs/qualityMetrics" },
+    "issue_healing_decisions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/issueHealingDecision" }
+    },
+    "durable_effects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/effectProjection" }
+    },
+    "report": { "$ref": "#/$defs/semanticArtifact" },
+    "retro": { "anyOf": [{ "$ref": "#/$defs/semanticArtifact" }, { "type": "null" }] },
+    "improvement": { "anyOf": [{ "$ref": "#/$defs/semanticArtifact" }, { "type": "null" }] },
+    "archive": { "anyOf": [{ "$ref": "#/$defs/semanticArtifact" }, { "type": "null" }] },
+    "semantic_counts": { "$ref": "#/$defs/semanticCounts" },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/redactedDiagnostic" }
+    }
+  },
+  "not": {
+    "anyOf": [
+      { "required": ["session_id"] },
+      { "required": ["conversation"] },
+      { "required": ["transcript"] },
+      { "required": ["token_count"] }
+    ]
+  },
+  "$defs": {
+    "jsonValue": {
+      "anyOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" },
+          "not": {
+            "anyOf": [
+              { "required": ["session_id"] },
+              { "required": ["conversation"] }
+            ]
+          }
+        }
+      ]
+    },
+    "familySet": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "gateDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["semantic_role", "decision", "input_digest"],
+      "properties": {
+        "semantic_role": { "type": "string", "minLength": 1 },
+        "decision": { "type": "string", "minLength": 1 },
+        "input_digest": { "type": "string", "minLength": 1 }
+      }
+    },
+    "artifactObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "media_type", "sha256", "semantic_projection"],
+      "properties": {
+        "artifact_id": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "semantic_projection": { "$ref": "#/$defs/jsonValue" }
+      }
+    },
+    "changedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "minLength": 1 }
+      }
+    },
+    "executionEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "digest"],
+      "properties": {
+        "summary": { "$ref": "#/$defs/jsonValue" },
+        "digest": { "type": "string", "minLength": 1 }
+      }
+    },
+    "qualityMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverage", "trace", "quality"],
+      "properties": {
+        "coverage": { "$ref": "#/$defs/jsonValue" },
+        "trace": { "$ref": "#/$defs/jsonValue" },
+        "quality": { "$ref": "#/$defs/jsonValue" }
+      }
+    },
+    "issueHealingDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issue_class", "decision", "evidence_digest"],
+      "properties": {
+        "issue_class": { "type": "string", "minLength": 1 },
+        "decision": { "type": "string", "minLength": 1 },
+        "evidence_digest": { "type": "string", "minLength": 1 }
+      }
+    },
+    "effectProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "effect_id",
+        "idempotency_key",
+        "status",
+        "receipt_digest",
+        "observed_external_projection"
+      ],
+      "properties": {
+        "effect_id": { "type": "string", "minLength": 1 },
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "receipt_digest": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "observed_external_projection": { "$ref": "#/$defs/jsonValue" }
+      }
+    },
+    "semanticArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["present", "digest", "semantic_fields"],
+      "properties": {
+        "present": { "type": "boolean" },
+        "digest": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "semantic_fields": { "$ref": "#/$defs/jsonValue" }
+      }
+    },
+    "semanticCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retries", "interrupts", "stops"],
+      "properties": {
+        "retries": { "$ref": "#/$defs/countMap" },
+        "interrupts": { "$ref": "#/$defs/countMap" },
+        "stops": { "$ref": "#/$defs/countMap" }
+      }
+    },
+    "countMap": {
+      "type": "object",
+      "additionalProperties": { "type": "integer" }
+    },
+    "redactedDiagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "message"],
+      "properties": {
+        "category": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
