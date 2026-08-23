@@ -266,23 +266,33 @@ def _project_export(path: Path) -> BehavioralProjectionV1:
         activated_families=_families(source.get("activated_families")),
         completed_families=_families(source.get("completed_families")),
         skipped_families=_families(source.get("skipped_families")),
-        gate_decisions=_models(source.get("gate_decisions"), GateDecisionV1, "semantic_role"),
-        artifact_contract=_models(source.get("artifact_contract"), ArtifactObservationV1, "artifact_id"),
-        changed_files=_models(source.get("changed_files"), ChangedFileV1, "path"),
+        gate_decisions=_models(
+            source.get("gate_decisions"), GateDecisionV1, "semantic_role", field="gate_decisions"
+        ),
+        artifact_contract=_models(
+            source.get("artifact_contract"),
+            ArtifactObservationV1,
+            "artifact_id",
+            field="artifact_contract",
+        ),
+        changed_files=_models(source.get("changed_files"), ChangedFileV1, "path", field="changed_files"),
         execution_evidence=ExecutionEvidenceV1.model_validate(source.get("execution_evidence")),
         quality_metrics=QualityMetricsV1.model_validate(source.get("quality_metrics")),
         issue_healing_decisions=_models(
             source.get("issue_healing_decisions"),
             IssueHealingDecisionV1,
             "issue_class",
+            field="issue_healing_decisions",
         ),
-        durable_effects=_models(source.get("durable_effects"), EffectProjectionV1, "effect_id"),
+        durable_effects=_models(
+            source.get("durable_effects"), EffectProjectionV1, "effect_id", field="durable_effects"
+        ),
         report=SemanticArtifactProjectionV1.model_validate(source.get("report")),
         retro=_optional_artifact(source.get("retro")),
         improvement=_optional_artifact(source.get("improvement")),
         archive=_optional_artifact(source.get("archive")),
         semantic_counts=SemanticCountsV1.model_validate(source.get("semantic_counts")),
-        diagnostics=_models(source.get("diagnostics"), RedactedDiagnosticV1, "category"),
+        diagnostics=_models(source.get("diagnostics"), RedactedDiagnosticV1, "category", field="diagnostics"),
     )
 
 
@@ -319,11 +329,11 @@ def _families(value: JSONValue) -> frozenset[str]:
     return frozenset(families)
 
 
-def _models(value: JSONValue, model: type[ModelT], sort_key: str) -> tuple[ModelT, ...]:
+def _models(value: JSONValue, model: type[ModelT], sort_key: str, *, field: str) -> tuple[ModelT, ...]:
     if value is None:
-        return ()
+        raise ProjectionError(f"{field} must be an array")
     if not isinstance(value, tuple):
-        raise ProjectionError(f"{model.__name__} must be an array")
+        raise ProjectionError(f"{field} must be an array")
     items = [model.model_validate(item) for item in value]
     return tuple(sorted(items, key=lambda item: str(getattr(item, sort_key))))
 

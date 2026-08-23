@@ -387,3 +387,24 @@ def test_evaluate_complete_runs_rejects_incomplete_export(tmp_path: Path) -> Non
     )
     with pytest.raises(ValueError, match="completed"):
         evaluate_complete_runs(opencode, cursor)
+
+
+@pytest.mark.parametrize("field", ("artifact_contract", "gate_decisions"))
+def test_omitted_required_projection_array_refuses_to_project(tmp_path: Path, field: str) -> None:
+    source = default_source(runtime_identity="legacy-aa")
+    del source[field]
+    export = write_export(tmp_path / f"omit-{field}", source)
+    with pytest.raises(projection.ProjectionError, match=field):
+        project_legacy_export(export)
+
+
+def test_explicit_empty_required_arrays_still_project(tmp_path: Path) -> None:
+    export = make_export(
+        tmp_path / "empty-arrays",
+        runtime_identity="legacy-aa",
+        artifact_contract=[],
+        gate_decisions=[],
+    )
+    projected = project_legacy_export(export)
+    assert projected.artifact_contract == ()
+    assert projected.gate_decisions == ()
