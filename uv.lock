@@ -339,6 +339,7 @@ dependencies = [
     { name = "assurance-improvement" },
     { name = "assurance-intake" },
     { name = "assurance-quality" },
+    { name = "click" },
     { name = "graph-engine" },
 ]
 
@@ -360,6 +361,7 @@ requires-dist = [
     { name = "assurance-improvement", editable = "packages/assurance-improvement" },
     { name = "assurance-intake", editable = "packages/assurance-intake" },
     { name = "assurance-quality", editable = "packages/assurance-quality" },
+    { name = "click", specifier = ">=8.1" },
     { name = "graph-engine", editable = "packages/graph-engine" },
 ]
 provides-extras = ["opencode", "cursor"]

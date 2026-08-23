@@ -6,7 +6,11 @@ import pytest
 
 from tests.phase5.conformance import EVIDENCE_ROOT
 
-pytest_plugins = ("tests.phase5.composition_harness", "tests.phase5.product_runner")
+pytest_plugins = (
+    "tests.phase5.composition_harness",
+    "tests.phase5.product_runner",
+    "tests.phase5.cli_support",
+)
 
 
 @pytest.fixture

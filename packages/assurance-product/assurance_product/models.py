@@ -586,3 +586,76 @@ def authenticate_product_input_resources(value: ProductInputV1, composition: obj
         digest = getattr(entry, "sha256", None)
         if digest != ref.sha256:
             raise ValueError(f"resource digest drifted: {ref.resource_id}")
+
+
+class GraphStatusV1(FrozenModel):
+    graph_instance_id: str
+    graph_id: str
+    parent_graph_instance_id: str | None
+    state: Literal["inactive", "running", "failed", "stopped", "interrupted", "completed"]
+
+
+class NodeStatusV1(FrozenModel):
+    graph_instance_id: str
+    node_id: str
+    state: Literal[
+        "inactive",
+        "ready",
+        "running",
+        "retrying",
+        "succeeded",
+        "failed",
+        "stopped",
+        "interrupted",
+        "skipped",
+    ]
+    attempt: int | None
+    lease_state: str | None
+    failure_category: str | None
+    activity_reference_digest: str | None
+
+
+class CoverageProgressV1(FrozenModel):
+    round: int
+    maximum_rounds: int
+    measured: FrozenJSONValue
+    decision: str
+
+
+class EffectStatusV1(FrozenModel):
+    effect_id: str
+    kind: str
+    state: str
+    receipt_digest: str | None
+
+
+class AdapterEvidenceRefV1(FrozenModel):
+    activation_id: str
+    activity_id: str
+    reference_digest: str
+    terminal_receipt_digest: str | None
+
+
+class PendingInterruptStatusV1(FrozenModel):
+    node_id: str
+    actions: tuple[str, ...]
+    reason_category: str
+
+
+class StatusV1(FrozenModel):
+    schema_version: Literal["1"]
+    invocation_id: str
+    lock_digest: str
+    root_input_digest: str
+    initial_tree_id: str
+    current_head_tree_id: str
+    status: Literal["running", "blocked", "interrupted", "stopped", "failed", "completed"]
+    entrypoint: str
+    graph_hierarchy: tuple[GraphStatusV1, ...]
+    node_states: tuple[NodeStatusV1, ...]
+    selected_test_families: tuple[str, ...]
+    coverage_progress: CoverageProgressV1 | None
+    durable_effects: tuple[EffectStatusV1, ...]
+    adapter_evidence: tuple[AdapterEvidenceRefV1, ...]
+    pending_interrupt: PendingInterruptStatusV1 | None
+    terminal_reason: str | None

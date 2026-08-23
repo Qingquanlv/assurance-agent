@@ -10,6 +10,7 @@ dependencies = [
   "assurance-healing==0.1.0",
   "assurance-quality==0.1.0",
   "assurance-improvement==0.1.0",
+  "click>=8.1",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,9 @@ cursor = ["agent-runtime-cursor==0.1.0"]
 [project.entry-points."graph_engine.products"]
 assurance-opencode = "assurance_product.product:AssuranceOpenCodeProductProvider"
 assurance-cursor = "assurance_product.product:AssuranceCursorProductProvider"
+
+[project.scripts]
+aa-next = "assurance_product.cli:main"
 
 [build-system]
 requires = ["hatchling"]
