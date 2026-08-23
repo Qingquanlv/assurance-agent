@@ -161,6 +161,61 @@ def load_graph_inventory() -> dict[str, Any]:
     return load_yaml(INVENTORY_PATH)
 
 
+def dump_graph_inventory(compiled_product_workflow: CompiledWorkflow) -> dict[str, Any]:
+    entrypoints: dict[str, dict[str, list[str]]] = {}
+    for name, graph_id in compiled_product_workflow.entrypoints.items():
+        nodes, edges, aliases = _entrypoint_closure(compiled_product_workflow, graph_id)
+        entrypoints[name] = {
+            "nodes": sorted(nodes),
+            "edges": sorted(edges),
+            "aliases": sorted(aliases),
+        }
+    return {
+        "entrypoints": entrypoints,
+        "nodes": sorted(workflow_node_ids(compiled_product_workflow)),
+        "edges": sorted(workflow_edge_ids(compiled_product_workflow)),
+        "aliases": sorted(graph_capability_ids(compiled_product_workflow)),
+    }
+
+
+def write_graph_inventory(compiled_product_workflow: CompiledWorkflow) -> Path:
+    import yaml
+
+    document = dump_graph_inventory(compiled_product_workflow)
+    INVENTORY_PATH.write_text(
+        yaml.safe_dump(document, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    return INVENTORY_PATH
+
+
+def _entrypoint_closure(
+    compiled_product_workflow: CompiledWorkflow, start_graph: str
+) -> tuple[set[str], set[str], set[str]]:
+    pending = [start_graph]
+    seen: set[str] = set()
+    nodes: set[str] = set()
+    edges: set[str] = set()
+    aliases: set[str] = set()
+    while pending:
+        graph_id = pending.pop()
+        if graph_id in seen:
+            continue
+        seen.add(graph_id)
+        graph = compiled_product_workflow.graphs[graph_id]
+        for node_id, node in graph.nodes.items():
+            nodes.add(f"{graph_id}/{node_id}")
+            capability = node.definition.capability
+            if capability is not None:
+                aliases.add(capability)
+            target = node.definition.graph
+            if target is not None and target not in seen:
+                pending.append(target)
+        for edge in graph.edges:
+            edges.add(f"{graph_id}:{edge.from_}->{edge.to}")
+    return nodes, edges, aliases
+
+
 def workflow_node_ids(compiled_product_workflow: CompiledWorkflow) -> set[str]:
     return {
         f"{graph_id}/{node_id}"

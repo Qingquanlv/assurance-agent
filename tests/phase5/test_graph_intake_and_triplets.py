@@ -63,6 +63,11 @@ _SLICE_GRAPHS = frozenset(
         "improvement-export",
         "improvement-apply",
         "improvement-rollback",
+        "execute",
+        "archive",
+        "issue-review",
+        "issue-analyze",
+        "issue-reconcile",
     }
 )
 _SLICE_PREPARE_IDS = (
@@ -104,7 +109,12 @@ _PUBLIC_ENTRYPOINTS = (
     "intake",
     "case",
     "full",
+    "execute",
+    "archive",
     "retro",
+    "issue-review",
+    "issue-analyze",
+    "issue-reconcile",
     "improvement-review",
     "improvement-evaluate",
     "improvement-export",

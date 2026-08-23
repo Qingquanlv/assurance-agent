@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
 
+import yaml
+
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.composition import (
     CapabilityBindingEntry,
@@ -23,6 +25,7 @@ from graph_engine.composition import (
 )
 from graph_engine.composition.sources import WheelProductDeclaration
 from graph_engine.frozen_json import thaw_json
+from graph_engine.graph.compiler import CompiledWorkflow
 from graph_engine.graph.schema import WorkflowDef, parse_workflow
 from graph_engine.plugin_api import FrozenModel, ProviderSource
 
@@ -104,6 +107,18 @@ _FORBIDDEN_GRAPH_PREFIXES = (
     "assurance.quality.",
     "assurance.healing.",
 )
+_TEST_ONLY_MARKERS = (".test.",)
+_INVENTORY_RELATIVE = Path(
+    ".superpowers/sdd/2026-08-22-pure-graph-engine-phase5-assurance-product-assembly/graph-inventory.yaml"
+)
+
+
+class GraphAuditResult(FrozenModel):
+    unreachable_nodes: tuple[str, ...]
+    dead_ends: tuple[str, ...]
+    forbidden_direct_targets: tuple[str, ...]
+    missing_bindings: tuple[str, ...]
+    uninventoried_nodes: tuple[str, ...]
 
 
 class AssuranceCompositionError(ValueError):
@@ -410,6 +425,99 @@ def resolve_assurance_composition(request: AssuranceCompositionRequest) -> Froze
         )
     )
     return _authenticate_assurance_composition(composition, adapter)
+
+
+def _workflow_node_ids(workflow: CompiledWorkflow) -> set[str]:
+    return {f"{graph_id}/{node_id}" for graph_id, graph in workflow.graphs.items() for node_id in graph.nodes}
+
+
+def _reachable_node_ids(workflow: CompiledWorkflow) -> set[str]:
+    pending: list[tuple[str, str]] = []
+    for graph_id in workflow.entrypoints.values():
+        graph = workflow.graphs[graph_id]
+        pending.append((graph_id, graph.start))
+    seen: set[str] = set()
+    while pending:
+        graph_id, node_id = pending.pop()
+        key = f"{graph_id}/{node_id}"
+        if key in seen:
+            continue
+        seen.add(key)
+        graph = workflow.graphs[graph_id]
+        node = graph.nodes[node_id]
+        target = node.definition.graph
+        if target is not None:
+            pending.append((target, workflow.graphs[target].start))
+        for edge in node.outgoing:
+            pending.append((graph_id, edge.to))
+    return seen
+
+
+def _is_forbidden_graph_target(capability: str) -> bool:
+    if capability.startswith(_FORBIDDEN_GRAPH_PREFIXES):
+        return True
+    if capability in _PHASE4_IMPROVEMENT_AGENT_IDS:
+        return True
+    if capability.startswith("test.") or any(marker in capability for marker in _TEST_ONLY_MARKERS):
+        return True
+    return False
+
+
+def _inventory_path() -> Path | None:
+    candidates = (
+        Path.cwd() / _INVENTORY_RELATIVE,
+        Path(__file__).resolve().parents[3] / _INVENTORY_RELATIVE,
+    )
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _load_inventory_nodes() -> set[str] | None:
+    path = _inventory_path()
+    if path is None:
+        return None
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(document, Mapping):
+        return None
+    nodes = document.get("nodes")
+    if not isinstance(nodes, list):
+        return None
+    return {node for node in nodes if isinstance(node, str)}
+
+
+def audit_full_graph(workflow: CompiledWorkflow, composition: FrozenComposition) -> GraphAuditResult:
+    all_nodes = _workflow_node_ids(workflow)
+    reachable = _reachable_node_ids(workflow)
+    inventoried = _load_inventory_nodes()
+    capability_entries = composition.registries.capabilities.entries
+    forbidden: list[str] = []
+    missing: list[str] = []
+    for graph in workflow.graphs.values():
+        for node in graph.nodes.values():
+            capability = node.definition.capability
+            if capability is None:
+                continue
+            if _is_forbidden_graph_target(capability):
+                forbidden.append(f"{graph.graph_id}/{node.node_id}:{capability}")
+            if capability not in capability_entries:
+                missing.append(f"{graph.graph_id}/{node.node_id}:{capability}")
+    dead_ends = tuple(
+        sorted(
+            f"{graph.graph_id}/{node.node_id}"
+            for graph in workflow.graphs.values()
+            for node in graph.nodes.values()
+            if node.definition.kind != "end" and not node.outgoing
+        )
+    )
+    return GraphAuditResult(
+        unreachable_nodes=tuple(sorted(all_nodes - reachable)),
+        dead_ends=dead_ends,
+        forbidden_direct_targets=tuple(sorted(forbidden)),
+        missing_bindings=tuple(sorted(missing)),
+        uninventoried_nodes=tuple(sorted(all_nodes if inventoried is None else all_nodes - inventoried)),
+    )
 
 
 def write_committed_product_declarations(package_root: Path | None = None) -> tuple[Path, Path]:

@@ -3,7 +3,12 @@ entrypoints:
   intake: entry
   case: case
   full: full
+  execute: execute
+  archive: archive
   retro: retro
+  issue-review: issue-review
+  issue-analyze: issue-analyze
+  issue-reconcile: issue-reconcile
   improvement-review: improvement-review
   improvement-evaluate: improvement-evaluate
   improvement-export: improvement-export
@@ -1829,4 +1834,174 @@ graphs:
         kind: end
     edges:
       - from: rollback
+        to: done
+  execute:
+    max_activations: 128
+    start: generation
+    nodes:
+      generation:
+        kind: subgraph
+        graph: generation
+      execute:
+        kind: subgraph
+        graph: execution-execute
+      execution-pass-gate:
+        kind: gate
+        expression: "status == 'passed'"
+        input_projection:
+          type: object
+          fields:
+            status:
+              type: predecessor_pointer
+              predecessor: execute
+              pointer: /status
+      execution-issue-gate:
+        kind: gate
+        expression: "status == 'failed' or status == 'product_issue'"
+        input_projection:
+          type: object
+          fields:
+            status:
+              type: predecessor_pointer
+              predecessor: execute
+              pointer: /status
+      execution-infra-gate:
+        kind: gate
+        expression: "status == 'infrastructure_failure'"
+        input_projection:
+          type: object
+          fields:
+            status:
+              type: predecessor_pointer
+              predecessor: execute
+              pointer: /status
+      issue-triage:
+        kind: subgraph
+        graph: quality-issue-triage
+      issue-analysis:
+        kind: subgraph
+        graph: quality-issue-analysis
+      fix-proposal:
+        kind: subgraph
+        graph: healing-fix-proposal
+      run:
+        kind: subgraph
+        graph: execution-run
+      quality:
+        kind: subgraph
+        graph: quality
+      coverage-policy-gate:
+        kind: gate
+        expression: "measured < threshold and rounds_used < rounds_budget"
+        input_projection:
+          type: object
+          fields:
+            measured:
+              type: predecessor_pointer
+              predecessor: quality
+              pointer: /coverage/measured
+            threshold:
+              type: predecessor_pointer
+              predecessor: quality
+              pointer: /coverage/threshold
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: quality
+              pointer: /coverage/rounds_used
+            rounds_budget:
+              type: root_pointer
+              pointer: /budgets/coverage_rounds
+      coverage-repair:
+        kind: subgraph
+        graph: healing-coverage-repair
+      report:
+        kind: subgraph
+        graph: quality-report
+      done:
+        kind: end
+    edges:
+      - from: generation
+        to: execute
+      - from: execute
+        to: execution-pass-gate
+      - from: execute
+        to: execution-issue-gate
+      - from: execute
+        to: execution-infra-gate
+      - from: execution-pass-gate
+        to: quality
+        condition: 'output.value == true'
+      - from: execution-issue-gate
+        to: issue-triage
+        condition: 'output.value == true'
+      - from: execution-infra-gate
+        to: report
+        condition: 'output.value == true'
+      - from: issue-triage
+        to: issue-analysis
+      - from: issue-analysis
+        to: fix-proposal
+      - from: fix-proposal
+        to: run
+      - from: run
+        to: quality
+      - from: quality
+        to: coverage-policy-gate
+      - from: coverage-policy-gate
+        to: coverage-repair
+        condition: 'output.value == true'
+      - from: coverage-policy-gate
+        to: report
+        condition: 'output.value == false'
+      - from: coverage-repair
+        to: generation
+      - from: report
+        to: done
+  archive:
+    max_activations: 4
+    start: archive
+    nodes:
+      archive:
+        kind: subgraph
+        graph: improvement-archive
+      done:
+        kind: end
+    edges:
+      - from: archive
+        to: done
+  issue-review:
+    max_activations: 4
+    start: review
+    nodes:
+      review:
+        kind: subgraph
+        graph: quality-issue-triage
+      done:
+        kind: end
+    edges:
+      - from: review
+        to: done
+  issue-analyze:
+    max_activations: 4
+    start: analyze
+    nodes:
+      analyze:
+        kind: subgraph
+        graph: quality-issue-analysis
+      done:
+        kind: end
+    edges:
+      - from: analyze
+        to: done
+  issue-reconcile:
+    max_activations: 4
+    start: analyze
+    nodes:
+      analyze:
+        kind: subgraph
+        graph: quality-issue-analysis
+      done:
+        kind: end
+    edges:
+      - from: analyze
         to: done
