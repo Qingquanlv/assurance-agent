@@ -1,0 +1,659 @@
+{
+  "items": [
+    {
+      "adapter_binding": {
+        "adapter_configuration_digest": "7cd4626d1a9d26c705f3c0578c1f19b19c1f7f364daf15e175740e0541aa7c8d",
+        "cancel_timeout_seconds": 60,
+        "endpoint": "http://127.0.0.1:4096",
+        "max_response_bytes": 4000000,
+        "observation_horizon_seconds": 3600,
+        "poll_interval_seconds": 2,
+        "project_scope": "live-project",
+        "protocol_profile": "opencode-http-v1",
+        "request_timeout_seconds": 300,
+        "schema_version": "1",
+        "secret_handle": "opencode.token",
+        "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003"
+      },
+      "adapter_version": "0.1.0",
+      "auto_archive": true,
+      "deployment_binding_routes": {
+        "assurance.execution.execute.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.execution.run.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.api.codegen-fix.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.api.codegen.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.api.plan-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.api.plan.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.e2e.codegen-fix.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.e2e.codegen.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.e2e.plan-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.e2e.plan.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.fuzz.codegen.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.fuzz.plan-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.fuzz.plan.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.performance.codegen.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.performance.plan-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.performance.plan.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.healing.coverage-repair.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.healing.fix-proposal.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.archive.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.improvement-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.retro-eval-analysis.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.retro-issue-analysis.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.retro-workflow-analysis.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.retro.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.intake.case-design.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.intake.case-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.intake.explore.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.intake.intake.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.quality.fact-baseline.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.quality.inspect.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.quality.issue-analysis.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.quality.issue-triage.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.quality.report.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        }
+      },
+      "entrypoint": "full",
+      "expected_terminal": "completed",
+      "id": "opencode-ret-dept-management",
+      "product": "assurance-opencode",
+      "required_steps": [
+        "intake.intake",
+        "intake.explore",
+        "intake.case-design",
+        "intake.case-review",
+        "generation.api.plan",
+        "generation.api.plan-review",
+        "generation.api.codegen",
+        "generation.e2e.plan",
+        "generation.e2e.plan-review",
+        "generation.e2e.codegen",
+        "generation.fuzz.plan",
+        "generation.fuzz.plan-review",
+        "generation.fuzz.codegen",
+        "generation.performance.plan",
+        "generation.performance.plan-review",
+        "generation.performance.codegen",
+        "execution.execute",
+        "execution.run",
+        "quality.fact-baseline",
+        "quality.inspect",
+        "quality.report"
+      ],
+      "requirement_path": "benchmark/vue-fastapi-admin/benchmark/requirements/dept-management.md",
+      "routing_assignments": {
+        "assurance.execution.execute.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.execution.run.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.api.codegen-fix.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.api.codegen.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.api.plan-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.api.plan.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.e2e.codegen-fix.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.e2e.codegen.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.e2e.plan-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.e2e.plan.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.fuzz.codegen.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.fuzz.plan-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.fuzz.plan.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.performance.codegen.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.performance.plan-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.generation.performance.plan.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.healing.coverage-repair.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.healing.fix-proposal.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.archive.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.improvement-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.retro-eval-analysis.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.retro-issue-analysis.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.retro-workflow-analysis.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.improvement.retro.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.intake.case-design.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.intake.case-review.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.intake.explore.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.intake.intake.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.quality.fact-baseline.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.quality.inspect.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.quality.issue-analysis.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.quality.issue-triage.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        },
+        "assurance.quality.report.prepare": {
+          "limits": {
+            "max_seconds": 3600
+          },
+          "permission_profile_id": "assurance.product.agent.permission.default",
+          "provider_model": "openai/gpt-5.6-terra",
+          "request_policy_id": "assurance.product.agent.request.default",
+          "worker_profile": "max"
+        }
+      },
+      "secret_env": "AA_NEXT_OPENCODE_TOKEN",
+      "secret_handle": "opencode.token",
+      "selected_test_families": [
+        "api",
+        "e2e",
+        "fuzz",
+        "performance"
+      ],
+      "sut_item_id": "RET-dept-management",
+      "sut_root": "benchmark/vue-fastapi-admin"
+    }
+  ],
+  "schema_version": "1"
+}
