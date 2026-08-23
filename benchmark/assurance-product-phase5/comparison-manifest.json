@@ -1,0 +1,180 @@
+{
+  "cases": [
+    {
+      "current_export": "fixtures/comparison/current/full-api-only-success",
+      "current_export_digest": "sha256:d8ca4841433ca8cfae608b52fc8433148c12200054b399b22d9d3427b73b23ea",
+      "id": "full-api-only-success",
+      "legacy_export": "fixtures/comparison/legacy/full-api-only-success",
+      "legacy_export_digest": "sha256:c8ab2b56432c110913a8dbf729be1ddb572b09757fa3d2df7c7cf558317498b4"
+    },
+    {
+      "current_export": "fixtures/comparison/current/full-e2e-only-success",
+      "current_export_digest": "sha256:731480bb3392f62169b4ff320e428ee5f6e5b10fe84678140dbe59fa9fd4aa07",
+      "id": "full-e2e-only-success",
+      "legacy_export": "fixtures/comparison/legacy/full-e2e-only-success",
+      "legacy_export_digest": "sha256:a9a63735bd003bfe3bc495f3a0c52ca47135e4bd75b9c165fc8a746fbe9c4f75"
+    },
+    {
+      "current_export": "fixtures/comparison/current/full-fuzz-only-success",
+      "current_export_digest": "sha256:78c2910b17ef3336c6a3e9920a9eeb5f7f495819face1bcf6d7dbcdbf2c860c6",
+      "id": "full-fuzz-only-success",
+      "legacy_export": "fixtures/comparison/legacy/full-fuzz-only-success",
+      "legacy_export_digest": "sha256:2c5f19add45ba6c998b40d305321ef8d7385fe5bbc118265b5e7c307704c9af2"
+    },
+    {
+      "current_export": "fixtures/comparison/current/full-performance-only-success",
+      "current_export_digest": "sha256:8de2b6196b0870698142e55913a43cf7af593e148a7267c738f99f0666072c6e",
+      "id": "full-performance-only-success",
+      "legacy_export": "fixtures/comparison/legacy/full-performance-only-success",
+      "legacy_export_digest": "sha256:0a40483c25856f3bdc9d3173b38cef7700ae4d2a11637a23a7b5eadd594825c3"
+    },
+    {
+      "current_export": "fixtures/comparison/current/full-all-four-family-success",
+      "current_export_digest": "sha256:fa4470bf94e6a38b920ee316983e7fb8d448aaa3655e17cda6aebe54cfd2d86c",
+      "id": "full-all-four-family-success",
+      "legacy_export": "fixtures/comparison/legacy/full-all-four-family-success",
+      "legacy_export_digest": "sha256:5ffed9529ee3b63248c524113bec6afb6269c205c05d6998e8adead9871f666e"
+    },
+    {
+      "current_export": "fixtures/comparison/current/intake-review-needs-fix-then-pass",
+      "current_export_digest": "sha256:fc0afd78090e4555b25e1e9f56ec63303fd32faa3b1de9925c1fdb331ada8370",
+      "id": "intake-review-needs-fix-then-pass",
+      "legacy_export": "fixtures/comparison/legacy/intake-review-needs-fix-then-pass",
+      "legacy_export_digest": "sha256:aa1698d34f75c418c2a35a2e48b1bc272a82802825181dc51d6b1cabb111e81c"
+    },
+    {
+      "current_export": "fixtures/comparison/current/plan-review-invalid-output-bounded-retry",
+      "current_export_digest": "sha256:90b8ef9036aa559c3b00b5d21f0102e00921c911e6f524b66ee09145fd7e50ef",
+      "id": "plan-review-invalid-output-bounded-retry",
+      "legacy_export": "fixtures/comparison/legacy/plan-review-invalid-output-bounded-retry",
+      "legacy_export_digest": "sha256:5130480f2115f3c34ae480352a035fbaa75bf68ab16f7a7f8a2a9fbc2b802f75"
+    },
+    {
+      "current_export": "fixtures/comparison/current/codegen-validation-failure-bounded-fix",
+      "current_export_digest": "sha256:3552356adfa5b73911daf22cbeec9a3325af907be0cdf3c3fa8a550a8210714a",
+      "id": "codegen-validation-failure-bounded-fix",
+      "legacy_export": "fixtures/comparison/legacy/codegen-validation-failure-bounded-fix",
+      "legacy_export_digest": "sha256:543b999852e2aab6514a987b9e6f2d6aa9757f5026af3f4bde8df47c4a9f52f1"
+    },
+    {
+      "current_export": "fixtures/comparison/current/execution-closed-mapping-no-stale-test",
+      "current_export_digest": "sha256:ce4ace2924b0d09cce9ce449c6bd641bc3283b436c69429230b36b4754d4bf3d",
+      "id": "execution-closed-mapping-no-stale-test",
+      "legacy_export": "fixtures/comparison/legacy/execution-closed-mapping-no-stale-test",
+      "legacy_export_digest": "sha256:2d1e3191a2799fcd4312b40733ac1d5562f591ffc0b6b26d65d70cb9a89de75e"
+    },
+    {
+      "current_export": "fixtures/comparison/current/coverage-insufficient-repair-reexecution-pass",
+      "current_export_digest": "sha256:b93e8d61ccbf53d59a1c8d229f4c7007301cc59403eb752ccdd6b4f8adfbd78a",
+      "id": "coverage-insufficient-repair-reexecution-pass",
+      "legacy_export": "fixtures/comparison/legacy/coverage-insufficient-repair-reexecution-pass",
+      "legacy_export_digest": "sha256:81b1ea6ca206b81a5ddd4c510c0cc34d5b0349167bec36bebde35cf0c25dfd07"
+    },
+    {
+      "current_export": "fixtures/comparison/current/coverage-repair-no-progress-exhausted",
+      "current_export_digest": "sha256:28bd2e7443e5e86643780614f6049c2ed4b71fc9a0bdb36037869cf313f3e7cc",
+      "id": "coverage-repair-no-progress-exhausted",
+      "legacy_export": "fixtures/comparison/legacy/coverage-repair-no-progress-exhausted",
+      "legacy_export_digest": "sha256:70ff8e143370330d7f1df877ee11e042e6f015638df8036a31cff640d24740d5"
+    },
+    {
+      "current_export": "fixtures/comparison/current/healing-disallowed-business-stop",
+      "current_export_digest": "sha256:6ca5ab784b1309dc9f28da609b567abfb58586d974abdb7f3238a92eed5191cf",
+      "id": "healing-disallowed-business-stop",
+      "legacy_export": "fixtures/comparison/legacy/healing-disallowed-business-stop",
+      "legacy_export_digest": "sha256:7377b7cf9dcd55a27fa8604ac2599e0a57eec4551609181ec302ea3cbae34843"
+    },
+    {
+      "current_export": "fixtures/comparison/current/report-generation-required-outputs",
+      "current_export_digest": "sha256:32d21bf141bc057bb2b1bb90aaa65a50a5219e0316451bffc98af402fdec1bb0",
+      "id": "report-generation-required-outputs",
+      "legacy_export": "fixtures/comparison/legacy/report-generation-required-outputs",
+      "legacy_export_digest": "sha256:140b16eab956ca3886a4b35cb078dbefba83c1f72f597125b9d8ea901e4e7ef9"
+    },
+    {
+      "current_export": "fixtures/comparison/current/issue-analysis-reconcile-path",
+      "current_export_digest": "sha256:2c4d93b00dadb0bf7710029992168f0cc0d5f01e925ab4f4093cde323c23b424",
+      "id": "issue-analysis-reconcile-path",
+      "legacy_export": "fixtures/comparison/legacy/issue-analysis-reconcile-path",
+      "legacy_export_digest": "sha256:44689a18f26cd57386fb658c20d55df5086b7b2452a3c2829267c70349f7ddfd"
+    },
+    {
+      "current_export": "fixtures/comparison/current/archive-durable-effect-replay",
+      "current_export_digest": "sha256:e1dba441c34af588a6bfcb3feaa021bec5db2cabec7fbf0f5b7f4efcc783dfd9",
+      "id": "archive-durable-effect-replay",
+      "legacy_export": "fixtures/comparison/legacy/archive-durable-effect-replay",
+      "legacy_export_digest": "sha256:4abf25b2588e8fbb4bd1eed1dc7669c379e8f157a44766e3f33338e13636f886"
+    },
+    {
+      "current_export": "fixtures/comparison/current/retro-collect-analyze-propose-reconcile",
+      "current_export_digest": "sha256:b1b6d9f8948b584b66b9bfe9b2e40d6080487aeff09ee422586b8ca0b3fd3e5f",
+      "id": "retro-collect-analyze-propose-reconcile",
+      "legacy_export": "fixtures/comparison/legacy/retro-collect-analyze-propose-reconcile",
+      "legacy_export_digest": "sha256:cebeab534cf05c81756507533302d704b780157974beabd5bbd10b9512f60234"
+    },
+    {
+      "current_export": "fixtures/comparison/current/improvement-review-evaluate-export-apply",
+      "current_export_digest": "sha256:abde17cd53c03b20c29b79aaa342982330ed9f3b78c98a985a1ee3c4aaee7687",
+      "id": "improvement-review-evaluate-export-apply",
+      "legacy_export": "fixtures/comparison/legacy/improvement-review-evaluate-export-apply",
+      "legacy_export_digest": "sha256:b3378bfde2c957b4b6f1e3d666c2aae09b47734eedba370dd66bab9cfd9ab9c9"
+    },
+    {
+      "current_export": "fixtures/comparison/current/improvement-rollback",
+      "current_export_digest": "sha256:1f6bc61a90671a24825e5dfba4648e1211297f713b5d3d8684a908e7878b6a05",
+      "id": "improvement-rollback",
+      "legacy_export": "fixtures/comparison/legacy/improvement-rollback",
+      "legacy_export_digest": "sha256:4d835c9f66948b5e7309fbe0b786326aa02a18b36edf9eb7c0afdb658b4ade8e"
+    },
+    {
+      "current_export": "fixtures/comparison/current/human-interrupt-exact-resume",
+      "current_export_digest": "sha256:18e8f58389bfb9b56f68c8a13b09201001a5cf9fabe393eff0dd693a8a5b161e",
+      "id": "human-interrupt-exact-resume",
+      "legacy_export": "fixtures/comparison/legacy/human-interrupt-exact-resume",
+      "legacy_export_digest": "sha256:000bc6ac8cb930207150660e1b6141eef03cd47518ad21575dd700410c2c5bf5"
+    },
+    {
+      "current_export": "fixtures/comparison/current/transient-local-retry",
+      "current_export_digest": "sha256:9e200b725435672f549fbef961e49d0b6f005a5f7024c418d48949d2df6e5f77",
+      "id": "transient-local-retry",
+      "legacy_export": "fixtures/comparison/legacy/transient-local-retry",
+      "legacy_export_digest": "sha256:e7695c827244386459c536036630f2aceb37396fb5d33c2a7f2c87c967d09bfc"
+    },
+    {
+      "current_export": "fixtures/comparison/current/opencode-ambiguous-create-recovery",
+      "current_export_digest": "sha256:bc993752ce5fda0cd81654f4896c8cc2e145ac257d107e1fdcae9ab4000d8723",
+      "id": "opencode-ambiguous-create-recovery",
+      "legacy_export": "fixtures/comparison/legacy/opencode-ambiguous-create-recovery",
+      "legacy_export_digest": "sha256:1c1265ea021cb6588c36e5802cad9ac287fbcf3bc9587eae3c46eecb8c63c138"
+    },
+    {
+      "current_export": "fixtures/comparison/current/cursor-unknown-process-indeterminate",
+      "current_export_digest": "sha256:b90c2e6bd7decaf9b7ac8f4ac78467dabfd23a1e277b048f85fe60d02c50aa78",
+      "id": "cursor-unknown-process-indeterminate",
+      "legacy_export": "fixtures/comparison/legacy/cursor-unknown-process-indeterminate",
+      "legacy_export_digest": "sha256:b1f98d0f84d972b347aa744584551b5e79de07cbfb645dcd09277d5efcb0f7f4"
+    },
+    {
+      "current_export": "fixtures/comparison/current/engine-crash-after-provider-terminal-receipt",
+      "current_export_digest": "sha256:2a929c7199be4caa93f8da9b1d27292d7265a9aff3b6271173bdeb285cf4ce9c",
+      "id": "engine-crash-after-provider-terminal-receipt",
+      "legacy_export": "fixtures/comparison/legacy/engine-crash-after-provider-terminal-receipt",
+      "legacy_export_digest": "sha256:31c25f10dc06fe97bcace8cd06e079f62943aa5e3f4846615d912e94721d2008"
+    },
+    {
+      "current_export": "fixtures/comparison/current/config-model-graph-source-drift-rejection",
+      "current_export_digest": "sha256:0f402574c00d290dcda815b5d47b642180ed607b122fa945b1b6c558b473cca0",
+      "id": "config-model-graph-source-drift-rejection",
+      "legacy_export": "fixtures/comparison/legacy/config-model-graph-source-drift-rejection",
+      "legacy_export_digest": "sha256:95dd578c3b46092956ca70239bc532d234db63f34948a9f82db554f77e974132"
+    },
+    {
+      "current_export": "fixtures/comparison/current/replay-after-provider-state-removal",
+      "current_export_digest": "sha256:6485b885d66d09b129c67398e55f21e26fa3d5df31a1d0c11d5eecc7c1627ee4",
+      "id": "replay-after-provider-state-removal",
+      "legacy_export": "fixtures/comparison/legacy/replay-after-provider-state-removal",
+      "legacy_export_digest": "sha256:464a00ee6ba279c7bf4a455e2f1daf7c077821483a7f797d0513bb155c0f9edc"
+    }
+  ],
+  "schema_version": "1"
+}

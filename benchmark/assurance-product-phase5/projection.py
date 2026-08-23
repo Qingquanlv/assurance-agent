@@ -186,6 +186,10 @@ def digest_export(root: Path) -> str:
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
+def digest_directory(root: Path) -> str:
+    return digest_export(root)
+
+
 def walk_export_files(root: Path) -> tuple[tuple[Path, str], ...]:
     export_root = _open_export_root(root)
     found: list[tuple[Path, str]] = []

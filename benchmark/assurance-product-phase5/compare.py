@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
 from projection import (
     BehavioralProjectionV1,
@@ -76,6 +76,39 @@ SET_FIELDS = frozenset(
         "skipped_families",
     }
 )
+
+
+class ComparisonCaseV1(ProjectionModel):
+    id: str
+    legacy_export: str
+    current_export: str
+    legacy_export_digest: str
+    current_export_digest: str
+
+    @field_validator("legacy_export_digest", "current_export_digest")
+    @classmethod
+    def _authenticated_digest(cls, value: str) -> str:
+        prefix = "sha256:"
+        hex_part = value[len(prefix) :]
+        if not value.startswith(prefix) or len(hex_part) != 64 or hex_part != hex_part.lower():
+            raise ValueError("digest must be sha256: plus 64 lowercase hex")
+        if any(char not in "0123456789abcdef" for char in hex_part):
+            raise ValueError("digest must be sha256: plus 64 lowercase hex")
+        return value
+
+
+class ComparisonManifestV1(ProjectionModel):
+    schema_version: Literal["1"]
+    cases: tuple[ComparisonCaseV1, ...]
+
+    @model_validator(mode="after")
+    def _exact_matrix(self) -> ComparisonManifestV1:
+        ids = tuple(item.id for item in self.cases)
+        if ids != CASE_IDS:
+            raise ValueError("cases must be the exact Task 1 comparison matrix")
+        if len(set(ids)) != 25:
+            raise ValueError("comparison case ids must be unique")
+        return self
 
 
 class DispositionV1(ProjectionModel):

@@ -1,76 +1,202 @@
+schema_version: "1"
 cases:
   - id: full-api-only-success
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: full-e2e-only-success
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: full-fuzz-only-success
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: full-performance-only-success
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: full-all-four-family-success
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: intake-review-needs-fix-then-pass
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: plan-review-invalid-output-bounded-retry
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: codegen-validation-failure-bounded-fix
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: execution-closed-mapping-no-stale-test
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: coverage-insufficient-repair-reexecution-pass
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: coverage-repair-no-progress-exhausted
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: healing-disallowed-business-stop
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: report-generation-required-outputs
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: issue-analysis-reconcile-path
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: archive-durable-effect-replay
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: retro-collect-analyze-propose-reconcile
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: improvement-review-evaluate-export-apply
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: improvement-rollback
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: human-interrupt-exact-resume
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: transient-local-retry
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: opencode-ambiguous-create-recovery
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: cursor-unknown-process-indeterminate
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: engine-crash-after-provider-terminal-receipt
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: config-model-graph-source-drift-rejection
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
   - id: replay-after-provider-state-removal
-    status: planned
-    mode: exact
+    status: compared
+    fields:
+      - field: runtime_identity
+        mode: intentionally-different
+        classification: required
+        predicate: null
+        governing_contract: spec §17.4 lock and runtime identity
