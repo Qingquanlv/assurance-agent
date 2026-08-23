@@ -60,6 +60,7 @@ def result_contract(schema_id: str) -> ResultContract:
         schema_id=schema_id,
         schema_digest=canonical_digest(payload),
         extraction_mode="structured",
+        schema_document=payload,
     )
 
 

@@ -130,11 +130,7 @@ def request(**overrides: object) -> TaskRequest:
 
 class ExactSecretPort:
     def __init__(self, authorized: dict[str, bytes] | None = None) -> None:
-        self._authorized = (
-            dict(authorized)
-            if authorized is not None
-            else {"cursor.api-key": CANARY}
-        )
+        self._authorized = dict(authorized) if authorized is not None else {"cursor.api-key": CANARY}
 
     def resolve(self, handle: str) -> bytes:
         try:
@@ -145,11 +141,7 @@ class ExactSecretPort:
 
 class RevocableSecretPort:
     def __init__(self, authorized: dict[str, bytes] | None = None) -> None:
-        self._authorized = (
-            dict(authorized)
-            if authorized is not None
-            else {"cursor.api-key": CANARY}
-        )
+        self._authorized = dict(authorized) if authorized is not None else {"cursor.api-key": CANARY}
         self.revoked = False
         self.resolved_handles: list[str] = []
 
@@ -286,13 +278,20 @@ class CursorFixture:
         return result
 
 
-def execute_fixture(root: Path, host: FakeConfinedProcessHost | None = None) -> CursorFixture:
+def execute_fixture(
+    root: Path,
+    host: FakeConfinedProcessHost | None = None,
+    *,
+    agent_run: AgentRunRequest | None = None,
+) -> CursorFixture:
     cfg = config(root)
     process_host = host if host is not None else FakeConfinedProcessHost()
     if process_host.stdout is None:
         process_host.stdout = complete_stream(str(root.resolve()))
     task_context, port = context(root)
-    task = request(binding_data=binding_data(cfg))
+    task = request(
+        binding_data=binding_data(cfg), **({"agent_run": agent_run} if agent_run is not None else {})
+    )
     return CursorFixture(
         handler=CursorHandler(process_host),
         host=process_host,

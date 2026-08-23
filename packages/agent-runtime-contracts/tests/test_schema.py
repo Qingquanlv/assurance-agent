@@ -98,6 +98,76 @@ def test_resolve_result_schema_includes_phase3_live_fixture() -> None:
     assert resolve_result_schema(_LIVE_FIXTURE_SCHEMA_DIGEST) == _LIVE_FIXTURE_SCHEMA
 
 
+_INTAKE_RESULT_SCHEMA = {
+    "additionalProperties": False,
+    "properties": {
+        "output_files": {
+            "items": {"title": "Output Files", "type": "string"},
+            "type": "array",
+        }
+    },
+    "required": ["output_files"],
+    "title": "ArtifactListResultV1",
+    "type": "object",
+}
+
+
+def test_product_result_schema_is_not_in_the_fixture_registry() -> None:
+    digest = canonical_digest(_INTAKE_RESULT_SCHEMA)
+    with pytest.raises(ValueError, match="result schema is missing"):
+        resolve_result_schema(digest)
+
+
+def test_resolve_result_schema_accepts_authenticated_document() -> None:
+    digest = canonical_digest(_INTAKE_RESULT_SCHEMA)
+    assert resolve_result_schema(digest, schema_document=_INTAKE_RESULT_SCHEMA) == _INTAKE_RESULT_SCHEMA
+    with pytest.raises(ValueError, match="digest"):
+        resolve_result_schema("0" * 64, schema_document=_INTAKE_RESULT_SCHEMA)
+
+
+def test_validate_structured_result_allows_title_and_description_annotations() -> None:
+    schema = {
+        **_INTAKE_RESULT_SCHEMA,
+        "description": "intake artifact list",
+    }
+    payload = {"output_files": ["qa/changes/CH-1/proposal.md"]}
+    assert (
+        validate_structured_result(
+            payload,
+            schema=schema,
+            schema_digest=canonical_digest(schema),
+        )
+        == payload
+    )
+
+
+def test_result_contract_carries_schema_document_when_digest_matches() -> None:
+    digest = canonical_digest(_INTAKE_RESULT_SCHEMA)
+    contract = ResultContract(
+        schema_id="assurance.intake.result.intake.v1",
+        schema_digest=digest,
+        extraction_mode="structured",
+        schema_document=_INTAKE_RESULT_SCHEMA,
+    )
+    assert contract.schema_document is not None
+    assert resolve_result_schema(contract.schema_digest, schema_document=contract.schema_document) == (
+        _INTAKE_RESULT_SCHEMA
+    )
+    omitted = ResultContract(
+        schema_id="fixture.result.v1",
+        schema_digest=canonical_digest(_STRICT_SCHEMA),
+        extraction_mode="structured",
+    )
+    assert "schema_document" not in omitted.model_dump(mode="json")
+    with pytest.raises(ValidationError, match="digest"):
+        ResultContract(
+            schema_id="assurance.intake.result.intake.v1",
+            schema_digest="0" * 64,
+            extraction_mode="structured",
+            schema_document=_INTAKE_RESULT_SCHEMA,
+        )
+
+
 def test_result_contract_digest_must_match_schema() -> None:
     contract = ResultContract(
         schema_id="fixture.result.v1",

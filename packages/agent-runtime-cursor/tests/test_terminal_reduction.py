@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_runtime_contracts import AgentRunResult
+from agent_runtime_contracts import AgentRunResult, ResultContract
 from agent_runtime_contracts.schema import canonical_digest, thaw_json
 from agent_runtime_cursor.process import CursorProcessReceipt
 from fake_process_host import FakeConfinedProcessHost  # pyright: ignore[reportMissingImports]
-from cursor_harness import complete_stream, error_stream, execute_fixture  # pyright: ignore[reportMissingImports]
+from cursor_harness import (  # pyright: ignore[reportMissingImports]
+    agent_run,
+    complete_stream,
+    error_stream,
+    execute_fixture,
+)
 
 
 _FORBIDDEN_RESULT_FIELDS = (
@@ -38,6 +43,37 @@ async def test_terminal_reduction_returns_schema_valid_agent_run_result(tmp_path
     receipt = CursorProcessReceipt.model_validate(thaw_json(fixture.port.snapshot.reference))
     assert receipt.stream_session_id is None
     assert "--resume" not in fixture.host.launches[0].argv
+
+
+async def test_product_result_schema_on_contract_validates(tmp_path: Path) -> None:
+    schema = {
+        "additionalProperties": False,
+        "properties": {
+            "output_files": {
+                "items": {"title": "Output Files", "type": "string"},
+                "type": "array",
+            }
+        },
+        "required": ["output_files"],
+        "title": "ArtifactListResultV1",
+        "type": "object",
+    }
+    cwd = str(tmp_path.resolve())
+    host = FakeConfinedProcessHost(
+        stdout=complete_stream(cwd, result={"output_files": ["qa/changes/CH-1/proposal.md"]}),
+    )
+    run = agent_run(
+        result_contract=ResultContract(
+            schema_id="assurance.intake.result.intake.v1",
+            schema_digest=canonical_digest(schema),
+            extraction_mode="structured",
+            schema_document=schema,
+        )
+    )
+    fixture = execute_fixture(tmp_path, host, agent_run=run)
+    outcome = await fixture.handler.execute(fixture.request, fixture.context)
+    result = AgentRunResult.model_validate(outcome.output)
+    assert thaw_json(result.structured_result) == {"output_files": ["qa/changes/CH-1/proposal.md"]}
 
 
 async def test_terminal_reduction_rejects_result_schema_failure(tmp_path: Path) -> None:

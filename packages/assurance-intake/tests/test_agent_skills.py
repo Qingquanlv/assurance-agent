@@ -115,6 +115,8 @@ async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Pat
     assert "opencode" not in encoded
     assert "cursor" not in encoded
     assert request.execution.provider_model == "test-model"
+    assert request.result_contract.schema_document is not None
+    assert request.result_contract.schema_id == "assurance.intake.result.case-design.v1"
 
 
 @pytest.mark.asyncio

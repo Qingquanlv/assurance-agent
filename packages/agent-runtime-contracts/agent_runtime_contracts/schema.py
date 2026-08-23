@@ -23,6 +23,8 @@ _ALLOWED_SCHEMA_KEYS = frozenset(
         "maximum",
         "minItems",
         "maxItems",
+        "title",
+        "description",
     }
 )
 _PRIMITIVE_TYPES = frozenset({"string", "number", "integer", "boolean", "null"})
@@ -306,7 +308,12 @@ _FIXTURE_RESULT_SCHEMAS: tuple[object, ...] = (
 )
 
 
-def resolve_result_schema(schema_digest: str) -> object:
+def resolve_result_schema(schema_digest: str, schema_document: object | None = None) -> object:
+    if schema_document is not None:
+        thawed = thaw_json(schema_document)
+        if canonical_digest(thawed) != schema_digest:
+            raise ValueError("result schema digest is not canonical")
+        return thawed
     for schema in _FIXTURE_RESULT_SCHEMAS:
         if canonical_digest(schema) == schema_digest:
             return schema

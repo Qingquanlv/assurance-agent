@@ -46,6 +46,7 @@ def result_contract() -> ResultContract:
         schema_id=EXECUTION_RESULT_ID,
         schema_digest=canonical_digest(payload),
         extraction_mode="structured",
+        schema_document=payload,
     )
 
 

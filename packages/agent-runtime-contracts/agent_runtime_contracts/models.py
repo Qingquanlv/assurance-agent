@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Literal, Self
 
-from pydantic import Field, JsonValue, field_serializer, field_validator, model_validator
+from pydantic import Field, JsonValue, field_serializer, field_validator, model_serializer, model_validator
 
 from graph_engine.plugin_api import FrozenModel
 
@@ -79,6 +80,31 @@ class ResultContract(FrozenModel):
     schema_id: str = Field(min_length=1)
     schema_digest: str = Field(pattern=_SHA256_PATTERN)
     extraction_mode: Literal["structured"]
+    schema_document: JSONValue | None = None
+
+    @field_validator("schema_document", mode="after")
+    @classmethod
+    def _freeze_schema_document(cls, value: JSONValue | None) -> Any:
+        return None if value is None else freeze_json(value)
+
+    @field_serializer("schema_document")
+    def _serialize_schema_document(self, value: object) -> Any:
+        return None if value is None else thaw_json(value)
+
+    @model_validator(mode="after")
+    def _schema_document_matches_digest(self) -> Self:
+        if self.schema_document is None:
+            return self
+        if canonical_digest(thaw_json(self.schema_document)) != self.schema_digest:
+            raise ValueError("result schema digest is not canonical")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _omit_missing_schema_document(self, serializer: Callable[[Any], dict[str, Any]]) -> dict[str, Any]:
+        data = serializer(self)
+        if data.get("schema_document") is None:
+            data.pop("schema_document", None)
+        return data
 
 
 class ExecutionLimits(FrozenModel):

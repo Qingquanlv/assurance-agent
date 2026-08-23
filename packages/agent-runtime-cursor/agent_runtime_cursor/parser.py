@@ -10,7 +10,6 @@ from agent_runtime_contracts.schema import (
     canonical_digest,
     reject_credentials_in_digest_input,
     resolve_result_schema,
-    thaw_json,
     validate_structured_result,
 )
 from graph_engine.plugin_api import TaskOutcome, TaskRequest
@@ -243,7 +242,7 @@ def _structured_result(terminal: Mapping[str, Any]) -> object:
 
 def _result_schema(request: TaskRequest, contract: ResultContract) -> object:
     del request
-    return resolve_result_schema(contract.schema_digest)
+    return resolve_result_schema(contract.schema_digest, schema_document=contract.schema_document)
 
 
 def _provider_error_message(terminal: Mapping[str, Any]) -> str:

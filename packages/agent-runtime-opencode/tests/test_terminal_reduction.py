@@ -1,12 +1,29 @@
 from __future__ import annotations
 
-from agent_runtime_contracts import AgentRunResult
-from agent_runtime_contracts.schema import canonical_digest
+from agent_runtime_contracts import AgentRunRequest, AgentRunResult, ResultContract
+from agent_runtime_contracts.schema import canonical_digest, thaw_json
+from agent_runtime_opencode.reducer import reduce_terminal
 from harness import (  # pyright: ignore[reportMissingImports]
     _completed_engine_invocation,
     _terminal_success_fixture,
     _terminal_success_outcome,
+    agent_run_request,
+    task_request,
 )
+
+
+_INTAKE_RESULT_SCHEMA = {
+    "additionalProperties": False,
+    "properties": {
+        "output_files": {
+            "items": {"title": "Output Files", "type": "string"},
+            "type": "array",
+        }
+    },
+    "required": ["output_files"],
+    "title": "ArtifactListResultV1",
+    "type": "object",
+}
 
 
 _FORBIDDEN_RESULT_FIELDS = (
@@ -57,3 +74,58 @@ def test_post_success_replay_needs_no_opencode_access() -> None:
         AgentRunResult.model_validate(replayed.outcome.output)
     finally:
         fixture.close()
+
+
+def _intake_messages(payload: object) -> list[dict[str, object]]:
+    import json
+
+    return [
+        {
+            "info": {"id": "asst-1", "role": "assistant"},
+            "parts": [{"type": "text", "text": json.dumps(payload, separators=(",", ":"))}],
+        }
+    ]
+
+
+def test_product_result_schema_missing_document_is_invalid_output() -> None:
+    agent_run = agent_run_request(result_schema=_INTAKE_RESULT_SCHEMA)
+    outcome = reduce_terminal(
+        kind="succeeded",
+        session={},
+        messages=_intake_messages({"output_files": ["qa/changes/CH-1/proposal.md"]}),
+        agent_run=agent_run,
+        request=task_request(agent_run),
+        diff=None,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.retryable is False
+    assert outcome.failure.message == "result schema is missing"
+
+
+def test_product_result_schema_on_contract_validates() -> None:
+    digest = canonical_digest(_INTAKE_RESULT_SCHEMA)
+    base = agent_run_request(result_schema=_INTAKE_RESULT_SCHEMA)
+    agent_run = AgentRunRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "result_contract": ResultContract(
+                schema_id="assurance.intake.result.intake.v1",
+                schema_digest=digest,
+                extraction_mode="structured",
+                schema_document=_INTAKE_RESULT_SCHEMA,
+            ).model_dump(mode="json"),
+        }
+    )
+    outcome = reduce_terminal(
+        kind="succeeded",
+        session={},
+        messages=_intake_messages({"output_files": ["qa/changes/CH-1/proposal.md"]}),
+        agent_run=agent_run,
+        request=task_request(agent_run),
+        diff=None,
+    )
+    assert outcome.status == "succeeded"
+    result = AgentRunResult.model_validate(outcome.output)
+    assert thaw_json(result.structured_result) == {"output_files": ["qa/changes/CH-1/proposal.md"]}
