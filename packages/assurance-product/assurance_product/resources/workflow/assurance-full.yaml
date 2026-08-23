@@ -19,7 +19,7 @@ retry:
     max_attempts: 1
 timeout:
   short:
-    run_seconds: 30
+    run_seconds: 3600
 graphs:
   entry:
     max_activations: 8
