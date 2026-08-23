@@ -23,7 +23,7 @@ from graph_engine.composition import (
 )
 from graph_engine.composition.sources import WheelProductDeclaration
 from graph_engine.frozen_json import thaw_json
-from graph_engine.graph.schema import WorkflowDef
+from graph_engine.graph.schema import WorkflowDef, parse_workflow
 from graph_engine.plugin_api import FrozenModel, ProviderSource
 
 from assurance_product.models import (
@@ -33,7 +33,6 @@ from assurance_product.models import (
     PLUGIN_ID,
     PLUGIN_VERSION,
     PREPARE_IDS,
-    PRODUCT_ID,
     AdapterName,
     CursorBindingV1,
     OpenCodeBindingV1,
@@ -67,22 +66,22 @@ _PLUGIN_VERSIONS: dict[str, str] = {
     PLUGIN_ID: f"=={PLUGIN_VERSION}",
     CONFIGURATION_PLUGIN_ID: f"=={CONFIGURATION_PLUGIN_VERSION}",
 }
-_ENTRYPOINTS = {"run": "root"}
-_WORKFLOW_DOCUMENT: dict[str, JSONValue] = {
-    "name": PRODUCT_ID,
-    "entrypoints": dict(_ENTRYPOINTS),
-    "retry": {"once": {"max_attempts": 1}},
-    "timeout": {"short": {"run_seconds": 1}},
-    "graphs": {
-        "root": {
-            "max_activations": 1,
-            "start": "done",
-            "nodes": {"done": {"kind": "end"}},
-            "edges": [],
-        }
-    },
-}
-_WORKFLOW = WorkflowDef.model_validate(_WORKFLOW_DOCUMENT)
+_WORKFLOW_PATH = Path(__file__).resolve().parent / "resources" / "workflow" / "assurance-full.yaml"
+
+
+def load_canonical_workflow() -> WorkflowDef:
+    return parse_workflow(_WORKFLOW_PATH.read_text(encoding="utf-8"))
+
+
+def _canonical_workflow_document() -> dict[str, JSONValue]:
+    return cast(
+        dict[str, JSONValue],
+        load_canonical_workflow().model_dump(mode="json", by_alias=True, exclude_unset=True),
+    )
+
+
+_WORKFLOW = load_canonical_workflow()
+_ENTRYPOINTS = dict(_WORKFLOW.entrypoints)
 _PROVIDERS: dict[AdapterName, str] = {
     "opencode": "AssuranceOpenCodeProductProvider",
     "cursor": "AssuranceCursorProductProvider",
@@ -171,7 +170,7 @@ def product_declaration_document(
 ) -> dict[str, JSONValue]:
     source = _product_source(adapter).model_dump(mode="json")
     manifest = _build_manifest(adapter, config_plugin_paths).model_dump(mode="json")
-    manifest["workflow"] = _WORKFLOW_DOCUMENT
+    manifest["workflow"] = _canonical_workflow_document()
     manifest.pop("workflow_resource_id", None)
     return {
         "schema_version": "1",
@@ -272,10 +271,19 @@ def _authenticate_assurance_composition(
         raise AssuranceCompositionError("composition binding set is not the exact 99 aliases")
     if _lock_binding_ids(composition) != expected_bindings:
         raise AssuranceCompositionError("lock binding projection is not the exact 99 aliases")
-    if _graph_binding_ids(composition):
-        raise AssuranceCompositionError(
-            "placeholder workflow must have an empty graph binding set; Tasks 14-18 will tighten this"
-        )
+    graph_bindings = _graph_binding_ids(composition)
+    expected_graph = {
+        node.capability
+        for graph in _WORKFLOW.graphs.values()
+        for node in graph.nodes.values()
+        if node.capability is not None
+    }
+    if not graph_bindings.issubset(expected_bindings):
+        raise AssuranceCompositionError("graph bindings must be a subset of the frozen 99 aliases")
+    if graph_bindings != expected_graph:
+        raise AssuranceCompositionError("compiled workflow capabilities do not match the canonical slice")
+    if any(not capability.startswith(f"{PLUGIN_ID}.") for capability in graph_bindings):
+        raise AssuranceCompositionError("graph referenced a non-product agent alias")
 
     source = composition.manifest.source
     if source is None or source.entrypoint_name != f"assurance-{adapter}":

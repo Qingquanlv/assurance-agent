@@ -3,11 +3,87 @@ entrypoints:
     nodes: []
     edges: []
   intake:
-    nodes: []
-    edges: []
+    nodes:
+      - entry/intake
+      - entry/explore
+      - entry/case-design
+      - entry/case-review
+      - entry/done
+      - intake/prepare
+      - intake/execute
+      - intake/finalize
+      - intake/done
+      - explore/prepare
+      - explore/execute
+      - explore/finalize
+      - explore/done
+      - case-design/prepare
+      - case-design/execute
+      - case-design/finalize
+      - case-design/done
+      - case-review/prepare
+      - case-review/execute
+      - case-review/finalize
+      - case-review/done
+    edges:
+      - entry:intake->explore
+      - entry:explore->case-design
+      - entry:case-design->case-review
+      - entry:case-review->done
+      - intake:prepare->execute
+      - intake:execute->finalize
+      - intake:finalize->done
+      - explore:prepare->execute
+      - explore:execute->finalize
+      - explore:finalize->done
+      - case-design:prepare->execute
+      - case-design:execute->finalize
+      - case-design:finalize->done
+      - case-review:prepare->execute
+      - case-review:execute->finalize
+      - case-review:finalize->done
+    aliases:
+      - assurance.product.agent.intake.intake.prepare
+      - assurance.product.agent.intake.intake.execute
+      - assurance.product.agent.intake.intake.finalize
+      - assurance.product.agent.intake.explore.prepare
+      - assurance.product.agent.intake.explore.execute
+      - assurance.product.agent.intake.explore.finalize
+      - assurance.product.agent.intake.case-design.prepare
+      - assurance.product.agent.intake.case-design.execute
+      - assurance.product.agent.intake.case-design.finalize
+      - assurance.product.agent.intake.case-review.prepare
+      - assurance.product.agent.intake.case-review.execute
+      - assurance.product.agent.intake.case-review.finalize
   case:
-    nodes: []
-    edges: []
+    nodes:
+      - case/case-design
+      - case/case-review
+      - case/done
+      - case-design/prepare
+      - case-design/execute
+      - case-design/finalize
+      - case-design/done
+      - case-review/prepare
+      - case-review/execute
+      - case-review/finalize
+      - case-review/done
+    edges:
+      - case:case-design->case-review
+      - case:case-review->done
+      - case-design:prepare->execute
+      - case-design:execute->finalize
+      - case-design:finalize->done
+      - case-review:prepare->execute
+      - case-review:execute->finalize
+      - case-review:finalize->done
+    aliases:
+      - assurance.product.agent.intake.case-design.prepare
+      - assurance.product.agent.intake.case-design.execute
+      - assurance.product.agent.intake.case-design.finalize
+      - assurance.product.agent.intake.case-review.prepare
+      - assurance.product.agent.intake.case-review.execute
+      - assurance.product.agent.intake.case-review.finalize
   execute:
     nodes: []
     edges: []
@@ -41,5 +117,60 @@ entrypoints:
   improvement-rollback:
     nodes: []
     edges: []
-nodes: []
-edges: []
+nodes:
+  - entry/intake
+  - entry/explore
+  - entry/case-design
+  - entry/case-review
+  - entry/done
+  - case/case-design
+  - case/case-review
+  - case/done
+  - intake/prepare
+  - intake/execute
+  - intake/finalize
+  - intake/done
+  - explore/prepare
+  - explore/execute
+  - explore/finalize
+  - explore/done
+  - case-design/prepare
+  - case-design/execute
+  - case-design/finalize
+  - case-design/done
+  - case-review/prepare
+  - case-review/execute
+  - case-review/finalize
+  - case-review/done
+edges:
+  - entry:intake->explore
+  - entry:explore->case-design
+  - entry:case-design->case-review
+  - entry:case-review->done
+  - case:case-design->case-review
+  - case:case-review->done
+  - intake:prepare->execute
+  - intake:execute->finalize
+  - intake:finalize->done
+  - explore:prepare->execute
+  - explore:execute->finalize
+  - explore:finalize->done
+  - case-design:prepare->execute
+  - case-design:execute->finalize
+  - case-design:finalize->done
+  - case-review:prepare->execute
+  - case-review:execute->finalize
+  - case-review:finalize->done
+aliases:
+  - assurance.product.agent.intake.intake.prepare
+  - assurance.product.agent.intake.intake.execute
+  - assurance.product.agent.intake.intake.finalize
+  - assurance.product.agent.intake.explore.prepare
+  - assurance.product.agent.intake.explore.execute
+  - assurance.product.agent.intake.explore.finalize
+  - assurance.product.agent.intake.case-design.prepare
+  - assurance.product.agent.intake.case-design.execute
+  - assurance.product.agent.intake.case-design.finalize
+  - assurance.product.agent.intake.case-review.prepare
+  - assurance.product.agent.intake.case-review.execute
+  - assurance.product.agent.intake.case-review.finalize

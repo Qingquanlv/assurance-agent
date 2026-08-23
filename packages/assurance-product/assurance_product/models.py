@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
+import unicodedata
 from urllib.parse import urlparse
 
 from pydantic import AnyHttpUrl, ConfigDict, Field, field_validator, model_validator
@@ -422,3 +423,166 @@ def finalize_aliases() -> tuple[str, ...]:
 
 def expected_finalize_ids() -> frozenset[str]:
     return frozenset(prepare_id.removesuffix(".prepare") + ".finalize" for prepare_id in PREPARE_IDS)
+
+
+TEST_FAMILY_ORDER: tuple[Literal["api", "e2e", "fuzz", "performance"], ...] = (
+    "api",
+    "e2e",
+    "fuzz",
+    "performance",
+)
+FAMILY_NONEMPTY_ENTRYPOINTS = frozenset({"full", "execute"})
+FAMILY_EMPTY_ENTRYPOINTS = frozenset(
+    {
+        "intake",
+        "case",
+        "archive",
+        "retro",
+        "issue-review",
+        "issue-analyze",
+        "issue-reconcile",
+        "improvement-review",
+        "improvement-evaluate",
+        "improvement-export",
+        "improvement-apply",
+        "improvement-rollback",
+    }
+)
+PRODUCT_ENTRYPOINTS = FAMILY_NONEMPTY_ENTRYPOINTS | FAMILY_EMPTY_ENTRYPOINTS
+
+
+def _canonical_token(value: str, label: str) -> str:
+    normalized = unicodedata.normalize("NFC", value.strip())
+    if not normalized or any(character.isspace() for character in normalized):
+        raise ValueError(f"{label} must be one non-empty token")
+    return normalized
+
+
+def _canonical_text(value: str, label: str) -> str:
+    normalized = unicodedata.normalize("NFC", value.strip())
+    if not normalized:
+        raise ValueError(f"{label} must be non-empty")
+    return normalized
+
+
+def _canonical_artifact_prefixes(values: tuple[str, ...]) -> tuple[str, ...]:
+    cleaned = tuple(unicodedata.normalize("NFC", item.strip()) for item in values)
+    if any(not item for item in cleaned):
+        raise ValueError("allowed_artifact_paths must be non-empty prefixes")
+    if len(set(cleaned)) != len(cleaned):
+        raise ValueError("allowed_artifact_paths must be unique")
+    ordered = tuple(sorted(cleaned))
+    if ordered != cleaned:
+        raise ValueError("allowed_artifact_paths must be sorted unique relative POSIX prefixes")
+    for path in ordered:
+        posix = PurePosixPath(path)
+        if (
+            posix.is_absolute()
+            or "\\" in path
+            or (len(path) >= 2 and path[1] == ":")
+            or posix.as_posix() != path
+            or any(part in {"", ".", ".."} for part in posix.parts)
+        ):
+            raise ValueError("allowed_artifact_paths must be canonical relative POSIX prefixes")
+    return ordered
+
+
+class ResourceRefV1(FrozenModel):
+    resource_id: str
+    sha256: str = Field(pattern=_SHA256)
+
+    @field_validator("resource_id")
+    @classmethod
+    def _resource_id(cls, value: str) -> str:
+        return _qualified_id(value, "resource_id")
+
+
+class BusinessBudgetsV1(FrozenModel):
+    review_rounds: int = Field(ge=0)
+    coverage_rounds: int = Field(ge=0)
+    healing_rounds: int = Field(ge=0)
+    execution_retries: int = Field(ge=0)
+
+
+class ProductInputV1(FrozenModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["1"]
+    change_id: str
+    requirement: str
+    run_mode: Literal["case", "implement", "verify"]
+    selected_test_families: tuple[Literal["api", "e2e", "fuzz", "performance"], ...]
+    auto_archive: bool
+    capability_catalog: ResourceRefV1
+    product_policy: ResourceRefV1
+    data_knowledge: ResourceRefV1
+    allowed_artifact_paths: tuple[str, ...]
+    budgets: BusinessBudgetsV1
+
+    @field_validator("change_id")
+    @classmethod
+    def _change_id(cls, value: str) -> str:
+        return _canonical_token(value, "change_id")
+
+    @field_validator("requirement")
+    @classmethod
+    def _requirement(cls, value: str) -> str:
+        return _canonical_text(value, "requirement")
+
+    @field_validator("selected_test_families")
+    @classmethod
+    def _selected_test_families(
+        cls, value: tuple[Literal["api", "e2e", "fuzz", "performance"], ...]
+    ) -> tuple[Literal["api", "e2e", "fuzz", "performance"], ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("selected_test_families must be unique")
+        order = {name: index for index, name in enumerate(TEST_FAMILY_ORDER)}
+        if tuple(sorted(value, key=order.__getitem__)) != value:
+            raise ValueError("selected_test_families must be in canonical family order")
+        return value
+
+    @field_validator("allowed_artifact_paths")
+    @classmethod
+    def _allowed_artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_artifact_prefixes(value)
+
+    def validate_for_entrypoint(self, entrypoint: str) -> ProductInputV1:
+        validate_entrypoint_families(entrypoint, self.selected_test_families)
+        return self
+
+    def authenticate_against(self, composition: object) -> ProductInputV1:
+        authenticate_product_input_resources(self, composition)
+        return self
+
+
+def validate_entrypoint_families(
+    entrypoint: str,
+    families: tuple[str, ...],
+) -> None:
+    if entrypoint not in PRODUCT_ENTRYPOINTS:
+        raise ValueError(f"unknown product entrypoint: {entrypoint}")
+    if entrypoint in FAMILY_NONEMPTY_ENTRYPOINTS and not families:
+        raise ValueError(f"{entrypoint} requires a non-empty selected_test_families tuple")
+    if entrypoint in FAMILY_EMPTY_ENTRYPOINTS and families:
+        raise ValueError(f"{entrypoint} requires an empty selected_test_families tuple")
+
+
+def authenticate_product_input_resources(value: ProductInputV1, composition: object) -> None:
+    resources = getattr(getattr(getattr(composition, "registries", None), "resources", None), "entries", None)
+    if not isinstance(resources, Mapping):
+        raise ValueError("composition resource registry is unavailable")
+    refs = (
+        value.capability_catalog,
+        value.product_policy,
+        value.data_knowledge,
+    )
+    seen: set[str] = set()
+    for ref in refs:
+        if ref.resource_id in seen:
+            raise ValueError(f"duplicate product resource reference: {ref.resource_id}")
+        seen.add(ref.resource_id)
+        entry = resources.get(ref.resource_id)
+        if entry is None:
+            raise ValueError(f"resource is not registered: {ref.resource_id}")
+        digest = getattr(entry, "sha256", None)
+        if digest != ref.sha256:
+            raise ValueError(f"resource digest drifted: {ref.resource_id}")

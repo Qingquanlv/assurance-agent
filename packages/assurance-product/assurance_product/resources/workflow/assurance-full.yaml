@@ -1,0 +1,218 @@
+name: assurance
+entrypoints:
+  intake: entry
+  case: case
+retry:
+  once:
+    max_attempts: 1
+timeout:
+  short:
+    run_seconds: 30
+graphs:
+  entry:
+    max_activations: 8
+    start: intake
+    nodes:
+      intake:
+        kind: subgraph
+        graph: intake
+      explore:
+        kind: subgraph
+        graph: explore
+      case-design:
+        kind: subgraph
+        graph: case-design
+      case-review:
+        kind: subgraph
+        graph: case-review
+      done:
+        kind: end
+    edges:
+      - from: intake
+        to: explore
+      - from: explore
+        to: case-design
+      - from: case-design
+        to: case-review
+      - from: case-review
+        to: done
+  case:
+    max_activations: 6
+    start: case-design
+    nodes:
+      case-design:
+        kind: subgraph
+        graph: case-design
+      case-review:
+        kind: subgraph
+        graph: case-review
+      done:
+        kind: end
+    edges:
+      - from: case-design
+        to: case-review
+      - from: case-review
+        to: done
+  intake:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.intake.intake.prepare
+        input: &prepare-input
+          capability_leafs: []
+        input_projection: &prepare-projection
+          type: object
+          fields:
+            change_id:
+              type: root_pointer
+              pointer: /change_id
+            capability_leafs:
+              type: config_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: root_pointer
+              pointer: /allowed_artifact_paths
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.intake.intake.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.intake.intake.finalize
+        input: *prepare-input
+        input_projection: &finalize-projection
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            capability_leafs:
+              type: config_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: root_pointer
+              pointer: /allowed_artifact_paths
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  explore:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.intake.explore.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.intake.explore.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.intake.explore.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  case-design:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.intake.case-design.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.intake.case-design.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.intake.case-design.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  case-review:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.intake.case-review.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.intake.case-review.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.intake.case-review.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
