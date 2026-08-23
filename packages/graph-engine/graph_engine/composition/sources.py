@@ -976,6 +976,8 @@ def _parse_record(record_bytes: bytes) -> tuple[tuple[str, str | None, int | Non
         if relative_path in seen:
             raise SourceSnapshotError(f"duplicate RECORD path: {relative_path}")
         seen.add(relative_path)
+        if any(part == ".." for part in relative_path.split("/")):
+            continue
         try:
             SourceFile.from_bytes(relative_path, b"")
         except (TypeError, ValueError) as error:

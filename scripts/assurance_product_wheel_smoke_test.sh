@@ -89,14 +89,12 @@ from __future__ import annotations
 
 import argparse
 import ast
-import csv
-import io
 import json
 import sys
 import zipfile
 from email.parser import BytesParser
 from importlib import metadata, util
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 CLOSED_NAMES = (
     "graph-engine",
@@ -303,47 +301,6 @@ def probe_prefix(prefix: str, expected_names: str, expected_entry_points: str, f
     print(f"PREFIX={prefix} ENTRY_POINTS={','.join(expected_eps)}")
 
 
-def _canonical_record_path(relative_path: str) -> bool:
-    try:
-        path = PurePosixPath(relative_path)
-    except (TypeError, ValueError):
-        return False
-    return bool(relative_path) and not path.is_absolute() and all(
-        part not in {"", ".", ".."} for part in path.parts
-    )
-
-
-def sanitize_installer_records() -> None:
-    """Drop PEP 376 installer script rows (``../../../bin/aa-next``) from RECORD.
-
-    Installed-source authentication rejects non-canonical RECORD paths. Console
-    scripts are generated outside site-packages and are not wheel source.
-    """
-
-    rewritten = 0
-    for dist in metadata.distributions():
-        record_path: Path | None = None
-        for file in dist.files or ():
-            relative = str(file)
-            if relative.endswith(".dist-info/RECORD"):
-                record_path = Path(str(dist.locate_file(file)))
-                break
-        if record_path is None or not record_path.is_file():
-            continue
-        rows = list(csv.reader(record_path.read_text(encoding="utf-8").splitlines()))
-        kept = [row for row in rows if row and _canonical_record_path(row[0])]
-        dropped = [row[0] for row in rows if row and not _canonical_record_path(row[0])]
-        if not dropped:
-            continue
-        buffer = io.StringIO()
-        writer = csv.writer(buffer, lineterminator="\n")
-        writer.writerows(kept)
-        record_path.write_text(buffer.getvalue(), encoding="utf-8")
-        rewritten += 1
-        print(f"SANITIZED_RECORD name={dist.metadata['Name']} dropped={dropped}")
-    print(f"INSTALLER_RECORDS_SANITIZED={rewritten}")
-
-
 def check_compile_ok(output: str, product: str) -> None:
     document = json.loads(output)
     if document.get("engine_api") != "2.0":
@@ -380,7 +337,6 @@ def main(argv: list[str]) -> int:
     compile_ok = sub.add_parser("compile-ok")
     compile_ok.add_argument("--output", required=True)
     compile_ok.add_argument("--product", required=True)
-    sub.add_parser("sanitize-records")
     args = parser.parse_args(argv)
     if args.command == "archives":
         check_archives(Path(args.dist))
@@ -390,9 +346,6 @@ def main(argv: list[str]) -> int:
         return 0
     if args.command == "compile-ok":
         check_compile_ok(Path(args.output).read_text(encoding="utf-8"), args.product)
-        return 0
-    if args.command == "sanitize-records":
-        sanitize_installer_records()
         return 0
     probe_prefix(args.prefix, args.expected_names, args.expected_entry_points, args.forbidden_names)
     return 0
@@ -423,12 +376,11 @@ install_env() {
   shift
   local venv="$smoke_root/venv-$name"
   uv venv --offline --python 3.11 "$venv"
-  uv pip install \
+    uv pip install \
     --offline \
     --python "$venv/bin/python" \
     --find-links "$dist_root" \
     "$@"
-  "$venv/bin/python" "$smoke_root/check.py" sanitize-records
   if [[ -x "$venv/bin/aa" ]]; then
     echo "legacy aa must be absent in $name" >&2
     exit 1
@@ -520,7 +472,6 @@ install_binding() {
     --python "$smoke_root/venv-$name/bin/python" \
     --find-links "$dist_root" \
     "$wheel"
-  "$smoke_root/venv-$name/bin/python" "$smoke_root/check.py" sanitize-records
 }
 
 compile_product() {

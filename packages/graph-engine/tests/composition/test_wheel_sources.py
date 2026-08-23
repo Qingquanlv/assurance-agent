@@ -886,6 +886,26 @@ def test_installed_snapshot_rejects_record_hash_mismatch(
         snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
 
 
+def test_installed_snapshot_skips_installer_script_record_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    _select_distribution(monkeypatch, distribution)
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    rows = _record_rows(distribution)
+    rows.append(["../../../bin/toy-script", "", ""])
+    _replace_record_rows(distribution, rows)
+
+    snapshot = snapshot_wheel_source(source)
+
+    assert "../../../bin/toy-script" not in {item.path for item in snapshot.files}
+    assert any(item.path.endswith("/RECORD") for item in snapshot.files)
+
+    Path(distribution.locate_file("toy_plugin/__init__.py")).write_bytes(b"mutated\n")
+    with pytest.raises(SourceSnapshotError, match="RECORD hash mismatch"):
+        snapshot_wheel_source(source)
+
+
 def test_installed_snapshot_rejects_missing_record_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -989,7 +1009,7 @@ def test_installed_snapshot_rejects_invalid_record_without_loading(
         record_path.write_text("only,two-columns\n", encoding="utf-8")
     else:
         rows = _record_rows(distribution)
-        rows.append(["../escape.py", "", ""] if fault == "unsafe" else list(rows[0]))
+        rows.append(["/absolute/escape.py", "", ""] if fault == "unsafe" else list(rows[0]))
         _replace_record_rows(distribution, rows)
     loaded: list[str] = []
     monkeypatch.setattr(
