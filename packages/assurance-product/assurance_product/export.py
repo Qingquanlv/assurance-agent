@@ -78,7 +78,11 @@ def export_invocation(
             authorization,
         )
         _reject_incomplete_export(status, projection)
-        with SnapshotStore(invocation_root / "workspace") as store:
+        with SnapshotStore.at(
+            invocation_fd,
+            "workspace",
+            display_root=invocation_root / "workspace",
+        ) as store:
             head_tree_id = store.head_tree_id()
             expected_head = projection.head_tree_id or status.initial_tree_id
             if head_tree_id != expected_head or head_tree_id != status.current_head_tree_id:

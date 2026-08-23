@@ -231,6 +231,49 @@ def test_export_refuses_resolved_secret_bytes(
         leaked.engine.close()
 
 
+def test_export_workspace_follows_authenticated_invocation_fd(
+    completed_invocation, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from assurance_product import export as export_mod
+    from graph_engine.runtime.workspace import SnapshotStore
+
+    invocation_root = completed_invocation.engine_root / "invocations" / completed_invocation.id
+    with SnapshotStore(invocation_root / "workspace") as store:
+        authenticated_head = store.head_tree_id()
+
+    decoy_parent = tmp_path / "decoy-invocation"
+    decoy_parent.mkdir()
+    decoy_store = SnapshotStore.create(decoy_parent / "workspace", {"decoy.txt": b"swapped-tree"})
+    decoy_head = decoy_store.head_tree_id()
+    decoy_store.close()
+    assert decoy_head != authenticated_head
+
+    real_open = export_mod._open_invocation
+
+    def open_then_rename_swap(engine_root: Path, invocation_id: str) -> int:
+        invocation_fd = real_open(engine_root, invocation_id)
+        parked = invocation_root.with_name(f"{invocation_id}.authenticated")
+        invocation_root.rename(parked)
+        decoy_parent.rename(invocation_root)
+        return invocation_fd
+
+    monkeypatch.setattr(export_mod, "_open_invocation", open_then_rename_swap)
+
+    destination = tmp_path / "fd-export"
+    exported = export_mod.export_invocation(
+        completed_invocation.engine,
+        completed_invocation.id,
+        destination,
+        authorization=completed_invocation.authorization,
+    )
+
+    with SnapshotStore(invocation_root / "workspace") as path_store:
+        assert path_store.head_tree_id() == decoy_head
+    assert exported.status.current_head_tree_id == authenticated_head
+    assert (destination / "result-tree" / "README.md").is_file()
+    assert not (destination / "result-tree" / "decoy.txt").exists()
+
+
 def test_export_refuses_missing_terminal_receipt(
     tmp_path: Path, installed_sources, monkeypatch: pytest.MonkeyPatch
 ):
