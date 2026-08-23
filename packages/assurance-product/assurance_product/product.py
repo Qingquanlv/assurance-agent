@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
-import sys
-from types import ModuleType
 from typing import Literal, cast
 
 from graph_engine.canonical import JSONValue, canonical_json_bytes
@@ -93,18 +90,6 @@ _PROVIDERS: dict[AdapterName, str] = {
 _PREPARE_DATA_FIELDS = frozenset({"execution", "request_policy_digest", "request_config_digest"})
 _PREPARE_EXECUTION_FIELDS = frozenset(
     {"provider_model", "worker_profile", "permission_profile_digest", "limits"}
-)
-_SNAPSHOT_MODULE_PREFIXES: tuple[str, ...] = (
-    "assurance_product",
-    "assurance_intake",
-    "assurance_generation",
-    "assurance_execution",
-    "assurance_healing",
-    "assurance_quality",
-    "assurance_improvement",
-    "agent_runtime_opencode",
-    "agent_runtime_cursor",
-    "assurance_product_bindings_",
 )
 
 
@@ -372,33 +357,20 @@ def _authenticate_assurance_composition(
     return composition
 
 
-def _evict_snapshot_modules() -> dict[str, ModuleType]:
-    evicted: dict[str, ModuleType] = {}
-    for name in tuple(sys.modules):
-        if any(name == prefix or name.startswith(prefix) for prefix in _SNAPSHOT_MODULE_PREFIXES):
-            evicted[name] = sys.modules.pop(name)
-    importlib.invalidate_caches()
-    return evicted
-
-
 def resolve_assurance_composition(request: AssuranceCompositionRequest) -> FrozenComposition:
     adapter = adapter_for_entrypoint(request.product_entrypoint)
     if not request.configuration_tree.path.is_dir():
         raise AssuranceCompositionError("configuration tree is not an explicit existing path")
-    evicted = _evict_snapshot_modules()
-    try:
-        composition = RegistryPlatform().resolve(
-            ResolutionRequest(
-                product=_wheel_product_source(adapter, request.product_entrypoint),
-                plugins=(
-                    *(wheel_plugin_source(source) for source in product_source_catalog(adapter)),
-                    request.deployment_source,
-                    request.configuration_tree,
-                ),
-            )
+    composition = RegistryPlatform().resolve(
+        ResolutionRequest(
+            product=_wheel_product_source(adapter, request.product_entrypoint),
+            plugins=(
+                *(wheel_plugin_source(source) for source in product_source_catalog(adapter)),
+                request.deployment_source,
+                request.configuration_tree,
+            ),
         )
-    finally:
-        sys.modules.update(evicted)
+    )
     return _authenticate_assurance_composition(composition, adapter)
 
 

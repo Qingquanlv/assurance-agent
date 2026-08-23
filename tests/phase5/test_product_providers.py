@@ -3,13 +3,6 @@ from __future__ import annotations
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import ProviderSource
 
-from assurance_product.models import ENGINE_API, PRODUCT_ID
-from assurance_product.product import (
-    AssuranceCursorProductProvider,
-    AssuranceOpenCodeProductProvider,
-)
-from assurance_product.source_catalog import product_source_catalog
-
 _SIX_CAPABILITY_DISTRIBUTIONS = frozenset(
     {
         "assurance-intake",
@@ -92,6 +85,8 @@ def runtime_coordinates(catalog: tuple[ProviderSource, ...]) -> set[str]:
 
 
 def test_provider_catalogs_differ_only_by_runtime_adapter():
+    from assurance_product.source_catalog import product_source_catalog
+
     opencode = product_source_catalog("opencode")
     cursor = product_source_catalog("cursor")
     assert six_capability_coordinates(opencode) == six_capability_coordinates(cursor)
@@ -100,6 +95,8 @@ def test_provider_catalogs_differ_only_by_runtime_adapter():
 
 
 def test_source_catalogs_are_six_wheels_plus_selected_adapter():
+    from assurance_product.source_catalog import product_source_catalog
+
     opencode = product_source_catalog("opencode")
     cursor = product_source_catalog("cursor")
     assert six_capability_coordinates(opencode) == _SIX_CAPABILITY_SOURCES
@@ -114,6 +111,12 @@ def test_source_catalogs_are_six_wheels_plus_selected_adapter():
 
 
 def test_providers_return_one_minimal_manifest_per_adapter():
+    from assurance_product.models import ENGINE_API, PRODUCT_ID
+    from assurance_product.product import (
+        AssuranceCursorProductProvider,
+        AssuranceOpenCodeProductProvider,
+    )
+
     opencode = AssuranceOpenCodeProductProvider.manifest()
     cursor = AssuranceCursorProductProvider.manifest()
     assert PRODUCT_ID == "assurance"

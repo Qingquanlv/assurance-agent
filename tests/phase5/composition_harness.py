@@ -66,11 +66,13 @@ def request_for(adapter: str, installed_sources: InstalledSources):
 
 
 def build_installed_sources(root: Path) -> InstalledSources:
-    from assurance_product.binding_builder import build_deployment_wheel
-
     wheels: dict[str, Path] = {}
     deployments: dict[str, WheelPluginSource] = {}
     extract_roots: dict[str, Path] = {}
+    _extract_workspace_wheels(root, extract_roots)
+    _import_extracted_workspace_packages()
+    from assurance_product.binding_builder import build_deployment_wheel
+
     for adapter in ("opencode", "cursor"):
         built = build_deployment_wheel(
             _DEPLOYMENT_FIXTURES / f"{adapter}.yaml",
@@ -84,7 +86,6 @@ def build_installed_sources(root: Path) -> InstalledSources:
             entrypoint_name="deployment",
             declaration_path=built.declaration_path,
         )
-    _extract_workspace_wheels(root, extract_roots)
     return InstalledSources(
         deployments=deployments,
         configuration_tree=ConfigTreePluginSource(path=_CONFIG_FIXTURE.resolve()),
@@ -135,6 +136,21 @@ def _extract_workspace_wheels(root: Path, extract_roots: dict[str, Path]) -> Non
         wheel = next(output.glob("*.whl"))
         extract_roots[name] = _extract_wheel(wheel, root / f"workspace-extract-{name}")
     importlib.invalidate_caches()
+
+
+def _import_extracted_workspace_packages() -> None:
+    """Load extracted wheels with standard loaders, not pytest assertion rewriting."""
+    hooks = [finder for finder in sys.meta_path if type(finder).__name__ == "AssertionRewritingHook"]
+    for hook in hooks:
+        sys.meta_path.remove(hook)
+    try:
+        importlib.invalidate_caches()
+        for distribution, _project in _WORKSPACE_WHEELS:
+            importlib.import_module(distribution.replace("-", "_"))
+    finally:
+        for hook in reversed(hooks):
+            if hook not in sys.meta_path:
+                sys.meta_path.insert(0, hook)
 
 
 def _extract_wheel(wheel: Path, destination: Path) -> Path:

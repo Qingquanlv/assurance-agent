@@ -1624,6 +1624,137 @@ def test_load_rejects_preload_executed_from_changed_then_restored_bytes(
         load_snapshotted_entrypoint(source, snapshot)
 
 
+def test_load_accepts_already_imported_installed_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    root = Path(distribution.locate_file(""))
+    package_init = Path(distribution.locate_file("toy_plugin/__init__.py"))
+    package_init.write_text(
+        "from graph_engine.plugin_api import PluginContribution, PluginDescriptor, ProviderSource\n"
+        "_DESCRIPTOR = PluginDescriptor(\n"
+        "    schema_version='1',\n"
+        "    source=ProviderSource(\n"
+        "        distribution='toy-runtime',\n"
+        "        version='1.2.3',\n"
+        "        entrypoint_group='graph_engine.plugins',\n"
+        "        entrypoint_name='toy.runtime',\n"
+        "        entrypoint_value='toy_plugin:provider',\n"
+        "        declaration_path='toy_plugin/plugin-declaration.json',\n"
+        "        import_roots=('',),\n"
+        "    ),\n"
+        "    plugin_id='toy.runtime',\n"
+        "    plugin_version='1.2.3',\n"
+        "    engine_api='0.2',\n"
+        "    task_handlers=(),\n"
+        "    commit_validators=(),\n"
+        ")\n"
+        "class Provider:\n"
+        "    def descriptor(self):\n"
+        "        return _DESCRIPTOR\n"
+        "    def contribute(self, _ports):\n"
+        "        return PluginContribution.empty()\n"
+        "provider = Provider()\n",
+        encoding="utf-8",
+    )
+    _write_record(
+        root,
+        Path(distribution.locate_file("toy_runtime-1.2.3.dist-info")),
+        (
+            "toy_plugin/__init__.py",
+            "toy_plugin/plugin-declaration.json",
+            "toy_plugin/product-declaration.json",
+            "toy_runtime-1.2.3.dist-info/METADATA",
+            "toy_runtime-1.2.3.dist-info/entry_points.txt",
+        ),
+    )
+    _select_distribution(monkeypatch, distribution)
+    monkeypatch.syspath_prepend(str(root))
+    imported = importlib.import_module("toy_plugin")
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    snapshot = snapshot_wheel_source(source)
+
+    try:
+        loaded = load_snapshotted_entrypoint(source, snapshot)
+
+        assert loaded.descriptor().plugin_id == "toy.runtime"
+        assert sys.modules["toy_plugin"] is imported
+    finally:
+        for module_name in tuple(sys.modules):
+            if module_name == "toy_plugin" or module_name.startswith("toy_plugin."):
+                sys.modules.pop(module_name, None)
+
+
+def test_load_accepts_already_imported_installed_provider_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    distribution = _installed_distribution(tmp_path)
+    root = Path(distribution.locate_file(""))
+    package_init = Path(distribution.locate_file("toy_plugin/__init__.py"))
+    helper_path = Path(distribution.locate_file("toy_plugin/helper.py"))
+    helper_path.write_text("VALUE = 'authenticated'\n", encoding="utf-8")
+    package_init.write_text(
+        "from .helper import VALUE\n"
+        "from graph_engine.plugin_api import PluginContribution, PluginDescriptor, ProviderSource\n"
+        "_DESCRIPTOR = PluginDescriptor(\n"
+        "    schema_version='1',\n"
+        "    source=ProviderSource(\n"
+        "        distribution='toy-runtime',\n"
+        "        version='1.2.3',\n"
+        "        entrypoint_group='graph_engine.plugins',\n"
+        "        entrypoint_name='toy.runtime',\n"
+        "        entrypoint_value='toy_plugin:provider',\n"
+        "        declaration_path='toy_plugin/plugin-declaration.json',\n"
+        "        import_roots=('',),\n"
+        "    ),\n"
+        "    plugin_id='toy.runtime',\n"
+        "    plugin_version='1.2.3',\n"
+        "    engine_api='0.2',\n"
+        "    task_handlers=(),\n"
+        "    commit_validators=(),\n"
+        ")\n"
+        "class Provider:\n"
+        "    def descriptor(self):\n"
+        "        return _DESCRIPTOR\n"
+        "    def contribute(self, _ports):\n"
+        "        return PluginContribution.empty()\n"
+        "provider = Provider()\n",
+        encoding="utf-8",
+    )
+    _write_record(
+        root,
+        Path(distribution.locate_file("toy_runtime-1.2.3.dist-info")),
+        (
+            "toy_plugin/__init__.py",
+            "toy_plugin/helper.py",
+            "toy_plugin/plugin-declaration.json",
+            "toy_plugin/product-declaration.json",
+            "toy_runtime-1.2.3.dist-info/METADATA",
+            "toy_runtime-1.2.3.dist-info/entry_points.txt",
+        ),
+    )
+    _select_distribution(monkeypatch, distribution)
+    monkeypatch.syspath_prepend(str(root))
+    imported = importlib.import_module("toy_plugin")
+    helper = sys.modules["toy_plugin.helper"]
+    source = WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime")
+    snapshot = snapshot_wheel_source(source)
+
+    try:
+        loaded = load_snapshotted_entrypoint(source, snapshot)
+
+        assert loaded.descriptor().plugin_id == "toy.runtime"
+        assert sys.modules["toy_plugin"] is imported
+        assert sys.modules["toy_plugin.helper"] is helper
+        assert any(
+            item.module_name == "toy_plugin.helper" and item.validate for item in loaded.import_plan.modules
+        )
+    finally:
+        for module_name in tuple(sys.modules):
+            if module_name == "toy_plugin" or module_name.startswith("toy_plugin."):
+                sys.modules.pop(module_name, None)
+
+
 def test_binding_quarantines_same_source_helper_before_entrypoint_import(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

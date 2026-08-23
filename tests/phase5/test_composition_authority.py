@@ -90,11 +90,13 @@ def test_forged_deployment_declaration_fails_closed(installed_sources, tmp_path:
         configuration_tree=installed_sources.configuration_tree,
     )
     _swap_sys_path(extract, forged)
+    _drop_modules_from_roots(extract)
     try:
         with pytest.raises((ResolutionError, SourceSnapshotError, AssuranceCompositionError)):
             resolve_assurance_composition(request)
     finally:
         _swap_sys_path(forged, extract)
+        _drop_modules_from_roots(forged)
 
 
 def test_mutated_config_tree_changes_lock(installed_sources, tmp_path: Path):
@@ -140,11 +142,13 @@ def test_missing_binding_fails_closed(installed_sources, tmp_path: Path):
         lambda document: document["bindings"].pop(),
     )
     _swap_sys_path(original, mutated)
+    _drop_modules_from_roots(original)
     try:
-        with pytest.raises((AssuranceCompositionError, ResolutionError)):
+        with pytest.raises((AssuranceCompositionError, ResolutionError, SourceSnapshotError)):
             resolve_assurance_composition(request)
     finally:
         _swap_sys_path(mutated, original)
+        _drop_modules_from_roots(mutated)
 
 
 def test_extra_owned_binding_fails_closed(installed_sources, tmp_path: Path):
@@ -159,11 +163,13 @@ def test_extra_owned_binding_fails_closed(installed_sources, tmp_path: Path):
 
     request, original, mutated = _mutated_deployment_request(installed_sources, tmp_path, add_extra)
     _swap_sys_path(original, mutated)
+    _drop_modules_from_roots(original)
     try:
-        with pytest.raises((AssuranceCompositionError, ResolutionError)):
+        with pytest.raises((AssuranceCompositionError, ResolutionError, SourceSnapshotError)):
             resolve_assurance_composition(request)
     finally:
         _swap_sys_path(mutated, original)
+        _drop_modules_from_roots(mutated)
 
 
 def test_duplicate_binding_id_fails_closed(installed_sources, tmp_path: Path):
@@ -176,11 +182,13 @@ def test_duplicate_binding_id_fails_closed(installed_sources, tmp_path: Path):
 
     request, original, mutated = _mutated_deployment_request(installed_sources, tmp_path, duplicate)
     _swap_sys_path(original, mutated)
+    _drop_modules_from_roots(original)
     try:
-        with pytest.raises((AssuranceCompositionError, ResolutionError)):
+        with pytest.raises((AssuranceCompositionError, ResolutionError, SourceSnapshotError)):
             resolve_assurance_composition(request)
     finally:
         _swap_sys_path(mutated, original)
+        _drop_modules_from_roots(mutated)
 
 
 def _mutated_deployment_request(installed_sources, tmp_path: Path, mutate):
@@ -245,3 +253,19 @@ def _swap_sys_path(old: Path, new: Path) -> None:
     sys.path = [new_s if item == old_s else item for item in sys.path]
     if new_s not in sys.path:
         sys.path.insert(0, new_s)
+
+
+def _drop_modules_from_roots(*roots: Path) -> None:
+    import sys
+
+    resolved = tuple(root.resolve() for root in roots)
+    for name, module in list(sys.modules.items()):
+        origin = getattr(module, "__file__", None)
+        if not isinstance(origin, str):
+            continue
+        try:
+            path = Path(origin).resolve()
+        except OSError:
+            continue
+        if any(path.is_relative_to(root) for root in resolved):
+            sys.modules.pop(name, None)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from graph_engine.composition import CapabilityBindingEntry
@@ -57,3 +59,14 @@ def test_wrong_runtime_deployment_fails_closed(installed_sources):
     )
     with pytest.raises((DependencyConflict, ResolutionError, AssuranceCompositionError)):
         resolve_assurance_composition(request)
+
+
+def test_resolve_accepts_already_imported_assurance_product(installed_sources):
+    import assurance_intake
+    import assurance_product
+    from assurance_product.product import resolve_assurance_composition
+
+    assert sys.modules["assurance_product"] is assurance_product
+    assert sys.modules["assurance_intake"] is assurance_intake
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    assert composition.lock.product.source.kind.value == "wheel_product"

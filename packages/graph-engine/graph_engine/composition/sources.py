@@ -46,6 +46,7 @@ from graph_engine.composition.import_plan import (
     ImportProvenancePlan,
     ModuleImportPlan,
     ModuleProvenance,
+    _validate_imported_module,
     active_import_provenance_plan,
     build_import_provenance_plan,
     extend_import_plan_with_quarantine,
@@ -463,6 +464,13 @@ def _load_snapshotted_entrypoint_binding(
             initial_modules=before_modules,
         )
         import_plan = _extend_plan_with_cache_authority(
+            import_plan,
+            provider_source,
+            snapshot,
+            before_modules,
+            cache,
+        )
+        import_plan = _extend_plan_with_preloaded_authority(
             import_plan,
             provider_source,
             snapshot,
@@ -1095,16 +1103,22 @@ def _canonical_declared_paths(files: tuple[str, ...]) -> tuple[str, ...]:
 def _fresh_module_authority(cache: _AuthenticatedBindingCache):
     def owns(item: ModuleImportPlan, module: ModuleType) -> bool:
         authenticated = cache.modules.get(item.module_name)
-        return (
-            authenticated is not None
-            and authenticated.module is module
-            and any(
+        if authenticated is not None:
+            return authenticated.module is module and any(
                 provenance.authenticates_same_module(item.provenance)
                 for provenance in authenticated.provenances
             )
-        )
+        return _preloaded_physical_authority(item, module)
 
     return owns
+
+
+def _preloaded_physical_authority(item: ModuleImportPlan, module: ModuleType) -> bool:
+    try:
+        _validate_imported_module(item, module)
+    except SourceSnapshotError:
+        return False
+    return item.provenance.physical_sha256 is not None
 
 
 def _cached_module_authority(cache: _AuthenticatedBindingCache, source_digest: str):
@@ -1144,6 +1158,43 @@ def _extend_plan_with_cache_authority(
         if not _fresh_module_authority(cache)(candidate.module(module_name), authenticated.module):
             continue
         extended = candidate
+    return extended
+
+
+def _extend_plan_with_preloaded_authority(
+    plan: ImportProvenancePlan,
+    source: ProviderSource,
+    snapshot: SourceSnapshot,
+    initial_modules: Mapping[str, ModuleType],
+    cache: _AuthenticatedBindingCache,
+) -> ImportProvenancePlan:
+    extended = plan
+    planned = {item.module_name for item in plan.modules}
+    if not any(
+        item.validate
+        and isinstance(initial_modules.get(item.module_name), ModuleType)
+        and cache.modules.get(item.module_name) is None
+        and _preloaded_physical_authority(item, initial_modules[item.module_name])
+        for item in plan.modules
+    ):
+        return plan
+    for module_name, module in sorted(initial_modules.items()):
+        if module_name in planned or not isinstance(module, ModuleType):
+            continue
+        try:
+            candidate = extend_import_provenance_plan(
+                extended,
+                source,
+                snapshot,
+                initial_modules,
+                authorized_modules=(module_name,),
+            )
+        except SourceSnapshotError:
+            continue
+        if not _preloaded_physical_authority(candidate.module(module_name), module):
+            continue
+        extended = candidate
+        planned = {candidate_item.module_name for candidate_item in extended.modules}
     return extended
 
 
@@ -1709,6 +1760,13 @@ def _authenticated_provider_call(
             _cached_module_authority(binding._cache, binding._snapshot.digest),
         )
         import_plan = _extend_plan_with_cache_authority(
+            import_plan,
+            resolved.declaration.source,
+            binding._snapshot,
+            before_modules,
+            binding._cache,
+        )
+        import_plan = _extend_plan_with_preloaded_authority(
             import_plan,
             resolved.declaration.source,
             binding._snapshot,
