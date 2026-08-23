@@ -32,10 +32,10 @@ from graph_engine.runtime.tree_io import (
     SeedCapturePolicy,
     SnapshotExportError,
     capture_workspace_seed,
-    materialize_snapshot,
 )
 
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
+from assurance_product.export import ResultExportError, export_invocation
 from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1
 from assurance_product.product import (
     AssuranceCompositionError,
@@ -822,7 +822,7 @@ def _export_invocation(
     config_tree: str,
     secrets: Sequence[str],
 ) -> dict[str, object]:
-    composition, projection, _identity = _open_authenticated(
+    composition, _projection, _identity = _open_authenticated(
         engine_root=engine_root,
         invocation_id=invocation_id,
         product=product,
@@ -832,22 +832,21 @@ def _export_invocation(
         config_tree=config_tree,
         secrets=secrets,
     )
-    if projection.status != "succeeded":
-        raise CommandError(f"cannot export a {projection.status} invocation")
     authorization = _authorize_secrets(composition, secrets)
     try:
         with create_engine(engine_root, authorization) as engine:
-            with engine.open(invocation_id, composition, authorization=authorization) as handle:
-                with handle.workspace as store:
-                    tree_id = store.head_tree_id()
-                    manifest = materialize_snapshot(store, tree_id, destination)
-    except (SnapshotExportError, EngineError, GraphEngineError, OSError) as error:
+            exported = export_invocation(
+                engine,
+                invocation_id,
+                destination,
+                authorization=authorization,
+            )
+    except (ResultExportError, SnapshotExportError, EngineError, GraphEngineError, OSError) as error:
         raise CommandError(str(error)) from error
-    return {
-        "invocation_id": invocation_id,
-        "tree_id": manifest.tree_id,
-        "destination": manifest.destination,
-    }
+    document = exported.model_dump(mode="json")
+    document["tree_id"] = exported.status.current_head_tree_id
+    document["destination"] = str(destination)
+    return document
 
 
 def _read_authenticated_projection(

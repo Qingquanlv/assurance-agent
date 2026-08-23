@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,10 +22,16 @@ from graph_engine.runtime.host_protocol import (
 )
 from graph_engine.runtime.host_receipts import TerminalReceiptStore, prove_call_quiescent
 from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
+from graph_engine.runtime.secret_sources import (
+    InvocationRuntimeAuthorization,
+    SecretSourceBinding,
+    runtime_authorization_digest,
+)
+from graph_engine.runtime.seed import InvocationSeed
+from graph_engine.runtime.tree_io import SeedCapturePolicy, capture_workspace_seed
 from graph_engine.runtime.workspace import SnapshotStore
 
-from tests.phase5.composition_harness import InstalledSources
+from tests.phase5.composition_harness import InstalledSources, request_for
 from tests.phase5.product_runner import _ScriptedTaskHost
 from tests.phase5.test_product_input import valid_product_input
 
@@ -231,6 +238,116 @@ def scripted_engine_factory(
         )
 
     return factory
+
+
+@dataclass
+class LifecycleInvocation:
+    engine: Engine
+    id: str
+    authorization: InvocationRuntimeAuthorization
+    lock_digest: str
+    composition: FrozenComposition
+    project_dir: Path
+    engine_root: Path
+
+
+def lifecycle_authorization() -> InvocationRuntimeAuthorization:
+    sources = (
+        SecretSourceBinding(
+            handle=SECRET_HANDLE,
+            source_kind="environment",
+            source_locator=SECRET_ENV,
+        ),
+    )
+    return InvocationRuntimeAuthorization(
+        schema_version="1",
+        secret_sources=sources,
+        digest=runtime_authorization_digest(sources),
+    )
+
+
+def start_lifecycle_invocation(
+    tmp_path: Path,
+    installed_sources: InstalledSources,
+    *,
+    invocation_id: str,
+    drive: bool = False,
+    require_succeeded: bool = True,
+    entrypoint: str = "intake",
+    families: tuple[str, ...] = (),
+    extra_project_files: Mapping[str, str] | None = None,
+    host_factory=None,
+) -> LifecycleInvocation:
+    from assurance_product.models import ProductInputV1
+    from assurance_product.product import resolve_assurance_composition
+
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    project_dir = write_project_dir(tmp_path / "project")
+    for relative, content in dict(extra_project_files or {}).items():
+        path = project_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    input_path = write_product_input(
+        tmp_path / "input.json",
+        composition,
+        selected_test_families=families,
+    )
+    product_input = ProductInputV1.model_validate_json(input_path.read_text(encoding="utf-8"))
+    workspace = capture_workspace_seed(project_dir, policy=SeedCapturePolicy())
+    root_input = cast(JSONValue, product_input.model_dump(mode="json"))
+    seed = InvocationSeed(
+        schema_version="1",
+        root_input=root_input,
+        root_input_digest=canonical_digest(root_input),
+        workspace=workspace,
+    )
+    authorization = lifecycle_authorization()
+    engine_root = tmp_path / "engine-root"
+    engine_root.mkdir(exist_ok=True)
+    factory = scripted_engine_factory() if host_factory is None else host_factory
+    engine = factory(engine_root, authorization)
+    handle = engine.start(
+        composition,
+        entrypoint=entrypoint,
+        invocation_id=invocation_id,
+        seed=seed,
+        authorization=authorization,
+    )
+    try:
+        if drive:
+            result = engine.run_until_blocked(handle)
+            if require_succeeded and result.status != "succeeded":
+                raise AssertionError(f"expected succeeded lifecycle, got {result.status}")
+    finally:
+        handle.close()
+    return LifecycleInvocation(
+        engine=engine,
+        id=invocation_id,
+        authorization=authorization,
+        lock_digest=composition.lock_digest,
+        composition=composition,
+        project_dir=project_dir,
+        engine_root=engine_root,
+    )
+
+
+@pytest.fixture
+def completed_invocation(
+    tmp_path: Path,
+    installed_sources: InstalledSources,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[LifecycleInvocation]:
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
+    invocation = start_lifecycle_invocation(
+        tmp_path,
+        installed_sources,
+        invocation_id="inv-export-completed",
+        drive=True,
+    )
+    try:
+        yield invocation
+    finally:
+        invocation.engine.close()
 
 
 def common_lifecycle_args(

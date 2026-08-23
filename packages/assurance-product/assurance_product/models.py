@@ -659,3 +659,46 @@ class StatusV1(FrozenModel):
     adapter_evidence: tuple[AdapterEvidenceRefV1, ...]
     pending_interrupt: PendingInterruptStatusV1 | None
     terminal_reason: str | None
+
+
+class ExportedArtifactV1(FrozenModel):
+    artifact_id: str
+    relative_path: str
+    media_type: str
+    sha256: str = Field(pattern=_SHA256)
+
+    @field_validator("artifact_id")
+    @classmethod
+    def _artifact_id(cls, value: str) -> str:
+        return _canonical_token(value, "artifact_id")
+
+    @field_validator("relative_path")
+    @classmethod
+    def _relative_path(cls, value: str) -> str:
+        prefixes = _canonical_artifact_prefixes((value,))
+        return prefixes[0]
+
+    @field_validator("media_type")
+    @classmethod
+    def _media_type(cls, value: str) -> str:
+        return _canonical_token(value, "media_type")
+
+
+class ResultExportV1(FrozenModel):
+    schema_version: Literal["1"]
+    invocation_id: str
+    lock_digest: str = Field(pattern=_SHA256)
+    event_stream_digest: str = Field(pattern=_SHA256)
+    result_tree_digest: str
+    status: StatusV1
+    artifact_index: tuple[ExportedArtifactV1, ...]
+
+    @field_validator("result_tree_digest")
+    @classmethod
+    def _result_tree_digest(cls, value: str) -> str:
+        prefix, separator, digest = value.partition(":")
+        if prefix != "sha256" or not separator or len(digest) != 64:
+            raise ValueError("result_tree_digest must be sha256: plus 64 lowercase hex")
+        if any(character not in "0123456789abcdef" for character in digest):
+            raise ValueError("result_tree_digest must be sha256: plus 64 lowercase hex")
+        return value
