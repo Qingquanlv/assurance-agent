@@ -74,3 +74,5 @@ jobs:
         run: bash scripts/graph_engine_smoke_test.sh
       - name: assurance capability wheel smoke test
         run: bash scripts/assurance_capability_wheel_smoke_test.sh
+      - name: assurance product wheel smoke test
+        run: bash scripts/assurance_product_wheel_smoke_test.sh
