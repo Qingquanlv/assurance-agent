@@ -183,15 +183,17 @@ def inspect_wheel_archive(wheel: Path, *, deployment: bool) -> None:
         if any(name in LEGACY_DISTS for name in requirements):
             raise SystemExit(f"legacy requirement in {wheel.name}: {requirements}")
         if dist_name == "assurance-product":
-            scripts = {
-                name.rsplit("/", 1)[-1]
-                for name in names
-                if "/scripts/" in name and not name.endswith("/")
-            }
-            if "aa" in scripts:
+            entry_points_name = next(
+                (name for name in names if name.endswith(".dist-info/entry_points.txt")),
+                None,
+            )
+            if entry_points_name is None:
+                raise SystemExit("product wheel is missing entry_points.txt")
+            entry_points_text = archive.read(entry_points_name).decode("utf-8")
+            if "aa-next =" not in entry_points_text:
+                raise SystemExit("product wheel is missing the aa-next console script")
+            if "\naa =" in f"\n{entry_points_text}":
                 raise SystemExit("product wheel must not ship the legacy aa script")
-            if "aa-next" not in scripts:
-                raise SystemExit("product wheel is missing the aa-next script")
 
 
 def check_archives(dist_root: Path) -> None:
@@ -291,8 +293,8 @@ def probe_prefix(prefix: str, expected_names: str, expected_entry_points: str, f
         name = canonicalize_name(dist.metadata["Name"])
         if name not in expected and not name.startswith("assurance-product-bindings-"):
             continue
-        root = Path(str(dist.locate_file("")))
-        for path in root.rglob("*"):
+        for file in dist.files or ():
+            path = Path(str(dist.locate_file(file)))
             if not path.is_file() or path.suffix not in {".py", ".json", ".yaml", ".yml", ".txt"}:
                 continue
             scan_bytes(path.read_bytes(), SECRET_CANARIES, f"{prefix}:{path}")
