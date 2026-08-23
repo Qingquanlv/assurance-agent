@@ -2,6 +2,7 @@ name: assurance
 entrypoints:
   intake: entry
   case: case
+  full: full
 retry:
   once:
     max_attempts: 1
@@ -52,6 +53,38 @@ graphs:
       - from: case-design
         to: case-review
       - from: case-review
+        to: done
+  full:
+    max_activations: 16
+    start: intake
+    nodes:
+      intake:
+        kind: subgraph
+        graph: intake
+      explore:
+        kind: subgraph
+        graph: explore
+      case-design:
+        kind: subgraph
+        graph: case-design
+      case-review:
+        kind: subgraph
+        graph: case-review
+      generation:
+        kind: subgraph
+        graph: generation
+      done:
+        kind: end
+    edges:
+      - from: intake
+        to: explore
+      - from: explore
+        to: case-design
+      - from: case-design
+        to: case-review
+      - from: case-review
+        to: generation
+      - from: generation
         to: done
   intake:
     max_activations: 8
@@ -203,6 +236,730 @@ graphs:
       finalize:
         kind: task
         capability: assurance.product.agent.intake.case-review.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation:
+    max_activations: 32
+    start: fanout
+    nodes:
+      fanout:
+        kind: gate
+        expression: 'true'
+      select-api:
+        kind: gate
+        expression: "'api' in selected_test_families"
+        input_projection: &family-selection
+          type: object
+          fields:
+            selected_test_families:
+              type: root_pointer
+              pointer: /selected_test_families
+      select-e2e:
+        kind: gate
+        expression: "'e2e' in selected_test_families"
+        input_projection: *family-selection
+      select-fuzz:
+        kind: gate
+        expression: "'fuzz' in selected_test_families"
+        input_projection: *family-selection
+      select-performance:
+        kind: gate
+        expression: "'performance' in selected_test_families"
+        input_projection: *family-selection
+      api:
+        kind: subgraph
+        graph: generation-api
+      e2e:
+        kind: subgraph
+        graph: generation-e2e
+      fuzz:
+        kind: subgraph
+        graph: generation-fuzz
+      performance:
+        kind: subgraph
+        graph: generation-performance
+      api-skip:
+        kind: gate
+        expression: 'true'
+      e2e-skip:
+        kind: gate
+        expression: 'true'
+      fuzz-skip:
+        kind: gate
+        expression: 'true'
+      performance-skip:
+        kind: gate
+        expression: 'true'
+      api-done:
+        kind: gate
+        expression: 'true'
+      e2e-done:
+        kind: gate
+        expression: 'true'
+      fuzz-done:
+        kind: gate
+        expression: 'true'
+      performance-done:
+        kind: gate
+        expression: 'true'
+      join-selected:
+        kind: join
+        join: all
+        input_projection:
+          type: object
+          fields:
+            selected_families:
+              type: root_pointer
+              pointer: /selected_test_families
+            completed:
+              type: all_predecessor_tokens
+      done:
+        kind: end
+    edges:
+      - from: fanout
+        to: select-api
+      - from: fanout
+        to: select-e2e
+      - from: fanout
+        to: select-fuzz
+      - from: fanout
+        to: select-performance
+      - from: select-api
+        to: api
+        condition: 'output.value == true'
+      - from: select-api
+        to: api-skip
+        condition: 'output.value == false'
+      - from: select-e2e
+        to: e2e
+        condition: 'output.value == true'
+      - from: select-e2e
+        to: e2e-skip
+        condition: 'output.value == false'
+      - from: select-fuzz
+        to: fuzz
+        condition: 'output.value == true'
+      - from: select-fuzz
+        to: fuzz-skip
+        condition: 'output.value == false'
+      - from: select-performance
+        to: performance
+        condition: 'output.value == true'
+      - from: select-performance
+        to: performance-skip
+        condition: 'output.value == false'
+      - from: api
+        to: api-done
+      - from: api-skip
+        to: api-done
+      - from: e2e
+        to: e2e-done
+      - from: e2e-skip
+        to: e2e-done
+      - from: fuzz
+        to: fuzz-done
+      - from: fuzz-skip
+        to: fuzz-done
+      - from: performance
+        to: performance-done
+      - from: performance-skip
+        to: performance-done
+      - from: api-done
+        to: join-selected
+      - from: e2e-done
+        to: join-selected
+      - from: fuzz-done
+        to: join-selected
+      - from: performance-done
+        to: join-selected
+      - from: join-selected
+        to: done
+  generation-api:
+    max_activations: 8
+    start: plan
+    nodes:
+      plan:
+        kind: subgraph
+        graph: generation-api-plan
+      plan-review:
+        kind: subgraph
+        graph: generation-api-plan-review
+      codegen:
+        kind: subgraph
+        graph: generation-api-codegen
+      codegen-fix:
+        kind: subgraph
+        graph: generation-api-codegen-fix
+      done:
+        kind: end
+    edges:
+      - from: plan
+        to: plan-review
+      - from: plan-review
+        to: codegen
+      - from: codegen
+        to: codegen-fix
+      - from: codegen-fix
+        to: done
+  generation-api-plan:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.api.plan.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.api.plan.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.api.plan.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-api-plan-review:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.api.plan-review.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.api.plan-review.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.api.plan-review.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-api-codegen:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.api.codegen.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.api.codegen.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.api.codegen.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-api-codegen-fix:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.api.codegen-fix.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.api.codegen-fix.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.api.codegen-fix.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-e2e:
+    max_activations: 8
+    start: plan
+    nodes:
+      plan:
+        kind: subgraph
+        graph: generation-e2e-plan
+      plan-review:
+        kind: subgraph
+        graph: generation-e2e-plan-review
+      codegen:
+        kind: subgraph
+        graph: generation-e2e-codegen
+      codegen-fix:
+        kind: subgraph
+        graph: generation-e2e-codegen-fix
+      done:
+        kind: end
+    edges:
+      - from: plan
+        to: plan-review
+      - from: plan-review
+        to: codegen
+      - from: codegen
+        to: codegen-fix
+      - from: codegen-fix
+        to: done
+  generation-e2e-plan:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.plan.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.plan.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.plan.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-e2e-plan-review:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.plan-review.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.plan-review.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.plan-review.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-e2e-codegen:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.codegen.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.codegen.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.codegen.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-e2e-codegen-fix:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.codegen-fix.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.codegen-fix.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.e2e.codegen-fix.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-fuzz:
+    max_activations: 8
+    start: plan
+    nodes:
+      plan:
+        kind: subgraph
+        graph: generation-fuzz-plan
+      plan-review:
+        kind: subgraph
+        graph: generation-fuzz-plan-review
+      codegen:
+        kind: subgraph
+        graph: generation-fuzz-codegen
+      done:
+        kind: end
+    edges:
+      - from: plan
+        to: plan-review
+      - from: plan-review
+        to: codegen
+      - from: codegen
+        to: done
+  generation-fuzz-plan:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.fuzz.plan.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.fuzz.plan.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.fuzz.plan.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-fuzz-plan-review:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.fuzz.plan-review.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.fuzz.plan-review.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.fuzz.plan-review.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-fuzz-codegen:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.fuzz.codegen.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.fuzz.codegen.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.fuzz.codegen.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-performance:
+    max_activations: 8
+    start: plan
+    nodes:
+      plan:
+        kind: subgraph
+        graph: generation-performance-plan
+      plan-review:
+        kind: subgraph
+        graph: generation-performance-plan-review
+      codegen:
+        kind: subgraph
+        graph: generation-performance-codegen
+      done:
+        kind: end
+    edges:
+      - from: plan
+        to: plan-review
+      - from: plan-review
+        to: codegen
+      - from: codegen
+        to: done
+  generation-performance-plan:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.performance.plan.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.performance.plan.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.performance.plan.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-performance-plan-review:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.performance.plan-review.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.performance.plan-review.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.performance.plan-review.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  generation-performance-codegen:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.generation.performance.codegen.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.generation.performance.codegen.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.generation.performance.codegen.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once

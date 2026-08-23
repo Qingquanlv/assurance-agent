@@ -14,15 +14,57 @@ from tests.phase5.graph_inventory import (
     workflow_node_ids,
 )
 
-_SLICE_GRAPHS = frozenset({"entry", "intake", "explore", "case-design", "case-review", "case"})
+_SLICE_GRAPHS = frozenset(
+    {
+        "entry",
+        "intake",
+        "explore",
+        "case-design",
+        "case-review",
+        "case",
+        "full",
+        "generation",
+        "generation-api",
+        "generation-api-plan",
+        "generation-api-plan-review",
+        "generation-api-codegen",
+        "generation-api-codegen-fix",
+        "generation-e2e",
+        "generation-e2e-plan",
+        "generation-e2e-plan-review",
+        "generation-e2e-codegen",
+        "generation-e2e-codegen-fix",
+        "generation-fuzz",
+        "generation-fuzz-plan",
+        "generation-fuzz-plan-review",
+        "generation-fuzz-codegen",
+        "generation-performance",
+        "generation-performance-plan",
+        "generation-performance-plan-review",
+        "generation-performance-codegen",
+    }
+)
 _SLICE_PREPARE_IDS = (
     "assurance.intake.intake.prepare",
     "assurance.intake.explore.prepare",
     "assurance.intake.case-design.prepare",
     "assurance.intake.case-review.prepare",
+    "assurance.generation.api.codegen-fix.prepare",
+    "assurance.generation.api.codegen.prepare",
+    "assurance.generation.api.plan-review.prepare",
+    "assurance.generation.api.plan.prepare",
+    "assurance.generation.e2e.codegen-fix.prepare",
+    "assurance.generation.e2e.codegen.prepare",
+    "assurance.generation.e2e.plan-review.prepare",
+    "assurance.generation.e2e.plan.prepare",
+    "assurance.generation.fuzz.codegen.prepare",
+    "assurance.generation.fuzz.plan-review.prepare",
+    "assurance.generation.fuzz.plan.prepare",
+    "assurance.generation.performance.codegen.prepare",
+    "assurance.generation.performance.plan-review.prepare",
+    "assurance.generation.performance.plan.prepare",
 )
 _DEFERRED_SHAPES = (
-    "generation",
     "execution",
     "quality",
     "healing",
@@ -48,6 +90,7 @@ def test_canonical_workflow_is_loaded_from_yaml():
     assert workflow.name == "assurance"
     assert "intake" in workflow.entrypoints
     assert "case" in workflow.entrypoints
+    assert "full" in workflow.entrypoints
     assert set(workflow.graphs) >= _SLICE_GRAPHS
     assert not any(name.startswith(_DEFERRED_SHAPES) for name in workflow.graphs)
 
@@ -77,7 +120,7 @@ def test_workflow_compiles_under_both_product_providers(adapter, installed_sourc
     provider = AssuranceOpenCodeProductProvider if adapter == "opencode" else AssuranceCursorProductProvider
     assert provider.manifest().workflow == workflow
     assert composition.workflow.entrypoints == workflow.entrypoints
-    assert set(composition.workflow.entrypoints) >= {"intake", "case"}
+    assert set(composition.workflow.entrypoints) >= {"intake", "case", "full"}
     capabilities = graph_capability_ids(composition.workflow)
     assert capabilities
     assert capabilities.issubset(
@@ -95,6 +138,6 @@ def test_graph_inventory_records_this_slice(compiled_product_workflow):
     assert recorded_edges == workflow_edge_ids(compiled_product_workflow)
     assert recorded_aliases == graph_capability_ids(compiled_product_workflow)
     assert INVENTORY_PATH.is_file()
-    for entrypoint in ("intake", "case"):
+    for entrypoint in ("intake", "case", "full"):
         assert inventory["entrypoints"][entrypoint]["nodes"]
         assert inventory["entrypoints"][entrypoint]["edges"]

@@ -20,6 +20,13 @@ INVENTORY_PATH = Path(__file__).resolve().parents[2] / (
 )
 _AGENT_PREFIX = "assurance.product.agent."
 _FORBIDDEN_PREFIXES = ("runtime.", "assurance.intake.", "assurance.generation.")
+GENERATION_FAMILIES = ("api", "e2e", "fuzz", "performance")
+
+
+def generation_prepare_ids() -> tuple[str, ...]:
+    from assurance_product.models import PREPARE_IDS
+
+    return tuple(prepare_id for prepare_id in PREPARE_IDS if prepare_id.startswith("assurance.generation."))
 
 
 @dataclass(frozen=True)
