@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -8,7 +9,7 @@ import uuid
 import pytest
 
 from graph_engine.composition import FrozenComposition
-from graph_engine.frozen_json import thaw_json
+from graph_engine.frozen_json import freeze_json, thaw_json
 from graph_engine.graph.input_projection import project_task_input
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
@@ -32,6 +33,7 @@ from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 
 GENERATION_FAMILIES = ("api", "e2e", "fuzz", "performance")
+FAMILY_TERMINALS = ("api-done", "e2e-done", "fuzz-done", "performance-done")
 _GENERATION_PREFIX = "assurance.product.agent.generation."
 _JOIN_NODE_ID = "join-selected"
 _SHA = "a" * 64
@@ -89,7 +91,7 @@ class ProductRun:
         composition: FrozenComposition,
     ) -> None:
         self._selected_test_families = selected_test_families
-        self._completion_order = completion_order
+        self._completion_order: Literal["forward", "reverse"] = completion_order
         self._engine_root = engine_root
         self._composition = composition
 
@@ -119,8 +121,8 @@ class ProductRun:
         return _trace_from_result(
             result.projection,
             self._composition,
-            set(self._selected_test_families),
             root_input,
+            completion_order=self._completion_order,
         )
 
 
@@ -166,8 +168,9 @@ def _family_from_capability(capability: str | None) -> str | None:
 def _trace_from_result(
     projection: InvocationProjection,
     composition: FrozenComposition,
-    selected: set[str],
     root_input: dict[str, object],
+    *,
+    completion_order: Literal["forward", "reverse"],
 ) -> GenerationTrace:
     graphs = {item.graph_instance_id: item for item in projection.graph_instances}
     completed: set[str] = set()
@@ -182,17 +185,49 @@ def _trace_from_result(
         family = _family_from_capability(node.definition.capability)
         if family is not None:
             completed.add(family)
+    join_output = _join_output(
+        projection,
+        composition,
+        root_input,
+        completion_order=completion_order,
+    )
     return GenerationTrace(
         completed_generation_families=completed,
-        join_expected=selected,
-        join_output=_join_output(projection, composition, root_input),
+        join_expected=_join_expected(join_output),
+        join_output=join_output,
     )
+
+
+def _join_expected(join_output: object) -> set[str]:
+    if not isinstance(join_output, Mapping):
+        raise AssertionError(f"join output is not an object: {type(join_output)!r}")
+    families = join_output.get("selected_families")
+    if not isinstance(families, list | tuple):
+        raise AssertionError(f"join selected_families is missing: {join_output!r}")
+    return set(families)
+
+
+def _predecessor_tokens_in_order(
+    raw: Mapping[str, object],
+    *,
+    completion_order: Literal["forward", "reverse"],
+) -> dict[str, object]:
+    order = FAMILY_TERMINALS if completion_order == "forward" else tuple(reversed(FAMILY_TERMINALS))
+    missing = [source for source in order if source not in raw]
+    extra = sorted(set(raw) - set(order))
+    if missing or extra:
+        raise AssertionError(
+            f"join predecessors must be the four family terminals; missing={missing} extra={extra}"
+        )
+    return {source: raw[source] for source in order}
 
 
 def _join_output(
     projection: InvocationProjection,
     composition: FrozenComposition,
     root_input: dict[str, object],
+    *,
+    completion_order: Literal["forward", "reverse"],
 ) -> object:
     graphs = {item.graph_instance_id: item for item in projection.graph_instances}
     join = next(
@@ -204,16 +239,20 @@ def _join_output(
     )
     compiled = composition.workflow.graphs["generation"].nodes[_JOIN_NODE_ID]
     tokens = {item.token_id: item for item in projection.offered_tokens}
-    predecessor_tokens: dict[str, object] = {}
+    raw_predecessors: dict[str, object] = {}
     for token_id in join.token_ids:
         token = tokens[token_id]
         if token.source is None:
             continue
-        predecessor_tokens[token.source] = thaw_json(token.payload)
+        raw_predecessors[token.source] = thaw_json(token.payload)
+    predecessor_tokens = _predecessor_tokens_in_order(
+        raw_predecessors,
+        completion_order=completion_order,
+    )
     projection_def = compiled.definition.input_projection
     if projection_def is None:
-        return thaw_json(join.output)
-    return thaw_json(
+        return freeze_json(join.output)
+    return freeze_json(
         project_task_input(
             projection_def,
             root_input=root_input,
