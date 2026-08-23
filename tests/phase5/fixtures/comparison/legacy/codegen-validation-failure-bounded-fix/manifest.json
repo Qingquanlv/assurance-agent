@@ -70,6 +70,11 @@
       "semantic_role": "generation.api.plan-review"
     },
     {
+      "decision": "validation-failure",
+      "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
+      "semantic_role": "generation.api.codegen"
+    },
+    {
       "decision": "pass",
       "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
       "semantic_role": "generation.api.codegen"
@@ -77,12 +82,12 @@
     {
       "decision": "pass",
       "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
-      "semantic_role": "execution.api"
+      "semantic_role": "generation.api.codegen-fix"
     },
     {
       "decision": "pass",
       "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
-      "semantic_role": "generation.api.codegen-fix"
+      "semantic_role": "execution.api"
     }
   ],
   "improvement": null,

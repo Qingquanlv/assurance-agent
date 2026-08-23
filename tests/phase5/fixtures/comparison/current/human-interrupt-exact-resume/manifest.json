@@ -78,6 +78,16 @@
       "decision": "pass",
       "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
       "semantic_role": "execution.api"
+    },
+    {
+      "decision": "interrupted",
+      "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
+      "semantic_role": "interrupt.human"
+    },
+    {
+      "decision": "exact-resume",
+      "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
+      "semantic_role": "interrupt.human"
     }
   ],
   "improvement": null,
@@ -125,5 +135,5 @@
     "performance"
   ],
   "terminal_class": "completed",
-  "terminal_reason_category": null
+  "terminal_reason_category": "human_interrupt_exact_resume"
 }

@@ -42,7 +42,18 @@
       "message": "ambiguous create recovered from provider evidence"
     }
   ],
-  "durable_effects": [],
+  "durable_effects": [
+    {
+      "effect_id": "opencode.ambiguous-create",
+      "idempotency_key": "opencode-create-v1",
+      "observed_external_projection": {
+        "create": "ambiguous",
+        "recovery": "provider-evidence"
+      },
+      "receipt_digest": "840df28a9ed6bcd7000a4b2ae18e644859764a9a63a4dc6be941b7a1d52efb1f",
+      "status": "recovered"
+    }
+  ],
   "execution_evidence": {
     "digest": "e653716349409c426c58aa3b32986ede64443c7a8dc441d4e7910ae0f27fe832",
     "summary": {
@@ -78,6 +89,16 @@
       "decision": "pass",
       "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
       "semantic_role": "execution.api"
+    },
+    {
+      "decision": "ambiguous",
+      "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
+      "semantic_role": "adapter.opencode.create"
+    },
+    {
+      "decision": "recovered",
+      "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
+      "semantic_role": "adapter.opencode.create"
     }
   ],
   "improvement": null,

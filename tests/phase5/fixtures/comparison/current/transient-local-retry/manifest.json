@@ -44,13 +44,14 @@
   ],
   "durable_effects": [],
   "execution_evidence": {
-    "digest": "e653716349409c426c58aa3b32986ede64443c7a8dc441d4e7910ae0f27fe832",
+    "digest": "24486550744c3dd9a758a12446168e37ab654930119479c53ae26cf147d41b82",
     "summary": {
       "failed": 0,
       "families": [
         "api"
       ],
-      "passed": 1
+      "passed": 1,
+      "transient_retries": 1
     }
   },
   "gate_decisions": [
@@ -78,6 +79,16 @@
       "decision": "pass",
       "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
       "semantic_role": "execution.api"
+    },
+    {
+      "decision": "retry",
+      "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
+      "semantic_role": "retry.transient.local"
+    },
+    {
+      "decision": "pass",
+      "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
+      "semantic_role": "retry.transient.local"
     }
   ],
   "improvement": null,

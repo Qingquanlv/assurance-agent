@@ -21,6 +21,7 @@ MANIFEST_PATH = HARNESS_ROOT / "comparison-manifest.json"
 INPUT_DIGEST = hashlib.sha256(b"phase5-comparison-input-v1").hexdigest()
 CHANGED_DIGEST = hashlib.sha256(b"phase5-changed-file").hexdigest()
 RECEIPT_DIGEST = hashlib.sha256(b"phase5-receipt").hexdigest()
+TRANSIENT_EVIDENCE_DIGEST = hashlib.sha256(b"phase5-transient-local-retry").hexdigest()
 REPORT_BODY = '{"schema_version":"1","decision":"pass","sections":["summary","coverage"]}\n'
 REPORT_DIGEST = hashlib.sha256(REPORT_BODY.encode("utf-8")).hexdigest()
 FAMILIES = ("api", "e2e", "fuzz", "performance")
@@ -205,29 +206,77 @@ def case_export(case_id: str, runtime_identity: str) -> tuple[dict[str, Any], di
         ]
         source["semantic_counts"]["retries"] = {"generation.api.plan-review": 1}
     elif case_id == "codegen-validation-failure-bounded-fix":
-        source["gate_decisions"].extend(
-            [
-                {
-                    "semantic_role": "generation.api.codegen-fix",
-                    "decision": "pass",
-                    "input_digest": INPUT_DIGEST,
-                }
-            ]
-        )
+        source["gate_decisions"] = [
+            {"semantic_role": "intake.review", "decision": "pass", "input_digest": INPUT_DIGEST},
+            {
+                "semantic_role": "generation.api.plan",
+                "decision": "pass",
+                "input_digest": INPUT_DIGEST,
+            },
+            {
+                "semantic_role": "generation.api.plan-review",
+                "decision": "pass",
+                "input_digest": INPUT_DIGEST,
+            },
+            {
+                "semantic_role": "generation.api.codegen",
+                "decision": "validation-failure",
+                "input_digest": INPUT_DIGEST,
+            },
+            {
+                "semantic_role": "generation.api.codegen",
+                "decision": "pass",
+                "input_digest": INPUT_DIGEST,
+            },
+            {
+                "semantic_role": "generation.api.codegen-fix",
+                "decision": "pass",
+                "input_digest": INPUT_DIGEST,
+            },
+            {"semantic_role": "execution.api", "decision": "pass", "input_digest": INPUT_DIGEST},
+        ]
         source["semantic_counts"]["retries"] = {"generation.api.codegen": 1}
         source["diagnostics"] = [
             {"category": "validation", "message": "codegen failed once then bounded fix passed"}
         ]
     elif case_id == "execution-closed-mapping-no-stale-test":
-        source["changed_files"] = default_changed_files(completed)
+        source["gate_decisions"].append(
+            {
+                "semantic_role": "execution.api.mapping",
+                "decision": "closed",
+                "input_digest": INPUT_DIGEST,
+            }
+        )
+        for artifact in source["artifact_contract"]:
+            projection = artifact.get("semantic_projection")
+            if isinstance(projection, dict) and projection.get("mapped") is True:
+                projection["mapping_closed"] = True
+                projection["stale_unmapped_tests"] = []
         source["diagnostics"] = [{"category": "mapping", "message": "closed mapping; no stale unmapped test"}]
     elif case_id == "coverage-insufficient-repair-reexecution-pass":
         source["quality_metrics"]["coverage"] = {
             "outcome": "pass",
             "ratio": 1,
-            "repaired": True,
-            "reexecuted": True,
+            "observations": [
+                {"phase": "initial", "outcome": "insufficient", "ratio": 0.4},
+                {"phase": "repair", "outcome": "repaired", "ratio": 0.4},
+                {"phase": "reexecution", "outcome": "pass", "ratio": 1},
+            ],
         }
+        source["gate_decisions"].extend(
+            [
+                {
+                    "semantic_role": "healing.coverage",
+                    "decision": "insufficient",
+                    "input_digest": INPUT_DIGEST,
+                },
+                {
+                    "semantic_role": "healing.coverage-repair",
+                    "decision": "pass",
+                    "input_digest": INPUT_DIGEST,
+                },
+            ]
+        )
         source["semantic_counts"]["retries"] = {"healing.coverage-repair": 1}
     elif case_id == "coverage-repair-no-progress-exhausted":
         source["terminal_class"] = "stopped"
@@ -321,12 +370,76 @@ def case_export(case_id: str, runtime_identity: str) -> tuple[dict[str, Any], di
             "semantic_fields": {"rollback": True},
         }
     elif case_id == "human-interrupt-exact-resume":
+        source["terminal_reason_category"] = "human_interrupt_exact_resume"
         source["semantic_counts"]["interrupts"] = {"human": 1}
+        source["gate_decisions"].extend(
+            [
+                {
+                    "semantic_role": "interrupt.human",
+                    "decision": "interrupted",
+                    "input_digest": INPUT_DIGEST,
+                },
+                {
+                    "semantic_role": "interrupt.human",
+                    "decision": "exact-resume",
+                    "input_digest": INPUT_DIGEST,
+                },
+            ]
+        )
         source["diagnostics"] = [{"category": "interrupt", "message": "exact resume after human interrupt"}]
     elif case_id == "transient-local-retry":
+        source["gate_decisions"].extend(
+            [
+                {
+                    "semantic_role": "retry.transient.local",
+                    "decision": "retry",
+                    "input_digest": INPUT_DIGEST,
+                },
+                {
+                    "semantic_role": "retry.transient.local",
+                    "decision": "pass",
+                    "input_digest": INPUT_DIGEST,
+                },
+            ]
+        )
+        source["execution_evidence"] = {
+            "summary": {
+                "passed": len(completed),
+                "failed": 0,
+                "families": list(completed),
+                "transient_retries": 1,
+            },
+            "digest": TRANSIENT_EVIDENCE_DIGEST,
+        }
         source["semantic_counts"]["retries"] = {"transient.local": 1}
         source["diagnostics"] = [{"category": "retry", "message": "transient local retry then pass"}]
     elif case_id == "opencode-ambiguous-create-recovery":
+        source["gate_decisions"].extend(
+            [
+                {
+                    "semantic_role": "adapter.opencode.create",
+                    "decision": "ambiguous",
+                    "input_digest": INPUT_DIGEST,
+                },
+                {
+                    "semantic_role": "adapter.opencode.create",
+                    "decision": "recovered",
+                    "input_digest": INPUT_DIGEST,
+                },
+            ]
+        )
+        source["durable_effects"] = [
+            {
+                "effect_id": "opencode.ambiguous-create",
+                "idempotency_key": "opencode-create-v1",
+                "status": "recovered",
+                "receipt_digest": RECEIPT_DIGEST,
+                "observed_external_projection": {
+                    "create": "ambiguous",
+                    "recovery": "provider-evidence",
+                },
+            }
+        ]
         source["diagnostics"] = [
             {"category": "recovery", "message": "ambiguous create recovered from provider evidence"}
         ]

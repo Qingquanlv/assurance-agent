@@ -21,7 +21,9 @@
       "media_type": "text/x-python",
       "semantic_projection": {
         "family": "api",
-        "mapped": true
+        "mapped": true,
+        "mapping_closed": true,
+        "stale_unmapped_tests": []
       },
       "sha256": "2185811bfba8a2e711046ae247b2c8c4f07697243c5d05b4d950def4a5853b46"
     }
@@ -78,6 +80,11 @@
       "decision": "pass",
       "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
       "semantic_role": "execution.api"
+    },
+    {
+      "decision": "closed",
+      "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
+      "semantic_role": "execution.api.mapping"
     }
   ],
   "improvement": null,

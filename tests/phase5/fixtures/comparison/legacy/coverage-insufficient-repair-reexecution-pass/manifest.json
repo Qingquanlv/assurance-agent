@@ -78,6 +78,16 @@
       "decision": "pass",
       "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
       "semantic_role": "execution.api"
+    },
+    {
+      "decision": "insufficient",
+      "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
+      "semantic_role": "healing.coverage"
+    },
+    {
+      "decision": "pass",
+      "input_digest": "5fe87b3ab24244b7555005fa69c19aae4e248849fd217f8796ad19b765115dbb",
+      "semantic_role": "healing.coverage-repair"
     }
   ],
   "improvement": null,
@@ -85,10 +95,25 @@
   "issue_healing_decisions": [],
   "quality_metrics": {
     "coverage": {
+      "observations": [
+        {
+          "outcome": "insufficient",
+          "phase": "initial",
+          "ratio": 0.4
+        },
+        {
+          "outcome": "repaired",
+          "phase": "repair",
+          "ratio": 0.4
+        },
+        {
+          "outcome": "pass",
+          "phase": "reexecution",
+          "ratio": 1
+        }
+      ],
       "outcome": "pass",
-      "ratio": 1,
-      "reexecuted": true,
-      "repaired": true
+      "ratio": 1
     },
     "quality": {
       "decision": "pass"

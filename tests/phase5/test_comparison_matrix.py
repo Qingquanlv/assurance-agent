@@ -242,6 +242,33 @@ def test_every_fixture_declares_required_arrays(comparison_manifest: Any) -> Non
                 assert isinstance(payload[field], list), f"{item.id} {relative} {field} must be an array"
 
 
+def governed_signature_without_identity_or_diagnostics(projected: Any) -> dict[str, Any]:
+    return {
+        field: projection.jsonable(getattr(projected, field))
+        for field in COMPARED_FIELDS
+        if field not in {"runtime_identity", "diagnostics"}
+    }
+
+
+def test_current_projections_are_pairwise_distinct_without_identity_or_diagnostics(
+    comparison_manifest: Any,
+) -> None:
+    signatures: dict[str, dict[str, Any]] = {}
+    for item in comparison_manifest.cases:
+        projected = project_new_export(resolve_export(item.current_export))
+        signatures[item.id] = governed_signature_without_identity_or_diagnostics(projected)
+    ids = list(signatures)
+    collisions: list[str] = []
+    for index, left_id in enumerate(ids):
+        for right_id in ids[index + 1 :]:
+            if signatures[left_id] == signatures[right_id]:
+                collisions.append(f"{left_id} == {right_id}")
+    assert collisions == [], (
+        "current projections collide after dropping runtime_identity and diagnostics: "
+        + "; ".join(collisions)
+    )
+
+
 def test_all_twenty_five_cases_are_governed_passes(comparison_manifest: Any) -> None:
     executed: list[str] = []
     extra = 0

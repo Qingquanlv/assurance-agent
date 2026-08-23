@@ -51,24 +51,24 @@
     },
     {
       "current_export": "fixtures/comparison/current/codegen-validation-failure-bounded-fix",
-      "current_export_digest": "sha256:3552356adfa5b73911daf22cbeec9a3325af907be0cdf3c3fa8a550a8210714a",
+      "current_export_digest": "sha256:f55e19d4c94d319eba8ba5efaa7d31a09c6bf667d8ac8c27ac27f497f89262ef",
       "id": "codegen-validation-failure-bounded-fix",
       "legacy_export": "fixtures/comparison/legacy/codegen-validation-failure-bounded-fix",
-      "legacy_export_digest": "sha256:543b999852e2aab6514a987b9e6f2d6aa9757f5026af3f4bde8df47c4a9f52f1"
+      "legacy_export_digest": "sha256:10bdf8f7a92912aba48dc0fee5c15dc890097457171b150a5524c416938b6255"
     },
     {
       "current_export": "fixtures/comparison/current/execution-closed-mapping-no-stale-test",
-      "current_export_digest": "sha256:ce4ace2924b0d09cce9ce449c6bd641bc3283b436c69429230b36b4754d4bf3d",
+      "current_export_digest": "sha256:848f4a41c6e048ee9a0f7f3c66acc35638ee3ac796ea65a57a08e4e4e54bf63f",
       "id": "execution-closed-mapping-no-stale-test",
       "legacy_export": "fixtures/comparison/legacy/execution-closed-mapping-no-stale-test",
-      "legacy_export_digest": "sha256:2d1e3191a2799fcd4312b40733ac1d5562f591ffc0b6b26d65d70cb9a89de75e"
+      "legacy_export_digest": "sha256:07c9db1f0d48ffd631a47c7b0cc90a842aabb20d309fc209050a209bd17d2c10"
     },
     {
       "current_export": "fixtures/comparison/current/coverage-insufficient-repair-reexecution-pass",
-      "current_export_digest": "sha256:b93e8d61ccbf53d59a1c8d229f4c7007301cc59403eb752ccdd6b4f8adfbd78a",
+      "current_export_digest": "sha256:54754c36425fe980ebe2e28e7260badb9378bc87d061e7020195c3046cb0e580",
       "id": "coverage-insufficient-repair-reexecution-pass",
       "legacy_export": "fixtures/comparison/legacy/coverage-insufficient-repair-reexecution-pass",
-      "legacy_export_digest": "sha256:81b1ea6ca206b81a5ddd4c510c0cc34d5b0349167bec36bebde35cf0c25dfd07"
+      "legacy_export_digest": "sha256:b56debaf18d20718ff3c7931f27f0e247899c4ebfde98b8f041e98a17f304c86"
     },
     {
       "current_export": "fixtures/comparison/current/coverage-repair-no-progress-exhausted",
@@ -128,24 +128,24 @@
     },
     {
       "current_export": "fixtures/comparison/current/human-interrupt-exact-resume",
-      "current_export_digest": "sha256:18e8f58389bfb9b56f68c8a13b09201001a5cf9fabe393eff0dd693a8a5b161e",
+      "current_export_digest": "sha256:8880861d47c93b688f7bb288e4aee3b55184bd3508947a773fe2a46a054cb133",
       "id": "human-interrupt-exact-resume",
       "legacy_export": "fixtures/comparison/legacy/human-interrupt-exact-resume",
-      "legacy_export_digest": "sha256:000bc6ac8cb930207150660e1b6141eef03cd47518ad21575dd700410c2c5bf5"
+      "legacy_export_digest": "sha256:7bd28a7f2ab64b7a9e77694232c46ad26d56f246263c5cdbf287612dc4bcf9b5"
     },
     {
       "current_export": "fixtures/comparison/current/transient-local-retry",
-      "current_export_digest": "sha256:9e200b725435672f549fbef961e49d0b6f005a5f7024c418d48949d2df6e5f77",
+      "current_export_digest": "sha256:c254fa766a441931f7650714a042a7bee98316473a40bc0a204c455e396a90d4",
       "id": "transient-local-retry",
       "legacy_export": "fixtures/comparison/legacy/transient-local-retry",
-      "legacy_export_digest": "sha256:e7695c827244386459c536036630f2aceb37396fb5d33c2a7f2c87c967d09bfc"
+      "legacy_export_digest": "sha256:95cae7ed7c59126e3258d142e817e177ffdcf40b39a9b1f877d4b8d8140cd787"
     },
     {
       "current_export": "fixtures/comparison/current/opencode-ambiguous-create-recovery",
-      "current_export_digest": "sha256:bc993752ce5fda0cd81654f4896c8cc2e145ac257d107e1fdcae9ab4000d8723",
+      "current_export_digest": "sha256:8286428f8016a63d9aa8329b644a29f2a904a152d60f577086d1f32a0628b3b4",
       "id": "opencode-ambiguous-create-recovery",
       "legacy_export": "fixtures/comparison/legacy/opencode-ambiguous-create-recovery",
-      "legacy_export_digest": "sha256:1c1265ea021cb6588c36e5802cad9ac287fbcf3bc9587eae3c46eecb8c63c138"
+      "legacy_export_digest": "sha256:f263fe1847c93fe074cb50893ae6af8c94f428c70864ab3daa98860f9463ae2a"
     },
     {
       "current_export": "fixtures/comparison/current/cursor-unknown-process-indeterminate",
