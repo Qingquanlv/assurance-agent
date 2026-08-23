@@ -3,11 +3,11 @@
 **Item:** `opencode-ret-dept-management`
 **Product:** `assurance-opencode`
 **Entrypoint:** `full`
-**Started:** 2026-08-23T05:09:42Z
-**Ended:** 2026-08-23T05:18:20Z
+**Started:** 2026-08-23T06:46:10Z
+**Ended:** (in progress)
 **Terminal status:** `running`
-**Lock digest:** `ef6f9e1b8778bdc68c8a487d17e8d3d7bb7070e5c18f170766bb8fd53691b72f`
-**Outcome:** blocked
+**Lock digest:** `9fbf87b7d489cb78d563fe9954ff25d8d4606f2203fe0c77fec54e94286a279f`
+**Outcome:** incomplete
 
 ## Routing
 
@@ -15,11 +15,13 @@ Every prepare ID is locked to `openai/gpt-5.6-terra` / `max`.
 
 ## Status
 
+Authoritative invocation remains `running` (`pending_interrupt` null, coverage unset). Ledger: intake `prepare` succeeded; intake `execute` bound (`task_activity_bound`) and has stayed bound without `prompt identity conflict`. Export has not been attempted. Resume was not invoked. Provider conversation text was not used as status. Runtime secret bytes are not present in this file.
+
 ```json
 {
   "coverage_progress": null,
   "entrypoint": "full",
-  "lock_digest": "ef6f9e1b8778bdc68c8a487d17e8d3d7bb7070e5c18f170766bb8fd53691b72f",
+  "lock_digest": "9fbf87b7d489cb78d563fe9954ff25d8d4606f2203fe0c77fec54e94286a279f",
   "selected_test_families": [
     "api",
     "e2e",
@@ -31,35 +33,10 @@ Every prepare ID is locked to `openai/gpt-5.6-terra` / `max`.
 }
 ```
 
-## Validation
-
-```json
-{
-  "last_run": {
-    "actions": [],
-    "invocation_id": "opencode-ret-dept-management",
-    "status": "interrupted",
-    "terminal_reason": "activity_recovery"
-  },
-  "transitions": [
-    {
-      "at": "2026-08-23T05:10:05Z",
-      "status": "interrupted",
-      "terminal_reason": "activity_recovery"
-    },
-    {
-      "at": "2026-08-23T05:17:55Z",
-      "status": "running",
-      "terminal_reason": "activity_recovery"
-    }
-  ]
-}
-```
-
 ## Notes
 
-OpenCode at the pinned origin was healthy. Isolated `aa-next` compile/start succeeded. The first `aa-next run` returned `interrupted` / `activity_recovery` with empty actions (exit 30). Authoritative `aa-next status --json` stayed `running`: graph `full`/`intake` running, `prepare` succeeded, `execute` still running, `pending_interrupt` null, coverage unset.
+Fresh invocation `opencode-20260823-064610` (not a resume). Isolated compile/start succeeded. Compiled workflow class `short.run_seconds` is `3600`.
 
-The intake execute activity was bound to the live OpenCode adapter and then cancelled with reason `timeout`. The compiled workflow timeout class `short` is 30 seconds; that is shorter than a live intake host turn. Because `pending_interrupt` declared no actions, `aa-next resume` was not invoked. A second `aa-next run` on the same invocation again returned `interrupted` / `activity_recovery` with empty actions and no ledger progress.
+Two earlier fresh attempts after the worker-crash fix (`opencode-20260823-062828`, `opencode-20260823-063339`) reached bind, then `execute` returned `TaskOutcome.failed(external_effect, prompt identity conflict, retryable=False)` instead of raising `OpenCodeDispatchIncomplete`. No `activity_recovery`. Live GET `/session/{id}/message/{id}` is `{info, parts}` with `info.id` equal to the minted `messageID`; OpenCode prepends extra text to the first stored part. Containment on same-`messageID` texts is what let this third run stay `running` past that re-observe.
 
-Expected terminal `completed` was not reached. Export was not attempted. Provider conversation text was not used as status. Runtime secret bytes were authorized only through the Task 19 env-handle form and are not present in the manifest, this file, or git. Phase 3 adapter-fixture evidence is not this run.
+Expected terminal `completed` has not been reached yet. The live `run-opencode.sh` process was left running.

@@ -57,6 +57,14 @@ def _secret_canaries(secret: bytes) -> tuple[str, ...]:
     return (text,) if text else ()
 
 
+def _activity_is_bound(context: TaskContext) -> bool:
+    port = context.activity
+    if port is None:
+        return False
+    snapshot = port.snapshot
+    return snapshot.reference is not None or snapshot.state == "bound"
+
+
 class OpenCodeHandler:
     async def preflight(self, request: TaskRequest, context: TaskContext) -> dict[str, Any]:
         config = OpenCodeAdapterConfig.from_request(request)
@@ -84,6 +92,12 @@ class OpenCodeHandler:
                     raise OpenCodeDispatchIncomplete("terminal observation is missing an outcome")
                 return result.outcome
             if result.status != "running":
+                if _activity_is_bound(context):
+                    return TaskOutcome.failed(
+                        "external_effect",
+                        result.reason or result.status,
+                        retryable=False,
+                    )
                 raise OpenCodeDispatchIncomplete(result.reason or result.status)
             if time.monotonic() >= deadline:
                 raise OpenCodeDispatchIncomplete("observation horizon exceeded")

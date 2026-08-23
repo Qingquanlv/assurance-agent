@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent_runtime_contracts import AgentRunRequest
-from agent_runtime_contracts.schema import canonical_digest, thaw_json
+from agent_runtime_contracts.schema import thaw_json
 from graph_engine.plugin_api import FrozenModel
 from agent_runtime_opencode.protocol import canonical_json_text
 
@@ -200,9 +200,13 @@ def classify_admission(record: object, expected: Mapping[str, object]) -> Litera
     candidate: object = record.get("admission") if isinstance(record.get("admission"), dict) else record
     if not isinstance(candidate, dict):
         return "conflict"
-    if candidate.get("messageID") == expected.get("messageID"):
-        return "exact" if canonical_digest(candidate) == canonical_digest(dict(expected)) else "conflict"
+    expected_id = expected.get("messageID")
     info = candidate.get("info")
+    candidate_id = candidate.get("messageID")
+    if candidate_id != expected_id and isinstance(info, dict):
+        candidate_id = info.get("id")
+    if candidate_id == expected_id:
+        return "exact" if _admission_identity_matches(candidate, expected) else "conflict"
     role = info.get("role") if isinstance(info, dict) else candidate.get("role")
     if role != "user":
         return "conflict"
@@ -210,6 +214,46 @@ def classify_admission(record: object, expected: Mapping[str, object]) -> Litera
     if expected_texts and _text_parts(candidate.get("parts")) == expected_texts:
         return "exact"
     return "conflict"
+
+
+def _admission_identity_matches(candidate: Mapping[str, object], expected: Mapping[str, object]) -> bool:
+    expected_texts = _text_parts(expected.get("parts"))
+    if not expected_texts or not _texts_admitted(expected_texts, _text_parts(candidate.get("parts"))):
+        return False
+    expected_model = _model_identity(expected.get("model"))
+    if expected_model is None:
+        return True
+    observed_model = _model_identity(candidate.get("model"))
+    if observed_model is None:
+        info = candidate.get("info")
+        if isinstance(info, dict):
+            observed_model = _model_identity(info.get("model"))
+    if observed_model is None:
+        return True
+    return observed_model == expected_model
+
+
+def _texts_admitted(expected: tuple[str, ...], observed: tuple[str, ...]) -> bool:
+    if expected == observed:
+        return True
+    haystack = "\n".join(observed)
+    cursor = 0
+    for piece in expected:
+        found = haystack.find(piece, cursor)
+        if found < 0:
+            return False
+        cursor = found + len(piece)
+    return True
+
+
+def _model_identity(model: object) -> tuple[str, str] | None:
+    if not isinstance(model, dict):
+        return None
+    provider = model.get("providerID")
+    model_id = model.get("modelID")
+    if isinstance(provider, str) and isinstance(model_id, str) and provider and model_id:
+        return (provider, model_id)
+    return None
 
 
 def _text_parts(parts: object) -> tuple[str, ...]:
