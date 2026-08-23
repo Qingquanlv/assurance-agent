@@ -21,7 +21,9 @@ from assurance_intake.operations import (
     CaseReviewFinalizeHandler,
     ExploreFinalizeHandler,
     IntakeFinalizeHandler,
+    IntakePrepareHandler,
 )
+from assurance_intake.resource_loader import resource_text
 
 _SHA = "a" * 64
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -40,6 +42,12 @@ CASE_INPUT: dict[str, JSONValue] = {
     "change_id": "CH-DEMO-001",
     "capability_leafs": list(VALID_LEAFS),
     "artifact_paths": ["qa/changes/CH-DEMO-001/explore/advisory.json"],
+}
+INTAKE_INPUT: dict[str, JSONValue] = {
+    "change_id": "RET-dept-management",
+    "requirement": "Cover department CRUD and the department tree page.",
+    "capability_leafs": [],
+    "artifact_paths": ["qa/changes"],
 }
 
 
@@ -73,6 +81,42 @@ def fake_agent_result(structured_result: JSONValue) -> AgentRunResult:
         adapter_id="test.fake",
         adapter_version="1.0.0",
     )
+
+
+def test_intake_skill_requires_direct_change_write() -> None:
+    skill = resource_text("skills/aa-intake/SKILL.md")
+    persona = resource_text("personas/intake-host.md")
+    assert "qa/changes/<change-id>" in skill
+    assert "must not ask" in skill.lower() or "do not ask" in skill.lower()
+    assert "must not require" in skill.lower() or "do not require" in skill.lower()
+    assert "initialize" in skill.lower()
+    assert "requirement.md" in skill
+    assert "interactive" not in persona.lower()
+    assert "do not ask" in persona.lower()
+
+
+@pytest.mark.asyncio
+async def test_intake_prepare_rejects_missing_requirement(tmp_path: Path) -> None:
+    payload = {key: value for key, value in INTAKE_INPUT.items() if key != "requirement"}
+    prepared = await run_prepare(IntakePrepareHandler(), payload, BINDING, tmp_path)
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert prepared.failure.kind == "invalid_input"
+    assert prepared.failure.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_intake_prepare_embeds_locked_requirement_and_write_rules(tmp_path: Path) -> None:
+    prepared = await run_prepare(IntakePrepareHandler(), INTAKE_INPUT, BINDING, tmp_path)
+    request = AgentRunRequest.model_validate(prepared.output)
+    skill, persona, business = request.instructions
+    assert "Capability-owned intake" in (skill.text_content or "")
+    assert "Do not ask" in (skill.text_content or "")
+    assert "qa/changes/<change-id>" in (skill.text_content or "")
+    assert "Do not ask" in (persona.text_content or "")
+    payload = cast(Mapping[str, object], business.json_content)
+    assert payload["change_id"] == "RET-dept-management"
+    assert payload["requirement"] == "Cover department CRUD and the department tree page."
 
 
 @pytest.mark.asyncio
@@ -219,6 +263,43 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
     assert executed.output == {
         "artifacts": [{"path": relative, "digest": hashlib.sha256(payload).hexdigest()}]
     }
+
+
+@pytest.mark.asyncio
+async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path) -> None:
+    relative = "qa/changes/RET-dept-management/requirement.md"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    payload = b"# RET-dept-management\n\nCover department CRUD.\n"
+    path.write_bytes(payload)
+    executed = await _finalize_files(
+        IntakeFinalizeHandler(),
+        {"output_files": [relative]},
+        tmp_path,
+        ["qa/archive", "qa/cases", "qa/changes"],
+    )
+    assert executed.status == "succeeded"
+    assert executed.output == {
+        "artifacts": [{"path": relative, "digest": hashlib.sha256(payload).hexdigest()}]
+    }
+
+
+@pytest.mark.asyncio
+async def test_intake_finalize_rejects_file_outside_locked_prefix(tmp_path: Path) -> None:
+    relative = "qa/notes/outside.md"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"nope\n")
+    executed = await _finalize_files(
+        IntakeFinalizeHandler(),
+        {"output_files": [relative]},
+        tmp_path,
+        ["qa/changes"],
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "undeclared" in executed.failure.message
 
 
 @pytest.mark.asyncio

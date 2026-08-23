@@ -70,6 +70,10 @@ def _workspace_file(workspace: Path, relative: str) -> Path:
     return path
 
 
+def _allowed_by_lock(relative: str, locked: tuple[str, ...]) -> bool:
+    return any(relative == prefix or relative.startswith(f"{prefix}/") for prefix in locked)
+
+
 def _authenticate_files(
     workspace: Path,
     declared: tuple[str, ...],
@@ -77,10 +81,9 @@ def _authenticate_files(
 ) -> list[dict[str, str]]:
     if not locked:
         raise InputError("artifact_paths must lock the expected output files")
-    expected = set(locked)
     artifacts: list[dict[str, str]] = []
     for relative in declared:
-        if relative not in expected:
+        if not _allowed_by_lock(relative, locked):
             raise OutputError(f"undeclared output file: {relative}")
         path = _workspace_file(workspace, relative)
         if not path.is_file() or path.is_symlink():

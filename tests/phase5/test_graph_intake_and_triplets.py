@@ -133,6 +133,8 @@ def compiled_product_workflow(installed_sources):
 
 
 def test_canonical_workflow_is_loaded_from_yaml():
+    from graph_engine.graph.input_projection import ObjectProjection, RootPointerProjection
+
     from assurance_product.product import load_canonical_workflow
 
     workflow = load_canonical_workflow()
@@ -142,6 +144,14 @@ def test_canonical_workflow_is_loaded_from_yaml():
     assert "full" in workflow.entrypoints
     assert set(workflow.entrypoints) >= set(_PUBLIC_ENTRYPOINTS)
     assert set(workflow.graphs) >= _SLICE_GRAPHS
+    intake_prepare = workflow.graphs["intake"].nodes["prepare"].input_projection
+    explore_prepare = workflow.graphs["explore"].nodes["prepare"].input_projection
+    assert isinstance(intake_prepare, ObjectProjection)
+    assert isinstance(explore_prepare, ObjectProjection)
+    requirement = intake_prepare.fields["requirement"]
+    assert isinstance(requirement, RootPointerProjection)
+    assert requirement.pointer == "/requirement"
+    assert "requirement" not in explore_prepare.fields
 
 
 def test_every_agent_node_is_one_closed_triplet(compiled_product_workflow):

@@ -57,7 +57,15 @@ class _SkillInputV1(FrozenModel):
 
 
 class IntakeInputV1(_SkillInputV1):
-    pass
+    requirement: str = Field(min_length=1)
+
+    @field_validator("requirement")
+    @classmethod
+    def _requirement(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("requirement must be a non-empty string")
+        return text
 
 
 class ExploreInputV1(_SkillInputV1):

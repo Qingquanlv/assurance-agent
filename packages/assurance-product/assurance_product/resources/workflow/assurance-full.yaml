@@ -274,12 +274,15 @@ graphs:
         capability: assurance.product.agent.intake.intake.prepare
         input: &prepare-input
           capability_leafs: []
-        input_projection: &prepare-projection
+        input_projection:
           type: object
           fields:
             change_id:
               type: root_pointer
               pointer: /change_id
+            requirement:
+              type: root_pointer
+              pointer: /requirement
             capability_leafs:
               type: config_pointer
               pointer: /capability_leafs
@@ -331,7 +334,18 @@ graphs:
         kind: task
         capability: assurance.product.agent.intake.explore.prepare
         input: *prepare-input
-        input_projection: *prepare-projection
+        input_projection: &prepare-projection
+          type: object
+          fields:
+            change_id:
+              type: root_pointer
+              pointer: /change_id
+            capability_leafs:
+              type: config_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: root_pointer
+              pointer: /allowed_artifact_paths
         retry: once
         timeout: short
       execute:
