@@ -52,6 +52,17 @@ _SLICE_GRAPHS = frozenset(
         "healing-fix-proposal",
         "healing-coverage-repair",
         "quality-report",
+        "improvement-archive",
+        "improvement-retro",
+        "improvement-retro-eval-analysis",
+        "improvement-retro-issue-analysis",
+        "improvement-retro-workflow-analysis",
+        "improvement-review",
+        "retro",
+        "improvement-evaluate",
+        "improvement-export",
+        "improvement-apply",
+        "improvement-rollback",
     }
 )
 _SLICE_PREPARE_IDS = (
@@ -82,11 +93,23 @@ _SLICE_PREPARE_IDS = (
     "assurance.quality.issue-analysis.prepare",
     "assurance.quality.issue-triage.prepare",
     "assurance.quality.report.prepare",
+    "assurance.improvement.archive.prepare",
+    "assurance.improvement.improvement-review.prepare",
+    "assurance.improvement.retro-eval-analysis.prepare",
+    "assurance.improvement.retro-issue-analysis.prepare",
+    "assurance.improvement.retro-workflow-analysis.prepare",
+    "assurance.improvement.retro.prepare",
 )
-_DEFERRED_SHAPES = (
-    "archive",
+_PUBLIC_ENTRYPOINTS = (
+    "intake",
+    "case",
+    "full",
     "retro",
-    "improvement",
+    "improvement-review",
+    "improvement-evaluate",
+    "improvement-export",
+    "improvement-apply",
+    "improvement-rollback",
 )
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
@@ -107,8 +130,8 @@ def test_canonical_workflow_is_loaded_from_yaml():
     assert "intake" in workflow.entrypoints
     assert "case" in workflow.entrypoints
     assert "full" in workflow.entrypoints
+    assert set(workflow.entrypoints) >= set(_PUBLIC_ENTRYPOINTS)
     assert set(workflow.graphs) >= _SLICE_GRAPHS
-    assert not any(name.startswith(_DEFERRED_SHAPES) for name in workflow.graphs)
 
 
 def test_every_agent_node_is_one_closed_triplet(compiled_product_workflow):
@@ -136,12 +159,11 @@ def test_workflow_compiles_under_both_product_providers(adapter, installed_sourc
     provider = AssuranceOpenCodeProductProvider if adapter == "opencode" else AssuranceCursorProductProvider
     assert provider.manifest().workflow == workflow
     assert composition.workflow.entrypoints == workflow.entrypoints
-    assert set(composition.workflow.entrypoints) >= {"intake", "case", "full"}
+    assert set(composition.workflow.entrypoints) >= set(_PUBLIC_ENTRYPOINTS)
     capabilities = graph_capability_ids(composition.workflow)
     assert capabilities
-    assert capabilities.issubset(
-        {alias for prepare_id in _SLICE_PREPARE_IDS for alias in expected_triplet_aliases(prepare_id)}
-    )
+    aliases = {alias for prepare_id in _SLICE_PREPARE_IDS for alias in expected_triplet_aliases(prepare_id)}
+    assert aliases.issubset(capabilities)
     assert_closed_agent_aliases(composition.workflow)
 
 
@@ -154,6 +176,6 @@ def test_graph_inventory_records_this_slice(compiled_product_workflow):
     assert recorded_edges == workflow_edge_ids(compiled_product_workflow)
     assert recorded_aliases == graph_capability_ids(compiled_product_workflow)
     assert INVENTORY_PATH.is_file()
-    for entrypoint in ("intake", "case", "full"):
+    for entrypoint in _PUBLIC_ENTRYPOINTS:
         assert inventory["entrypoints"][entrypoint]["nodes"]
         assert inventory["entrypoints"][entrypoint]["edges"]

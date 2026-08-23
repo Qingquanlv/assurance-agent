@@ -3,6 +3,12 @@ entrypoints:
   intake: entry
   case: case
   full: full
+  retro: retro
+  improvement-review: improvement-review
+  improvement-evaluate: improvement-evaluate
+  improvement-export: improvement-export
+  improvement-apply: improvement-apply
+  improvement-rollback: improvement-rollback
 retry:
   once:
     max_attempts: 1
@@ -70,6 +76,24 @@ graphs:
       case-review:
         kind: subgraph
         graph: case-review
+      review-human-gate:
+        kind: gate
+        expression: "decision == 'needs-human'"
+        input_projection: &review-decision
+          type: object
+          fields:
+            decision:
+              type: predecessor_pointer
+              predecessor: case-review
+              pointer: /decision
+      review-pass-gate:
+        kind: gate
+        expression: "decision != 'needs-human'"
+        input_projection: *review-decision
+      human-review:
+        kind: interrupt
+        reason: needs-human
+        actions: [approve, reject]
       generation:
         kind: subgraph
         graph: generation
@@ -152,6 +176,22 @@ graphs:
       report:
         kind: subgraph
         graph: quality-report
+      archive-gate:
+        kind: gate
+        expression: "auto_archive == true"
+        input_projection: &auto-archive-selection
+          type: object
+          fields:
+            auto_archive:
+              type: root_pointer
+              pointer: /auto_archive
+      skip-archive-gate:
+        kind: gate
+        expression: "auto_archive == false"
+        input_projection: *auto-archive-selection
+      archive:
+        kind: subgraph
+        graph: improvement-archive
       done:
         kind: end
     edges:
@@ -162,6 +202,16 @@ graphs:
       - from: case-design
         to: case-review
       - from: case-review
+        to: review-human-gate
+      - from: case-review
+        to: review-pass-gate
+      - from: review-human-gate
+        to: human-review
+        condition: 'output.value == true'
+      - from: review-pass-gate
+        to: generation
+        condition: 'output.value == true'
+      - from: human-review
         to: generation
       - from: generation
         to: execute
@@ -199,6 +249,16 @@ graphs:
       - from: coverage-repair
         to: generation
       - from: report
+        to: archive-gate
+      - from: report
+        to: skip-archive-gate
+      - from: archive-gate
+        to: archive
+        condition: 'output.value == true'
+      - from: skip-archive-gate
+        to: done
+        condition: 'output.value == true'
+      - from: archive
         to: done
   intake:
     max_activations: 8
@@ -1418,4 +1478,355 @@ graphs:
       - from: execute
         to: finalize
       - from: finalize
+        to: done
+  improvement-archive:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.improvement.archive.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.improvement.archive.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.improvement.archive.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  improvement-retro:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.improvement.retro.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.improvement.retro.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.improvement.retro.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  improvement-retro-eval-analysis:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.improvement.retro-eval-analysis.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.improvement.retro-eval-analysis.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.improvement.retro-eval-analysis.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  improvement-retro-issue-analysis:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.improvement.retro-issue-analysis.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.improvement.retro-issue-analysis.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.improvement.retro-issue-analysis.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  improvement-retro-workflow-analysis:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.improvement.retro-workflow-analysis.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.improvement.retro-workflow-analysis.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.improvement.retro-workflow-analysis.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  improvement-review:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.product.agent.improvement.improvement-review.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability: assurance.product.agent.improvement.improvement-review.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.product.agent.improvement.improvement-review.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: prepare
+        to: execute
+      - from: execute
+        to: finalize
+      - from: finalize
+        to: done
+  retro:
+    max_activations: 16
+    start: collect
+    nodes:
+      collect:
+        kind: task
+        capability: assurance.improvement.retro-collect-v3
+        input_projection: &change-id-projection
+          type: object
+          fields:
+            change_id:
+              type: root_pointer
+              pointer: /change_id
+        retry: once
+        timeout: short
+      retro:
+        kind: subgraph
+        graph: improvement-retro
+      retro-eval-analysis:
+        kind: subgraph
+        graph: improvement-retro-eval-analysis
+      retro-issue-analysis:
+        kind: subgraph
+        graph: improvement-retro-issue-analysis
+      retro-workflow-analysis:
+        kind: subgraph
+        graph: improvement-retro-workflow-analysis
+      reconcile:
+        kind: task
+        capability: assurance.improvement.reconcile-improvements
+        input_projection: *change-id-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: collect
+        to: retro
+      - from: retro
+        to: retro-eval-analysis
+      - from: retro-eval-analysis
+        to: retro-issue-analysis
+      - from: retro-issue-analysis
+        to: retro-workflow-analysis
+      - from: retro-workflow-analysis
+        to: reconcile
+      - from: reconcile
+        to: done
+  improvement-evaluate:
+    max_activations: 4
+    start: evaluate
+    nodes:
+      evaluate:
+        kind: task
+        capability: assurance.improvement.evaluate-memory-improvement
+        input_projection: *change-id-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: evaluate
+        to: done
+  improvement-export:
+    max_activations: 4
+    start: export
+    nodes:
+      export:
+        kind: task
+        capability: assurance.improvement.export-change-improvement
+        input_projection: *change-id-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: export
+        to: done
+  improvement-apply:
+    max_activations: 8
+    start: review
+    nodes:
+      review:
+        kind: subgraph
+        graph: improvement-review
+      review-human-gate:
+        kind: gate
+        expression: "decision == 'needs-human'"
+        input_projection: &apply-review-decision
+          type: object
+          fields:
+            decision:
+              type: predecessor_pointer
+              predecessor: review
+              pointer: /decision
+      review-pass-gate:
+        kind: gate
+        expression: "decision != 'needs-human'"
+        input_projection: *apply-review-decision
+      human-review:
+        kind: interrupt
+        reason: needs-human
+        actions: [approve, reject]
+      apply:
+        kind: task
+        capability: assurance.improvement.apply-memory-improvement
+        input_projection: *change-id-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: review
+        to: review-human-gate
+      - from: review
+        to: review-pass-gate
+      - from: review-human-gate
+        to: human-review
+        condition: 'output.value == true'
+      - from: review-pass-gate
+        to: apply
+        condition: 'output.value == true'
+      - from: human-review
+        to: apply
+      - from: apply
+        to: done
+  improvement-rollback:
+    max_activations: 4
+    start: rollback
+    nodes:
+      rollback:
+        kind: task
+        capability: assurance.improvement.rollback-memory-improvement
+        input_projection: *change-id-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - from: rollback
         to: done

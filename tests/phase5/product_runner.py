@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 import uuid
@@ -20,7 +20,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
-from graph_engine.runtime.engine import Engine
+from graph_engine.runtime.engine import Engine, EngineError, InvocationHandle
 from graph_engine.runtime.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
@@ -45,6 +45,22 @@ _EXECUTION_FINALIZE = (
 )
 _INSPECT_FINALIZE = f"{_AGENT_PREFIX}quality.inspect.finalize"
 _REPORT_FINALIZE = f"{_AGENT_PREFIX}quality.report.finalize"
+_CASE_REVIEW_FINALIZE = f"{_AGENT_PREFIX}intake.case-review.finalize"
+_IMPROVEMENT_REVIEW_FINALIZE = f"{_AGENT_PREFIX}improvement.improvement-review.finalize"
+_FIX_PROPOSAL_FINALIZE = f"{_AGENT_PREFIX}healing.fix-proposal.finalize"
+_REVIEW_FINALIZES = frozenset({_CASE_REVIEW_FINALIZE, _IMPROVEMENT_REVIEW_FINALIZE})
+_OPERATION_LOGICAL_STEPS = {
+    "assurance.improvement.apply-memory-improvement": "improvement.apply",
+    "assurance.improvement.evaluate-memory-improvement": "improvement.evaluate",
+    "assurance.improvement.export-change-improvement": "improvement.export",
+    "assurance.improvement.rollback-memory-improvement": "improvement.rollback",
+}
+_ENGINE_TO_TERMINAL = {
+    "succeeded": "completed",
+    "interrupted": "interrupted",
+    "stopped": "stopped",
+    "failed": "failed",
+}
 
 
 @dataclass(frozen=True)
@@ -81,6 +97,39 @@ class GenerationTrace:
     join_output: object
 
 
+@dataclass
+class TerminalResult:
+    status: str
+    logical_steps: tuple[str, ...]
+    terminal_tail: tuple[str, ...]
+    stop_reason: str | None
+    has_nested_stop: bool
+    report: ReportTrace
+    _engine: Engine
+    _handle: InvocationHandle
+    _composition: FrozenComposition
+    _engines: list[Engine] = field(default_factory=list)
+
+    def resume(self, payload: Mapping[str, object]) -> TerminalResult:
+        if set(payload) != {"decision"}:
+            raise EngineError("resume input is not the closed interrupt payload")
+        action = payload["decision"]
+        if not isinstance(action, str):
+            raise EngineError("resume input is not the closed interrupt payload")
+        resume_payload = cast(JSONValue, {"decision": action})
+        handle = self._engine.resume(self._handle, action=action, payload=resume_payload)
+        result = self._engine.run_until_blocked(handle)
+        return _terminal_from_run(
+            result.projection,
+            self._composition,
+            engine=self._engine,
+            handle=handle,
+            run_status=result.status,
+            stop_reason=result.reason,
+            engines=self._engines,
+        )
+
+
 def _step_matches(step: str, query: str) -> bool:
     return step == query or step.startswith(f"{query}.")
 
@@ -101,11 +150,15 @@ class _ScriptedTaskHost:
         coverage_sequence: tuple[float, ...],
         threshold: float,
         coverage_rounds: int,
+        review_decision: str,
+        healing_decision: str,
     ) -> None:
         self._execution_sequence = execution_sequence
         self._coverage_sequence = coverage_sequence
         self._threshold = threshold
         self._coverage_rounds = coverage_rounds
+        self._review_decision = review_decision
+        self._healing_decision = healing_decision
         self._execution_index = 0
         self._coverage_index = 0
         self._inspect_count = 0
@@ -146,6 +199,10 @@ class _ScriptedTaskHost:
             if self._exhausted:
                 return TaskOutcome.stopped("coverage_budget_exhausted", output)
             return TaskOutcome.succeeded(output)
+        if capability_id in _REVIEW_FINALIZES:
+            return TaskOutcome.succeeded({"decision": self._review_decision, "needs_fix": False})
+        if capability_id == _FIX_PROPOSAL_FINALIZE and self._healing_decision == "disallowed":
+            return TaskOutcome.stopped("healing_disallowed")
         return TaskOutcome.succeeded({"decision": "pass", "needs_fix": False})
 
     def _next_execution(self) -> str:
@@ -187,7 +244,11 @@ class ProductRun:
     def __init__(
         self,
         *,
+        entrypoint: str,
         selected_test_families: tuple[str, ...],
+        auto_archive: bool,
+        review_decision: str,
+        healing_decision: str,
         completion_order: Literal["forward", "reverse"] = "forward",
         execution_sequence: tuple[str, ...] = (),
         coverage_sequence: tuple[float, ...] = (),
@@ -196,7 +257,11 @@ class ProductRun:
         engine_root: Path,
         composition: FrozenComposition,
     ) -> None:
+        self._entrypoint = entrypoint
         self._selected_test_families = selected_test_families
+        self._auto_archive = auto_archive
+        self._review_decision = review_decision
+        self._healing_decision = healing_decision
         self._completion_order: Literal["forward", "reverse"] = completion_order
         self._execution_sequence = execution_sequence
         self._coverage_sequence = coverage_sequence
@@ -204,6 +269,7 @@ class ProductRun:
         self._coverage_rounds = coverage_rounds
         self._engine_root = engine_root
         self._composition = composition
+        self._engines: list[Engine] = []
 
     def run_to_report(self) -> FlowTrace:
         workflow = self._composition.workflow
@@ -218,6 +284,20 @@ class ProductRun:
         projection, status = self._run_engine()
         assert status in {"succeeded", "stopped"}, status
         return _flow_trace_from_result(projection, self._composition)
+
+    def run_to_terminal(self) -> TerminalResult:
+        workflow = self._composition.workflow
+        assert self._entrypoint in workflow.entrypoints, f"entrypoint {self._entrypoint!r} is absent"
+        projection, status, reason, engine, handle = self._run_engine_open()
+        return _terminal_from_run(
+            projection,
+            self._composition,
+            engine=engine,
+            handle=handle,
+            run_status=status,
+            stop_reason=reason,
+            engines=self._engines,
+        )
 
     def run_to_generation_join(self) -> GenerationTrace:
         workflow = self._composition.workflow
@@ -247,35 +327,52 @@ class ProductRun:
         payload = _product_input(
             selected_test_families=self._selected_test_families,
             coverage_rounds=self._resolved_coverage_rounds(),
+            auto_archive=self._auto_archive,
         )
-        return ProductInputV1.model_validate(payload).validate_for_entrypoint("full").model_dump(mode="json")
+        return (
+            ProductInputV1.model_validate(payload)
+            .validate_for_entrypoint(self._entrypoint)
+            .model_dump(mode="json")
+        )
 
-    def _run_engine(self) -> tuple[InvocationProjection, str]:
-        root_input = self._root_input()
-        seed = empty_invocation_seed(root_input=cast(JSONValue, root_input))
-        invocation_id = f"assurance-{uuid.uuid4().hex}"
-        host = _ScriptedTaskHost(
+    def _host(self) -> _ScriptedTaskHost:
+        return _ScriptedTaskHost(
             execution_sequence=self._execution_sequence,
             coverage_sequence=self._coverage_sequence,
             threshold=self._threshold,
             coverage_rounds=self._resolved_coverage_rounds(),
+            review_decision=self._review_decision,
+            healing_decision=self._healing_decision,
         )
-        with Engine(self._engine_root / invocation_id, host=host) as engine:
-            with engine.start(
-                self._composition,
-                entrypoint="full",
-                invocation_id=invocation_id,
-                seed=seed,
-                authorization=empty_runtime_authorization(),
-            ) as handle:
-                result = engine.run_until_blocked(handle)
-        return result.projection, result.status
+
+    def _run_engine(self) -> tuple[InvocationProjection, str]:
+        projection, status, _reason, engine, handle = self._run_engine_open()
+        handle.close()
+        engine.close()
+        return projection, status
+
+    def _run_engine_open(self) -> tuple[InvocationProjection, str, str | None, Engine, InvocationHandle]:
+        root_input = self._root_input()
+        seed = empty_invocation_seed(root_input=cast(JSONValue, root_input))
+        invocation_id = f"assurance-{uuid.uuid4().hex}"
+        engine = Engine(self._engine_root / invocation_id, host=self._host())
+        self._engines.append(engine)
+        handle = engine.start(
+            self._composition,
+            entrypoint=self._entrypoint,
+            invocation_id=invocation_id,
+            seed=seed,
+            authorization=empty_runtime_authorization(),
+        )
+        result = engine.run_until_blocked(handle)
+        return result.projection, result.status, result.reason, engine, handle
 
 
 def _product_input(
     *,
     selected_test_families: tuple[str, ...],
     coverage_rounds: int = 1,
+    auto_archive: bool = False,
 ) -> dict[str, object]:
     return {
         "schema_version": "1",
@@ -283,7 +380,7 @@ def _product_input(
         "requirement": "Add login",
         "run_mode": "implement",
         "selected_test_families": selected_test_families,
-        "auto_archive": False,
+        "auto_archive": auto_archive,
         "capability_catalog": {
             "resource_id": "assurance.product.configuration.capability-catalog",
             "sha256": _SHA,
@@ -307,9 +404,54 @@ def _product_input(
 
 
 def _logical_step(capability: str) -> str | None:
+    operation = _OPERATION_LOGICAL_STEPS.get(capability)
+    if operation is not None:
+        return operation
     if not capability.startswith(_AGENT_PREFIX) or not capability.endswith(".finalize"):
         return None
     return capability.removeprefix(_AGENT_PREFIX).removesuffix(".finalize")
+
+
+def _terminal_tail(steps: tuple[str, ...]) -> tuple[str, ...]:
+    for index, step in enumerate(steps):
+        if step == "quality.report":
+            return steps[index:]
+    return ()
+
+
+def _has_nested_stop(projection: InvocationProjection) -> bool:
+    root_ids = {
+        item.graph_instance_id for item in projection.graph_instances if item.parent_activation_id is None
+    }
+    return any(
+        activation.status == "stopped" and activation.graph_instance_id not in root_ids
+        for activation in projection.activations
+    )
+
+
+def _terminal_from_run(
+    projection: InvocationProjection,
+    composition: FrozenComposition,
+    *,
+    engine: Engine,
+    handle: InvocationHandle,
+    run_status: str,
+    stop_reason: str | None,
+    engines: list[Engine],
+) -> TerminalResult:
+    flow = _flow_trace_from_result(projection, composition)
+    return TerminalResult(
+        status=_ENGINE_TO_TERMINAL[run_status],
+        logical_steps=flow.logical_steps,
+        terminal_tail=_terminal_tail(flow.logical_steps),
+        stop_reason=stop_reason,
+        has_nested_stop=_has_nested_stop(projection),
+        report=flow.report,
+        _engine=engine,
+        _handle=handle,
+        _composition=composition,
+        _engines=engines,
+    )
 
 
 def _prepare_stem(capability: str) -> str | None:
@@ -504,16 +646,29 @@ def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
 
     def factory(
         *,
-        selected_test_families: tuple[str, ...] = ("api",),
+        entrypoint: str = "full",
+        selected_test_families: tuple[str, ...] | None = None,
+        auto_archive: bool = False,
+        review_decision: str = "pass",
+        healing_decision: str = "allowed",
         completion_order: Literal["forward", "reverse"] = "forward",
         execution_sequence: tuple[str, ...] = (),
         coverage_sequence: tuple[float, ...] = (),
         threshold: float = 0.90,
         coverage_rounds: int | None = None,
     ) -> ProductRun:
+        from assurance_product.models import FAMILY_EMPTY_ENTRYPOINTS
+
         assert composition is not None, "workflow stops after the intake/case slice"
+        families = selected_test_families
+        if families is None:
+            families = () if entrypoint in FAMILY_EMPTY_ENTRYPOINTS else ("api",)
         return ProductRun(
-            selected_test_families=selected_test_families,
+            entrypoint=entrypoint,
+            selected_test_families=families,
+            auto_archive=auto_archive,
+            review_decision=review_decision,
+            healing_decision=healing_decision,
             completion_order=completion_order,
             execution_sequence=execution_sequence,
             coverage_sequence=coverage_sequence,

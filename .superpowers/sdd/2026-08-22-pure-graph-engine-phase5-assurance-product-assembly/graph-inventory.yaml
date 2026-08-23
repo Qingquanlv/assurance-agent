@@ -1,11 +1,10 @@
 entrypoints:
   intake:
     nodes:
-    - entry/intake
-    - entry/explore
-    - entry/case-design
-    - entry/case-review
-    - entry/done
+    - case-review/prepare
+    - case-review/execute
+    - case-review/finalize
+    - case-review/done
     - intake/prepare
     - intake/execute
     - intake/finalize
@@ -18,15 +17,15 @@ entrypoints:
     - case-design/execute
     - case-design/finalize
     - case-design/done
-    - case-review/prepare
-    - case-review/execute
-    - case-review/finalize
-    - case-review/done
+    - entry/intake
+    - entry/explore
+    - entry/case-design
+    - entry/case-review
+    - entry/done
     edges:
-    - entry:intake->explore
-    - entry:explore->case-design
-    - entry:case-design->case-review
-    - entry:case-review->done
+    - case-review:prepare->execute
+    - case-review:execute->finalize
+    - case-review:finalize->done
     - intake:prepare->execute
     - intake:execute->finalize
     - intake:finalize->done
@@ -36,9 +35,10 @@ entrypoints:
     - case-design:prepare->execute
     - case-design:execute->finalize
     - case-design:finalize->done
-    - case-review:prepare->execute
-    - case-review:execute->finalize
-    - case-review:finalize->done
+    - entry:intake->explore
+    - entry:explore->case-design
+    - entry:case-design->case-review
+    - entry:case-review->done
     aliases:
     - assurance.product.agent.intake.case-design.execute
     - assurance.product.agent.intake.case-design.finalize
@@ -54,9 +54,6 @@ entrypoints:
     - assurance.product.agent.intake.intake.prepare
   case:
     nodes:
-    - case/case-design
-    - case/case-review
-    - case/done
     - case-design/prepare
     - case-design/execute
     - case-design/finalize
@@ -65,15 +62,18 @@ entrypoints:
     - case-review/execute
     - case-review/finalize
     - case-review/done
+    - case/case-design
+    - case/case-review
+    - case/done
     edges:
-    - case:case-design->case-review
-    - case:case-review->done
     - case-design:prepare->execute
     - case-design:execute->finalize
     - case-design:finalize->done
     - case-review:prepare->execute
     - case-review:execute->finalize
     - case-review:finalize->done
+    - case:case-design->case-review
+    - case:case-review->done
     aliases:
     - assurance.product.agent.intake.case-design.execute
     - assurance.product.agent.intake.case-design.finalize
@@ -83,10 +83,26 @@ entrypoints:
     - assurance.product.agent.intake.case-review.prepare
   full:
     nodes:
+    - quality-fact-baseline/prepare
+    - quality-fact-baseline/execute
+    - quality-fact-baseline/finalize
+    - quality-fact-baseline/done
+    - execution-run/prepare
+    - execution-run/execute
+    - execution-run/finalize
+    - execution-run/done
+    - generation-api/plan
+    - generation-api/plan-review
+    - generation-api/codegen
+    - generation-api/codegen-fix
+    - generation-api/done
     - full/intake
     - full/explore
     - full/case-design
     - full/case-review
+    - full/review-human-gate
+    - full/review-pass-gate
+    - full/human-review
     - full/generation
     - full/execute
     - full/execution-pass-gate
@@ -100,23 +116,30 @@ entrypoints:
     - full/coverage-policy-gate
     - full/coverage-repair
     - full/report
+    - full/archive-gate
+    - full/skip-archive-gate
+    - full/archive
     - full/done
-    - intake/prepare
-    - intake/execute
-    - intake/finalize
-    - intake/done
-    - explore/prepare
-    - explore/execute
-    - explore/finalize
-    - explore/done
+    - generation-e2e-plan-review/prepare
+    - generation-e2e-plan-review/execute
+    - generation-e2e-plan-review/finalize
+    - generation-e2e-plan-review/done
+    - quality-report/prepare
+    - quality-report/execute
+    - quality-report/finalize
+    - quality-report/done
+    - generation-fuzz-plan/prepare
+    - generation-fuzz-plan/execute
+    - generation-fuzz-plan/finalize
+    - generation-fuzz-plan/done
+    - generation-e2e-codegen-fix/prepare
+    - generation-e2e-codegen-fix/execute
+    - generation-e2e-codegen-fix/finalize
+    - generation-e2e-codegen-fix/done
     - case-design/prepare
     - case-design/execute
     - case-design/finalize
     - case-design/done
-    - case-review/prepare
-    - case-review/execute
-    - case-review/finalize
-    - case-review/done
     - generation/fanout
     - generation/select-api
     - generation/select-e2e
@@ -136,124 +159,125 @@ entrypoints:
     - generation/performance-done
     - generation/join-selected
     - generation/done
-    - execution-execute/prepare
-    - execution-execute/execute
-    - execution-execute/finalize
-    - execution-execute/done
-    - quality-issue-triage/prepare
-    - quality-issue-triage/execute
-    - quality-issue-triage/finalize
-    - quality-issue-triage/done
-    - quality-issue-analysis/prepare
-    - quality-issue-analysis/execute
-    - quality-issue-analysis/finalize
-    - quality-issue-analysis/done
-    - healing-fix-proposal/prepare
-    - healing-fix-proposal/execute
-    - healing-fix-proposal/finalize
-    - healing-fix-proposal/done
-    - execution-run/prepare
-    - execution-run/execute
-    - execution-run/finalize
-    - execution-run/done
     - quality/fact-baseline
     - quality/inspect
     - quality/done
-    - healing-coverage-repair/prepare
-    - healing-coverage-repair/execute
-    - healing-coverage-repair/finalize
-    - healing-coverage-repair/done
-    - quality-report/prepare
-    - quality-report/execute
-    - quality-report/finalize
-    - quality-report/done
-    - generation-api/plan
-    - generation-api/plan-review
-    - generation-api/codegen
-    - generation-api/codegen-fix
-    - generation-api/done
+    - generation-fuzz-plan-review/prepare
+    - generation-fuzz-plan-review/execute
+    - generation-fuzz-plan-review/finalize
+    - generation-fuzz-plan-review/done
+    - generation-performance-plan/prepare
+    - generation-performance-plan/execute
+    - generation-performance-plan/finalize
+    - generation-performance-plan/done
+    - generation-performance-codegen/prepare
+    - generation-performance-codegen/execute
+    - generation-performance-codegen/finalize
+    - generation-performance-codegen/done
+    - generation-fuzz-codegen/prepare
+    - generation-fuzz-codegen/execute
+    - generation-fuzz-codegen/finalize
+    - generation-fuzz-codegen/done
+    - case-review/prepare
+    - case-review/execute
+    - case-review/finalize
+    - case-review/done
+    - improvement-archive/prepare
+    - improvement-archive/execute
+    - improvement-archive/finalize
+    - improvement-archive/done
+    - generation-e2e-codegen/prepare
+    - generation-e2e-codegen/execute
+    - generation-e2e-codegen/finalize
+    - generation-e2e-codegen/done
+    - generation-api-codegen-fix/prepare
+    - generation-api-codegen-fix/execute
+    - generation-api-codegen-fix/finalize
+    - generation-api-codegen-fix/done
+    - generation-api-plan-review/prepare
+    - generation-api-plan-review/execute
+    - generation-api-plan-review/finalize
+    - generation-api-plan-review/done
     - generation-e2e/plan
     - generation-e2e/plan-review
     - generation-e2e/codegen
     - generation-e2e/codegen-fix
     - generation-e2e/done
-    - generation-fuzz/plan
-    - generation-fuzz/plan-review
-    - generation-fuzz/codegen
-    - generation-fuzz/done
-    - generation-performance/plan
-    - generation-performance/plan-review
-    - generation-performance/codegen
-    - generation-performance/done
-    - quality-fact-baseline/prepare
-    - quality-fact-baseline/execute
-    - quality-fact-baseline/finalize
-    - quality-fact-baseline/done
-    - quality-inspect/prepare
-    - quality-inspect/execute
-    - quality-inspect/finalize
-    - quality-inspect/done
+    - quality-issue-analysis/prepare
+    - quality-issue-analysis/execute
+    - quality-issue-analysis/finalize
+    - quality-issue-analysis/done
     - generation-api-plan/prepare
     - generation-api-plan/execute
     - generation-api-plan/finalize
     - generation-api-plan/done
-    - generation-api-plan-review/prepare
-    - generation-api-plan-review/execute
-    - generation-api-plan-review/finalize
-    - generation-api-plan-review/done
-    - generation-api-codegen/prepare
-    - generation-api-codegen/execute
-    - generation-api-codegen/finalize
-    - generation-api-codegen/done
-    - generation-api-codegen-fix/prepare
-    - generation-api-codegen-fix/execute
-    - generation-api-codegen-fix/finalize
-    - generation-api-codegen-fix/done
+    - execution-execute/prepare
+    - execution-execute/execute
+    - execution-execute/finalize
+    - execution-execute/done
+    - healing-fix-proposal/prepare
+    - healing-fix-proposal/execute
+    - healing-fix-proposal/finalize
+    - healing-fix-proposal/done
     - generation-e2e-plan/prepare
     - generation-e2e-plan/execute
     - generation-e2e-plan/finalize
     - generation-e2e-plan/done
-    - generation-e2e-plan-review/prepare
-    - generation-e2e-plan-review/execute
-    - generation-e2e-plan-review/finalize
-    - generation-e2e-plan-review/done
-    - generation-e2e-codegen/prepare
-    - generation-e2e-codegen/execute
-    - generation-e2e-codegen/finalize
-    - generation-e2e-codegen/done
-    - generation-e2e-codegen-fix/prepare
-    - generation-e2e-codegen-fix/execute
-    - generation-e2e-codegen-fix/finalize
-    - generation-e2e-codegen-fix/done
-    - generation-fuzz-plan/prepare
-    - generation-fuzz-plan/execute
-    - generation-fuzz-plan/finalize
-    - generation-fuzz-plan/done
-    - generation-fuzz-plan-review/prepare
-    - generation-fuzz-plan-review/execute
-    - generation-fuzz-plan-review/finalize
-    - generation-fuzz-plan-review/done
-    - generation-fuzz-codegen/prepare
-    - generation-fuzz-codegen/execute
-    - generation-fuzz-codegen/finalize
-    - generation-fuzz-codegen/done
-    - generation-performance-plan/prepare
-    - generation-performance-plan/execute
-    - generation-performance-plan/finalize
-    - generation-performance-plan/done
+    - intake/prepare
+    - intake/execute
+    - intake/finalize
+    - intake/done
+    - quality-inspect/prepare
+    - quality-inspect/execute
+    - quality-inspect/finalize
+    - quality-inspect/done
+    - generation-api-codegen/prepare
+    - generation-api-codegen/execute
+    - generation-api-codegen/finalize
+    - generation-api-codegen/done
+    - explore/prepare
+    - explore/execute
+    - explore/finalize
+    - explore/done
+    - quality-issue-triage/prepare
+    - quality-issue-triage/execute
+    - quality-issue-triage/finalize
+    - quality-issue-triage/done
+    - generation-performance/plan
+    - generation-performance/plan-review
+    - generation-performance/codegen
+    - generation-performance/done
+    - healing-coverage-repair/prepare
+    - healing-coverage-repair/execute
+    - healing-coverage-repair/finalize
+    - healing-coverage-repair/done
     - generation-performance-plan-review/prepare
     - generation-performance-plan-review/execute
     - generation-performance-plan-review/finalize
     - generation-performance-plan-review/done
-    - generation-performance-codegen/prepare
-    - generation-performance-codegen/execute
-    - generation-performance-codegen/finalize
-    - generation-performance-codegen/done
+    - generation-fuzz/plan
+    - generation-fuzz/plan-review
+    - generation-fuzz/codegen
+    - generation-fuzz/done
     edges:
+    - quality-fact-baseline:prepare->execute
+    - quality-fact-baseline:execute->finalize
+    - quality-fact-baseline:finalize->done
+    - execution-run:prepare->execute
+    - execution-run:execute->finalize
+    - execution-run:finalize->done
+    - generation-api:plan->plan-review
+    - generation-api:plan-review->codegen
+    - generation-api:codegen->codegen-fix
+    - generation-api:codegen-fix->done
     - full:intake->explore
     - full:explore->case-design
     - full:case-design->case-review
-    - full:case-review->generation
+    - full:case-review->review-human-gate
+    - full:case-review->review-pass-gate
+    - full:review-human-gate->human-review
+    - full:review-pass-gate->generation
+    - full:human-review->generation
     - full:generation->execute
     - full:execute->execution-pass-gate
     - full:execute->execution-issue-gate
@@ -269,19 +293,26 @@ entrypoints:
     - full:coverage-policy-gate->coverage-repair
     - full:coverage-policy-gate->report
     - full:coverage-repair->generation
-    - full:report->done
-    - intake:prepare->execute
-    - intake:execute->finalize
-    - intake:finalize->done
-    - explore:prepare->execute
-    - explore:execute->finalize
-    - explore:finalize->done
+    - full:report->archive-gate
+    - full:report->skip-archive-gate
+    - full:archive-gate->archive
+    - full:skip-archive-gate->done
+    - full:archive->done
+    - generation-e2e-plan-review:prepare->execute
+    - generation-e2e-plan-review:execute->finalize
+    - generation-e2e-plan-review:finalize->done
+    - quality-report:prepare->execute
+    - quality-report:execute->finalize
+    - quality-report:finalize->done
+    - generation-fuzz-plan:prepare->execute
+    - generation-fuzz-plan:execute->finalize
+    - generation-fuzz-plan:finalize->done
+    - generation-e2e-codegen-fix:prepare->execute
+    - generation-e2e-codegen-fix:execute->finalize
+    - generation-e2e-codegen-fix:finalize->done
     - case-design:prepare->execute
     - case-design:execute->finalize
     - case-design:finalize->done
-    - case-review:prepare->execute
-    - case-review:execute->finalize
-    - case-review:finalize->done
     - generation:fanout->select-api
     - generation:fanout->select-e2e
     - generation:fanout->select-fuzz
@@ -307,91 +338,81 @@ entrypoints:
     - generation:fuzz-done->join-selected
     - generation:performance-done->join-selected
     - generation:join-selected->done
-    - execution-execute:prepare->execute
-    - execution-execute:execute->finalize
-    - execution-execute:finalize->done
-    - quality-issue-triage:prepare->execute
-    - quality-issue-triage:execute->finalize
-    - quality-issue-triage:finalize->done
-    - quality-issue-analysis:prepare->execute
-    - quality-issue-analysis:execute->finalize
-    - quality-issue-analysis:finalize->done
-    - healing-fix-proposal:prepare->execute
-    - healing-fix-proposal:execute->finalize
-    - healing-fix-proposal:finalize->done
-    - execution-run:prepare->execute
-    - execution-run:execute->finalize
-    - execution-run:finalize->done
     - quality:fact-baseline->inspect
     - quality:inspect->done
-    - healing-coverage-repair:prepare->execute
-    - healing-coverage-repair:execute->finalize
-    - healing-coverage-repair:finalize->done
-    - quality-report:prepare->execute
-    - quality-report:execute->finalize
-    - quality-report:finalize->done
-    - generation-api:plan->plan-review
-    - generation-api:plan-review->codegen
-    - generation-api:codegen->codegen-fix
-    - generation-api:codegen-fix->done
+    - generation-fuzz-plan-review:prepare->execute
+    - generation-fuzz-plan-review:execute->finalize
+    - generation-fuzz-plan-review:finalize->done
+    - generation-performance-plan:prepare->execute
+    - generation-performance-plan:execute->finalize
+    - generation-performance-plan:finalize->done
+    - generation-performance-codegen:prepare->execute
+    - generation-performance-codegen:execute->finalize
+    - generation-performance-codegen:finalize->done
+    - generation-fuzz-codegen:prepare->execute
+    - generation-fuzz-codegen:execute->finalize
+    - generation-fuzz-codegen:finalize->done
+    - case-review:prepare->execute
+    - case-review:execute->finalize
+    - case-review:finalize->done
+    - improvement-archive:prepare->execute
+    - improvement-archive:execute->finalize
+    - improvement-archive:finalize->done
+    - generation-e2e-codegen:prepare->execute
+    - generation-e2e-codegen:execute->finalize
+    - generation-e2e-codegen:finalize->done
+    - generation-api-codegen-fix:prepare->execute
+    - generation-api-codegen-fix:execute->finalize
+    - generation-api-codegen-fix:finalize->done
+    - generation-api-plan-review:prepare->execute
+    - generation-api-plan-review:execute->finalize
+    - generation-api-plan-review:finalize->done
     - generation-e2e:plan->plan-review
     - generation-e2e:plan-review->codegen
     - generation-e2e:codegen->codegen-fix
     - generation-e2e:codegen-fix->done
-    - generation-fuzz:plan->plan-review
-    - generation-fuzz:plan-review->codegen
-    - generation-fuzz:codegen->done
-    - generation-performance:plan->plan-review
-    - generation-performance:plan-review->codegen
-    - generation-performance:codegen->done
-    - quality-fact-baseline:prepare->execute
-    - quality-fact-baseline:execute->finalize
-    - quality-fact-baseline:finalize->done
-    - quality-inspect:prepare->execute
-    - quality-inspect:execute->finalize
-    - quality-inspect:finalize->done
+    - quality-issue-analysis:prepare->execute
+    - quality-issue-analysis:execute->finalize
+    - quality-issue-analysis:finalize->done
     - generation-api-plan:prepare->execute
     - generation-api-plan:execute->finalize
     - generation-api-plan:finalize->done
-    - generation-api-plan-review:prepare->execute
-    - generation-api-plan-review:execute->finalize
-    - generation-api-plan-review:finalize->done
-    - generation-api-codegen:prepare->execute
-    - generation-api-codegen:execute->finalize
-    - generation-api-codegen:finalize->done
-    - generation-api-codegen-fix:prepare->execute
-    - generation-api-codegen-fix:execute->finalize
-    - generation-api-codegen-fix:finalize->done
+    - execution-execute:prepare->execute
+    - execution-execute:execute->finalize
+    - execution-execute:finalize->done
+    - healing-fix-proposal:prepare->execute
+    - healing-fix-proposal:execute->finalize
+    - healing-fix-proposal:finalize->done
     - generation-e2e-plan:prepare->execute
     - generation-e2e-plan:execute->finalize
     - generation-e2e-plan:finalize->done
-    - generation-e2e-plan-review:prepare->execute
-    - generation-e2e-plan-review:execute->finalize
-    - generation-e2e-plan-review:finalize->done
-    - generation-e2e-codegen:prepare->execute
-    - generation-e2e-codegen:execute->finalize
-    - generation-e2e-codegen:finalize->done
-    - generation-e2e-codegen-fix:prepare->execute
-    - generation-e2e-codegen-fix:execute->finalize
-    - generation-e2e-codegen-fix:finalize->done
-    - generation-fuzz-plan:prepare->execute
-    - generation-fuzz-plan:execute->finalize
-    - generation-fuzz-plan:finalize->done
-    - generation-fuzz-plan-review:prepare->execute
-    - generation-fuzz-plan-review:execute->finalize
-    - generation-fuzz-plan-review:finalize->done
-    - generation-fuzz-codegen:prepare->execute
-    - generation-fuzz-codegen:execute->finalize
-    - generation-fuzz-codegen:finalize->done
-    - generation-performance-plan:prepare->execute
-    - generation-performance-plan:execute->finalize
-    - generation-performance-plan:finalize->done
+    - intake:prepare->execute
+    - intake:execute->finalize
+    - intake:finalize->done
+    - quality-inspect:prepare->execute
+    - quality-inspect:execute->finalize
+    - quality-inspect:finalize->done
+    - generation-api-codegen:prepare->execute
+    - generation-api-codegen:execute->finalize
+    - generation-api-codegen:finalize->done
+    - explore:prepare->execute
+    - explore:execute->finalize
+    - explore:finalize->done
+    - quality-issue-triage:prepare->execute
+    - quality-issue-triage:execute->finalize
+    - quality-issue-triage:finalize->done
+    - generation-performance:plan->plan-review
+    - generation-performance:plan-review->codegen
+    - generation-performance:codegen->done
+    - healing-coverage-repair:prepare->execute
+    - healing-coverage-repair:execute->finalize
+    - healing-coverage-repair:finalize->done
     - generation-performance-plan-review:prepare->execute
     - generation-performance-plan-review:execute->finalize
     - generation-performance-plan-review:finalize->done
-    - generation-performance-codegen:prepare->execute
-    - generation-performance-codegen:execute->finalize
-    - generation-performance-codegen:finalize->done
+    - generation-fuzz:plan->plan-review
+    - generation-fuzz:plan-review->codegen
+    - generation-fuzz:codegen->done
     aliases:
     - assurance.product.agent.execution.execute.execute
     - assurance.product.agent.execution.execute.finalize
@@ -447,6 +468,9 @@ entrypoints:
     - assurance.product.agent.healing.fix-proposal.execute
     - assurance.product.agent.healing.fix-proposal.finalize
     - assurance.product.agent.healing.fix-proposal.prepare
+    - assurance.product.agent.improvement.archive.execute
+    - assurance.product.agent.improvement.archive.finalize
+    - assurance.product.agent.improvement.archive.prepare
     - assurance.product.agent.intake.case-design.execute
     - assurance.product.agent.intake.case-design.finalize
     - assurance.product.agent.intake.case-design.prepare
@@ -474,6 +498,130 @@ entrypoints:
     - assurance.product.agent.quality.report.execute
     - assurance.product.agent.quality.report.finalize
     - assurance.product.agent.quality.report.prepare
+  retro:
+    nodes:
+    - improvement-retro-issue-analysis/prepare
+    - improvement-retro-issue-analysis/execute
+    - improvement-retro-issue-analysis/finalize
+    - improvement-retro-issue-analysis/done
+    - improvement-retro-eval-analysis/prepare
+    - improvement-retro-eval-analysis/execute
+    - improvement-retro-eval-analysis/finalize
+    - improvement-retro-eval-analysis/done
+    - retro/collect
+    - retro/retro
+    - retro/retro-eval-analysis
+    - retro/retro-issue-analysis
+    - retro/retro-workflow-analysis
+    - retro/reconcile
+    - retro/done
+    - improvement-retro-workflow-analysis/prepare
+    - improvement-retro-workflow-analysis/execute
+    - improvement-retro-workflow-analysis/finalize
+    - improvement-retro-workflow-analysis/done
+    - improvement-retro/prepare
+    - improvement-retro/execute
+    - improvement-retro/finalize
+    - improvement-retro/done
+    edges:
+    - improvement-retro-issue-analysis:prepare->execute
+    - improvement-retro-issue-analysis:execute->finalize
+    - improvement-retro-issue-analysis:finalize->done
+    - improvement-retro-eval-analysis:prepare->execute
+    - improvement-retro-eval-analysis:execute->finalize
+    - improvement-retro-eval-analysis:finalize->done
+    - retro:collect->retro
+    - retro:retro->retro-eval-analysis
+    - retro:retro-eval-analysis->retro-issue-analysis
+    - retro:retro-issue-analysis->retro-workflow-analysis
+    - retro:retro-workflow-analysis->reconcile
+    - retro:reconcile->done
+    - improvement-retro-workflow-analysis:prepare->execute
+    - improvement-retro-workflow-analysis:execute->finalize
+    - improvement-retro-workflow-analysis:finalize->done
+    - improvement-retro:prepare->execute
+    - improvement-retro:execute->finalize
+    - improvement-retro:finalize->done
+    aliases:
+    - assurance.improvement.reconcile-improvements
+    - assurance.improvement.retro-collect-v3
+    - assurance.product.agent.improvement.retro-eval-analysis.execute
+    - assurance.product.agent.improvement.retro-eval-analysis.finalize
+    - assurance.product.agent.improvement.retro-eval-analysis.prepare
+    - assurance.product.agent.improvement.retro-issue-analysis.execute
+    - assurance.product.agent.improvement.retro-issue-analysis.finalize
+    - assurance.product.agent.improvement.retro-issue-analysis.prepare
+    - assurance.product.agent.improvement.retro-workflow-analysis.execute
+    - assurance.product.agent.improvement.retro-workflow-analysis.finalize
+    - assurance.product.agent.improvement.retro-workflow-analysis.prepare
+    - assurance.product.agent.improvement.retro.execute
+    - assurance.product.agent.improvement.retro.finalize
+    - assurance.product.agent.improvement.retro.prepare
+  improvement-review:
+    nodes:
+    - improvement-review/prepare
+    - improvement-review/execute
+    - improvement-review/finalize
+    - improvement-review/done
+    edges:
+    - improvement-review:prepare->execute
+    - improvement-review:execute->finalize
+    - improvement-review:finalize->done
+    aliases:
+    - assurance.product.agent.improvement.improvement-review.execute
+    - assurance.product.agent.improvement.improvement-review.finalize
+    - assurance.product.agent.improvement.improvement-review.prepare
+  improvement-evaluate:
+    nodes:
+    - improvement-evaluate/evaluate
+    - improvement-evaluate/done
+    edges:
+    - improvement-evaluate:evaluate->done
+    aliases:
+    - assurance.improvement.evaluate-memory-improvement
+  improvement-export:
+    nodes:
+    - improvement-export/export
+    - improvement-export/done
+    edges:
+    - improvement-export:export->done
+    aliases:
+    - assurance.improvement.export-change-improvement
+  improvement-apply:
+    nodes:
+    - improvement-review/prepare
+    - improvement-review/execute
+    - improvement-review/finalize
+    - improvement-review/done
+    - improvement-apply/review
+    - improvement-apply/review-human-gate
+    - improvement-apply/review-pass-gate
+    - improvement-apply/human-review
+    - improvement-apply/apply
+    - improvement-apply/done
+    edges:
+    - improvement-review:prepare->execute
+    - improvement-review:execute->finalize
+    - improvement-review:finalize->done
+    - improvement-apply:review->review-human-gate
+    - improvement-apply:review->review-pass-gate
+    - improvement-apply:review-human-gate->human-review
+    - improvement-apply:review-pass-gate->apply
+    - improvement-apply:human-review->apply
+    - improvement-apply:apply->done
+    aliases:
+    - assurance.improvement.apply-memory-improvement
+    - assurance.product.agent.improvement.improvement-review.execute
+    - assurance.product.agent.improvement.improvement-review.finalize
+    - assurance.product.agent.improvement.improvement-review.prepare
+  improvement-rollback:
+    nodes:
+    - improvement-rollback/rollback
+    - improvement-rollback/done
+    edges:
+    - improvement-rollback:rollback->done
+    aliases:
+    - assurance.improvement.rollback-memory-improvement
 nodes:
 - entry/intake
 - entry/explore
@@ -487,6 +635,9 @@ nodes:
 - full/explore
 - full/case-design
 - full/case-review
+- full/review-human-gate
+- full/review-pass-gate
+- full/human-review
 - full/generation
 - full/execute
 - full/execution-pass-gate
@@ -500,6 +651,9 @@ nodes:
 - full/coverage-policy-gate
 - full/coverage-repair
 - full/report
+- full/archive-gate
+- full/skip-archive-gate
+- full/archive
 - full/done
 - intake/prepare
 - intake/execute
@@ -649,6 +803,49 @@ nodes:
 - quality-report/execute
 - quality-report/finalize
 - quality-report/done
+- improvement-archive/prepare
+- improvement-archive/execute
+- improvement-archive/finalize
+- improvement-archive/done
+- improvement-retro/prepare
+- improvement-retro/execute
+- improvement-retro/finalize
+- improvement-retro/done
+- improvement-retro-eval-analysis/prepare
+- improvement-retro-eval-analysis/execute
+- improvement-retro-eval-analysis/finalize
+- improvement-retro-eval-analysis/done
+- improvement-retro-issue-analysis/prepare
+- improvement-retro-issue-analysis/execute
+- improvement-retro-issue-analysis/finalize
+- improvement-retro-issue-analysis/done
+- improvement-retro-workflow-analysis/prepare
+- improvement-retro-workflow-analysis/execute
+- improvement-retro-workflow-analysis/finalize
+- improvement-retro-workflow-analysis/done
+- improvement-review/prepare
+- improvement-review/execute
+- improvement-review/finalize
+- improvement-review/done
+- retro/collect
+- retro/retro
+- retro/retro-eval-analysis
+- retro/retro-issue-analysis
+- retro/retro-workflow-analysis
+- retro/reconcile
+- retro/done
+- improvement-evaluate/evaluate
+- improvement-evaluate/done
+- improvement-export/export
+- improvement-export/done
+- improvement-apply/review
+- improvement-apply/review-human-gate
+- improvement-apply/review-pass-gate
+- improvement-apply/human-review
+- improvement-apply/apply
+- improvement-apply/done
+- improvement-rollback/rollback
+- improvement-rollback/done
 edges:
 - entry:intake->explore
 - entry:explore->case-design
@@ -659,7 +856,11 @@ edges:
 - full:intake->explore
 - full:explore->case-design
 - full:case-design->case-review
-- full:case-review->generation
+- full:case-review->review-human-gate
+- full:case-review->review-pass-gate
+- full:review-human-gate->human-review
+- full:review-pass-gate->generation
+- full:human-review->generation
 - full:generation->execute
 - full:execute->execution-pass-gate
 - full:execute->execution-issue-gate
@@ -675,7 +876,11 @@ edges:
 - full:coverage-policy-gate->coverage-repair
 - full:coverage-policy-gate->report
 - full:coverage-repair->generation
-- full:report->done
+- full:report->archive-gate
+- full:report->skip-archive-gate
+- full:archive-gate->archive
+- full:skip-archive-gate->done
+- full:archive->done
 - intake:prepare->execute
 - intake:execute->finalize
 - intake:finalize->done
@@ -798,7 +1003,46 @@ edges:
 - quality-report:prepare->execute
 - quality-report:execute->finalize
 - quality-report:finalize->done
+- improvement-archive:prepare->execute
+- improvement-archive:execute->finalize
+- improvement-archive:finalize->done
+- improvement-retro:prepare->execute
+- improvement-retro:execute->finalize
+- improvement-retro:finalize->done
+- improvement-retro-eval-analysis:prepare->execute
+- improvement-retro-eval-analysis:execute->finalize
+- improvement-retro-eval-analysis:finalize->done
+- improvement-retro-issue-analysis:prepare->execute
+- improvement-retro-issue-analysis:execute->finalize
+- improvement-retro-issue-analysis:finalize->done
+- improvement-retro-workflow-analysis:prepare->execute
+- improvement-retro-workflow-analysis:execute->finalize
+- improvement-retro-workflow-analysis:finalize->done
+- improvement-review:prepare->execute
+- improvement-review:execute->finalize
+- improvement-review:finalize->done
+- retro:collect->retro
+- retro:retro->retro-eval-analysis
+- retro:retro-eval-analysis->retro-issue-analysis
+- retro:retro-issue-analysis->retro-workflow-analysis
+- retro:retro-workflow-analysis->reconcile
+- retro:reconcile->done
+- improvement-evaluate:evaluate->done
+- improvement-export:export->done
+- improvement-apply:review->review-human-gate
+- improvement-apply:review->review-pass-gate
+- improvement-apply:review-human-gate->human-review
+- improvement-apply:review-pass-gate->apply
+- improvement-apply:human-review->apply
+- improvement-apply:apply->done
+- improvement-rollback:rollback->done
 aliases:
+- assurance.improvement.apply-memory-improvement
+- assurance.improvement.evaluate-memory-improvement
+- assurance.improvement.export-change-improvement
+- assurance.improvement.reconcile-improvements
+- assurance.improvement.retro-collect-v3
+- assurance.improvement.rollback-memory-improvement
 - assurance.product.agent.execution.execute.execute
 - assurance.product.agent.execution.execute.finalize
 - assurance.product.agent.execution.execute.prepare
@@ -853,6 +1097,24 @@ aliases:
 - assurance.product.agent.healing.fix-proposal.execute
 - assurance.product.agent.healing.fix-proposal.finalize
 - assurance.product.agent.healing.fix-proposal.prepare
+- assurance.product.agent.improvement.archive.execute
+- assurance.product.agent.improvement.archive.finalize
+- assurance.product.agent.improvement.archive.prepare
+- assurance.product.agent.improvement.improvement-review.execute
+- assurance.product.agent.improvement.improvement-review.finalize
+- assurance.product.agent.improvement.improvement-review.prepare
+- assurance.product.agent.improvement.retro-eval-analysis.execute
+- assurance.product.agent.improvement.retro-eval-analysis.finalize
+- assurance.product.agent.improvement.retro-eval-analysis.prepare
+- assurance.product.agent.improvement.retro-issue-analysis.execute
+- assurance.product.agent.improvement.retro-issue-analysis.finalize
+- assurance.product.agent.improvement.retro-issue-analysis.prepare
+- assurance.product.agent.improvement.retro-workflow-analysis.execute
+- assurance.product.agent.improvement.retro-workflow-analysis.finalize
+- assurance.product.agent.improvement.retro-workflow-analysis.prepare
+- assurance.product.agent.improvement.retro.execute
+- assurance.product.agent.improvement.retro.finalize
+- assurance.product.agent.improvement.retro.prepare
 - assurance.product.agent.intake.case-design.execute
 - assurance.product.agent.intake.case-design.finalize
 - assurance.product.agent.intake.case-design.prepare

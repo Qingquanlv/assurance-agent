@@ -90,6 +90,20 @@ _PREPARE_DATA_FIELDS = frozenset({"execution", "request_policy_digest", "request
 _PREPARE_EXECUTION_FIELDS = frozenset(
     {"provider_model", "worker_profile", "permission_profile_digest", "limits"}
 )
+_PHASE4_IMPROVEMENT_AGENT_IDS = frozenset(
+    f"{prepare_id.removesuffix('.prepare')}{suffix}"
+    for prepare_id in PREPARE_IDS
+    if prepare_id.startswith("assurance.improvement.")
+    for suffix in (".prepare", ".finalize")
+)
+_FORBIDDEN_GRAPH_PREFIXES = (
+    "runtime.",
+    "assurance.intake.",
+    "assurance.generation.",
+    "assurance.execution.",
+    "assurance.quality.",
+    "assurance.healing.",
+)
 
 
 class AssuranceCompositionError(ValueError):
@@ -231,6 +245,14 @@ def _graph_binding_ids(composition: FrozenComposition) -> set[str]:
     }
 
 
+def _is_allowed_phase4_operation(capability: str) -> bool:
+    return (
+        capability.startswith("assurance.improvement.")
+        and capability not in _PHASE4_IMPROVEMENT_AGENT_IDS
+        and not capability.startswith(_FORBIDDEN_GRAPH_PREFIXES)
+    )
+
+
 def _prepare_data_is_assignment(value: object) -> bool:
     data = thaw_json(value)
     if not isinstance(data, Mapping):
@@ -278,11 +300,19 @@ def _authenticate_assurance_composition(
         for node in graph.nodes.values()
         if node.capability is not None
     }
-    if not graph_bindings.issubset(expected_bindings):
+    agent_bindings = {capability for capability in graph_bindings if capability.startswith(f"{PLUGIN_ID}.")}
+    operation_bindings = graph_bindings - agent_bindings
+    if not agent_bindings.issubset(expected_bindings):
         raise AssuranceCompositionError("graph bindings must be a subset of the frozen 99 aliases")
+    if not expected_bindings.issubset(agent_bindings):
+        raise AssuranceCompositionError("graph is missing required agent aliases")
     if graph_bindings != expected_graph:
         raise AssuranceCompositionError("compiled workflow capabilities do not match the canonical slice")
-    if any(not capability.startswith(f"{PLUGIN_ID}.") for capability in graph_bindings):
+    if any(capability.startswith(_FORBIDDEN_GRAPH_PREFIXES) for capability in graph_bindings):
+        raise AssuranceCompositionError("graph referenced a direct runtime or Phase 4 capability")
+    if any(capability in _PHASE4_IMPROVEMENT_AGENT_IDS for capability in graph_bindings):
+        raise AssuranceCompositionError("graph referenced a Phase 4 agent prepare id")
+    if any(not _is_allowed_phase4_operation(capability) for capability in operation_bindings):
         raise AssuranceCompositionError("graph referenced a non-product agent alias")
 
     source = composition.manifest.source

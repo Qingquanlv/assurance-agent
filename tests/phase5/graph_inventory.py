@@ -27,6 +27,19 @@ _FORBIDDEN_PREFIXES = (
     "assurance.quality.",
     "assurance.healing.",
 )
+_PHASE4_IMPROVEMENT_AGENT_PREPARES = (
+    "assurance.improvement.archive.prepare",
+    "assurance.improvement.improvement-review.prepare",
+    "assurance.improvement.retro-eval-analysis.prepare",
+    "assurance.improvement.retro-issue-analysis.prepare",
+    "assurance.improvement.retro-workflow-analysis.prepare",
+    "assurance.improvement.retro.prepare",
+)
+_PHASE4_IMPROVEMENT_AGENT_IDS = frozenset(
+    f"{prepare_id.removesuffix('.prepare')}{suffix}"
+    for prepare_id in _PHASE4_IMPROVEMENT_AGENT_PREPARES
+    for suffix in (".prepare", ".finalize")
+)
 GENERATION_FAMILIES = ("api", "e2e", "fuzz", "performance")
 
 
@@ -117,18 +130,31 @@ def graph_capability_ids(compiled_product_workflow: CompiledWorkflow) -> frozens
     )
 
 
+def _is_allowed_phase4_operation(capability: str) -> bool:
+    return capability.startswith("assurance.improvement.") and capability not in _PHASE4_IMPROVEMENT_AGENT_IDS
+
+
 def assert_closed_agent_aliases(compiled_product_workflow: CompiledWorkflow) -> None:
     capabilities = graph_capability_ids(compiled_product_workflow)
-    if not capabilities.issubset(ALL_BINDING_IDS):
-        extra = sorted(capabilities - set(ALL_BINDING_IDS))
+    agent_ids = {capability for capability in capabilities if capability.startswith(_AGENT_PREFIX)}
+    operation_ids = capabilities - agent_ids
+    if not agent_ids.issubset(ALL_BINDING_IDS):
+        extra = sorted(agent_ids - set(ALL_BINDING_IDS))
         raise AssertionError(f"graph capabilities are outside the frozen 99 aliases: {extra}")
     forbidden = sorted(
         capability
         for capability in capabilities
-        if capability.startswith(_FORBIDDEN_PREFIXES) or not capability.startswith(_AGENT_PREFIX)
+        if capability.startswith(_FORBIDDEN_PREFIXES) or capability in _PHASE4_IMPROVEMENT_AGENT_IDS
     )
     if forbidden:
         raise AssertionError(f"graph references a direct runtime or Phase 4 capability: {forbidden}")
+    unknown = sorted(
+        capability for capability in operation_ids if not _is_allowed_phase4_operation(capability)
+    )
+    if unknown:
+        raise AssertionError(
+            f"graph references a capability outside agent aliases and Phase 4 operations: {unknown}"
+        )
 
 
 def load_graph_inventory() -> dict[str, Any]:
