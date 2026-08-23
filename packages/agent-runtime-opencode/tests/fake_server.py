@@ -100,6 +100,7 @@ class OpenCodeFakeServer:
         self.metadata = dict(metadata or {})
         self.create_bodies: list[dict[str, object]] = []
         self.prompt_bodies: list[dict[str, object]] = []
+        self.directories: list[str] = []
         self.sse_cursors: list[str | None] = []
         self.terminal_mode: TerminalMode = "success"
         self.sse_mode: SseMode = "heartbeat"
@@ -225,6 +226,10 @@ class OpenCodeFakeServer:
         parsed = urlparse(handler.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        directory = (query.get("directory") or [None])[0]
+        if isinstance(directory, str):
+            with self._lock:
+                self.directories.append(directory)
         length = int(handler.headers.get("Content-Length", "0") or "0")
         body = handler.rfile.read(length) if length > 0 else b""
         if self.cut == "before_request":

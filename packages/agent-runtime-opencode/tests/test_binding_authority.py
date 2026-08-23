@@ -22,6 +22,7 @@ from harness import (  # pyright: ignore[reportMissingImports]
     _SHA,
     _binding_data,
     _config,
+    _open_code_fixture,
     _terminal_success_fixture,
     agent_run_request,
     profile,
@@ -70,9 +71,7 @@ def task_request_fixture() -> TaskRequest:
 async def test_opencode_rejects_missing_locked_endpoint(
     task_request_fixture: TaskRequest, opencode_context: TaskContext
 ) -> None:
-    configured = task_request_fixture.model_copy(
-        update={"binding_data": {"model": "gpt-5.6-terra"}}
-    )
+    configured = task_request_fixture.model_copy(update={"binding_data": {"model": "gpt-5.6-terra"}})
     outcome = await OpenCodeHandler().execute(configured, opencode_context)
     assert outcome.status == "failed"
     assert outcome.failure is not None
@@ -120,6 +119,22 @@ def test_opencode_from_request_redacts_secret_material_in_errors() -> None:
         assert _SECRET_TEXT not in str(error.value)
     finally:
         fake.close()
+
+
+async def test_execute_sends_workspace_root_as_opencode_directory() -> None:
+    fixture = _open_code_fixture(config_overrides={"project_scope": "/tmp/harness-project-copy"})
+    try:
+        fixture.fake.project_scope = str(fixture.context.workspace_root.resolve())
+        fixture.fake.terminal_mode = "success"
+        fixture.fake.sse_mode = "fast_idle"
+        outcome = await fixture.handler.execute(fixture.request, fixture.context)
+        assert outcome.status == "succeeded"
+        workspace = str(fixture.context.workspace_root.resolve())
+        assert fixture.fake.directories
+        assert all(item == workspace for item in fixture.fake.directories)
+        assert "/tmp/harness-project-copy" not in fixture.fake.directories
+    finally:
+        fixture.close()
 
 
 async def test_opencode_cancel_parses_binding_independently(opencode_context: TaskContext) -> None:

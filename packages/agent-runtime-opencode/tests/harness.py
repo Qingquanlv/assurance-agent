@@ -327,6 +327,7 @@ def _open_code_fixture(
         create_cut=create_cut,  # type: ignore[arg-type]
         hide_sessions=hide_sessions,
         prompt_cut=prompt_cut,  # type: ignore[arg-type]
+        project_scope=str(workspace_root.resolve()),
     )
     config = _config(fake, **(config_overrides or {}))
     request = task_request(run, binding_data=_binding_data(config))

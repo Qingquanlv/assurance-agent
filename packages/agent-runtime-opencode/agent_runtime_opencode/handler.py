@@ -71,7 +71,11 @@ class OpenCodeHandler:
         if context.secrets is None:
             raise SecretHandleUnauthorized("secret port is required")
         secret = context.secrets.resolve(config.secret_handle)
-        client = OpenCodeHttpClient(config, secret=secret)
+        client = OpenCodeHttpClient(
+            config,
+            secret=secret,
+            directory=str(context.workspace_root.resolve()),
+        )
         try:
             return await self._observe_fingerprint(client, config, secret)
         finally:
@@ -147,7 +151,11 @@ class OpenCodeHandler:
         if mismatch is not None:
             return TaskActivityCancelResult(status="indeterminate", reason=mismatch)
         secret = context.secrets.resolve(config.secret_handle)
-        client = OpenCodeHttpClient(config, secret=secret)
+        client = OpenCodeHttpClient(
+            config,
+            secret=secret,
+            directory=str(context.workspace_root.resolve()),
+        )
         try:
             context.heartbeat()
             fingerprint = await self._observe_fingerprint(client, config, secret)
@@ -225,7 +233,11 @@ class OpenCodeHandler:
             return TaskActivityReconcileResult(status="indeterminate", reason=mismatch)
         secret = context.secrets.resolve(config.secret_handle)
         canaries = _secret_canaries(secret)
-        client = OpenCodeHttpClient(config, secret=secret)
+        client = OpenCodeHttpClient(
+            config,
+            secret=secret,
+            directory=str(context.workspace_root.resolve()),
+        )
         try:
             context.heartbeat()
             fingerprint = await self._observe_fingerprint(client, config, secret)

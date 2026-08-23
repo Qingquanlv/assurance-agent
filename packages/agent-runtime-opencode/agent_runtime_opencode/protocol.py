@@ -86,9 +86,16 @@ def _path_segment(value: str, label: str) -> str:
 
 
 class OpenCodeHttpClient:
-    def __init__(self, config: OpenCodeAdapterConfig, *, secret: bytes) -> None:
+    def __init__(
+        self,
+        config: OpenCodeAdapterConfig,
+        *,
+        secret: bytes,
+        directory: str | None = None,
+    ) -> None:
         self._config = config
         self._origin = config.origin
+        self._directory = directory if directory is not None else config.project_scope
         headers: dict[str, str] = {}
         if secret:
             headers["Authorization"] = f"Bearer {secret.decode('utf-8')}"
@@ -205,7 +212,7 @@ class OpenCodeHttpClient:
         stream_deadline_seconds: float | None = None,
         _redirects: int = 0,
     ) -> bytes:
-        params: dict[str, str] = {"directory": self._config.project_scope}
+        params: dict[str, str] = {"directory": self._directory}
         if extra_params:
             params.update(extra_params)
         deadline = time.monotonic() + stream_deadline_seconds if stream_deadline_seconds is not None else None
