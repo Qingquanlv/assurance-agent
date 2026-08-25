@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import assurance_product.change_workspace as change_workspace
 
 from assurance_product.change_workspace import (
     ChangeWorkspace,
@@ -56,6 +57,60 @@ def test_initialize_cleans_up_directories_created_before_a_real_obstruction(tmp_
 
     assert not workspace.paths.runtime_root.exists()
     assert workspace.paths.staging_root.is_file()
+
+
+@pytest.mark.parametrize("symlink_name", [".runtime", ".staging"])
+def test_initialize_rejects_symlinked_top_level_state_without_touching_target(
+    tmp_path: Path, symlink_name: str
+) -> None:
+    workspace = ChangeWorkspace.open(make_project(tmp_path), "BENCH-dept-001")
+    target = tmp_path / f"{symlink_name}-target"
+    target.mkdir()
+    (workspace.paths.change_root / symlink_name).symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError):
+        workspace.initialize()
+
+    assert (workspace.paths.change_root / symlink_name).is_symlink()
+    assert target.is_dir()
+
+
+def test_initialize_rejects_symlinked_runtime_child_without_touching_target(tmp_path: Path) -> None:
+    workspace = ChangeWorkspace.open(make_project(tmp_path), "BENCH-dept-001")
+    runtime = workspace.paths.runtime_root
+    runtime.mkdir()
+    (runtime / "ledger").mkdir()
+    target = tmp_path / "activities-target"
+    target.mkdir()
+    (runtime / "activities").symlink_to(target, target_is_directory=True)
+    (runtime / "receipts").mkdir()
+    workspace.paths.staging_root.mkdir()
+
+    with pytest.raises(ValueError):
+        workspace.initialize()
+
+    assert (runtime / "activities").is_symlink()
+    assert target.is_dir()
+
+
+def test_initialize_rolls_back_directories_after_mid_creation_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = ChangeWorkspace.open(make_project(tmp_path), "BENCH-dept-001")
+    original_mkdir = change_workspace._mkdir
+
+    def fail_at_staging(path: Path) -> None:
+        if path == workspace.paths.staging_root:
+            raise OSError("injected obstruction")
+        original_mkdir(path)
+
+    monkeypatch.setattr(change_workspace, "_mkdir", fail_at_staging)
+
+    with pytest.raises(ValueError):
+        workspace.initialize()
+
+    assert not workspace.paths.runtime_root.exists()
+    assert not workspace.paths.staging_root.exists()
 
 
 @pytest.mark.parametrize("project", [Path("relative"), Path("missing")])

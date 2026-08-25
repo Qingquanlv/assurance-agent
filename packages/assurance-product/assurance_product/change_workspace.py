@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _mkdir(path: Path) -> None:
+    path.mkdir()
+
+
 @dataclass(frozen=True, slots=True)
 class ChangePaths:
     project_root: Path
@@ -91,18 +95,22 @@ class ChangeWorkspace:
         if runtime_exists != staging_exists:
             raise ValueError("change workspace has a partial initialization")
         if runtime_exists:
+            if runtime.is_symlink() or staging.is_symlink():
+                raise ValueError("change workspace contains a symlink")
             if not runtime.is_dir() or not staging.is_dir():
                 raise ValueError("change workspace contains a non-directory path")
             if {child.name for child in runtime.iterdir()} != expected_runtime:
                 raise ValueError("runtime directory has an incomplete layout")
-            if any(not (runtime / name).is_dir() for name in expected_runtime):
+            if any(
+                (runtime / name).is_symlink() or not (runtime / name).is_dir() for name in expected_runtime
+            ):
                 raise ValueError("runtime directory contains a non-directory path")
             return
 
         created: list[Path] = []
 
         def create_directory(path: Path) -> None:
-            path.mkdir()
+            _mkdir(path)
             created.append(path)
 
         try:
