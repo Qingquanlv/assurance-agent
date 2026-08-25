@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 from pathlib import Path
 
 import pytest
 
+import graph_engine.runtime.task_workspace as task_workspace
 from graph_engine.runtime.task_workspace import TaskWorkspaceStore, TaskWorkspaceViolation
 
 
@@ -148,3 +150,115 @@ def test_identical_promotion_replay_is_idempotent_but_different_bytes_fail_close
     with pytest.raises(TaskWorkspaceViolation, match="receipt"):
         store.promote(binding.identity, different)
     assert (project / "out.txt").read_bytes() == b"first"
+
+
+@pytest.mark.parametrize("mutation", ["staged", "target", "deleted-target"])
+def test_completed_receipt_replay_reauthenticates_staged_and_target_state(
+    tmp_path: Path, mutation: str
+) -> None:
+    store, project, _attempts = _store(tmp_path)
+    binding = _begin(store, claims=("out.txt",))
+    staged_file = binding.write_root / "out.txt"
+    staged_file.write_bytes(b"first")
+    staged = store.seal(binding.identity)
+    store.promote(binding.identity, staged)
+    if mutation == "staged":
+        staged_file.write_bytes(b"changed")
+    elif mutation == "target":
+        (project / "out.txt").write_bytes(b"changed")
+    else:
+        (project / "out.txt").unlink()
+
+    with pytest.raises(TaskWorkspaceViolation):
+        store.promote(binding.identity, staged)
+
+
+def test_ancestor_symlink_swap_cannot_redirect_descriptor_bound_target_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, project, _attempts = _store(tmp_path)
+    target_parent = project / "out"
+    target_parent.mkdir()
+    (target_parent / "target.txt").write_bytes(b"before")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "target.txt"
+    sentinel.write_bytes(b"outside")
+    binding = _begin(store)
+    (binding.write_root / "out").mkdir()
+    (binding.write_root / "out" / "target.txt").write_bytes(b"after")
+    staged = store.seal(binding.identity)
+
+    real_replace = os.replace
+
+    def swap_parent_then_replace(
+        source: str | bytes | Path,
+        target: str | bytes | Path,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        if target == "target.txt" and "dst_dir_fd" in kwargs:
+            project_parent = project / "out"
+            if project_parent.is_dir() and not project_parent.is_symlink():
+                shutil.move(str(project_parent), str(project / "out-real"))
+                project_parent.symlink_to(outside, target_is_directory=True)
+        real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr("graph_engine.runtime.task_workspace.os.replace", swap_parent_then_replace)
+
+    with pytest.raises(TaskWorkspaceViolation):
+        store.promote(binding.identity, staged)
+
+    assert sentinel.read_bytes() == b"outside"
+    assert (project / "out-real" / "target.txt").read_bytes() == b"after"
+
+
+def test_ancestor_symlink_swap_cannot_redirect_baseline_or_staged_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "out").mkdir()
+    (project / "out" / "baseline.txt").write_bytes(b"baseline")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_bytes(b"outside")
+    store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
+    real_open = os.open
+
+    def swap_baseline_parent(name: str | bytes | Path, flags: int, *args: object, **kwargs: object) -> int:
+        if name == "out" and kwargs.get("dir_fd") is not None:
+            current = project / "out"
+            if current.is_dir() and not current.is_symlink():
+                shutil.move(str(current), str(project / "out-real"))
+                current.symlink_to(outside, target_is_directory=True)
+        return real_open(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(task_workspace.os, "open", swap_baseline_parent)
+
+    with pytest.raises(TaskWorkspaceViolation):
+        store.begin(task_id="baseline", attempt=1, output_paths=("out",))
+    assert sentinel.read_bytes() == b"outside"
+
+    monkeypatch.undo()
+    binding = store.begin(task_id="staged", attempt=1, output_paths=("staged",))
+    (binding.write_root / "staged").mkdir()
+    (binding.write_root / "staged" / "file.txt").write_bytes(b"staged")
+    staging_outside = tmp_path / "staging-outside"
+    staging_outside.mkdir()
+    staging_sentinel = staging_outside / "sentinel.txt"
+    staging_sentinel.write_bytes(b"outside")
+
+    def swap_staged_parent(name: str | bytes | Path, flags: int, *args: object, **kwargs: object) -> int:
+        if name == "staged" and kwargs.get("dir_fd") is not None:
+            current = binding.write_root / "staged"
+            if current.is_dir() and not current.is_symlink():
+                shutil.move(str(current), str(binding.write_root / "staged-real"))
+                current.symlink_to(staging_outside, target_is_directory=True)
+        return real_open(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(task_workspace.os, "open", swap_staged_parent)
+    with pytest.raises(TaskWorkspaceViolation):
+        store.seal(binding.identity)
+    assert staging_sentinel.read_bytes() == b"outside"
