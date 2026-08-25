@@ -166,6 +166,28 @@ design spec now state the boundary and Task 6 acceptance explicitly.
 
 ## Remaining risks and consciously deferred work
 
+### Fix Round 3 correction
+
+Fix Round 2 correctly moved the completed receipt ahead of cleanup, but its
+single deterministic receipt temp conflated two states: a fully written,
+authenticated prepared receipt and an incomplete construction interrupted by
+real process exit. Therefore the earlier statements that changed temporary
+bytes are always a conflict and that the deterministic temporary can always be
+reused were too broad. A partial construction is not authenticated evidence of
+a competing intent and must not make recovery permanently indeterminate.
+
+Commits `7b844f459c85c8f338be1f28dffda23e41062126` and
+`d6d5ff2cab33c8f263dab98531574208d751aefd` replace that protocol with a unique
+construction file followed by a deterministic prepared file. Replay removes
+and rebuilds partial/unparseable artifacts in the exact expected
+identity/receipt-digest namespace, while preserving and rejecting a canonical
+`PromotionReceipt` for a different intent. It also safely recognizes the exact
+double-dot, identity-bound pending construction names left by Fix Round 2 so
+repeated crashes do not accumulate orphans. The new process-crash and
+public-recovery evidence is recorded in `task-3-4-fix-round-3.md`; this
+correction supersedes Fix Round 2's deterministic-temp tamper wording, not its
+receipt-first terminal semantics.
+
 - The raw-filesystem multi-file visibility window is an accepted consequence of
   the direct layout. Engine-managed consumption is receipt/resource-lock gated.
 - A persistently broken filesystem can leave authenticated cleanup residue after
@@ -187,3 +209,7 @@ design spec now state the boundary and Task 6 acceptance explicitly.
 - `5546e25c7b584463ed15fe996a33cf8481435b53` — Fix Round 2 receipt-first
   publication, explicit indeterminate recovery, reader gating, and plan/spec
   boundary clarification.
+- `7b844f459c85c8f338be1f28dffda23e41062126` — Fix Round 3 interrupted
+  construction recovery and public recovery translation.
+- `d6d5ff2cab33c8f263dab98531574208d751aefd` — exact legacy pending-orphan
+  recognition and cleanup.

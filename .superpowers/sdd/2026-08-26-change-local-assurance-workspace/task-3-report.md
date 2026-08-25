@@ -26,6 +26,15 @@ terminal outcome. Completed receipts now precede cleanup, and an uncertain
 replacement, rollback, or receipt publication remains prepared as
 `PromotionPublicationIndeterminate`.
 
+Fix Round 3 interrupted-construction recovery is implemented by
+`7b844f459c85c8f338be1f28dffda23e41062126`, with historically exact legacy
+pending-orphan recognition in `d6d5ff2cab33c8f263dab98531574208d751aefd`.
+These supersede Fix Round 2's single-file deterministic receipt-temporary
+protocol, which could mistake a partial process-crash artifact for a conflicting
+authenticated publication. Receipt and pending publication now use separate
+construction and prepared layers, and direct public recovery translates
+promotion uncertainty at the engine boundary.
+
 ## TDD evidence
 
 ### RED
@@ -149,6 +158,43 @@ GREEN evidence:
 - Exact Task 3/4 production `pyright`, explicitly including
   `runtime/effects.py`, reports `0 errors, 0 warnings, 0 informations`.
 
+### Fix Round 3 RED/GREEN
+
+RED command, run after adding the process-crash and public-API regressions but
+before changing production code:
+
+```text
+.venv/bin/pytest packages/graph-engine/tests/runtime/test_task_workspace_faults.py packages/graph-engine/tests/runtime/test_engine.py -q --tb=short -k 'partial_completed_receipt_construction or pending_intent_construction_crashes or public_recover_translates or replay_replaces_unparseable or pending_replay_preserves_authenticated_legacy'
+```
+
+Outcome: `5 failed, 131 deselected` in 0.78s. A partial deterministic completed
+receipt temp permanently conflicted on every fresh replay; random pending-intent
+construction temps accumulated across real `fork`/`os._exit` cuts; the old
+implementation ignored an authenticated different-intent legacy construction;
+and direct `await handle.recover()` leaked
+`PromotionPublicationIndeterminate`.
+
+The report audit then corrected the legacy regression fixture to the exact
+double-dot name created when Fix Round 2 passed an already-dot-prefixed pending
+name to `_atomic_write_at`. That historically exact test produced an additional
+RED of `1 failed, 22 deselected`: the real legacy orphan was ignored.
+
+GREEN evidence:
+
+- the exact RED selection: `5 passed, 131 deselected`;
+- task workspace, task-workspace faults, and engine: `153 passed` in 15.47s;
+- the two real process-crash tests: `2 passed, 22 deselected`;
+- direct public recovery translation: `1 passed, 112 deselected`;
+- legacy and real-crash cleanup/preservation selection:
+  `4 passed, 20 deselected`;
+- final graph-engine suite: `1301 passed, 1 skipped, 1 failed` in 74.14s;
+- the same sole Task 16 CLI failure at `graph_engine/__main__.py:288`, with the
+  same filesystem-dependent non-UTF-8 legacy-workspace skip;
+- the four changed Python files pass exact `ruff check` and
+  `ruff format --check`; and
+- exact Task 3/4 production `pyright`, explicitly including
+  `runtime/effects.py`, reports `0 errors, 0 warnings, 0 informations`.
+
 ## Changed files
 
 Core Task 3 runtime/API files:
@@ -192,11 +238,19 @@ The complete authoritative file list is the 46-file stat of commit
   proves every canonical target is at its baseline. If that proof fails,
   `PromotionPublicationIndeterminate` preserves the pending record and
   deterministic rollback evidence for replay.
-- Once every target is proven staged, a deterministic, digest-named and
-  content-authenticated receipt temp is fsynced and replaced into the completed
-  receipt. Only after that receipt is durable does best-effort cleanup remove
-  target temps/backups and the pending intent. Cleanup failure cannot demote the
+- Once every target is proven staged, receipt publication writes a unique
+  identity/receipt-digest/purpose-bound construction file, applies mode `0600`,
+  fsyncs it, and atomically replaces it into a deterministic prepared name.
+  After the receipts directory is durable, that prepared file is atomically
+  replaced into the completed receipt and the directory is fsynced again. Only
+  then does best-effort cleanup remove target temps/backups, publication
+  artifacts, and the pending intent. Cleanup failure cannot demote the
   completed promotion; replay retries residue cleanup.
+- Replay may remove only exact construction/prepared names in the authenticated
+  promotion namespace. Partial or unparseable same-intent artifacts are rebuilt;
+  a valid receipt for a different intent is preserved and rejected. Regular-file,
+  single-link, no-follow checks prevent cleanup from following or deleting an
+  attacker-selected filesystem object.
 - Scheduler leaves an indeterminate publication at `TaskCommitPrepared` with
   no ordinary failure or promotion-completed event. Engine translates it to
   `EnginePublicationIndeterminate`; resume completes from authenticated
@@ -255,3 +309,9 @@ The complete authoritative file list is the 46-file stat of commit
 - `5546e25c7b584463ed15fe996a33cf8481435b53` — Fix Round 2 receipt-first
   publication, explicit indeterminate recovery, successor gating tests, and
   direct-layout/threat-boundary clarification.
+- `7b844f459c85c8f338be1f28dffda23e41062126` — Fix Round 3 two-layer
+  publication construction, crash-orphan recovery, and public recovery error
+  translation.
+- `d6d5ff2cab33c8f263dab98531574208d751aefd` — recognize, clean, and
+  fail-closed authenticate the exact double-dot pending-orphan namespace left
+  by Fix Round 2.
