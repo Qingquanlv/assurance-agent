@@ -83,7 +83,37 @@ class ChangeWorkspace:
         return cls(paths)
 
     def initialize(self) -> None:
-        self.paths.runtime_root.mkdir(parents=True, exist_ok=True)
-        for name in ("ledger", "activities", "receipts"):
-            (self.paths.runtime_root / name).mkdir(exist_ok=True)
-        self.paths.staging_root.mkdir(exist_ok=True)
+        runtime = self.paths.runtime_root
+        staging = self.paths.staging_root
+        expected_runtime = {"ledger", "activities", "receipts"}
+        runtime_exists = runtime.exists()
+        staging_exists = staging.exists()
+        if runtime_exists != staging_exists:
+            raise ValueError("change workspace has a partial initialization")
+        if runtime_exists:
+            if not runtime.is_dir() or not staging.is_dir():
+                raise ValueError("change workspace contains a non-directory path")
+            if {child.name for child in runtime.iterdir()} != expected_runtime:
+                raise ValueError("runtime directory has an incomplete layout")
+            if any(not (runtime / name).is_dir() for name in expected_runtime):
+                raise ValueError("runtime directory contains a non-directory path")
+            return
+
+        created: list[Path] = []
+
+        def create_directory(path: Path) -> None:
+            path.mkdir()
+            created.append(path)
+
+        try:
+            create_directory(runtime)
+            for name in ("ledger", "activities", "receipts"):
+                create_directory(runtime / name)
+            create_directory(staging)
+        except OSError as exc:
+            for path in reversed(created):
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+            raise ValueError("could not initialize change workspace") from exc

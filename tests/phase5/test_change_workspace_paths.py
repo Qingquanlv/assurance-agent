@@ -47,10 +47,29 @@ def test_initialize_creates_only_the_exact_change_workspace_directories(tmp_path
     assert not workspace.paths.generated_root.exists()
 
 
+def test_initialize_cleans_up_directories_created_before_a_real_obstruction(tmp_path: Path) -> None:
+    workspace = ChangeWorkspace.open(make_project(tmp_path), "BENCH-dept-001")
+    workspace.paths.staging_root.write_text("obstruction")
+
+    with pytest.raises(ValueError):
+        workspace.initialize()
+
+    assert not workspace.paths.runtime_root.exists()
+    assert workspace.paths.staging_root.is_file()
+
+
 @pytest.mark.parametrize("project", [Path("relative"), Path("missing")])
 def test_open_rejects_noncanonical_or_missing_project(tmp_path: Path, project: Path) -> None:
     if project.name == "missing":
         project = tmp_path / project
+    with pytest.raises(ValueError):
+        ChangeWorkspace.open(project, "BENCH-dept-001")
+
+
+def test_open_rejects_a_file_as_project(tmp_path: Path) -> None:
+    project = tmp_path / "project-file"
+    project.write_text("not a directory")
+
     with pytest.raises(ValueError):
         ChangeWorkspace.open(project, "BENCH-dept-001")
 
