@@ -455,30 +455,6 @@ def prompt_admission_body(request: TaskRequest, message_id: str) -> dict[str, ob
                     "text": canonical_json_text(thaw_json(instruction.json_content)),
                 }
             )
-    schema_document = agent_run.result_contract.schema_document
-    schema_text = (
-        "not embedded; obey the named locked result contract"
-        if schema_document is None
-        else canonical_json_text(thaw_json(schema_document))
-    )
-    parts.append(
-        {
-            "type": "text",
-            "text": (
-                "# Runtime result contract\n\n"
-                "Your final assistant response MUST be exactly one JSON object with no "
-                "Markdown fence, commentary, completion summary, or trailing text. The object "
-                "must validate against the following locked JSON Schema. This runtime contract "
-                "overrides any user-facing final-output wording in the supplied skill. It governs "
-                "only the final assistant text and does not replace required tool calls or file "
-                "writes. Complete and verify every required side effect before returning the final "
-                "JSON object.\n\n"
-                f"schema_id: {agent_run.result_contract.schema_id}\n"
-                f"schema_digest: {agent_run.result_contract.schema_digest}\n"
-                f"schema: {schema_text}"
-            ),
-        }
-    )
     body: dict[str, object] = {
         "messageID": message_id,
         "parts": parts,
