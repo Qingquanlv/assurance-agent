@@ -9,10 +9,10 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
@@ -21,6 +21,7 @@ from graph_engine.plugin_api import (
     TaskActivityReconcileResult,
     TaskActivitySnapshot,
     TaskHandler,
+    TaskWorkspaceBinding,
 )
 from graph_engine.runtime.activity import LedgerTaskActivityPort
 from graph_engine.runtime.host_protocol import (
@@ -50,7 +51,7 @@ from graph_engine.runtime.secret_sources import (
     InvocationRuntimeAuthorization,
     resolve_secret_source,
 )
-from graph_engine.runtime.workspace import SnapshotStore
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 _CALL_TIMEOUT_SECONDS = 30.0
 _CANCEL_GRACE_SECONDS = 0.25
@@ -58,6 +59,16 @@ _TERMINATE_GRACE_SECONDS = 0.25
 _PARENT_ALIVE_ENV = "GRAPH_ENGINE_PARENT_ALIVE_FD"
 _ACTIVITY_RESPONSE_ENV = "GRAPH_ENGINE_ACTIVITY_RESPONSE_FD"
 _CANCEL_ENV = "GRAPH_ENGINE_CANCEL_FD"
+
+
+class _BinaryStream(Protocol):
+    def fileno(self) -> int: ...
+
+    def read(self, size: int = -1) -> bytes: ...
+
+    def write(self, data: bytes) -> int: ...
+
+    def flush(self) -> None: ...
 
 
 class UnsupportedProductionPlatform(GraphEngineError):
@@ -71,7 +82,7 @@ class ProductionHostError(GraphEngineError):
 @dataclass(frozen=True, slots=True)
 class _BoundRuntime:
     handlers: Mapping[str, TaskHandler]
-    store: SnapshotStore | None
+    store: TaskWorkspaceStore | None
     receipts: TerminalReceiptStore | None
     handler_import_roots: Mapping[str, tuple[str, ...]]
 
@@ -99,7 +110,7 @@ class _ProductionTaskExecutionHost:
         self,
         *,
         handlers: Mapping[str, TaskHandler],
-        store: SnapshotStore,
+        store: TaskWorkspaceStore,
         receipts: TerminalReceiptStore | None = None,
         handler_import_roots: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
@@ -162,7 +173,7 @@ class _ProductionTaskExecutionHost:
         handler = self._bound.handlers.get(call.request.capability_id)
         if handler is None:
             raise ProductionHostError(f"missing installed handler: {call.request.capability_id}")
-        attempt_root = self._attempt_root(call)
+        workspace = self._attempt_binding(call)
         call_digest = canonical_digest(cast(JSONValue, call.model_dump(mode="json")))
         session_key = derive_wire_session_key(
             call_digest=call_digest,
@@ -170,7 +181,7 @@ class _ProductionTaskExecutionHost:
         )
         secrets = self._resolve_authorized_secrets(call.authorized_secret_handles)
         supervisor = _ProcessSupervisor.for_platform()
-        process = supervisor.spawn(attempt_root=attempt_root, call_digest=call_digest)
+        process = supervisor.spawn(attempt_root=workspace.write_root, call_digest=call_digest)
         try:
             return await asyncio.to_thread(
                 self._drive_worker,
@@ -178,7 +189,7 @@ class _ProductionTaskExecutionHost:
                 operation,
                 call,
                 session_key,
-                attempt_root,
+                workspace,
                 secrets,
             )
         finally:
@@ -191,7 +202,7 @@ class _ProductionTaskExecutionHost:
         operation: HostOperation,
         call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
         session_key: bytes,
-        attempt_root: Path,
+        workspace: TaskWorkspaceBinding,
         secrets: dict[str, bytes],
     ) -> TaskHostCallResult:
         assert process.stdin is not None and process.stdout is not None
@@ -203,7 +214,8 @@ class _ProductionTaskExecutionHost:
                 "kind": "job",
                 "operation": operation,
                 "call": cast(JSONValue, call.model_dump(mode="json")),
-                "attempt_root": str(attempt_root),
+                "project_root": str(workspace.project_root),
+                "write_root": str(workspace.write_root),
                 "capability_id": call.capability_id,
                 "capability_entrypoint": call.capability_entrypoint,
                 "handler_import_roots": list(import_roots),
@@ -227,10 +239,15 @@ class _ProductionTaskExecutionHost:
             if detail:
                 message = f"{message}: {detail}"
             raise ProductionHostError(message)
-        quiescence = process.prove_quiescent(attempt_root=attempt_root)
+        quiescence = process.prove_quiescent(attempt_root=workspace.write_root)
         scan_for_secret_leaks(canonical_json_bytes(result.model_dump(mode="json")), secrets.values())
         _revoke_secrets(secrets)
-        self._install_terminal_receipt(call, result, quiescence=quiescence)
+        self._install_terminal_receipt(
+            call,
+            result,
+            workspace=workspace,
+            quiescence=quiescence,
+        )
         return result
 
     def _read_worker_result(
@@ -353,6 +370,7 @@ class _ProductionTaskExecutionHost:
         call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
         result: TaskHostCallResult,
         *,
+        workspace: TaskWorkspaceBinding,
         quiescence: str,
     ) -> None:
         if self._bound.receipts is None or call.identity.activity_id is None:
@@ -360,6 +378,8 @@ class _ProductionTaskExecutionHost:
         activity = self._activity_for_receipt(call)
         if activity is None:
             return
+        if activity.workspace_identity != workspace.identity:
+            raise ProductionHostError("terminal activity workspace identity drifted")
         if result.operation == "execute" and result.outcome is not None:
             outcome = result.outcome
         elif result.operation == "reconcile" and result.reconcile_result is not None:
@@ -372,6 +392,8 @@ class _ProductionTaskExecutionHost:
             outcome = result.cancel_result.outcome
         else:
             return
+        assert self._bound.store is not None
+        staged = self._bound.store.seal(workspace.identity)
         sink = self._bound.receipts.sink_for(call.identity)
         sink.install(
             TaskHostTerminalReceipt(
@@ -384,7 +406,11 @@ class _ProductionTaskExecutionHost:
                 activity_id=call.identity.activity_id,
                 operation=call.identity.operation,
                 request_digest=activity.request_digest,
-                workspace_identity_digest=activity.workspace_identity.attempt_identity_digest,
+                workspace_identity_digest=workspace.identity.identity_digest,
+                project_root_digest=call.attempt_root.project_root_digest,
+                write_root_digest=call.attempt_root.write_root_digest,
+                baseline_digest=call.attempt_root.baseline_digest,
+                staged_write_set_digest=staged.staged_digest,
                 dispatch_fingerprint_digest=activity.dispatch_fingerprint_digest,
                 reference_digest=activity.reference_digest,
                 outcome=outcome,
@@ -395,16 +421,28 @@ class _ProductionTaskExecutionHost:
             )
         )
 
-    def _attempt_root(self, call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall) -> Path:
+    def _attempt_binding(
+        self,
+        call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
+    ) -> TaskWorkspaceBinding:
         assert self._bound.store is not None
-        expected = self._bound.store.root / "attempts" / call.attempt_root.attempt_directory_id
-        resolved = expected.resolve()
-        attempts_root = (self._bound.store.root / "attempts").resolve()
-        if resolved != attempts_root and attempts_root not in resolved.parents:
-            raise ProductionHostError("attempt workspace escapes the bound attempt namespace")
-        if not resolved.is_dir():
-            raise ProductionHostError("attempt workspace is unavailable")
-        return resolved
+        identity = call.attempt_root.workspace_identity
+        try:
+            binding = self._bound.store.begin(
+                task_id=identity.task_id,
+                attempt=identity.attempt,
+                output_paths=identity.output_paths,
+            )
+        except Exception as error:
+            raise ProductionHostError("attempt workspace is unavailable") from error
+        if binding.identity != identity:
+            raise ProductionHostError("attempt workspace identity differs from the host call")
+        if (
+            call.attempt_root.project_root_digest != identity.project_digest
+            or call.attempt_root.write_root_digest != identity.write_root_digest
+        ):
+            raise ProductionHostError("attempt workspace root identity is not authenticated")
+        return binding
 
     def _open_ledger(self, invocation_id: str) -> Ledger:
         invocation_root = self._root / "invocations" / invocation_id
@@ -421,8 +459,8 @@ class _ProductionTaskExecutionHost:
         return resolved
 
     @staticmethod
-    def _stream_io(stream: object) -> object:
-        return getattr(stream, "buffer", stream)
+    def _stream_io(stream: object) -> _BinaryStream:
+        return cast(_BinaryStream, getattr(stream, "buffer", stream))
 
     def _write_frame(self, stream: object, session_key: bytes, message: dict[str, JSONValue]) -> None:
         payload = canonical_json_bytes(message)
@@ -430,7 +468,7 @@ class _ProductionTaskExecutionHost:
         buffer = self._stream_io(stream)
         fileno = getattr(buffer, "fileno", None)
         if callable(fileno):
-            write_all_bytes(fileno(), data)
+            write_all_bytes(cast(Callable[[], int], fileno)(), data)
             return
         buffer.write(data)
         buffer.flush()
@@ -439,7 +477,7 @@ class _ProductionTaskExecutionHost:
         buffer_obj = self._stream_io(stream)
         fileno = getattr(buffer_obj, "fileno", None)
         if callable(fileno):
-            fd = fileno()
+            fd = cast(Callable[[], int], fileno)()
             if fd >= 0:
                 return os.read(fd, size)
         chunk = buffer_obj.read(size)

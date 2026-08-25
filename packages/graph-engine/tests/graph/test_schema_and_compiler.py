@@ -182,6 +182,30 @@ def test_compile_is_deterministic(registry: CapabilityRegistry) -> None:
     assert first.graphs["root"].declaration_order == ("ping", "done")
 
 
+def test_compiler_accepts_closed_resource_claim_templates(
+    registry: CapabilityRegistry,
+) -> None:
+    raw = _raw_valid()
+    nodes = cast(dict[str, object], cast(dict[str, object], raw["graphs"])["root"])["nodes"]
+    ping = cast(dict[str, object], cast(dict[str, object], nodes)["ping"])
+    ping["resources"] = {
+        "parameters": {"change": "/change_id", "family": "/family"},
+        "reads": ("artifacts/{change}",),
+        "writes": ("artifacts/{change}/generated/{family}",),
+    }
+
+    compiled = compile_workflow(_parse_raw(raw), registry)
+
+    resources = compiled.graphs["root"].nodes["ping"].definition.resources
+    assert type(resources).__name__ == "ResourceClaimTemplate"
+    assert resources.model_dump(mode="json") == {
+        "parameters": {"change": "/change_id", "family": "/family"},
+        "reads": ["artifacts/{change}"],
+        "writes": ["artifacts/{change}/generated/{family}"],
+        "exclusive": [],
+    }
+
+
 def test_unknown_capability_fails_before_runtime() -> None:
     workflow = parse_workflow(VALID)
     with pytest.raises(CompileError, match="unknown capability toy.one.ping"):

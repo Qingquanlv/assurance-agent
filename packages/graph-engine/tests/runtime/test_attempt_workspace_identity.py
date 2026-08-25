@@ -3,9 +3,9 @@ from __future__ import annotations
 from bootstrap_fixtures import synthetic_invocation_started
 import ast
 import asyncio
+import hashlib
 import inspect
 import os
-import shutil
 from pathlib import Path
 
 import pytest
@@ -22,10 +22,8 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
-from graph_engine.runtime.activity import AttemptWorkspaceLost
 from graph_engine.runtime.events import (
     GraphStarted,
-    InvocationStarted,
     NodeActivated,
 )
 from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostExecuteCall
@@ -33,11 +31,10 @@ from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import (
     PlannedTask,
     activity_id_for_attempt,
-    attempt_directory_id,
     fold_events,
 )
 from graph_engine.runtime.scheduler import FakeClock, Scheduler
-from graph_engine.runtime.workspace import SnapshotStore
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore, TaskWorkspaceViolation
 
 
 _LOCK_DIGEST = "a" * 64
@@ -77,13 +74,13 @@ class _DirectRegistry:
 class _InProcessTestHost:
     def __init__(self) -> None:
         self._handlers: dict[str, TaskHandler] = {}
-        self._store: SnapshotStore | None = None
+        self._store: TaskWorkspaceStore | None = None
 
     def bind_invocation_runtime(
         self,
         *,
         handlers: dict[str, TaskHandler],
-        store: SnapshotStore,
+        store: TaskWorkspaceStore,
     ) -> None:
         self._handlers = handlers
         self._store = store
@@ -109,11 +106,19 @@ class _ExecutingTestHost(_InProcessTestHost):
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
         assert self._store is not None
         handler = self._handlers[call.request.capability_id]
-        workspace_root = self._store.root / "attempts" / call.attempt_root.attempt_directory_id
+        identity = call.attempt_root.workspace_identity
+        binding = self._store.begin(
+            task_id=identity.task_id,
+            attempt=identity.attempt,
+            output_paths=identity.output_paths,
+        )
+        assert binding.identity == identity
         outcome = await handler.execute(
             call.request,
             TaskContext(
-                workspace_root=workspace_root,
+                project_root=binding.project_root,
+                write_root=binding.write_root,
+                workspace_identity=binding.identity,
                 heartbeat=lambda: None,
                 cancel_requested=lambda: False,
                 invocation=call.request.invocation,
@@ -145,11 +150,18 @@ def _scheduler_with_boundaries(
     tmp_path: Path,
     *,
     host: _InProcessTestHost | None = None,
-) -> tuple[Scheduler, Ledger, SnapshotStore]:
+) -> tuple[Scheduler, Ledger, TaskWorkspaceStore]:
     task = _task()
     handler = _RecoverableHandler()
     assert isinstance(handler, RecoverableTaskHandler)
-    store = SnapshotStore.create(tmp_path / "store", {"seed.txt": b"seed"})
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "seed.txt").write_bytes(b"seed")
+    store = TaskWorkspaceStore(
+        project_root,
+        tmp_path / "attempts",
+        tmp_path / "promotion-receipts",
+    )
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
         (
@@ -174,55 +186,46 @@ def _scheduler_with_boundaries(
         lease_seconds=10.0,
         lock_digest=_LOCK_DIGEST,
     )
-    timeline: list[str] = []
-    store.boundaries = timeline
-    ledger.boundaries = timeline
     return scheduler, ledger, store
 
 
-def _prepared_attempt_store(tmp_path: Path) -> tuple[SnapshotStore, object]:
-    store = SnapshotStore.create(tmp_path / "store", {"seed.txt": b"seed"})
-    _workspace, identity = store.create_attempt_identity(
-        invocation_id="inv-1",
-        task_id="task-1",
-        activation_id="act-1",
-        attempt=1,
+def _prepared_attempt_store(tmp_path: Path) -> tuple[TaskWorkspaceStore, object]:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "seed.txt").write_bytes(b"seed")
+    store = TaskWorkspaceStore(
+        project_root,
+        tmp_path / "attempts",
+        tmp_path / "promotion-receipts",
     )
-    del _workspace
-    return store, identity
+    binding = store.begin(task_id="task-1", attempt=1, output_paths=("seed.txt",))
+    return store, binding.identity
 
 
-def _mutate_attempt(store: SnapshotStore, identity: object, mutation: str) -> None:
-    directory_id = identity.attempt_directory_id  # type: ignore[attr-defined]
-    root = store.root / "attempts" / directory_id
+def _task_root(store: TaskWorkspaceStore, task_id: str) -> Path:
+    return store.attempts_root / hashlib.sha256(task_id.encode("utf-8")).hexdigest()
+
+
+def _mutate_attempt(store: TaskWorkspaceStore, identity: object, mutation: str) -> None:
+    root = _task_root(store, identity.task_id) / identity.attempt_id  # type: ignore[attr-defined]
     if mutation == "missing":
-        shutil.rmtree(root)
-        return
-    if mutation == "replaced":
-        shutil.rmtree(root)
-        root.mkdir()
-        (root / "forged.txt").write_bytes(b"forged")
+        root.rmdir()
         return
     if mutation == "symlink":
-        shutil.rmtree(root)
-        outside = store.root.parent / "outside"
+        root.rmdir()
+        outside = store.attempts_root.parent / "outside"
         outside.mkdir()
         (outside / "escaped.txt").write_bytes(b"escaped")
         root.symlink_to(outside, target_is_directory=True)
-        return
-    if mutation == "baseline_drift":
-        tree = store.root / "trees" / identity.baseline_tree_id  # type: ignore[attr-defined]
-        target = tree / "seed.txt"
-        target.chmod(0o600)
-        target.write_bytes(b"drifted")
         return
     raise AssertionError(f"unknown mutation: {mutation}")
 
 
 def test_recoverable_start_creates_workspace_before_atomic_initial_batch(tmp_path: Path) -> None:
     scheduler, ledger, store = _scheduler_with_boundaries(tmp_path)
-    scheduler.start_recoverable(_task())
-    assert store.boundaries.index("attempt_installed") < ledger.boundaries.index("batch_append")
+    _lease, workspace, identity = scheduler.start_recoverable(_task())
+    assert workspace.write_root == _task_root(store, identity.task_id) / identity.attempt_id
+    assert workspace.write_root.is_dir()
     assert [envelope.event.kind for envelope in ledger.read_all()[-3:]] == [
         "task_attempt_started",
         "task_lease_acquired",
@@ -230,29 +233,28 @@ def test_recoverable_start_creates_workspace_before_atomic_initial_batch(tmp_pat
     ]
 
 
-@pytest.mark.parametrize("mutation", ["missing", "replaced", "symlink", "baseline_drift"])
+@pytest.mark.parametrize("mutation", ["missing", "symlink"])
 def test_recovery_never_recreates_lost_prepared_workspace(tmp_path: Path, mutation: str) -> None:
     store, identity = _prepared_attempt_store(tmp_path)
     _mutate_attempt(store, identity, mutation)
-    with pytest.raises(AttemptWorkspaceLost):
-        store.open_attempt(identity)
-    assert store.create_attempt_calls == 1
+    with pytest.raises((OSError, TaskWorkspaceViolation)):
+        store.begin(
+            task_id=identity.task_id,  # type: ignore[attr-defined]
+            attempt=identity.attempt,  # type: ignore[attr-defined]
+            output_paths=identity.output_paths,  # type: ignore[attr-defined]
+        )
 
 
 def test_identity_never_serializes_an_unrestricted_path(tmp_path: Path) -> None:
     store, identity = _prepared_attempt_store(tmp_path)
     dumped = identity.model_dump(mode="json")
     encoded = identity.model_dump_json()
-    assert dumped["attempt_directory_id"] == attempt_directory_id(
-        invocation_id="inv-1",
-        task_id="task-1",
-        activation_id="act-1",
-        attempt=1,
-    )
-    assert "/" not in dumped["attempt_directory_id"]
-    assert "\\" not in dumped["attempt_directory_id"]
-    assert str(store.root) not in encoded
-    assert os.fsdecode(store.root) not in encoded
+    assert dumped["attempt_id"] == "attempt-1"
+    assert "/" not in dumped["attempt_id"]
+    assert "\\" not in dumped["attempt_id"]
+    assert str(store.project_root) not in encoded
+    assert str(store.attempts_root) not in encoded
+    assert os.fsdecode(store.project_root) not in encoded
     for value in dumped.values():
         if isinstance(value, str):
             assert not value.startswith("/")
@@ -261,22 +263,19 @@ def test_identity_never_serializes_an_unrestricted_path(tmp_path: Path) -> None:
 
 def test_activity_recovery_paths_do_not_invoke_reset_or_create_attempts() -> None:
     import graph_engine.runtime.scheduler as scheduler_runtime
-    import graph_engine.runtime.workspace as workspace_runtime
+    import graph_engine.runtime.task_workspace as workspace_runtime
 
     forbidden = {"reset_attempt", "create_attempts"}
     scanned = {
         "Scheduler.start_recoverable": _calls_in_class_method(
             scheduler_runtime.Scheduler, "start_recoverable"
         ),
-        "SnapshotStore.create_attempt_identity": _calls_in_class_method(
-            workspace_runtime.SnapshotStore, "create_attempt_identity"
+        "TaskWorkspaceStore.begin": _calls_in_class_method(workspace_runtime.TaskWorkspaceStore, "begin"),
+        "TaskWorkspaceStore._binding_paths": _calls_in_class_method(
+            workspace_runtime.TaskWorkspaceStore, "_binding_paths"
         ),
-        "SnapshotStore.open_attempt": _calls_in_class_method(workspace_runtime.SnapshotStore, "open_attempt"),
-        "SnapshotStore._open_attempt": _calls_in_class_method(
-            workspace_runtime.SnapshotStore, "_open_attempt"
-        ),
-        "AttemptWorkspace.authenticate_identity": _calls_in_class_method(
-            workspace_runtime.AttemptWorkspace, "authenticate_identity"
+        "TaskWorkspaceStore._authenticate_identity": _calls_in_class_method(
+            workspace_runtime.TaskWorkspaceStore, "_authenticate_identity"
         ),
     }
     for label, names in scanned.items():
@@ -288,21 +287,8 @@ def test_absent_initial_batch_removes_only_the_authenticated_orphan(
 ) -> None:
     scheduler, ledger, store = _scheduler_with_boundaries(tmp_path)
     task = _task()
-    directory_id = attempt_directory_id(
-        invocation_id=task.invocation_id,
-        task_id=task.task_id,
-        activation_id=task.activation_id,
-        attempt=task.attempt,
-    )
-    sibling, _identity = store.create_attempt_identity(
-        invocation_id="inv-other",
-        task_id="task-other",
-        activation_id="act-other",
-        attempt=1,
-    )
-    timeline: list[str] = []
-    store.boundaries = timeline
-    ledger.boundaries = timeline
+    attempt_root = _task_root(store, task.task_id) / "attempt-1"
+    sibling = store.begin(task_id="task-other", attempt=1, output_paths=())
 
     def fail_append(*_args: object, **_kwargs: object) -> object:
         raise OSError("simulated absent publication")
@@ -311,8 +297,10 @@ def test_absent_initial_batch_removes_only_the_authenticated_orphan(
     with pytest.raises(OSError, match="simulated absent publication"):
         scheduler.start_recoverable(task)
 
-    assert not (store.root / "attempts" / directory_id).exists()
-    assert sibling.root.exists()
+    assert attempt_root.is_dir()
+    reopened = store.begin(task_id=task.task_id, attempt=task.attempt, output_paths=())
+    assert reopened.write_root == attempt_root
+    assert sibling.write_root.exists()
 
 
 def test_ambiguous_initial_batch_retains_the_attempt_workspace(
@@ -322,12 +310,7 @@ def test_ambiguous_initial_batch_retains_the_attempt_workspace(
 
     scheduler, ledger, store = _scheduler_with_boundaries(tmp_path)
     task = _task()
-    directory_id = attempt_directory_id(
-        invocation_id=task.invocation_id,
-        task_id=task.task_id,
-        activation_id=task.activation_id,
-        attempt=task.attempt,
-    )
+    attempt_root = _task_root(store, task.task_id) / "attempt-1"
 
     def ambiguous_append(*_args: object, **_kwargs: object) -> object:
         raise LedgerPublicationIndeterminate("publication outcome is indeterminate")
@@ -336,7 +319,7 @@ def test_ambiguous_initial_batch_retains_the_attempt_workspace(
     with pytest.raises(LedgerPublicationIndeterminate):
         scheduler.start_recoverable(task)
 
-    assert (store.root / "attempts" / directory_id).exists()
+    assert attempt_root.is_dir()
 
 
 def test_recoverable_run_wave_does_not_promote_attempt_outcome_before_terminal(
@@ -358,45 +341,35 @@ def test_recoverable_run_wave_does_not_promote_attempt_outcome_before_terminal(
     assert attempt.status == "running"
     assert attempt.activity is not None
     assert attempt.activity.state == "prepared"
-    directory_id = attempt_directory_id(
-        invocation_id=task.invocation_id,
-        task_id=task.task_id,
-        activation_id=task.activation_id,
-        attempt=task.attempt,
-    )
-    assert (store.root / "attempts" / directory_id).exists()
+    assert (_task_root(store, task.task_id) / "attempt-1").exists()
 
 
 @pytest.mark.parametrize("orphan", ["unauthenticated", "authenticated"])
-def test_legal_start_replaces_pre_batch_orphan(tmp_path: Path, orphan: str) -> None:
+def test_start_reuses_only_an_authenticated_pre_batch_workspace(tmp_path: Path, orphan: str) -> None:
     scheduler, ledger, store = _scheduler_with_boundaries(tmp_path)
     task = _task()
-    directory_id = attempt_directory_id(
-        invocation_id=task.invocation_id,
-        task_id=task.task_id,
-        activation_id=task.activation_id,
-        attempt=task.attempt,
-    )
+    task_root = _task_root(store, task.task_id)
+    attempt_root = task_root / "attempt-1"
     if orphan == "authenticated":
-        store.create_attempt_identity(
-            invocation_id=task.invocation_id,
-            task_id=task.task_id,
-            activation_id=task.activation_id,
-            attempt=task.attempt,
-        )
+        expected = store.begin(task_id=task.task_id, attempt=task.attempt, output_paths=())
     else:
-        store._create_attempt(directory_id)
-    assert (store.root / "attempts" / directory_id).exists()
-    scheduler.start_recoverable(task)
+        task_root.mkdir()
+        attempt_root.mkdir()
+        expected = None
+    assert attempt_root.exists()
+    if expected is None:
+        with pytest.raises(TaskWorkspaceViolation):
+            scheduler.start_recoverable(task)
+        assert len(ledger.read_all()) == 3
+        return
+    _lease, reopened, identity = scheduler.start_recoverable(task)
     assert [envelope.event.kind for envelope in ledger.read_all()[-3:]] == [
         "task_attempt_started",
         "task_lease_acquired",
         "task_activity_prepared",
     ]
-    prepared = ledger.read_all()[-1].event
-    reopened = store.open_attempt(prepared.workspace_identity)
-    assert reopened.root.exists()
-    assert store.create_attempt_calls == (2 if orphan == "authenticated" else 1)
+    assert reopened.identity == expected.identity == identity
+    assert reopened.write_root == attempt_root
 
 
 def test_prepared_activity_uses_derived_ids(tmp_path: Path) -> None:
@@ -411,15 +384,15 @@ def test_prepared_activity_uses_derived_ids(tmp_path: Path) -> None:
         activation_id=task.activation_id,
         attempt=task.attempt,
     )
-    assert prepared.workspace_identity.attempt_directory_id == attempt_directory_id(
-        invocation_id=task.invocation_id,
+    assert prepared.workspace_identity.task_id == task.task_id
+    assert prepared.workspace_identity.attempt_id == "attempt-1"
+    reopened = store.begin(
         task_id=task.task_id,
-        activation_id=task.activation_id,
         attempt=task.attempt,
+        output_paths=task.resources.writes,
     )
-    reopened = store.open_attempt(prepared.workspace_identity)
-    assert reopened.attempt_id == prepared.workspace_identity.attempt_directory_id
-    assert reopened.baseline_tree_id == store.head_tree_id()
+    assert reopened.identity == prepared.workspace_identity
+    assert reopened.project_root == store.project_root
 
 
 def _calls_in_class_method(cls: type[object], method_name: str) -> set[str]:

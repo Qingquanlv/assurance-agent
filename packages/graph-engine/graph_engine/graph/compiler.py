@@ -28,7 +28,7 @@ from graph_engine.graph.schema import (
     WorkflowDef,
     validate_node_shape,
 )
-from graph_engine.plugin_api import ResourceClaims
+from graph_engine.plugin_api import ResourceClaims, ResourceClaimTemplate
 
 
 class _CapabilityRegistryView(Protocol):
@@ -91,7 +91,7 @@ class CompiledNodeDefinition(_CompiledModel):
     input_projection: InputProjectionDef | None = None
     retry: str | None = None
     timeout: str | None = None
-    resources: ResourceClaims = Field(default_factory=ResourceClaims)
+    resources: ResourceClaims | ResourceClaimTemplate = Field(default_factory=ResourceClaims)
     validators: tuple[str, ...] = ()
 
     @field_validator("input", mode="after")

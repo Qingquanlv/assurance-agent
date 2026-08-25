@@ -19,9 +19,9 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
+from graph_engine.plugin_api import InvocationWorkspaceBinding
 from graph_engine.runtime.engine import Engine, EngineError
 from graph_engine.runtime.events import GraphStarted, InvocationStarted, TokenOffered
-from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
 
@@ -95,6 +95,18 @@ def seed() -> object:
 
 
 @pytest.fixture
+def workspace_binding(tmp_path: Path) -> InvocationWorkspaceBinding:
+    roots = tuple(tmp_path / name for name in ("project", "attempts", "promotion-receipts"))
+    for root in roots:
+        root.mkdir()
+    return InvocationWorkspaceBinding(
+        project_root=roots[0],
+        attempts_root=roots[1],
+        receipts_root=roots[2],
+    )
+
+
+@pytest.fixture
 def engine_factory(tmp_path: Path):
     real_boundary = ledger_runtime._append_boundary
 
@@ -127,20 +139,35 @@ def test_start_recovers_to_one_authenticated_bootstrap_prefix(
     engine_factory,
     composition: FrozenComposition,
     seed: object,
+    workspace_binding: InvocationWorkspaceBinding,
     boundary: int,
 ) -> None:
     engine = engine_factory(fail_after_bootstrap_append=boundary)
     with contextlib.suppress(InjectedCrash):
-        engine.start(composition, entrypoint="full", invocation_id="inv-1", seed=seed, authorization=empty_runtime_authorization())
+        engine.start(
+            composition,
+            entrypoint="full",
+            invocation_id="inv-1",
+            seed=seed,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        )
     recovered_engine = engine_factory()
     try:
-        recovered = recovered_engine.open("inv-1", composition, authorization=empty_runtime_authorization())
+        recovered = recovered_engine.open(
+            "inv-1",
+            composition,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        )
     except EngineError:
         recovered = recovered_engine.start(
             composition,
             entrypoint="full",
             invocation_id="inv-1",
-            seed=seed, authorization=empty_runtime_authorization(),
+            seed=seed,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
         )
     events = recovered.ledger.read_all()
     assert [item.event.kind for item in events[:3]] == [
@@ -166,10 +193,18 @@ def test_open_rejects_schema_v1_prototype_invocation(
     tmp_path: Path,
     composition: FrozenComposition,
     seed: object,
+    workspace_binding: InvocationWorkspaceBinding,
 ) -> None:
     root = tmp_path / "engine"
     with Engine(root) as engine:
-        engine.start(composition, entrypoint="full", invocation_id="legacy", seed=seed, authorization=empty_runtime_authorization()).close()
+        engine.start(
+            composition,
+            entrypoint="full",
+            invocation_id="legacy",
+            seed=seed,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        ).close()
     invocation = root / "invocations" / "legacy"
     intent_path = invocation / "invocation.start.json"
     os.chmod(intent_path, 0o600)
@@ -180,5 +215,10 @@ def test_open_rejects_schema_v1_prototype_invocation(
     }
     intent_path.write_bytes(canonical_json_bytes(legacy_intent))
     intent_path.chmod(0o400)
-    with Engine(root) as engine, pytest.raises(Exception, match="schema-v1 prototype"):
-        engine.open("legacy", composition, authorization=empty_runtime_authorization())
+    with Engine(root) as engine, pytest.raises(Exception, match="unsupported invocation start intent"):
+        engine.open(
+            "legacy",
+            composition,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        )

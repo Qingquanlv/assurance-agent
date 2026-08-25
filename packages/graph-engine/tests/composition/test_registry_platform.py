@@ -71,6 +71,7 @@ from graph_engine.plugin_api import (
     PluginDependency,
     PluginDescriptor,
     ProviderSource,
+    InvocationWorkspaceBinding,
     RegistryPorts,
     ResourceContribution,
     SchemaContribution,
@@ -89,6 +90,19 @@ from graph_engine.runtime.invocation_lock import InvocationDrift
 class _Handler:
     async def execute(self, _request: TaskRequest, _context: TaskContext) -> TaskOutcome:
         return TaskOutcome.succeeded({"ok": True})
+
+
+def _workspace_binding(root: Path) -> InvocationWorkspaceBinding:
+    project_root = root.parent / f".{root.name}-project"
+    attempts_root = root.parent / f".{root.name}-attempts"
+    receipts_root = root.parent / f".{root.name}-receipts"
+    for path in (project_root, attempts_root, receipts_root):
+        path.mkdir(exist_ok=True)
+    return InvocationWorkspaceBinding(
+        project_root=project_root,
+        attempts_root=attempts_root,
+        receipts_root=receipts_root,
+    )
 
 
 class _EffectHandler:
@@ -3184,6 +3198,7 @@ def test_engine_open_rejects_each_independently_reresolved_lock_facet_without_cl
     )
     original = platform.resolve(request)
     engine_root = tmp_path / "engine"
+    workspace_binding = _workspace_binding(engine_root)
     with Engine(engine_root) as engine:
         engine.start(
             original,
@@ -3191,6 +3206,7 @@ def test_engine_open_rejects_each_independently_reresolved_lock_facet_without_cl
             invocation_id="facet-drift",
             seed=empty_invocation_seed(),
             authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
         ).close()
     invocation = engine_root / "invocations" / "facet-drift"
     before_ledger = b"".join(
@@ -3333,7 +3349,12 @@ def test_engine_open_rejects_each_independently_reresolved_lock_facet_without_cl
 
     monkeypatch.setattr(Engine, "_acquire_runner_claim", reject_claim)
     with Engine(engine_root) as engine, pytest.raises(InvocationDrift):
-        engine.open("facet-drift", drifted, authorization=empty_runtime_authorization())
+        engine.open(
+            "facet-drift",
+            drifted,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        )
 
     assert claims == 0
     assert (

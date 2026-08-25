@@ -6,7 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
-from graph_engine.plugin_api import AttemptWorkspaceIdentity, FailureKind, TaskFailure, TaskOutcome
+from graph_engine.plugin_api import (
+    FailureKind,
+    StagedWriteSet,
+    TaskFailure,
+    TaskOutcome,
+    TaskWorkspaceIdentity,
+)
 from graph_engine.runtime.frozen_json import FrozenJSONValue, thaw_json
 
 
@@ -41,7 +47,6 @@ class InvocationStarted(RuntimeEventModel):
     entrypoint: str
     runtime_authorization_digest: str = Field(pattern=_SHA256_PATTERN)
     root_input_digest: str = Field(pattern=_SHA256_PATTERN)
-    initial_tree_id: str = Field(pattern=_SHA256_PATTERN)
 
 
 class GraphStarted(RuntimeEventModel):
@@ -147,7 +152,7 @@ class TaskActivityPrepared(RuntimeEventModel):
     activation_id: str = Field(min_length=1)
     attempt: int = Field(ge=1)
     request_digest: str = Field(pattern=_SHA256_PATTERN)
-    workspace_identity: AttemptWorkspaceIdentity
+    workspace_identity: TaskWorkspaceIdentity
 
 
 class TaskActivityDispatchStarted(RuntimeEventModel):
@@ -202,21 +207,16 @@ class TaskActivityTerminalObserved(RuntimeEventModel):
     outcome: TaskOutcome
     outcome_digest: str = Field(pattern=_SHA256_PATTERN)
     terminal_proof_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
-    candidate_tree_id: str | None = Field(default=None, pattern=_SHA256_PATTERN)
-    write_set_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    staged_write_set_digest: str = Field(pattern=_SHA256_PATTERN)
+    promotion_receipt_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
 
     @model_validator(mode="after")
     def _validate_terminal_fields(self) -> Self:
         expected = canonical_digest(cast(JSONValue, self.outcome.model_dump(mode="json")))
         if self.outcome_digest != expected:
             raise ValueError("terminal activity requires a canonical outcome digest")
-        succeeded = self.outcome.status == "succeeded"
-        has_candidate = self.candidate_tree_id is not None
-        has_write_set = self.write_set_digest is not None
-        if succeeded != has_candidate or succeeded != has_write_set:
-            raise ValueError(
-                "candidate tree and write-set digests are required exactly for a succeeded terminal outcome"
-            )
+        if self.outcome.status != "succeeded" and self.promotion_receipt_digest is not None:
+            raise ValueError("failed terminal activity cannot carry a promotion receipt")
         return self
 
 
@@ -244,6 +244,8 @@ class TaskAttemptSucceeded(RuntimeEventModel):
     activation_id: str
     attempt: int = Field(ge=1)
     output: FrozenJSONValue
+    staged_write_set_digest: str = Field(pattern=_SHA256_PATTERN)
+    promotion_receipt_digest: str = Field(pattern=_SHA256_PATTERN)
 
 
 class TaskAttemptFailed(RuntimeEventModel):
@@ -251,6 +253,8 @@ class TaskAttemptFailed(RuntimeEventModel):
     activation_id: str
     attempt: int = Field(ge=1)
     failure: TaskFailure
+    staged_write_set_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    promotion_receipt_digest: None = None
 
 
 class TaskAttemptStopped(RuntimeEventModel):
@@ -259,6 +263,8 @@ class TaskAttemptStopped(RuntimeEventModel):
     attempt: int = Field(ge=1)
     reason: str
     output: FrozenJSONValue = None
+    staged_write_set_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    promotion_receipt_digest: None = None
 
 
 class TaskCommitPrepared(RuntimeEventModel):
@@ -267,17 +273,31 @@ class TaskCommitPrepared(RuntimeEventModel):
     activation_id: str
     attempt: int = Field(ge=1)
     output: FrozenJSONValue
-    previous_tree_id: str = Field(pattern=_SHA256_PATTERN)
-    tree_id: str = Field(pattern=_SHA256_PATTERN)
+    workspace_identity: TaskWorkspaceIdentity
+    staged_write_set: StagedWriteSet
+    staged_write_set_digest: str = Field(pattern=_SHA256_PATTERN)
     effect_ids: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _validate_effect_ids(self) -> Self:
+        if self.workspace_identity.identity_digest != self.staged_write_set.identity_digest:
+            raise ValueError("prepared staged write set belongs to another workspace")
+        if self.staged_write_set_digest != self.staged_write_set.staged_digest:
+            raise ValueError("prepared staged write-set digest is not canonical")
         if any(not effect_id for effect_id in self.effect_ids):
             raise ValueError("prepared effect ids must be non-empty")
         if len(set(self.effect_ids)) != len(self.effect_ids):
             raise ValueError("prepared effect ids must be unique")
         return self
+
+
+class TaskPromotionCompleted(RuntimeEventModel):
+    kind: Literal["task_promotion_completed"] = "task_promotion_completed"
+    task_id: str
+    activation_id: str
+    attempt: int = Field(ge=1)
+    staged_write_set_digest: str = Field(pattern=_SHA256_PATTERN)
+    promotion_receipt_digest: str = Field(pattern=_SHA256_PATTERN)
 
 
 class EffectIntentCommitted(RuntimeEventModel):
@@ -429,7 +449,7 @@ RuntimeEvent = Annotated[
     | TaskAttemptSucceeded
     | TaskAttemptFailed
     | TaskAttemptStopped
-    | HeadAdvanced
+    | TaskPromotionCompleted
     | NodeCompleted
     | NodeFailed
     | NodeInterrupted
@@ -507,6 +527,7 @@ __all__ = [
     "TaskLeaseAcquired",
     "TaskLeaseAdopted",
     "TaskLeaseHeartbeat",
+    "TaskPromotionCompleted",
     "TokenConsumed",
     "TokenOffered",
 ]

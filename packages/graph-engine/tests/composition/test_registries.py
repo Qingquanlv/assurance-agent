@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from graph_engine.canonical import canonical_digest
 from graph_engine.composition import (
     CapabilityBindingEntry,
     CapabilityRegistry,
@@ -56,6 +57,7 @@ from graph_engine.plugin_api import (
     TaskContext,
     TaskOutcome,
     TaskRequest,
+    TaskWorkspaceIdentity,
     InvocationMetadata,
     ValidationContext,
     ValidationResult,
@@ -70,6 +72,20 @@ _TEST_INVOCATION = InvocationMetadata(
     composition_digest="b" * 64,
     entrypoint="main",
 )
+
+
+def _workspace_identity() -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "task-1",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
 
 
 class _Handler:
@@ -573,7 +589,9 @@ def test_binding_adapter_preserves_alias_target_frozen_data_and_resource_ids() -
         registries.capabilities.task_handlers["toy.flow.run"].execute(
             request,
             TaskContext(
-                workspace_root=Path("/workspace"),
+                project_root=Path("/project"),
+                write_root=Path("/attempts/task-1/attempt-1"),
+                workspace_identity=_workspace_identity(),
                 heartbeat=lambda: None,
                 cancel_requested=lambda: False,
                 invocation=_TEST_INVOCATION,

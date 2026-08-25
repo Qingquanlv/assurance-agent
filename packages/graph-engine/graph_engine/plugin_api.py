@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast, runtime_checkable
 
@@ -209,16 +210,16 @@ def _require_terminal_observation(
     *,
     terminal: TaskOutcome | None,
     outcome_digest: str | None,
-    candidate_tree_id: str | None,
-    write_set_digest: str | None,
+    staged_write_set_digest: str | None,
+    promotion_receipt_digest: str | None,
     required: bool,
 ) -> None:
     if not required:
         if (
             terminal is not None
             or outcome_digest is not None
-            or candidate_tree_id is not None
-            or write_set_digest is not None
+            or staged_write_set_digest is not None
+            or promotion_receipt_digest is not None
         ):
             raise ValueError("terminal outcome is allowed only for terminal_observed")
         return
@@ -226,11 +227,10 @@ def _require_terminal_observation(
         raise ValueError("terminal activity requires a canonical outcome digest")
     if outcome_digest != _canonical_json_digest(terminal.model_dump(mode="json")):
         raise ValueError("terminal activity requires a canonical outcome digest")
-    succeeded = terminal.status == "succeeded"
-    if succeeded != (candidate_tree_id is not None) or succeeded != (write_set_digest is not None):
-        raise ValueError(
-            "candidate tree and write-set digests are required exactly for a succeeded terminal outcome"
-        )
+    if staged_write_set_digest is None:
+        raise ValueError("terminal activity requires a staged write-set digest")
+    if terminal.status != "succeeded" and promotion_receipt_digest is not None:
+        raise ValueError("only successful terminal activity may carry a promotion receipt")
 
 
 class AttemptWorkspaceIdentity(FrozenModel):
@@ -258,7 +258,7 @@ class AttemptWorkspaceIdentity(FrozenModel):
 class TaskActivitySnapshot(FrozenModel):
     activity_id: str = Field(min_length=1)
     request_digest: str = Field(pattern=_SHA256_PATTERN)
-    workspace_identity: AttemptWorkspaceIdentity
+    workspace_identity: TaskWorkspaceIdentity
     state: ActivityState
     reference: JSONValue | None = None
     reference_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
@@ -269,8 +269,8 @@ class TaskActivitySnapshot(FrozenModel):
     terminal: TaskOutcome | None = None
     outcome_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     terminal_proof_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
-    candidate_tree_id: str | None = Field(default=None, pattern=_SHA256_PATTERN)
-    write_set_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    staged_write_set_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    promotion_receipt_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
 
     @field_validator("reference", "dispatch_fingerprint", mode="after")
     @classmethod
@@ -307,8 +307,8 @@ class TaskActivitySnapshot(FrozenModel):
         _require_terminal_observation(
             terminal=self.terminal,
             outcome_digest=self.outcome_digest,
-            candidate_tree_id=self.candidate_tree_id,
-            write_set_digest=self.write_set_digest,
+            staged_write_set_digest=self.staged_write_set_digest,
+            promotion_receipt_digest=self.promotion_receipt_digest,
             required=terminal_required,
         )
         if not terminal_required:
@@ -465,7 +465,9 @@ class TaskActivityPort(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class TaskContext:
-    workspace_root: Path
+    project_root: Path
+    write_root: Path
+    workspace_identity: TaskWorkspaceIdentity
     heartbeat: Callable[[], None]
     cancel_requested: Callable[[], bool]
     invocation: InvocationMetadata
@@ -521,6 +523,127 @@ class ResourceClaims(FrozenModel):
     @classmethod
     def _validate_prefixes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(_validate_resource_prefix(value) for value in values)
+
+
+_RESOURCE_PARAMETER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESOURCE_PLACEHOLDER_PATTERN = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+def _validate_json_pointer(value: str) -> str:
+    if not value.startswith("/") or value == "/":
+        raise ValueError("resource parameter projection must be a non-root JSON pointer")
+    for segment in value[1:].split("/"):
+        if not segment:
+            raise ValueError("resource parameter JSON pointer must not contain empty segments")
+        index = 0
+        while index < len(segment):
+            if segment[index] != "~":
+                index += 1
+                continue
+            if index + 1 >= len(segment) or segment[index + 1] not in {"0", "1"}:
+                raise ValueError("resource parameter JSON pointer contains an invalid escape")
+            index += 2
+    return value
+
+
+def _template_parameter_names(value: str) -> set[str]:
+    windows_path = PureWindowsPath(value)
+    if (
+        not value
+        or "\\" in value
+        or value.startswith("/")
+        or windows_path.is_absolute()
+        or bool(windows_path.drive)
+    ):
+        raise ValueError("resource template must be a relative resource prefix")
+    names: set[str] = set()
+    for segment in value.split("/"):
+        if segment in {"", ".", ".."}:
+            raise ValueError("resource template must not contain empty or dot segments")
+        placeholder = _RESOURCE_PLACEHOLDER_PATTERN.fullmatch(segment)
+        if placeholder is not None:
+            names.add(placeholder.group(1))
+        elif "{" in segment or "}" in segment:
+            raise ValueError("resource template placeholders must occupy a complete path component")
+    return names
+
+
+class ResourceClaimTemplate(FrozenModel):
+    """Closed, business-neutral resource prefixes resolved from final task input."""
+
+    parameters: dict[str, str]
+    reads: tuple[str, ...] = ()
+    writes: tuple[str, ...] = ()
+    exclusive: tuple[str, ...] = ()
+
+    @field_validator("parameters")
+    @classmethod
+    def _validate_parameters(cls, values: dict[str, str]) -> dict[str, str]:
+        if not values:
+            raise ValueError("resource template parameters must not be empty")
+        normalized: dict[str, str] = {}
+        for name, pointer in values.items():
+            if _RESOURCE_PARAMETER_PATTERN.fullmatch(name) is None:
+                raise ValueError(f"invalid resource template parameter: {name!r}")
+            normalized[name] = _validate_json_pointer(pointer)
+        return dict(sorted(normalized.items()))
+
+    @model_validator(mode="after")
+    def _validate_closed_template(self) -> ResourceClaimTemplate:
+        referenced: set[str] = set()
+        for value in (*self.reads, *self.writes, *self.exclusive):
+            referenced.update(_template_parameter_names(value))
+        declared = set(self.parameters)
+        unknown = referenced - declared
+        unused = declared - referenced
+        if unknown:
+            raise ValueError(f"unknown resource template parameter: {sorted(unknown)[0]}")
+        if unused:
+            raise ValueError(f"unused resource template parameter: {sorted(unused)[0]}")
+        return self
+
+    def resolve(self, task_input: JSONValue) -> ResourceClaims:
+        values = {
+            name: _resolve_resource_pointer(task_input, pointer) for name, pointer in self.parameters.items()
+        }
+
+        def render(template: str) -> str:
+            segments: list[str] = []
+            for segment in template.split("/"):
+                placeholder = _RESOURCE_PLACEHOLDER_PATTERN.fullmatch(segment)
+                rendered = values[placeholder.group(1)] if placeholder is not None else segment
+                if not rendered or "/" in rendered or "\\" in rendered or rendered in {".", ".."}:
+                    raise ValueError("resource parameter resolved to an unsafe path component")
+                segments.append(rendered)
+            return "/".join(segments)
+
+        return ResourceClaims(
+            reads=tuple(render(value) for value in self.reads),
+            writes=tuple(render(value) for value in self.writes),
+            exclusive=tuple(render(value) for value in self.exclusive),
+        )
+
+
+def _resolve_resource_pointer(value: JSONValue, pointer: str) -> str:
+    current: object = value
+    for raw_segment in pointer[1:].split("/"):
+        segment = raw_segment.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, Mapping):
+            if segment not in current:
+                raise ValueError(f"resource parameter projection is missing: {pointer}")
+            current = current[segment]
+        elif isinstance(current, (list, tuple)):
+            if not segment.isdigit():
+                raise ValueError(f"resource parameter projection is not an array index: {pointer}")
+            index = int(segment)
+            if index >= len(current):
+                raise ValueError(f"resource parameter projection is missing: {pointer}")
+            current = current[index]
+        else:
+            raise ValueError(f"resource parameter projection traverses a scalar: {pointer}")
+    if not isinstance(current, str):
+        raise ValueError("resource parameter projection must resolve to a string")
+    return current
 
 
 def _validate_task_workspace_path(value: str) -> str:
@@ -602,6 +725,65 @@ class TaskWorkspaceBinding:
     write_root: Path
 
 
+def _canonical_binding_directory(value: Path, label: str) -> Path:
+    supplied = Path(value)
+    if not supplied.is_absolute():
+        raise ValueError(f"{label} must be an absolute canonical directory")
+    try:
+        resolved = supplied.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"{label} must exist") from error
+    if supplied != resolved or not resolved.is_dir():
+        raise ValueError(f"{label} must be an absolute canonical directory")
+    return resolved
+
+
+def _binding_path_digest(path: Path) -> str:
+    return canonical_digest({"path": str(path)})
+
+
+@dataclass(frozen=True, slots=True)
+class InvocationWorkspaceBinding:
+    """Process-local canonical roots; only their digests enter invocation identity."""
+
+    project_root: Path
+    attempts_root: Path
+    receipts_root: Path
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "project_root", _canonical_binding_directory(self.project_root, "project root")
+        )
+        object.__setattr__(
+            self, "attempts_root", _canonical_binding_directory(self.attempts_root, "attempts root")
+        )
+        object.__setattr__(
+            self, "receipts_root", _canonical_binding_directory(self.receipts_root, "receipts root")
+        )
+
+    @property
+    def project_root_digest(self) -> str:
+        return _binding_path_digest(self.project_root)
+
+    @property
+    def attempts_root_digest(self) -> str:
+        return _binding_path_digest(self.attempts_root)
+
+    @property
+    def receipts_root_digest(self) -> str:
+        return _binding_path_digest(self.receipts_root)
+
+    @property
+    def identity_digest(self) -> str:
+        return canonical_digest(
+            {
+                "project_root_digest": self.project_root_digest,
+                "attempts_root_digest": self.attempts_root_digest,
+                "receipts_root_digest": self.receipts_root_digest,
+            }
+        )
+
+
 class StagedWriteSet(FrozenModel):
     identity_digest: str = Field(pattern=_SHA256_PATTERN)
     files: tuple[StagedFile, ...]
@@ -673,7 +855,7 @@ class ValidationResult(FrozenModel):
 
 
 class CommitValidator(Protocol):
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult: ...
+    def validate(self, staged: StagedWriteSet, context: ValidationContext) -> ValidationResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1032,6 +1214,7 @@ __all__ = [
     "FailureKind",
     "FrozenModel",
     "InvocationMetadata",
+    "InvocationWorkspaceBinding",
     "PluginContribution",
     "PluginContractError",
     "PluginDependency",
@@ -1042,6 +1225,7 @@ __all__ = [
     "RegistryPorts",
     "ResourceContribution",
     "ResourceClaims",
+    "ResourceClaimTemplate",
     "SchemaContribution",
     "SecretHandleUnauthorized",
     "SecretPort",
@@ -1055,6 +1239,11 @@ __all__ = [
     "TaskOutcome",
     "TaskRequest",
     "TaskStatus",
+    "TaskWorkspaceBinding",
+    "TaskWorkspaceIdentity",
+    "StagedFile",
+    "StagedWriteSet",
+    "PromotionReceipt",
     "ValidationContext",
     "ValidationResult",
     "validate_contribution",

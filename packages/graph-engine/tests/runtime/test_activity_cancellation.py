@@ -20,13 +20,13 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 from graph_engine.runtime.activity import LedgerTaskActivityPort
-from graph_engine.runtime.events import GraphStarted, InvocationStarted, NodeActivated
+from graph_engine.runtime.events import GraphStarted, NodeActivated
 from graph_engine.runtime.host_protocol import TaskActivityRpcIdentity, TaskHostCallResult
 from graph_engine.runtime.host_receipts import TerminalReceiptStore, prove_call_quiescent
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import PlannedTask, fold_events
 from graph_engine.runtime.scheduler import FakeClock, Scheduler
-from graph_engine.runtime.workspace import SnapshotStore
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 
 _LOCK = "a" * 64
@@ -81,7 +81,7 @@ class _CancelHost:
         self._cancel_error = cancel_error
         self._hang = hang
         self._handlers: dict[str, TaskHandler] = {}
-        self._store: SnapshotStore | None = None
+        self._store: TaskWorkspaceStore | None = None
         self.cancel_calls = 0
         self.reconcile_calls = 0
         self.order: list[str] = []
@@ -90,7 +90,7 @@ class _CancelHost:
         self,
         *,
         handlers: dict[str, TaskHandler],
-        store: SnapshotStore,
+        store: TaskWorkspaceStore,
         receipts: TerminalReceiptStore | None = None,
     ) -> None:
         self._handlers = handlers
@@ -122,6 +122,8 @@ class _CancelHost:
             identity = getattr(call, "identity")
             activity = getattr(call, "activity")
             outcome = TaskOutcome.stopped("provider-canceled")
+            assert self._store is not None
+            staged = self._store.seal(activity.workspace_identity)
             sink = self._receipts.sink_for(identity)
             from graph_engine.runtime.host_protocol import TaskHostTerminalReceipt
 
@@ -136,7 +138,13 @@ class _CancelHost:
                     activity_id=identity.activity_id,
                     operation="cancel",
                     request_digest=activity.request_digest,
-                    workspace_identity_digest=activity.workspace_identity.attempt_identity_digest,
+                    workspace_identity_digest=activity.workspace_identity.identity_digest,
+                    project_root_digest=activity.workspace_identity.project_digest,
+                    write_root_digest=activity.workspace_identity.write_root_digest,
+                    baseline_digest=canonical_digest(
+                        [item.model_dump(mode="json") for item in activity.workspace_identity.baseline_files]
+                    ),
+                    staged_write_set_digest=staged.staged_digest,
                     dispatch_fingerprint_digest=activity.dispatch_fingerprint_digest,
                     reference_digest=activity.reference_digest,
                     outcome=outcome,
@@ -190,9 +198,15 @@ def _scheduler(
     tmp_path: Path,
     host: _CancelHost,
     receipts: TerminalReceiptStore,
-) -> tuple[Scheduler, Ledger, SnapshotStore, PlannedTask]:
+) -> tuple[Scheduler, Ledger, TaskWorkspaceStore, PlannedTask]:
     task = _task()
-    store = SnapshotStore.create(tmp_path / "store", {})
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    store = TaskWorkspaceStore(
+        project_root,
+        tmp_path / "attempts",
+        tmp_path / "promotion-receipts",
+    )
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
         (
@@ -301,7 +315,8 @@ def test_terminal_cancel_promotes_and_does_not_adopt_running(tmp_path: Path) -> 
     assert attempt.activity.state == "terminal_observed"
     assert attempt.activity.terminal is not None
     assert attempt.activity.terminal.status == "stopped"
-    assert attempt.activity.candidate_tree_id is None
+    assert attempt.activity.staged_write_set_digest is not None
+    assert attempt.activity.promotion_receipt_digest is None
 
 
 @pytest.mark.parametrize("mode", ["indeterminate", "timeout", "exception"])

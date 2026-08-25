@@ -9,7 +9,7 @@ from graph_engine.errors import GraphEngineError
 from graph_engine.graph.compiler import CompiledGraph, CompiledNode, CompiledWorkflow
 from graph_engine.graph.expressions import evaluate_expression
 from graph_engine.graph.input_projection import InputProjectionError, project_task_input
-from graph_engine.plugin_api import TaskFailure
+from graph_engine.plugin_api import ResourceClaimTemplate, TaskFailure
 from graph_engine.runtime.events import (
     EffectApplyStarted,
     EffectIntentCommitted,
@@ -18,7 +18,6 @@ from graph_engine.runtime.events import (
     GraphCompleted,
     GraphFailed,
     GraphStarted,
-    HeadAdvanced,
     InvocationFinished,
     InvocationStarted,
     InterruptResumed,
@@ -40,6 +39,7 @@ from graph_engine.runtime.events import (
     TaskLeaseAcquired,
     TaskLeaseAdopted,
     TaskLeaseHeartbeat,
+    TaskPromotionCompleted,
     TokenConsumed,
     TokenOffered,
 )
@@ -372,6 +372,29 @@ def _validate_external_history_transition(
     if isinstance(event, TaskCommitPrepared):
         return _validate_prepared_commit_history(event, envelopes, cursor)
 
+    if isinstance(event, TaskPromotionCompleted):
+        activation = next(
+            (item for item in projection.activations if item.activation_id == event.activation_id),
+            None,
+        )
+        latest = activation.attempts[-1] if activation is not None and activation.attempts else None
+        if latest is None or latest.prepared_commit is None:
+            raise PlanningError("event history promotes no prepared task attempt")
+        if latest.prepared_commit.effect_ids:
+            return 1
+        if cursor + 1 >= len(envelopes):
+            raise PlanningError("event history contains a partial promotion publication")
+        succeeded = envelopes[cursor + 1].event
+        if (
+            not isinstance(succeeded, TaskAttemptSucceeded)
+            or succeeded.activation_id != event.activation_id
+            or succeeded.attempt != event.attempt
+            or succeeded.staged_write_set_digest != event.staged_write_set_digest
+            or succeeded.promotion_receipt_digest != event.promotion_receipt_digest
+        ):
+            raise PlanningError("promotion receipt lacks its atomic task success")
+        return 2
+
     if isinstance(event, EffectApplyStarted | EffectReceiptRecorded):
         return 1
 
@@ -383,16 +406,7 @@ def _validate_external_history_transition(
         latest = activation.attempts[-1] if activation is not None and activation.attempts else None
         if latest is not None and latest.status == "effect_pending":
             return 1
-        if cursor + 1 >= len(envelopes):
-            raise PlanningError("event history contains a partial task-success publication")
-        advanced = envelopes[cursor + 1].event
-        if (
-            not isinstance(advanced, HeadAdvanced)
-            or advanced.activation_id != event.activation_id
-            or advanced.attempt != event.attempt
-        ):
-            raise PlanningError("event history task success lacks its atomic HEAD advance")
-        return 2
+        raise PlanningError("event history task success lacks its promotion receipt")
 
     if isinstance(event, TaskAttemptFailed | TaskAttemptStopped):
         return 1
@@ -420,21 +434,11 @@ def _validate_prepared_commit_history(
     envelopes: tuple[EventEnvelope, ...],
     cursor: int,
 ) -> int:
-    needed = 2 + len(event.effect_ids)
+    needed = 1 + len(event.effect_ids)
     if cursor + needed > len(envelopes):
         raise PlanningError("event history contains a partial prepared-commit publication")
-    advanced = envelopes[cursor + 1].event
-    if (
-        not isinstance(advanced, HeadAdvanced)
-        or advanced.activation_id != event.activation_id
-        or advanced.attempt != event.attempt
-        or advanced.task_id != event.task_id
-        or advanced.previous_tree_id != event.previous_tree_id
-        or advanced.tree_id != event.tree_id
-    ):
-        raise PlanningError("event history prepared commit lacks its atomic HEAD advance")
     for index, effect_id in enumerate(event.effect_ids):
-        intent = envelopes[cursor + 2 + index].event
+        intent = envelopes[cursor + 1 + index].event
         if (
             not isinstance(intent, EffectIntentCommitted)
             or intent.effect_id != effect_id
@@ -451,7 +455,8 @@ def _can_defer_planned_events(
     event: RuntimeEvent,
 ) -> bool:
     has_running_attempt = any(
-        activation.attempts and activation.attempts[-1].status in {"running", "effect_pending"}
+        activation.attempts
+        and activation.attempts[-1].status in {"running", "promotion_pending", "effect_pending"}
         for activation in projection.activations
     )
     return has_running_attempt and isinstance(
@@ -466,6 +471,7 @@ def _can_defer_planned_events(
         | TaskAttemptFailed
         | TaskAttemptStopped
         | TaskCommitPrepared
+        | TaskPromotionCompleted
         | EffectApplyStarted
         | EffectReceiptRecorded,
     )
@@ -480,7 +486,10 @@ def plan_running_tasks(
     state = _PlannerState.from_projection(compiled, projection)
     tasks: list[PlannedTask] = []
     for activation in state.activations.values():
-        if not activation.attempts or activation.attempts[-1].status != "running":
+        if not activation.attempts or activation.attempts[-1].status not in {
+            "running",
+            "promotion_pending",
+        }:
             continue
         graph = state.graphs[activation.graph_instance_id]
         node = compiled.graphs[graph.graph_id].nodes[activation.node_id]
@@ -634,17 +643,22 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
                 if (
                     latest is None
                     or latest.status != "succeeded"
-                    or latest.committed_tree_id is None
+                    or latest.prepared_commit is None
+                    or latest.prepared_commit.promotion_receipt_digest is None
                     or thaw_json(activation.output) != thaw_json(latest.output)
                 ):
                     raise PlanningError(
                         "completed task requires a committed successful attempt with exact output"
                     )
             if any(
-                attempt.status == "succeeded" and attempt.committed_tree_id is None
+                attempt.status == "succeeded"
+                and (
+                    attempt.prepared_commit is None
+                    or attempt.prepared_commit.promotion_receipt_digest is None
+                )
                 for attempt in activation.attempts
             ):
-                raise PlanningError("successful task attempt requires an atomic HEAD advance")
+                raise PlanningError("successful task attempt requires an atomic promotion receipt")
         if activation.status == "completed" and behavior.execution == "structural":
             if behavior.output_builder is None:
                 raise PlanningError(f"planner does not support structural node {activation.node_id!r}")
@@ -1166,7 +1180,8 @@ def _terminal_task_activations(state: _PlannerState) -> tuple[ActivationRecord, 
 
 def _has_running_attempt(state: _PlannerState) -> bool:
     return any(
-        activation.attempts and activation.attempts[-1].status in {"running", "effect_pending"}
+        activation.attempts
+        and activation.attempts[-1].status in {"running", "promotion_pending", "effect_pending"}
         for activation in state.activations.values()
     )
 
@@ -1255,7 +1270,7 @@ def _settle_existing_activations(state: _PlannerState) -> None:
             state.tasks.append(_planned_task(state, node, activation))
             continue
         latest = activation.attempts[-1]
-        if latest.status in {"running", "effect_pending"}:
+        if latest.status in {"running", "promotion_pending", "effect_pending"}:
             continue
         if latest.status == "succeeded":
             completed = activation.model_copy(update={"status": "completed", "output": latest.output})
@@ -1457,6 +1472,13 @@ def _planned_task(state: _PlannerState, node: CompiledNode, activation: Activati
         or not prior_failure.retryable
     ):
         raise PlanningError("terminal task failure was routed as a retry")
+    input_value = _activation_input(state, node, activation)
+    resources = node.definition.resources
+    if isinstance(resources, ResourceClaimTemplate):
+        try:
+            resources = resources.resolve(input_value)
+        except ValueError as error:
+            raise PlanningError(f"invalid_input: {error}") from error
     return PlannedTask(
         invocation_id=state.invocation_id,
         task_id=task_id(activation.activation_id),
@@ -1465,10 +1487,10 @@ def _planned_task(state: _PlannerState, node: CompiledNode, activation: Activati
         node_id=node.node_id,
         capability_id=capability_id,
         attempt=attempt,
-        input=_activation_input(state, node, activation),
+        input=input_value,
         prior_failure=prior_failure,
         timeout_seconds=state.compiled.timeout[timeout_name].run_seconds,
-        resources=node.definition.resources,
+        resources=resources,
         validators=node.definition.validators,
         topology_rank=node.topology_rank,
         declaration_index=node.declaration_index,

@@ -14,9 +14,10 @@ from typing import Literal, Self, cast
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.composition import FrozenComposition
+from graph_engine.composition import FrozenComposition, SourceKey
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
+    InvocationWorkspaceBinding,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
     TaskOutcome,
@@ -35,6 +36,7 @@ from graph_engine.runtime.events import (
     InvocationStarted,
     NodeCompleted,
     RuntimeEvent,
+    TaskAttemptSucceeded,
     TokenOffered,
 )
 from graph_engine.runtime.frozen_json import FrozenJSONValue, freeze_json, thaw_json
@@ -53,7 +55,7 @@ from graph_engine.runtime.ledger import (
     LedgerPublicationIndeterminate,
     append_validated_batch,
 )
-from graph_engine.runtime.models import InvocationProjection, RecoveryResult, fold_events
+from graph_engine.runtime.models import AttemptRecord, InvocationProjection, RecoveryResult, fold_events
 from graph_engine.runtime.planner import (
     PlanningError,
     _start_token_id,
@@ -80,11 +82,7 @@ from graph_engine.runtime.scheduler import (
 )
 from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
 from graph_engine.runtime.seed import InvocationSeed
-from graph_engine.runtime.workspace import (
-    FinalizationRolledBack,
-    HeadPublicationIndeterminate,
-    SnapshotStore,
-)
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 
 class EngineError(GraphEngineError):
@@ -108,6 +106,7 @@ class InvocationHandle:
     _composition: FrozenComposition = field(repr=False, compare=False)
     _invocation_fd: int = field(repr=False, compare=False)
     _engine: Engine = field(repr=False, compare=False)
+    _workspace_binding: InvocationWorkspaceBinding = field(repr=False, compare=False)
     _authorization: InvocationRuntimeAuthorization = field(repr=False, compare=False)
     _closed: bool = field(default=False, init=False, repr=False, compare=False)
 
@@ -122,13 +121,13 @@ class InvocationHandle:
         )
 
     @property
-    def workspace(self) -> SnapshotStore:
+    def workspace(self) -> TaskWorkspaceStore:
         if self._closed:
             raise EngineError("invocation handle is closed")
-        return SnapshotStore.at(
-            self._invocation_fd,
-            "workspace",
-            display_root=self.invocation_root / "workspace",
+        return TaskWorkspaceStore(
+            self._workspace_binding.project_root,
+            self._workspace_binding.attempts_root,
+            self._workspace_binding.receipts_root,
         )
 
     async def recover(self) -> RecoveryResult:
@@ -161,7 +160,6 @@ class InvocationHandle:
 
 _RESULT_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 _RUNNER_LOCK = ".engine-runner.lock"
-_EMPTY_TREE_ID = canonical_digest([])
 
 
 class RunResult(BaseModel):
@@ -182,6 +180,38 @@ class RunResult(BaseModel):
     @property
     def reason(self) -> str | None:
         return self.terminal_reason
+
+
+def _ready_effect_task_success(
+    projection: InvocationProjection,
+) -> tuple[str, AttemptRecord] | None:
+    ready: list[tuple[str, AttemptRecord]] = []
+    for activation in projection.activations:
+        if not activation.attempts:
+            continue
+        attempt = activation.attempts[-1]
+        prepared = attempt.prepared_commit
+        if (
+            attempt.status != "effect_pending"
+            or prepared is None
+            or prepared.promotion_receipt_digest is None
+        ):
+            continue
+        records = tuple(
+            item
+            for item in projection.effects
+            if item.activation_id == activation.activation_id and item.task_attempt == attempt.attempt
+        )
+        if len(records) == len(prepared.effect_ids) and all(item.status == "applied" for item in records):
+            ready.append((activation.activation_id, attempt))
+    ready.sort(
+        key=lambda item: (
+            item[1].prepared_commit.task_id if item[1].prepared_commit is not None else item[0],
+            item[1].attempt,
+            item[0],
+        )
+    )
+    return ready[0] if ready else None
 
 
 class _UnavailableTaskHost:
@@ -246,9 +276,7 @@ class Engine:
         )
 
         if sys.platform == "win32":
-            raise UnsupportedProductionPlatform(
-                "production task execution supports Linux and macOS only"
-            )
+            raise UnsupportedProductionPlatform("production task execution supports Linux and macOS only")
         host = _ProductionTaskExecutionHost(root=Path(root), authorization=authorization)
         return cls(root, host=host, clock=clock)
 
@@ -282,6 +310,7 @@ class Engine:
         invocation_id: str,
         seed: InvocationSeed,
         authorization: InvocationRuntimeAuthorization,
+        workspace_binding: InvocationWorkspaceBinding,
     ) -> InvocationHandle:
         self._assert_namespace_path_current()
         self._invocation_root(invocation_id)
@@ -291,8 +320,17 @@ class Engine:
             raise TypeError("engine start requires an InvocationSeed")
         if not isinstance(authorization, InvocationRuntimeAuthorization):
             raise TypeError("engine start requires an InvocationRuntimeAuthorization")
+        if not isinstance(workspace_binding, InvocationWorkspaceBinding):
+            raise TypeError("engine start requires an InvocationWorkspaceBinding")
         if _entry_exists(self._invocations_fd, invocation_id):
-            return self._continue_start(invocation_id, composition, entrypoint, seed, authorization)
+            return self._continue_start(
+                invocation_id,
+                composition,
+                entrypoint,
+                seed,
+                authorization,
+                workspace_binding,
+            )
         if entrypoint not in composition.workflow.entrypoints:
             raise EngineError(f"unknown entrypoint {entrypoint!r}")
         staging_name = f".{invocation_id}.invocation-init-{uuid.uuid4().hex}"
@@ -314,7 +352,10 @@ class Engine:
                 entrypoint=entrypoint,
                 runtime_authorization_digest=authorization.digest,
                 root_input_digest=seed.root_input_digest,
-                initial_tree_id=seed.workspace.tree_id,
+                workspace_binding_digest=workspace_binding.identity_digest,
+                project_root_digest=workspace_binding.project_root_digest,
+                attempts_root_digest=workspace_binding.attempts_root_digest,
+                receipts_root_digest=workspace_binding.receipts_root_digest,
             )
             _initialization_boundary("lock_installed")
             installed_now = self._install_invocation(staging_name, invocation_id, staging_fd)
@@ -329,7 +370,12 @@ class Engine:
                     descriptor=cleanup_fd,
                 )
                 return self._continue_start(
-                    invocation_id, composition, entrypoint, seed, authorization
+                    invocation_id,
+                    composition,
+                    entrypoint,
+                    seed,
+                    authorization,
+                    workspace_binding,
                 )
             installed = True
             return self._complete_start_at(
@@ -339,6 +385,7 @@ class Engine:
                 staging_fd,
                 seed,
                 authorization,
+                workspace_binding,
             )
         except BaseException as error:
             if staging_fd is not None and not installed:
@@ -372,16 +419,19 @@ class Engine:
         composition: FrozenComposition,
         *,
         authorization: InvocationRuntimeAuthorization,
+        workspace_binding: InvocationWorkspaceBinding,
     ) -> InvocationHandle:
         self._assert_namespace_path_current()
         if not isinstance(composition, FrozenComposition):
             raise TypeError("engine open requires a FrozenComposition")
         if not isinstance(authorization, InvocationRuntimeAuthorization):
             raise TypeError("engine open requires an InvocationRuntimeAuthorization")
+        if not isinstance(workspace_binding, InvocationWorkspaceBinding):
+            raise TypeError("engine open requires an InvocationWorkspaceBinding")
         invocation_root = self._invocation_root(invocation_id)
         invocation_fd = self._open_invocation(invocation_id)
         claim_fd: int | None = None
-        store: SnapshotStore | None = None
+        store: TaskWorkspaceStore | None = None
         try:
             intent = self._authenticate_invocation_records(
                 invocation_id,
@@ -389,6 +439,7 @@ class Engine:
                 None,
                 invocation_fd,
             )
+            self._authenticate_workspace_binding(workspace_binding, intent)
             self._validate_authorization_against_intent(authorization, intent)
             preclaim_ledger = Ledger.at(
                 invocation_fd,
@@ -436,13 +487,12 @@ class Engine:
             )
             if checkpoint is not None:
                 projection = checkpoint.projection
-            store = SnapshotStore.at(
-                invocation_fd,
-                "workspace",
-                display_root=invocation_root / "workspace",
+            store = TaskWorkspaceStore(
+                workspace_binding.project_root,
+                workspace_binding.attempts_root,
+                workspace_binding.receipts_root,
             )
             self._ensure_ledger_durable(ledger)
-            _transition_boundary("head_recovery")
             self._authenticate_transition_identity(
                 invocation_id,
                 composition,
@@ -450,18 +500,6 @@ class Engine:
                 invocation_fd,
                 ledger,
             )
-            store.recover_head_transaction(projection.head_tree_id)
-            self._authenticate_transition_identity(
-                invocation_id,
-                composition,
-                intent.entrypoint,
-                invocation_fd,
-                ledger,
-            )
-            actual_tree_id = store.head_tree_id()
-            expected_tree_id = projection.head_tree_id or _EMPTY_TREE_ID
-            if actual_tree_id != expected_tree_id:
-                raise EngineError("workspace HEAD disagrees with the authoritative ledger")
             self._authenticate_live_activity_workspaces(projection, store)
             if projection.status == "running":
                 scheduler = self._scheduler(
@@ -552,6 +590,7 @@ class Engine:
                 composition,
                 invocation_fd,
                 self,
+                workspace_binding,
                 authorization,
             )
         except BaseException as error:
@@ -565,6 +604,7 @@ class Engine:
         entrypoint: str,
         seed: InvocationSeed,
         authorization: InvocationRuntimeAuthorization,
+        workspace_binding: InvocationWorkspaceBinding,
     ) -> InvocationHandle:
         invocation_fd = self._open_invocation(invocation_id)
         try:
@@ -575,6 +615,7 @@ class Engine:
                 invocation_fd,
                 seed,
                 authorization,
+                workspace_binding,
             )
         finally:
             _cleanup_runtime_resources(
@@ -591,6 +632,7 @@ class Engine:
         invocation_fd: int,
         seed: InvocationSeed,
         authorization: InvocationRuntimeAuthorization,
+        workspace_binding: InvocationWorkspaceBinding,
     ) -> InvocationHandle:
         invocation_root = self._invocation_root(invocation_id)
         intent = self._authenticate_invocation_records(
@@ -599,6 +641,7 @@ class Engine:
             entrypoint,
             invocation_fd,
         )
+        self._authenticate_workspace_binding(workspace_binding, intent)
         self._validate_seed_against_intent(seed, intent, authorization)
         _initialization_boundary("before_recovery_root_fsync")
         os.fsync(self._invocations_fd)
@@ -637,7 +680,7 @@ class Engine:
                 preclaim_ledger,
             )
         claim_fd = self._acquire_runner_claim(invocation_fd)
-        store: SnapshotStore | None = None
+        store: TaskWorkspaceStore | None = None
         try:
             intent = self._authenticate_invocation_records(
                 invocation_id,
@@ -645,26 +688,18 @@ class Engine:
                 entrypoint,
                 invocation_fd,
             )
+            self._authenticate_workspace_binding(workspace_binding, intent)
             ledger = Ledger.at(
                 invocation_fd,
                 "ledger",
                 display_root=invocation_root / "ledger",
             )
             envelopes = ledger.read_all()
-            if _entry_exists(invocation_fd, "workspace"):
-                store = SnapshotStore.at(
-                    invocation_fd,
-                    "workspace",
-                    display_root=invocation_root / "workspace",
-                )
-            else:
-                initial_files = {item.path: item.content for item in seed.workspace.files}
-                store = SnapshotStore.create_at(
-                    invocation_fd,
-                    "workspace",
-                    initial_files,
-                    display_root=invocation_root / "workspace",
-                )
+            store = TaskWorkspaceStore(
+                workspace_binding.project_root,
+                workspace_binding.attempts_root,
+                workspace_binding.receipts_root,
+            )
             intent = self._authenticate_invocation_records(
                 invocation_id,
                 composition,
@@ -684,13 +719,8 @@ class Engine:
                 projection = fold_events(envelopes)
                 self._validate_workflow(composition, projection)
                 self._validate_history(composition, envelopes, projection)
-                expected_tree_id = projection.head_tree_id or _EMPTY_TREE_ID
-                if store.head_tree_id() != expected_tree_id:
-                    raise EngineError("workspace HEAD disagrees with the authoritative ledger")
             else:
-                if store.head_tree_id() != seed.workspace.tree_id:
-                    raise EngineError("unbootstrapped invocation workspace does not match the seed")
-                _initialization_boundary("workspace_ready")
+                _initialization_boundary("workspace_roots_ready")
                 bootstrap = self._bootstrap_events(
                     invocation_id, composition, entrypoint, seed, authorization
                 )
@@ -746,6 +776,7 @@ class Engine:
             composition,
             os.dup(invocation_fd),
             self,
+            workspace_binding,
             authorization,
         )
 
@@ -774,7 +805,6 @@ class Engine:
         if (
             started.runtime_authorization_digest != intent.runtime_authorization_digest
             or started.root_input_digest != intent.root_input_digest
-            or started.initial_tree_id != intent.initial_tree_id
         ):
             raise InvocationDrift("invocation ledger bootstrap seed identity differs from its start intent")
         if len(envelopes) < 3:
@@ -818,7 +848,6 @@ class Engine:
                 event_schema_version="2",
                 runtime_authorization_digest=authorization.digest,
                 root_input_digest=seed.root_input_digest,
-                initial_tree_id=seed.workspace.tree_id,
             ),
             GraphStarted(
                 graph_instance_id=graph_id,
@@ -857,12 +886,30 @@ class Engine:
         intent: InvocationStartIntent,
         authorization: InvocationRuntimeAuthorization,
     ) -> None:
-        if (
-            seed.root_input_digest != intent.root_input_digest
-            or seed.workspace.tree_id != intent.initial_tree_id
-        ):
+        if seed.root_input_digest != intent.root_input_digest:
             raise InvocationDrift("invocation seed differs from its start intent")
         self._validate_authorization_against_intent(authorization, intent)
+
+    def _authenticate_workspace_binding(
+        self,
+        binding: InvocationWorkspaceBinding,
+        intent: InvocationStartIntent,
+    ) -> None:
+        try:
+            current = InvocationWorkspaceBinding(
+                project_root=binding.project_root,
+                attempts_root=binding.attempts_root,
+                receipts_root=binding.receipts_root,
+            )
+        except ValueError as error:
+            raise InvocationDrift("invocation workspace roots are no longer canonical") from error
+        if (
+            current.identity_digest != intent.workspace_binding_digest
+            or current.project_root_digest != intent.project_root_digest
+            or current.attempts_root_digest != intent.attempts_root_digest
+            or current.receipts_root_digest != intent.receipts_root_digest
+        ):
+            raise InvocationDrift("invocation workspace binding differs from its immutable start intent")
 
     def _validate_authorization_against_intent(
         self,
@@ -888,7 +935,8 @@ class Engine:
 
     def _run_until_blocked_claimed(self, handle: InvocationHandle) -> RunResult:
         composition, invocation_root, invocation_fd = self._validated_handle(handle)
-        with handle.workspace as store:
+        store = handle.workspace
+        try:
             return self._run_until_blocked_with_store(
                 handle,
                 composition,
@@ -896,6 +944,8 @@ class Engine:
                 invocation_fd,
                 store,
             )
+        finally:
+            store.close()
 
     def _run_until_blocked_with_store(
         self,
@@ -903,14 +953,13 @@ class Engine:
         composition: FrozenComposition,
         invocation_root: Path,
         invocation_fd: int,
-        store: SnapshotStore,
+        store: TaskWorkspaceStore,
     ) -> RunResult:
         ledger = Ledger.at(
             invocation_fd,
             "ledger",
             display_root=invocation_root / "ledger",
         )
-        store.head_tree_id()
         scheduler = self._scheduler(
             handle.invocation_id,
             composition,
@@ -972,6 +1021,32 @@ class Engine:
                     "lease reclamation publication is indeterminate"
                 ) from error
 
+            ready_success = _ready_effect_task_success(projection)
+            if ready_success is not None:
+                activation_id, attempt = ready_success
+                prepared = attempt.prepared_commit
+                assert prepared is not None
+                assert prepared.promotion_receipt_digest is not None
+                self._append_authenticated(
+                    context="planner_append",
+                    invocation_id=handle.invocation_id,
+                    composition=composition,
+                    entrypoint=handle._entrypoint,
+                    invocation_fd=invocation_fd,
+                    ledger=ledger,
+                    events=(
+                        TaskAttemptSucceeded(
+                            activation_id=activation_id,
+                            attempt=attempt.attempt,
+                            output=attempt.output,
+                            staged_write_set_digest=prepared.staged_write_set_digest,
+                            promotion_receipt_digest=prepared.promotion_receipt_digest,
+                        ),
+                    ),
+                    existing=envelopes,
+                )
+                continue
+
             if needs_settlement(projection):
                 try:
                     settlement = asyncio.run(executor.settle_next(projection))
@@ -1005,12 +1080,6 @@ class Engine:
                     raise EnginePublicationIndeterminate(
                         "running task publication is indeterminate"
                     ) from error
-                except HeadPublicationIndeterminate as error:
-                    raise EnginePublicationIndeterminate(
-                        "running task publication is indeterminate"
-                    ) from error
-                except FinalizationRolledBack as error:
-                    raise EngineError("running task publication failed and was rolled back") from error
                 if resumed:
                     continue
                 if any(scheduler._task_has_live_activity(task) for task in running_tasks):
@@ -1045,10 +1114,6 @@ class Engine:
                     raise EngineConflictError("another runner advanced the invocation") from error
                 except LedgerPublicationIndeterminate as error:
                     raise EnginePublicationIndeterminate("task publication is indeterminate") from error
-                except HeadPublicationIndeterminate as error:
-                    raise EnginePublicationIndeterminate("task publication is indeterminate") from error
-                except FinalizationRolledBack as error:
-                    raise EngineError("task publication failed and was rolled back") from error
                 continue
             if plan.terminal == "interrupted":
                 refreshed = fold_events(ledger.read_all())
@@ -1179,6 +1244,7 @@ class Engine:
             composition,
             os.dup(invocation_fd),
             self,
+            handle._workspace_binding,
             handle._authorization,
         )
 
@@ -1189,7 +1255,7 @@ class Engine:
         entrypoint: str,
         invocation_root: Path,
         invocation_fd: int,
-        store: SnapshotStore,
+        store: TaskWorkspaceStore,
         ledger: Ledger,
         authorization: InvocationRuntimeAuthorization,
     ) -> Scheduler:
@@ -1227,7 +1293,28 @@ class Engine:
             resources=composition.registries.resources,
             receipts=receipts,
             runtime_authorization=authorization,
+            handler_import_roots=self._handler_import_roots(composition),
         )
+
+    def _handler_import_roots(
+        self,
+        composition: FrozenComposition,
+    ) -> dict[str, tuple[str, ...]]:
+        roots: dict[str, tuple[str, ...]] = {}
+        for capability_id, entry in composition.registries.capabilities.entries.items():
+            provenance = getattr(entry, "provenance", None) or getattr(entry, "target_provenance", None)
+            source_key = getattr(provenance, "source_key", None)
+            if not isinstance(source_key, SourceKey):
+                continue
+            source = composition.registries.sources.entries.get(source_key)
+            if source is None:
+                continue
+            identity = source.snapshot.identity
+            import_roots = identity.import_roots or ()
+            roots[capability_id] = tuple(
+                str((identity.root / import_root).resolve(strict=True)) for import_root in import_roots
+            )
+        return roots
 
     async def _recover_invocation(self, handle: InvocationHandle) -> RecoveryResult:
         _composition, _invocation_root, invocation_fd = self._validated_handle(handle)
@@ -1243,7 +1330,8 @@ class Engine:
 
     async def _recover_invocation_claimed(self, handle: InvocationHandle) -> RecoveryResult:
         composition, invocation_root, invocation_fd = self._validated_handle(handle)
-        with handle.workspace as store:
+        store = handle.workspace
+        try:
             ledger = Ledger.at(
                 invocation_fd,
                 "ledger",
@@ -1275,19 +1363,30 @@ class Engine:
                 raise EnginePublicationIndeterminate(
                     "activity recovery publication is indeterminate"
                 ) from error
+        finally:
+            store.close()
 
     def _authenticate_live_activity_workspaces(
         self,
         projection: InvocationProjection,
-        store: SnapshotStore,
+        store: TaskWorkspaceStore,
     ) -> None:
         for activation in projection.activations:
             if not activation.attempts:
                 continue
             attempt = activation.attempts[-1]
-            if attempt.status not in {"running", "effect_pending"} or attempt.activity is None:
+            if (
+                attempt.status not in {"running", "promotion_pending", "effect_pending"}
+                or attempt.activity is None
+            ):
                 continue
-            store.open_attempt(attempt.activity.workspace_identity)
+            binding = store.begin(
+                task_id=attempt.activity.workspace_identity.task_id,
+                attempt=attempt.activity.workspace_identity.attempt,
+                output_paths=attempt.activity.workspace_identity.output_paths,
+            )
+            if binding.identity != attempt.activity.workspace_identity:
+                raise EngineError("task workspace identity differs from the authoritative ledger")
 
     def _require_invocation_anchor(self, invocation_id: str, invocation_fd: int) -> None:
         self._assert_namespace_path_current()
@@ -1362,6 +1461,13 @@ class Engine:
         composition = handle._composition
         if composition.lock_digest != handle.lock_digest:
             raise EngineError("invocation handle lock digest mismatch")
+        intent = self._authenticate_invocation_records(
+            handle.invocation_id,
+            composition,
+            handle._entrypoint,
+            handle._invocation_fd,
+        )
+        self._authenticate_workspace_binding(handle._workspace_binding, intent)
         ledger = Ledger.at(
             handle._invocation_fd,
             "ledger",
@@ -1766,7 +1872,7 @@ def _close_preserving_primary(
 def _cleanup_runtime_resources(
     primary: BaseException | None,
     *,
-    store: SnapshotStore | None,
+    store: TaskWorkspaceStore | None,
     descriptors: tuple[tuple[int, str], ...],
     actions: tuple[tuple[Callable[[], None], str], ...] = (),
 ) -> None:

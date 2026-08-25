@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 import graph_engine
 import graph_engine.plugin_api as plugin_api
+from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
@@ -30,6 +31,7 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
     TaskRequest,
+    TaskWorkspaceIdentity,
     InvocationMetadata,
     ValidationContext,
     ValidationResult,
@@ -43,6 +45,20 @@ _TEST_INVOCATION = InvocationMetadata(
     composition_digest="b" * 64,
     entrypoint="main",
 )
+
+
+def _workspace_identity() -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "task-1",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
 
 
 class _Handler:
@@ -457,13 +473,15 @@ def test_task_request_is_frozen_forbids_extra_and_enforces_attempts() -> None:
 
 def test_task_context_and_candidate_contracts_remain_frozen() -> None:
     context = TaskContext(
-        workspace_root=Path("/workspace"),
+        project_root=Path("/project"),
+        write_root=Path("/attempts/task-1/attempt-1"),
+        workspace_identity=_workspace_identity(),
         heartbeat=lambda: None,
         cancel_requested=lambda: False,
         invocation=_TEST_INVOCATION,
     )
     with pytest.raises(AttributeError):
-        context.workspace_root = Path("/elsewhere")
+        context.write_root = Path("/elsewhere")
 
     candidate = CandidateWriteSet(
         baseline_tree_id="base",

@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 import graph_engine.runtime.ledger as ledger_runtime
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
-from graph_engine.plugin_api import AttemptWorkspaceIdentity, TaskFailure, TaskOutcome
+from graph_engine.plugin_api import StagedWriteSet, TaskFailure, TaskOutcome, TaskWorkspaceIdentity
 from graph_engine.runtime.checkpoint import load_checkpoint, write_checkpoint
 from graph_engine.runtime.events import (
     EffectApplyStarted,
@@ -24,7 +24,6 @@ from graph_engine.runtime.events import (
     GraphCompleted,
     GraphFailed,
     GraphStarted,
-    HeadAdvanced,
     InterruptResumed,
     InvocationFinished,
     InvocationStarted,
@@ -44,6 +43,7 @@ from graph_engine.runtime.events import (
     TaskLeaseAcquired,
     TaskLeaseAdopted,
     TaskLeaseHeartbeat,
+    TaskPromotionCompleted,
     TokenConsumed,
     TokenOffered,
 )
@@ -154,9 +154,7 @@ def test_validated_append_rejects_invalid_fold_before_publication(tmp_path: Path
     with pytest.raises(ProjectionError):
         append(
             ledger,
-            (
-                synthetic_invocation_started(invocation_id="inv-2", lock_digest="b" * 64),
-            ),
+            (synthetic_invocation_started(invocation_id="inv-2", lock_digest="b" * 64),),
             expected_next_seq=2,
         )
     assert len(ledger.read_all()) == 1
@@ -252,9 +250,7 @@ def test_visible_exact_range_with_failed_durability_barrier_is_indeterminate(
     with pytest.raises(ledger_runtime.LedgerPublicationIndeterminate, match="durab"):
         ledger_runtime.append_validated_batch(
             ledger,
-            (
-                synthetic_invocation_started(),
-            ),
+            (synthetic_invocation_started(),),
             expected_next_seq=1,
         )
 
@@ -386,9 +382,89 @@ def _envelopes(*events: object) -> tuple[EventEnvelope, ...]:
     )
 
 
+def _workspace_identity(task_id: str = "task-1", *, attempt: int = 1) -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": task_id,
+        "attempt": attempt,
+        "attempt_id": f"attempt-{attempt}",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": canonical_digest({"task_id": task_id, "attempt": attempt, "kind": "write-root"}),
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
+
+
+def _staged_write_set(task_id: str = "task-1", *, attempt: int = 1) -> StagedWriteSet:
+    identity = _workspace_identity(task_id, attempt=attempt)
+    payload = {"identity_digest": identity.identity_digest, "files": []}
+    return StagedWriteSet(
+        identity_digest=identity.identity_digest,
+        files=(),
+        staged_digest=canonical_digest(payload),
+    )
+
+
+def _task_commit(
+    activation_id: str,
+    output: object,
+    *,
+    task_id: str = "task-1",
+    attempt: int = 1,
+    effect_ids: tuple[str, ...] = (),
+) -> TaskCommitPrepared:
+    identity = _workspace_identity(task_id, attempt=attempt)
+    staged = _staged_write_set(task_id, attempt=attempt)
+    return TaskCommitPrepared(
+        task_id=task_id,
+        activation_id=activation_id,
+        attempt=attempt,
+        output=output,  # type: ignore[arg-type]
+        workspace_identity=identity,
+        staged_write_set=staged,
+        staged_write_set_digest=staged.staged_digest,
+        effect_ids=effect_ids,
+    )
+
+
+def _task_promotion(
+    activation_id: str,
+    *,
+    task_id: str = "task-1",
+    attempt: int = 1,
+    staged_write_set_digest: str | None = None,
+) -> TaskPromotionCompleted:
+    return TaskPromotionCompleted(
+        task_id=task_id,
+        activation_id=activation_id,
+        attempt=attempt,
+        staged_write_set_digest=(
+            staged_write_set_digest or _staged_write_set(task_id, attempt=attempt).staged_digest
+        ),
+        promotion_receipt_digest="c" * 64,
+    )
+
+
+def _task_success(
+    activation_id: str,
+    output: object,
+    *,
+    task_id: str = "task-1",
+    attempt: int = 1,
+) -> TaskAttemptSucceeded:
+    return TaskAttemptSucceeded(
+        activation_id=activation_id,
+        attempt=attempt,
+        output=output,  # type: ignore[arg-type]
+        staged_write_set_digest=_staged_write_set(task_id, attempt=attempt).staged_digest,
+        promotion_receipt_digest="c" * 64,
+    )
+
+
 def _complete_task_history() -> tuple[EventEnvelope, ...]:
     return _envelopes(
-        synthetic_invocation_started(initial_tree_id="a" * 64),
+        synthetic_invocation_started(),
         GraphStarted(graph_instance_id="root", graph_id="root"),
         TokenOffered(
             token_id="tok-1",
@@ -426,14 +502,9 @@ def _complete_task_history() -> tuple[EventEnvelope, ...]:
             heartbeat_at=5.0,
             expires_at=15.0,
         ),
-        TaskAttemptSucceeded(activation_id="act-1", attempt=1, output={"ok": True}),
-        HeadAdvanced(
-            task_id="task-1",
-            activation_id="act-1",
-            attempt=1,
-            previous_tree_id="a" * 64,
-            tree_id="b" * 64,
-        ),
+        _task_commit("act-1", {"ok": True}),
+        _task_promotion("act-1"),
+        _task_success("act-1", {"ok": True}),
         NodeCompleted(activation_id="act-1", output={"ok": True}),
         GraphCompleted(graph_instance_id="root", output={"ok": True}),
         InvocationFinished(invocation_id="inv-1", status="succeeded"),
@@ -443,9 +514,9 @@ def _complete_task_history() -> tuple[EventEnvelope, ...]:
 @pytest.mark.parametrize(
     "batch_sizes",
     [
-        (13,),
-        (1,) * 13,
-        (3, 4, 1, 2, 3),
+        (14,),
+        (1,) * 14,
+        (3, 4, 1, 2, 4),
     ],
 )
 def test_incremental_fold_matches_one_shot_across_batch_partitions(
@@ -492,7 +563,7 @@ def test_fold_rejects_success_without_started_attempt() -> None:
     events = _envelopes(
         synthetic_invocation_started(),
         NodeActivated(activation_id="act-1", graph_instance_id="root", node_id="task", token_ids=()),
-        TaskAttemptSucceeded(activation_id="act-1", attempt=1, output=None),
+        _task_success("act-1", None),
     )
     with pytest.raises(ProjectionError, match="without a matching active attempt"):
         fold_events(events)
@@ -515,7 +586,9 @@ def test_fold_records_attempt_history() -> None:
             synthetic_invocation_started(),
             NodeActivated(activation_id="act-1", graph_instance_id="root", node_id="task", token_ids=()),
             TaskAttemptStarted(activation_id="act-1", attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
-            TaskAttemptSucceeded(activation_id="act-1", attempt=1, output={"ok": True}),
+            _task_commit("act-1", {"ok": True}),
+            _task_promotion("act-1"),
+            _task_success("act-1", {"ok": True}),
         )
     )
     assert projection.activations[0].attempts[0].status == "succeeded"
@@ -645,7 +718,6 @@ def test_append_recovers_after_subprocess_crash_boundary(
             event_schema_version="2",
             runtime_authorization_digest=EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
             root_input_digest=_seed.root_input_digest,
-            initial_tree_id=_seed.workspace.tree_id,
         ),), expected_next_seq=1)
         """
     )
@@ -779,7 +851,13 @@ def _attempt_history(status: str) -> list[object]:
             )
         )
     elif status == "succeeded":
-        events.append(TaskAttemptSucceeded(activation_id="act-1", attempt=1, output=None))
+        events.extend(
+            (
+                _task_commit("act-1", None),
+                _task_promotion("act-1"),
+                _task_success("act-1", None),
+            )
+        )
     elif status == "stopped":
         events.append(TaskAttemptStopped(activation_id="act-1", attempt=1, reason="stop"))
     return events
@@ -813,7 +891,11 @@ def test_attempt_and_node_transition_matrix(prior: str, action: str, allowed: bo
         "start": TaskAttemptStarted(
             activation_id="act-1", attempt=attempt, lease_expires_at="2030-01-02T00:00:00Z"
         ),
-        "outcome": TaskAttemptSucceeded(activation_id="act-1", attempt=attempt, output=None),
+        "outcome": TaskAttemptFailed(
+            activation_id="act-1",
+            attempt=attempt,
+            failure=TaskFailure(kind="transient", message="outcome"),
+        ),
         "complete": NodeCompleted(activation_id="act-1"),
         "interrupt": _interrupt_event(),
     }
@@ -1181,8 +1263,6 @@ def test_loaded_checkpoint_json_is_deeply_immutable(tmp_path: Path) -> None:
         cast(tuple[object, ...], payload["nested"])[0] = 2  # type: ignore[index]
 
 
-_EMPTY = "0" * 64
-_TREE = "b" * 64
 _LOCK = "a" * 64
 
 
@@ -1233,25 +1313,15 @@ def _running_task_prefix() -> tuple[object, ...]:
 
 
 def _prepared_commit() -> TaskCommitPrepared:
-    return TaskCommitPrepared(
-        task_id="task-1",
-        activation_id="a1",
-        attempt=1,
-        output={"ok": True},
-        previous_tree_id=_EMPTY,
-        tree_id=_TREE,
+    return _task_commit(
+        "a1",
+        {"ok": True},
         effect_ids=("effect-1", "effect-2"),
     )
 
 
-def _prepared_head() -> HeadAdvanced:
-    return HeadAdvanced(
-        task_id="task-1",
-        activation_id="a1",
-        attempt=1,
-        previous_tree_id=_EMPTY,
-        tree_id=_TREE,
-    )
+def _prepared_promotion() -> TaskPromotionCompleted:
+    return _task_promotion("a1")
 
 
 def _intent(effect_id: str, index: int, payload: Mapping[str, object], key: str) -> EffectIntentCommitted:
@@ -1270,31 +1340,16 @@ def _committed_effect_history() -> tuple[object, ...]:
     return (
         *_running_task_prefix(),
         _prepared_commit(),
-        _prepared_head(),
         _intent("effect-1", 0, {"n": 1}, _KEY1),
         _intent("effect-2", 1, {"n": 2}, _KEY2),
+        _prepared_promotion(),
     )
 
 
 def test_fold_keeps_task_pending_until_all_effect_receipts() -> None:
     envelopes = _envelopes(
         *_running_task_prefix(),
-        TaskCommitPrepared(
-            task_id="task-1",
-            activation_id="a1",
-            attempt=1,
-            output={"ok": True},
-            previous_tree_id=_EMPTY,
-            tree_id=_TREE,
-            effect_ids=("effect-1", "effect-2"),
-        ),
-        HeadAdvanced(
-            task_id="task-1",
-            activation_id="a1",
-            attempt=1,
-            previous_tree_id=_EMPTY,
-            tree_id=_TREE,
-        ),
+        _prepared_commit(),
         EffectIntentCommitted(
             effect_id="effect-1",
             activation_id="a1",
@@ -1313,6 +1368,7 @@ def test_fold_keeps_task_pending_until_all_effect_receipts() -> None:
             payload={"n": 2},
             idempotency_key=_KEY2,
         ),
+        _prepared_promotion(),
     )
     projection = fold_events(envelopes)
     assert projection.activations[-1].attempts[-1].status == "effect_pending"
@@ -1346,12 +1402,15 @@ def test_fold_records_receipts_then_succeeds_the_effect_pending_attempt() -> Non
         EffectReceiptRecorded(effect_id="effect-1", apply_attempt=1, receipt={"remote": 1}),
         EffectApplyStarted(effect_id="effect-2", apply_attempt=1),
         EffectReceiptRecorded(effect_id="effect-2", apply_attempt=1, receipt={"remote": 2}),
-        TaskAttemptSucceeded(activation_id="a1", attempt=1, output={"ok": True}),
+        _task_success("a1", {"ok": True}),
     )
     projection = fold_events(envelopes)
     assert projection.activations[-1].attempts[-1].status == "succeeded"
     assert tuple(effect.status for effect in projection.effects) == ("applied", "applied")
-    assert projection.activations[-1].attempts[-1].committed_tree_id == _TREE
+    prepared = projection.activations[-1].attempts[-1].prepared_commit
+    assert prepared is not None
+    assert prepared.staged_write_set_digest == _staged_write_set().staged_digest
+    assert prepared.promotion_receipt_digest == "c" * 64
 
 
 @pytest.mark.parametrize("partition", ["all", "one", "split"])
@@ -1362,7 +1421,7 @@ def test_incremental_effect_fold_matches_one_shot(partition: str) -> None:
         EffectReceiptRecorded(effect_id="effect-1", apply_attempt=1, receipt={"remote": 1}),
         EffectApplyStarted(effect_id="effect-2", apply_attempt=1),
         EffectReceiptRecorded(effect_id="effect-2", apply_attempt=1, receipt={"remote": 2}),
-        TaskAttemptSucceeded(activation_id="a1", attempt=1, output={"ok": True}),
+        _task_success("a1", {"ok": True}),
     )
     if partition == "all":
         batch_sizes = (len(envelopes),)
@@ -1390,7 +1449,6 @@ def test_fold_rejects_wrong_effect_index_order() -> None:
             _envelopes(
                 *_running_task_prefix(),
                 _prepared_commit(),
-                _prepared_head(),
                 _intent("effect-2", 1, {"n": 2}, _KEY2),
             )
         )
@@ -1402,7 +1460,6 @@ def test_fold_rejects_wrong_effect_order() -> None:
             _envelopes(
                 *_running_task_prefix(),
                 _prepared_commit(),
-                _prepared_head(),
                 _intent("effect-2", 0, {"n": 2}, _KEY2),
             )
         )
@@ -1414,7 +1471,6 @@ def test_fold_rejects_wrong_effect_idempotency_key() -> None:
             _envelopes(
                 *_running_task_prefix(),
                 _prepared_commit(),
-                _prepared_head(),
                 _intent("effect-1", 0, {"n": 1}, "c" * 64),
             )
         )
@@ -1424,7 +1480,9 @@ def test_fold_rejects_duplicate_effect_intent() -> None:
     with pytest.raises(ProjectionError, match="duplicate"):
         fold_events(
             _envelopes(
-                *_committed_effect_history(),
+                *_running_task_prefix(),
+                _prepared_commit(),
+                _intent("effect-1", 0, {"n": 1}, _KEY1),
                 _intent("effect-1", 0, {"n": 1}, _KEY1),
             )
         )
@@ -1467,7 +1525,7 @@ def test_fold_rejects_success_before_all_effect_receipts() -> None:
         fold_events(
             _envelopes(
                 *_committed_effect_history(),
-                TaskAttemptSucceeded(activation_id="a1", attempt=1, output={"ok": True}),
+                _task_success("a1", {"ok": True}),
             )
         )
 
@@ -1527,18 +1585,18 @@ def test_fold_rejects_non_retryable_effect_failure_followed_by_retry() -> None:
         )
 
 
-def test_fold_rejects_effect_head_mismatch_for_prepared_commit() -> None:
-    with pytest.raises(ProjectionError, match="HEAD"):
+def test_fold_rejects_promotion_write_set_mismatch_for_prepared_commit() -> None:
+    with pytest.raises(ProjectionError, match="promotion receipt"):
         fold_events(
             _envelopes(
                 *_running_task_prefix(),
                 _prepared_commit(),
-                HeadAdvanced(
+                TaskPromotionCompleted(
                     task_id="task-1",
                     activation_id="a1",
                     attempt=1,
-                    previous_tree_id=_EMPTY,
-                    tree_id="c" * 64,
+                    staged_write_set_digest="b" * 64,
+                    promotion_receipt_digest="c" * 64,
                 ),
             )
         )
@@ -1580,11 +1638,7 @@ def test_activity_events_round_trip_through_ledger_json(tmp_path: Path) -> None:
             activation_id="act-1",
             attempt=1,
             request_digest="0" * 64,
-            workspace_identity=AttemptWorkspaceIdentity(
-                attempt_directory_id="attempt-1",
-                baseline_tree_id="a" * 64,
-                attempt_identity_digest="b" * 64,
-            ),
+            workspace_identity=_workspace_identity(),
         ),
         TaskActivityDispatchStarted(
             activity_id="activity-1",
@@ -1606,8 +1660,8 @@ def test_activity_events_round_trip_through_ledger_json(tmp_path: Path) -> None:
             activity_id="activity-1",
             outcome=outcome,
             outcome_digest=canonical_digest(outcome.model_dump(mode="json")),
-            candidate_tree_id="c" * 64,
-            write_set_digest="d" * 64,
+            staged_write_set_digest=_staged_write_set().staged_digest,
+            promotion_receipt_digest="c" * 64,
         ),
         TaskLeaseAdopted(
             activity_id="activity-1",
@@ -1638,11 +1692,7 @@ def test_checkpoint_round_trips_bound_activity_projection(tmp_path: Path) -> Non
             activation_id="a1",
             attempt=1,
             request_digest="0" * 64,
-            workspace_identity=AttemptWorkspaceIdentity(
-                attempt_directory_id="attempt-1",
-                baseline_tree_id="a" * 64,
-                attempt_identity_digest="b" * 64,
-            ),
+            workspace_identity=_workspace_identity(),
         ),
         TaskActivityDispatchStarted(
             activity_id="activity-1",

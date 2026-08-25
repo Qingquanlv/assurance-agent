@@ -19,7 +19,6 @@ def synthetic_invocation_started(
     entrypoint: str = "main",
     runtime_authorization_digest: str = EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
     root_input_digest: str | None = None,
-    initial_tree_id: str | None = None,
 ) -> InvocationStarted:
     """Build ``InvocationStarted`` with canonical empty-seed v2 identity fields."""
 
@@ -30,5 +29,4 @@ def synthetic_invocation_started(
         event_schema_version="2",
         runtime_authorization_digest=runtime_authorization_digest,
         root_input_digest=_EMPTY_SEED.root_input_digest if root_input_digest is None else root_input_digest,
-        initial_tree_id=SYNTHETIC_INITIAL_TREE_ID if initial_tree_id is None else initial_tree_id,
     )

@@ -5,7 +5,6 @@ import hmac
 import os
 import struct
 from collections.abc import Iterable, Mapping
-from pathlib import PureWindowsPath
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import Field, field_validator, model_validator
@@ -26,6 +25,7 @@ from graph_engine.plugin_api import (
     TaskActivitySnapshot,
     TaskOutcome,
     TaskRequest,
+    TaskWorkspaceIdentity,
 )
 
 
@@ -58,29 +58,26 @@ def _qualified_id(value: str, kind: str) -> str:
         raise ValueError(f"invalid {kind}: {value!r}") from error
 
 
-def _reject_host_path(value: str, kind: str) -> str:
-    windows_path = PureWindowsPath(value)
-    if (
-        not value
-        or "/" in value
-        or "\\" in value
-        or value in {".", ".."}
-        or windows_path.is_absolute()
-        or bool(windows_path.drive)
-    ):
-        raise ValueError(f"{kind} must not contain a host path")
-    return value
-
-
 class AttemptRootDescriptor(FrozenModel):
+    schema_version: Literal["2"] = "2"
     capability_id: Literal["graph.engine.attempt-root"] = ATTEMPT_ROOT_CAPABILITY_ID
-    attempt_directory_id: str
-    layout_schema_version: Literal["1"] = "1"
+    workspace_identity: TaskWorkspaceIdentity
+    project_root_digest: str = Field(pattern=_SHA256_PATTERN)
+    write_root_digest: str = Field(pattern=_SHA256_PATTERN)
+    baseline_digest: str = Field(pattern=_SHA256_PATTERN)
 
-    @field_validator("attempt_directory_id")
-    @classmethod
-    def _validate_attempt_directory_id(cls, value: str) -> str:
-        return _reject_host_path(value, "attempt directory id")
+    @model_validator(mode="after")
+    def _authenticate_identity(self) -> AttemptRootDescriptor:
+        if self.project_root_digest != self.workspace_identity.project_digest:
+            raise ValueError("attempt root project digest disagrees with workspace identity")
+        if self.write_root_digest != self.workspace_identity.write_root_digest:
+            raise ValueError("attempt root write digest disagrees with workspace identity")
+        expected_baseline = canonical_digest(
+            [item.model_dump(mode="json") for item in self.workspace_identity.baseline_files]
+        )
+        if self.baseline_digest != expected_baseline:
+            raise ValueError("attempt root baseline digest is not canonical")
+        return self
 
 
 class TaskActivityRpcIdentity(FrozenModel):
@@ -179,7 +176,7 @@ class TaskHostCallResult(FrozenModel):
 
 
 class TaskHostTerminalReceipt(FrozenModel):
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["2"] = "2"
     host_implementation_digest: str = Field(pattern=_SHA256_PATTERN)
     wire_schema_version: Literal["1"] = TASK_HOST_WIRE_SCHEMA_VERSION
     invocation_id: str
@@ -190,6 +187,10 @@ class TaskHostTerminalReceipt(FrozenModel):
     operation: HostOperation
     request_digest: str = Field(pattern=_SHA256_PATTERN)
     workspace_identity_digest: str = Field(pattern=_SHA256_PATTERN)
+    project_root_digest: str = Field(pattern=_SHA256_PATTERN)
+    write_root_digest: str = Field(pattern=_SHA256_PATTERN)
+    baseline_digest: str = Field(pattern=_SHA256_PATTERN)
+    staged_write_set_digest: str = Field(pattern=_SHA256_PATTERN)
     dispatch_fingerprint_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     reference_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     outcome: TaskOutcome

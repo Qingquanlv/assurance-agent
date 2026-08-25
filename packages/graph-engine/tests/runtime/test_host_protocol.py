@@ -9,7 +9,6 @@ from pydantic import ValidationError
 
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import (
-    AttemptWorkspaceIdentity,
     InvocationMetadata,
     ResourceClaims,
     SecretHandleUnauthorized,
@@ -21,6 +20,7 @@ from graph_engine.plugin_api import (
     TaskContext,
     TaskOutcome,
     TaskRequest,
+    TaskWorkspaceIdentity,
 )
 from graph_engine.runtime.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
@@ -35,6 +35,7 @@ from graph_engine.runtime.host_protocol import (
     TaskHostTerminalReceipt,
     authorized_secret_port,
 )
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 
 _LOCK_DIGEST = "a" * 64
@@ -90,13 +91,37 @@ def _identity(*, operation: str = "execute") -> TaskHostCallIdentity:
     )
 
 
+def _workspace_identity() -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "task-1",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": ["out.txt"],
+        "baseline_files": [],
+        "project_digest": canonical_digest({"path": "/project"}),
+        "write_root_digest": canonical_digest({"path": "/attempts/task-1/attempt-1"}),
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(identity_digest=canonical_digest(payload), **payload)
+
+
+def _attempt_root() -> AttemptRootDescriptor:
+    workspace = _workspace_identity()
+    return AttemptRootDescriptor(
+        workspace_identity=workspace,
+        project_root_digest=workspace.project_digest,
+        write_root_digest=workspace.write_root_digest,
+        baseline_digest=canonical_digest([]),
+    )
+
+
 def _execute_call() -> TaskHostExecuteCall:
     return TaskHostExecuteCall(
         identity=_identity(),
         capability_id="runtime.opencode.execute",
         capability_entrypoint="runtime.opencode.plugin:Handler.execute",
         request=_request(),
-        attempt_root=AttemptRootDescriptor(attempt_directory_id="attempt-1"),
+        attempt_root=_attempt_root(),
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
             task_id="task-1",
@@ -112,11 +137,7 @@ def _prepared_snapshot() -> TaskActivitySnapshot:
     return TaskActivitySnapshot(
         activity_id="activity-1",
         request_digest="0" * 64,
-        workspace_identity=AttemptWorkspaceIdentity(
-            attempt_directory_id="attempt-1",
-            baseline_tree_id="0" * 64,
-            attempt_identity_digest="1" * 64,
-        ),
+        workspace_identity=_workspace_identity(),
         state="prepared",
     )
 
@@ -169,12 +190,47 @@ def test_host_call_carries_resolved_capability_request_and_wire_identity() -> No
     assert call.capability_entrypoint == "runtime.opencode.plugin:Handler.execute"
     assert call.request.target_capability_id == "runtime.opencode.execute"
     assert call.attempt_root.capability_id == "graph.engine.attempt-root"
-    assert "/" not in call.attempt_root.attempt_directory_id
+    assert call.attempt_root.schema_version == "2"
+    assert call.attempt_root.workspace_identity == _workspace_identity()
     assert call.activity_rpc.activity_id is None
     assert call.authorized_secret_handles == ("opencode.token",)
     assert call.identity.wire_schema_version == "1"
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         TaskHostExecuteCall.model_validate({**call.model_dump(mode="json"), "worker_command": "python"})
+
+
+def test_schema_v2_attempt_root_authenticates_both_roots_and_baseline(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "out.txt").write_text("before", encoding="utf-8")
+    store = TaskWorkspaceStore(
+        project_root,
+        tmp_path / "attempts",
+        tmp_path / "promotion-receipts",
+    )
+    try:
+        workspace = store.begin(task_id="task-1", attempt=1, output_paths=("out.txt",))
+        baseline_digest = canonical_digest(
+            [item.model_dump(mode="json") for item in workspace.identity.baseline_files]
+        )
+        descriptor = AttemptRootDescriptor.model_validate(
+            {
+                "schema_version": "2",
+                "workspace_identity": workspace.identity.model_dump(mode="json"),
+                "project_root_digest": workspace.identity.project_digest,
+                "write_root_digest": workspace.identity.write_root_digest,
+                "baseline_digest": baseline_digest,
+            }
+        )
+    finally:
+        store.close()
+
+    assert descriptor.schema_version == "2"
+    assert descriptor.workspace_identity == workspace.identity
+    assert descriptor.project_root_digest == workspace.identity.project_digest
+    assert descriptor.write_root_digest == workspace.identity.write_root_digest
+    assert descriptor.baseline_digest == baseline_digest
+    assert "attempt_directory_id" not in descriptor.model_dump(mode="json")
 
 
 def test_task_execution_host_exposes_fixed_lifecycle_transport() -> None:
@@ -196,7 +252,7 @@ def test_fake_host_lifecycle_methods_return_typed_results() -> None:
         capability_id="runtime.opencode.execute",
         capability_entrypoint="runtime.opencode.plugin:Handler.execute",
         request=_request(),
-        attempt_root=AttemptRootDescriptor(attempt_directory_id="attempt-1"),
+        attempt_root=_attempt_root(),
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
             task_id="task-1",
@@ -215,7 +271,7 @@ def test_fake_host_lifecycle_methods_return_typed_results() -> None:
         capability_id="runtime.opencode.execute",
         capability_entrypoint="runtime.opencode.plugin:Handler.execute",
         request=_request(),
-        attempt_root=AttemptRootDescriptor(attempt_directory_id="attempt-1"),
+        attempt_root=_attempt_root(),
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
             task_id="task-1",
@@ -231,17 +287,32 @@ def test_fake_host_lifecycle_methods_return_typed_results() -> None:
     assert host.read_terminal_receipts(_identity()) == ()
 
 
-def test_phase2_task_context_may_omit_activity_and_secrets() -> None:
-    context = TaskContext(
-        workspace_root=Path("/workspace"),
-        heartbeat=lambda: None,
-        cancel_requested=lambda: False,
-        invocation=_invocation(),
-    )
+def test_task_context_exposes_authenticated_project_and_write_roots(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    store = TaskWorkspaceStore(project_root, tmp_path / "attempts", tmp_path / "receipts")
+    try:
+        binding = store.begin(task_id="task-1", attempt=1, output_paths=("out.txt",))
+        context = TaskContext(
+            project_root=binding.project_root,
+            write_root=binding.write_root,
+            workspace_identity=binding.identity,
+            heartbeat=lambda: None,
+            cancel_requested=lambda: False,
+            invocation=_invocation(),
+        )
+    finally:
+        store.close()
+
+    assert context.project_root == project_root.resolve()
+    assert context.write_root == binding.write_root
+    assert context.workspace_identity == binding.identity
     assert context.activity is None
     assert context.secrets is None
     assert set(context.__dataclass_fields__) == {
-        "workspace_root",
+        "project_root",
+        "write_root",
+        "workspace_identity",
         "heartbeat",
         "cancel_requested",
         "invocation",

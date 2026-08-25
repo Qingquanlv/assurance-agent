@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bootstrap_fixtures import SYNTHETIC_BASELINE_TREE_ID, synthetic_invocation_started
+from bootstrap_fixtures import synthetic_invocation_started
 import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable, Mapping
@@ -9,9 +9,8 @@ from typing import cast
 
 import pytest
 import graph_engine.runtime.ledger as ledger_runtime
-import graph_engine.runtime.workspace as workspace_runtime
 
-from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition import (
     CapabilityRegistry,
     ExecutableBindingMode,
@@ -35,8 +34,6 @@ from graph_engine.composition.models import (
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
 from graph_engine.plugin_api import (
-    AttemptWorkspaceIdentity,
-    CandidateWriteSet,
     EffectApplyResult,
     EffectIntent,
     EffectPolicy,
@@ -54,6 +51,9 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
     TaskRequest,
+    StagedWriteSet,
+    TaskWorkspaceBinding,
+    TaskWorkspaceIdentity,
     ValidationContext,
     ValidationResult,
 )
@@ -62,7 +62,6 @@ from graph_engine.runtime.events import (
     EventEnvelope,
     GraphFailed,
     GraphStarted,
-    HeadAdvanced,
     NodeActivated,
     TaskActivityPrepared,
     TaskAttemptFailed,
@@ -71,6 +70,7 @@ from graph_engine.runtime.events import (
     TaskCommitPrepared,
     TaskLeaseAcquired,
     TaskLeaseHeartbeat,
+    TaskPromotionCompleted,
 )
 from graph_engine.runtime.ledger import Ledger, LedgerConflictError
 from graph_engine.runtime.models import PlannedTask, ProjectionError, fold_events
@@ -84,21 +84,52 @@ from graph_engine.runtime.scheduler import (
     FakeClock,
     LedgerPublicationIndeterminate,
     Lease,
-    LeaseUnavailableError,
     Scheduler,
     SchedulerStateError,
     _match_json_schema,
     select_wave,
 )
-from graph_engine.runtime.workspace import (
-    FinalizationRolledBack,
-    HeadPublicationIndeterminate,
-    SnapshotStore,
-    WorkspaceViolation,
-)
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.runtime.task_workspace import TaskWorkspaceViolation
 
 
 Handler = Callable[[TaskRequest, TaskContext], Awaitable[object]]
+
+
+class _TestTaskWorkspaceStore(TaskWorkspaceStore):
+    """Task-workspace store with read-only project helpers for scheduler tests."""
+
+    root: Path
+
+    @classmethod
+    def create(
+        cls,
+        root: Path,
+        initial: Mapping[str, bytes] | None = None,
+    ) -> _TestTaskWorkspaceStore:
+        project_root = root / "project"
+        project_root.mkdir(parents=True)
+        for logical_path, contents in (initial or {}).items():
+            target = project_root / logical_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(contents)
+        store = cls(project_root, root / "attempts", root / "receipts")
+        store.root = root
+        return store
+
+    def head_tree_id(self) -> str:
+        files = {
+            path.relative_to(self.project_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(self.project_root.rglob("*"))
+            if path.is_file()
+        }
+        return canonical_digest(cast(JSONValue, files))
+
+    def read_head(self, logical_path: str) -> bytes:
+        try:
+            return (self.project_root / logical_path).read_bytes()
+        except FileNotFoundError as error:
+            raise TaskWorkspaceViolation(f"project output does not exist: {logical_path}") from error
 
 
 class _FunctionHandler:
@@ -370,13 +401,13 @@ class _InProcessTestHost:
     def __init__(self) -> None:
         self.workspace_roots: list[Path] = []
         self._handlers: Mapping[str, TaskHandler] = {}
-        self._store: SnapshotStore | None = None
+        self._store: TaskWorkspaceStore | None = None
 
     def bind_invocation_runtime(
         self,
         *,
         handlers: Mapping[str, TaskHandler],
-        store: SnapshotStore,
+        store: TaskWorkspaceStore,
     ) -> None:
         self._handlers = handlers
         self._store = store
@@ -384,12 +415,19 @@ class _InProcessTestHost:
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
         assert self._store is not None
         handler = self._handlers[call.request.capability_id]
-        workspace_root = self._store.root / "attempts" / call.attempt_root.attempt_directory_id
-        self.workspace_roots.append(workspace_root)
+        workspace = self._store.begin(
+            task_id=call.attempt_root.workspace_identity.task_id,
+            attempt=call.attempt_root.workspace_identity.attempt,
+            output_paths=call.attempt_root.workspace_identity.output_paths,
+        )
+        assert workspace.identity == call.attempt_root.workspace_identity
+        self.workspace_roots.append(workspace.write_root)
         outcome = await handler.execute(
             call.request,
             TaskContext(
-                workspace_root=workspace_root,
+                project_root=workspace.project_root,
+                write_root=workspace.write_root,
+                workspace_identity=workspace.identity,
                 heartbeat=lambda: None,
                 cancel_requested=lambda: False,
                 invocation=call.request.invocation,
@@ -441,6 +479,32 @@ def _planned_task() -> PlannedTask:
     return _task("work", resources=ResourceClaims(writes=("out.txt",)))
 
 
+def _test_workspace_identity(*, task_id: str = "task-1") -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": task_id,
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(
+        **payload,
+        identity_digest=canonical_digest(cast(JSONValue, payload)),
+    )
+
+
+def _test_staged_write_set(identity: TaskWorkspaceIdentity) -> StagedWriteSet:
+    payload = {"identity_digest": identity.identity_digest, "files": []}
+    return StagedWriteSet(
+        identity_digest=identity.identity_digest,
+        files=(),
+        staged_digest=canonical_digest(payload),
+    )
+
+
 def _effectful_outcome() -> TaskOutcome:
     return TaskOutcome.succeeded(
         {"ok": True},
@@ -462,25 +526,22 @@ def _scheduler(
     clock: FakeClock | None = None,
     max_parallel: int = 4,
     host: _InProcessTestHost | None = None,
-) -> tuple[Scheduler, SnapshotStore, Ledger]:
+) -> tuple[Scheduler, _TestTaskWorkspaceStore, Ledger]:
     if outcome is not None:
         task = _planned_task()
 
         async def returning(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
             if outcome.status == "succeeded":
-                (context.workspace_root / "out.txt").write_bytes(b"ok")
+                (context.write_root / "out.txt").write_bytes(b"ok")
             return outcome
 
         handlers = {task.capability_id: returning}
     if handlers is None:
         handlers = {}
-    store = SnapshotStore.create(tmp_path / "store", initial or {})
+    store = _TestTaskWorkspaceStore.create(tmp_path / "store", initial or {})
     ledger = Ledger(tmp_path / "ledger")
     lifecycle: list[object] = [
-        synthetic_invocation_started(
-            lock_digest=_LOCK_DIGEST,
-            initial_tree_id=store.head_tree_id(),
-        ),
+        synthetic_invocation_started(lock_digest=_LOCK_DIGEST),
         GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
     ]
     lifecycle.extend(
@@ -568,14 +629,11 @@ def _captured_request_for_alias(tmp_path: Path, alias: str) -> TaskRequest:
         topology_rank=0,
         declaration_index=0,
     )
-    store = SnapshotStore.create(tmp_path / "store", {})
+    store = _TestTaskWorkspaceStore.create(tmp_path / "store", {})
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
         (
-            synthetic_invocation_started(
-                lock_digest=_LOCK_DIGEST,
-                initial_tree_id=store.head_tree_id(),
-            ),
+            synthetic_invocation_started(lock_digest=_LOCK_DIGEST),
             GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
             NodeActivated(
                 activation_id=activation,
@@ -671,7 +729,7 @@ def test_scheduler_execute_crosses_frozen_host_call_values(tmp_path: Path) -> No
     assert call.identity.operation == "execute"
     assert call.request.capability_id == task.capability_id
     assert call.attempt_root.capability_id == "graph.engine.attempt-root"
-    assert "/" not in call.attempt_root.attempt_directory_id
+    assert "/" not in call.attempt_root.workspace_identity.attempt_id
     assert results[0].outcome.status == "succeeded"
 
 
@@ -720,7 +778,9 @@ def test_bound_handler_cannot_mint_unsorted_ids_or_digestless_claims_after_sched
         handler.execute(
             projected,
             TaskContext(
-                workspace_root=Path("/workspace"),
+                project_root=Path("/project"),
+                write_root=Path("/write"),
+                workspace_identity=_test_workspace_identity(),
                 heartbeat=lambda: None,
                 cancel_requested=lambda: False,
                 invocation=projected.invocation,
@@ -787,14 +847,11 @@ def _host_execute_for_bound_alias(
         topology_rank=0,
         declaration_index=0,
     )
-    store = SnapshotStore.create(tmp_path / "store", {})
+    store = _TestTaskWorkspaceStore.create(tmp_path / "store", {})
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
         (
-            synthetic_invocation_started(
-                lock_digest=_LOCK_DIGEST,
-                initial_tree_id=store.head_tree_id(),
-            ),
+            synthetic_invocation_started(lock_digest=_LOCK_DIGEST),
             GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
             NodeActivated(
                 activation_id=activation,
@@ -856,17 +913,6 @@ def test_bound_execute_only_alias_stays_non_recoverable(tmp_path: Path) -> None:
     )
     assert call.activity_rpc.activity_id is None
     assert call.identity.activity_id is None
-
-
-def _install_head_document(store: SnapshotStore, tree_id: str) -> None:
-    tree_stat = (store.root / "trees" / tree_id).stat()
-    payload: dict[str, object] = {
-        "tree_id": tree_id,
-        "tree_dev": tree_stat.st_dev,
-        "tree_ino": tree_stat.st_ino,
-    }
-    document = {**payload, "digest": canonical_digest(cast(JSONValue, payload))}
-    (store.root / "HEAD.json").write_bytes(canonical_json_bytes(cast(JSONValue, document)))
 
 
 def _fail_ledger_boundary_once(
@@ -990,18 +1036,18 @@ def test_all_handlers_share_baseline_and_no_success_is_persisted_before_gather(
     ledger_ref: list[Ledger] = []
 
     async def fast(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        observed.append((context.workspace_root / "seed.txt").read_bytes())
-        (context.workspace_root / "fast.txt").write_bytes(b"fast")
+        observed.append((context.project_root / "seed.txt").read_bytes())
+        (context.write_root / "fast.txt").write_bytes(b"fast")
         await slow_started.wait()
         assert all(item.event.kind != "task_attempt_succeeded" for item in ledger_ref[0].read_all())
         release.set()
         return TaskOutcome.succeeded({"ok": True})
 
     async def slow(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        observed.append((context.workspace_root / "seed.txt").read_bytes())
+        observed.append((context.project_root / "seed.txt").read_bytes())
         slow_started.set()
         await release.wait()
-        (context.workspace_root / "slow.txt").write_bytes(b"slow")
+        (context.write_root / "slow.txt").write_bytes(b"slow")
         return TaskOutcome.succeeded({"ok": True})
 
     scheduler, store, ledger = _scheduler(
@@ -1029,7 +1075,7 @@ def _run_duration_scenario(root: Path, delays: tuple[float, float]) -> tuple[lis
     def make_handler(path: str, delay: float) -> object:
         async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
             await asyncio.sleep(delay)
-            (context.workspace_root / path).write_text(path, encoding="utf-8")
+            (context.write_root / path).write_text(path, encoding="utf-8")
             return TaskOutcome.succeeded({"path": path})
 
         return handler
@@ -1046,16 +1092,16 @@ def _run_duration_scenario(root: Path, delays: tuple[float, float]) -> tuple[lis
     return events, store.head_tree_id()
 
 
-def test_reverse_handler_completion_has_identical_events_and_tree(tmp_path: Path) -> None:
+def test_reverse_handler_completion_has_identical_semantics_and_project_state(tmp_path: Path) -> None:
     first_events, first_tree = _run_duration_scenario(tmp_path / "first", (0.001, 0.02))
     second_events, second_tree = _run_duration_scenario(tmp_path / "second", (0.02, 0.001))
 
-    assert first_events == second_events
+    assert [event["kind"] for event in first_events] == [event["kind"] for event in second_events]
+    assert [event.get("output") for event in first_events] == [event.get("output") for event in second_events]
     assert first_tree == second_tree
-    assert canonical_digest(cast(JSONValue, first_events)) == canonical_digest(cast(JSONValue, second_events))
 
 
-def test_deterministic_rebase_applies_add_change_and_delete(tmp_path: Path) -> None:
+def test_deterministic_promotion_applies_disjoint_add_and_change(tmp_path: Path) -> None:
     tasks = (
         _task("left", index=0, resources=ResourceClaims(writes=("left",))),
         _task("right", index=1, resources=ResourceClaims(writes=("right",))),
@@ -1063,9 +1109,9 @@ def test_deterministic_rebase_applies_add_change_and_delete(tmp_path: Path) -> N
 
     async def edit(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
         prefix = _request.node_id
-        (context.workspace_root / prefix / "add.txt").write_bytes(b"added")
-        (context.workspace_root / prefix / "change.txt").write_bytes(b"changed")
-        (context.workspace_root / prefix / "delete.txt").unlink()
+        (context.write_root / prefix).mkdir()
+        (context.write_root / prefix / "add.txt").write_bytes(b"added")
+        (context.write_root / prefix / "change.txt").write_bytes(b"changed")
         return TaskOutcome.succeeded()
 
     initial = {
@@ -1085,15 +1131,14 @@ def test_deterministic_rebase_applies_add_change_and_delete(tmp_path: Path) -> N
     for prefix in ("left", "right"):
         assert store.read_head(f"{prefix}/add.txt") == b"added"
         assert store.read_head(f"{prefix}/change.txt") == b"changed"
-        with pytest.raises(WorkspaceViolation):
-            store.read_head(f"{prefix}/delete.txt")
+        assert store.read_head(f"{prefix}/delete.txt") == b"gone"
 
 
 class _Validator:
     def __init__(self, result: ValidationResult | BaseException) -> None:
         self.result = result
 
-    def validate(self, _candidate: CandidateWriteSet, _context: ValidationContext) -> ValidationResult:
+    def validate(self, _candidate: StagedWriteSet, _context: ValidationContext) -> ValidationResult:
         if isinstance(self.result, BaseException):
             raise self.result
         return self.result
@@ -1107,7 +1152,7 @@ def test_validator_rejection_or_exception_never_moves_head_or_emits_success(
     tmp_path: Path, validator: _Validator
 ) -> None:
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "out.txt").write_bytes(b"new")
+        (context.write_root / "out.txt").write_bytes(b"new")
         return TaskOutcome.succeeded()
 
     task = _task(
@@ -1125,7 +1170,7 @@ def test_validator_rejection_or_exception_never_moves_head_or_emits_success(
     result = asyncio.run(scheduler.run_wave((task,)))[0]
 
     assert result.outcome.failure is not None
-    assert result.outcome.failure.kind == "invalid_output"
+    assert result.outcome.failure.kind == "invalid_output", result.outcome.failure.message
     assert store.head_tree_id() == before
     assert all(
         item.event.kind not in {"task_attempt_succeeded", "head_advanced"} for item in ledger.read_all()
@@ -1139,11 +1184,11 @@ def test_lease_expiry_during_validator_cannot_publish_success(tmp_path: Path) ->
     clock = FakeClock(100.0)
 
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "out.txt").write_bytes(b"candidate")
+        (context.write_root / "out.txt").write_bytes(b"candidate")
         return TaskOutcome.succeeded()
 
     class ExpiringValidator:
-        def validate(self, _candidate: CandidateWriteSet, _context: ValidationContext) -> ValidationResult:
+        def validate(self, _candidate: StagedWriteSet, _context: ValidationContext) -> ValidationResult:
             clock.set(110.001)
             return ValidationResult(accepted=True)
 
@@ -1173,41 +1218,9 @@ def test_lease_expiry_during_validator_cannot_publish_success(tmp_path: Path) ->
     assert projection.activations[0].attempts[-1].status == "failed"
 
 
-def test_lease_expiry_at_publication_boundary_conditionally_rolls_back(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    clock = FakeClock(100.0)
-
-    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "out.txt").write_bytes(b"candidate")
-        return TaskOutcome.succeeded()
-
-    task = _task("expires-at-publication", resources=ResourceClaims(writes=("out.txt",)))
-    scheduler, store, ledger = _scheduler(
-        tmp_path,
-        {task.capability_id: handler},
-        clock=clock,
-    )
-    before = store.head_tree_id()
-    monkeypatch.setattr(
-        workspace_runtime,
-        "_finalization_boundary",
-        lambda _name: clock.set(110.001),
-    )
-
-    with pytest.raises(FinalizationRolledBack) as raised:
-        asyncio.run(scheduler.run_wave((task,)))
-
-    assert isinstance(raised.value.__cause__, LeaseUnavailableError)
-    assert store.head_tree_id() == before
-    assert all(
-        item.event.kind not in {"task_attempt_succeeded", "head_advanced"} for item in ledger.read_all()
-    )
-
-
 def test_undeclared_candidate_and_commit_exception_fail_closed(tmp_path: Path) -> None:
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "undeclared.txt").write_bytes(b"new")
+        (context.write_root / "undeclared.txt").write_bytes(b"new")
         return TaskOutcome.succeeded()
 
     task = _task("bad-write", resources=ResourceClaims(writes=("allowed",)))
@@ -1222,12 +1235,12 @@ def test_undeclared_candidate_and_commit_exception_fail_closed(tmp_path: Path) -
     assert all(item.event.kind != "task_attempt_succeeded" for item in ledger.read_all())
 
 
-def _persist_lease(ledger: Ledger, lease: Lease, *, initial_tree_id: str) -> None:
+def _persist_lease(ledger: Ledger, lease: Lease) -> None:
     existing = ledger.read_all()
     if not existing:
         ledger.append_batch(
             (
-                synthetic_invocation_started(initial_tree_id=initial_tree_id),
+                synthetic_invocation_started(),
                 GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
                 NodeActivated(
                     activation_id=lease.activation_id,
@@ -1267,7 +1280,7 @@ def _persist_lease(ledger: Ledger, lease: Lease, *, initial_tree_id: str) -> Non
 
 
 def test_reclaim_uses_persisted_heartbeat_and_strict_expiry_boundary(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "store", {})
+    store = _TestTaskWorkspaceStore.create(tmp_path / "store", {})
     ledger = Ledger(tmp_path / "ledger")
     lease = Lease(
         task_id="task-1",
@@ -1278,7 +1291,7 @@ def test_reclaim_uses_persisted_heartbeat_and_strict_expiry_boundary(tmp_path: P
         heartbeat_at=1.0,
         expires_at=11.0,
     )
-    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
+    _persist_lease(ledger, lease)
     old = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1347,14 +1360,11 @@ class _RecoverableRegistry:
 
 def test_reclaim_expired_skips_recoverable_live_activity(tmp_path: Path) -> None:
     task = _planned_task()
-    store = SnapshotStore.create(tmp_path / "store", {})
+    store = _TestTaskWorkspaceStore.create(tmp_path / "store", {})
     ledger = Ledger(tmp_path / "ledger")
     ledger.append_batch(
         (
-            synthetic_invocation_started(
-                lock_digest=_LOCK_DIGEST,
-                initial_tree_id=store.head_tree_id(),
-            ),
+            synthetic_invocation_started(lock_digest=_LOCK_DIGEST),
             GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
             NodeActivated(
                 activation_id=task.activation_id,
@@ -1396,7 +1406,7 @@ def test_authoritative_reclaim_append_is_reconciled(
     monkeypatch: pytest.MonkeyPatch,
     failed_boundary: str,
 ) -> None:
-    store = SnapshotStore.create(tmp_path / "store", {})
+    store = _TestTaskWorkspaceStore.create(tmp_path / "store", {})
     ledger = Ledger(tmp_path / "ledger")
     lease = Lease(
         task_id="task-1",
@@ -1407,7 +1417,7 @@ def test_authoritative_reclaim_append_is_reconciled(
         heartbeat_at=1.0,
         expires_at=2.0,
     )
-    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
+    _persist_lease(ledger, lease)
     scheduler = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1423,7 +1433,7 @@ def test_authoritative_reclaim_append_is_reconciled(
 
 
 def test_expired_lease_cannot_be_resurrected_by_heartbeat(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "store", {})
+    store = _TestTaskWorkspaceStore.create(tmp_path / "store", {})
     ledger = Ledger(tmp_path / "ledger")
     lease = Lease(
         task_id="task-1",
@@ -1434,7 +1444,7 @@ def test_expired_lease_cannot_be_resurrected_by_heartbeat(tmp_path: Path) -> Non
         heartbeat_at=1.0,
         expires_at=11.0,
     )
-    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
+    _persist_lease(ledger, lease)
     scheduler = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1459,7 +1469,7 @@ def test_authoritative_heartbeat_append_is_reconciled(
     monkeypatch: pytest.MonkeyPatch,
     failed_boundary: str,
 ) -> None:
-    store = SnapshotStore.create(tmp_path / "store", {})
+    store = _TestTaskWorkspaceStore.create(tmp_path / "store", {})
     ledger = Ledger(tmp_path / "ledger")
     lease = Lease(
         task_id="task-1",
@@ -1470,7 +1480,7 @@ def test_authoritative_heartbeat_append_is_reconciled(
         heartbeat_at=1.0,
         expires_at=11.0,
     )
-    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
+    _persist_lease(ledger, lease)
     scheduler = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1490,7 +1500,7 @@ def test_authoritative_heartbeat_append_is_reconciled(
 def test_unreadable_generic_append_outcome_is_explicitly_indeterminate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    store = SnapshotStore.create(tmp_path / "store", {})
+    store = _TestTaskWorkspaceStore.create(tmp_path / "store", {})
     ledger = Ledger(tmp_path / "ledger")
     lease = Lease(
         task_id="task-1",
@@ -1501,7 +1511,7 @@ def test_unreadable_generic_append_outcome_is_explicitly_indeterminate(
         heartbeat_at=1.0,
         expires_at=11.0,
     )
-    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
+    _persist_lease(ledger, lease)
     scheduler = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1536,7 +1546,7 @@ def test_unreadable_generic_append_outcome_is_explicitly_indeterminate(
 
 
 def test_heartbeat_compare_and_append_rejects_concurrent_reclaim(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "store", {})
+    store = _TestTaskWorkspaceStore.create(tmp_path / "store", {})
     ledger = Ledger(tmp_path / "ledger")
     lease = Lease(
         task_id="task-1",
@@ -1547,7 +1557,7 @@ def test_heartbeat_compare_and_append_rejects_concurrent_reclaim(tmp_path: Path)
         heartbeat_at=1.0,
         expires_at=11.0,
     )
-    _persist_lease(ledger, lease, initial_tree_id=store.head_tree_id())
+    _persist_lease(ledger, lease)
     scheduler = Scheduler(
         CapabilityRegistry.empty(),
         store,
@@ -1588,7 +1598,7 @@ def test_reclaimed_handler_result_cannot_move_head_or_emit_success(tmp_path: Pat
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
         started.set()
         await release.wait()
-        (context.workspace_root / "out.txt").write_bytes(b"late")
+        (context.write_root / "out.txt").write_bytes(b"late")
         return TaskOutcome.succeeded()
 
     task = _task("late", resources=ResourceClaims(writes=("out.txt",)))
@@ -1626,47 +1636,6 @@ def test_reclaimed_handler_result_cannot_move_head_or_emit_success(tmp_path: Pat
     assert "head_advanced" not in kinds
 
 
-def test_reclaim_between_commit_and_success_batch_rolls_head_back(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    clock = FakeClock(100.0)
-
-    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "out.txt").write_bytes(b"candidate")
-        return TaskOutcome.succeeded()
-
-    task = _task("commit-race", resources=ResourceClaims(writes=("out.txt",)))
-    scheduler, store, ledger = _scheduler(
-        tmp_path,
-        {task.capability_id: handler},
-        clock=clock,
-    )
-    recovery = Scheduler(
-        CapabilityRegistry.empty(),
-        store,
-        Ledger(ledger.root),
-        _InProcessTestHost(),
-        owner_id="recovery-worker",
-        clock=clock,
-    )
-
-    def reclaim_after_publish(_name: str) -> None:
-        clock.set(110.001)
-        assert recovery.reclaim_expired() == (task.task_id,)
-
-    monkeypatch.setattr(workspace_runtime, "_finalization_boundary", reclaim_after_publish)
-    before = store.head_tree_id()
-
-    with pytest.raises(FinalizationRolledBack):
-        asyncio.run(scheduler.run_wave((task,)))
-
-    assert store.head_tree_id() == before
-    kinds = [item.event.kind for item in ledger.read_all()]
-    assert kinds.count("task_attempt_failed") == 1
-    assert "task_attempt_succeeded" not in kinds
-    assert "head_advanced" not in kinds
-
-
 def test_unpersisted_or_tampered_lease_is_not_reclaimable(tmp_path: Path) -> None:
     scheduler, _store, _ledger = _scheduler(
         tmp_path,
@@ -1685,9 +1654,12 @@ def test_unpersisted_or_tampered_lease_is_not_reclaimable(tmp_path: Path) -> Non
     assert scheduler.reclaim_expired((supplied,)) == ()
 
 
-def test_fold_persists_lease_heartbeat_and_head_transition() -> None:
+def test_fold_persists_lease_heartbeat_and_promotion_receipt() -> None:
+    workspace_identity = _test_workspace_identity()
+    staged = _test_staged_write_set(workspace_identity)
+    promotion_receipt_digest = "c" * 64
     events = (
-        synthetic_invocation_started(initial_tree_id=SYNTHETIC_BASELINE_TREE_ID),
+        synthetic_invocation_started(),
         NodeActivated(
             activation_id="activation-1",
             graph_instance_id="graph-1",
@@ -1712,13 +1684,28 @@ def test_fold_persists_lease_heartbeat_and_head_transition() -> None:
             heartbeat_at=5.0,
             expires_at=15.0,
         ),
-        TaskAttemptSucceeded(activation_id="activation-1", attempt=1, output={"ok": True}),
-        HeadAdvanced(
+        TaskCommitPrepared(
             task_id="task-1",
             activation_id="activation-1",
             attempt=1,
-            previous_tree_id="b" * 64,
-            tree_id="c" * 64,
+            output={"ok": True},
+            workspace_identity=workspace_identity,
+            staged_write_set=staged,
+            staged_write_set_digest=staged.staged_digest,
+        ),
+        TaskPromotionCompleted(
+            task_id="task-1",
+            activation_id="activation-1",
+            attempt=1,
+            staged_write_set_digest=staged.staged_digest,
+            promotion_receipt_digest=promotion_receipt_digest,
+        ),
+        TaskAttemptSucceeded(
+            activation_id="activation-1",
+            attempt=1,
+            output={"ok": True},
+            staged_write_set_digest=staged.staged_digest,
+            promotion_receipt_digest=promotion_receipt_digest,
         ),
     )
 
@@ -1730,12 +1717,16 @@ def test_fold_persists_lease_heartbeat_and_head_transition() -> None:
     assert attempt.lease_task_id == "task-1"
     assert attempt.lease_heartbeat_at == 5.0
     assert attempt.lease_expires_at_value == 15.0
-    assert projection.head_tree_id == "c" * 64
+    assert attempt.status == "succeeded"
+    assert attempt.prepared_commit is not None
+    assert attempt.prepared_commit.promotion_receipt_digest == promotion_receipt_digest
 
 
-def test_fold_rejects_head_advance_after_graph_failure() -> None:
+def test_fold_rejects_promotion_completion_after_graph_failure() -> None:
+    workspace_identity = _test_workspace_identity()
+    staged = _test_staged_write_set(workspace_identity)
     events = (
-        synthetic_invocation_started(initial_tree_id=SYNTHETIC_BASELINE_TREE_ID),
+        synthetic_invocation_started(),
         GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
         NodeActivated(
             activation_id="activation-1",
@@ -1753,14 +1744,36 @@ def test_fold_rejects_head_advance_after_graph_failure() -> None:
             heartbeat_at=1.0,
             expires_at=11.0,
         ),
-        TaskAttemptSucceeded(activation_id="activation-1", attempt=1, output=None),
-        GraphFailed(graph_instance_id="graph-1", reason="failed"),
-        HeadAdvanced(
+        TaskCommitPrepared(
             task_id="task-1",
             activation_id="activation-1",
             attempt=1,
-            previous_tree_id="b" * 64,
-            tree_id="c" * 64,
+            output=None,
+            workspace_identity=workspace_identity,
+            staged_write_set=staged,
+            staged_write_set_digest=staged.staged_digest,
+        ),
+        TaskPromotionCompleted(
+            task_id="task-1",
+            activation_id="activation-1",
+            attempt=1,
+            staged_write_set_digest=staged.staged_digest,
+            promotion_receipt_digest="c" * 64,
+        ),
+        TaskAttemptSucceeded(
+            activation_id="activation-1",
+            attempt=1,
+            output=None,
+            staged_write_set_digest=staged.staged_digest,
+            promotion_receipt_digest="c" * 64,
+        ),
+        GraphFailed(graph_instance_id="graph-1", reason="failed"),
+        TaskPromotionCompleted(
+            task_id="task-1",
+            activation_id="activation-1",
+            attempt=1,
+            staged_write_set_digest=staged.staged_digest,
+            promotion_receipt_digest="c" * 64,
         ),
     )
 
@@ -1807,9 +1820,9 @@ def test_authoritative_start_and_terminal_appends_are_reconciled(
     fold_events(ledger.read_all())
 
 
-def test_start_lease_and_success_head_are_atomic_ledger_batches(tmp_path: Path) -> None:
+def test_start_preparation_and_terminal_promotion_are_durable_batches(tmp_path: Path) -> None:
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "out.txt").write_bytes(b"ok")
+        (context.write_root / "out.txt").write_bytes(b"ok")
         return TaskOutcome.succeeded()
 
     task = _task("atomic", resources=ResourceClaims(writes=("out.txt",)))
@@ -1820,24 +1833,27 @@ def test_start_lease_and_success_head_are_atomic_ledger_batches(tmp_path: Path) 
     assert batch_names == [
         "0000000001-0000000003.json",
         "0000000004-0000000005.json",
-        "0000000006-0000000008.json",
+        "0000000006-0000000006.json",
+        "0000000007-0000000008.json",
     ]
     assert [item.event.kind for item in ledger.read_all()][-3:] == [
         "task_commit_prepared",
-        "head_advanced",
+        "task_promotion_completed",
         "task_attempt_succeeded",
     ]
     projection = fold_events(ledger.read_all())
-    head_event = ledger.read_all()[-2].event
-    assert isinstance(head_event, HeadAdvanced)
-    assert projection.head_tree_id == head_event.tree_id
+    promotion_event = ledger.read_all()[-2].event
+    assert isinstance(promotion_event, TaskPromotionCompleted)
+    prepared = projection.activations[0].attempts[0].prepared_commit
+    assert prepared is not None
+    assert prepared.promotion_receipt_digest == promotion_event.promotion_receipt_digest
 
 
-def test_success_ledger_failure_rolls_head_back_without_success_event(tmp_path: Path) -> None:
+def test_pre_promotion_intent_failure_leaves_project_unchanged(tmp_path: Path) -> None:
     ledger_ref: list[Ledger] = []
 
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "out.txt").write_bytes(b"ok")
+        (context.write_root / "out.txt").write_bytes(b"ok")
         ledger = ledger_ref[0]
         original = ledger.append_batch
 
@@ -1854,16 +1870,15 @@ def test_success_ledger_failure_rolls_head_back_without_success_event(tmp_path: 
     ledger_ref.append(ledger)
     before = store.head_tree_id()
 
-    with pytest.raises(FinalizationRolledBack) as raised:
+    with pytest.raises(RuntimeError, match="ledger unavailable"):
         asyncio.run(scheduler.run_wave((task,)))
 
-    assert isinstance(raised.value.__cause__, RuntimeError)
     assert store.head_tree_id() == before
     assert all(item.event.kind != "task_attempt_succeeded" for item in ledger.read_all())
 
 
 @pytest.mark.parametrize("failed_boundary", ["final_installed", "directory_fsynced"])
-def test_success_append_error_after_authoritative_publication_keeps_exact_ledger_and_head(
+def test_success_append_error_after_authoritative_publication_keeps_exact_promotion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failed_boundary: str,
@@ -1872,7 +1887,7 @@ def test_success_append_error_after_authoritative_publication_keeps_exact_ledger
 
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
         nonlocal armed
-        (context.workspace_root / "out.txt").write_bytes(b"ok")
+        (context.write_root / "out.txt").write_bytes(b"ok")
         armed = True
         return TaskOutcome.succeeded()
 
@@ -1887,14 +1902,14 @@ def test_success_append_error_after_authoritative_publication_keeps_exact_ledger
     result = asyncio.run(scheduler.run_wave((task,)))[0]
 
     assert result.outcome.status == "succeeded"
-    assert result.head_tree_id == store.head_tree_id()
+    assert result.promotion_receipt_digest is not None
     assert store.read_head("out.txt") == b"ok"
     kinds = [item.event.kind for item in ledger.read_all()]
     assert kinds.count("task_attempt_succeeded") == 1
-    assert kinds.count("head_advanced") == 1
+    assert kinds.count("task_promotion_completed") == 1
 
 
-def test_unreadable_success_append_outcome_preserves_head_as_indeterminate(
+def test_unreadable_pre_promotion_append_outcome_is_indeterminate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     armed = False
@@ -1902,7 +1917,7 @@ def test_unreadable_success_append_outcome_preserves_head_as_indeterminate(
 
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
         nonlocal armed
-        (context.workspace_root / "out.txt").write_bytes(b"ok")
+        (context.write_root / "out.txt").write_bytes(b"ok")
         armed = True
         return TaskOutcome.succeeded()
 
@@ -1924,119 +1939,16 @@ def test_unreadable_success_append_outcome_preserves_head_as_indeterminate(
     monkeypatch.setattr(ledger_runtime, "_append_boundary", fail_after_final_install)
     ledger.read_all = fail_reconciliation_read  # type: ignore[method-assign]
 
-    with pytest.raises(HeadPublicationIndeterminate) as raised:
+    before = store.head_tree_id()
+    with pytest.raises(LedgerPublicationIndeterminate) as raised:
         asyncio.run(scheduler.run_wave((task,)))
 
     assert isinstance(raised.value.__cause__, OSError)
-    assert store.read_head("out.txt") == b"ok"
+    assert store.head_tree_id() == before
     kinds = [item.event.kind for item in Ledger(ledger.root).read_all()]
-    assert kinds.count("task_attempt_succeeded") == 1
-    assert kinds.count("head_advanced") == 1
-
-
-def test_success_ledger_and_rollback_failure_is_explicitly_indeterminate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    ledger_ref: list[Ledger] = []
-
-    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "out.txt").write_bytes(b"ok")
-        ledger = ledger_ref[0]
-        original = ledger.append_batch
-
-        def fail_success(events: object, expected_next_seq: int) -> object:
-            if any(getattr(event, "kind", None) == "task_commit_prepared" for event in events):  # type: ignore[union-attr]
-                raise RuntimeError("ledger unavailable")
-            return original(events, expected_next_seq)  # type: ignore[arg-type]
-
-        ledger.append_batch = fail_success  # type: ignore[method-assign]
-        return TaskOutcome.succeeded()
-
-    def fail_restore(_self: object, _root_fd: int, _previous: bytes | None) -> None:
-        raise OSError("rollback unavailable")
-
-    task = _task("indeterminate-rollback", resources=ResourceClaims(writes=("out.txt",)))
-    scheduler, store, ledger = _scheduler(tmp_path, {task.capability_id: handler})
-    ledger_ref.append(ledger)
-    monkeypatch.setattr(SnapshotStore, "_restore_previous_head", fail_restore)
-
-    with pytest.raises(HeadPublicationIndeterminate) as raised:
-        asyncio.run(scheduler.run_wave((task,)))
-
-    assert isinstance(raised.value.__cause__, OSError)
-    assert all(item.event.kind != "task_attempt_succeeded" for item in ledger.read_all())
-    assert store.read_head("out.txt") == b"ok"
-
-
-def test_losing_success_cas_never_overwrites_or_records_newer_head(tmp_path: Path) -> None:
-    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "a.txt").write_bytes(b"A")
-        return TaskOutcome.succeeded()
-
-    task = _task("writer-a", resources=ResourceClaims(writes=("a.txt",)))
-    scheduler, store, ledger = _scheduler(tmp_path, {task.capability_id: handler})
-
-    newer = store.create_attempt("newer-head")
-    (newer.root / "a.txt").write_bytes(b"A")
-    (newer.root / "b.txt").write_bytes(b"B")
-    newer_candidate = newer.seal()
-    newer.discard()
-
-    lease_b = Lease(
-        task_id="task-writer-b",
-        activation_id="activation-writer-b",
-        attempt=1,
-        owner_id="worker-b",
-        acquired_at=100.0,
-        heartbeat_at=100.0,
-        expires_at=1000.0,
-    )
-    _persist_lease(ledger, lease_b, initial_tree_id=store.head_tree_id())
-    original_append = ledger.append_batch
-
-    def append_newer_success_first(events: object, expected_next_seq: int) -> object:
-        materialized = tuple(events)  # type: ignore[arg-type]
-        a_head = next(
-            (event for event in materialized if isinstance(event, HeadAdvanced)),
-            None,
-        )
-        if a_head is None:
-            return original_append(materialized, expected_next_seq)
-        _install_head_document(store, newer_candidate.candidate_tree_id)
-        Ledger(ledger.root).append_batch(
-            (
-                TaskAttemptSucceeded(
-                    activation_id=lease_b.activation_id,
-                    attempt=lease_b.attempt,
-                    output=None,
-                ),
-                HeadAdvanced(
-                    task_id=lease_b.task_id,
-                    activation_id=lease_b.activation_id,
-                    attempt=lease_b.attempt,
-                    previous_tree_id=a_head.tree_id,
-                    tree_id=newer_candidate.candidate_tree_id,
-                ),
-            ),
-            expected_next_seq=expected_next_seq,
-        )
-        return original_append(materialized, expected_next_seq)
-
-    ledger.append_batch = append_newer_success_first  # type: ignore[method-assign]
-
-    with pytest.raises(HeadPublicationIndeterminate):
-        asyncio.run(scheduler.run_wave((task,)))
-
-    assert store.head_tree_id() == newer_candidate.candidate_tree_id
-    events = [envelope.event for envelope in ledger.read_all()]
-    assert any(
-        isinstance(event, TaskAttemptSucceeded) and event.activation_id == lease_b.activation_id
-        for event in events
-    )
-    assert all(
-        not isinstance(event, TaskAttemptSucceeded) or event.activation_id != task.activation_id
-        for event in events
-    )
+    assert kinds.count("task_commit_prepared") == 1
+    assert kinds.count("task_attempt_succeeded") == 0
+    assert kinds.count("task_promotion_completed") == 0
 
 
 def test_explicit_test_host_receives_the_exact_attempt_root(tmp_path: Path) -> None:
@@ -2046,15 +1958,17 @@ def test_explicit_test_host_receives_the_exact_attempt_root(tmp_path: Path) -> N
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
         seen.append(context)
         assert set(context.__dataclass_fields__) == {
-            "workspace_root",
+            "project_root",
+            "write_root",
+            "workspace_identity",
             "heartbeat",
             "cancel_requested",
             "invocation",
             "activity",
             "secrets",
         }
-        assert context.workspace_root.name.endswith(".run")
-        assert context.workspace_root.parent.name == "attempts"
+        assert context.project_root == store.project_root
+        assert context.write_root.name == "attempt-1"
         return TaskOutcome.succeeded()
 
     task = _task("bounded")
@@ -2065,9 +1979,9 @@ def test_explicit_test_host_receives_the_exact_attempt_root(tmp_path: Path) -> N
     )
     asyncio.run(scheduler.run_wave((task,)))
 
-    assert host.workspace_roots == [seen[0].workspace_root]
-    assert seen[0].workspace_root != store.root
-    assert seen[0].workspace_root != store.root / "trees"
+    assert host.workspace_roots == [seen[0].write_root]
+    assert seen[0].write_root != store.project_root
+    assert seen[0].workspace_identity.write_root_digest == canonical_digest({"path": str(seen[0].write_root)})
 
 
 def test_start_rejects_task_without_folded_active_activation(tmp_path: Path) -> None:
@@ -2075,7 +1989,7 @@ def test_start_rejects_task_without_folded_active_activation(tmp_path: Path) -> 
         return TaskOutcome.succeeded()
 
     task = _task("unplanned")
-    store = SnapshotStore.create(tmp_path / "store", {})
+    store = _TestTaskWorkspaceStore.create(tmp_path / "store", {})
     ledger = Ledger(tmp_path / "ledger")
     scheduler = Scheduler(
         _registry({task.capability_id: handler}),
@@ -2221,7 +2135,7 @@ def test_wave_attempts_use_one_baseline_despite_commit_between_creations(
     )
 
     async def handler(request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        observed[request.node_id] = (context.workspace_root / "seed.txt").read_bytes()
+        observed[request.node_id] = (context.project_root / "seed.txt").read_bytes()
         return TaskOutcome.succeeded()
 
     scheduler, store, _ledger = _scheduler(
@@ -2235,24 +2149,29 @@ def test_wave_attempts_use_one_baseline_despite_commit_between_creations(
     assert observed == {"first": b"H0", "second": b"H0"}
 
 
-def test_effectful_success_publishes_head_and_intents_without_task_success(tmp_path: Path) -> None:
+def test_effectful_success_promotes_and_commits_intents_without_task_success(tmp_path: Path) -> None:
     scheduler, store, ledger = _scheduler(tmp_path, outcome=_effectful_outcome())
     result = asyncio.run(scheduler.run_wave((_planned_task(),)))[0]
     events = tuple(envelope.event for envelope in ledger.read_all())
     assert isinstance(events[-4], TaskCommitPrepared)
-    assert isinstance(events[-3], HeadAdvanced)
+    assert isinstance(events[-3], EffectIntentCommitted)
     assert isinstance(events[-2], EffectIntentCommitted)
-    assert isinstance(events[-1], EffectIntentCommitted)
+    assert isinstance(events[-1], TaskPromotionCompleted)
     assert not any(isinstance(event, TaskAttemptSucceeded) for event in events)
     assert result.outcome.effects
-    assert store.head_tree_id() == result.head_tree_id
+    assert result.promotion_receipt_digest == events[-1].promotion_receipt_digest
+    assert store.read_head("out.txt") == b"ok"
 
 
-def test_effect_free_success_keeps_one_atomic_publication(tmp_path: Path) -> None:
+def test_effect_free_success_records_promotion_and_terminal_receipt(tmp_path: Path) -> None:
     scheduler, _store, ledger = _scheduler(tmp_path, outcome=TaskOutcome.succeeded({"ok": True}))
     asyncio.run(scheduler.run_wave((_planned_task(),)))
     tail = tuple(envelope.event.kind for envelope in ledger.read_all()[-3:])
-    assert tail == ("task_commit_prepared", "head_advanced", "task_attempt_succeeded")
+    assert tail == (
+        "task_commit_prepared",
+        "task_promotion_completed",
+        "task_attempt_succeeded",
+    )
 
 
 def test_unknown_effect_kind_fails_before_head(tmp_path: Path) -> None:
@@ -2274,7 +2193,8 @@ def test_unknown_effect_kind_fails_before_head(tmp_path: Path) -> None:
     assert store.head_tree_id() == before
     events = tuple(envelope.event for envelope in ledger.read_all())
     assert not any(
-        isinstance(event, (TaskCommitPrepared, HeadAdvanced, EffectIntentCommitted)) for event in events
+        isinstance(event, (TaskCommitPrepared, TaskPromotionCompleted, EffectIntentCommitted))
+        for event in events
     )
     assert isinstance(events[-1], TaskAttemptFailed)
 
@@ -2292,7 +2212,7 @@ def test_invalid_intent_payload_fails_before_head(tmp_path: Path) -> None:
     assert result.outcome.failure is not None
     assert result.outcome.failure.kind == "invalid_output"
     assert store.head_tree_id() == before
-    assert all(item.event.kind != "head_advanced" for item in ledger.read_all())
+    assert all(item.event.kind != "task_promotion_completed" for item in ledger.read_all())
 
 
 def test_typed_schema_applies_enum_after_type_match() -> None:
@@ -2324,8 +2244,8 @@ def test_prepared_effect_ids_and_keys_are_stable(tmp_path: Path) -> None:
     result = asyncio.run(scheduler.run_wave((task,)))[0]
     events = tuple(envelope.event for envelope in ledger.read_all())
     prepared = events[-4]
-    first = events[-2]
-    second = events[-1]
+    first = events[-3]
+    second = events[-2]
     assert isinstance(prepared, TaskCommitPrepared)
     assert isinstance(first, EffectIntentCommitted)
     assert isinstance(second, EffectIntentCommitted)
@@ -2373,12 +2293,12 @@ def test_lease_expiry_before_prepared_publication_does_not_move_head(tmp_path: P
     clock = FakeClock(100.0)
 
     class ExpiringValidator:
-        def validate(self, _candidate: CandidateWriteSet, _context: ValidationContext) -> ValidationResult:
+        def validate(self, _candidate: StagedWriteSet, _context: ValidationContext) -> ValidationResult:
             clock.set(110.001)
             return ValidationResult(accepted=True)
 
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "out.txt").write_bytes(b"candidate")
+        (context.write_root / "out.txt").write_bytes(b"candidate")
         return _effectful_outcome()
 
     task = _planned_task()
@@ -2398,44 +2318,12 @@ def test_lease_expiry_before_prepared_publication_does_not_move_head(tmp_path: P
     assert result.outcome.failure.kind == "transient"
     assert store.head_tree_id() == before
     assert all(
-        item.event.kind not in {"task_commit_prepared", "head_advanced", "effect_intent_committed"}
+        item.event.kind not in {"task_commit_prepared", "task_promotion_completed", "effect_intent_committed"}
         for item in ledger.read_all()
     )
 
 
-def test_concurrent_reclaim_during_prepared_publication_rolls_head_back(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    clock = FakeClock(100.0)
-    scheduler, store, ledger = _scheduler(tmp_path, outcome=_effectful_outcome(), clock=clock)
-    recovery = Scheduler(
-        CapabilityRegistry.empty(),
-        store,
-        Ledger(ledger.root),
-        _InProcessTestHost(),
-        owner_id="recovery-worker",
-        clock=clock,
-    )
-    task = _planned_task()
-
-    def reclaim_after_publish(_name: str) -> None:
-        clock.set(110.001)
-        assert recovery.reclaim_expired() == (task.task_id,)
-
-    monkeypatch.setattr(workspace_runtime, "_finalization_boundary", reclaim_after_publish)
-    before = store.head_tree_id()
-
-    with pytest.raises(FinalizationRolledBack):
-        asyncio.run(scheduler.run_wave((task,)))
-
-    assert store.head_tree_id() == before
-    kinds = [item.event.kind for item in ledger.read_all()]
-    assert kinds.count("task_attempt_failed") == 1
-    assert "task_commit_prepared" not in kinds
-    assert "head_advanced" not in kinds
-
-
-def test_prepared_cas_conflict_rolls_head_back(tmp_path: Path) -> None:
+def test_prepared_intent_cas_conflict_leaves_project_unchanged(tmp_path: Path) -> None:
     scheduler, store, ledger = _scheduler(tmp_path, outcome=_effectful_outcome())
     original = ledger.append_batch
     before = store.head_tree_id()
@@ -2448,7 +2336,7 @@ def test_prepared_cas_conflict_rolls_head_back(tmp_path: Path) -> None:
 
     ledger.append_batch = conflict_prepared  # type: ignore[method-assign]
 
-    with pytest.raises(FinalizationRolledBack):
+    with pytest.raises(LedgerConflictError):
         asyncio.run(scheduler.run_wave((_planned_task(),)))
 
     assert store.head_tree_id() == before
@@ -2465,7 +2353,7 @@ def test_prepared_append_installed_completes(
 
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
         nonlocal armed
-        (context.workspace_root / "out.txt").write_bytes(b"ok")
+        (context.write_root / "out.txt").write_bytes(b"ok")
         armed = True
         return _effectful_outcome()
 
@@ -2485,22 +2373,25 @@ def test_prepared_append_installed_completes(
     result = asyncio.run(scheduler.run_wave((task,)))[0]
 
     assert result.outcome.status == "succeeded"
-    assert result.head_tree_id == store.head_tree_id()
+    assert result.promotion_receipt_digest is not None
+    assert store.read_head("out.txt") == b"ok"
     kinds = [item.event.kind for item in ledger.read_all()]
     assert kinds.count("task_commit_prepared") == 1
-    assert kinds.count("head_advanced") == 1
+    assert kinds.count("task_promotion_completed") == 1
     assert kinds.count("effect_intent_committed") == 2
     assert "task_attempt_succeeded" not in kinds
 
 
-def test_prepared_append_unreadable_preserves_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prepared_append_unreadable_leaves_project_unpromoted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     armed = False
     append_failed = False
     task = _planned_task()
 
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
         nonlocal armed
-        (context.workspace_root / "out.txt").write_bytes(b"ok")
+        (context.write_root / "out.txt").write_bytes(b"ok")
         armed = True
         return _effectful_outcome()
 
@@ -2525,71 +2416,14 @@ def test_prepared_append_unreadable_preserves_head(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(ledger_runtime, "_append_boundary", fail_after_final_install)
     ledger.read_all = fail_reconciliation_read  # type: ignore[method-assign]
 
-    with pytest.raises(HeadPublicationIndeterminate):
+    before = store.head_tree_id()
+    with pytest.raises(LedgerPublicationIndeterminate):
         asyncio.run(scheduler.run_wave((task,)))
 
-    assert store.read_head("out.txt") == b"ok"
+    assert store.head_tree_id() == before
     kinds = [item.event.kind for item in Ledger(ledger.root).read_all()]
     assert kinds.count("task_commit_prepared") == 1
-    assert kinds.count("head_advanced") == 1
-
-
-def test_prepared_publication_never_overwrites_newer_head(tmp_path: Path) -> None:
-    scheduler, store, ledger = _scheduler(tmp_path, outcome=_effectful_outcome())
-    task = _planned_task()
-    newer = store.create_attempt("newer-head")
-    (newer.root / "out.txt").write_bytes(b"ok")
-    (newer.root / "other.txt").write_bytes(b"B")
-    newer_candidate = newer.seal()
-    newer.discard()
-    lease_b = Lease(
-        task_id="task-writer-b",
-        activation_id="activation-writer-b",
-        attempt=1,
-        owner_id="worker-b",
-        acquired_at=100.0,
-        heartbeat_at=100.0,
-        expires_at=1000.0,
-    )
-    _persist_lease(ledger, lease_b, initial_tree_id=store.head_tree_id())
-    original_append = ledger.append_batch
-
-    def append_newer_success_first(events: object, expected_next_seq: int) -> object:
-        materialized = tuple(events)  # type: ignore[arg-type]
-        prepared = next((event for event in materialized if isinstance(event, TaskCommitPrepared)), None)
-        if prepared is None:
-            return original_append(materialized, expected_next_seq)
-        _install_head_document(store, newer_candidate.candidate_tree_id)
-        Ledger(ledger.root).append_batch(
-            (
-                TaskAttemptSucceeded(
-                    activation_id=lease_b.activation_id,
-                    attempt=lease_b.attempt,
-                    output=None,
-                ),
-                HeadAdvanced(
-                    task_id=lease_b.task_id,
-                    activation_id=lease_b.activation_id,
-                    attempt=lease_b.attempt,
-                    previous_tree_id=prepared.tree_id,
-                    tree_id=newer_candidate.candidate_tree_id,
-                ),
-            ),
-            expected_next_seq=expected_next_seq,
-        )
-        return original_append(materialized, expected_next_seq)
-
-    ledger.append_batch = append_newer_success_first  # type: ignore[method-assign]
-
-    with pytest.raises(HeadPublicationIndeterminate):
-        asyncio.run(scheduler.run_wave((task,)))
-
-    assert store.head_tree_id() == newer_candidate.candidate_tree_id
-    events = [envelope.event for envelope in ledger.read_all()]
-    assert all(
-        not isinstance(event, TaskCommitPrepared) or event.activation_id != task.activation_id
-        for event in events
-    )
+    assert kinds.count("task_promotion_completed") == 0
 
 
 def test_scheduler_binds_identity_narrow_activity_port(tmp_path: Path) -> None:
@@ -2599,6 +2433,11 @@ def test_scheduler_binds_identity_narrow_activity_port(tmp_path: Path) -> None:
         return TaskOutcome.succeeded()
 
     scheduler, store, ledger = _scheduler(tmp_path, {task.capability_id: handler})
+    workspace_identity = store.begin(
+        task_id=task.task_id,
+        attempt=task.attempt,
+        output_paths=task.resources.writes,
+    ).identity
     next_seq = ledger.read_all()[-1].seq + 1
     ledger.append_batch(
         (
@@ -2622,11 +2461,7 @@ def test_scheduler_binds_identity_narrow_activity_port(tmp_path: Path) -> None:
                 activation_id=task.activation_id,
                 attempt=1,
                 request_digest="0" * 64,
-                workspace_identity=AttemptWorkspaceIdentity(
-                    attempt_directory_id="attempt-1",
-                    baseline_tree_id=store.head_tree_id(),
-                    attempt_identity_digest="b" * 64,
-                ),
+                workspace_identity=workspace_identity,
             ),
         ),
         expected_next_seq=next_seq,
@@ -2654,7 +2489,7 @@ def test_disposable_wave_does_not_prepare_activity(tmp_path: Path) -> None:
     task = _planned_task()
 
     async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "out.txt").write_bytes(b"ok")
+        (context.write_root / "out.txt").write_bytes(b"ok")
         return TaskOutcome.succeeded()
 
     scheduler, _store, ledger = _scheduler(tmp_path, {task.capability_id: handler})
@@ -2663,3 +2498,188 @@ def test_disposable_wave_does_not_prepare_activity(tmp_path: Path) -> None:
     assert "task_activity_prepared" not in kinds
     assert kinds.count("task_attempt_started") == 1
     assert kinds.count("task_lease_acquired") == 1
+
+
+class _DualRootTestHost:
+    """In-process host that authenticates the portable workspace descriptor."""
+
+    def __init__(self) -> None:
+        self._handlers: Mapping[str, TaskHandler] = {}
+        self._store: TaskWorkspaceStore | None = None
+        self.bindings: list[TaskWorkspaceBinding] = []
+
+    def bind_invocation_runtime(
+        self,
+        *,
+        handlers: Mapping[str, TaskHandler],
+        store: TaskWorkspaceStore,
+        receipts: object | None = None,
+    ) -> None:
+        del receipts
+        self._handlers = handlers
+        self._store = store
+
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        assert self._store is not None
+        identity = call.attempt_root.workspace_identity
+        binding = self._store.begin(
+            task_id=identity.task_id,
+            attempt=identity.attempt,
+            output_paths=identity.output_paths,
+        )
+        assert binding.identity == identity
+        self.bindings.append(binding)
+        handler = self._handlers[call.request.capability_id]
+        outcome = await handler.execute(
+            call.request,
+            TaskContext(
+                project_root=binding.project_root,
+                write_root=binding.write_root,
+                workspace_identity=binding.identity,
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=call.request.invocation,
+            ),
+        )
+        return TaskHostCallResult(operation="execute", outcome=outcome)
+
+    async def reconcile(self, call: object) -> TaskHostCallResult:
+        del call
+        raise AssertionError("reconcile must stay unwired")
+
+    async def cancel(self, call: object) -> TaskHostCallResult:
+        del call
+        raise AssertionError("cancel must stay unwired")
+
+    def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[()]:
+        del identity
+        return ()
+
+
+def _dual_root_scheduler(
+    tmp_path: Path,
+    handlers: Mapping[str, Handler],
+    *,
+    validators: Mapping[str, object] | None = None,
+) -> tuple[Scheduler, TaskWorkspaceStore, Ledger, _DualRootTestHost, Path]:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    store = TaskWorkspaceStore(
+        project_root,
+        tmp_path / "attempts",
+        tmp_path / "promotion-receipts",
+    )
+    ledger = Ledger(tmp_path / "ledger")
+    lifecycle: list[object] = [
+        synthetic_invocation_started(lock_digest=_LOCK_DIGEST),
+        GraphStarted(graph_instance_id="graph-1", graph_id="graph-1"),
+    ]
+    lifecycle.extend(
+        NodeActivated(
+            activation_id=f"activation-{capability_id.rsplit('.', 1)[-1]}",
+            graph_instance_id="graph-1",
+            node_id=capability_id.rsplit(".", 1)[-1],
+            token_ids=(),
+        )
+        for capability_id in handlers
+    )
+    ledger.append_batch(lifecycle, expected_next_seq=1)  # type: ignore[arg-type]
+    host = _DualRootTestHost()
+    scheduler = Scheduler(
+        _registry(handlers, validators),
+        store,
+        ledger,
+        host,
+        owner_id="worker-1",
+        clock=FakeClock(100.0),
+        lease_seconds=10.0,
+        max_parallel=4,
+        lock_digest=_LOCK_DIGEST,
+    )
+    return scheduler, store, ledger, host, project_root
+
+
+def test_wave_tasks_share_project_root_but_receive_distinct_empty_write_roots(
+    tmp_path: Path,
+) -> None:
+    tasks = (
+        _task("first", index=0, resources=ResourceClaims(writes=("generated/first.txt",))),
+        _task("second", index=1, resources=ResourceClaims(writes=("generated/second.txt",))),
+    )
+    observed_empty: list[bool] = []
+
+    async def handler(request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        observed_empty.append(not any(context.write_root.iterdir()))
+        target = context.write_root / f"generated/{request.node_id}.txt"
+        target.parent.mkdir(parents=True)
+        target.write_text(request.node_id, encoding="utf-8")
+        return TaskOutcome.succeeded({"node": request.node_id})
+
+    handlers = {task.capability_id: handler for task in tasks}
+    scheduler, store, ledger, host, project_root = _dual_root_scheduler(tmp_path, handlers)
+    try:
+        results = asyncio.run(scheduler.run_wave(tasks))
+    finally:
+        store.close()
+
+    assert [result.outcome.status for result in results] == ["succeeded", "succeeded"]
+    assert observed_empty == [True, True]
+    assert {binding.project_root for binding in host.bindings} == {project_root.resolve()}
+    assert len({binding.write_root for binding in host.bindings}) == 2
+    assert (project_root / "generated/first.txt").read_text(encoding="utf-8") == "first"
+    assert (project_root / "generated/second.txt").read_text(encoding="utf-8") == "second"
+    payloads = [envelope.event.model_dump(mode="json") for envelope in ledger.read_all()]
+    assert all("candidate_tree_id" not in payload for payload in payloads)
+    assert all("current_head_tree_id" not in payload for payload in payloads)
+
+
+class _RecordingStagedValidator:
+    def __init__(self, *, accepted: bool) -> None:
+        self.accepted = accepted
+        self.seen: list[StagedWriteSet] = []
+
+    def validate(
+        self,
+        staged: StagedWriteSet,
+        _context: ValidationContext,
+    ) -> ValidationResult:
+        self.seen.append(staged)
+        if self.accepted:
+            return ValidationResult(accepted=True)
+        return ValidationResult(accepted=False, reason="rejected staged bytes")
+
+
+@pytest.mark.parametrize("mode", ["handler_failed", "validator_rejected"])
+def test_failed_or_rejected_attempt_never_promotes_staged_output(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    validator = _RecordingStagedValidator(accepted=False)
+    validators = {"test.validators.closed": validator} if mode == "validator_rejected" else None
+    task = _task(
+        "work",
+        resources=ResourceClaims(writes=("out.txt",)),
+        validators=("test.validators.closed",) if validators else (),
+    )
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        (context.write_root / "out.txt").write_bytes(b"untrusted")
+        if mode == "handler_failed":
+            return TaskOutcome.failed("invalid_output", "handler failed")
+        return TaskOutcome.succeeded({"ok": True})
+
+    scheduler, store, _ledger, _host, project_root = _dual_root_scheduler(
+        tmp_path,
+        {task.capability_id: handler},
+        validators=validators,
+    )
+    try:
+        (result,) = asyncio.run(scheduler.run_wave((task,)))
+    finally:
+        store.close()
+
+    assert result.outcome.status == "failed"
+    assert not (project_root / "out.txt").exists()
+    if mode == "validator_rejected":
+        assert len(validator.seen) == 1
+        assert tuple(file.path for file in validator.seen[0].files) == ("out.txt",)

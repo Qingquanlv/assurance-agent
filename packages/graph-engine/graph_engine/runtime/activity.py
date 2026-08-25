@@ -7,7 +7,7 @@ from typing import cast
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
-from graph_engine.plugin_api import CandidateWriteSet, TaskActivitySnapshot
+from graph_engine.plugin_api import TaskActivitySnapshot
 from graph_engine.runtime.events import (
     EventEnvelope,
     RuntimeEvent,
@@ -31,7 +31,7 @@ from graph_engine.runtime.models import (
 
 
 MAX_ACTIVITY_VALUE_BYTES = 16 * 1024
-_LIVE_ATTEMPT_STATUSES = {"running", "effect_pending"}
+_LIVE_ATTEMPT_STATUSES = {"running", "promotion_pending", "effect_pending"}
 _RECOVERY_DECISIONS: dict[ReconcileStatus, RecoveryDecisionKind] = {
     "not_dispatched": "execute_same_attempt",
     "running": "adopt_same_attempt",
@@ -43,11 +43,6 @@ _RECOVERY_DECISIONS: dict[ReconcileStatus, RecoveryDecisionKind] = {
 
 def recovery_decision_for_status(status: ReconcileStatus) -> RecoveryDecisionKind:
     return _RECOVERY_DECISIONS[status]
-
-
-def write_set_digest(candidate: CandidateWriteSet) -> str:
-    payload: JSONValue = [[item.path, item.before_sha256, item.after_sha256] for item in candidate.files]
-    return canonical_digest(payload)
 
 
 class TaskActivityConflict(GraphEngineError):
@@ -304,5 +299,4 @@ __all__ = [
     "TaskActivityReferenceInvalid",
     "bounded_canonical_json",
     "recovery_decision_for_status",
-    "write_set_digest",
 ]

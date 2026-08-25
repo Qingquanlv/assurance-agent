@@ -5,12 +5,11 @@ from pathlib import Path
 import pytest
 
 from graph_engine.canonical import canonical_digest
-from graph_engine.plugin_api import AttemptWorkspaceIdentity, TaskOutcome
+from graph_engine.plugin_api import StagedWriteSet, TaskOutcome, TaskWorkspaceIdentity
 from graph_engine.runtime.checkpoint import write_checkpoint
 from graph_engine.runtime.events import (
     EventEnvelope,
     GraphStarted,
-    HeadAdvanced,
     InvocationStarted,
     NodeActivated,
     TaskActivityBound,
@@ -25,21 +24,18 @@ from graph_engine.runtime.events import (
     TaskCommitPrepared,
     TaskLeaseAcquired,
     TaskLeaseAdopted,
+    TaskPromotionCompleted,
     TokenConsumed,
     TokenOffered,
 )
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import FoldCursor, ProjectionError, fold_events
-from graph_engine.runtime.seed import empty_invocation_seed
 
 from bootstrap_fixtures import synthetic_invocation_started
 
 
 _LOCK = "a" * 64
-_EMPTY_TREE = empty_invocation_seed().workspace.tree_id
-_BASELINE = _EMPTY_TREE
-_CANDIDATE = "c" * 64
-_WRITE_SET = "d" * 64
+_PROMOTION = "c" * 64
 _PROOF = "f" * 64
 
 
@@ -47,11 +43,30 @@ def _digest(value: object) -> str:
     return canonical_digest(value)  # type: ignore[arg-type]
 
 
-def _identity() -> AttemptWorkspaceIdentity:
-    return AttemptWorkspaceIdentity(
-        attempt_directory_id="attempt-1",
-        baseline_tree_id=_BASELINE,
-        attempt_identity_digest="b" * 64,
+def _identity() -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "task-1",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(
+        **payload,
+        identity_digest=_digest(payload),
+    )
+
+
+def _staged(*, identity: TaskWorkspaceIdentity | None = None) -> StagedWriteSet:
+    workspace_identity = identity or _identity()
+    payload = {"identity_digest": workspace_identity.identity_digest, "files": []}
+    return StagedWriteSet(
+        identity_digest=workspace_identity.identity_digest,
+        files=(),
+        staged_digest=_digest(payload),
     )
 
 
@@ -83,7 +98,7 @@ def _envelopes(*events: object) -> tuple[EventEnvelope, ...]:
 
 
 def _invocation_started() -> InvocationStarted:
-    return synthetic_invocation_started(lock_digest=_LOCK, initial_tree_id=_EMPTY_TREE)
+    return synthetic_invocation_started(lock_digest=_LOCK)
 
 
 def _running_prefix() -> tuple[object, ...]:
@@ -153,29 +168,44 @@ def _success_terminal() -> TaskActivityTerminalObserved:
         activity_id="activity-1",
         outcome=outcome,
         outcome_digest=_digest(outcome.model_dump(mode="json")),
-        candidate_tree_id=_CANDIDATE,
-        write_set_digest=_WRITE_SET,
+        staged_write_set_digest=_staged().staged_digest,
+        promotion_receipt_digest=None,
     )
 
 
-def _failed_terminal(*, proof: str | None = None) -> TaskActivityTerminalObserved:
+def _failed_terminal(
+    *, proof: str | None = None, promotion_receipt_digest: str | None = None
+) -> TaskActivityTerminalObserved:
     outcome = _failed_outcome()
     return TaskActivityTerminalObserved(
         activity_id="activity-1",
         outcome=outcome,
         outcome_digest=_digest(outcome.model_dump(mode="json")),
         terminal_proof_digest=proof,
+        staged_write_set_digest=_staged().staged_digest,
+        promotion_receipt_digest=promotion_receipt_digest,
     )
 
 
 def _success() -> TaskAttemptSucceeded:
-    return TaskAttemptSucceeded(activation_id="a1", attempt=1, output={"answer": 42})
+    return TaskAttemptSucceeded(
+        activation_id="a1",
+        attempt=1,
+        output={"answer": 42},
+        staged_write_set_digest=_staged().staged_digest,
+        promotion_receipt_digest=_PROMOTION,
+    )
 
 
 def _failed_attempt() -> TaskAttemptFailed:
     failure = _failed_outcome().failure
     assert failure is not None
-    return TaskAttemptFailed(activation_id="a1", attempt=1, failure=failure)
+    return TaskAttemptFailed(
+        activation_id="a1",
+        attempt=1,
+        failure=failure,
+        staged_write_set_digest=_staged().staged_digest,
+    )
 
 
 def _stopped_terminal(*, proof: str | None = None) -> TaskActivityTerminalObserved:
@@ -185,31 +215,40 @@ def _stopped_terminal(*, proof: str | None = None) -> TaskActivityTerminalObserv
         outcome=outcome,
         outcome_digest=_digest(outcome.model_dump(mode="json")),
         terminal_proof_digest=proof,
+        staged_write_set_digest=_staged().staged_digest,
     )
 
 
 def _stopped_attempt() -> TaskAttemptStopped:
-    return TaskAttemptStopped(activation_id="a1", attempt=1, reason="commit rejected")
+    return TaskAttemptStopped(
+        activation_id="a1",
+        attempt=1,
+        reason="commit rejected",
+        staged_write_set_digest=_staged().staged_digest,
+    )
 
 
-def _commit(*, tree_id: str = _CANDIDATE) -> TaskCommitPrepared:
+def _commit(*, staged: StagedWriteSet | None = None) -> TaskCommitPrepared:
+    workspace_identity = _identity()
+    write_set = staged or _staged(identity=workspace_identity)
     return TaskCommitPrepared(
         task_id="task-1",
         activation_id="a1",
         attempt=1,
         output={"answer": 42},
-        previous_tree_id=_BASELINE,
-        tree_id=tree_id,
+        workspace_identity=workspace_identity,
+        staged_write_set=write_set,
+        staged_write_set_digest=write_set.staged_digest,
     )
 
 
-def _head(*, tree_id: str = _CANDIDATE) -> HeadAdvanced:
-    return HeadAdvanced(
+def _promotion(*, staged_write_set_digest: str | None = None) -> TaskPromotionCompleted:
+    return TaskPromotionCompleted(
         task_id="task-1",
         activation_id="a1",
         attempt=1,
-        previous_tree_id=_BASELINE,
-        tree_id=tree_id,
+        staged_write_set_digest=staged_write_set_digest or _staged().staged_digest,
+        promotion_receipt_digest=_PROMOTION,
     )
 
 
@@ -238,8 +277,9 @@ def _complete_recoverable_history() -> tuple[EventEnvelope, ...]:
         _dispatch(),
         _bound(),
         _success_terminal(),
+        _commit(),
+        _promotion(),
         _success(),
-        _head(),
     )
 
 
@@ -274,7 +314,7 @@ def _mutated_history(mutation: str) -> tuple[EventEnvelope, ...]:
             _dispatch(),
             _bound(),
             _failed_terminal(),
-            _head(),
+            _commit(),
         )
     if mutation == "adopt_without_evidence":
         return _envelopes(*_running_prefix(), _adopt())
@@ -287,10 +327,11 @@ def test_fold_projects_complete_recoverable_activity() -> None:
     assert attempt.activity is not None
     assert attempt.activity.state == "terminal_observed"
     assert attempt.activity.reference == _reference()
-    assert attempt.activity.candidate_tree_id == _CANDIDATE
-    assert attempt.activity.write_set_digest == _WRITE_SET
+    assert attempt.activity.staged_write_set_digest == _staged().staged_digest
+    assert attempt.activity.promotion_receipt_digest is None
     assert attempt.status == "succeeded"
-    assert attempt.committed_tree_id == _CANDIDATE
+    assert attempt.prepared_commit is not None
+    assert attempt.prepared_commit.promotion_receipt_digest == _PROMOTION
 
 
 def test_fold_projects_bound_running_activity() -> None:
@@ -308,7 +349,7 @@ def test_fold_projects_bound_running_activity() -> None:
         ("success_without_bound", "success requires a bound activity"),
         ("duplicate_dispatch", "dispatch transition is already durable"),
         ("changed_reference", "activity reference is immutable"),
-        ("failed_with_candidate", "failed terminal activity cannot have a candidate"),
+        ("failed_with_candidate", "failed terminal activity cannot prepare promotion"),
         ("adopt_without_evidence", "lease adoption requires reconciliation evidence"),
     ],
 )
@@ -319,21 +360,38 @@ def test_fold_rejects_illegal_activity_histories(mutation: str, message: str) ->
 
 
 def test_effect_free_history_without_activity_remains_legal() -> None:
+    staged = _staged()
     envelopes = _envelopes(
         *_running_prefix(),
-        TaskAttemptSucceeded(activation_id="a1", attempt=1, output={"ok": True}),
-        HeadAdvanced(
+        TaskCommitPrepared(
             task_id="task-1",
             activation_id="a1",
             attempt=1,
-            previous_tree_id=_BASELINE,
-            tree_id="b" * 64,
+            output={"ok": True},
+            workspace_identity=_identity(),
+            staged_write_set=staged,
+            staged_write_set_digest=staged.staged_digest,
+        ),
+        TaskPromotionCompleted(
+            task_id="task-1",
+            activation_id="a1",
+            attempt=1,
+            staged_write_set_digest=staged.staged_digest,
+            promotion_receipt_digest=_PROMOTION,
+        ),
+        TaskAttemptSucceeded(
+            activation_id="a1",
+            attempt=1,
+            output={"ok": True},
+            staged_write_set_digest=staged.staged_digest,
+            promotion_receipt_digest=_PROMOTION,
         ),
     )
     attempt = fold_events(envelopes).activations[-1].attempts[-1]
     assert attempt.activity is None
     assert attempt.status == "succeeded"
-    assert attempt.committed_tree_id == "b" * 64
+    assert attempt.prepared_commit is not None
+    assert attempt.prepared_commit.promotion_receipt_digest == _PROMOTION
 
 
 def test_fold_rejects_recoverable_outcome_before_terminal() -> None:
@@ -341,8 +399,8 @@ def test_fold_rejects_recoverable_outcome_before_terminal() -> None:
         fold_events(_envelopes(*_running_prefix(), _prepared(), _dispatch(), _bound(), _success()))
 
 
-def test_fold_rejects_success_head_that_does_not_match_candidate() -> None:
-    with pytest.raises(ProjectionError, match="candidate"):
+def test_fold_rejects_promotion_that_does_not_match_staged_write_set() -> None:
+    with pytest.raises(ProjectionError, match="promotion receipt"):
         fold_events(
             _envelopes(
                 *_running_prefix(),
@@ -350,8 +408,8 @@ def test_fold_rejects_success_head_that_does_not_match_candidate() -> None:
                 _dispatch(),
                 _bound(),
                 _success_terminal(),
-                _success(),
-                _head(tree_id="e" * 64),
+                _commit(),
+                _promotion(staged_write_set_digest="e" * 64),
             )
         )
 
@@ -365,7 +423,7 @@ def test_fold_allows_prepared_failed_terminal_bypass() -> None:
     assert attempt.activity is not None
     assert attempt.activity.state == "terminal_observed"
     assert attempt.activity.dispatch_fingerprint is None
-    assert attempt.committed_tree_id is None
+    assert attempt.prepared_commit is None
 
 
 def test_fold_allows_unbound_failed_terminal_with_proof() -> None:
@@ -403,8 +461,9 @@ def test_fold_keeps_cancel_overlay_through_terminal() -> None:
                 requested_at=1.5,
             ),
             _success_terminal(),
+            _commit(),
+            _promotion(),
             _success(),
-            _head(),
         )
     )
     activity = projection.activations[-1].attempts[-1].activity
@@ -473,10 +532,9 @@ def test_fold_allows_attempt_failure_after_succeeded_terminal() -> None:
     assert activity.state == "terminal_observed"
     assert activity.terminal is not None
     assert activity.terminal.status == "succeeded"
-    assert activity.candidate_tree_id == _CANDIDATE
-    assert activity.write_set_digest == _WRITE_SET
+    assert activity.staged_write_set_digest == _staged().staged_digest
+    assert activity.promotion_receipt_digest is None
     assert attempt.prepared_commit is None
-    assert attempt.committed_tree_id is None
 
 
 def test_fold_allows_attempt_stop_after_succeeded_terminal() -> None:
@@ -497,13 +555,13 @@ def test_fold_allows_attempt_stop_after_succeeded_terminal() -> None:
     assert activity is not None
     assert activity.terminal is not None
     assert activity.terminal.status == "succeeded"
-    assert activity.candidate_tree_id == _CANDIDATE
+    assert activity.staged_write_set_digest == _staged().staged_digest
 
 
 @pytest.mark.parametrize("terminal", ["failed", "stopped"])
 def test_fold_rejects_commit_after_non_success_terminal(terminal: str) -> None:
     observed = _failed_terminal() if terminal == "failed" else _stopped_terminal()
-    with pytest.raises(ProjectionError, match="failed terminal activity cannot have a candidate"):
+    with pytest.raises(ProjectionError, match="failed terminal activity cannot prepare promotion"):
         fold_events(_envelopes(*_running_prefix(), _prepared(), _dispatch(), _bound(), observed, _commit()))
 
 
@@ -533,13 +591,13 @@ def test_fold_allows_commit_after_succeeded_terminal() -> None:
     )
     attempt = projection.activations[-1].attempts[-1]
     activity = attempt.activity
-    assert attempt.status == "effect_pending"
+    assert attempt.status == "promotion_pending"
     assert attempt.prepared_commit is not None
-    assert attempt.prepared_commit.tree_id == _CANDIDATE
+    assert attempt.prepared_commit.staged_write_set_digest == _staged().staged_digest
     assert activity is not None
     assert activity.terminal is not None
     assert activity.terminal.status == "succeeded"
-    assert activity.candidate_tree_id == _CANDIDATE
+    assert activity.staged_write_set_digest == _staged().staged_digest
 
 
 def test_partitioned_fold_matches_one_shot_activity_fold() -> None:

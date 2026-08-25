@@ -120,13 +120,12 @@ class WorkspaceSeed:
 
 @dataclass(frozen=True)
 class InvocationSeed:
-    schema_version: Literal["1"]
+    schema_version: Literal["2"]
     root_input: JSONValue
     root_input_digest: str
-    workspace: WorkspaceSeed
 
     def __post_init__(self) -> None:
-        if self.schema_version != "1":
+        if self.schema_version != "2":
             raise _validation_error(
                 "InvocationSeed",
                 ("schema_version",),
@@ -146,15 +145,13 @@ class InvocationSeed:
 
 
 def empty_invocation_seed(*, root_input: JSONValue | None = None) -> InvocationSeed:
-    """Deterministic empty workspace and default root input for runtime tests."""
+    """Deterministic root-only invocation seed for runtime tests."""
 
     input_value: JSONValue = {} if root_input is None else root_input
-    empty_tree_id = workspace_tree_id({})
     return InvocationSeed(
-        schema_version="1",
+        schema_version="2",
         root_input=input_value,
         root_input_digest=canonical_digest(input_value),
-        workspace=WorkspaceSeed(schema_version="1", tree_id=empty_tree_id, files=()),
     )
 
 

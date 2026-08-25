@@ -16,6 +16,7 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
+from graph_engine.plugin_api import InvocationWorkspaceBinding
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.production_host import UnsupportedProductionPlatform
 from graph_engine.runtime.secret_sources import empty_runtime_authorization
@@ -41,6 +42,11 @@ def installed_composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fr
         provider_path.read_text(encoding="utf-8")
         .replace('entrypoints={"hello": "root"}', 'entrypoints={"full": "root"}')
         .replace('"entrypoints": {"hello": "root"}', '"entrypoints": {"full": "root"}'),
+        encoding="utf-8",
+    )
+    plugin_path = source / "graph_engine_toy_a" / "plugin.py"
+    plugin_path.write_text(
+        plugin_path.read_text(encoding="utf-8").replace("context.workspace_root", "context.write_root"),
         encoding="utf-8",
     )
     source_files = tuple(
@@ -83,6 +89,15 @@ def authorization() -> object:
     return empty_runtime_authorization()
 
 
+def _workspace_binding(tmp_path: Path) -> InvocationWorkspaceBinding:
+    project_root = tmp_path / "project"
+    attempts_root = tmp_path / "attempts"
+    receipts_root = tmp_path / "promotion-receipts"
+    for root in (project_root, attempts_root, receipts_root):
+        root.mkdir()
+    return InvocationWorkspaceBinding(project_root, attempts_root, receipts_root)
+
+
 def test_production_engine_executes_installed_handler(
     tmp_path: Path,
     installed_composition: FrozenComposition,
@@ -90,6 +105,7 @@ def test_production_engine_executes_installed_handler(
     authorization: object,
 ) -> None:
     engine = Engine.production(tmp_path, authorization=authorization)
+    workspace_binding = _workspace_binding(tmp_path)
     try:
         handle = engine.start(
             installed_composition,
@@ -97,6 +113,7 @@ def test_production_engine_executes_installed_handler(
             invocation_id="inv",
             seed=seed,
             authorization=authorization,
+            workspace_binding=workspace_binding,
         )
         try:
             result = engine.run_until_blocked(handle)

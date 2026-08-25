@@ -13,11 +13,13 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
-from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import (
     SecretPort,
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
     TaskActivitySnapshot,
     TaskContext,
     TaskHandler,
@@ -42,11 +44,22 @@ _ACTIVITY_RESPONSE_ENV = "GRAPH_ENGINE_ACTIVITY_RESPONSE_FD"
 _CANCEL_ENV = "GRAPH_ENGINE_CANCEL_FD"
 
 
+class _BinaryStream(Protocol):
+    def fileno(self) -> int: ...
+
+    def read(self, size: int = -1) -> bytes: ...
+
+    def write(self, data: bytes) -> int: ...
+
+    def flush(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _WorkerJob:
     operation: str
     call: dict[str, JSONValue]
-    attempt_root: str
+    project_root: str
+    write_root: str
     capability_id: str
     capability_entrypoint: str
     handler_import_roots: tuple[str, ...]
@@ -132,21 +145,23 @@ class _AsyncCallableHandler:
 
     async def reconcile(
         self, request: object, context: TaskContext, activity: TaskActivitySnapshot
-    ) -> object:
+    ) -> TaskActivityReconcileResult:
         result = self._callable(request, context, activity)
         if asyncio.iscoroutine(result):
-            return await result
-        return result
+            result = await result
+        return cast(TaskActivityReconcileResult, result)
 
-    async def cancel(self, request: object, context: TaskContext, activity: TaskActivitySnapshot) -> object:
+    async def cancel(
+        self, request: object, context: TaskContext, activity: TaskActivitySnapshot
+    ) -> TaskActivityCancelResult:
         result = self._callable(request, context, activity)
         if asyncio.iscoroutine(result):
-            return await result
-        return result
+            result = await result
+        return cast(TaskActivityCancelResult, result)
 
 
-def _stream_io(stream: object) -> object:
-    return getattr(stream, "buffer", stream)
+def _stream_io(stream: object) -> _BinaryStream:
+    return cast(_BinaryStream, getattr(stream, "buffer", stream))
 
 
 _READ_BUFFER = b""
@@ -156,7 +171,7 @@ def _read_chunk(stream: object, size: int) -> bytes:
     stream_io = _stream_io(stream)
     fileno = getattr(stream_io, "fileno", None)
     if callable(fileno):
-        fd = fileno()
+        fd = cast(Callable[[], int], fileno)()
         if fd >= 0:
             return os.read(fd, size)
     chunk = stream_io.read(size)
@@ -195,7 +210,7 @@ def _write_frame(session_key: bytes, stream: object, message: dict[str, JSONValu
     stream_io = _stream_io(stream)
     fileno = getattr(stream_io, "fileno", None)
     if callable(fileno):
-        write_all_bytes(fileno(), data)
+        write_all_bytes(cast(Callable[[], int], fileno)(), data)
         return
     stream_io.write(data)
     stream_io.flush()
@@ -227,13 +242,26 @@ async def _run_call(
     operation: str,
     call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
     *,
-    workspace_root: Path,
+    project_root: Path,
+    write_root: Path,
     secrets: SecretPort | None,
     activity_port: _ParentActivityPort | None,
     cancel_requested: Callable[[], bool],
 ) -> TaskHostCallResult:
+    project_root = _authenticate_root(
+        project_root,
+        call.attempt_root.project_root_digest,
+        label="project root",
+    )
+    write_root = _authenticate_root(
+        write_root,
+        call.attempt_root.write_root_digest,
+        label="write root",
+    )
     context = TaskContext(
-        workspace_root=workspace_root,
+        project_root=project_root,
+        write_root=write_root,
+        workspace_identity=call.attempt_root.workspace_identity,
         heartbeat=lambda: None,
         cancel_requested=cancel_requested,
         invocation=call.request.invocation,
@@ -259,6 +287,22 @@ async def _run_call(
         cancel_call.request, context, cancel_call.activity
     )
     return TaskHostCallResult(operation="cancel", cancel_result=cancel_result)
+
+
+def _authenticate_root(path: Path, expected_digest: str, *, label: str) -> Path:
+    supplied = Path(path)
+    if not supplied.is_absolute():
+        raise TaskHostProtocolError(f"{label} must be an absolute authenticated root")
+    try:
+        resolved = supplied.resolve(strict=True)
+    except OSError as error:
+        raise TaskHostProtocolError(f"{label} is unavailable") from error
+    if supplied != resolved or not resolved.is_dir():
+        raise TaskHostProtocolError(f"{label} must be a canonical authenticated root")
+    actual_digest = canonical_digest({"path": str(resolved)})
+    if actual_digest != expected_digest:
+        raise TaskHostProtocolError(f"{label} identity differs from the authenticated root")
+    return resolved
 
 
 def main() -> int:
@@ -334,13 +378,17 @@ def main() -> int:
             frame = _read_frame(session_key, sys.stdin)
             kind = frame.get("kind")
             if kind == "job":
+                import_roots = frame.get("handler_import_roots")
+                if not isinstance(import_roots, list):
+                    raise TaskHostProtocolError("worker import roots must be a list")
                 parsed = _WorkerJob(
                     operation=str(frame["operation"]),
                     call=cast(dict[str, JSONValue], frame["call"]),
-                    attempt_root=str(frame["attempt_root"]),
+                    project_root=str(frame["project_root"]),
+                    write_root=str(frame["write_root"]),
                     capability_id=str(frame["capability_id"]),
                     capability_entrypoint=str(frame["capability_entrypoint"]),
-                    handler_import_roots=tuple(str(item) for item in frame["handler_import_roots"]),
+                    handler_import_roots=tuple(str(item) for item in import_roots),
                 )
                 for entry in parsed.handler_import_roots:
                     if entry and entry not in sys.path:
@@ -370,7 +418,8 @@ def main() -> int:
                     handler,
                     parsed.operation,
                     host_call,
-                    workspace_root=Path(parsed.attempt_root),
+                    project_root=Path(parsed.project_root),
+                    write_root=Path(parsed.write_root),
                     secrets=secret_port,
                     activity_port=activity_port,
                     cancel_requested=cancel_requested,

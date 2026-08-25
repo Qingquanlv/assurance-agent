@@ -38,21 +38,22 @@ from graph_engine.plugin_api import (
     PluginContribution,
     PluginDescriptor,
     SchemaContribution,
+    StagedWriteSet,
     TaskFailure,
+    TaskWorkspaceIdentity,
 )
 from graph_engine.runtime.events import (
     EffectApplyStarted,
     EffectIntentCommitted,
     EffectReceiptRecorded,
     GraphStarted,
-    HeadAdvanced,
-    InvocationStarted,
     NodeActivated,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptSucceeded,
     TaskCommitPrepared,
     TaskLeaseAcquired,
+    TaskPromotionCompleted,
     TokenConsumed,
     TokenOffered,
 )
@@ -64,8 +65,6 @@ _KIND = "test.effects.audit"
 _PAYLOAD: dict[str, int] = {"n": 1}
 _EFFECT_ID = "effect-1"
 _LOCK = "a" * 64
-_EMPTY = "0" * 64
-_TREE = "b" * 64
 _KEY = canonical_digest(
     {
         "lock_digest": _LOCK,
@@ -173,6 +172,30 @@ def _effect_key(effect_id: str, payload: dict[str, int]) -> str:
             "kind": _KIND,
             "payload_digest": canonical_digest(payload),
         }
+    )
+
+
+def _workspace_identity(task_id: str) -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": task_id,
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": canonical_digest({"task_id": task_id, "kind": "write-root"}),
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
+
+
+def _staged_write_set(task_id: str) -> StagedWriteSet:
+    identity = _workspace_identity(task_id)
+    payload = {"identity_digest": identity.identity_digest, "files": []}
+    return StagedWriteSet(
+        identity_digest=identity.identity_digest,
+        files=(),
+        staged_digest=canonical_digest(payload),
     )
 
 
@@ -287,10 +310,10 @@ def _task_events(
     node_id: str,
     token_id: str,
     effects: tuple[tuple[str, dict[str, int]], ...],
-    previous_tree_id: str = _EMPTY,
-    tree_id: str = _TREE,
 ) -> list[object]:
     effect_ids = tuple(effect_id for effect_id, _payload in effects)
+    workspace = _workspace_identity(task_id)
+    staged = _staged_write_set(task_id)
     events: list[object] = [
         TokenOffered(
             token_id=token_id,
@@ -321,16 +344,10 @@ def _task_events(
             activation_id=activation_id,
             attempt=1,
             output={"ok": True},
-            previous_tree_id=previous_tree_id,
-            tree_id=tree_id,
+            workspace_identity=workspace,
+            staged_write_set=staged,
+            staged_write_set_digest=staged.staged_digest,
             effect_ids=effect_ids,
-        ),
-        HeadAdvanced(
-            task_id=task_id,
-            activation_id=activation_id,
-            attempt=1,
-            previous_tree_id=previous_tree_id,
-            tree_id=tree_id,
         ),
     ]
     events.extend(
@@ -344,6 +361,15 @@ def _task_events(
             idempotency_key=_effect_key(effect_id, payload),
         )
         for index, (effect_id, payload) in enumerate(effects)
+    )
+    events.append(
+        TaskPromotionCompleted(
+            task_id=task_id,
+            activation_id=activation_id,
+            attempt=1,
+            staged_write_set_digest=staged.staged_digest,
+            promotion_receipt_digest="c" * 64,
+        )
     )
     return events
 
@@ -370,9 +396,7 @@ def _effect_executor(
         synthetic_invocation_started(lock_digest=_LOCK),
         GraphStarted(graph_instance_id="root", graph_id="root"),
     ]
-    previous_tree_id = _EMPTY
     for index, (task_id, activation_id) in enumerate(tasks):
-        tree_id = _TREE if len(tasks) == 1 else canonical_digest(["tree", task_id])
         task_effects = effects if len(tasks) == 1 else ((f"effect-{task_id}", {"n": index + 1}),)
         events.extend(
             _task_events(
@@ -381,11 +405,8 @@ def _effect_executor(
                 node_id=f"node-{index}",
                 token_id=f"tok-{index}",
                 effects=task_effects,
-                previous_tree_id=previous_tree_id,
-                tree_id=tree_id,
             )
         )
-        previous_tree_id = tree_id
     if state == "applying":
         events.append(EffectApplyStarted(effect_id=effects[0][0], apply_attempt=1))
     elif state == "receipts":
@@ -491,8 +512,10 @@ def test_executor_retries_transient_then_not_applied_without_burning_start_slot(
     assert failed.failure.retryable is False
     assert failed.failure.kind == "external_effect"
     folded = fold_events(ledger.read_all())
-    assert folded.activations[-1].attempts[-1].status == "failed"
-    assert folded.head_tree_id == _TREE
+    attempt = folded.activations[-1].attempts[-1]
+    assert attempt.status == "failed"
+    assert attempt.prepared_commit is not None
+    assert attempt.prepared_commit.promotion_receipt_digest == "c" * 64
 
 
 def test_executor_retries_transient_apply_after_backoff(
@@ -580,8 +603,10 @@ def test_executor_non_last_effect_failure_marks_remaining_intents_failed(
         asyncio.run(executor.settle_next(fold_events(ledger.read_all())))
     folded = fold_events(ledger.read_all())
     assert tuple(item.status for item in folded.effects) == ("permanently_failed", "permanently_failed")
-    assert folded.activations[-1].attempts[-1].status == "failed"
-    assert folded.head_tree_id == _TREE
+    attempt = folded.activations[-1].attempts[-1]
+    assert attempt.status == "failed"
+    assert attempt.prepared_commit is not None
+    assert attempt.prepared_commit.promotion_receipt_digest == "c" * 64
     assert needs_settlement(folded) is False
     assert handler.apply_keys == (_effect_key("effect-1", {"n": 1}),)
     assert handler.reconcile_keys == ((_effect_key("effect-1", {"n": 1}),) if reconcile_result else ())
@@ -602,8 +627,10 @@ def test_executor_publishes_permanent_failure_without_rolling_back_head(tmp_path
     assert failed.failure.retryable is False
     assert failed.failure.kind == "external_effect"
     folded = fold_events(ledger.read_all())
-    assert folded.head_tree_id == _TREE
-    assert folded.activations[-1].attempts[-1].status == "failed"
+    attempt = folded.activations[-1].attempts[-1]
+    assert attempt.status == "failed"
+    assert attempt.prepared_commit is not None
+    assert attempt.prepared_commit.promotion_receipt_digest == "c" * 64
 
 
 def test_executor_exhausts_policy_as_non_retryable_failure(tmp_path: Path) -> None:
@@ -626,8 +653,10 @@ def test_executor_exhausts_policy_as_non_retryable_failure(tmp_path: Path) -> No
     assert isinstance(failed, TaskAttemptFailed)
     assert failed.failure.retryable is False
     folded = fold_events(ledger.read_all())
-    assert folded.activations[-1].attempts[-1].status == "failed"
-    assert folded.head_tree_id == _TREE
+    attempt = folded.activations[-1].attempts[-1]
+    assert attempt.status == "failed"
+    assert attempt.prepared_commit is not None
+    assert attempt.prepared_commit.promotion_receipt_digest == "c" * 64
     assert handler.apply_keys == (_KEY,)
 
 
@@ -676,16 +705,34 @@ def test_executor_selects_multiple_tasks_in_canonical_order(tmp_path: Path) -> N
     assert started.effect_id == selected.effect_id
 
 
-def test_executor_publishes_task_success_after_all_receipts(tmp_path: Path) -> None:
+def test_engine_publishes_task_success_after_all_receipts(tmp_path: Path) -> None:
+    from graph_engine.runtime.engine import _ready_effect_task_success
+
     handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
-    executor, ledger, projection = _effect_executor(
+    _executor, ledger, projection = _effect_executor(
         tmp_path,
         handler=handler,
         state="receipts",
         effects=(("effect-1", {"n": 1}), ("effect-2", {"n": 2})),
     )
-    settlement = asyncio.run(executor.settle_next(projection))
-    assert settlement.progressed is True
+    ready = _ready_effect_task_success(projection)
+    assert ready is not None
+    activation_id, attempt = ready
+    prepared = attempt.prepared_commit
+    assert prepared is not None
+    assert prepared.promotion_receipt_digest == "c" * 64
+    ledger.append_batch(
+        (
+            TaskAttemptSucceeded(
+                activation_id=activation_id,
+                attempt=attempt.attempt,
+                output=attempt.output,
+                staged_write_set_digest=prepared.staged_write_set_digest,
+                promotion_receipt_digest=prepared.promotion_receipt_digest,
+            ),
+        ),
+        expected_next_seq=len(ledger.read_all()) + 1,
+    )
     assert handler.apply_keys == ()
     assert handler.reconcile_keys == ()
     succeeded = ledger.read_all()[-1].event
@@ -693,5 +740,4 @@ def test_executor_publishes_task_success_after_all_receipts(tmp_path: Path) -> N
     assert succeeded.output == {"ok": True}
     folded = fold_events(ledger.read_all())
     assert folded.activations[-1].attempts[-1].status == "succeeded"
-    assert folded.head_tree_id == _TREE
     assert tuple(item.status for item in folded.effects) == ("applied", "applied")

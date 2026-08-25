@@ -32,11 +32,12 @@ from graph_engine.composition.registries import _build_registries
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.graph.schema import parse_workflow
 from graph_engine.plugin_api import (
-    AttemptWorkspaceIdentity,
     PluginContribution,
     PluginDescriptor,
+    StagedWriteSet,
     TaskActivitySnapshot,
     TaskFailure,
+    TaskWorkspaceIdentity,
 )
 from graph_engine.runtime.events import (
     EffectApplyStarted,
@@ -44,7 +45,6 @@ from graph_engine.runtime.events import (
     EffectReceiptRecorded,
     EventEnvelope,
     GraphStarted,
-    HeadAdvanced,
     InvocationStarted,
     NodeActivated,
     NodeCompleted,
@@ -58,10 +58,11 @@ from graph_engine.runtime.events import (
     TaskCommitPrepared,
     TaskLeaseAcquired,
     TaskLeaseHeartbeat,
+    TaskPromotionCompleted,
     TokenConsumed,
     TokenOffered,
 )
-from graph_engine.runtime.models import ActivationRecord, InvocationProjection, fold_events
+from graph_engine.runtime.models import ActivationRecord, InvocationProjection, ProjectionError, fold_events
 from graph_engine.runtime.planner import (
     PlanningError,
     activation_id,
@@ -238,6 +239,89 @@ def _task_lease(activation: str, *, attempt: int = 1) -> TaskLeaseAcquired:
     )
 
 
+def _workspace_identity(task_identifier: str, *, attempt: int = 1) -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": task_identifier,
+        "attempt": attempt,
+        "attempt_id": f"attempt-{attempt}",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": canonical_digest(
+            {"task_id": task_identifier, "attempt": attempt, "kind": "write-root"}
+        ),
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(
+        **payload,
+        identity_digest=canonical_digest(payload),
+    )
+
+
+def _staged_write_set(identity: TaskWorkspaceIdentity) -> StagedWriteSet:
+    payload = {"identity_digest": identity.identity_digest, "files": []}
+    return StagedWriteSet(
+        identity_digest=identity.identity_digest,
+        files=(),
+        staged_digest=canonical_digest(payload),
+    )
+
+
+def _prepared_commit(
+    task_identifier: str,
+    activation: str,
+    output: object,
+    *,
+    attempt: int = 1,
+    effect_ids: tuple[str, ...] = (),
+) -> TaskCommitPrepared:
+    identity = _workspace_identity(task_identifier, attempt=attempt)
+    staged = _staged_write_set(identity)
+    return TaskCommitPrepared(
+        task_id=task_identifier,
+        activation_id=activation,
+        attempt=attempt,
+        output=output,  # type: ignore[arg-type]
+        workspace_identity=identity,
+        staged_write_set=staged,
+        staged_write_set_digest=staged.staged_digest,
+        effect_ids=effect_ids,
+    )
+
+
+def _promotion(
+    task_identifier: str,
+    activation: str,
+    *,
+    attempt: int = 1,
+) -> TaskPromotionCompleted:
+    staged = _staged_write_set(_workspace_identity(task_identifier, attempt=attempt))
+    return TaskPromotionCompleted(
+        task_id=task_identifier,
+        activation_id=activation,
+        attempt=attempt,
+        staged_write_set_digest=staged.staged_digest,
+        promotion_receipt_digest="c" * 64,
+    )
+
+
+def _task_success(
+    task_identifier: str,
+    activation: str,
+    output: object,
+    *,
+    attempt: int = 1,
+) -> TaskAttemptSucceeded:
+    staged = _staged_write_set(_workspace_identity(task_identifier, attempt=attempt))
+    return TaskAttemptSucceeded(
+        activation_id=activation,
+        attempt=attempt,
+        output=output,  # type: ignore[arg-type]
+        staged_write_set_digest=staged.staged_digest,
+        promotion_receipt_digest="c" * 64,
+    )
+
+
 def _completed_start_gate_events(compiled: CompiledWorkflow, node: str) -> tuple[object, ...]:
     token = _canonical_start_token(compiled)
     activation = activation_id("root", node, 0, (token.token_id,))
@@ -296,6 +380,36 @@ def test_start_token_plans_the_first_task_with_canonical_input() -> None:
         "node_activated",
     ]
     assert plan.terminal is None
+
+
+def test_planner_resolves_resource_template_to_concrete_claims_before_scheduling() -> None:
+    compiled = _compiled(
+        """
+      generate:
+        kind: task
+        capability: test.tasks.run
+        retry: policy
+        timeout: short
+        input: {change_id: CHANGE-1, family: api}
+        resources:
+          parameters: {change: /config/change_id, family: /config/family}
+          reads: ["artifacts/{change}"]
+          writes: ["artifacts/{change}/generated/{family}"]
+      done: {kind: end}
+""",
+        "      - {from: generate, to: done}",
+        start="generate",
+    )
+
+    plan = plan_next(compiled, _projection(_invocation()))
+
+    assert len(plan.tasks) == 1
+    assert plan.tasks[0].resources.model_dump(mode="json") == {
+        "reads": ["artifacts/CHANGE-1"],
+        "writes": ["artifacts/CHANGE-1/generated/api"],
+        "exclusive": [],
+    }
+    assert type(plan.tasks[0].resources).__name__ == "ResourceClaims"
 
 
 def test_planning_is_deterministic_and_does_not_mutate_projection() -> None:
@@ -919,26 +1033,15 @@ def test_event_history_accepts_parallel_successes_before_deterministic_all_join(
                 _task_lease(task.activation_id),
             )
         )
-    previous_tree_id = "0" * 64
-    for index, task in enumerate(initial.tasks, start=1):
-        tree_id = str(index) * 64
+    for task in initial.tasks:
+        output = {task.node_id: True}
         events.extend(
             (
-                TaskAttemptSucceeded(
-                    activation_id=task.activation_id,
-                    attempt=1,
-                    output={task.node_id: True},
-                ),
-                HeadAdvanced(
-                    task_id=task.task_id,
-                    activation_id=task.activation_id,
-                    attempt=1,
-                    previous_tree_id=previous_tree_id,
-                    tree_id=tree_id,
-                ),
+                _prepared_commit(task.task_id, task.activation_id, output),
+                _promotion(task.task_id, task.activation_id),
+                _task_success(task.task_id, task.activation_id, output),
             )
         )
-        previous_tree_id = tree_id
     settled = plan_next(compiled, _projection(*events))
     assert settled.terminal == "succeeded"
     events.extend(settled.events)
@@ -984,16 +1087,16 @@ def test_event_history_rejects_partial_external_atomic_transition(
         events = (
             *events,
             _task_lease(task.activation_id),
-            TaskAttemptSucceeded(
-                activation_id=task.activation_id,
-                attempt=task.attempt,
-                output={"ok": True},
-            ),
+            _task_success(task.task_id, task.activation_id, {"ok": True}),
         )
     envelopes = tuple(
         EventEnvelope.from_event(index, event)  # type: ignore[arg-type]
         for index, event in enumerate(events, start=1)
     )
+    if transition == "success":
+        with pytest.raises(ProjectionError, match="attempt outcome without a matching active attempt"):
+            fold_events(envelopes)
+        return
     projection = fold_events(envelopes)
 
     with pytest.raises(PlanningError, match=match):
@@ -1150,7 +1253,7 @@ def test_successful_task_completion_is_routed_structurally() -> None:
     activation = activation_id("root", "work", 0, (start_token.token_id,))
     identifier = task_id(activation)
     events = (
-        synthetic_invocation_started(initial_tree_id="a" * 64),
+        synthetic_invocation_started(),
         _root(),
         *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2030-01-01T00:00:00Z"),
@@ -1163,14 +1266,9 @@ def test_successful_task_completion_is_routed_structurally() -> None:
             heartbeat_at=1.0,
             expires_at=2.0,
         ),
-        TaskAttemptSucceeded(activation_id=activation, attempt=1, output={"result": 2}),
-        HeadAdvanced(
-            task_id=identifier,
-            activation_id=activation,
-            attempt=1,
-            previous_tree_id="a" * 64,
-            tree_id="b" * 64,
-        ),
+        _prepared_commit(identifier, activation, {"result": 2}),
+        _promotion(identifier, activation),
+        _task_success(identifier, activation, {"result": 2}),
     )
     projection = _projection(*events)
 
@@ -1202,7 +1300,7 @@ def test_completed_end_is_rechecked_after_later_task_settlement() -> None:
     identifier = task_id(work_activation)
     assert end_activation < work_activation
     events = (
-        synthetic_invocation_started(initial_tree_id="a" * 64),
+        synthetic_invocation_started(),
         _root(),
         TokenOffered(
             token_id="end-token",
@@ -1241,14 +1339,9 @@ def test_completed_end_is_rechecked_after_later_task_settlement() -> None:
             heartbeat_at=1.0,
             expires_at=2.0,
         ),
-        TaskAttemptSucceeded(activation_id=work_activation, attempt=1, output="ignored"),
-        HeadAdvanced(
-            task_id=identifier,
-            activation_id=work_activation,
-            attempt=1,
-            previous_tree_id="a" * 64,
-            tree_id="b" * 64,
-        ),
+        _prepared_commit(identifier, work_activation, "ignored"),
+        _promotion(identifier, work_activation),
+        _task_success(identifier, work_activation, "ignored"),
     )
 
     plan = plan_next(compiled, _projection(*events))
@@ -1336,10 +1429,6 @@ def test_planned_inputs_are_deeply_frozen() -> None:
         task.input["new"] = True  # type: ignore[index]
 
 
-_EMPTY_TREE = "0" * 64
-_EFFECT_TREE = "b" * 64
-
-
 def _effect_idempotency_key(effect_id: str, kind: str, payload: dict[str, object]) -> str:
     return canonical_digest(
         {
@@ -1383,24 +1472,15 @@ def test_plan_next_emits_no_downstream_while_effect_pending() -> None:
         *_task_activation_events(compiled),
         TaskAttemptStarted(activation_id=activation, attempt=1, lease_expires_at="2"),
         _task_lease(activation),
-        TaskCommitPrepared(
-            task_id=identifier,
-            activation_id=activation,
-            attempt=1,
-            output={"ok": True},
-            previous_tree_id=_EMPTY_TREE,
-            tree_id=_EFFECT_TREE,
+        _prepared_commit(
+            identifier,
+            activation,
+            {"ok": True},
             effect_ids=("effect-1", "effect-2"),
-        ),
-        HeadAdvanced(
-            task_id=identifier,
-            activation_id=activation,
-            attempt=1,
-            previous_tree_id=_EMPTY_TREE,
-            tree_id=_EFFECT_TREE,
         ),
         _effect_intent(activation, "effect-1", 0, {"n": 1}),
         _effect_intent(activation, "effect-2", 1, {"n": 2}),
+        _promotion(identifier, activation),
     )
 
     plan = plan_next(compiled, projection)
@@ -1461,33 +1541,20 @@ def test_event_history_accepts_prepared_effect_apply_receipt_and_final_success()
             lease_expires_at="2",
         ),
         _task_lease(task.activation_id),
-        TaskCommitPrepared(
-            task_id=task.task_id,
-            activation_id=task.activation_id,
-            attempt=1,
-            output={"ok": True},
-            previous_tree_id=_EMPTY_TREE,
-            tree_id=_EFFECT_TREE,
+        _prepared_commit(
+            task.task_id,
+            task.activation_id,
+            {"ok": True},
             effect_ids=("effect-1", "effect-2"),
-        ),
-        HeadAdvanced(
-            task_id=task.task_id,
-            activation_id=task.activation_id,
-            attempt=1,
-            previous_tree_id=_EMPTY_TREE,
-            tree_id=_EFFECT_TREE,
         ),
         _effect_intent(task.activation_id, "effect-1", 0, {"n": 1}),
         _effect_intent(task.activation_id, "effect-2", 1, {"n": 2}),
+        _promotion(task.task_id, task.activation_id),
         EffectApplyStarted(effect_id="effect-1", apply_attempt=1),
         EffectReceiptRecorded(effect_id="effect-1", apply_attempt=1, receipt={"remote": 1}),
         EffectApplyStarted(effect_id="effect-2", apply_attempt=1),
         EffectReceiptRecorded(effect_id="effect-2", apply_attempt=1, receipt={"remote": 2}),
-        TaskAttemptSucceeded(
-            activation_id=task.activation_id,
-            attempt=1,
-            output={"ok": True},
-        ),
+        _task_success(task.task_id, task.activation_id, {"ok": True}),
     ]
     settled = plan_next(compiled, _projection(*events))
     assert settled.terminal == "succeeded"
@@ -1522,24 +1589,15 @@ def test_event_history_accepts_heartbeat_while_effect_pending() -> None:
             lease_expires_at="2",
         ),
         _task_lease(task.activation_id),
-        TaskCommitPrepared(
-            task_id=task.task_id,
-            activation_id=task.activation_id,
-            attempt=1,
-            output={"ok": True},
-            previous_tree_id=_EMPTY_TREE,
-            tree_id=_EFFECT_TREE,
+        _prepared_commit(
+            task.task_id,
+            task.activation_id,
+            {"ok": True},
             effect_ids=("effect-1", "effect-2"),
-        ),
-        HeadAdvanced(
-            task_id=task.task_id,
-            activation_id=task.activation_id,
-            attempt=1,
-            previous_tree_id=_EMPTY_TREE,
-            tree_id=_EFFECT_TREE,
         ),
         _effect_intent(task.activation_id, "effect-1", 0, {"n": 1}),
         _effect_intent(task.activation_id, "effect-2", 1, {"n": 2}),
+        _promotion(task.task_id, task.activation_id),
         TaskLeaseHeartbeat(
             task_id=task.task_id,
             activation_id=task.activation_id,
@@ -1559,11 +1617,7 @@ def test_event_history_accepts_heartbeat_while_effect_pending() -> None:
         EffectReceiptRecorded(effect_id="effect-1", apply_attempt=1, receipt={"remote": 1}),
         EffectApplyStarted(effect_id="effect-2", apply_attempt=1),
         EffectReceiptRecorded(effect_id="effect-2", apply_attempt=1, receipt={"remote": 2}),
-        TaskAttemptSucceeded(
-            activation_id=task.activation_id,
-            attempt=1,
-            output={"ok": True},
-        ),
+        _task_success(task.task_id, task.activation_id, {"ok": True}),
     ]
     settled = plan_next(compiled, _projection(*events))
     events.extend(settled.events)
@@ -1598,13 +1652,10 @@ def test_event_history_rejects_partial_prepared_effect_batch() -> None:
             lease_expires_at="2",
         ),
         _task_lease(task.activation_id),
-        TaskCommitPrepared(
-            task_id=task.task_id,
-            activation_id=task.activation_id,
-            attempt=1,
-            output={"ok": True},
-            previous_tree_id=_EMPTY_TREE,
-            tree_id=_EFFECT_TREE,
+        _prepared_commit(
+            task.task_id,
+            task.activation_id,
+            {"ok": True},
             effect_ids=("effect-1", "effect-2"),
         ),
     )
@@ -1619,11 +1670,7 @@ def test_event_history_rejects_partial_prepared_effect_batch() -> None:
 
 
 def _live_activity_snapshot(state: str) -> TaskActivitySnapshot:
-    identity = AttemptWorkspaceIdentity(
-        attempt_directory_id="attempt-1",
-        baseline_tree_id="a" * 64,
-        attempt_identity_digest="b" * 64,
-    )
+    identity = _workspace_identity("task-1")
     fingerprint = {"endpoint": "https://127.0.0.1:1", "executable": "runner"}
     reference = {"id": "ext-1"}
     fields: dict[str, object] = {
@@ -1681,11 +1728,7 @@ def test_planner_does_not_plan_behind_fold_legal_bound_running_activity() -> Non
     )
     start_token = _canonical_start_token(compiled)
     activation = activation_id("root", "work", 0, (start_token.token_id,))
-    identity = AttemptWorkspaceIdentity(
-        attempt_directory_id="attempt-1",
-        baseline_tree_id="a" * 64,
-        attempt_identity_digest="b" * 64,
-    )
+    identity = _workspace_identity(task_id(activation))
     fingerprint = {"endpoint": "https://127.0.0.1:1", "executable": "runner"}
     reference = {"id": "ext-1"}
     projection = _projection(

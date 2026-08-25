@@ -23,14 +23,18 @@ from graph_engine.runtime.host_protocol import (
     TaskHostProtocolError,
     scan_for_secret_leaks,
 )
-from graph_engine.runtime.production_host import ProductionHostError, _ProcessSupervisor, _ProductionTaskExecutionHost
+from graph_engine.runtime.production_host import (
+    ProductionHostError,
+    _ProcessSupervisor,
+    _ProductionTaskExecutionHost,
+)
 from graph_engine.runtime.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     empty_runtime_authorization,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.workspace import SnapshotStore
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 
 _CANARY = b"canary-secret-material"
@@ -57,7 +61,11 @@ def _authorization(secret_path: Path) -> InvocationRuntimeAuthorization:
     )
 
 
-def _execute_call(*, secret_handles: tuple[str, ...] = ("test.secret",)) -> TaskHostExecuteCall:
+def _execute_call(
+    attempt_root: AttemptRootDescriptor,
+    *,
+    secret_handles: tuple[str, ...] = ("test.secret",),
+) -> TaskHostExecuteCall:
     host = pinned_execution_host_lock()
     return TaskHostExecuteCall(
         identity=TaskHostCallIdentity(
@@ -92,7 +100,7 @@ def _execute_call(*, secret_handles: tuple[str, ...] = ("test.secret",)) -> Task
             attempt=1,
             input={},
         ),
-        attempt_root=AttemptRootDescriptor(attempt_directory_id="attempt-1"),
+        attempt_root=attempt_root,
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
             task_id="task-1",
@@ -101,6 +109,24 @@ def _execute_call(*, secret_handles: tuple[str, ...] = ("test.secret",)) -> Task
             activity_id=None,
         ),
         authorized_secret_handles=secret_handles,
+    )
+
+
+def _workspace_store(tmp_path: Path) -> tuple[TaskWorkspaceStore, AttemptRootDescriptor]:
+    project_root = tmp_path / "project"
+    project_root.mkdir(exist_ok=True)
+    store = TaskWorkspaceStore(
+        project_root,
+        tmp_path / "attempts",
+        tmp_path / "promotion-receipts",
+    )
+    binding = store.begin(task_id="task-1", attempt=1, output_paths=())
+    workspace = binding.identity
+    return store, AttemptRootDescriptor(
+        workspace_identity=workspace,
+        project_root_digest=workspace.project_digest,
+        write_root_digest=workspace.write_root_digest,
+        baseline_digest=canonical_digest([]),
     )
 
 
@@ -167,15 +193,16 @@ class Handler:
     secret_path = tmp_path / "secret.txt"
     secret_path.write_bytes(_CANARY)
     authorization = _authorization(secret_path)
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store, attempt_root = _workspace_store(tmp_path)
     host = _ProductionTaskExecutionHost(root=tmp_path, authorization=authorization)
     host.bind_invocation_runtime(
         handlers={"test.secret.run": _SecretEchoHandler()},
         store=store,
         handler_import_roots={"test.secret.run": (str(tmp_path),)},
     )
-    call = _execute_call().model_copy(update={"capability_entrypoint": "secret_handler:Handler.execute"})
+    call = _execute_call(attempt_root).model_copy(
+        update={"capability_entrypoint": "secret_handler:Handler.execute"}
+    )
     result = asyncio.run(host.execute(call))
     assert result.outcome is not None
     payload = canonical_json_bytes(result.model_dump(mode="json"))
@@ -183,15 +210,16 @@ class Handler:
 
 
 def test_production_host_rejects_unauthorized_secret_handle(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store, attempt_root = _workspace_store(tmp_path)
     host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
     host.bind_invocation_runtime(handlers={"test.secret.run": _SecretEchoHandler()}, store=store)
     with pytest.raises(ProductionHostError, match="missing authorized secret handle"):
-        asyncio.run(host.execute(_execute_call(secret_handles=("test.secret",))))
+        asyncio.run(host.execute(_execute_call(attempt_root, secret_handles=("test.secret",))))
 
 
-def test_production_host_revokes_parent_secrets_after_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_production_host_revokes_parent_secrets_after_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from graph_engine.runtime import production_host as module
 
     handler_path = tmp_path / "secret_handler.py"
@@ -212,8 +240,7 @@ class Handler:
     secret_path = tmp_path / "secret.txt"
     secret_path.write_bytes(_CANARY)
     authorization = _authorization(secret_path)
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store, attempt_root = _workspace_store(tmp_path)
     host = _ProductionTaskExecutionHost(root=tmp_path, authorization=authorization)
     host.bind_invocation_runtime(
         handlers={"test.secret.run": _SecretEchoHandler()},
@@ -228,14 +255,16 @@ class Handler:
         original_revoke(secrets)
 
     monkeypatch.setattr(module, "_revoke_secrets", recording_revoke)
-    call = _execute_call().model_copy(update={"capability_entrypoint": "secret_handler:Handler.execute"})
+    call = _execute_call(attempt_root).model_copy(
+        update={"capability_entrypoint": "secret_handler:Handler.execute"}
+    )
     asyncio.run(host.execute(call))
     assert any(size > 0 for size in revoked_sizes)
 
 
-def test_production_job_frame_excludes_parent_sys_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from graph_engine.runtime import production_host as module
-
+def test_production_job_frame_excludes_parent_sys_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     captured: list[dict[str, object]] = []
 
     original_write = _ProductionTaskExecutionHost._write_frame
@@ -256,8 +285,7 @@ def test_production_job_frame_excludes_parent_sys_path(tmp_path: Path, monkeypat
         "        return TaskOutcome.succeeded({'ok': True})\n",
         encoding="utf-8",
     )
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store, attempt_root = _workspace_store(tmp_path)
     secret_path = tmp_path / "secret.txt"
     secret_path.write_bytes(_CANARY)
     host = _ProductionTaskExecutionHost(root=tmp_path, authorization=_authorization(secret_path))
@@ -266,7 +294,9 @@ def test_production_job_frame_excludes_parent_sys_path(tmp_path: Path, monkeypat
         store=store,
         handler_import_roots={"test.secret.run": (str(tmp_path),)},
     )
-    call = _execute_call().model_copy(update={"capability_entrypoint": "secret_handler:Handler.execute"})
+    call = _execute_call(attempt_root).model_copy(
+        update={"capability_entrypoint": "secret_handler:Handler.execute"}
+    )
     asyncio.run(host.execute(call))
     assert captured
     job = captured[0]

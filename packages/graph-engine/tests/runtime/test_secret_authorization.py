@@ -17,7 +17,12 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.plugin_api import CapabilityBindingContribution, TaskOutcome, TaskRequest
+from graph_engine.plugin_api import (
+    CapabilityBindingContribution,
+    InvocationWorkspaceBinding,
+    TaskOutcome,
+    TaskRequest,
+)
 from graph_engine.runtime.engine import Engine, InvocationDrift
 from graph_engine.runtime.models import PlannedTask
 from graph_engine.runtime.scheduler import Scheduler, SchedulerStateError
@@ -27,7 +32,6 @@ from graph_engine.runtime.secret_sources import (
     empty_runtime_authorization,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 
 
@@ -108,6 +112,19 @@ def _registry_with_binding(binding: CapabilityBindingContribution) -> SimpleName
     )
 
 
+def _workspace_binding(tmp_path: Path) -> InvocationWorkspaceBinding:
+    project_root = tmp_path / "project"
+    attempts_root = tmp_path / "attempts"
+    receipts_root = tmp_path / "promotion-receipts"
+    for path in (project_root, attempts_root, receipts_root):
+        path.mkdir(exist_ok=True)
+    return InvocationWorkspaceBinding(
+        project_root=project_root,
+        attempts_root=attempts_root,
+        receipts_root=receipts_root,
+    )
+
+
 def _planned_task(capability_id: str) -> PlannedTask:
     return PlannedTask(
         invocation_id="inv-1",
@@ -122,9 +139,7 @@ def _planned_task(capability_id: str) -> PlannedTask:
         validators=(),
         topology_rank=0,
         declaration_index=0,
-        resources=__import__(
-            "graph_engine.plugin_api", fromlist=["ResourceClaims"]
-        ).ResourceClaims(),
+        resources=__import__("graph_engine.plugin_api", fromlist=["ResourceClaims"]).ResourceClaims(),
     )
 
 
@@ -144,9 +159,7 @@ def scheduler_fixture() -> object:
         binding: CapabilityBindingContribution,
         authorization: InvocationRuntimeAuthorization | None = None,
     ) -> _SchedulerProbe:
-        runtime_authorization = (
-            authorization if authorization is not None else empty_runtime_authorization()
-        )
+        runtime_authorization = authorization if authorization is not None else empty_runtime_authorization()
         scheduler = Scheduler(
             _registry_with_binding(binding),
             store=object(),  # type: ignore[arg-type]
@@ -227,12 +240,11 @@ def test_secret_bytes_never_serialize(
         invocation_id="inv",
         seed=empty_invocation_seed(),
         authorization=authorization,
+        workspace_binding=_workspace_binding(tmp_path),
     )
     engine_root = tmp_path / "engine"
     assert b"actual-secret" not in b"".join(
-        path.read_bytes()
-        for path in engine_root.rglob("*")
-        if path.is_file() and not path.is_symlink()
+        path.read_bytes() for path in engine_root.rglob("*") if path.is_file() and not path.is_symlink()
     )
 
 
@@ -270,12 +282,14 @@ def test_open_rejects_runtime_authorization_digest_mismatch(
 ) -> None:
     composition = _toy_composition(tmp_path, monkeypatch)
     engine = Engine(tmp_path / "engine")
+    workspace_binding = _workspace_binding(tmp_path)
     engine.start(
         composition,
         entrypoint="full",
         invocation_id="inv-open",
         seed=empty_invocation_seed(),
         authorization=empty_runtime_authorization(),
+        workspace_binding=workspace_binding,
     ).close()
     drifted = InvocationRuntimeAuthorization(
         schema_version="1",
@@ -297,7 +311,12 @@ def test_open_rejects_runtime_authorization_digest_mismatch(
         ),
     )
     with pytest.raises(InvocationDrift, match="authorization"):
-        engine.open("inv-open", composition, authorization=drifted)
+        engine.open(
+            "inv-open",
+            composition,
+            authorization=drifted,
+            workspace_binding=workspace_binding,
+        )
 
 
 def test_dispatch_rejects_missing_authorized_handle(scheduler_fixture) -> None:

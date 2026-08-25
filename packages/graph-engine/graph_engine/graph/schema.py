@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, m
 
 from graph_engine.graph.input_projection import InputProjectionDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
-from graph_engine.plugin_api import FailureKind, ResourceClaims
+from graph_engine.plugin_api import FailureKind, ResourceClaims, ResourceClaimTemplate
 
 if TYPE_CHECKING:
     from graph_engine.canonical import JSONValue
@@ -48,7 +48,9 @@ _REQUIRED_NODE_FIELDS: dict[NodeKind, tuple[str, ...]] = {
 }
 
 _ALLOWED_NODE_FIELDS: dict[NodeKind, frozenset[str]] = {
-    "task": frozenset({"capability", "input", "input_projection", "retry", "timeout", "resources", "validators"}),
+    "task": frozenset(
+        {"capability", "input", "input_projection", "retry", "timeout", "resources", "validators"}
+    ),
     "subgraph": frozenset({"graph", "input", "input_projection", "resources"}),
     "join": frozenset({"join", "input_projection"}),
     "gate": frozenset({"expression", "input_projection"}),
@@ -92,7 +94,7 @@ class NodeDef(FrozenModel):
     input_projection: InputProjectionDef | None = None
     retry: str | None = None
     timeout: str | None = None
-    resources: ResourceClaims = Field(default_factory=ResourceClaims)
+    resources: ResourceClaims | ResourceClaimTemplate = Field(default_factory=ResourceClaims)
     validators: tuple[str, ...] = ()
 
     @model_validator(mode="after")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
 import importlib
 from pathlib import Path
 import shutil
@@ -17,7 +18,7 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.plugin_api import TaskContext, TaskHandler
+from graph_engine.plugin_api import InvocationWorkspaceBinding, TaskContext, TaskHandler
 from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine, EngineError, RunResult
@@ -31,6 +32,7 @@ from graph_engine.runtime.events import (
 )
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import ActivationRecord
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 
 def _toy_composition(
@@ -47,6 +49,11 @@ def _toy_composition(
         repository / "examples" / distribution,
         source,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    plugin_path = source / package_name / "plugin.py"
+    plugin_path.write_text(
+        plugin_path.read_text(encoding="utf-8").replace("context.workspace_root", "context.write_root"),
+        encoding="utf-8",
     )
     source_files = tuple(
         sorted(path.relative_to(source).as_posix() for path in source.rglob("*") if path.is_file())
@@ -93,13 +100,13 @@ class _InProcessTestHost:
 
     def __init__(self) -> None:
         self._handlers: Mapping[str, TaskHandler] = {}
-        self._store: object | None = None
+        self._store: TaskWorkspaceStore | None = None
 
     def bind_invocation_runtime(
         self,
         *,
         handlers: Mapping[str, TaskHandler],
-        store: object,
+        store: TaskWorkspaceStore,
     ) -> None:
         self._handlers = handlers
         self._store = store
@@ -107,11 +114,19 @@ class _InProcessTestHost:
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
         assert self._store is not None
         handler = self._handlers[call.request.capability_id]
-        workspace_root = Path(self._store.root) / "attempts" / call.attempt_root.attempt_directory_id  # type: ignore[attr-defined]
+        identity = call.attempt_root.workspace_identity
+        binding = self._store.begin(
+            task_id=identity.task_id,
+            attempt=identity.attempt,
+            output_paths=identity.output_paths,
+        )
+        assert binding.identity == identity
         outcome = await handler.execute(
             call.request,
             TaskContext(
-                workspace_root=workspace_root,
+                project_root=binding.project_root,
+                write_root=binding.write_root,
+                workspace_identity=binding.identity,
                 heartbeat=lambda: None,
                 cancel_requested=lambda: False,
                 invocation=call.request.invocation,
@@ -133,7 +148,7 @@ EventIDFields = tuple[tuple[str, EventIDValue], ...]
 EventIDSignature = tuple[int, str, EventIDFields]
 
 _ID_FIELDS_BY_EVENT_KIND: dict[str, tuple[str, ...]] = {
-    "invocation_started": ("invocation_id", "initial_tree_id"),
+    "invocation_started": ("invocation_id",),
     "graph_started": (
         "graph_instance_id",
         "graph_id",
@@ -151,16 +166,16 @@ _ID_FIELDS_BY_EVENT_KIND: dict[str, tuple[str, ...]] = {
     "task_activity_dispatch_started": ("activity_id",),
     "task_activity_bound": ("activity_id",),
     "task_activity_cancel_requested": ("activity_id",),
-    "task_activity_terminal_observed": ("activity_id", "candidate_tree_id"),
+    "task_activity_terminal_observed": ("activity_id",),
     "task_lease_adopted": ("activity_id", "task_id", "activation_id", "owner_id"),
-    "task_commit_prepared": ("task_id", "activation_id", "previous_tree_id", "tree_id", "effect_ids"),
+    "task_commit_prepared": ("task_id", "activation_id", "effect_ids"),
+    "task_promotion_completed": ("task_id", "activation_id"),
     "effect_intent_committed": ("effect_id", "activation_id"),
     "effect_apply_started": ("effect_id",),
     "effect_receipt_recorded": ("effect_id",),
     "task_attempt_succeeded": ("activation_id",),
     "task_attempt_failed": ("activation_id",),
     "task_attempt_stopped": ("activation_id",),
-    "head_advanced": ("task_id", "activation_id", "previous_tree_id", "tree_id"),
     "node_completed": ("activation_id",),
     "node_failed": ("activation_id",),
     "node_interrupted": ("activation_id", "interrupt_id", "graph_instance_id"),
@@ -264,14 +279,45 @@ def test_event_id_projection_covers_every_runtime_event_id_field() -> None:
     assert _ID_FIELDS_BY_EVENT_KIND == _runtime_event_id_schema()
 
 
+def _workspace_binding(root: Path) -> InvocationWorkspaceBinding:
+    project_root = root.parent / f".{root.name}-project"
+    attempts_root = root.parent / f".{root.name}-attempts"
+    receipts_root = root.parent / f".{root.name}-receipts"
+    for path in (project_root, attempts_root, receipts_root):
+        path.mkdir(exist_ok=True)
+    return InvocationWorkspaceBinding(
+        project_root=project_root,
+        attempts_root=attempts_root,
+        receipts_root=receipts_root,
+    )
+
+
+def _project_digest(project_root: Path) -> str:
+    return canonical_digest(
+        {
+            path.relative_to(project_root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(project_root.rglob("*"))
+            if path.is_file()
+        }
+    )
+
+
 def _run_to_completion(
     root: Path,
     composition: FrozenComposition,
     *,
     invocation_id: str,
 ) -> tuple[str, tuple[EventIDSignature, ...], str, JSONValue]:
+    workspace_binding = _workspace_binding(root)
     with Engine(root, host=_InProcessTestHost()) as engine:
-        with engine.start(composition, entrypoint="review", invocation_id=invocation_id, seed=empty_invocation_seed(), authorization=empty_runtime_authorization()) as handle:
+        with engine.start(
+            composition,
+            entrypoint="review",
+            invocation_id=invocation_id,
+            seed=empty_invocation_seed(),
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        ) as handle:
             blocked = engine.run_until_blocked(handle)
             assert blocked.status == "interrupted"
             with engine.resume(
@@ -281,14 +327,18 @@ def _run_to_completion(
             ) as resumed:
                 completed = engine.run_until_blocked(resumed)
                 assert completed.status == "succeeded"
-                with resumed.workspace as workspace:
-                    final_tree_id = workspace.head_tree_id()
+                final_workspace_digest = _project_digest(workspace_binding.project_root)
                 envelopes = Ledger(resumed.invocation_root / "ledger").read_all()
                 terminal_output = cast(
                     JSONValue,
                     completed.model_dump(mode="json")["output"],
                 )
-    return composition.workflow.digest, _event_id_sequence(envelopes), final_tree_id, terminal_output
+    return (
+        composition.workflow.digest,
+        _event_id_sequence(envelopes),
+        final_workspace_digest,
+        terminal_output,
+    )
 
 
 def test_toy_b_recovers_then_interrupts_and_resumes(
@@ -313,8 +363,17 @@ def test_toy_b_recovers_then_interrupts_and_resumes(
     assert child_task_claims.writes == ("child.txt",)
     assert set(left_claims.writes).isdisjoint(child_subgraph_claims.writes)
 
-    with Engine(tmp_path / "engine", host=_InProcessTestHost()) as engine:
-        with engine.start(resolved, entrypoint="review", invocation_id="toy-b-1", seed=empty_invocation_seed(), authorization=empty_runtime_authorization()) as handle:
+    engine_root = tmp_path / "engine"
+    workspace_binding = _workspace_binding(engine_root)
+    with Engine(engine_root, host=_InProcessTestHost()) as engine:
+        with engine.start(
+            resolved,
+            entrypoint="review",
+            invocation_id="toy-b-1",
+            seed=empty_invocation_seed(),
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        ) as handle:
             blocked = engine.run_until_blocked(handle)
             assert blocked.status == "interrupted"
             assert blocked.actions == ("approve", "reject")
@@ -360,11 +419,15 @@ def test_toy_b_recovers_then_interrupts_and_resumes(
                     "action": "approve",
                     "payload": {"reviewer": "Ada"},
                 }
-                with resumed.workspace as workspace:
-                    assert workspace.read_head("left.txt") == b"left\n"
-                    assert workspace.read_head("child.txt") == b"child\n"
+                assert (workspace_binding.project_root / "left.txt").read_bytes() == b"left\n"
+                assert (workspace_binding.project_root / "child.txt").read_bytes() == b"child\n"
 
-            with engine.open("toy-b-1", resolved, authorization=empty_runtime_authorization()) as replayed_handle:
+            with engine.open(
+                "toy-b-1",
+                resolved,
+                authorization=empty_runtime_authorization(),
+                workspace_binding=workspace_binding,
+            ) as replayed_handle:
                 replayed = engine.run_until_blocked(replayed_handle)
                 assert replayed.status == "succeeded"
                 assert replayed.output == completed.output

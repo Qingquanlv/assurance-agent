@@ -7,11 +7,11 @@ import pytest
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
-    AttemptWorkspaceIdentity,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
     TaskActivitySnapshot,
     TaskOutcome,
+    TaskWorkspaceIdentity,
 )
 from graph_engine.runtime.activity import (
     AttemptWorkspaceLost,
@@ -43,12 +43,18 @@ _ACTIVITY_ERRORS = (
 )
 
 
-def _identity() -> AttemptWorkspaceIdentity:
-    return AttemptWorkspaceIdentity(
-        attempt_directory_id="attempt-1",
-        baseline_tree_id="a" * 64,
-        attempt_identity_digest="b" * 64,
-    )
+def _identity(*, task_id: str = "task-1") -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": task_id,
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=_digest(payload))
 
 
 def _digest(value: object) -> str:
@@ -107,8 +113,7 @@ def _all_six_activity_events() -> tuple[
             activity_id="activity-1",
             outcome=outcome,
             outcome_digest=_outcome_digest(outcome),
-            candidate_tree_id="c" * 64,
-            write_set_digest="d" * 64,
+            staged_write_set_digest="d" * 64,
         ),
         TaskLeaseAdopted(
             activity_id="activity-1",
@@ -124,9 +129,9 @@ def _all_six_activity_events() -> tuple[
     )
 
 
-def test_terminal_activity_requires_exact_success_candidate() -> None:
+def test_terminal_activity_requires_a_staged_write_set_digest() -> None:
     outcome = TaskOutcome.succeeded({"answer": 42})
-    with pytest.raises(ValueError, match="candidate tree and write-set"):
+    with pytest.raises(ValueError, match="staged write-set"):
         TaskActivitySnapshot(
             activity_id="activity-1",
             request_digest="0" * 64,
@@ -139,9 +144,7 @@ def test_terminal_activity_requires_exact_success_candidate() -> None:
 
 def test_activity_event_golden_is_canonical() -> None:
     events = _all_six_activity_events()
-    assert canonical_json_bytes([event.model_dump(mode="json") for event in events]) == (
-        GOLDEN.read_bytes()
-    )
+    assert canonical_json_bytes([event.model_dump(mode="json") for event in events]) == (GOLDEN.read_bytes())
 
 
 def test_prepared_activity_forbids_a_bound_reference() -> None:
@@ -202,15 +205,14 @@ def test_terminal_activity_requires_canonical_outcome_digest() -> None:
             reference_digest=_digest(reference),
             terminal=outcome,
             outcome_digest="0" * 64,
-            candidate_tree_id="c" * 64,
-            write_set_digest="d" * 64,
+            staged_write_set_digest="d" * 64,
         )
 
 
-def test_failed_terminal_activity_forbids_a_candidate() -> None:
+def test_failed_terminal_activity_forbids_a_promotion_receipt() -> None:
     fingerprint = _fingerprint()
     outcome = TaskOutcome.failed("timeout", "lost")
-    with pytest.raises(ValueError, match="candidate tree and write-set"):
+    with pytest.raises(ValueError, match="successful terminal activity"):
         TaskActivitySnapshot(
             activity_id="activity-1",
             request_digest="0" * 64,
@@ -221,8 +223,8 @@ def test_failed_terminal_activity_forbids_a_candidate() -> None:
             terminal=outcome,
             outcome_digest=_outcome_digest(outcome),
             terminal_proof_digest="f" * 64,
-            candidate_tree_id="c" * 64,
-            write_set_digest="d" * 64,
+            staged_write_set_digest="d" * 64,
+            promotion_receipt_digest="c" * 64,
         )
 
 
@@ -239,10 +241,11 @@ def test_unbound_terminal_after_dispatch_requires_proof_digest() -> None:
             dispatch_fingerprint_digest=_digest(fingerprint),
             terminal=outcome,
             outcome_digest=_outcome_digest(outcome),
+            staged_write_set_digest="d" * 64,
         )
 
 
-def test_succeeded_terminal_activity_accepts_exact_candidate() -> None:
+def test_succeeded_terminal_activity_accepts_a_staged_write_set() -> None:
     fingerprint = _fingerprint()
     reference = _reference()
     outcome = TaskOutcome.succeeded({"answer": 42})
@@ -257,11 +260,10 @@ def test_succeeded_terminal_activity_accepts_exact_candidate() -> None:
         reference_digest=_digest(reference),
         terminal=outcome,
         outcome_digest=_outcome_digest(outcome),
-        candidate_tree_id="c" * 64,
-        write_set_digest="d" * 64,
+        staged_write_set_digest="d" * 64,
     )
-    assert snapshot.candidate_tree_id == "c" * 64
-    assert snapshot.write_set_digest == "d" * 64
+    assert snapshot.staged_write_set_digest == "d" * 64
+    assert snapshot.promotion_receipt_digest is None
 
 
 def test_reconcile_requires_outcome_exactly_for_terminal() -> None:
@@ -317,11 +319,7 @@ def test_cancel_requires_non_empty_reason_for_indeterminate() -> None:
 
 def test_workspace_identity_rejects_a_host_path() -> None:
     with pytest.raises(ValueError, match="host path"):
-        AttemptWorkspaceIdentity(
-            attempt_directory_id="/tmp/attempt-1",
-            baseline_tree_id="a" * 64,
-            attempt_identity_digest="b" * 64,
-        )
+        _identity(task_id="/tmp/attempt-1")
 
 
 def test_activity_values_do_not_import_runtime_modules() -> None:

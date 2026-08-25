@@ -14,8 +14,10 @@ import graph_engine.runtime.scheduler as scheduler_runtime
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
+    InvocationWorkspaceBinding,
     RecoverableTaskHandler,
     ResourceClaims,
+    StagedWriteSet,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
     TaskActivitySnapshot,
@@ -23,8 +25,9 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
     TaskRequest,
+    TaskWorkspaceIdentity,
 )
-from graph_engine.runtime.activity import LedgerTaskActivityPort, write_set_digest
+from graph_engine.runtime.activity import LedgerTaskActivityPort
 from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine
@@ -43,7 +46,7 @@ from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import PlannedTask, fold_events
 from graph_engine.runtime.planner import plan_next
 from graph_engine.runtime.scheduler import FakeClock, Scheduler
-from graph_engine.runtime.workspace import SnapshotStore
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 
 _LOCK = "a" * 64
@@ -54,7 +57,7 @@ _Cut = Literal[
     "after_quiescence_before_receipt",
     "after_receipt_fsync",
     "after_receipt_rename",
-    "after_candidate_seal",
+    "after_staged_seal",
     "after_terminal_event_install",
     "after_terminal_event_fsync",
     "before_receipt_cleanup",
@@ -107,7 +110,7 @@ class _ReceiptHost:
         self._receipts = receipts
         self._cut = cut
         self._handlers: dict[str, TaskHandler] = {}
-        self._store: SnapshotStore | None = None
+        self._store: TaskWorkspaceStore | None = None
         self._armed = False
         self.provider_calls = 0
 
@@ -115,9 +118,11 @@ class _ReceiptHost:
         self,
         *,
         handlers: dict[str, TaskHandler],
-        store: SnapshotStore,
+        store: TaskWorkspaceStore,
         receipts: TerminalReceiptStore | None = None,
+        handler_import_roots: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
+        del handler_import_roots
         self._handlers = handlers
         self._store = store
         if receipts is not None:
@@ -131,11 +136,18 @@ class _ReceiptHost:
         port.bind(_REFERENCE)
         handler = self._handlers[call.request.capability_id]
         assert self._store is not None
-        workspace_root = self._store.root / "attempts" / call.attempt_root.attempt_directory_id
+        workspace = self._store.begin(
+            task_id=call.attempt_root.workspace_identity.task_id,
+            attempt=call.attempt_root.workspace_identity.attempt,
+            output_paths=call.attempt_root.workspace_identity.output_paths,
+        )
+        assert workspace.identity == call.attempt_root.workspace_identity
         outcome = await handler.execute(
             call.request,
             TaskContext(
-                workspace_root=workspace_root,
+                project_root=workspace.project_root,
+                write_root=workspace.write_root,
+                workspace_identity=workspace.identity,
                 heartbeat=lambda: None,
                 cancel_requested=lambda: False,
                 invocation=call.request.invocation,
@@ -178,6 +190,8 @@ class _ReceiptHost:
         host_receipts._quiescence_cut("before_quiescence")
         quiescence = prove_call_quiescent()
         host_receipts._quiescence_cut("after_quiescence_before_receipt")
+        assert self._store is not None
+        staged = self._store.seal(activity.workspace_identity)
         sink = self._receipts.sink_for(identity)
         sink.install(
             _receipt(
@@ -185,6 +199,7 @@ class _ReceiptHost:
                 activity,
                 outcome,
                 quiescence,
+                staged=staged,
                 host_call_id=sink.host_call_id,
             )
         )
@@ -198,11 +213,17 @@ class _CutFixture:
     host: _ReceiptHost
     receipts: TerminalReceiptStore
     ledger: Ledger
+    workspace_binding: InvocationWorkspaceBinding
 
     async def reopen_and_recover(self) -> "_Recovered":
         self.host.provider_calls = 0
         engine = Engine(self.engine_root, clock=FakeClock(21.0), host=self.host)
-        handle = engine.open("receipt-1", self.product, authorization=empty_runtime_authorization())
+        handle = engine.open(
+            "receipt-1",
+            self.product,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=self.workspace_binding,
+        )
         try:
             await handle.recover()
             events = [
@@ -215,15 +236,15 @@ class _CutFixture:
             projection = fold_events(self.ledger.read_all())
             activity = projection.activations[-1].attempts[-1].activity
             assert activity is not None
-            candidate_matches = (
-                activity.candidate_tree_id == terminal.candidate_tree_id
-                and activity.write_set_digest == terminal.write_set_digest
+            staged_matches = (
+                activity.staged_write_set_digest == terminal.staged_write_set_digest
+                and activity.promotion_receipt_digest == terminal.promotion_receipt_digest
                 and activity.outcome_digest == terminal.outcome_digest
             )
             return _Recovered(
                 provider_calls=self.host.provider_calls,
                 terminal_events=1,
-                candidate_matches_receipt=candidate_matches,
+                staged_matches_receipt=staged_matches,
             )
         finally:
             handle.close()
@@ -234,7 +255,7 @@ class _CutFixture:
 class _Recovered:
     provider_calls: int
     terminal_events: int
-    candidate_matches_receipt: bool
+    staged_matches_receipt: bool
 
 
 def _digest(value: object) -> str:
@@ -283,15 +304,44 @@ def _outcome() -> TaskOutcome:
     return TaskOutcome.succeeded({"ok": True})
 
 
+def _workspace_identity() -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "task-1",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(
+        **payload,
+        identity_digest=_digest(payload),
+    )
+
+
+def _staged(identity: TaskWorkspaceIdentity) -> StagedWriteSet:
+    payload = {"identity_digest": identity.identity_digest, "files": []}
+    return StagedWriteSet(
+        identity_digest=identity.identity_digest,
+        files=(),
+        staged_digest=_digest(payload),
+    )
+
+
 def _receipt(
     identity: TaskHostCallIdentity,
     activity: TaskActivitySnapshot,
     outcome: TaskOutcome,
     quiescence: str,
     *,
+    staged: StagedWriteSet | None = None,
     host_call_id: int,
 ) -> TaskHostTerminalReceipt:
     assert identity.activity_id is not None
+    workspace_identity = activity.workspace_identity
+    staged_write_set = staged or _staged(workspace_identity)
     return TaskHostTerminalReceipt(
         host_implementation_digest=identity.host_implementation_digest,
         wire_schema_version=identity.wire_schema_version,
@@ -302,7 +352,11 @@ def _receipt(
         activity_id=identity.activity_id,
         operation=identity.operation,
         request_digest=activity.request_digest,
-        workspace_identity_digest=activity.workspace_identity.attempt_identity_digest,
+        workspace_identity_digest=workspace_identity.identity_digest,
+        project_root_digest=workspace_identity.project_digest,
+        write_root_digest=workspace_identity.write_root_digest,
+        baseline_digest=_digest([item.model_dump(mode="json") for item in workspace_identity.baseline_files]),
+        staged_write_set_digest=staged_write_set.staged_digest,
         dispatch_fingerprint_digest=activity.dispatch_fingerprint_digest,
         reference_digest=activity.reference_digest,
         outcome=outcome,
@@ -314,16 +368,10 @@ def _receipt(
 
 
 def _prepared_snapshot() -> TaskActivitySnapshot:
-    from graph_engine.plugin_api import AttemptWorkspaceIdentity
-
     return TaskActivitySnapshot(
         activity_id="activity-1",
         request_digest="0" * 64,
-        workspace_identity=AttemptWorkspaceIdentity(
-            attempt_directory_id="attempt-1",
-            baseline_tree_id="a" * 64,
-            attempt_identity_digest="b" * 64,
-        ),
+        workspace_identity=_workspace_identity(),
         state="bound",
         dispatch_fingerprint=_FINGERPRINT,
         dispatch_fingerprint_digest=_digest(_FINGERPRINT),
@@ -434,6 +482,15 @@ def _load_product() -> Any:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    for attribute, name in (
+        ("_CALLBACKS", names[0]),
+        ("_EFFECT_CALLBACKS", names[1]),
+        ("_EFFECT_POLICIES", names[2]),
+    ):
+        existing = saved[name]
+        if isinstance(existing, dict):
+            setattr(module, attribute, existing)
+            setattr(builtins, name, existing)
 
     async def unused(_request: TaskRequest, _context: TaskContext) -> TaskOutcome:
         return TaskOutcome.succeeded({"ok": True})
@@ -451,8 +508,25 @@ def _load_product() -> Any:
 
 async def _cut_terminal_call(cut: _Cut, tmp_path: Path) -> _CutFixture:
     product = _load_product()
+    project_root = tmp_path / "project"
+    attempts_root = tmp_path / "attempts"
+    promotion_receipts_root = tmp_path / "promotion-receipts"
+    for root in (project_root, attempts_root, promotion_receipts_root):
+        root.mkdir()
+    workspace_binding = InvocationWorkspaceBinding(
+        project_root=project_root,
+        attempts_root=attempts_root,
+        receipts_root=promotion_receipts_root,
+    )
     engine = Engine(tmp_path, clock=FakeClock(10.0))
-    handle = engine.start(product, entrypoint="main", invocation_id="receipt-1", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
+    handle = engine.start(
+        product,
+        entrypoint="main",
+        invocation_id="receipt-1",
+        seed=empty_invocation_seed(),
+        authorization=empty_runtime_authorization(),
+        workspace_binding=workspace_binding,
+    )
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     plan = plan_next(product.workflow, fold_events(envelopes))
@@ -473,25 +547,24 @@ async def _cut_terminal_call(cut: _Cut, tmp_path: Path) -> _CutFixture:
     )
     saved = _install_cut(cut)
     try:
-        with handle.workspace as store:
-            scheduler = Scheduler(
-                _DirectRegistry({task.capability_id: _RecoverableHandler()}),
-                store,
-                ledger,
-                host,
-                owner_id=owner_id,
-                clock=FakeClock(10.0),
-                lease_seconds=30.0,
-                lock_digest=product.lock_digest,
-                composition_digest=product.digest,
-                entrypoint="main",
-                receipts=receipts,
-            )
-            assert isinstance(_RecoverableHandler(), RecoverableTaskHandler)
-            try:
-                await scheduler.run_wave((task,))
-            except CutCrash:
-                pass
+        scheduler = Scheduler(
+            _DirectRegistry({task.capability_id: _RecoverableHandler()}),
+            handle.workspace,
+            ledger,
+            host,
+            owner_id=owner_id,
+            clock=FakeClock(10.0),
+            lease_seconds=30.0,
+            lock_digest=product.lock_digest,
+            composition_digest=product.digest,
+            entrypoint="main",
+            receipts=receipts,
+        )
+        assert isinstance(_RecoverableHandler(), RecoverableTaskHandler)
+        try:
+            await scheduler.run_wave((task,))
+        except CutCrash:
+            pass
     finally:
         _restore_cut(saved)
         handle.close()
@@ -503,6 +576,7 @@ async def _cut_terminal_call(cut: _Cut, tmp_path: Path) -> _CutFixture:
         host=host,
         receipts=receipts,
         ledger=ledger,
+        workspace_binding=workspace_binding,
     )
 
 
@@ -513,7 +587,7 @@ async def _cut_terminal_call(cut: _Cut, tmp_path: Path) -> _CutFixture:
         "after_quiescence_before_receipt",
         "after_receipt_fsync",
         "after_receipt_rename",
-        "after_candidate_seal",
+        "after_staged_seal",
         "after_terminal_event_install",
         "after_terminal_event_fsync",
         "before_receipt_cleanup",
@@ -528,7 +602,7 @@ async def _assert_terminal_receipt_cut(tmp_path: Path, cut: _Cut) -> None:
     recovered = await fixture.reopen_and_recover()
     assert recovered.provider_calls <= 1
     assert recovered.terminal_events == 1
-    assert recovered.candidate_matches_receipt
+    assert recovered.staged_matches_receipt
 
 
 def test_recovery_checks_receipt_before_reconcile(tmp_path: Path) -> None:
@@ -544,24 +618,24 @@ async def _assert_receipt_before_reconcile(tmp_path: Path) -> None:
     del before
 
 
-def test_success_candidate_is_sealed_without_moving_head(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "store", {"seed.txt": b"old"})
-    before = store.head_tree_id()
-    from graph_engine.plugin_api import AttemptWorkspaceIdentity
-    from graph_engine.runtime.models import attempt_directory_id, attempt_identity_digest
-
-    workspace, identity = store.create_attempt_identity(
-        invocation_id="inv-1",
-        task_id="task-1",
-        activation_id="a1",
-        attempt=1,
+def test_success_write_set_is_sealed_without_promoting_project(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "seed.txt").write_bytes(b"old")
+    store = TaskWorkspaceStore(
+        project_root,
+        tmp_path / "attempts",
+        tmp_path / "promotion-receipts",
     )
-    del workspace
-    assert identity.attempt_directory_id == attempt_directory_id("inv-1", "task-1", "a1", 1)
-    assert identity.attempt_identity_digest == attempt_identity_digest("inv-1", "task-1", "a1", 1)
-    candidate = store.seal_authenticated_candidate(identity, ResourceClaims())
-    assert store.head_tree_id() == before
-    assert candidate.candidate_tree_id != ""
-    assert write_set_digest(candidate) == write_set_digest(candidate)
-    reopened = AttemptWorkspaceIdentity.model_validate(identity.model_dump())
-    del reopened
+    workspace = store.begin(
+        task_id="task-1",
+        attempt=1,
+        output_paths=("out.txt",),
+    )
+    (workspace.write_root / "out.txt").write_bytes(b"new")
+    staged = store.seal(workspace.identity)
+    assert (project_root / "seed.txt").read_bytes() == b"old"
+    assert not (project_root / "out.txt").exists()
+    assert staged.files[0].path == "out.txt"
+    assert TaskWorkspaceIdentity.model_validate(workspace.identity.model_dump()) == workspace.identity
+    store.close()

@@ -15,26 +15,27 @@ from graph_engine.composition.models import EffectRegistry, SchemaRegistry
 from graph_engine.errors import GraphEngineError
 from graph_engine.identifiers import canonical_id
 from graph_engine.plugin_api import (
-    AttemptWorkspaceIdentity,
-    CandidateWriteSet,
     CommitValidator,
     EffectIntent,
     FailureKind,
     InvocationMetadata,
     RecoverableTaskHandler,
     ResourceClaims,
+    StagedWriteSet,
     TaskActivityReconcileResult,
     TaskActivitySnapshot,
     TaskHandler,
     TaskOutcome,
     TaskRequest,
+    TaskWorkspaceBinding,
+    TaskWorkspaceIdentity,
     ValidationContext,
+    ValidationResult,
 )
 from graph_engine.runtime.activity import (
     LedgerTaskActivityPort,
     TaskActivityRecoveryUnsupported,
     recovery_decision_for_status,
-    write_set_digest,
 )
 from graph_engine.runtime.host_protocol import (
     AttemptRootDescriptor,
@@ -52,7 +53,6 @@ from graph_engine.runtime.host_receipts import TerminalReceiptError, TerminalRec
 from graph_engine.runtime.events import (
     EffectIntentCommitted,
     EventEnvelope,
-    HeadAdvanced,
     RuntimeEvent,
     TaskActivityCancelRequested,
     TaskActivityPrepared,
@@ -65,6 +65,7 @@ from graph_engine.runtime.events import (
     TaskLeaseAcquired,
     TaskLeaseAdopted,
     TaskLeaseHeartbeat,
+    TaskPromotionCompleted,
 )
 from graph_engine.runtime.frozen_json import thaw_json
 from graph_engine.runtime.secret_sources import (
@@ -87,16 +88,11 @@ from graph_engine.runtime.models import (
     PlannedTask,
     ProjectionError,
     RecoveryResult,
+    ValidationReceipt,
     activity_id_for_attempt,
-    attempt_directory_id,
     fold_events,
 )
-from graph_engine.runtime.workspace import (
-    AttemptWorkspace,
-    FinalizationRolledBack,
-    HeadPublicationIndeterminate,
-    SnapshotStore,
-)
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 _match_json_schema = match_json_schema
 _validate_json_schema = validate_json_schema
@@ -183,9 +179,10 @@ class AttemptResult(BaseModel):
     task: PlannedTask
     outcome: TaskOutcome
     lease: Lease
-    candidate: CandidateWriteSet | None = None
+    workspace_identity: TaskWorkspaceIdentity | None = None
+    staged_write_set: StagedWriteSet | None = None
     commit: CommitResult | None = None
-    head_tree_id: str | None = None
+    promotion_receipt_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     effect_ids: tuple[str, ...] = ()
 
 
@@ -245,7 +242,7 @@ class Scheduler:
     def __init__(
         self,
         registry: _CapabilityRegistryView,
-        store: SnapshotStore,
+        store: TaskWorkspaceStore,
         ledger: Ledger,
         host: TaskExecutionHost,
         *,
@@ -263,6 +260,7 @@ class Scheduler:
         receipts: TerminalReceiptStore | None = None,
         cancel_timeout_seconds: float = 5.0,
         runtime_authorization: InvocationRuntimeAuthorization | None = None,
+        handler_import_roots: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
         if not owner_id:
             raise ValueError("owner_id must not be empty")
@@ -293,10 +291,16 @@ class Scheduler:
             runtime_authorization if runtime_authorization is not None else empty_runtime_authorization()
         )
         self._same_attempt_execute: set[tuple[str, int]] = set()
+        import_roots = dict(handler_import_roots or {})
         bind_runtime = getattr(host, "bind_invocation_runtime", None)
         if callable(bind_runtime):
             try:
-                bind_runtime(handlers=registry.task_handlers, store=store, receipts=receipts)
+                bind_runtime(
+                    handlers=registry.task_handlers,
+                    store=store,
+                    receipts=receipts,
+                    handler_import_roots=import_roots,
+                )
             except TypeError:
                 bind_runtime(handlers=registry.task_handlers, store=store)
 
@@ -312,7 +316,7 @@ class Scheduler:
 
     def start_recoverable(
         self, task: PlannedTask
-    ) -> tuple[Lease, AttemptWorkspace, AttemptWorkspaceIdentity]:
+    ) -> tuple[Lease, TaskWorkspaceBinding, TaskWorkspaceIdentity]:
         handler = self._registry.task_handlers.get(task.capability_id)
         if not _handler_impl_is_recoverable(handler):
             raise TaskActivityRecoveryUnsupported(f"task handler is not recoverable: {task.capability_id}")
@@ -320,19 +324,12 @@ class Scheduler:
         _validate_start_transition(task, envelopes)
         request = self._project_request(task)
         request_digest = canonical_digest(cast(JSONValue, request.model_dump(mode="json")))
-        directory_id = attempt_directory_id(
-            task.invocation_id,
-            task.task_id,
-            task.activation_id,
-            task.attempt,
-        )
-        self._store.discard_unprepared_orphan(directory_id)
-        workspace, identity = self._store.create_attempt_identity(
-            invocation_id=task.invocation_id,
+        workspace = self._store.begin(
             task_id=task.task_id,
-            activation_id=task.activation_id,
             attempt=task.attempt,
+            output_paths=task.resources.writes,
         )
+        identity = workspace.identity
         acquired = self._now()
         lease = Lease(
             task_id=task.task_id,
@@ -365,16 +362,11 @@ class Scheduler:
             ),
         )
         expected_next_seq = _next_sequence(envelopes)
-        expected = tuple(
-            EventEnvelope.from_event(expected_next_seq + offset, event) for offset, event in enumerate(events)
-        )
         try:
             self._append(events, expected_next_seq=expected_next_seq)
         except LedgerPublicationIndeterminate:
             raise
         except BaseException:
-            if _initial_batch_absent(self._ledger, expected, expected_next_seq):
-                workspace.discard()
             raise
         return lease, workspace, identity
 
@@ -400,7 +392,7 @@ class Scheduler:
         activity = attempt.activity
         assert activity is not None
         try:
-            workspace = self._store.open_attempt(activity.workspace_identity)
+            workspace = self._open_workspace(activity.workspace_identity)
         except Exception:
             return self._blocked_recovery(task, activity, status="indeterminate")
 
@@ -469,7 +461,7 @@ class Scheduler:
                 raise SchedulerStateError(f"task activity does not match: {task.activation_id}")
             activity = refreshed
         try:
-            workspace = self._store.open_attempt(activity.workspace_identity)
+            workspace = self._open_workspace(activity.workspace_identity)
         except Exception:
             return self._blocked_recovery(task, activity, status="indeterminate")
         try:
@@ -523,21 +515,18 @@ class Scheduler:
             return await self._run_wave_including_recoverable(selected)
 
         leases = tuple(self._start(task) for task in selected)
-        attempt_ids = tuple(self._attempt_id(task, "run") for task in selected)
-        attempt_workspaces = self._store.create_attempts(attempt_ids)
-        work: list[tuple[PlannedTask, AttemptWorkspace, _LeaseState]] = []
-        try:
-            for task, lease, attempt_workspace in zip(
-                selected,
-                leases,
-                attempt_workspaces,
-                strict=True,
-            ):
-                work.append((task, attempt_workspace, _LeaseState(self, lease)))
-        except BaseException:
-            for workspace in attempt_workspaces:
-                workspace.discard()
-            raise
+        work = [
+            (
+                task,
+                self._store.begin(
+                    task_id=task.task_id,
+                    attempt=task.attempt,
+                    output_paths=task.resources.writes,
+                ),
+                _LeaseState(self, lease),
+            )
+            for task, lease in zip(selected, leases, strict=True)
+        ]
 
         gathered = await asyncio.gather(
             *(self._execute(task, workspace, lease_state) for task, workspace, lease_state in work)
@@ -550,36 +539,34 @@ class Scheduler:
     async def _run_wave_including_recoverable(
         self, selected: Sequence[PlannedTask]
     ) -> tuple[AttemptResult, ...]:
-        work: list[tuple[PlannedTask, AttemptWorkspace, _LeaseState, str | None]] = []
-        try:
-            for task in selected:
-                if self._handler_is_recoverable(task):
-                    lease, workspace, _identity = self.start_recoverable(task)
-                    activity_id = activity_id_for_attempt(
-                        task.invocation_id,
-                        task.task_id,
-                        task.activation_id,
-                        task.attempt,
+        work: list[tuple[PlannedTask, TaskWorkspaceBinding, _LeaseState, str | None]] = []
+        for task in selected:
+            if self._handler_is_recoverable(task):
+                lease, workspace, _identity = self.start_recoverable(task)
+                activity_id = activity_id_for_attempt(
+                    task.invocation_id,
+                    task.task_id,
+                    task.activation_id,
+                    task.attempt,
+                )
+                self.task_activity_port(
+                    TaskActivityRpcIdentity(
+                        invocation_id=task.invocation_id,
+                        task_id=task.task_id,
+                        activation_id=task.activation_id,
+                        attempt=task.attempt,
+                        activity_id=activity_id,
                     )
-                    self.task_activity_port(
-                        TaskActivityRpcIdentity(
-                            invocation_id=task.invocation_id,
-                            task_id=task.task_id,
-                            activation_id=task.activation_id,
-                            attempt=task.attempt,
-                            activity_id=activity_id,
-                        )
-                    )
-                else:
-                    lease = self._start(task)
-                    workspace = self._store.create_attempt(self._attempt_id(task, "run"))
-                    activity_id = None
-                work.append((task, workspace, _LeaseState(self, lease), activity_id))
-        except BaseException:
-            for _task, workspace, _lease, activity_id in work:
-                if activity_id is None:
-                    workspace.discard()
-            raise
+                )
+            else:
+                lease = self._start(task)
+                workspace = self._store.begin(
+                    task_id=task.task_id,
+                    attempt=task.attempt,
+                    output_paths=task.resources.writes,
+                )
+                activity_id = None
+            work.append((task, workspace, _LeaseState(self, lease), activity_id))
 
         gathered = await asyncio.gather(
             *(
@@ -596,55 +583,57 @@ class Scheduler:
             return ()
         envelopes = self._ledger.read_all()
         running = self._persisted_running_leases(envelopes)
-        work: list[tuple[PlannedTask, AttemptWorkspace, _LeaseState, str | None]] = []
-        try:
-            for task in selected:
-                _validate_running_transition(task, envelopes)
-                if (
-                    self._task_has_live_activity(task)
-                    and (task.task_id, task.attempt) not in self._same_attempt_execute
-                ):
-                    continue
-                lease = running.get((task.task_id, task.attempt))
-                if lease is None or lease.owner_id != self._owner_id:
-                    raise LeaseUnavailableError(
-                        "persisted running task is not owned by this deterministic scheduler"
+        work: list[tuple[PlannedTask, TaskWorkspaceBinding, _LeaseState, str | None]] = []
+        recovered: dict[str, AttemptResult] = {}
+        for task in selected:
+            _validate_running_transition(task, envelopes)
+            lease = running.get((task.task_id, task.attempt))
+            if lease is None or lease.owner_id != self._owner_id:
+                raise LeaseUnavailableError(
+                    "persisted running task is not owned by this deterministic scheduler"
+                )
+            record = self._latest_attempt_record(task)
+            if record is not None and record.status == "promotion_pending":
+                recovered[task.task_id] = self._resume_prepared_promotion(task, lease, record)
+                continue
+            if (
+                self._task_has_live_activity(task)
+                and (task.task_id, task.attempt) not in self._same_attempt_execute
+            ):
+                continue
+            if lease.expires_at < self._now():
+                raise LeaseUnavailableError("persisted running task lease expired")
+            if self._task_has_live_activity(task):
+                activity = self._live_activity(task)
+                if activity is None:
+                    raise TaskActivityRecoveryUnsupported(
+                        "recoverable attempt recovery cannot recreate the workspace"
                     )
-                if lease.expires_at < self._now():
-                    raise LeaseUnavailableError("persisted running task lease expired")
-                if self._task_has_live_activity(task):
-                    activity = self._live_activity(task)
-                    if activity is None:
-                        raise TaskActivityRecoveryUnsupported(
-                            "recoverable attempt recovery cannot recreate the workspace"
-                        )
-                    workspace = self._store.open_attempt(activity.workspace_identity)
-                    work.append(
-                        (
-                            task,
-                            workspace,
-                            _LeaseState(self, lease),
-                            activity.activity_id,
-                        )
-                    )
-                    self._same_attempt_execute.discard((task.task_id, task.attempt))
-                    continue
-                workspace = self._store.reset_attempt(self._attempt_id(task, "run"))
-                work.append((task, workspace, _LeaseState(self, lease), None))
-        except BaseException:
-            for _task, workspace, _lease, activity_id in work:
-                if activity_id is None:
-                    workspace.discard()
-            raise
-        if not work:
-            return ()
-        gathered = await asyncio.gather(
-            *(
-                self._execute(task, workspace, lease_state, activity_id=activity_id)
-                for task, workspace, lease_state, activity_id in work
+                workspace = self._open_workspace(activity.workspace_identity)
+                work.append((task, workspace, _LeaseState(self, lease), activity.activity_id))
+                self._same_attempt_execute.discard((task.task_id, task.attempt))
+                continue
+            workspace = self._store.begin(
+                task_id=task.task_id,
+                attempt=task.attempt,
+                output_paths=task.resources.writes,
             )
+            if self._store.seal(workspace.identity).files:
+                raise SchedulerStateError("unprepared staged output cannot be replayed")
+            work.append((task, workspace, _LeaseState(self, lease), None))
+        gathered = (
+            await asyncio.gather(
+                *(
+                    self._execute(task, workspace, lease_state, activity_id=activity_id)
+                    for task, workspace, lease_state, activity_id in work
+                )
+            )
+            if work
+            else ()
         )
-        return tuple(self._finalize_wave_result(result) for result in gathered)
+        for result in gathered:
+            recovered[result.task.task_id] = self._finalize_wave_result(result)
+        return tuple(recovered[task.task_id] for task in selected if task.task_id in recovered)
 
     def heartbeat(self, lease: Lease) -> Lease:
         guard = self._lease_guard(lease)
@@ -738,18 +727,19 @@ class Scheduler:
     async def _execute(
         self,
         task: PlannedTask,
-        workspace: AttemptWorkspace,
+        workspace: TaskWorkspaceBinding,
         lease_state: _LeaseState,
         *,
         activity_id: str | None = None,
     ) -> AttemptResult:
+        if self._registry.task_handlers.get(task.capability_id) is None:
+            return AttemptResult(
+                task=task,
+                outcome=TaskOutcome.failed("internal", f"missing task handler: {task.capability_id}"),
+                lease=lease_state.current,
+                workspace_identity=workspace.identity,
+            )
         try:
-            if self._registry.task_handlers.get(task.capability_id) is None:
-                return AttemptResult(
-                    task=task,
-                    outcome=TaskOutcome.failed("internal", f"missing task handler: {task.capability_id}"),
-                    lease=lease_state.current,
-                )
             request = self._project_request(task)
 
             try:
@@ -766,7 +756,12 @@ class Scheduler:
                         if activity is not None and activity.terminal is not None
                         else TaskOutcome.failed("timeout", "task handler exceeded its run timeout")
                     )
-                    return AttemptResult(task=task, outcome=outcome, lease=lease_state.current)
+                    return AttemptResult(
+                        task=task,
+                        outcome=outcome,
+                        lease=lease_state.current,
+                        workspace_identity=workspace.identity,
+                    )
                 outcome = TaskOutcome.failed("timeout", "task handler exceeded its run timeout")
             except asyncio.CancelledError as error:
                 if activity_id is not None:
@@ -798,36 +793,46 @@ class Scheduler:
                 if activity is not None:
                     receipts = self._collect_terminal_receipts(task, activity)
                     if receipts is None:
-                        return AttemptResult(task=task, outcome=outcome, lease=lease_state.current)
+                        return AttemptResult(
+                            task=task,
+                            outcome=outcome,
+                            lease=lease_state.current,
+                            workspace_identity=workspace.identity,
+                        )
                     if len(receipts) == 1:
                         self._promote_receipt(task, activity, receipts[0])
                         return AttemptResult(
                             task=task,
                             outcome=receipts[0].outcome,
                             lease=lease_state.current,
+                            workspace_identity=workspace.identity,
                         )
-                return AttemptResult(task=task, outcome=outcome, lease=lease_state.current)
-            if outcome.status != "succeeded":
-                return AttemptResult(task=task, outcome=outcome, lease=lease_state.current)
+                return AttemptResult(
+                    task=task,
+                    outcome=outcome,
+                    lease=lease_state.current,
+                    workspace_identity=workspace.identity,
+                )
             try:
-                candidate = workspace.seal()
+                staged = self._store.seal(workspace.identity)
             except Exception as error:
                 return AttemptResult(
                     task=task,
                     outcome=TaskOutcome.failed(
-                        "internal", _exception_message("candidate sealing failed", error)
+                        "internal", _exception_message("staged write-set sealing failed", error)
                     ),
                     lease=lease_state.current,
+                    workspace_identity=workspace.identity,
                 )
             return AttemptResult(
                 task=task,
                 outcome=outcome,
                 lease=lease_state.current,
-                candidate=candidate,
+                workspace_identity=workspace.identity,
+                staged_write_set=staged,
             )
-        finally:
-            if activity_id is None:
-                workspace.discard()
+        except BaseException:
+            raise
 
     def _finalize(self, result: AttemptResult, *, allow_expired_lease: bool = False) -> AttemptResult:
         task = result.task
@@ -844,6 +849,11 @@ class Scheduler:
                         activation_id=task.activation_id,
                         attempt=task.attempt,
                         failure=expired.outcome.failure,
+                        staged_write_set_digest=(
+                            result.staged_write_set.staged_digest
+                            if result.staged_write_set is not None
+                            else None
+                        ),
                     ),
                 ),
                 expected_next_seq=guard.expected_next_seq,
@@ -857,6 +867,11 @@ class Scheduler:
                         activation_id=task.activation_id,
                         attempt=task.attempt,
                         failure=result.outcome.failure,
+                        staged_write_set_digest=(
+                            result.staged_write_set.staged_digest
+                            if result.staged_write_set is not None
+                            else None
+                        ),
                     ),
                 ),
                 expected_next_seq=guard.expected_next_seq,
@@ -871,17 +886,23 @@ class Scheduler:
                         attempt=task.attempt,
                         reason=result.outcome.stop_reason,
                         output=result.outcome.output,
+                        staged_write_set_digest=(
+                            result.staged_write_set.staged_digest
+                            if result.staged_write_set is not None
+                            else None
+                        ),
                     ),
                 ),
                 expected_next_seq=guard.expected_next_seq,
             )
             return result
 
-        candidate = result.candidate
-        if candidate is None:
+        staged = result.staged_write_set
+        workspace_identity = result.workspace_identity
+        if staged is None or workspace_identity is None:
             return self._record_commit_failure(
                 result,
-                "successful handler produced no candidate",
+                "successful handler produced no sealed staged write set",
                 expected_next_seq=guard.expected_next_seq,
             )
         try:
@@ -893,47 +914,59 @@ class Scheduler:
                 kind="invalid_output",
                 expected_next_seq=guard.expected_next_seq,
             )
+        validation_receipts: list[ValidationReceipt] = []
+        context = self._validation_context(task)
         try:
-            current_tree_id = self._store.head_tree_id()
-            if candidate.baseline_tree_id != current_tree_id:
-                candidate = self._store.rebase_candidate(candidate, self._attempt_id(task, "rebase"))
-            events = self.prepare_success(
-                task,
-                result.outcome,
-                candidate.baseline_tree_id,
-                candidate.candidate_tree_id,
-                prepared_intents,
+            for validator_id, validator in self._named_validators(task):
+                validation = validator.validate(staged, context)
+                if not isinstance(validation, ValidationResult):
+                    raise TypeError(
+                        f"validator {validator_id} returned {type(validation).__name__}, "
+                        "expected ValidationResult"
+                    )
+                validation_receipts.append(
+                    ValidationReceipt(
+                        validator_id=validator_id,
+                        accepted=validation.accepted,
+                        reason=validation.reason,
+                    )
+                )
+        except Exception as error:
+            return self._record_commit_failure(
+                result,
+                _exception_message("staged validation failed", error),
+                kind="invalid_output",
+                expected_next_seq=guard.expected_next_seq,
             )
-            range_digest = _prepared_event_range_digest(guard.expected_next_seq, events)
-            validators = tuple(
-                (validator_id, self._registry.commit_validators[validator_id])
-                for validator_id in task.validators
+        commit = CommitResult(
+            committed=all(receipt.accepted for receipt in validation_receipts),
+            receipts=tuple(validation_receipts),
+        )
+        if not commit.committed:
+            reasons = "; ".join(
+                f"{receipt.validator_id}: {receipt.reason}"
+                for receipt in commit.receipts
+                if not receipt.accepted
             )
-            context = ValidationContext(
-                invocation_id=task.invocation_id,
-                task_id=task.task_id,
-                graph_instance_id=task.graph_instance_id,
-                node_id=task.node_id,
-                resources=task.resources,
+            return self._record_commit_failure(
+                result,
+                f"commit validation rejected: {reasons}",
+                kind="invalid_output",
+                commit=commit,
+                expected_next_seq=guard.expected_next_seq,
             )
 
-            def authorize_publish() -> None:
-                self._guard_transition()
-                self._require_live_lease(result.lease, allow_expired=allow_expired_lease)
-
-            def publish_prepared(_previous_tree_id: str, _tree_id: str) -> None:
-                live = self._require_live_lease(result.lease, allow_expired=allow_expired_lease)
-                self._append_prepared(events, expected_next_seq=live.expected_next_seq)
-
-            commit = self._store.finalize_candidate(
-                candidate,
-                task.resources,
-                validators,
-                context,
-                authorize_publish=authorize_publish,
-                publish_prepared=publish_prepared,
-                prepared_event_range_digest=range_digest,
-            )
+        events = self.prepare_success(
+            task,
+            result.outcome,
+            workspace_identity,
+            staged,
+            prepared_intents,
+        )
+        try:
+            live = self._require_live_lease(result.lease, allow_expired=allow_expired_lease)
+            self._append_prepared(events, expected_next_seq=live.expected_next_seq)
+            self._ledger.ensure_durable()
         except LeaseUnavailableError:
             expired = _replace_with_lease_failure(result, "persisted task lease expired")
             fresh = self._lease_guard(result.lease)
@@ -948,50 +981,102 @@ class Scheduler:
                             activation_id=task.activation_id,
                             attempt=task.attempt,
                             failure=expired.outcome.failure,
+                            staged_write_set_digest=staged.staged_digest,
                         ),
                     ),
                     expected_next_seq=fresh.expected_next_seq,
                 )
             return expired
-        except (FinalizationRolledBack, HeadPublicationIndeterminate):
-            raise
-        except Exception as error:
-            fresh = self._lease_guard(result.lease)
-            if not _same_lease_owner(fresh.running, result.lease):
-                return _replace_with_lease_failure(
-                    result, "task lease ended while candidate finalization failed"
+
+        promotion = self._store.promote(workspace_identity, staged)
+        _promotion_cut("after_promotion")
+        terminal_events: list[RuntimeEvent] = [
+            TaskPromotionCompleted(
+                task_id=task.task_id,
+                activation_id=task.activation_id,
+                attempt=task.attempt,
+                staged_write_set_digest=staged.staged_digest,
+                promotion_receipt_digest=promotion.receipt_digest,
+            )
+        ]
+        if not prepared_intents:
+            terminal_events.append(
+                TaskAttemptSucceeded(
+                    activation_id=task.activation_id,
+                    attempt=task.attempt,
+                    output=result.outcome.output,
+                    staged_write_set_digest=staged.staged_digest,
+                    promotion_receipt_digest=promotion.receipt_digest,
                 )
-            return self._record_commit_failure(
-                result,
-                _exception_message("candidate commit failed", error),
-                expected_next_seq=fresh.expected_next_seq,
             )
-        if not commit.committed:
-            reasons = "; ".join(
-                f"{receipt.validator_id}: {receipt.reason}"
-                for receipt in commit.receipts
-                if not receipt.accepted
-            )
-            fresh = self._lease_guard(result.lease)
-            if not _same_lease_owner(fresh.running, result.lease):
-                return _replace_with_lease_failure(
-                    result, "task lease ended after commit validation rejection"
-                )
-            return self._record_commit_failure(
-                result,
-                f"commit validation rejected: {reasons}",
-                kind="invalid_output",
-                commit=commit,
-                expected_next_seq=fresh.expected_next_seq,
-            )
+        self._append(tuple(terminal_events))
         return result.model_copy(
             update={
-                "candidate": candidate,
                 "commit": commit,
-                "head_tree_id": candidate.candidate_tree_id,
+                "promotion_receipt_digest": promotion.receipt_digest,
                 "effect_ids": tuple(effect_id for effect_id, _intent, _key in prepared_intents),
             }
         )
+
+    def _resume_prepared_promotion(
+        self,
+        task: PlannedTask,
+        lease: Lease,
+        record: AttemptRecord,
+    ) -> AttemptResult:
+        prepared = record.prepared_commit
+        if prepared is None or prepared.attempt != task.attempt:
+            raise SchedulerStateError("promotion recovery lacks its prepared commit")
+        binding = self._open_workspace(prepared.workspace_identity)
+        promotion = self._store.promote(prepared.workspace_identity, prepared.staged_write_set)
+        if (
+            prepared.promotion_receipt_digest is not None
+            and prepared.promotion_receipt_digest != promotion.receipt_digest
+        ):
+            raise SchedulerStateError("durable promotion receipt disagrees with prepared recovery")
+        events: list[RuntimeEvent] = []
+        if prepared.promotion_receipt_digest is None:
+            events.append(
+                TaskPromotionCompleted(
+                    task_id=task.task_id,
+                    activation_id=task.activation_id,
+                    attempt=task.attempt,
+                    staged_write_set_digest=prepared.staged_write_set_digest,
+                    promotion_receipt_digest=promotion.receipt_digest,
+                )
+            )
+        if not prepared.effect_ids:
+            events.append(
+                TaskAttemptSucceeded(
+                    activation_id=task.activation_id,
+                    attempt=task.attempt,
+                    output=prepared.output,
+                    staged_write_set_digest=prepared.staged_write_set_digest,
+                    promotion_receipt_digest=promotion.receipt_digest,
+                )
+            )
+        if events:
+            self._append(tuple(events))
+        return AttemptResult(
+            task=task,
+            outcome=TaskOutcome.succeeded(thaw_json(prepared.output)),
+            lease=lease,
+            workspace_identity=binding.identity,
+            staged_write_set=prepared.staged_write_set,
+            commit=CommitResult(committed=True),
+            promotion_receipt_digest=promotion.receipt_digest,
+            effect_ids=prepared.effect_ids,
+        )
+
+    def _open_workspace(self, identity: TaskWorkspaceIdentity) -> TaskWorkspaceBinding:
+        binding = self._store.begin(
+            task_id=identity.task_id,
+            attempt=identity.attempt,
+            output_paths=identity.output_paths,
+        )
+        if binding.identity != identity:
+            raise SchedulerStateError("task workspace identity changed during recovery")
+        return binding
 
     def _record_commit_failure(
         self,
@@ -1010,6 +1095,9 @@ class Scheduler:
                     activation_id=result.task.activation_id,
                     attempt=result.task.attempt,
                     failure=outcome.failure,
+                    staged_write_set_digest=(
+                        result.staged_write_set.staged_digest if result.staged_write_set is not None else None
+                    ),
                 ),
             ),
             expected_next_seq=expected_next_seq,
@@ -1020,8 +1108,8 @@ class Scheduler:
         self,
         task: PlannedTask,
         outcome: TaskOutcome,
-        previous_tree_id: str,
-        tree_id: str,
+        workspace_identity: TaskWorkspaceIdentity,
+        staged_write_set: StagedWriteSet,
         intents: tuple[tuple[str, EffectIntent, str], ...] | None = None,
     ) -> tuple[RuntimeEvent, ...]:
         prepared_intents = intents if intents is not None else self._validated_effect_intents(task, outcome)
@@ -1032,16 +1120,10 @@ class Scheduler:
                 activation_id=task.activation_id,
                 attempt=task.attempt,
                 output=outcome.output,
-                previous_tree_id=previous_tree_id,
-                tree_id=tree_id,
+                workspace_identity=workspace_identity,
+                staged_write_set=staged_write_set,
+                staged_write_set_digest=staged_write_set.staged_digest,
                 effect_ids=effect_ids,
-            ),
-            HeadAdvanced(
-                task_id=task.task_id,
-                activation_id=task.activation_id,
-                attempt=task.attempt,
-                previous_tree_id=previous_tree_id,
-                tree_id=tree_id,
             ),
         ]
         if prepared_intents:
@@ -1056,14 +1138,6 @@ class Scheduler:
                     idempotency_key=key,
                 )
                 for index, (effect_id, intent, key) in enumerate(prepared_intents)
-            )
-        else:
-            events.append(
-                TaskAttemptSucceeded(
-                    activation_id=task.activation_id,
-                    attempt=task.attempt,
-                    output=outcome.output,
-                )
             )
         return tuple(events)
 
@@ -1182,11 +1256,22 @@ class Scheduler:
         except RuntimeAuthorizationError as error:
             raise SchedulerStateError(str(error)) from error
 
+    @staticmethod
+    def _attempt_root_descriptor(identity: TaskWorkspaceIdentity) -> AttemptRootDescriptor:
+        return AttemptRootDescriptor(
+            workspace_identity=identity,
+            project_root_digest=identity.project_digest,
+            write_root_digest=identity.write_root_digest,
+            baseline_digest=canonical_digest(
+                [item.model_dump(mode="json") for item in identity.baseline_files]
+            ),
+        )
+
     def _host_execute_call(
         self,
         task: PlannedTask,
         request: TaskRequest,
-        workspace: AttemptWorkspace,
+        workspace: TaskWorkspaceBinding,
         *,
         activity_id: str | None = None,
     ) -> TaskHostExecuteCall:
@@ -1208,7 +1293,7 @@ class Scheduler:
             capability_id=capability_id,
             capability_entrypoint=self._capability_entrypoint(capability_id),
             request=request,
-            attempt_root=AttemptRootDescriptor(attempt_directory_id=workspace.attempt_id),
+            attempt_root=self._attempt_root_descriptor(workspace.identity),
             activity_rpc=TaskActivityRpcIdentity(
                 invocation_id=task.invocation_id,
                 task_id=task.task_id,
@@ -1243,7 +1328,7 @@ class Scheduler:
         self,
         task: PlannedTask,
         activity: TaskActivitySnapshot,
-        workspace: AttemptWorkspace,
+        workspace: TaskWorkspaceBinding,
         operation: HostOperation,
     ) -> dict[str, object]:
         binding = getattr(self._registry, "bindings", {}).get(task.capability_id)
@@ -1253,7 +1338,7 @@ class Scheduler:
             "capability_id": capability_id,
             "capability_entrypoint": self._capability_entrypoint(capability_id),
             "request": self._project_request(task),
-            "attempt_root": AttemptRootDescriptor(attempt_directory_id=workspace.attempt_id),
+            "attempt_root": self._attempt_root_descriptor(workspace.identity),
             "activity_rpc": TaskActivityRpcIdentity(
                 invocation_id=task.invocation_id,
                 task_id=task.task_id,
@@ -1270,7 +1355,7 @@ class Scheduler:
         self,
         task: PlannedTask,
         activity: TaskActivitySnapshot,
-        workspace: AttemptWorkspace,
+        workspace: TaskWorkspaceBinding,
     ) -> TaskHostReconcileCall:
         return TaskHostReconcileCall(
             **self._host_lifecycle_call_fields(task, activity, workspace, "reconcile")  # type: ignore[arg-type]
@@ -1280,7 +1365,7 @@ class Scheduler:
         self,
         task: PlannedTask,
         activity: TaskActivitySnapshot,
-        workspace: AttemptWorkspace,
+        workspace: TaskWorkspaceBinding,
     ) -> TaskHostCancelCall:
         return TaskHostCancelCall(
             **self._host_lifecycle_call_fields(task, activity, workspace, "cancel")  # type: ignore[arg-type]
@@ -1315,7 +1400,7 @@ class Scheduler:
         self,
         task: PlannedTask,
         activity: TaskActivitySnapshot,
-        workspace: AttemptWorkspace,
+        workspace: TaskWorkspaceBinding,
     ) -> str:
         try:
             async with asyncio.timeout(self._cancel_timeout_seconds):
@@ -1349,29 +1434,20 @@ class Scheduler:
             self._cleanup_receipt_after_terminal(task, activity)
             self._finalize_observed_if_running(task, activity)
             return self._recovery_decision(task, activity, "promote_same_attempt", "terminal")
-        candidate_tree_id: str | None = None
-        digest: str | None = None
-        sealed_candidate: CandidateWriteSet | None = None
-        if receipt.outcome.status == "succeeded":
-            try:
-                sealed_candidate = self._store.seal_authenticated_candidate(
-                    activity.workspace_identity,
-                    task.resources,
-                    self._named_validators(task),
-                    self._validation_context(task),
-                )
-            except Exception:
-                return self._blocked_recovery(task, activity, status="indeterminate")
-            candidate_tree_id = sealed_candidate.candidate_tree_id
-            digest = write_set_digest(sealed_candidate)
-            _promotion_cut("after_candidate_seal")
+        try:
+            staged = self._store.seal(activity.workspace_identity)
+        except Exception:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        if staged.staged_digest != receipt.staged_write_set_digest:
+            return self._blocked_recovery(task, activity, status="indeterminate")
+        _promotion_cut("after_staged_seal")
         event = TaskActivityTerminalObserved(
             activity_id=activity.activity_id,
             outcome=receipt.outcome,
             outcome_digest=receipt.outcome_digest,
             terminal_proof_digest=receipt.terminal_proof_digest,
-            candidate_tree_id=candidate_tree_id,
-            write_set_digest=digest,
+            staged_write_set_digest=staged.staged_digest,
+            promotion_receipt_digest=None,
         )
         global _PROMOTING_TERMINAL
         _PROMOTING_TERMINAL = True
@@ -1390,7 +1466,7 @@ class Scheduler:
         if observed is None:
             return self._blocked_recovery(task, activity, status="indeterminate")
         self._delete_promoted_receipt(task, receipt, event)
-        self._finalize_observed_if_running(task, observed, candidate=sealed_candidate)
+        self._finalize_observed_if_running(task, observed, staged=staged)
         return self._recovery_decision(task, observed, "promote_same_attempt", "terminal")
 
     def _delete_promoted_receipt(
@@ -1412,6 +1488,7 @@ class Scheduler:
             self._receipts is None
             or activity.terminal is None
             or activity.outcome_digest is None
+            or activity.staged_write_set_digest is None
             or activity.state != "terminal_observed"
         ):
             return
@@ -1420,8 +1497,8 @@ class Scheduler:
             outcome=activity.terminal,
             outcome_digest=activity.outcome_digest,
             terminal_proof_digest=activity.terminal_proof_digest,
-            candidate_tree_id=activity.candidate_tree_id,
-            write_set_digest=activity.write_set_digest,
+            staged_write_set_digest=activity.staged_write_set_digest,
+            promotion_receipt_digest=activity.promotion_receipt_digest,
         )
         for operation in ("execute", "reconcile", "cancel"):
             identity = self._host_call_identity(task, activity.activity_id, operation)
@@ -1454,7 +1531,7 @@ class Scheduler:
         self,
         task: PlannedTask,
         activity: TaskActivitySnapshot,
-        workspace: AttemptWorkspace,
+        workspace: TaskWorkspaceBinding,
     ) -> TaskActivityReconcileResult | None:
         try:
             result = await self._host.reconcile(self._host_reconcile_call(task, activity, workspace))
@@ -1581,33 +1658,30 @@ class Scheduler:
         record = self._latest_attempt_record(task)
         return record is not None and record.status == "running"
 
-    def _candidate_from_observed(
+    def _staged_from_observed(
         self,
         task: PlannedTask,
         activity: TaskActivitySnapshot,
-    ) -> CandidateWriteSet | None:
+    ) -> StagedWriteSet | None:
         del task
-        if activity.terminal is None or activity.terminal.status != "succeeded":
+        if activity.terminal is None:
             return None
-        if activity.candidate_tree_id is None or activity.write_set_digest is None:
+        if activity.staged_write_set_digest is None:
             return None
         try:
-            candidate = self._store.open_recorded_candidate(
-                activity.workspace_identity,
-                activity.candidate_tree_id,
-            )
+            staged = self._store.seal(activity.workspace_identity)
         except Exception:
             return None
-        if write_set_digest(candidate) != activity.write_set_digest:
+        if staged.staged_digest != activity.staged_write_set_digest:
             return None
-        return candidate
+        return staged
 
     def _finalize_observed_if_running(
         self,
         task: PlannedTask,
         activity: TaskActivitySnapshot,
         *,
-        candidate: CandidateWriteSet | None = None,
+        staged: StagedWriteSet | None = None,
     ) -> AttemptResult | None:
         if activity.state != "terminal_observed" or activity.terminal is None:
             return None
@@ -1616,15 +1690,16 @@ class Scheduler:
         lease = self._persisted_running_leases().get((task.task_id, task.attempt))
         if lease is None:
             return None
-        sealed = candidate
-        if activity.terminal.status == "succeeded" and sealed is None:
-            sealed = self._candidate_from_observed(task, activity)
+        sealed = staged
+        if sealed is None:
+            sealed = self._staged_from_observed(task, activity)
         return self._finalize(
             AttemptResult(
                 task=task,
                 outcome=activity.terminal,
                 lease=lease,
-                candidate=sealed,
+                workspace_identity=activity.workspace_identity,
+                staged_write_set=sealed,
             ),
             allow_expired_lease=True,
         )
@@ -1637,11 +1712,17 @@ class Scheduler:
             return result
         if not self._attempt_is_running(result.task):
             return result
-        candidate = result.candidate
-        if activity.terminal.status == "succeeded" and candidate is None:
-            candidate = self._candidate_from_observed(result.task, activity)
+        staged = result.staged_write_set
+        if staged is None:
+            staged = self._staged_from_observed(result.task, activity)
         return self._finalize(
-            result.model_copy(update={"outcome": activity.terminal, "candidate": candidate})
+            result.model_copy(
+                update={
+                    "outcome": activity.terminal,
+                    "workspace_identity": activity.workspace_identity,
+                    "staged_write_set": staged,
+                }
+            )
         )
 
     def _handler_is_recoverable(self, task: PlannedTask) -> bool:
@@ -1747,8 +1828,8 @@ class Scheduler:
             )
             self._guard_transition()
         except LedgerPublicationIndeterminate as error:
-            raise HeadPublicationIndeterminate(
-                "prepared ledger publication outcome is indeterminate; candidate HEAD preserved"
+            raise LedgerPublicationIndeterminate(
+                "prepared promotion intent publication is indeterminate"
             ) from error.__cause__
 
     def _guard_transition(self) -> None:
@@ -1760,17 +1841,6 @@ class Scheduler:
         if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
             raise ValueError("clock returned a non-finite number")
         return float(value)
-
-    def _attempt_id(self, task: PlannedTask, phase: str) -> str:
-        identity = canonical_digest(
-            {
-                "attempt": task.attempt,
-                "owner_id": self._owner_id,
-                "phase": phase,
-                "task_id": task.task_id,
-            }
-        )
-        return f"{identity}.{phase}"
 
 
 def _initial_batch_absent(
@@ -1873,7 +1943,7 @@ def _validate_running_transition(task: PlannedTask, envelopes: Sequence[EventEnv
         or activation.graph_instance_id != task.graph_instance_id
         or activation.node_id != task.node_id
         or not activation.attempts
-        or activation.attempts[-1].status != "running"
+        or activation.attempts[-1].status not in {"running", "promotion_pending"}
         or activation.attempts[-1].attempt != task.attempt
     ):
         raise SchedulerStateError(f"task running attempt does not match: {task.activation_id}")
@@ -1894,7 +1964,13 @@ def _receipt_matches_activity(
         and receipt.attempt == task.attempt
         and receipt.activity_id == activity.activity_id
         and receipt.request_digest == activity.request_digest
-        and receipt.workspace_identity_digest == activity.workspace_identity.attempt_identity_digest
+        and receipt.workspace_identity_digest == activity.workspace_identity.identity_digest
+        and receipt.project_root_digest == activity.workspace_identity.project_digest
+        and receipt.write_root_digest == activity.workspace_identity.write_root_digest
+        and receipt.baseline_digest
+        == canonical_digest(
+            [item.model_dump(mode="json") for item in activity.workspace_identity.baseline_files]
+        )
         and receipt.dispatch_fingerprint_digest == activity.dispatch_fingerprint_digest
         and receipt.reference_digest == activity.reference_digest
         and receipt.outcome_digest
@@ -1910,7 +1986,11 @@ def _lease_has_live_activity(projection: InvocationProjection, lease: Lease) -> 
     if activation is None or not activation.attempts or activation.attempts[-1].attempt != lease.attempt:
         return False
     attempt = activation.attempts[-1]
-    return attempt.activity is not None and attempt.status in {"running", "effect_pending"}
+    return attempt.activity is not None and attempt.status in {
+        "running",
+        "promotion_pending",
+        "effect_pending",
+    }
 
 
 def _replace_with_lease_failure(result: AttemptResult, message: str) -> AttemptResult:

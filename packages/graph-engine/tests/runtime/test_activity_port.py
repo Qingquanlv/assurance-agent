@@ -7,7 +7,7 @@ import pytest
 
 import graph_engine.runtime.ledger as ledger_runtime
 from graph_engine.canonical import canonical_digest
-from graph_engine.plugin_api import AttemptWorkspaceIdentity, TaskActivityPort, TaskOutcome
+from graph_engine.plugin_api import TaskActivityPort, TaskOutcome, TaskWorkspaceIdentity
 from graph_engine.runtime.activity import (
     LedgerTaskActivityPort,
     MAX_ACTIVITY_VALUE_BYTES,
@@ -17,7 +17,6 @@ from graph_engine.runtime.activity import (
 )
 from graph_engine.runtime.events import (
     GraphStarted,
-    InvocationStarted,
     NodeActivated,
     TaskActivityPrepared,
     TaskActivityTerminalObserved,
@@ -38,12 +37,18 @@ _REFERENCE = {"session_id": "ses_1"}
 _ACTIVE_LEDGER: Ledger | None = None
 
 
-def _identity() -> AttemptWorkspaceIdentity:
-    return AttemptWorkspaceIdentity(
-        attempt_directory_id="attempt-1",
-        baseline_tree_id="a" * 64,
-        attempt_identity_digest="b" * 64,
-    )
+def _identity(*, attempt: int = 1) -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "task-1",
+        "attempt": attempt,
+        "attempt_id": f"attempt-{attempt}",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": canonical_digest({"attempt": attempt, "kind": "write-root"}),
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
 
 
 def _rpc_identity(*, activity_id: str = "activity-1", attempt: int = 1) -> TaskActivityRpcIdentity:
@@ -125,13 +130,19 @@ def _advance_attempt_elsewhere(activity_id: str) -> None:
         outcome=outcome,
         outcome_digest=canonical_digest(outcome.model_dump(mode="json")),
         terminal_proof_digest=proof,
+        staged_write_set_digest="d" * 64,
     )
     failure = outcome.failure
     assert failure is not None
     ledger.append_batch(
         (
             terminal,
-            TaskAttemptFailed(activation_id="a1", attempt=1, failure=failure),
+            TaskAttemptFailed(
+                activation_id="a1",
+                attempt=1,
+                failure=failure,
+                staged_write_set_digest="d" * 64,
+            ),
             TaskAttemptStarted(activation_id="a1", attempt=next_attempt, lease_expires_at="21"),
             TaskLeaseAcquired(
                 task_id="task-1",
@@ -148,11 +159,7 @@ def _advance_attempt_elsewhere(activity_id: str) -> None:
                 activation_id="a1",
                 attempt=next_attempt,
                 request_digest="1" * 64,
-                workspace_identity=AttemptWorkspaceIdentity(
-                    attempt_directory_id="attempt-2",
-                    baseline_tree_id="a" * 64,
-                    attempt_identity_digest="c" * 64,
-                ),
+                workspace_identity=_identity(attempt=2),
             ),
         ),
         expected_next_seq=envelopes[-1].seq + 1,

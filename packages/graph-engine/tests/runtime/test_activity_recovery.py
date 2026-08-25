@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import importlib.util
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -11,6 +12,7 @@ import pytest
 
 from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import (
+    InvocationWorkspaceBinding,
     RecoverableTaskHandler,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
@@ -29,7 +31,7 @@ from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import fold_events
 from graph_engine.runtime.planner import plan_next
 from graph_engine.runtime.scheduler import FakeClock, Scheduler
-from graph_engine.runtime.workspace import SnapshotStore
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 
 _ReconcileStatus = Literal["not_dispatched", "running", "terminal", "absent", "indeterminate"]
@@ -85,14 +87,14 @@ class _RecordingHost:
         self._malformed = malformed
         self.calls = calls if calls is not None else CallLog()
         self._handlers: dict[str, TaskHandler] = {}
-        self._store: SnapshotStore | None = None
+        self._store: TaskWorkspaceStore | None = None
         self._receipts: TerminalReceiptStore | None = None
 
     def bind_invocation_runtime(
         self,
         *,
         handlers: dict[str, TaskHandler],
-        store: SnapshotStore,
+        store: TaskWorkspaceStore,
         receipts: object | None = None,
     ) -> None:
         self._handlers = handlers
@@ -173,8 +175,30 @@ def _load_engine_helpers() -> Any:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    for attribute, name in (
+        ("_CALLBACKS", names[0]),
+        ("_EFFECT_CALLBACKS", names[1]),
+        ("_EFFECT_POLICIES", names[2]),
+    ):
+        existing = saved[name]
+        if isinstance(existing, dict):
+            setattr(module, attribute, existing)
+            setattr(builtins, name, existing)
     module._restored_builtins = saved  # type: ignore[attr-defined]
     return module
+
+
+def _workspace_binding(root: Path) -> InvocationWorkspaceBinding:
+    project_root = root / "project"
+    attempts_root = root / "attempts"
+    receipts_root = root / "promotion-receipts"
+    for path in (project_root, attempts_root, receipts_root):
+        path.mkdir(exist_ok=True)
+    return InvocationWorkspaceBinding(
+        project_root=project_root,
+        attempts_root=attempts_root,
+        receipts_root=receipts_root,
+    )
 
 
 def _task_product(handler: Any) -> Any:
@@ -191,12 +215,12 @@ def _task_product(handler: Any) -> Any:
 
 
 def _install_call_recording(calls: CallLog) -> tuple[Any, Any]:
-    original_open = SnapshotStore.open_attempt
+    original_open = TaskWorkspaceStore.begin
     original_append = Scheduler._append
 
-    def recording_open(self: SnapshotStore, identity: Any) -> Any:
+    def recording_open(self: TaskWorkspaceStore, *args: Any, **kwargs: Any) -> Any:
         calls.order.append("authenticate_workspace")
-        return original_open(self, identity)
+        return original_open(self, *args, **kwargs)
 
     def recording_append(self: Scheduler, events: Any, *, expected_next_seq: int | None = None) -> None:
         for event in events:
@@ -205,13 +229,13 @@ def _install_call_recording(calls: CallLog) -> tuple[Any, Any]:
                 calls.order.append(kind)
         return original_append(self, events, expected_next_seq=expected_next_seq)
 
-    SnapshotStore.open_attempt = recording_open  # type: ignore[method-assign]
+    TaskWorkspaceStore.begin = recording_open  # type: ignore[method-assign]
     Scheduler._append = recording_append  # type: ignore[method-assign]
     return original_open, original_append
 
 
 def _restore_call_recording(original_open: Any, original_append: Any) -> None:
-    SnapshotStore.open_attempt = original_open
+    TaskWorkspaceStore.begin = original_open
     Scheduler._append = original_append
 
 
@@ -235,8 +259,16 @@ async def _crashed_recoverable_attempt(
         calls=calls,
     )
     start_clock = FakeClock(10.0)
+    workspace_binding = _workspace_binding(tmp_path)
     engine = Engine(tmp_path, clock=start_clock, host=host)
-    handle = engine.start(product, entrypoint="main", invocation_id="recover-1", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
+    handle = engine.start(
+        product,
+        entrypoint="main",
+        invocation_id="recover-1",
+        seed=empty_invocation_seed(),
+        authorization=empty_runtime_authorization(),
+        workspace_binding=workspace_binding,
+    )
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     plan = plan_next(product.workflow, fold_events(envelopes))
@@ -253,7 +285,7 @@ async def _crashed_recoverable_attempt(
             "role": "engine-scheduler",
         }
     )
-    with handle.workspace as store:
+    with closing(handle.workspace) as store:
         scheduler = Scheduler(
             _DirectRegistry({"test.empty.run": _RecoverableHandler()}),
             store,
@@ -276,7 +308,12 @@ async def _crashed_recoverable_attempt(
     try:
         reopen_clock = FakeClock(21.0 if expired else 11.0)
         reopened_engine = Engine(tmp_path, clock=reopen_clock, host=host)
-        reopened = reopened_engine.open("recover-1", product, authorization=empty_runtime_authorization())
+        reopened = reopened_engine.open(
+            "recover-1",
+            product,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        )
         calls.order.clear()
         return _RecoveryFixture(
             handle=reopened,
@@ -401,13 +438,24 @@ async def _assert_no_blind_retry(tmp_path: Path, mode: str) -> None:
     try:
         before = fixture.ledger.read_all()
         before_bytes = fixture.ledger.read_bytes()
-        workspace_tree = fixture.handle.workspace.head_tree_id()
+        with closing(fixture.handle.workspace) as workspace:
+            project_entries = tuple(
+                sorted(path.relative_to(workspace.project_root) for path in workspace.project_root.rglob("*"))
+            )
         result = await fixture.handle.recover()
         assert fixture.observed_decision(result) == "block"
         after = fixture.ledger.read_all()
         assert [item.event.kind for item in after] == [item.event.kind for item in before]
         assert fixture.ledger.read_bytes() == before_bytes
-        assert fixture.handle.workspace.head_tree_id() == workspace_tree
+        with closing(fixture.handle.workspace) as workspace:
+            assert (
+                tuple(
+                    sorted(
+                        path.relative_to(workspace.project_root) for path in workspace.project_root.rglob("*")
+                    )
+                )
+                == project_entries
+            )
         projection = fold_events(after)
         attempt = projection.activations[-1].attempts[-1]
         assert attempt.attempt == fixture.attempt_before == 1
@@ -485,8 +533,16 @@ async def _assert_open_after_recovery_defers_compiled_events(tmp_path: Path) -> 
     calls = CallLog()
     host = _RecordingHost(status="running", calls=calls)
     start_clock = FakeClock(10.0)
+    workspace_binding = _workspace_binding(tmp_path)
     engine = Engine(tmp_path, clock=start_clock, host=host)
-    handle = engine.start(product, entrypoint="main", invocation_id="adopt-defer", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
+    handle = engine.start(
+        product,
+        entrypoint="main",
+        invocation_id="adopt-defer",
+        seed=empty_invocation_seed(),
+        authorization=empty_runtime_authorization(),
+        workspace_binding=workspace_binding,
+    )
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     structural = plan_next(product.workflow, fold_events(envelopes))
@@ -501,7 +557,7 @@ async def _assert_open_after_recovery_defers_compiled_events(tmp_path: Path) -> 
             "role": "engine-scheduler",
         }
     )
-    with handle.workspace as store:
+    with closing(handle.workspace) as store:
         recover_scheduler = Scheduler(
             _DirectRegistry({recoverable.capability_id: _RecoverableHandler()}),
             store,
@@ -555,7 +611,12 @@ async def _assert_open_after_recovery_defers_compiled_events(tmp_path: Path) -> 
         handle.close()
         engine.close()
         reopened_engine = Engine(tmp_path, clock=FakeClock(11.0), host=host)
-        reopened = reopened_engine.open("adopt-defer", product, authorization=empty_runtime_authorization())
+        reopened = reopened_engine.open(
+            "adopt-defer",
+            product,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        )
         reopened.close()
         reopened_engine.close()
     finally:
@@ -613,6 +674,8 @@ class _TerminalCancelHost(_RecordingHost):
         activity = getattr(call, "activity")
         outcome = TaskOutcome.stopped("provider-canceled")
         assert self._receipts is not None
+        assert self._store is not None
+        staged = self._store.seal(activity.workspace_identity)
         sink = self._receipts.sink_for(identity)
         sink.install(
             TaskHostTerminalReceipt(
@@ -625,7 +688,13 @@ class _TerminalCancelHost(_RecordingHost):
                 activity_id=identity.activity_id,
                 operation="cancel",
                 request_digest=activity.request_digest,
-                workspace_identity_digest=activity.workspace_identity.attempt_identity_digest,
+                workspace_identity_digest=activity.workspace_identity.identity_digest,
+                project_root_digest=activity.workspace_identity.project_digest,
+                write_root_digest=activity.workspace_identity.write_root_digest,
+                baseline_digest=canonical_digest(
+                    [item.model_dump(mode="json") for item in activity.workspace_identity.baseline_files]
+                ),
+                staged_write_set_digest=staged.staged_digest,
                 dispatch_fingerprint_digest=activity.dispatch_fingerprint_digest,
                 reference_digest=activity.reference_digest,
                 outcome=outcome,
@@ -656,8 +725,16 @@ async def _assert_cancel_terminal_does_not_adopt(tmp_path: Path) -> None:
     calls = CallLog()
     host = _TerminalCancelHost(status="running", calls=calls)
     start_clock = FakeClock(10.0)
+    workspace_binding = _workspace_binding(tmp_path)
     engine = Engine(tmp_path, clock=start_clock, host=host)
-    handle = engine.start(product, entrypoint="main", invocation_id="cancel-term", seed=empty_invocation_seed(), authorization=empty_runtime_authorization())
+    handle = engine.start(
+        product,
+        entrypoint="main",
+        invocation_id="cancel-term",
+        seed=empty_invocation_seed(),
+        authorization=empty_runtime_authorization(),
+        workspace_binding=workspace_binding,
+    )
     ledger = Ledger(handle.invocation_root / "ledger")
     envelopes = ledger.read_all()
     plan = plan_next(product.workflow, fold_events(envelopes))
@@ -671,7 +748,7 @@ async def _assert_cancel_terminal_does_not_adopt(tmp_path: Path) -> None:
             "role": "engine-scheduler",
         }
     )
-    with handle.workspace as store:
+    with closing(handle.workspace) as store:
         receipts = TerminalReceiptStore.open_or_create(handle.invocation_root / "receipts")
         host._receipts = receipts
         scheduler = Scheduler(
@@ -700,7 +777,12 @@ async def _assert_cancel_terminal_does_not_adopt(tmp_path: Path) -> None:
     reopened = None
     try:
         reopened_engine = Engine(tmp_path, clock=FakeClock(11.0), host=host)
-        reopened = reopened_engine.open("cancel-term", product, authorization=empty_runtime_authorization())
+        reopened = reopened_engine.open(
+            "cancel-term",
+            product,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        )
         calls.order.clear()
         result = await reopened.recover()
         decisions = getattr(result, "decisions", ())

@@ -6,7 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
-from graph_engine.plugin_api import ResourceClaims, TaskActivitySnapshot, TaskFailure
+from graph_engine.plugin_api import (
+    ResourceClaims,
+    StagedWriteSet,
+    TaskActivitySnapshot,
+    TaskFailure,
+    TaskWorkspaceIdentity,
+)
 from graph_engine.runtime.events import (
     EffectApplyStarted,
     EffectIntentCommitted,
@@ -15,7 +21,6 @@ from graph_engine.runtime.events import (
     GraphCompleted,
     GraphFailed,
     GraphStarted,
-    HeadAdvanced,
     InterruptResumed,
     InvocationFinished,
     InvocationStarted,
@@ -37,6 +42,7 @@ from graph_engine.runtime.events import (
     TaskLeaseAcquired,
     TaskLeaseAdopted,
     TaskLeaseHeartbeat,
+    TaskPromotionCompleted,
     TokenConsumed,
     TokenOffered,
 )
@@ -96,10 +102,17 @@ class ProjectionModel(BaseModel):
     model_config = _FROZEN
 
 
-AttemptStatus = Literal["running", "effect_pending", "succeeded", "failed", "stopped"]
+AttemptStatus = Literal[
+    "running",
+    "promotion_pending",
+    "effect_pending",
+    "succeeded",
+    "failed",
+    "stopped",
+]
 EffectStatus = Literal["committed", "applying", "applied", "permanently_failed"]
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
-_LIVE_ATTEMPT_STATUSES = {"running", "effect_pending"}
+_LIVE_ATTEMPT_STATUSES = {"running", "promotion_pending", "effect_pending"}
 _LIVE_ACTIVITY_STATES = {"prepared", "dispatch_started", "bound"}
 
 
@@ -108,12 +121,18 @@ class PreparedTaskCommit(ProjectionModel):
     activation_id: str
     attempt: int = Field(ge=1)
     output: FrozenJSONValue = None
-    previous_tree_id: str = Field(pattern=_SHA256_PATTERN)
-    tree_id: str = Field(pattern=_SHA256_PATTERN)
+    workspace_identity: TaskWorkspaceIdentity
+    staged_write_set: StagedWriteSet
+    staged_write_set_digest: str = Field(pattern=_SHA256_PATTERN)
+    promotion_receipt_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     effect_ids: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _validate_effect_ids(self) -> Self:
+        if self.workspace_identity.identity_digest != self.staged_write_set.identity_digest:
+            raise ValueError("prepared staged write set belongs to another workspace")
+        if self.staged_write_set_digest != self.staged_write_set.staged_digest:
+            raise ValueError("prepared staged write-set digest is not canonical")
         if any(not effect_id for effect_id in self.effect_ids):
             raise ValueError("prepared effect ids must be non-empty")
         if len(set(self.effect_ids)) != len(self.effect_ids):
@@ -231,7 +250,6 @@ class AttemptRecord(ProjectionModel):
     lease_acquired_at: float | None = None
     lease_heartbeat_at: float | None = None
     lease_expires_at_value: float | None = None
-    committed_tree_id: str | None = None
     prepared_commit: PreparedTaskCommit | None = None
 
     @model_validator(mode="after")
@@ -243,16 +261,10 @@ class AttemptRecord(ProjectionModel):
                 raise ValueError("stopped attempt requires a stop reason")
         elif self.stop_reason is not None:
             raise ValueError("stop reason is allowed only for stopped status")
-        if self.status == "effect_pending" and self.prepared_commit is None:
-            raise ValueError("effect_pending attempt requires a prepared commit")
+        if self.status in {"promotion_pending", "effect_pending"} and self.prepared_commit is None:
+            raise ValueError("pending attempt requires a prepared commit")
         if self.prepared_commit is not None and self.prepared_commit.attempt != self.attempt:
             raise ValueError("prepared commit does not match the attempt")
-        if (
-            self.prepared_commit is not None
-            and self.committed_tree_id is not None
-            and self.committed_tree_id != self.prepared_commit.tree_id
-        ):
-            raise ValueError("committed tree does not match the prepared commit")
         lease_values = (
             self.lease_task_id,
             self.lease_owner_id,
@@ -391,7 +403,6 @@ class InvocationProjection(ProjectionModel):
     effects: tuple[EffectRecord, ...] = ()
     pending_interrupt: PendingInterrupt | None = None
     terminal_reason: str | None = None
-    head_tree_id: str | None = None
 
     @model_validator(mode="after")
     def _validate_semantics(self) -> Self:
@@ -406,7 +417,6 @@ class InvocationProjection(ProjectionModel):
                     self.effects,
                     self.pending_interrupt,
                     self.terminal_reason,
-                    self.head_tree_id,
                 )
             ):
                 raise ValueError("not_started projection cannot contain runtime state")
@@ -588,7 +598,6 @@ def _advance_fold(
                     "invocation_id": event.invocation_id,
                     "lock_digest": event.lock_digest,
                     "entrypoint": event.entrypoint,
-                    "head_tree_id": event.initial_tree_id,
                 }
             )
             continue
@@ -797,6 +806,8 @@ def _advance_fold(
             projection = _fold_task_lease_adopted(projection, event, envelope.seq)
         elif isinstance(event, TaskCommitPrepared):
             projection = _fold_task_commit_prepared(projection, event, envelope.seq)
+        elif isinstance(event, TaskPromotionCompleted):
+            projection = _fold_task_promotion_completed(projection, event, envelope.seq)
         elif isinstance(event, EffectIntentCommitted):
             projection = _fold_effect_intent_committed(projection, event, envelope.seq)
         elif isinstance(event, EffectApplyStarted):
@@ -876,42 +887,6 @@ def _advance_fold(
                     )
                 }
             )
-        elif isinstance(event, HeadAdvanced):
-            activation = _activation(projection, event.activation_id, envelope.seq)
-            _ensure_graph_open_if_known(projection, activation.graph_instance_id, envelope.seq)
-            if activation.status != "active":
-                _fail(envelope.seq, "HEAD advanced for a non-active activation")
-            if not activation.attempts:
-                _fail(envelope.seq, "HEAD advanced without a successful task attempt")
-            attempt = activation.attempts[-1]
-            _require_activity_head_candidate(attempt, event.tree_id, envelope.seq)
-            if attempt.status == "succeeded":
-                if attempt.attempt != event.attempt or attempt.lease_task_id != event.task_id:
-                    _fail(envelope.seq, "HEAD advance does not match the successful attempt")
-            elif attempt.status == "effect_pending":
-                prepared = attempt.prepared_commit
-                if prepared is None:
-                    _fail(envelope.seq, "HEAD advanced without a prepared commit")
-                if (
-                    attempt.attempt != event.attempt
-                    or prepared.task_id != event.task_id
-                    or event.previous_tree_id != prepared.previous_tree_id
-                    or event.tree_id != prepared.tree_id
-                ):
-                    _fail(envelope.seq, "HEAD advance does not match the prepared commit")
-                if attempt.lease_task_id is not None and attempt.lease_task_id != event.task_id:
-                    _fail(envelope.seq, "HEAD advance does not match the prepared commit")
-            else:
-                _fail(envelope.seq, "HEAD advanced without a successful task attempt")
-            if attempt.committed_tree_id is not None:
-                _fail(envelope.seq, "successful task attempt already advanced HEAD")
-            if projection.head_tree_id is not None and projection.head_tree_id != event.previous_tree_id:
-                _fail(envelope.seq, "HEAD advance previous tree does not match projection")
-            attempt = attempt.model_copy(update={"committed_tree_id": event.tree_id})
-            projection = _replace_activation(
-                projection,
-                activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)}),
-            ).model_copy(update={"head_tree_id": event.tree_id})
         elif isinstance(event, InterruptResumed):
             pending = projection.pending_interrupt
             if pending is None or pending.interrupt_id != event.interrupt_id:
@@ -1091,22 +1066,54 @@ def _fold_task_commit_prepared(
         _fail(seq, "commit prepared without a matching active attempt")
     if attempt.lease_task_id is not None and attempt.lease_task_id != event.task_id:
         _fail(seq, "prepared commit does not match the active attempt")
-    _require_activity_commit_prepared(attempt, seq)
-    if projection.head_tree_id is not None and projection.head_tree_id != event.previous_tree_id:
-        _fail(seq, "prepared commit previous tree does not match projection")
+    _require_activity_commit_prepared(attempt, event, seq)
     prepared = PreparedTaskCommit(
         task_id=event.task_id,
         activation_id=event.activation_id,
         attempt=event.attempt,
         output=event.output,
-        previous_tree_id=event.previous_tree_id,
-        tree_id=event.tree_id,
+        workspace_identity=event.workspace_identity,
+        staged_write_set=event.staged_write_set,
+        staged_write_set_digest=event.staged_write_set_digest,
         effect_ids=event.effect_ids,
     )
     attempt = attempt.model_copy(
         update={
-            "status": "effect_pending",
+            "status": "promotion_pending",
             "output": event.output,
+            "prepared_commit": prepared,
+        }
+    )
+    return _replace_activation(
+        projection,
+        activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)}),
+    )
+
+
+def _fold_task_promotion_completed(
+    projection: InvocationProjection,
+    event: TaskPromotionCompleted,
+    seq: int,
+) -> InvocationProjection:
+    activation = _activation(projection, event.activation_id, seq)
+    _ensure_graph_open_if_known(projection, activation.graph_instance_id, seq)
+    if activation.status != "active" or not activation.attempts:
+        _fail(seq, "promotion completed without a prepared task attempt")
+    attempt = activation.attempts[-1]
+    prepared = attempt.prepared_commit
+    if attempt.status != "promotion_pending" or prepared is None:
+        _fail(seq, "promotion completed without a prepared task attempt")
+    if (
+        attempt.attempt != event.attempt
+        or prepared.task_id != event.task_id
+        or prepared.staged_write_set_digest != event.staged_write_set_digest
+        or prepared.promotion_receipt_digest is not None
+    ):
+        _fail(seq, "promotion receipt does not match the prepared task attempt")
+    prepared = prepared.model_copy(update={"promotion_receipt_digest": event.promotion_receipt_digest})
+    attempt = attempt.model_copy(
+        update={
+            "status": "effect_pending" if prepared.effect_ids else "promotion_pending",
             "prepared_commit": prepared,
         }
     )
@@ -1127,12 +1134,10 @@ def _fold_effect_intent_committed(
         _fail(seq, "intent committed without a prepared commit")
     attempt = activation.attempts[-1]
     prepared = attempt.prepared_commit
-    if attempt.status != "effect_pending" or prepared is None:
+    if attempt.status != "promotion_pending" or prepared is None:
         _fail(seq, "intent committed without a prepared commit")
     if attempt.attempt != event.attempt:
         _fail(seq, "intent committed without a matching prepared commit")
-    if attempt.committed_tree_id is None:
-        _fail(seq, "intent committed before HEAD advanced")
     if any(item.effect_id == event.effect_id for item in projection.effects):
         _fail(seq, "duplicate effect intent")
     expected_index = sum(
@@ -1187,6 +1192,17 @@ def _fold_effect_apply_started(
         _fail(seq, f"expected apply attempt {expected_attempt}, found {event.apply_attempt}")
     activation = _activation(projection, effect.activation_id, seq)
     _ensure_graph_open_if_known(projection, activation.graph_instance_id, seq)
+    attempt = next(
+        (item for item in activation.attempts if item.attempt == effect.task_attempt),
+        None,
+    )
+    if (
+        attempt is None
+        or attempt.status != "effect_pending"
+        or attempt.prepared_commit is None
+        or attempt.prepared_commit.promotion_receipt_digest is None
+    ):
+        _fail(seq, "effect apply started before staged output promotion")
     return _replace_effect(
         projection,
         effect.model_copy(update={"status": "applying", "apply_attempts": event.apply_attempt}),
@@ -1229,11 +1245,16 @@ def _fold_task_attempt_outcome(
         _fail(seq, "attempt outcome without a matching active attempt")
     _require_activity_attempt_outcome(attempt, event, seq)
     if isinstance(event, TaskAttemptSucceeded):
-        if attempt.status == "running":
+        prepared = attempt.prepared_commit
+        if attempt.status == "promotion_pending":
+            if prepared is None or prepared.effect_ids or prepared.promotion_receipt_digest is None:
+                _fail(seq, "task succeeded before staged output promotion")
+            if thaw_json(event.output) != thaw_json(prepared.output):
+                _fail(seq, "task success output disagrees with the prepared commit")
             attempt = attempt.model_copy(update={"status": "succeeded", "output": event.output})
         elif attempt.status == "effect_pending":
-            if attempt.committed_tree_id is None:
-                _fail(seq, "task succeeded before HEAD advanced")
+            if prepared is None or prepared.promotion_receipt_digest is None:
+                _fail(seq, "task succeeded before staged output promotion")
             if not _all_effect_receipts_present(projection, activation.activation_id, attempt):
                 _fail(seq, "task succeeded before all effect receipts")
             if thaw_json(event.output) != thaw_json(attempt.output):
@@ -1241,6 +1262,12 @@ def _fold_task_attempt_outcome(
             attempt = attempt.model_copy(update={"status": "succeeded", "output": event.output})
         else:
             _fail(seq, "attempt outcome without a matching active attempt")
+        assert prepared is not None
+        if (
+            event.staged_write_set_digest != prepared.staged_write_set_digest
+            or event.promotion_receipt_digest != prepared.promotion_receipt_digest
+        ):
+            _fail(seq, "task success receipt digests disagree with the prepared commit")
         activation = activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)})
         return _replace_activation(projection, activation)
     if attempt.status == "effect_pending":
@@ -1282,59 +1309,39 @@ def _require_activity_attempt_outcome(
             _fail(seq, "task success disagrees with the observed terminal activity")
         if thaw_json(event.output) != thaw_json(terminal.output):
             _fail(seq, "task success output disagrees with the observed terminal activity")
-        _require_success_candidate_match(attempt, seq)
+        if activity.staged_write_set_digest != event.staged_write_set_digest:
+            _fail(seq, "task success staged write set disagrees with observed activity")
         return
     if terminal.status == "succeeded":
         return
-    if activity.candidate_tree_id is not None or activity.write_set_digest is not None:
-        _fail(seq, "failed terminal activity cannot have a candidate")
     if isinstance(event, TaskAttemptFailed):
         if terminal.status != "failed" or event.failure != terminal.failure:
             _fail(seq, "task failure disagrees with the observed terminal activity")
+        if event.staged_write_set_digest != activity.staged_write_set_digest:
+            _fail(seq, "task failure staged write set disagrees with observed activity")
         return
     if terminal.status != "stopped" or event.reason != terminal.stop_reason:
         _fail(seq, "task stop disagrees with the observed terminal activity")
+    if event.staged_write_set_digest != activity.staged_write_set_digest:
+        _fail(seq, "task stop staged write set disagrees with observed activity")
 
 
-def _require_activity_commit_prepared(attempt: AttemptRecord, seq: int) -> None:
+def _require_activity_commit_prepared(
+    attempt: AttemptRecord,
+    event: TaskCommitPrepared,
+    seq: int,
+) -> None:
     activity = attempt.activity
     if activity is None:
         return
     terminal = activity.terminal if activity.state == "terminal_observed" else None
     if terminal is not None and terminal.status == "succeeded":
+        if activity.staged_write_set_digest != event.staged_write_set_digest:
+            _fail(seq, "prepared staged write set disagrees with observed activity")
         return
     if terminal is not None:
-        _fail(seq, "failed terminal activity cannot have a candidate")
+        _fail(seq, "failed terminal activity cannot prepare promotion")
     _fail(seq, "commit prepared before a succeeded terminal activity")
-
-
-def _require_activity_head_candidate(attempt: AttemptRecord, tree_id: str, seq: int) -> None:
-    activity = attempt.activity
-    if activity is None:
-        return
-    if activity.state == "terminal_observed" and activity.terminal is not None:
-        if activity.terminal.status != "succeeded":
-            _fail(seq, "failed terminal activity cannot have a candidate")
-    _require_success_candidate_match(attempt, seq, tree_id)
-
-
-def _require_success_candidate_match(
-    attempt: AttemptRecord,
-    seq: int,
-    tree_id: str | None = None,
-) -> None:
-    activity = attempt.activity
-    if activity is None or activity.terminal is None or activity.terminal.status != "succeeded":
-        return
-    observed_tree = tree_id
-    if observed_tree is None:
-        observed_tree = attempt.committed_tree_id
-        if observed_tree is None and attempt.prepared_commit is not None:
-            observed_tree = attempt.prepared_commit.tree_id
-    if observed_tree is None:
-        return
-    if observed_tree != activity.candidate_tree_id or activity.write_set_digest is None:
-        _fail(seq, "success candidate does not match the observed activity candidate")
 
 
 def _fold_task_activity_prepared(
@@ -1466,10 +1473,10 @@ def _fold_task_activity_terminal_observed(
         if activity.state != "bound":
             _fail(seq, "success requires a bound activity")
     else:
-        if event.candidate_tree_id is not None or event.write_set_digest is not None:
-            _fail(seq, "failed terminal activity cannot have a candidate")
-        if attempt.prepared_commit is not None or attempt.committed_tree_id is not None:
-            _fail(seq, "failed terminal activity cannot have a candidate")
+        if event.promotion_receipt_digest is not None:
+            _fail(seq, "failed terminal activity cannot carry a promotion receipt")
+        if attempt.prepared_commit is not None:
+            _fail(seq, "failed terminal activity cannot prepare promotion")
         if activity.state == "dispatch_started" and event.terminal_proof_digest is None:
             _fail(seq, "unbound terminal after dispatch_started requires terminal_proof_digest")
         if activity.state not in {"prepared", "dispatch_started", "bound"}:
@@ -1482,8 +1489,8 @@ def _fold_task_activity_terminal_observed(
             "terminal": event.outcome,
             "outcome_digest": event.outcome_digest,
             "terminal_proof_digest": event.terminal_proof_digest,
-            "candidate_tree_id": event.candidate_tree_id,
-            "write_set_digest": event.write_set_digest,
+            "staged_write_set_digest": event.staged_write_set_digest,
+            "promotion_receipt_digest": event.promotion_receipt_digest,
         },
     )
     return _replace_latest_attempt(projection, activation, attempt.model_copy(update={"activity": snapshot}))

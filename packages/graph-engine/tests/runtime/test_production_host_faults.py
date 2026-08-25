@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 
 from bootstrap_fixtures import synthetic_invocation_started
+from graph_engine.runtime import production_worker
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
-    AttemptWorkspaceIdentity,
     InvocationMetadata,
     ResourceClaims,
     TaskActivityCancelResult,
@@ -23,6 +23,7 @@ from graph_engine.plugin_api import (
     TaskContext,
     TaskOutcome,
     TaskRequest,
+    TaskWorkspaceBinding,
 )
 from graph_engine.runtime.host_protocol import (
     AttemptRootDescriptor,
@@ -50,7 +51,7 @@ from graph_engine.runtime.host_receipts import (
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.production_host import ProductionHostError, _ProductionTaskExecutionHost
 from graph_engine.runtime.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.workspace import SnapshotStore
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 
 def _write_handler(tmp_path: Path, *, class_name: str, body: str) -> tuple[str, tuple[str, ...]]:
@@ -67,7 +68,7 @@ def _write_handler(tmp_path: Path, *, class_name: str, body: str) -> tuple[str, 
 class _EchoHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del request
-        (context.workspace_root / "done.txt").write_text("ok\n", encoding="utf-8")
+        (context.write_root / "done.txt").write_text("ok\n", encoding="utf-8")
         return TaskOutcome.succeeded({"ok": True})
 
 
@@ -118,9 +119,28 @@ def _request() -> TaskRequest:
     )
 
 
+def _task_workspace_store(tmp_path: Path, *, name: str = "workspace") -> TaskWorkspaceStore:
+    root = tmp_path / name
+    project_root = root / "project"
+    project_root.mkdir(parents=True)
+    return TaskWorkspaceStore(
+        project_root,
+        root / "attempts",
+        root / "promotion-receipts",
+    )
+
+
+def _begin_workspace(store: TaskWorkspaceStore) -> TaskWorkspaceBinding:
+    return store.begin(
+        task_id="task-1",
+        attempt=1,
+        output_paths=("after.txt", "done.txt", "held.txt", "orphan.pid"),
+    )
+
+
 def _execute_call(
     *,
-    attempt_directory_id: str = "attempt-1",
+    workspace: TaskWorkspaceBinding,
     capability_id: str = "test.echo.run",
     entrypoint: str = "echo_handler:EchoHandler.execute",
     activity_id: str | None = None,
@@ -143,7 +163,7 @@ def _execute_call(
         request=_request().model_copy(
             update={"capability_id": capability_id, "target_capability_id": capability_id}
         ),
-        attempt_root=AttemptRootDescriptor(attempt_directory_id=attempt_directory_id),
+        attempt_root=_attempt_root(workspace),
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
             task_id="task-1",
@@ -156,24 +176,30 @@ def _execute_call(
     )
 
 
-def _activity_snapshot() -> TaskActivitySnapshot:
-    fingerprint = {"endpoint": "https://example.test"}
-    workspace = AttemptWorkspaceIdentity(
-        attempt_directory_id="attempt-1",
-        baseline_tree_id="0" * 64,
-        attempt_identity_digest="1" * 64,
+def _attempt_root(workspace: TaskWorkspaceBinding) -> AttemptRootDescriptor:
+    return AttemptRootDescriptor(
+        workspace_identity=workspace.identity,
+        project_root_digest=workspace.identity.project_digest,
+        write_root_digest=workspace.identity.write_root_digest,
+        baseline_digest=canonical_digest(
+            [item.model_dump(mode="json") for item in workspace.identity.baseline_files]
+        ),
     )
+
+
+def _activity_snapshot(workspace: TaskWorkspaceBinding) -> TaskActivitySnapshot:
+    fingerprint = {"endpoint": "https://example.test"}
     return TaskActivitySnapshot(
         activity_id="activity-1",
         request_digest="2" * 64,
-        workspace_identity=workspace,
+        workspace_identity=workspace.identity,
         dispatch_fingerprint=fingerprint,
         dispatch_fingerprint_digest=canonical_digest(fingerprint),
         state="dispatch_started",
     )
 
 
-def _reconcile_call(*, entrypoint: str) -> TaskHostReconcileCall:
+def _reconcile_call(*, workspace: TaskWorkspaceBinding, entrypoint: str) -> TaskHostReconcileCall:
     host = pinned_execution_host_lock()
     identity = TaskHostCallIdentity(
         invocation_id="inv-1",
@@ -190,7 +216,7 @@ def _reconcile_call(*, entrypoint: str) -> TaskHostReconcileCall:
         capability_id="test.echo.run",
         capability_entrypoint=entrypoint,
         request=_request(),
-        attempt_root=AttemptRootDescriptor(attempt_directory_id="attempt-1"),
+        attempt_root=_attempt_root(workspace),
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
             task_id="task-1",
@@ -199,11 +225,11 @@ def _reconcile_call(*, entrypoint: str) -> TaskHostReconcileCall:
             activity_id="activity-1",
         ),
         authorized_secret_handles=(),
-        activity=_activity_snapshot(),
+        activity=_activity_snapshot(workspace),
     )
 
 
-def _cancel_call(*, entrypoint: str) -> TaskHostCancelCall:
+def _cancel_call(*, workspace: TaskWorkspaceBinding, entrypoint: str) -> TaskHostCancelCall:
     host = pinned_execution_host_lock()
     identity = TaskHostCallIdentity(
         invocation_id="inv-1",
@@ -220,7 +246,7 @@ def _cancel_call(*, entrypoint: str) -> TaskHostCancelCall:
         capability_id="test.echo.run",
         capability_entrypoint=entrypoint,
         request=_request(),
-        attempt_root=AttemptRootDescriptor(attempt_directory_id="attempt-1"),
+        attempt_root=_attempt_root(workspace),
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
             task_id="task-1",
@@ -229,13 +255,13 @@ def _cancel_call(*, entrypoint: str) -> TaskHostCancelCall:
             activity_id="activity-1",
         ),
         authorized_secret_handles=(),
-        activity=_activity_snapshot(),
+        activity=_activity_snapshot(workspace),
     )
 
 
 def test_production_host_rejects_wrong_workspace(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
     entrypoint, roots = _write_handler(
         tmp_path,
         class_name="EchoHandler",
@@ -247,15 +273,16 @@ def test_production_host_rejects_wrong_workspace(tmp_path: Path) -> None:
         store=store,
         handler_import_roots={"test.echo.run": roots},
     )
-    call = _execute_call(attempt_directory_id="missing-attempt", entrypoint=entrypoint)
+    workspace.write_root.rmdir()
+    call = _execute_call(workspace=workspace, entrypoint=entrypoint)
     with pytest.raises(ProductionHostError, match="attempt workspace"):
         asyncio.run(host.execute(call))
 
 
 def test_unrelated_workspace_holder_does_not_block_quiescence(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    attempt = store.create_attempt("attempt-1")
-    held = attempt.root / "held-by-provider.txt"
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
+    held = workspace.write_root / "held.txt"
     held.write_text("open\n", encoding="utf-8")
     holder = subprocess.Popen(
         [sys.executable, "-c", "import time; open(r'''" + str(held) + "'''); time.sleep(60)"],
@@ -277,7 +304,7 @@ def test_unrelated_workspace_holder_does_not_block_quiescence(tmp_path: Path) ->
             store=store,
             handler_import_roots={"test.echo.run": roots},
         )
-        result = asyncio.run(host.execute(_execute_call(entrypoint=entrypoint)))
+        result = asyncio.run(host.execute(_execute_call(workspace=workspace, entrypoint=entrypoint)))
         assert result.outcome is not None
         assert result.outcome.status == "succeeded"
     finally:
@@ -285,21 +312,70 @@ def test_unrelated_workspace_holder_does_not_block_quiescence(tmp_path: Path) ->
         holder.wait(timeout=2)
 
 
+def test_worker_rejects_substituted_project_root_before_handler_execution(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    foreign_project = tmp_path / "foreign-project"
+    foreign_project.mkdir()
+    store = TaskWorkspaceStore(project_root, tmp_path / "attempts-v2", tmp_path / "receipts-v2")
+    executed = False
+
+    class MustNotRun:
+        async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+            nonlocal executed
+            del request, context
+            executed = True
+            return TaskOutcome.succeeded()
+
+    try:
+        binding = store.begin(task_id="task-1", attempt=1, output_paths=("out.txt",))
+        baseline_digest = canonical_digest(
+            [item.model_dump(mode="json") for item in binding.identity.baseline_files]
+        )
+        descriptor = AttemptRootDescriptor.model_validate(
+            {
+                "schema_version": "2",
+                "workspace_identity": binding.identity.model_dump(mode="json"),
+                "project_root_digest": binding.identity.project_digest,
+                "write_root_digest": binding.identity.write_root_digest,
+                "baseline_digest": baseline_digest,
+            }
+        )
+        call = _execute_call(workspace=binding).model_copy(update={"attempt_root": descriptor})
+        with pytest.raises(Exception, match="project root|root identity|authenticated root"):
+            asyncio.run(
+                production_worker._run_call(
+                    MustNotRun(),
+                    "execute",
+                    call,
+                    project_root=foreign_project,
+                    write_root=binding.write_root,
+                    secrets=None,
+                    activity_port=None,
+                    cancel_requested=lambda: False,
+                )
+            )
+    finally:
+        store.close()
+
+    assert executed is False
+
+
 def test_leftover_process_group_child_still_fails_quiescence(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
     entrypoint, roots = _write_handler(
         tmp_path,
         class_name="OrphanHandler",
         body=(
             "async def execute(self, request, context):\n"
             "    import subprocess, sys, time\n"
-            "    held = context.workspace_root / 'held.txt'\n"
+            "    held = context.write_root / 'held.txt'\n"
             "    held.write_text('open\\n', encoding='utf-8')\n"
             "    child = subprocess.Popen(\n"
             "        [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
             "    )\n"
-            "    (context.workspace_root / 'orphan.pid').write_text(str(child.pid), encoding='utf-8')\n"
+            "    (context.write_root / 'orphan.pid').write_text(str(child.pid), encoding='utf-8')\n"
             "    time.sleep(0.2)\n"
             "    return TaskOutcome.succeeded({'ok': True})\n"
         ),
@@ -312,9 +388,9 @@ def test_leftover_process_group_child_still_fails_quiescence(tmp_path: Path) -> 
     )
     try:
         with pytest.raises(TerminalReceiptError, match="not quiescent"):
-            asyncio.run(host.execute(_execute_call(entrypoint=entrypoint)))
+            asyncio.run(host.execute(_execute_call(workspace=workspace, entrypoint=entrypoint)))
     finally:
-        pid_path = tmp_path / "workspace" / "attempts" / "attempt-1" / "orphan.pid"
+        pid_path = workspace.write_root / "orphan.pid"
         if pid_path.is_file():
             try:
                 os.kill(int(pid_path.read_text(encoding="utf-8")), 9)
@@ -346,6 +422,10 @@ def test_production_host_rejects_forged_terminal_receipt(tmp_path: Path) -> None
         operation=identity.operation,
         request_digest="0" * 64,
         workspace_identity_digest="1" * 64,
+        project_root_digest="2" * 64,
+        write_root_digest="3" * 64,
+        baseline_digest="4" * 64,
+        staged_write_set_digest="5" * 64,
         outcome=outcome,
         outcome_digest=canonical_digest(outcome.model_dump(mode="json")),
         quiescence_proof_digest=prove_call_quiescent(),
@@ -356,8 +436,8 @@ def test_production_host_rejects_forged_terminal_receipt(tmp_path: Path) -> None
 
 
 def test_production_host_worker_crash_before_response(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
     entrypoint, roots = _write_handler(
         tmp_path,
         class_name="MissingHandler",
@@ -370,12 +450,12 @@ def test_production_host_worker_crash_before_response(tmp_path: Path) -> None:
         handler_import_roots={"test.echo.run": roots},
     )
     with pytest.raises(ProductionHostError, match="worker (exited|control stream closed)"):
-        asyncio.run(host.execute(_execute_call(entrypoint=entrypoint)))
+        asyncio.run(host.execute(_execute_call(workspace=workspace, entrypoint=entrypoint)))
 
 
 def test_production_host_reconcile_from_installed_receipt(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
     receipts = TerminalReceiptStore.create(tmp_path / "receipts")
     host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
     host.bind_invocation_runtime(
@@ -383,7 +463,10 @@ def test_production_host_reconcile_from_installed_receipt(tmp_path: Path) -> Non
         store=store,
         receipts=receipts,
     )
-    reconcile = _reconcile_call(entrypoint="recoverable:RecoverableEcho.reconcile")
+    reconcile = _reconcile_call(
+        workspace=workspace,
+        entrypoint="recoverable:RecoverableEcho.reconcile",
+    )
     outcome = TaskOutcome.failed("transient", "already finished")
     sink = receipts.sink_for(reconcile.identity.model_copy(update={"operation": "execute"}))
     sink.install(
@@ -397,7 +480,11 @@ def test_production_host_reconcile_from_installed_receipt(tmp_path: Path) -> Non
             activity_id=reconcile.identity.activity_id,
             operation="execute",
             request_digest=reconcile.activity.request_digest,
-            workspace_identity_digest=reconcile.activity.workspace_identity.attempt_identity_digest,
+            workspace_identity_digest=workspace.identity.identity_digest,
+            project_root_digest=workspace.identity.project_digest,
+            write_root_digest=workspace.identity.write_root_digest,
+            baseline_digest=reconcile.attempt_root.baseline_digest,
+            staged_write_set_digest=store.seal(workspace.identity).staged_digest,
             dispatch_fingerprint_digest=reconcile.activity.dispatch_fingerprint_digest,
             reference_digest=reconcile.activity.reference_digest,
             outcome=outcome,
@@ -414,8 +501,8 @@ def test_production_host_reconcile_from_installed_receipt(tmp_path: Path) -> Non
 
 
 def test_production_host_cancel_runs_through_worker(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
     entrypoint, roots = _write_handler(
         tmp_path,
         class_name="RecoverableEcho",
@@ -432,7 +519,7 @@ def test_production_host_cancel_runs_through_worker(tmp_path: Path) -> None:
         store=store,
         handler_import_roots={"test.echo.run": roots},
     )
-    result = asyncio.run(host.cancel(_cancel_call(entrypoint=cancel_entrypoint)))
+    result = asyncio.run(host.cancel(_cancel_call(workspace=workspace, entrypoint=cancel_entrypoint)))
     assert result.cancel_result is not None
     assert result.cancel_result.status == "acknowledged"
 
@@ -450,8 +537,8 @@ def test_production_host_parent_alive_pipe_is_wired(tmp_path: Path, monkeypatch:
         return worker
 
     monkeypatch.setattr(module._ProcessSupervisor, "spawn", recording_spawn)
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
     entrypoint, roots = _write_handler(
         tmp_path,
         class_name="EchoHandler",
@@ -463,7 +550,7 @@ def test_production_host_parent_alive_pipe_is_wired(tmp_path: Path, monkeypatch:
         store=store,
         handler_import_roots={"test.echo.run": roots},
     )
-    asyncio.run(host.execute(_execute_call(entrypoint=entrypoint)))
+    asyncio.run(host.execute(_execute_call(workspace=workspace, entrypoint=entrypoint)))
     assert captured["parent_alive_w"] >= 0
 
 
@@ -471,8 +558,8 @@ def test_production_host_cancel_escalates_on_timeout(tmp_path: Path, monkeypatch
     from graph_engine.runtime import production_host as module
 
     monkeypatch.setattr(module, "_CALL_TIMEOUT_SECONDS", 0.2)
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
     entrypoint, roots = _write_handler(
         tmp_path,
         class_name="SlowHandler",
@@ -490,7 +577,15 @@ def test_production_host_cancel_escalates_on_timeout(tmp_path: Path, monkeypatch
         handler_import_roots={"test.echo.run": roots},
     )
     with pytest.raises(ProductionHostError, match="timed out"):
-        asyncio.run(host.execute(_execute_call(entrypoint=entrypoint, timeout_seconds=0.2)))
+        asyncio.run(
+            host.execute(
+                _execute_call(
+                    workspace=workspace,
+                    entrypoint=entrypoint,
+                    timeout_seconds=0.2,
+                )
+            )
+        )
 
 
 def test_production_host_honors_call_timeout_longer_than_default(
@@ -499,8 +594,8 @@ def test_production_host_honors_call_timeout_longer_than_default(
     from graph_engine.runtime import production_host as module
 
     monkeypatch.setattr(module, "_CALL_TIMEOUT_SECONDS", 0.2)
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
     entrypoint, roots = _write_handler(
         tmp_path,
         class_name="PauseHandler",
@@ -517,14 +612,22 @@ def test_production_host_honors_call_timeout_longer_than_default(
         store=store,
         handler_import_roots={"test.echo.run": roots},
     )
-    result = asyncio.run(host.execute(_execute_call(entrypoint=entrypoint, timeout_seconds=2.0)))
+    result = asyncio.run(
+        host.execute(
+            _execute_call(
+                workspace=workspace,
+                entrypoint=entrypoint,
+                timeout_seconds=2.0,
+            )
+        )
+    )
     assert result.outcome is not None
     assert result.outcome.status == "succeeded"
 
 
 def test_production_host_crash_after_receipt_leaves_durable_receipt(tmp_path: Path) -> None:
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
     receipts = TerminalReceiptStore.create(tmp_path / "receipts")
     host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
     host.bind_invocation_runtime(
@@ -532,7 +635,10 @@ def test_production_host_crash_after_receipt_leaves_durable_receipt(tmp_path: Pa
         store=store,
         receipts=receipts,
     )
-    reconcile = _reconcile_call(entrypoint="recoverable:RecoverableEcho.reconcile")
+    reconcile = _reconcile_call(
+        workspace=workspace,
+        entrypoint="recoverable:RecoverableEcho.reconcile",
+    )
     outcome = TaskOutcome.failed("transient", "already finished")
     sink = receipts.sink_for(reconcile.identity.model_copy(update={"operation": "execute"}))
     sink.install(
@@ -546,7 +652,11 @@ def test_production_host_crash_after_receipt_leaves_durable_receipt(tmp_path: Pa
             activity_id=reconcile.identity.activity_id,
             operation="execute",
             request_digest=reconcile.activity.request_digest,
-            workspace_identity_digest=reconcile.activity.workspace_identity.attempt_identity_digest,
+            workspace_identity_digest=workspace.identity.identity_digest,
+            project_root_digest=workspace.identity.project_digest,
+            write_root_digest=workspace.identity.write_root_digest,
+            baseline_digest=reconcile.attempt_root.baseline_digest,
+            staged_write_set_digest=store.seal(workspace.identity).staged_digest,
             dispatch_fingerprint_digest=reconcile.activity.dispatch_fingerprint_digest,
             reference_digest=reconcile.activity.reference_digest,
             outcome=outcome,
@@ -563,12 +673,7 @@ def test_production_host_crash_after_receipt_leaves_durable_receipt(tmp_path: Pa
     assert promoted[0].outcome == outcome
 
 
-def _prepare_activity_ledger(root: Path) -> None:
-    workspace = AttemptWorkspaceIdentity(
-        attempt_directory_id="attempt-1",
-        baseline_tree_id="0" * 64,
-        attempt_identity_digest="1" * 64,
-    )
+def _prepare_activity_ledger(root: Path, workspace: TaskWorkspaceBinding) -> None:
     ledger = Ledger(root / "invocations" / "inv-1" / "ledger")
     ledger.append_batch(
         (
@@ -604,7 +709,7 @@ def _prepare_activity_ledger(root: Path) -> None:
                 activation_id="activation-run",
                 attempt=1,
                 request_digest="2" * 64,
-                workspace_identity=workspace,
+                workspace_identity=workspace.identity,
             ),
         ),
         expected_next_seq=1,
@@ -612,9 +717,9 @@ def _prepare_activity_ledger(root: Path) -> None:
 
 
 def test_production_host_activity_snapshot_rpc_completes(tmp_path: Path) -> None:
-    _prepare_activity_ledger(tmp_path)
-    store = SnapshotStore.create(tmp_path / "workspace", {})
-    store.create_attempt("attempt-1")
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
+    _prepare_activity_ledger(tmp_path, workspace)
     entrypoint, roots = _write_handler(
         tmp_path,
         class_name="SnapshotHandler",
@@ -623,7 +728,7 @@ def test_production_host_activity_snapshot_rpc_completes(tmp_path: Path) -> None
             "    if context.activity is None:\n"
             "        raise ValueError('activity port is required')\n"
             "    snapshot = context.activity.snapshot\n"
-            "    (context.workspace_root / 'after.txt').write_text(snapshot.activity_id, encoding='utf-8')\n"
+            "    (context.write_root / 'after.txt').write_text(snapshot.activity_id, encoding='utf-8')\n"
             "    return TaskOutcome.succeeded({'ok': True})\n"
         ),
     )
@@ -635,11 +740,16 @@ def test_production_host_activity_snapshot_rpc_completes(tmp_path: Path) -> None
     )
     result = asyncio.run(
         asyncio.wait_for(
-            host.execute(_execute_call(entrypoint=entrypoint, activity_id="activity-1")),
+            host.execute(
+                _execute_call(
+                    workspace=workspace,
+                    entrypoint=entrypoint,
+                    activity_id="activity-1",
+                )
+            ),
             timeout=5.0,
         )
     )
     assert result.outcome is not None
     assert result.outcome.status == "succeeded"
-    attempt = tmp_path / "workspace" / "attempts" / "attempt-1"
-    assert (attempt / "after.txt").read_text(encoding="utf-8") == "activity-1"
+    assert (workspace.write_root / "after.txt").read_text(encoding="utf-8") == "activity-1"
