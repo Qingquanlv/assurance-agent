@@ -42,6 +42,7 @@ from graph_engine.plugin_api import (
     EffectReconcileResult,
     InvocationWorkspaceBinding,
     PluginDescriptor,
+    PromotionReceipt,
     ProviderSource,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
@@ -4242,6 +4243,94 @@ def test_run_translates_unreadable_success_reconciliation_to_engine_indeterminat
 
     with pytest.raises(EnginePublicationIndeterminate, match="indeterminate"):
         engine.run_until_blocked(handle)
+
+
+def test_engine_managed_successor_cannot_consume_output_before_promotion_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def handler(request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        calls.append(request.node_id)
+        if request.node_id == "produce":
+            (context.write_root / "out.txt").write_bytes(b"candidate")
+        else:
+            assert (context.project_root / "out.txt").read_bytes() == b"candidate"
+        return TaskOutcome.succeeded({"node": request.node_id})
+
+    product = _resolved(
+        {
+            "name": "receipt-gated-successor",
+            "entrypoints": {"main": "root"},
+            "retry": {"once": {"max_attempts": 1}},
+            "timeout": {"short": {"run_seconds": 5}},
+            "graphs": {
+                "root": {
+                    "max_activations": 3,
+                    "start": "produce",
+                    "nodes": {
+                        "produce": {
+                            "kind": "task",
+                            "capability": "test.empty.run",
+                            "retry": "once",
+                            "timeout": "short",
+                            "resources": {"writes": ["out.txt"]},
+                        },
+                        "consume": {
+                            "kind": "task",
+                            "capability": "test.empty.run",
+                            "retry": "once",
+                            "timeout": "short",
+                            "resources": {"reads": ["out.txt"]},
+                        },
+                        "end": {"kind": "end"},
+                    },
+                    "edges": [
+                        {"from": "produce", "to": "consume"},
+                        {"from": "consume", "to": "end"},
+                    ],
+                }
+            },
+        },
+        {"test.empty.run": _FunctionHandler(handler)},
+    )
+    real_install = TaskWorkspaceStore._install_completed_receipt
+    fail_once = True
+
+    def fail_receipt_once(
+        self: TaskWorkspaceStore,
+        expected_receipt: PromotionReceipt,
+        *,
+        receipt_name: str,
+    ) -> None:
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise OSError("injected receipt publication failure")
+        real_install(self, expected_receipt, receipt_name=receipt_name)
+
+    monkeypatch.setattr(TaskWorkspaceStore, "_install_completed_receipt", fail_receipt_once)
+    engine = Engine(tmp_path, clock=FakeClock(10), host=_InProcessTestHost())
+    handle = engine.start(
+        product,
+        entrypoint="main",
+        invocation_id="receipt-gated-successor",
+        seed=empty_invocation_seed(),
+        authorization=empty_runtime_authorization(),
+    )
+
+    with pytest.raises(EnginePublicationIndeterminate, match="promotion"):
+        engine.run_until_blocked(handle)
+
+    assert calls == ["produce"]
+    kinds = [envelope.event.kind for envelope in Ledger(handle.invocation_root / "ledger").read_all()]
+    assert "task_commit_prepared" in kinds
+    assert "task_promotion_completed" not in kinds
+    assert "task_attempt_failed" not in kinds
+
+    assert engine.run_until_blocked(handle).status == "succeeded"
+    assert calls == ["produce", "consume"]
 
 
 def test_initialization_failure_before_ledger_leaves_exactly_recoverable_identity(

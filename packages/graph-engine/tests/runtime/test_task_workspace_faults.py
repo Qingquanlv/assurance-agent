@@ -7,7 +7,29 @@ from pathlib import Path
 import pytest
 
 import graph_engine.runtime.task_workspace as task_workspace
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore, TaskWorkspaceViolation
+from graph_engine.plugin_api import StagedWriteSet, TaskWorkspaceBinding
+from graph_engine.runtime.task_workspace import (
+    PromotionPublicationIndeterminate,
+    TaskWorkspaceStore,
+    TaskWorkspaceViolation,
+)
+
+
+def _assert_publication_indeterminate(error: pytest.ExceptionInfo[BaseException]) -> None:
+    assert isinstance(error.value, PromotionPublicationIndeterminate)
+
+
+def _single_file_promotion(
+    tmp_path: Path,
+) -> tuple[TaskWorkspaceStore, TaskWorkspaceBinding, StagedWriteSet, Path]:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "out.txt").write_bytes(b"before")
+    store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
+    binding = store.begin(task_id="task", attempt=1, output_paths=("out.txt",))
+    (binding.write_root / "out.txt").write_bytes(b"after")
+    staged = store.seal(binding.identity)
+    return store, binding, staged, project
 
 
 def test_second_file_replace_failure_rolls_back_the_whole_promotion_and_can_replay(
@@ -249,3 +271,251 @@ def test_target_changed_during_temp_preparation_is_not_overwritten(
     assert mutated
     assert (project / "out.txt").read_bytes() == b"drifted"
     assert not (store.receipts_root / f"{binding.identity.identity_digest}.json").exists()
+
+
+@pytest.mark.parametrize("failure", ["write", "file_fsync", "rename", "directory_fsync"])
+def test_receipt_publication_fault_after_canonical_replace_is_indeterminate_and_replayable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    store, binding, staged, project = _single_file_promotion(tmp_path)
+    identity_digest = binding.identity.identity_digest
+    receipt_name = f"{identity_digest}.json"
+    pending_name = f".{identity_digest}.pending.json"
+    real_open = task_workspace.os.open
+    real_write = task_workspace.os.write
+    real_fsync = task_workspace.os.fsync
+    real_replace = task_workspace.os.replace
+    canonical_replaced = False
+    receipt_renamed = False
+    receipt_temp_descriptors: set[int] = set()
+
+    def track_open(name: str | bytes | Path, flags: int, *args: object, **kwargs: object) -> int:
+        descriptor = real_open(name, flags, *args, **kwargs)
+        if (
+            canonical_replaced
+            and kwargs.get("dir_fd") == store._receipts_fd
+            and isinstance(name, str)
+            and identity_digest in name
+            and "pending" not in name
+        ):
+            receipt_temp_descriptors.add(descriptor)
+        return descriptor
+
+    def fail_write(descriptor: int, content: object) -> int:
+        if failure == "write" and descriptor in receipt_temp_descriptors:
+            raise OSError("injected receipt write failure")
+        return real_write(descriptor, content)  # type: ignore[arg-type]
+
+    def fail_fsync(descriptor: int) -> None:
+        if failure == "file_fsync" and descriptor in receipt_temp_descriptors:
+            raise OSError("injected receipt file fsync failure")
+        if failure == "directory_fsync" and receipt_renamed and descriptor == store._receipts_fd:
+            raise OSError("injected receipt directory fsync failure")
+        real_fsync(descriptor)
+
+    def fail_replace(
+        source: str | bytes | Path,
+        target: str | bytes | Path,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        nonlocal canonical_replaced, receipt_renamed
+        if target == "out.txt":
+            canonical_replaced = True
+        if target == receipt_name and kwargs.get("dst_dir_fd") == store._receipts_fd:
+            if failure == "rename":
+                raise OSError("injected receipt rename failure")
+            receipt_renamed = True
+        real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(task_workspace.os, "open", track_open)
+    monkeypatch.setattr(task_workspace.os, "write", fail_write)
+    monkeypatch.setattr(task_workspace.os, "fsync", fail_fsync)
+    monkeypatch.setattr(task_workspace.os, "replace", fail_replace)
+
+    with pytest.raises(BaseException) as caught:
+        store.promote(binding.identity, staged)
+
+    _assert_publication_indeterminate(caught)
+    assert canonical_replaced
+    assert (project / "out.txt").read_bytes() == b"after"
+    assert (store.receipts_root / pending_name).is_file()
+    monkeypatch.undo()
+
+    receipt = store.promote(binding.identity, staged)
+
+    assert receipt.identity_digest == identity_digest
+    assert (store.receipts_root / receipt_name).is_file()
+    assert not (store.receipts_root / pending_name).exists()
+    assert tuple(store.receipts_root.glob("*.tmp")) == ()
+    assert tuple(project.glob(".out.txt.*")) == ()
+
+
+def test_receipt_rename_reuses_one_deterministic_authenticated_temp_until_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, binding, staged, _project = _single_file_promotion(tmp_path)
+    identity_digest = binding.identity.identity_digest
+    receipt_name = f"{identity_digest}.json"
+    real_replace = task_workspace.os.replace
+
+    def fail_receipt_rename(
+        source: str | bytes | Path,
+        target: str | bytes | Path,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        if target == receipt_name and kwargs.get("dst_dir_fd") == store._receipts_fd:
+            raise OSError("injected receipt rename failure")
+        real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(task_workspace.os, "replace", fail_receipt_rename)
+    with pytest.raises(BaseException) as first:
+        store.promote(binding.identity, staged)
+    _assert_publication_indeterminate(first)
+    first_temps = tuple(store.receipts_root.glob("*.tmp"))
+    assert len(first_temps) == 1
+
+    with pytest.raises(BaseException) as second:
+        store.promote(binding.identity, staged)
+    _assert_publication_indeterminate(second)
+    assert tuple(store.receipts_root.glob("*.tmp")) == first_temps
+
+    monkeypatch.undo()
+    store.promote(binding.identity, staged)
+    assert tuple(store.receipts_root.glob("*.tmp")) == ()
+
+
+def test_replay_rejects_tampered_deterministic_receipt_temporary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, binding, staged, _project = _single_file_promotion(tmp_path)
+    receipt_name = f"{binding.identity.identity_digest}.json"
+    real_replace = task_workspace.os.replace
+
+    def fail_receipt_rename(
+        source: str | bytes | Path,
+        target: str | bytes | Path,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        if target == receipt_name and kwargs.get("dst_dir_fd") == store._receipts_fd:
+            raise OSError("injected receipt rename failure")
+        real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(task_workspace.os, "replace", fail_receipt_rename)
+    with pytest.raises(PromotionPublicationIndeterminate):
+        store.promote(binding.identity, staged)
+    (temporary,) = tuple(store.receipts_root.glob("*.tmp"))
+    temporary.write_bytes(b"forged")
+    monkeypatch.undo()
+
+    with pytest.raises(PromotionPublicationIndeterminate) as caught:
+        store.promote(binding.identity, staged)
+
+    assert isinstance(caught.value.__cause__, TaskWorkspaceViolation)
+    assert not (store.receipts_root / receipt_name).exists()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["transaction_unlink", "pending_unlink", "pending_directory_fsync"],
+)
+def test_durable_receipt_makes_cleanup_fault_nonfatal_and_replay_cleans_residue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    store, binding, staged, project = _single_file_promotion(tmp_path)
+    identity_digest = binding.identity.identity_digest
+    receipt_path = store.receipts_root / f"{identity_digest}.json"
+    pending_name = f".{identity_digest}.pending.json"
+    pending_path = store.receipts_root / pending_name
+    real_unlink = task_workspace.os.unlink
+    real_fsync = task_workspace.os.fsync
+    injected = False
+    pending_unlinked = False
+
+    def fail_cleanup_unlink(name: str | bytes | Path, *args: object, **kwargs: object) -> None:
+        nonlocal injected, pending_unlinked
+        if failure == "transaction_unlink" and isinstance(name, str) and name.endswith(".rollback"):
+            assert receipt_path.is_file(), "transaction cleanup ran before durable receipt publication"
+            injected = True
+            raise OSError("injected transaction cleanup unlink failure")
+        if failure == "pending_unlink" and name == pending_name:
+            assert receipt_path.is_file()
+            injected = True
+            raise OSError("injected pending unlink failure")
+        real_unlink(name, *args, **kwargs)
+        if name == pending_name:
+            pending_unlinked = True
+
+    def fail_cleanup_fsync(descriptor: int) -> None:
+        nonlocal injected
+        if failure == "pending_directory_fsync" and pending_unlinked and descriptor == store._receipts_fd:
+            injected = True
+            raise OSError("injected pending directory fsync failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(task_workspace.os, "unlink", fail_cleanup_unlink)
+    monkeypatch.setattr(task_workspace.os, "fsync", fail_cleanup_fsync)
+
+    receipt = store.promote(binding.identity, staged)
+
+    assert injected
+    assert receipt_path.is_file()
+    assert (project / "out.txt").read_bytes() == b"after"
+    monkeypatch.undo()
+    assert store.promote(binding.identity, staged) == receipt
+    assert not pending_path.exists()
+    assert tuple(project.glob(".out.txt.*")) == ()
+
+
+def test_rollback_failure_is_indeterminate_and_preserves_evidence_for_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "left.txt").write_bytes(b"left-before")
+    (project / "right.txt").write_bytes(b"right-before")
+    store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
+    binding = store.begin(task_id="task", attempt=1, output_paths=("left.txt", "right.txt"))
+    (binding.write_root / "left.txt").write_bytes(b"left-after")
+    (binding.write_root / "right.txt").write_bytes(b"right-after")
+    staged = store.seal(binding.identity)
+    real_replace = task_workspace.os.replace
+
+    def fail_second_replace_and_rollback(
+        source: str | bytes | Path,
+        target: str | bytes | Path,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        if target == "right.txt":
+            raise OSError("injected second replace failure")
+        if target == "left.txt" and isinstance(source, str) and source.endswith(".rollback"):
+            raise OSError("injected rollback failure")
+        real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(task_workspace.os, "replace", fail_second_replace_and_rollback)
+
+    with pytest.raises(BaseException) as caught:
+        store.promote(binding.identity, staged)
+
+    _assert_publication_indeterminate(caught)
+    assert (project / "left.txt").read_bytes() == b"left-after"
+    assert (project / "right.txt").read_bytes() == b"right-before"
+    assert len(tuple(project.glob(".left.txt.*.rollback"))) == 1
+    assert (store.receipts_root / f".{binding.identity.identity_digest}.pending.json").is_file()
+    assert not (store.receipts_root / f"{binding.identity.identity_digest}.json").exists()
+
+    monkeypatch.undo()
+    store.promote(binding.identity, staged)
+    assert (project / "left.txt").read_bytes() == b"left-after"
+    assert (project / "right.txt").read_bytes() == b"right-after"
+    assert tuple(project.glob(".*.rollback")) == ()

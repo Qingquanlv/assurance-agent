@@ -131,7 +131,11 @@ from graph_engine.runtime.tree_io import (
     capture_workspace_seed,
     materialize_snapshot,
 )
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore, TaskWorkspaceViolation
+from graph_engine.runtime.task_workspace import (
+    PromotionPublicationIndeterminate,
+    TaskWorkspaceStore,
+    TaskWorkspaceViolation,
+)
 from graph_engine.plugin_api import (
     PromotionReceipt,
     StagedFile,
@@ -194,6 +198,7 @@ __all__ = [
     "PlanResult",
     "PlannedTask",
     "PlanningError",
+    "PromotionPublicationIndeterminate",
     "PreparedTaskCommit",
     "ProjectionError",
     "RecoveryResult",

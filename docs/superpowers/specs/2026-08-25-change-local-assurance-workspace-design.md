@@ -171,6 +171,14 @@ The engine:
 - never interprets `qa`, `changes`, test families, or generated-file manifests;
 - does not create `trees/`, `HEAD.json`, or a whole-SUT candidate copy.
 
+Installed product and `TaskHandler` Python code is part of the trusted runtime
+boundary. Root descriptors and pinned directory identities authenticate host
+protocol inputs and reject persistent namespace replacement, but they are not
+an OS sandbox against a same-permission malicious installed handler that swaps
+and restores a pathname during its own call. The SUT cannot register that code.
+Provider/model processes remain untrusted and are confined separately as
+described below.
+
 The ledger remains the authority for graph progress. It is not a filesystem
 version store.
 
@@ -236,8 +244,24 @@ If validation succeeds, the product promotes only declared outputs:
   output digests, and target paths.
 
 Promotion stages complete target directories or files and uses `os.replace`
-plus directory fsync. Repeating the same authenticated promotion is
-idempotent. Different bytes for an already promoted attempt fail closed.
+plus directory fsync. Each file replacement is atomic. A pending intent is
+durable before the first replacement, and the completed receipt is durably
+published after every replacement succeeds and before any adjacent temporary,
+rollback, or pending-intent cleanup. Repeating the same authenticated promotion
+is idempotent. Different bytes for an already promoted attempt fail closed.
+
+The required direct `qa/changes/<id>` file layout has no single OS primitive
+that atomically switches an arbitrary set of files spanning directories.
+Therefore “atomic promotion” at the batch level means terminal-failure
+atomicity: an ordinary failed terminal outcome is allowed only after every
+canonical target is proven at its baseline; otherwise the attempt stays
+prepared and raises `PromotionPublicationIndeterminate` until authenticated
+replay completes or restores it. Engine-managed workflow readers and successors
+hold the resource dependency and consume outputs only after the completed
+receipt and terminal event. A raw filesystem observer that ignores receipts can
+see a short intermediate set during the successful replace window. This is the
+explicit direct-layout tradeoff; no generation pointer, snapshot tree, or HEAD
+indirection is introduced.
 
 ### 7.4 Failure and retry
 
@@ -253,6 +277,13 @@ If adapter execution, structured-result parsing, or validation fails:
 Previously promoted outputs from successful nodes remain available for resume
 and audit. A failed workflow therefore remains visible in OpenChamber without
 presenting failed-node half-products as valid data.
+
+A filesystem or process failure during canonical replacement, rollback, or
+completed-receipt publication is not an ordinary node failure when the store
+cannot prove the complete baseline. The ledger retains the prepared commit,
+the pending intent and authenticated rollback evidence remain recoverable, and
+resource locks prevent successors from consuming the in-flight set. Replay
+finishes or restores the promotion without re-executing the handler.
 
 ## 8. Parallel generation and merge rules
 
@@ -388,6 +419,17 @@ added for prior result roots.
 - The SUT is never allowed to register executable code with graph-engine.
 - Model/session state is not used as publication authority.
 - Staging data alone can never advance a graph node or make a change achieved.
+- A completed promotion receipt is published before cleanup; cleanup failure is
+  non-terminal and replay removes authenticated pending/temp/rollback residue.
+- Installed handlers are trusted runtime code. Host-v2 root authentication
+  rejects persistent directory replacement and protocol path substitution, but
+  does not claim confinement against a malicious trusted handler performing a
+  same-permission swap-use-restore during its own call.
+- Provider/model processes are untrusted. OpenCode tool mediation and the Cursor
+  OS sandbox must make the project root read-only and the authenticated attempt
+  `write_root` the only writable project namespace. Acceptance includes failed
+  provider shell/tool attempts to rename, replace, or swap-use-restore the
+  project root; this boundary is completed by implementation Tasks 5 and 6.
 
 ## 15. Migration and deletion
 

@@ -38,6 +38,10 @@ class TaskWorkspaceViolation(GraphEngineError):
     """Raised when an untrusted task workspace fails closed."""
 
 
+class PromotionPublicationIndeterminate(TaskWorkspaceViolation):
+    """Raised when a prepared promotion has no safely terminal outcome yet."""
+
+
 def _path_digest(path: Path) -> str:
     return canonical_digest({"path": str(path)})
 
@@ -953,19 +957,24 @@ class TaskWorkspaceStore:
                     )
             except BaseException as error:
                 failures.append(error)
-        try:
-            self._cleanup_transaction_files(prepared)
-        except BaseException as error:
-            failures.append(error)
-        try:
-            _remove_created_directories(self._project_fd, created_directories)
-        except BaseException as error:
-            failures.append(error)
+        for item in prepared:
+            try:
+                current = self._target_state_at(item.parent_fd, item.target_name, item.file.path)
+                if current != self._before_state(item.file):
+                    failures.append(
+                        TaskWorkspaceViolation(
+                            f"promotion rollback could not prove the baseline: {item.file.path}"
+                        )
+                    )
+            except BaseException as error:
+                failures.append(error)
         if failures:
-            failure = TaskWorkspaceViolation("promotion rollback is indeterminate")
+            failure = PromotionPublicationIndeterminate("promotion rollback is indeterminate")
             for error in failures:
                 failure.add_note(f"rollback failure: {type(error).__name__}: {error}")
             raise failure
+        self._cleanup_transaction_files(prepared)
+        _remove_created_directories(self._project_fd, created_directories)
 
     def _execute_promotion_transaction(
         self,
@@ -1076,10 +1085,17 @@ class TaskWorkspaceStore:
                         dst_dir_fd=item.parent_fd,
                     )
                     os.fsync(item.parent_fd)
-            except BaseException:
-                self._rollback_transaction(prepared, created_directories)
+            except BaseException as error:
+                try:
+                    self._rollback_transaction(prepared, created_directories)
+                except PromotionPublicationIndeterminate as rollback_error:
+                    raise rollback_error from error
+                except BaseException as cleanup_error:
+                    error.add_note(
+                        "rollback restored every canonical target but cleanup failed: "
+                        f"{type(cleanup_error).__name__}: {cleanup_error}"
+                    )
                 raise
-            self._cleanup_transaction_files(prepared)
         finally:
             for item in prepared:
                 os.close(item.parent_fd)
@@ -1121,23 +1137,89 @@ class TaskWorkspaceStore:
             finally:
                 os.close(parent_fd)
 
+    @staticmethod
+    def _receipt_temporary_name(expected_receipt: PromotionReceipt) -> str:
+        return f".{expected_receipt.identity_digest}.{expected_receipt.receipt_digest}.receipt.tmp"
+
+    def _cleanup_receipt_temporary(self, expected_receipt: PromotionReceipt) -> None:
+        self._unlink_transaction_name(
+            self._receipts_fd,
+            self._receipt_temporary_name(expected_receipt),
+        )
+        os.fsync(self._receipts_fd)
+
     def _install_completed_receipt(
         self,
         expected_receipt: PromotionReceipt,
         *,
         receipt_name: str,
+    ) -> None:
+        content = canonical_json_bytes(expected_receipt.model_dump(mode="json"))
+        temporary_name = self._receipt_temporary_name(expected_receipt)
+        self._ensure_named_file(
+            self._receipts_fd,
+            temporary_name,
+            content,
+            hashlib.sha256(content).hexdigest(),
+            0o600,
+            "promotion receipt temporary",
+        )
+        os.replace(
+            temporary_name,
+            receipt_name,
+            src_dir_fd=self._receipts_fd,
+            dst_dir_fd=self._receipts_fd,
+        )
+        os.fsync(self._receipts_fd)
+        installed = self._read_receipt_at(receipt_name)
+        if installed != expected_receipt:
+            raise TaskWorkspaceViolation("installed promotion receipt failed authentication")
+
+    def _cleanup_completed_promotion(
+        self,
+        identity: TaskWorkspaceIdentity,
+        staged: StagedWriteSet,
+        expected_receipt: PromotionReceipt,
+        *,
         pending_name: str,
     ) -> None:
-        _atomic_write_at(
-            self._receipts_fd,
-            receipt_name,
-            canonical_json_bytes(expected_receipt.model_dump(mode="json")),
+        cleanup_steps = (
+            lambda: self._cleanup_replay_artifacts(identity, staged),
+            lambda: self._cleanup_receipt_temporary(expected_receipt),
+            lambda: self._remove_pending_receipt(pending_name),
         )
+        for cleanup in cleanup_steps:
+            try:
+                cleanup()
+            except Exception:
+                # A durable completed receipt is the terminal authority.  Residual
+                # authenticated transaction files are retried on the next replay.
+                continue
+
+    def _remove_pending_receipt(self, pending_name: str) -> None:
         try:
             os.unlink(pending_name, dir_fd=self._receipts_fd)
         except FileNotFoundError:
             pass
         os.fsync(self._receipts_fd)
+
+    def _publish_completed_receipt(
+        self,
+        expected_receipt: PromotionReceipt,
+        *,
+        receipt_name: str,
+    ) -> None:
+        try:
+            self._install_completed_receipt(
+                expected_receipt,
+                receipt_name=receipt_name,
+            )
+        except PromotionPublicationIndeterminate:
+            raise
+        except Exception as error:
+            raise PromotionPublicationIndeterminate(
+                "promotion receipt publication is indeterminate"
+            ) from error
 
     def promote(self, identity: TaskWorkspaceIdentity, staged: StagedWriteSet) -> PromotionReceipt:
         self._authenticate_roots_current()
@@ -1157,12 +1239,17 @@ class TaskWorkspaceStore:
             if not self._targets_match_staged(staged):
                 raise TaskWorkspaceViolation("completed promotion replay does not match staged targets")
             try:
-                os.unlink(f".{identity.identity_digest}.pending.json", dir_fd=self._receipts_fd)
-            except FileNotFoundError:
-                pass
-            else:
                 os.fsync(self._receipts_fd)
-            self._cleanup_replay_artifacts(identity, staged)
+            except Exception as error:
+                raise PromotionPublicationIndeterminate(
+                    "promotion receipt durability is indeterminate"
+                ) from error
+            self._cleanup_completed_promotion(
+                identity,
+                staged,
+                expected_receipt,
+                pending_name=f".{identity.identity_digest}.pending.json",
+            )
             return existing
         pending_name = f".{identity.identity_digest}.pending.json"
         try:
@@ -1177,12 +1264,18 @@ class TaskWorkspaceStore:
                 state = self._target_state(file)
                 if state in {self._before_state(file), self._after_state(file)}:
                     continue
-                raise TaskWorkspaceViolation("prior multi-file promotion is incomplete; refusing retry")
+                raise PromotionPublicationIndeterminate(
+                    "prior multi-file promotion is incomplete with an unauthenticated target state"
+                )
             if self._targets_match_staged(staged):
-                self._cleanup_replay_artifacts(identity, staged)
-                self._install_completed_receipt(
+                self._publish_completed_receipt(
                     expected_receipt,
                     receipt_name=receipt_name,
+                )
+                self._cleanup_completed_promotion(
+                    identity,
+                    staged,
+                    expected_receipt,
                     pending_name=pending_name,
                 )
                 return expected_receipt
@@ -1196,10 +1289,17 @@ class TaskWorkspaceStore:
             )
         self._execute_promotion_transaction(identity, staged)
         if not self._targets_match_staged(staged):
-            raise TaskWorkspaceViolation("promotion targets do not match staged write set")
-        self._install_completed_receipt(
+            raise PromotionPublicationIndeterminate(
+                "promotion targets cannot be proven to match the staged write set"
+            )
+        self._publish_completed_receipt(
             expected_receipt,
             receipt_name=receipt_name,
+        )
+        self._cleanup_completed_promotion(
+            identity,
+            staged,
+            expected_receipt,
             pending_name=pending_name,
         )
         return expected_receipt

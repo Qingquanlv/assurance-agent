@@ -81,7 +81,10 @@ from graph_engine.runtime.scheduler import (
 )
 from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
 from graph_engine.runtime.seed import InvocationSeed
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.runtime.task_workspace import (
+    PromotionPublicationIndeterminate,
+    TaskWorkspaceStore,
+)
 
 
 class EngineError(GraphEngineError):
@@ -998,6 +1001,10 @@ class Engine:
                         raise EnginePublicationIndeterminate(
                             "activity recovery publication is indeterminate"
                         ) from error
+                    except PromotionPublicationIndeterminate as error:
+                        raise EnginePublicationIndeterminate(
+                            "activity recovery promotion publication is indeterminate"
+                        ) from error
                 recovered = True
                 continue
 
@@ -1044,6 +1051,10 @@ class Engine:
                     raise EnginePublicationIndeterminate(
                         "running task publication is indeterminate"
                     ) from error
+                except PromotionPublicationIndeterminate as error:
+                    raise EnginePublicationIndeterminate(
+                        "running task promotion publication is indeterminate"
+                    ) from error
                 if resumed:
                     continue
                 if any(scheduler._task_has_live_activity(task) for task in running_tasks):
@@ -1078,6 +1089,10 @@ class Engine:
                     raise EngineConflictError("another runner advanced the invocation") from error
                 except LedgerPublicationIndeterminate as error:
                     raise EnginePublicationIndeterminate("task publication is indeterminate") from error
+                except PromotionPublicationIndeterminate as error:
+                    raise EnginePublicationIndeterminate(
+                        "task promotion publication is indeterminate"
+                    ) from error
                 continue
             if plan.terminal == "interrupted":
                 refreshed = fold_events(ledger.read_all())

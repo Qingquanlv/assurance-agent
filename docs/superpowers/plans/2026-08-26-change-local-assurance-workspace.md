@@ -140,12 +140,19 @@ staged = store.seal(binding.identity)
 receipt = store.promote(binding.identity, staged)
 ```
 
-- [ ] Promotion must write an adjacent temporary file, fsync it, `os.replace` the target, fsync the parent, and then atomically write a digest-bound receipt. Directory-wide replacement is permitted only when the declared output claim is a closed directory claim and every staged leaf is enumerated in `StagedWriteSet`.
+- [ ] Promotion must write and fsync every authenticated adjacent temporary and rollback file, publish each target with `os.replace` plus parent fsync, and durably publish the digest-bound completed receipt before removing any rollback evidence or pending intent. The direct `qa/changes/<id>` layout cannot provide one OS-level atomic visibility point for files spanning directories: batch terminal-failure atomicity therefore comes from durable intent/receipt, fail-closed `PromotionPublicationIndeterminate`, resource locking, and authenticated replay. Engine-managed readers and successors may consume the batch only after the completed receipt and terminal event. A raw directory observer that ignores the receipt can see a short intermediate set during successful replaces. Do not add generation/pointer, SnapshotStore, tree, or HEAD indirection to hide that direct-layout tradeoff.
 - [ ] Run focused tests plus `uv run pytest packages/graph-engine/tests/runtime/test_attempt_workspace_identity.py -q`; commit with `git commit -m "feat(engine): add dual-root task workspace"`.
 
 ## Task 3: Migrate Scheduler Commit Semantics off Snapshot Trees
 
 **Execution note:** Tasks 3 and 4 form one atomic implementation/review batch. The scheduler event/activity identity cannot switch to `TaskWorkspaceIdentity` while engine construction, host protocol, and worker receipts still require `AttemptWorkspaceIdentity`/`SnapshotStore`; do not add a transitional compatibility mode merely to split the commits. The combined batch uses both tasks' declared files and may update `runtime/activity.py`, `runtime/host_receipts.py`, `runtime/__init__.py`, and their directly corresponding graph-engine tests when required to keep one coherent schema.
+
+Promotion publication is a prepared/recoverable state until the completed
+receipt is durable. An uncertain replacement, rollback, or completed-receipt
+publication raises `PromotionPublicationIndeterminate`; scheduler and engine
+must not turn it into an ordinary failed attempt. Resource locks remain held,
+and no successor may consume canonical outputs, until authenticated replay
+completes the receipt and terminal event.
 
 **Files:**
 - Modify: `packages/graph-engine/graph_engine/runtime/scheduler.py`
@@ -177,7 +184,7 @@ receipt = store.promote(binding.identity, staged)
 
 ## Task 4: Replace Workspace Seed and Host Protocol with Authenticated Roots
 
-**Execution note:** Implement and review this task together with Task 3 as stated above. Produce one combined RED/GREEN report for the schema cutover and record both task numbers in the commit/review evidence.
+**Execution note:** Implement and review this task together with Task 3 as stated above. Produce one combined RED/GREEN report for the schema cutover and record both task numbers in the commit/review evidence. Installed `TaskHandler`/product Python is inside the trusted engine boundary: the host-v2 descriptor authenticates protocol inputs and rejects persistent root/attempt replacement or worker path substitution, but it is not a sandbox against a same-permission malicious installed handler that swaps and restores a path during its own call. Do not claim that pre/post checks close that unsupported threat or add polling as a substitute for confinement. Provider/model code is untrusted and becomes mechanically confined in Tasks 5 and 6.
 
 **Files:**
 - Modify: `packages/graph-engine/graph_engine/runtime/seed.py`
@@ -202,6 +209,13 @@ receipt = store.promote(binding.identity, staged)
 - [ ] Run `uv run pytest packages/graph-engine/tests/runtime/test_invocation_workspace_binding.py packages/graph-engine/tests/runtime/test_host_protocol.py packages/graph-engine/tests/runtime/test_production_host.py packages/graph-engine/tests/runtime/test_production_host_faults.py -q` and commit with `git commit -m "refactor(engine): bind invocations to read and write roots"`.
 
 ## Task 5: Make Agent Runtime Contracts Dual-root
+
+**Execution note:** Adapters receive the real project path because providers
+need it as readable context, but they must treat the authenticated request as
+the only path authority. This contract migration does not by itself make the
+project path read-only; Task 6 must place provider shell/tool execution behind
+the OpenCode boundary or OS sandbox and allow writes only below the authenticated
+attempt `write_root`.
 
 **Files:**
 - Modify: `packages/agent-runtime-contracts/agent_runtime_contracts/models.py`
@@ -238,6 +252,13 @@ Set OpenCode `directory=context.project_root`, Cursor `cwd=context.project_root`
 
 ## Task 6: Enforce OpenCode and Cursor Write Confinement
 
+**Execution note:** This is the mechanical security boundary for untrusted
+provider/model behavior. Acceptance must include provider shell/tool attempts
+to rename, replace, or swap-and-restore the project root and its ancestors;
+all such attempts must fail, while only the authenticated attempt `write_root`
+is writable. The trusted installed-handler limitation recorded in Task 4 does
+not relax this provider acceptance criterion.
+
 **Files:**
 - Modify: `packages/assurance-product/assurance_product/opencode_agents.py`
 - Modify: `packages/assurance-product/assurance_product/resources/opencode/assurance-boundary.mjs`
@@ -256,6 +277,7 @@ Set OpenCode `directory=context.project_root`, Cursor `cwd=context.project_root`
 - [ ] Implement an authenticated session binding created after OpenCode session creation and before prompt admission. The binding contains session ID, agent profile, project-root digest, write-root relative path, allowed output paths, task/attempt identity, and digest. The plugin validates it, mutates tool arguments to the staged physical path, and never accepts ambient glob permission as authority.
 - [ ] Remove archiver mutation permissions from the live `full` profiles. Keep shell disabled for all author/reviewer profiles. Executor shell commands must point at the explicit execution view and retain cache-disabled environment flags.
 - [ ] Add Cursor sandbox tests. On macOS wrap the pinned executable with a generated `sandbox-exec` profile that permits project reads and writes only under the attempt root plus an adapter-owned temp directory. On Linux use authenticated `bwrap` with a read-only `/` bind and writable binds only for the attempt/temp roots. Validate sandbox executable identity and record its profile digest in the process receipt.
+- [ ] Add adversarial provider tests proving shell/tool attempts cannot rename, replace, or swap-use-restore the project root or a canonical output parent; only the exact authenticated attempt `write_root` is writable. Run the same acceptance against OpenCode tool mediation and the Cursor OS sandbox.
 - [ ] Run `uv run pytest tests/phase5/test_agent_execution_contracts.py tests/phase5/test_opencode_staging_boundary.py packages/agent-runtime-cursor/tests/test_filesystem_sandbox.py packages/agent-runtime-cursor/tests/test_process_launch.py -q` and commit with `git commit -m "feat(adapters): confine writes to task staging roots"`.
 
 ## Task 7: Route Capability Outputs through ChangeWorkspace
@@ -603,7 +625,7 @@ Implementation is complete only when all of the following are simultaneously tru
 
 1. Workflow execution reads the real SUT and cannot write outside the authenticated attempt stage.
 2. Failed or retried tasks do not change canonical change artifacts or original SUT files.
-3. Successful task outputs promote atomically into the active change; generated test families remain physically isolated.
+3. Successful task outputs use per-file atomic replacement and batch-level durable intent/receipt with fail-closed replay; engine-managed readers see the batch only after its completed receipt and terminal event. Generated test families remain physically isolated.
 4. Candidate tests execute before publication from a disposable, closed-mapping view.
 5. `full` terminates at achieved and contains no automatic archive path.
 6. `aa export` publishes exactly the achieved apply manifest, detects drift, recovers from interruption, and is idempotent.
