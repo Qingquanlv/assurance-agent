@@ -84,10 +84,14 @@ immediate-before-replace drift.
 
 Mechanism: this is an authenticated durable rollback/complete transaction.
 Declared outputs may span directories, so individual replaces have an
-unavoidable short live visibility window. No ordinary failed terminal outcome
-leaves partial canonical output; a process crash remains pending/indeterminate
-  until authenticated replay completes; inconsistent evidence fails closed
-  without publishing a terminal outcome.
+unavoidable short live visibility window. Fix Round 1 correctly prevented a
+proven rollback from publishing an ordinary failed terminal outcome with a
+partial canonical set, but its first implementation cleaned rollback evidence
+before publishing the completed receipt and could surface an ordinary
+filesystem exception after the canonical set was already changed. Fix Round 2
+supersedes that publication order: the receipt becomes durable before cleanup,
+and uncertainty stays prepared as `PromotionPublicationIndeterminate` until
+authenticated replay.
 
 ### 2. Durable effects ordering and terminal state
 
@@ -140,9 +144,13 @@ leaf replacement, and worker project/write-root replacement before handler
 acceptance.
 
 The handler-facing `TaskContext` remains path-based. Descriptor pinning plus
-pre/post authentication rejects a substituted-root result, but arbitrary
-provider path operations cannot be forced through `openat` without a future
-descriptor-native context API.
+pre/post authentication rejects persistent substituted-root results. Installed
+handlers are trusted runtime code, so these checks do not claim confinement
+against a malicious same-permission handler that swaps and restores a path
+during its own call. Provider/model code is untrusted; Tasks 5 and 6 must pass
+the real project path through the authenticated adapter contract and enforce
+read-only project access plus an OS/tool boundary whose only writable project
+namespace is the authenticated attempt root.
 
 ### 5. ResourceClaimTemplate immutability and safe substitution
 
@@ -203,3 +211,6 @@ listed above.
 - `fe7502f55e389bc00374bd90c88f66e4b8c6aefd` — Fix Round 1 implementation and
   regression tests.
 - `cb21e3a027452943122292f4bb53697d13570474` — obsolete skipped-test cleanup.
+- `5546e25c7b584463ed15fe996a33cf8481435b53` — Fix Round 2 correction to
+  receipt publication order, explicit indeterminate recovery, and the trusted
+  handler/provider boundary described above.

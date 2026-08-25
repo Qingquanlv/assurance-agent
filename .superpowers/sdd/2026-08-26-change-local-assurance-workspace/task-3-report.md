@@ -19,6 +19,13 @@ tests removed by `cb21e3a027452943122292f4bb53697d13570474`. These commits super
 original report wherever promotion atomicity, effect-failure state, root
 authentication, resource-template immutability, or verification counts differ.
 
+Fix Round 2 publication ordering and recovery are implemented by
+`5546e25c7b584463ed15fe996a33cf8481435b53`. It supersedes Fix Round 1's
+over-broad claim that every post-replace filesystem exception had a proven
+terminal outcome. Completed receipts now precede cleanup, and an uncertain
+replacement, rollback, or receipt publication remains prepared as
+`PromotionPublicationIndeterminate`.
+
 ## TDD evidence
 
 ### RED
@@ -112,6 +119,36 @@ worktree: it reports existing later-task/test typing debt, including Task 16
 The exact task-owned production command above is the authoritative Fix Round
 check.
 
+### Fix Round 2 RED/GREEN
+
+RED command:
+
+```text
+uv run pytest packages/graph-engine/tests/runtime/test_task_workspace_faults.py packages/graph-engine/tests/runtime/test_scheduler_faults.py packages/graph-engine/tests/runtime/test_engine.py -q --tb=short -k 'receipt_publication_fault or receipt_rename_reuses or durable_receipt_makes or rollback_failure_is_indeterminate or promotion_publication_indeterminate or engine_managed_successor'
+```
+
+Outcome: `11 failed, 121 deselected` in 1.63s. Receipt write/fsync/rename and
+receipt-directory fsync surfaced ordinary `OSError` after canonical mutation;
+transaction cleanup ran before the completed receipt; pending cleanup failures
+escaped after a durable receipt; rollback failure used a generic workspace
+error and deleted recovery evidence; and engine did not translate promotion
+publication uncertainty.
+
+GREEN evidence:
+
+- The RED selection passed all `11` cases; the deterministic receipt-temp
+  tamper regression also passes and rejects changed bytes.
+- Task-workspace fault suite: `19 passed`.
+- Workspace/promotion/scheduler/engine focused matrix: `150 passed` in 15.99s.
+- Final full graph-engine suite: `1295 passed, 1 skipped, 1 failed` in 82.07s.
+- The only full-suite failure remains Task 16's CLI binding gap at
+  `graph_engine/__main__.py:288`; the skip remains the filesystem-dependent
+  non-UTF-8 legacy workspace case.
+- Fix Round 2's six changed Python files pass `ruff check` and
+  `ruff format --check`.
+- Exact Task 3/4 production `pyright`, explicitly including
+  `runtime/effects.py`, reports `0 errors, 0 warnings, 0 informations`.
+
 ## Changed files
 
 Core Task 3 runtime/API files:
@@ -151,9 +188,20 @@ The complete authoritative file list is the 46-file stat of commit
   sealed mode instead of forcing `0600`.
 - A promotion first persists its pending intent, then prepares and fsyncs every
   adjacent replacement and rollback file before the first canonical replace.
-  An ordinary write/fsync/replace/mode error rolls every changed target back in
-  reverse order and removes transaction artifacts. A process crash leaves the
-  authenticated pending record and deterministic rollback evidence for replay.
+  An ordinary write/fsync/replace/mode error is returned only after rollback
+  proves every canonical target is at its baseline. If that proof fails,
+  `PromotionPublicationIndeterminate` preserves the pending record and
+  deterministic rollback evidence for replay.
+- Once every target is proven staged, a deterministic, digest-named and
+  content-authenticated receipt temp is fsynced and replaced into the completed
+  receipt. Only after that receipt is durable does best-effort cleanup remove
+  target temps/backups and the pending intent. Cleanup failure cannot demote the
+  completed promotion; replay retries residue cleanup.
+- Scheduler leaves an indeterminate publication at `TaskCommitPrepared` with
+  no ordinary failure or promotion-completed event. Engine translates it to
+  `EnginePublicationIndeterminate`; resume completes from authenticated
+  pending/backup/receipt evidence without handler re-execution. Successors do
+  not consume the canonical files until receipt and terminal event publication.
 - Failed, stopped, indeterminate, rejected, expired, or undeclared-write
   attempts never promote. Validators receive `StagedWriteSet`, not a candidate
   tree.
@@ -174,14 +222,17 @@ The complete authoritative file list is the 46-file stat of commit
 
 ## Remaining risks
 
-- Arbitrary declared files may span multiple directories, so the durable
-  rollback/complete transaction cannot make every individual replace
-  simultaneously invisible. There is a short live visibility window during a
-  successful multi-file swap. The externally observable terminal outcome is
-  atomic: no ordinary failed return leaves partial canonical output, and a
-  crash remains pending/indeterminate until authenticated replay completes; an
-  inconsistent transaction fails closed instead of publishing a terminal
-  outcome.
+- Arbitrary declared files may span multiple directories in the required
+  direct `qa/changes/<id>` layout. No single OS primitive can make those
+  replaces simultaneously visible. Each file replace is atomic; the batch has
+  terminal-failure atomicity through durable intent/receipt, resource locks,
+  and fail-closed replay. Engine-managed readers wait for receipt and terminal
+  event, but a raw filesystem observer that ignores receipt state can see a
+  short intermediate set. Generation/pointer, SnapshotStore, tree, and HEAD
+  indirection remain deliberately excluded.
+- Persistently failing cleanup may leave authenticated temp/backup/pending
+  residue after a completed receipt. This cannot change the terminal outcome;
+  later replay continues cleanup.
 
 - Task 16 still owns deletion of orphaned public Snapshot/tree classes and
   modules; they are not used by the new scheduler/engine execution path.
@@ -201,3 +252,6 @@ The complete authoritative file list is the 46-file stat of commit
   root-identity, and resource-template hardening.
 - `cb21e3a027452943122292f4bb53697d13570474` — remove obsolete Snapshot-era
   blanket-skipped crash tests after staged equivalents passed.
+- `5546e25c7b584463ed15fe996a33cf8481435b53` — Fix Round 2 receipt-first
+  publication, explicit indeterminate recovery, successor gating tests, and
+  direct-layout/threat-boundary clarification.

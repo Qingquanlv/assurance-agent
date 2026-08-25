@@ -20,6 +20,13 @@ blanket-skipped tests removed by
 `cb21e3a027452943122292f4bb53697d13570474`. These results supersede the
 original report wherever path-only identity or verification counts differ.
 
+Fix Round 2 is implemented by
+`5546e25c7b584463ed15fe996a33cf8481435b53`. It leaves the persistent
+replacement and pinned-inode defenses intact while correcting the threat claim:
+installed handlers are trusted runtime code, and Task 4 does not claim to
+sandbox a malicious same-permission handler that swaps and restores a path
+during its own call.
+
 ## TDD evidence
 
 ### RED
@@ -83,6 +90,24 @@ and exactly matched the staged golden:
 The worktree-only lsof retry hunk remains unstaged and therefore has a separate
 working-tree digest/golden without contaminating the commit.
 
+### Fix Round 2 evidence
+
+The combined RED/GREEN commands and counts are recorded in the Task 3 report
+and `task-3-4-fix-round-2.md`. Task 4-specific assertions prove that promotion
+publication uncertainty is translated by engine run/resume/activity-recovery
+paths and that a successor cannot consume a canonically replaced file before
+the completed receipt and terminal event.
+
+No polling, repeated pre/post check, descriptor-only fake path API, adapter
+change, or malicious-installed-handler test was added. Existing persistent
+same-path replacement and pinned inode tests remain green in the full
+graph-engine suite. The plan/spec now make Tasks 5 and 6 responsible for the
+untrusted provider boundary, including shell/tool swap-use-restore acceptance.
+
+Final Fix Round 2 verification is `1295 passed, 1 skipped, 1 failed` in 82.07s;
+the sole failure remains the approved Task 16 CLI binding gap. Task-owned ruff,
+format, and production pyright (including `runtime/effects.py`) all pass.
+
 ## Changed files
 
 Core Task 4 files:
@@ -127,6 +152,16 @@ The complete authoritative file list is commit
   pinned workspace binding. The worker opens and pins both descriptors,
   authenticates no-follow stat evidence before handler execution, and
   reauthenticates both entries before accepting the result.
+- Installed `TaskHandler` and product Python is trusted. Host-v2 root
+  authentication guarantees protocol binding, persistent namespace replacement
+  detection, and worker path-substitution rejection; it is not an OS
+  confinement boundary against malicious trusted code that actively restores
+  the authenticated pathname before returning.
+- Provider/model code is outside that trusted boundary. Tasks 5 and 6 must pass
+  the real project path as read context while enforcing a read-only project and
+  making only the authenticated `write_root` writable. Task 6 acceptance now
+  explicitly covers provider shell/tool rename, replacement, and
+  swap-use-restore attempts.
 - Terminal host receipts bind request, activity, both roots, baseline, staged
   write set, dispatch/reference identity, outcome, and quiescence proof.
 - Replay and recovery consume durable terminal and promotion receipts without
@@ -138,14 +173,15 @@ The complete authoritative file list is commit
 
 ## Remaining risks
 
-- `TaskContext` intentionally remains path-based. The worker pins both root
-  descriptors and checks entry identity before and after the handler, so a
-  rename/recreate causes the call result to be rejected. The current handler
-  API cannot force arbitrary provider path operations through `openat`; a
-  malicious concurrent namespace writer can therefore create a transient path
-  use window, though it cannot produce an authenticated accepted result. A
-  future descriptor-native context would close that last architecture-level
-  window.
+- `TaskContext` intentionally remains path-based because external providers
+  need a real project path. Persistent external replacement is rejected by
+  pinned descriptors and current-entry authentication. Swap-use-restore by a
+  malicious installed handler is outside Task 4's supported threat model;
+  describing pre/post checks as preventing it would be false assurance.
+- Provider confinement is incomplete until Tasks 5 and 6 land their adapter
+  request and OpenCode/OS sandbox boundaries. Their acceptance must prove
+  provider shell/tool attempts cannot mutate or swap the project root and can
+  write only the authenticated attempt root.
 
 - Task 16 must update `graph_engine/__main__.py` to create/re-supply the binding;
   until then the single CLI graph test fails exactly as recorded.
@@ -167,3 +203,5 @@ The complete authoritative file list is commit
   stat-bound root, attempt-leaf, and host-worker authentication hardening.
 - `cb21e3a027452943122292f4bb53697d13570474` — remove obsolete Snapshot-era
   blanket-skipped crash tests after staged equivalents passed.
+- `5546e25c7b584463ed15fe996a33cf8481435b53` — Fix Round 2 indeterminate
+  promotion translation and explicit trusted-handler/provider threat boundary.
