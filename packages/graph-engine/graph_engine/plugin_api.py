@@ -523,6 +523,122 @@ class ResourceClaims(FrozenModel):
         return tuple(_validate_resource_prefix(value) for value in values)
 
 
+def _validate_task_workspace_path(value: str) -> str:
+    """Validate the logical, project-relative paths used by task workspaces."""
+
+    return _validate_resource_prefix(value)
+
+
+class StagedFile(FrozenModel):
+    """One regular file authenticated by a task-workspace seal."""
+
+    path: str
+    before_sha256: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    after_sha256: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        return _validate_task_workspace_path(value)
+
+
+class TaskWorkspaceIdentity(FrozenModel):
+    """Portable identity for one empty per-task staging root.
+
+    Host paths are represented only by digests; ``TaskWorkspaceBinding`` keeps
+    the process-local paths needed to execute a task.
+    """
+
+    task_id: str = Field(min_length=1)
+    attempt: int = Field(ge=1)
+    attempt_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
+    output_paths: tuple[str, ...]
+    baseline_files: tuple[StagedFile, ...] = ()
+    project_digest: str = Field(pattern=_SHA256_PATTERN)
+    write_root_digest: str = Field(pattern=_SHA256_PATTERN)
+    identity_digest: str = Field(pattern=_SHA256_PATTERN)
+    layout_schema_version: Literal["1"] = "1"
+
+    @field_validator("output_paths")
+    @classmethod
+    def _validate_output_paths(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_validate_task_workspace_path(value) for value in values)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("output paths must be a tuple of unique paths")
+        return normalized
+
+    @field_validator("task_id")
+    @classmethod
+    def _reject_absolute_task_id(cls, value: str) -> str:
+        windows_path = PureWindowsPath(value)
+        if value.startswith("/") or windows_path.is_absolute() or bool(windows_path.drive):
+            raise ValueError("task id must not contain an absolute host path")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> TaskWorkspaceIdentity:
+        paths = tuple(file.path for file in self.baseline_files)
+        if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
+            raise ValueError("baseline files must have unique canonical order")
+        for file in self.baseline_files:
+            if file.before_sha256 is None or file.after_sha256 is not None:
+                raise ValueError("baseline files must contain only a before digest")
+            if not any(
+                file.path == claim or file.path.startswith(f"{claim}/") for claim in self.output_paths
+            ):
+                raise ValueError("baseline file is outside the declared output paths")
+        expected = canonical_digest(self.model_dump(mode="json", exclude={"identity_digest"}))
+        if self.identity_digest != expected:
+            raise ValueError("task workspace identity digest is not canonical")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class TaskWorkspaceBinding:
+    """Local process binding for a portable task-workspace identity."""
+
+    identity: TaskWorkspaceIdentity
+    project_root: Path
+    write_root: Path
+
+
+class StagedWriteSet(FrozenModel):
+    identity_digest: str = Field(pattern=_SHA256_PATTERN)
+    files: tuple[StagedFile, ...]
+    staged_digest: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_write_set(self) -> StagedWriteSet:
+        paths = tuple(file.path for file in self.files)
+        if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
+            raise ValueError("staged files must have unique canonical order")
+        if any(file.after_sha256 is None for file in self.files):
+            raise ValueError("staged files must contain an after digest")
+        expected = canonical_digest(
+            {
+                "identity_digest": self.identity_digest,
+                "files": [file.model_dump(mode="json") for file in self.files],
+            }
+        )
+        if self.staged_digest != expected:
+            raise ValueError("staged write-set digest is not canonical")
+        return self
+
+
+class PromotionReceipt(FrozenModel):
+    identity_digest: str = Field(pattern=_SHA256_PATTERN)
+    staged_digest: str = Field(pattern=_SHA256_PATTERN)
+    receipt_digest: str = Field(pattern=_SHA256_PATTERN)
+    layout_schema_version: Literal["1"] = "1"
+
+    @model_validator(mode="after")
+    def _validate_receipt(self) -> PromotionReceipt:
+        expected = canonical_digest(self.model_dump(mode="json", exclude={"receipt_digest"}))
+        if self.receipt_digest != expected:
+            raise ValueError("promotion receipt digest is not canonical")
+        return self
+
+
 class CandidateFile(FrozenModel):
     path: str
     before_sha256: str | None

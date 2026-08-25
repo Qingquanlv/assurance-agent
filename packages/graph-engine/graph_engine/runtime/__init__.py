@@ -130,6 +130,14 @@ from graph_engine.runtime.tree_io import (
     capture_workspace_seed,
     materialize_snapshot,
 )
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore, TaskWorkspaceViolation
+from graph_engine.plugin_api import (
+    PromotionReceipt,
+    StagedFile,
+    StagedWriteSet,
+    TaskWorkspaceBinding,
+    TaskWorkspaceIdentity,
+)
 
 __all__ = [
     "ActivationRecord",
@@ -222,6 +230,10 @@ __all__ = [
     "TaskHostExecuteCall",
     "TaskHostReconcileCall",
     "TaskHostTerminalReceipt",
+    "TaskWorkspaceBinding",
+    "TaskWorkspaceIdentity",
+    "TaskWorkspaceStore",
+    "TaskWorkspaceViolation",
     "AttemptRootDescriptor",
     "TaskLeaseAcquired",
     "TaskLeaseAdopted",
@@ -229,6 +241,9 @@ __all__ = [
     "TokenConsumed",
     "TokenOffered",
     "TokenRecord",
+    "StagedFile",
+    "StagedWriteSet",
+    "PromotionReceipt",
     "EMPTY_RUNTIME_AUTHORIZATION_DIGEST",
     "InvocationSeed",
     "WorkspaceSeed",
