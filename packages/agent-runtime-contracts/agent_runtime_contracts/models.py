@@ -175,25 +175,12 @@ class FrozenExecutionSelection(FrozenModel):
 
 class AgentRunRequest(FrozenModel):
     schema_version: Literal["1"] = "1"
-    agent_profile: str | None = None
     instructions: tuple[InstructionPart, ...] = Field(min_length=1)
     result_contract: ResultContract
     execution: FrozenExecutionSelection
     workspace: AgentWorkspaceV1
     request_policy_digest: str = Field(pattern=_SHA256_PATTERN)
     request_config_digest: str = Field(pattern=_SHA256_PATTERN)
-
-    @field_validator("agent_profile")
-    @classmethod
-    def _validate_agent_profile(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not value or value != value.strip() or any(character.isspace() for character in value):
-            raise ValueError("agent_profile must be one exact non-empty selection")
-        lowered = value.lower()
-        if any(marker in lowered for marker in _ROUTING_MARKERS):
-            raise ValueError("agent_profile must not contain routing, fallbacks, or candidate lists")
-        return value
 
     def canonical_bytes(self) -> bytes:
         return canonical_json_bytes(self.model_dump(mode="json"))

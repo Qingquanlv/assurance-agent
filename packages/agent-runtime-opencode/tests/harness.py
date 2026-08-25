@@ -479,30 +479,10 @@ def prompt_admission_body(request: TaskRequest, message_id: str) -> dict[str, ob
             ),
         }
     )
-    if agent_run.agent_profile is not None:
-        parts = [
-            {
-                "type": "text",
-                "text": f"<system-reminder>\n{part['text']}\n</system-reminder>",
-            }
-            for part in parts
-        ]
     body: dict[str, object] = {
         "messageID": message_id,
         "parts": parts,
     }
-    if agent_run.agent_profile is not None:
-        body["agent"] = agent_run.agent_profile
-        body["tools"] = {
-            "apply_patch": True,
-            "artifact_write": True,
-            "write": True,
-            "edit": True,
-            "ast_grep_replace": False,
-            "webfetch": False,
-            "websearch": False,
-            "websearch_web_search_exa": False,
-        }
     model = agent_run.execution.provider_model
     if model != "provider_default":
         provider, separator, model_id = model.partition("/")

@@ -292,36 +292,6 @@ async def test_provider_error_is_typed_non_retryable_and_redacted() -> None:
         fixture.close()
 
 
-async def test_transient_provider_certificate_error_is_retryable() -> None:
-    fixture = _bound_fixture(terminal_mode="error", sse_mode="fast_idle")
-    fixture.fake.error_message = "unknown certificate verification error"
-    try:
-        outcome = await fixture.handler.execute(fixture.request, fixture.context)
-        assert isinstance(outcome, TaskOutcome)
-        assert outcome.status == "failed"
-        assert outcome.failure is not None
-        assert outcome.failure.kind == "transient"
-        assert outcome.failure.retryable is True
-    finally:
-        fixture.close()
-
-
-async def test_pre_dispatch_transport_error_is_retryable_without_recovery_wedge() -> None:
-    fixture = _open_code_fixture()
-    fixture.fake.fault_on("/config", "disconnect")
-    try:
-        outcome = await fixture.handler.execute(fixture.request, fixture.context)
-
-        assert outcome.status == "failed"
-        assert outcome.failure is not None
-        assert outcome.failure.kind == "transient"
-        assert outcome.failure.retryable is True
-        assert fixture.activity.state == "prepared"
-        assert fixture.fake.create_calls == 0
-    finally:
-        fixture.close()
-
-
 async def test_receipt_before_engine_ack_replays_without_provider() -> None:
     fixture = _terminal_success_fixture()
     try:

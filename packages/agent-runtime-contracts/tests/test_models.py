@@ -84,7 +84,6 @@ def _workspace(
 def _request() -> AgentRunRequest:
     return AgentRunRequest(
         schema_version="1",
-        agent_profile="aa-doc-author",
         instructions=(InstructionPart.text("text/plain", "write result.json"),),
         result_contract=ResultContract(
             schema_id="fixture.result.v1",
@@ -101,7 +100,6 @@ def _request() -> AgentRunRequest:
 def test_agent_run_request_is_strict_frozen_and_canonical() -> None:
     request = AgentRunRequest(
         schema_version="1",
-        agent_profile="aa-doc-author",
         instructions=(InstructionPart.text("text/plain", "write result.json"),),
         result_contract=ResultContract(
             schema_id="fixture.result.v1",
@@ -125,11 +123,10 @@ def test_agent_run_request_is_strict_frozen_and_canonical() -> None:
         AgentRunRequest.model_validate({**request.model_dump(), "fallback_model": "x"})
 
 
-@pytest.mark.parametrize("agent_profile", ["", " aa-doc-author", "aa doc-author", "aa-doc-author,other"])
-def test_agent_run_request_rejects_invalid_agent_profile(agent_profile: str) -> None:
+def test_agent_run_request_rejects_agent_profile() -> None:
     payload = _request().model_dump(mode="json")
-    payload["agent_profile"] = agent_profile
-    with pytest.raises(ValidationError, match="agent_profile"):
+    payload["agent_profile"] = "aa-doc-author"
+    with pytest.raises(ValidationError, match="extra"):
         AgentRunRequest.model_validate(payload)
 
 

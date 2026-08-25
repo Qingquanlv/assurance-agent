@@ -49,7 +49,6 @@ from agent_runtime_opencode.protocol import (
     canonical_json_text,
     resolve_advertised_profile,
 )
-from agent_runtime_opencode.redaction import failure_message
 from agent_runtime_opencode.reducer import reduce_terminal
 
 
@@ -80,13 +79,6 @@ def _activity_is_bound(context: TaskContext) -> bool:
         return False
     snapshot = port.snapshot
     return snapshot.reference is not None or snapshot.state == "bound"
-
-
-def _provider_reports_busy(status_map: object, session_id: str) -> bool:
-    if not isinstance(status_map, dict):
-        return False
-    status = status_map.get(session_id)
-    return isinstance(status, dict) and status.get("type") in {"busy", "retry"}
 
 
 class OpenCodeHandler:
@@ -288,15 +280,6 @@ class OpenCodeHandler:
             )
         except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
             if allow_create:
-                if isinstance(error, httpx.TransportError) and port.snapshot.state == "prepared":
-                    return TaskOutcome.failed(
-                        "transient",
-                        failure_message(
-                            str(error) or "provider pre-dispatch transport error",
-                            canaries=canaries,
-                        ),
-                        retryable=True,
-                    )
                 raise
             return TaskActivityReconcileResult(
                 status="indeterminate",
@@ -570,24 +553,18 @@ class OpenCodeHandler:
                 reason=str(error) or "provider observation is indeterminate",
             )
         agent_run = agent_run_from_request(request)
-        outcome = reduce_terminal(
-            kind=kind,
-            session=session,
-            messages=messages,
-            agent_run=agent_run,
-            request=request,
-            diff=diff,
-            canaries=canaries,
-        )
-        if kind == "succeeded" and _provider_reports_busy(status_map, session_id):
-            try:
-                await client.abort(session_id)
-            except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError):
-                pass
         return TaskActivityReconcileResult(
             status="terminal",
             reference=dumped,
-            outcome=outcome,
+            outcome=reduce_terminal(
+                kind=kind,
+                session=session,
+                messages=messages,
+                agent_run=agent_run,
+                request=request,
+                diff=diff,
+                canaries=canaries,
+            ),
         )
 
     def _bind_match(
