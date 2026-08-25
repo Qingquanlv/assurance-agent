@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import graph_engine.runtime.task_workspace as task_workspace
 from graph_engine.runtime.task_workspace import TaskWorkspaceStore, TaskWorkspaceViolation
 
 
@@ -126,3 +127,41 @@ def test_target_changed_immediately_before_replace_is_not_overwritten(
     with pytest.raises(TaskWorkspaceViolation, match="target drift"):
         store.promote(binding.identity, staged)
     assert (project / "out.txt").read_bytes() == b"drifted"
+
+
+def test_target_changed_during_temp_preparation_is_not_overwritten(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "out.txt").write_bytes(b"before")
+    store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
+    binding = store.begin(task_id="task", attempt=1, output_paths=("out.txt",))
+    (binding.write_root / "out.txt").write_bytes(b"after")
+    staged = store.seal(binding.identity)
+    real_open = task_workspace.os.open
+    real_fsync = task_workspace.os.fsync
+    temporary_descriptors: set[int] = set()
+    mutated = False
+
+    def record_target_temporary(name: str | bytes | Path, flags: int, *args: object, **kwargs: object) -> int:
+        descriptor = real_open(name, flags, *args, **kwargs)
+        if isinstance(name, str) and name.startswith(".out.txt.") and "dir_fd" in kwargs:
+            temporary_descriptors.add(descriptor)
+        return descriptor
+
+    def mutate_after_temp_fsync(descriptor: int) -> None:
+        nonlocal mutated
+        real_fsync(descriptor)
+        if descriptor in temporary_descriptors and not mutated:
+            mutated = True
+            (project / "out.txt").write_bytes(b"drifted")
+
+    monkeypatch.setattr(task_workspace.os, "open", record_target_temporary)
+    monkeypatch.setattr(task_workspace.os, "fsync", mutate_after_temp_fsync)
+
+    with pytest.raises(TaskWorkspaceViolation, match="target drift"):
+        store.promote(binding.identity, staged)
+    assert mutated
+    assert (project / "out.txt").read_bytes() == b"drifted"
+    assert not (store.receipts_root / f"{binding.identity.identity_digest}.json").exists()

@@ -708,9 +708,6 @@ class TaskWorkspaceStore:
                 self._project_fd, file.path, create=True, label="target parent"
             )
             try:
-                current = self._target_state_at(target_parent, target_name, file.path)
-                if current != file.before_sha256:
-                    raise TaskWorkspaceViolation(f"target drift immediately before replace: {file.path}")
                 temporary = f".{target_name}.{uuid.uuid4().hex}.tmp"
                 descriptor = os.open(
                     temporary,
@@ -729,6 +726,9 @@ class TaskWorkspaceStore:
                 finally:
                     os.close(descriptor)
                 try:
+                    current = self._target_state_at(target_parent, target_name, file.path)
+                    if current != file.before_sha256:
+                        raise TaskWorkspaceViolation(f"target drift immediately before replace: {file.path}")
                     os.replace(temporary, target_name, src_dir_fd=target_parent, dst_dir_fd=target_parent)
                     os.fsync(target_parent)
                 except BaseException:
