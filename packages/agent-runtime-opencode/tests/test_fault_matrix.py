@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -126,6 +127,32 @@ async def test_dual_root_workspace_identity_drift_is_fail_closed() -> None:
         fixture.close()
 
 
+async def test_bound_cancel_reconcile_rejects_live_root_drift_with_same_identity() -> None:
+    fixture = _terminal_success_fixture()
+    try:
+        other_project = fixture.context.project_root.parent / "other-project"
+        other_write = other_project / Path(fixture.context.write_root).relative_to(fixture.context.project_root)
+        other_write.mkdir(parents=True)
+        drifted = replace(
+            fixture.context,
+            project_root=other_project,
+            write_root=other_write,
+            workspace_identity=fixture.context.workspace_identity,
+        )
+        assert drifted.workspace_identity is fixture.context.workspace_identity
+        assert drifted.workspace_identity.identity_digest == fixture.context.workspace_identity.identity_digest
+        result = _reconcile(await fixture.handler.reconcile(fixture.request, drifted, fixture.activity))
+        assert result.status == "indeterminate"
+        assert result.reason is not None
+        assert "workspace" in result.reason
+        cancel = await fixture.handler.cancel(fixture.request, drifted, fixture.activity)
+        assert cancel.status == "indeterminate"
+        assert cancel.reason is not None
+        assert "workspace" in cancel.reason
+    finally:
+        fixture.close()
+
+
 async def test_malformed_get_response_is_indeterminate() -> None:
     fixture = _terminal_success_fixture()
     try:
@@ -221,29 +248,6 @@ async def test_busy_session_stays_running_when_diff_errors(fault: str) -> None:
         result = _reconcile(await fixture.reconcile())
         assert result.status == "running"
         assert result.outcome is None
-    finally:
-        fixture.close()
-
-
-async def test_stale_busy_session_is_aborted_and_retried() -> None:
-    fixture = _bound_fixture(
-        terminal_mode="busy",
-        config_overrides={"progress_timeout_seconds": 30},
-    )
-    try:
-        session_id = fixture.reference.session_id
-        assert session_id is not None
-        fixture.fake.set_session_updated(session_id, 1_000)
-
-        result = _reconcile(await fixture.reconcile())
-
-        assert result.status == "terminal"
-        assert result.outcome is not None
-        assert result.outcome.status == "failed"
-        assert result.outcome.failure is not None
-        assert result.outcome.failure.kind == "transient"
-        assert result.outcome.failure.retryable is True
-        assert fixture.fake.abort_calls == 1
     finally:
         fixture.close()
 

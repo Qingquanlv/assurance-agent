@@ -53,6 +53,22 @@ from agent_runtime_opencode.redaction import failure_message
 from agent_runtime_opencode.reducer import reduce_terminal
 
 
+def workspace_identity_digest_for(context: TaskContext) -> str:
+    return canonical_digest(
+        {
+            "project_root": str(context.project_root.resolve()),
+            "write_root": str(context.write_root.resolve()),
+        }
+    )
+
+
+def _dispatch_fingerprint(fingerprint: dict[str, Any], context: TaskContext) -> dict[str, Any]:
+    return {
+        **fingerprint,
+        "workspace_identity_digest": workspace_identity_digest_for(context),
+    }
+
+
 def _secret_canaries(secret: bytes) -> tuple[str, ...]:
     text = secret.decode("utf-8")
     return (text,) if text else ()
@@ -71,42 +87,6 @@ def _provider_reports_busy(status_map: object, session_id: str) -> bool:
         return False
     status = status_map.get(session_id)
     return isinstance(status, dict) and status.get("type") in {"busy", "retry"}
-
-
-def _provider_idle_seconds(session: object, messages: object) -> float | None:
-    """Return wall-clock age of the newest provider-authored progress timestamp."""
-
-    timestamps: list[float] = []
-
-    def collect_time(value: object) -> None:
-        if not isinstance(value, dict):
-            return
-        provider_time = value.get("time")
-        if not isinstance(provider_time, dict):
-            return
-        for key in ("updated", "completed", "end", "start", "created"):
-            timestamp = provider_time.get(key)
-            if isinstance(timestamp, int | float) and timestamp > 0:
-                timestamps.append(float(timestamp))
-
-    collect_time(session)
-    if isinstance(messages, list):
-        for message in messages:
-            collect_time(message)
-            if not isinstance(message, dict):
-                continue
-            collect_time(message.get("info"))
-            parts = message.get("parts")
-            if isinstance(parts, list):
-                for part in parts:
-                    collect_time(part)
-    if not timestamps:
-        return None
-    newest = max(timestamps)
-    # OpenCode 1.x timestamps are epoch milliseconds. Accept epoch seconds as a
-    # defensive compatibility shape, but never infer progress from content fields.
-    newest_seconds = newest / 1000 if newest >= 10_000_000_000 else newest
-    return max(0.0, time.time() - newest_seconds)
 
 
 class OpenCodeHandler:
@@ -213,7 +193,7 @@ class OpenCodeHandler:
             reference, record = bound
             canaries = _secret_canaries(secret)
             observed = await self._observe_bound(
-                client, request, context, reference, record, config=config, canaries=canaries
+                client, request, context, reference, record, canaries=canaries
             )
             if observed.status == "terminal":
                 if observed.outcome is None:
@@ -231,7 +211,7 @@ class OpenCodeHandler:
             deadline = time.monotonic() + config.cancel_timeout_seconds
             while True:
                 raced = await self._observe_bound(
-                    client, request, context, reference, record, config=config, canaries=canaries
+                    client, request, context, reference, record, canaries=canaries
                 )
                 if raced.status == "terminal":
                     if raced.outcome is None:
@@ -285,15 +265,18 @@ class OpenCodeHandler:
         try:
             context.heartbeat()
             fingerprint = await self._observe_fingerprint(client, config, secret)
+            dispatch_fingerprint = _dispatch_fingerprint(fingerprint, context)
             expected = self._expected_reference_fields(request, snapshot, fingerprint)
             if snapshot.reference is not None:
                 return await self._reconcile_bound(
-                    client, request, context, snapshot, expected, config=config, canaries=canaries
+                    client, request, context, snapshot, expected, canaries=canaries
                 )
             if snapshot.state == "prepared" and not allow_create:
-                return await self._reconcile_prepared(client, port, request, snapshot, fingerprint, expected)
+                return await self._reconcile_prepared(
+                    client, port, request, snapshot, dispatch_fingerprint, expected
+                )
             was_prepared = snapshot.state == "prepared"
-            snapshot = port.mark_dispatch_started(fingerprint)
+            snapshot = port.mark_dispatch_started(dispatch_fingerprint)
             expected = self._expected_reference_fields(request, snapshot, fingerprint)
             return await self._discover_or_create(
                 client,
@@ -401,7 +384,6 @@ class OpenCodeHandler:
         snapshot: TaskActivitySnapshot,
         expected: dict[str, str],
         *,
-        config: OpenCodeAdapterConfig,
         canaries: tuple[str, ...],
     ) -> TaskActivityReconcileResult:
         bound = await self._load_bound_session(client, snapshot, expected)
@@ -411,15 +393,7 @@ class OpenCodeHandler:
         admitted = await self._admit_prompt(client, request, reference)
         if admitted is not None:
             return admitted
-        return await self._observe_bound(
-            client,
-            request,
-            context,
-            reference,
-            record,
-            config=config,
-            canaries=canaries,
-        )
+        return await self._observe_bound(client, request, context, reference, record, canaries=canaries)
 
     async def _load_bound_session(
         self,
@@ -526,7 +500,6 @@ class OpenCodeHandler:
         reference: OpenCodeActivityReference,
         record: dict[str, Any],
         *,
-        config: OpenCodeAdapterConfig,
         canaries: tuple[str, ...],
     ) -> TaskActivityReconcileResult:
         session_id = reference.session_id
@@ -588,21 +561,6 @@ class OpenCodeHandler:
         )
         dumped = thaw_json(reference.model_dump(mode="json"))
         if kind == "running":
-            idle_seconds = _provider_idle_seconds(session, messages)
-            if idle_seconds is not None and idle_seconds >= config.progress_timeout_seconds:
-                try:
-                    await client.abort(session_id)
-                except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError):
-                    pass
-                return TaskActivityReconcileResult(
-                    status="terminal",
-                    reference=dumped,
-                    outcome=TaskOutcome.failed(
-                        "transient",
-                        "provider session made no observable progress before the progress timeout",
-                        retryable=True,
-                    ),
-                )
             return TaskActivityReconcileResult(status="running", reference=dumped)
         try:
             diff = await client.get_session_diff(session_id)
@@ -625,8 +583,6 @@ class OpenCodeHandler:
             try:
                 await client.abort(session_id)
             except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError):
-                # The authenticated result is already captured. Session cleanup is
-                # best-effort and must not turn it into an indeterminate activity.
                 pass
         return TaskActivityReconcileResult(
             status="terminal",
@@ -705,6 +661,12 @@ class OpenCodeHandler:
             return "request identity drifted"
         if context.workspace_identity.identity_digest != snapshot.workspace_identity.identity_digest:
             return "workspace identity drifted"
+        live = workspace_identity_digest_for(context)
+        fingerprint = thaw_json(snapshot.dispatch_fingerprint) if snapshot.dispatch_fingerprint else None
+        if isinstance(fingerprint, dict):
+            stored = fingerprint.get("workspace_identity_digest")
+            if stored not in {None, live}:
+                return "workspace identity drifted"
         try:
             AgentRunRequest.model_validate(thaw_json(request.input))
         except ValidationError:

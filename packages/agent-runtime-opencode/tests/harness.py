@@ -26,7 +26,7 @@ from agent_runtime_opencode.discovery import (
     metadata_match_digest,
     prompt_body_digest,
 )
-from agent_runtime_opencode.handler import OpenCodeHandler
+from agent_runtime_opencode.handler import OpenCodeHandler, workspace_identity_digest_for
 from agent_runtime_opencode.protocol import OpenCodeProtocolProfile, canonical_json_text
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 from graph_engine.plugin_api import (
@@ -153,7 +153,12 @@ class OpenCodeFixture:
 
     def bind_session(self, session_id: str) -> None:
         fingerprint = _fingerprint(self.config, self.fake.profile)
-        self.port.mark_dispatch_started(fingerprint)
+        self.port.mark_dispatch_started(
+            {
+                **fingerprint,
+                "workspace_identity_digest": workspace_identity_digest_for(self.context),
+            }
+        )
         metadata = discovery_metadata(
             request=self.request,
             snapshot=self.port.snapshot,
