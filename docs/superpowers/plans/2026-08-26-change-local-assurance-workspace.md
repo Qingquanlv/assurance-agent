@@ -145,6 +145,8 @@ receipt = store.promote(binding.identity, staged)
 
 ## Task 3: Migrate Scheduler Commit Semantics off Snapshot Trees
 
+**Execution note:** Tasks 3 and 4 form one atomic implementation/review batch. The scheduler event/activity identity cannot switch to `TaskWorkspaceIdentity` while engine construction, host protocol, and worker receipts still require `AttemptWorkspaceIdentity`/`SnapshotStore`; do not add a transitional compatibility mode merely to split the commits. The combined batch uses both tasks' declared files and may update `runtime/activity.py`, `runtime/host_receipts.py`, `runtime/__init__.py`, and their directly corresponding graph-engine tests when required to keep one coherent schema.
+
 **Files:**
 - Modify: `packages/graph-engine/graph_engine/runtime/scheduler.py`
 - Modify: `packages/graph-engine/graph_engine/runtime/engine.py`
@@ -174,6 +176,8 @@ receipt = store.promote(binding.identity, staged)
 - [ ] Commit with `git commit -m "refactor(engine): promote staged task outputs"`.
 
 ## Task 4: Replace Workspace Seed and Host Protocol with Authenticated Roots
+
+**Execution note:** Implement and review this task together with Task 3 as stated above. Produce one combined RED/GREEN report for the schema cutover and record both task numbers in the commit/review evidence.
 
 **Files:**
 - Modify: `packages/graph-engine/graph_engine/runtime/seed.py`
