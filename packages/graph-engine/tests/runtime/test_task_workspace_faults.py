@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import graph_engine.runtime.task_workspace as task_workspace
+from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import StagedWriteSet, TaskWorkspaceBinding
 from graph_engine.runtime.task_workspace import (
     PromotionPublicationIndeterminate,
@@ -30,6 +31,55 @@ def _single_file_promotion(
     (binding.write_root / "out.txt").write_bytes(b"after")
     staged = store.seal(binding.identity)
     return store, binding, staged, project
+
+
+def _crash_while_writing_receipt_file(
+    *,
+    project: Path,
+    attempts: Path,
+    receipts: Path,
+    binding: TaskWorkspaceBinding,
+    staged: StagedWriteSet,
+    purpose: str,
+) -> int:
+    process_id = os.fork()
+    if process_id == 0:
+        child_store = TaskWorkspaceStore(project, attempts, receipts)
+        real_open = task_workspace.os.open
+        real_write = task_workspace.os.write
+        target_descriptors: set[int] = set()
+
+        def track_receipt_file(
+            name: str | bytes | Path,
+            flags: int,
+            *args: object,
+            **kwargs: object,
+        ) -> int:
+            descriptor = real_open(name, flags, *args, **kwargs)
+            if (
+                kwargs.get("dir_fd") == child_store._receipts_fd
+                and isinstance(name, str)
+                and binding.identity.identity_digest in name
+                and purpose in name
+                and name.endswith(".tmp")
+            ):
+                target_descriptors.add(descriptor)
+            return descriptor
+
+        def crash_after_partial_write(descriptor: int, content: object) -> int:
+            if descriptor in target_descriptors:
+                payload = memoryview(content)  # type: ignore[arg-type]
+                written = real_write(descriptor, payload[: max(1, min(7, len(payload)))])
+                if written > 0:
+                    os._exit(91)
+            return real_write(descriptor, content)  # type: ignore[arg-type]
+
+        task_workspace.os.open = track_receipt_file
+        task_workspace.os.write = crash_after_partial_write
+        child_store.promote(binding.identity, staged)
+        os._exit(92)
+    _child, status = os.waitpid(process_id, 0)
+    return os.waitstatus_to_exitcode(status)
 
 
 def test_second_file_replace_failure_rolls_back_the_whole_promotion_and_can_replay(
@@ -389,7 +439,7 @@ def test_receipt_rename_reuses_one_deterministic_authenticated_temp_until_replay
     assert tuple(store.receipts_root.glob("*.tmp")) == ()
 
 
-def test_replay_rejects_tampered_deterministic_receipt_temporary(
+def test_replay_replaces_unparseable_same_intent_receipt_temporary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -414,11 +464,139 @@ def test_replay_rejects_tampered_deterministic_receipt_temporary(
     temporary.write_bytes(b"forged")
     monkeypatch.undo()
 
-    with pytest.raises(PromotionPublicationIndeterminate) as caught:
+    receipt = store.promote(binding.identity, staged)
+
+    assert (store.receipts_root / receipt_name).is_file()
+    assert receipt.identity_digest == binding.identity.identity_digest
+
+
+def test_replay_preserves_authenticated_different_intent_receipt_temporary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, binding, staged, _project = _single_file_promotion(tmp_path)
+    receipt_name = f"{binding.identity.identity_digest}.json"
+    real_replace = task_workspace.os.replace
+
+    def fail_receipt_rename(
+        source: str | bytes | Path,
+        target: str | bytes | Path,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        if target == receipt_name and kwargs.get("dst_dir_fd") == store._receipts_fd:
+            raise OSError("injected receipt rename failure")
+        real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(task_workspace.os, "replace", fail_receipt_rename)
+    with pytest.raises(PromotionPublicationIndeterminate):
+        store.promote(binding.identity, staged)
+    (temporary,) = tuple(store.receipts_root.glob("*.tmp"))
+    different = task_workspace._receipt(binding.identity.identity_digest, "f" * 64)
+    different_bytes = canonical_json_bytes(different.model_dump(mode="json"))
+    temporary.write_bytes(different_bytes)
+    temporary.chmod(0o600)
+    monkeypatch.undo()
+
+    with pytest.raises(PromotionPublicationIndeterminate):
         store.promote(binding.identity, staged)
 
-    assert isinstance(caught.value.__cause__, TaskWorkspaceViolation)
+    assert temporary.read_bytes() == different_bytes
     assert not (store.receipts_root / receipt_name).exists()
+
+
+def test_pending_replay_preserves_authenticated_legacy_different_intent_construction(
+    tmp_path: Path,
+) -> None:
+    store, binding, staged, project = _single_file_promotion(tmp_path)
+    different = task_workspace._receipt(binding.identity.identity_digest, "f" * 64)
+    different_bytes = canonical_json_bytes(different.model_dump(mode="json"))
+    legacy = store.receipts_root / f".{binding.identity.identity_digest}.pending.json.{'a' * 32}.tmp"
+    legacy.write_bytes(different_bytes)
+    legacy.chmod(0o600)
+
+    with pytest.raises(TaskWorkspaceViolation, match="different promotion intent"):
+        store.promote(binding.identity, staged)
+
+    assert legacy.read_bytes() == different_bytes
+    assert (project / "out.txt").read_bytes() == b"before"
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires process-crash fork semantics")
+def test_fresh_replays_replace_partial_completed_receipt_construction_and_finish(
+    tmp_path: Path,
+) -> None:
+    store, binding, staged, project = _single_file_promotion(tmp_path)
+    attempts = store.attempts_root
+    receipts = store.receipts_root
+    store.close()
+
+    assert (
+        _crash_while_writing_receipt_file(
+            project=project,
+            attempts=attempts,
+            receipts=receipts,
+            binding=binding,
+            staged=staged,
+            purpose="receipt",
+        )
+        == 91
+    )
+    assert (project / "out.txt").read_bytes() == b"after"
+    assert (receipts / f".{binding.identity.identity_digest}.pending.json").is_file()
+
+    replayed = []
+    for _ in range(2):
+        fresh = TaskWorkspaceStore(project, attempts, receipts)
+        try:
+            replayed.append(fresh.promote(binding.identity, staged))
+        finally:
+            fresh.close()
+
+    assert replayed[0] == replayed[1]
+    assert {entry.name for entry in receipts.iterdir()} == {f"{binding.identity.identity_digest}.json"}
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires process-crash fork semantics")
+def test_repeated_pending_intent_construction_crashes_do_not_accumulate_orphans(
+    tmp_path: Path,
+) -> None:
+    store, binding, staged, project = _single_file_promotion(tmp_path)
+    attempts = store.attempts_root
+    receipts = store.receipts_root
+    store.close()
+
+    for _ in range(2):
+        assert (
+            _crash_while_writing_receipt_file(
+                project=project,
+                attempts=attempts,
+                receipts=receipts,
+                binding=binding,
+                staged=staged,
+                purpose="pending",
+            )
+            == 91
+        )
+
+    pending_orphans = tuple(
+        entry
+        for entry in receipts.iterdir()
+        if binding.identity.identity_digest in entry.name
+        and "pending" in entry.name
+        and entry.name.endswith(".tmp")
+    )
+    assert len(pending_orphans) == 1
+    assert (project / "out.txt").read_bytes() == b"before"
+
+    fresh = TaskWorkspaceStore(project, attempts, receipts)
+    try:
+        receipt = fresh.promote(binding.identity, staged)
+    finally:
+        fresh.close()
+
+    assert (project / "out.txt").read_bytes() == b"after"
+    assert {entry.name for entry in receipts.iterdir()} == {f"{receipt.identity_digest}.json"}
 
 
 @pytest.mark.parametrize(

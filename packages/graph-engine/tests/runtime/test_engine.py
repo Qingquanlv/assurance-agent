@@ -98,7 +98,10 @@ from graph_engine.runtime.models import ProjectionError, fold_events
 from graph_engine.runtime.planner import activation_id, plan_next, task_id
 from graph_engine.runtime.scheduler import FakeClock
 from graph_engine.runtime.scheduler import Scheduler
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.runtime.task_workspace import (
+    PromotionPublicationIndeterminate,
+    TaskWorkspaceStore,
+)
 
 
 class Engine(RuntimeEngine):
@@ -2167,6 +2170,35 @@ def test_recover_publishes_task_attempt_succeeded_for_expired_succeeded_terminal
         assert attempt.status == "succeeded"
         result = engine.run_until_blocked(handle)
         assert result.status == "succeeded"
+    finally:
+        handle.close()
+        engine.close()
+
+
+def test_public_recover_translates_promotion_publication_indeterminate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    product = _leave_unfinalized_terminal_observed(
+        tmp_path,
+        monkeypatch,
+        _SucceedingRecoverableHandler(),
+        "recover-promotion-indeterminate",
+    )
+    engine = Engine(tmp_path, clock=FakeClock(41.0), host=_ReceiptInstallingTestHost())
+    handle = engine.open(
+        "recover-promotion-indeterminate",
+        product,
+        authorization=empty_runtime_authorization(),
+    )
+
+    def indeterminate(*_args: object, **_kwargs: object) -> object:
+        raise PromotionPublicationIndeterminate("injected promotion publication uncertainty")
+
+    monkeypatch.setattr(TaskWorkspaceStore, "promote", indeterminate)
+    try:
+        with pytest.raises(EnginePublicationIndeterminate, match="promotion"):
+            asyncio.run(handle.recover())
     finally:
         handle.close()
         engine.close()

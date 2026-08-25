@@ -1342,6 +1342,10 @@ class Engine:
                 raise EnginePublicationIndeterminate(
                     "activity recovery publication is indeterminate"
                 ) from error
+            except PromotionPublicationIndeterminate as error:
+                raise EnginePublicationIndeterminate(
+                    "activity recovery promotion publication is indeterminate"
+                ) from error
         finally:
             store.close()
 

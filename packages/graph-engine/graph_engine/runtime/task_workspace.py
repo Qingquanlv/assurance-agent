@@ -1138,15 +1138,194 @@ class TaskWorkspaceStore:
                 os.close(parent_fd)
 
     @staticmethod
-    def _receipt_temporary_name(expected_receipt: PromotionReceipt) -> str:
+    def _publication_prepared_name(expected_receipt: PromotionReceipt, purpose: str) -> str:
+        return f".{expected_receipt.identity_digest}.{expected_receipt.receipt_digest}.{purpose}.prepared.tmp"
+
+    @staticmethod
+    def _publication_construction_prefix(expected_receipt: PromotionReceipt, purpose: str) -> str:
+        return (
+            f".{expected_receipt.identity_digest}.{expected_receipt.receipt_digest}.{purpose}.construction."
+        )
+
+    @staticmethod
+    def _legacy_receipt_temporary_name(expected_receipt: PromotionReceipt) -> str:
         return f".{expected_receipt.identity_digest}.{expected_receipt.receipt_digest}.receipt.tmp"
 
-    def _cleanup_receipt_temporary(self, expected_receipt: PromotionReceipt) -> None:
-        self._unlink_transaction_name(
-            self._receipts_fd,
-            self._receipt_temporary_name(expected_receipt),
+    @staticmethod
+    def _legacy_pending_construction_prefix(expected_receipt: PromotionReceipt) -> str:
+        return f".{expected_receipt.identity_digest}.pending.json."
+
+    @staticmethod
+    def _is_construction_name(name: str, prefix: str) -> bool:
+        if not name.startswith(prefix) or not name.endswith(".tmp"):
+            return False
+        token = name[len(prefix) : -len(".tmp")]
+        return len(token) == 32 and all(character in "0123456789abcdef" for character in token)
+
+    def _publication_temporary_state(
+        self,
+        name: str,
+        expected_receipt: PromotionReceipt,
+        content: bytes,
+        digest: str,
+        *,
+        label: str,
+    ) -> str:
+        try:
+            existing_content, existing_digest, existing_mode = _read_regular_at(
+                self._receipts_fd,
+                name,
+                label,
+            )
+        except FileNotFoundError:
+            return "missing"
+        if existing_content == content and existing_digest == digest and existing_mode == 0o600:
+            return "expected"
+        try:
+            authenticated = PromotionReceipt.model_validate_json(existing_content)
+        except ValueError:
+            return "incomplete"
+        if authenticated != expected_receipt:
+            raise TaskWorkspaceViolation(f"authenticated {label} belongs to a different promotion intent")
+        return "incomplete"
+
+    def _cleanup_construction_files(
+        self,
+        expected_receipt: PromotionReceipt,
+        content: bytes,
+        digest: str,
+        *,
+        purpose: str,
+    ) -> None:
+        prefixes = [self._publication_construction_prefix(expected_receipt, purpose)]
+        if purpose == "pending":
+            prefixes.append(self._legacy_pending_construction_prefix(expected_receipt))
+        try:
+            names = sorted(os.listdir(self._receipts_fd), key=os.fsencode)
+        except OSError as error:
+            raise TaskWorkspaceViolation("cannot enumerate promotion construction files") from error
+        removed = False
+        for name in names:
+            if not any(self._is_construction_name(name, prefix) for prefix in prefixes):
+                continue
+            state = self._publication_temporary_state(
+                name,
+                expected_receipt,
+                content,
+                digest,
+                label=f"{purpose} construction temporary",
+            )
+            if state == "missing":
+                continue
+            self._unlink_transaction_name(self._receipts_fd, name)
+            removed = True
+        if removed:
+            os.fsync(self._receipts_fd)
+
+    def _recover_publication_prepared(
+        self,
+        expected_receipt: PromotionReceipt,
+        content: bytes,
+        digest: str,
+        *,
+        purpose: str,
+    ) -> str | None:
+        prepared_name = self._publication_prepared_name(expected_receipt, purpose)
+        candidates = [prepared_name]
+        if purpose == "receipt":
+            candidates.append(self._legacy_receipt_temporary_name(expected_receipt))
+        for name in candidates:
+            state = self._publication_temporary_state(
+                name,
+                expected_receipt,
+                content,
+                digest,
+                label=f"{purpose} prepared temporary",
+            )
+            if state == "missing":
+                continue
+            if state == "expected":
+                if name != prepared_name:
+                    os.replace(
+                        name,
+                        prepared_name,
+                        src_dir_fd=self._receipts_fd,
+                        dst_dir_fd=self._receipts_fd,
+                    )
+                    os.fsync(self._receipts_fd)
+                return prepared_name
+            self._unlink_transaction_name(self._receipts_fd, name)
+            os.fsync(self._receipts_fd)
+        return None
+
+    def _prepare_publication_file(
+        self,
+        expected_receipt: PromotionReceipt,
+        *,
+        purpose: str,
+    ) -> str:
+        content = canonical_json_bytes(expected_receipt.model_dump(mode="json"))
+        digest = hashlib.sha256(content).hexdigest()
+        self._cleanup_construction_files(
+            expected_receipt,
+            content,
+            digest,
+            purpose=purpose,
+        )
+        prepared_name = self._recover_publication_prepared(
+            expected_receipt,
+            content,
+            digest,
+            purpose=purpose,
+        )
+        if prepared_name is not None:
+            return prepared_name
+        construction_name = (
+            f"{self._publication_construction_prefix(expected_receipt, purpose)}{uuid.uuid4().hex}.tmp"
+        )
+        _write_named_file_at(self._receipts_fd, construction_name, content, 0o600)
+        prepared_name = self._publication_prepared_name(expected_receipt, purpose)
+        os.replace(
+            construction_name,
+            prepared_name,
+            src_dir_fd=self._receipts_fd,
+            dst_dir_fd=self._receipts_fd,
         )
         os.fsync(self._receipts_fd)
+        return prepared_name
+
+    def _cleanup_publication_temporaries(
+        self,
+        expected_receipt: PromotionReceipt,
+        *,
+        purpose: str,
+    ) -> None:
+        content = canonical_json_bytes(expected_receipt.model_dump(mode="json"))
+        digest = hashlib.sha256(content).hexdigest()
+        self._cleanup_construction_files(
+            expected_receipt,
+            content,
+            digest,
+            purpose=purpose,
+        )
+        names = [self._publication_prepared_name(expected_receipt, purpose)]
+        if purpose == "receipt":
+            names.append(self._legacy_receipt_temporary_name(expected_receipt))
+        removed = False
+        for name in names:
+            state = self._publication_temporary_state(
+                name,
+                expected_receipt,
+                content,
+                digest,
+                label=f"{purpose} prepared temporary",
+            )
+            if state == "missing":
+                continue
+            self._unlink_transaction_name(self._receipts_fd, name)
+            removed = True
+        if removed:
+            os.fsync(self._receipts_fd)
 
     def _install_completed_receipt(
         self,
@@ -1154,16 +1333,7 @@ class TaskWorkspaceStore:
         *,
         receipt_name: str,
     ) -> None:
-        content = canonical_json_bytes(expected_receipt.model_dump(mode="json"))
-        temporary_name = self._receipt_temporary_name(expected_receipt)
-        self._ensure_named_file(
-            self._receipts_fd,
-            temporary_name,
-            content,
-            hashlib.sha256(content).hexdigest(),
-            0o600,
-            "promotion receipt temporary",
-        )
+        temporary_name = self._prepare_publication_file(expected_receipt, purpose="receipt")
         os.replace(
             temporary_name,
             receipt_name,
@@ -1175,6 +1345,24 @@ class TaskWorkspaceStore:
         if installed != expected_receipt:
             raise TaskWorkspaceViolation("installed promotion receipt failed authentication")
 
+    def _install_pending_receipt(
+        self,
+        expected_receipt: PromotionReceipt,
+        *,
+        pending_name: str,
+    ) -> None:
+        temporary_name = self._prepare_publication_file(expected_receipt, purpose="pending")
+        os.replace(
+            temporary_name,
+            pending_name,
+            src_dir_fd=self._receipts_fd,
+            dst_dir_fd=self._receipts_fd,
+        )
+        os.fsync(self._receipts_fd)
+        installed = self._read_receipt_at(pending_name)
+        if installed != expected_receipt:
+            raise TaskWorkspaceViolation("installed pending promotion receipt failed authentication")
+
     def _cleanup_completed_promotion(
         self,
         identity: TaskWorkspaceIdentity,
@@ -1185,7 +1373,14 @@ class TaskWorkspaceStore:
     ) -> None:
         cleanup_steps = (
             lambda: self._cleanup_replay_artifacts(identity, staged),
-            lambda: self._cleanup_receipt_temporary(expected_receipt),
+            lambda: self._cleanup_publication_temporaries(
+                expected_receipt,
+                purpose="receipt",
+            ),
+            lambda: self._cleanup_publication_temporaries(
+                expected_receipt,
+                purpose="pending",
+            ),
             lambda: self._remove_pending_receipt(pending_name),
         )
         for cleanup in cleanup_steps:
@@ -1282,10 +1477,9 @@ class TaskWorkspaceStore:
         else:
             self._verify_target_baseline(identity)
             self._staged_matches_root(identity, staged)
-            _atomic_write_at(
-                self._receipts_fd,
-                pending_name,
-                canonical_json_bytes(expected_receipt.model_dump(mode="json")),
+            self._install_pending_receipt(
+                expected_receipt,
+                pending_name=pending_name,
             )
         self._execute_promotion_transaction(identity, staged)
         if not self._targets_match_staged(staged):
