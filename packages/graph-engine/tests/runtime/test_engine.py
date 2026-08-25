@@ -23,7 +23,6 @@ from pydantic import ValidationError
 import graph_engine.runtime.engine as engine_runtime
 import graph_engine.runtime.ledger as ledger_runtime
 import graph_engine.runtime.scheduler as scheduler_runtime
-import graph_engine.runtime.workspace as workspace_runtime
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.composition import (
     EditableWheelPluginSource,
@@ -44,7 +43,6 @@ from graph_engine.plugin_api import (
     InvocationWorkspaceBinding,
     PluginDescriptor,
     ProviderSource,
-    ResourceClaims,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
     TaskActivitySnapshot,
@@ -78,7 +76,6 @@ from graph_engine.runtime.events import (
     GraphCompleted,
     GraphFailed,
     GraphStarted,
-    HeadAdvanced,
     InterruptResumed,
     InvocationFinished,
     NodeActivated,
@@ -89,7 +86,6 @@ from graph_engine.runtime.events import (
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
-    TaskAttemptSucceeded,
     TaskLeaseAcquired,
     TaskLeaseHeartbeat,
     TokenConsumed,
@@ -102,7 +98,6 @@ from graph_engine.runtime.planner import activation_id, plan_next, task_id
 from graph_engine.runtime.scheduler import FakeClock
 from graph_engine.runtime.scheduler import Scheduler
 from graph_engine.runtime.task_workspace import TaskWorkspaceStore
-from graph_engine.runtime.workspace import SnapshotStore
 
 
 class Engine(RuntimeEngine):
@@ -2581,332 +2576,6 @@ def test_fresh_open_after_exact_facade_crash_matrix_has_identical_digests(
     assert recovered == baseline
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires process-crash fork semantics")
-@pytest.mark.skip(reason="snapshot HEAD journal was replaced by staged promotion receipts")
-def test_open_durably_syncs_linked_success_before_clearing_head_journal(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    armed = False
-
-    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        nonlocal armed
-        (context.write_root / "out.txt").write_bytes(b"durable")
-        armed = True
-        return TaskOutcome.succeeded("done")
-
-    product = _nested_task_interrupt_product(handler)
-    root = tmp_path / "durability-cut"
-    Engine(root, clock=FakeClock(10), host=_InProcessTestHost()).start(
-        product,
-        entrypoint="main",
-        invocation_id="durability",
-        seed=empty_invocation_seed(),
-        authorization=empty_runtime_authorization(),
-    )
-    process_id = os.fork()
-    if process_id == 0:
-
-        def crash_after_link(name: str) -> None:
-            if armed and name == "final_installed":
-                os._exit(91)
-
-        ledger_runtime._append_boundary = crash_after_link
-        child_engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-        child_handle = child_engine.open("durability", product, authorization=empty_runtime_authorization())
-        child_engine.run_until_blocked(child_handle)
-        os._exit(0)
-
-    _child, status = os.waitpid(process_id, 0)
-    assert os.waitstatus_to_exitcode(status) == 91
-    journal = root / "invocations" / "durability" / "workspace" / ".HEAD-transaction.json"
-    assert journal.exists()
-
-    ledger_synced = False
-    real_sync = Ledger.ensure_durable
-    real_clear = SnapshotStore._clear_head_transaction
-
-    def track_sync(self: Ledger) -> None:
-        nonlocal ledger_synced
-        real_sync(self)
-        ledger_synced = True
-
-    def require_sync_before_clear(self: SnapshotStore, root_fd: int) -> None:
-        assert ledger_synced
-        real_clear(self, root_fd)
-
-    monkeypatch.setattr(Ledger, "ensure_durable", track_sync)
-    monkeypatch.setattr(SnapshotStore, "_clear_head_transaction", require_sync_before_clear)
-
-    reopened = Engine(root, clock=FakeClock(10), host=_InProcessTestHost()).open(
-        "durability",
-        product,
-        authorization=empty_runtime_authorization(),
-    )
-
-    assert (
-        reopened.workspace.head_tree_id()
-        == fold_events(Ledger(reopened.invocation_root / "ledger").read_all()).head_tree_id
-    )
-    assert not journal.exists()
-
-
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires process-crash fork semantics")
-@pytest.mark.skip(reason="snapshot HEAD recovery was replaced by workspace-binding authentication")
-def test_open_authenticates_before_head_recovery_and_leaves_workspace_unchanged_on_drift(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    armed = False
-
-    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        nonlocal armed
-        (context.write_root / "out.txt").write_bytes(b"candidate")
-        armed = True
-        return TaskOutcome.succeeded("done")
-
-    composition = _nested_task_interrupt_product(handler)
-    root = tmp_path / "head-recovery-guard"
-    with Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as bootstrap:
-        bootstrap.start(
-            composition,
-            entrypoint="main",
-            invocation_id="guarded",
-            seed=empty_invocation_seed(),
-            authorization=empty_runtime_authorization(),
-        ).close()
-    process_id = os.fork()
-    if process_id == 0:
-
-        def crash_after_success_link(name: str) -> None:
-            if armed and name == "final_installed":
-                os._exit(91)
-
-        ledger_runtime._append_boundary = crash_after_success_link
-        child_engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-        child_handle = child_engine.open("guarded", composition, authorization=empty_runtime_authorization())
-        child_engine.run_until_blocked(child_handle)
-        os._exit(0)
-
-    _child, status = os.waitpid(process_id, 0)
-    assert os.waitstatus_to_exitcode(status) == 91
-    invocation = root / "invocations" / "guarded"
-    workspace = invocation / "workspace"
-    journal = workspace / ".HEAD-transaction.json"
-    head = workspace / "HEAD.json"
-    assert journal.exists()
-    before_journal = journal.read_bytes()
-    before_head = head.read_bytes()
-    before_ledger = b"".join(
-        path.read_bytes() for path in sorted((invocation / "ledger").glob("[0-9]*.json"))
-    )
-
-    def drift_before_recovery(context: str) -> None:
-        if context == "head_recovery":
-            (invocation / "invocation.lock.json").unlink()
-
-    monkeypatch.setattr(engine_runtime, "_transition_boundary", drift_before_recovery, raising=False)
-    with (
-        Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as engine,
-        pytest.raises(InvocationDrift),
-    ):
-        engine.open("guarded", composition, authorization=empty_runtime_authorization())
-
-    assert journal.read_bytes() == before_journal
-    assert head.read_bytes() == before_head
-    assert (
-        b"".join(path.read_bytes() for path in sorted((invocation / "ledger").glob("[0-9]*.json")))
-        == before_ledger
-    )
-
-
-@pytest.mark.parametrize("cut", ["unlink", "directory_fsync"])
-@pytest.mark.skip(reason="snapshot HEAD journal was replaced by staged promotion receipts")
-def test_post_success_journal_clear_fault_stops_before_successor_and_recovers(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cut: Literal["unlink", "directory_fsync"],
-) -> None:
-    armed = False
-    executed: list[str] = []
-
-    async def handler(request: TaskRequest, _context: TaskContext) -> TaskOutcome:
-        nonlocal armed
-        executed.append(request.node_id)
-        if request.node_id == "first":
-            armed = True
-        return TaskOutcome.succeeded(request.node_id)
-
-    product = _two_task_product(handler)
-    invocation_id = f"post-success-clear-{cut}"
-    root = tmp_path / cut
-    engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-    handle = engine.start(
-        product,
-        entrypoint="main",
-        invocation_id=invocation_id,
-        seed=empty_invocation_seed(),
-        authorization=empty_runtime_authorization(),
-    )
-    workspace_root = handle.invocation_root / "workspace"
-    journal = workspace_root / ".HEAD-transaction.json"
-    workspace_identity = workspace_root.stat()
-    real_unlink = workspace_runtime.os.unlink
-    real_fsync = workspace_runtime.os.fsync
-    journal_unlinked = False
-
-    def fault_unlink(path: object, *args: object, **kwargs: object) -> None:
-        nonlocal journal_unlinked
-        if armed and path == ".HEAD-transaction.json":
-            if cut == "unlink":
-                raise OSError("simulated journal unlink cut")
-            real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
-            journal_unlinked = True
-            return
-        real_unlink(path, *args, **kwargs)  # type: ignore[arg-type]
-
-    def fault_fsync(descriptor: int) -> None:
-        current = os.fstat(descriptor)
-        if (
-            armed
-            and cut == "directory_fsync"
-            and journal_unlinked
-            and (current.st_dev, current.st_ino) == (workspace_identity.st_dev, workspace_identity.st_ino)
-        ):
-            raise OSError("simulated journal directory fsync cut")
-        real_fsync(descriptor)
-
-    with monkeypatch.context() as faults:
-        faults.setattr(workspace_runtime.os, "unlink", fault_unlink)
-        faults.setattr(workspace_runtime.os, "fsync", fault_fsync)
-        with pytest.raises(EnginePublicationIndeterminate, match="publication is indeterminate"):
-            engine.run_until_blocked(handle)
-
-    events = tuple(envelope.event for envelope in Ledger(handle.invocation_root / "ledger").read_all())
-    first_activation = next(
-        activation
-        for activation in fold_events(Ledger(handle.invocation_root / "ledger").read_all()).activations
-        if activation.node_id == "first"
-    )
-    assert first_activation.attempts[-1].status == "succeeded"
-    assert first_activation.attempts[-1].committed_tree_id is not None
-    assert any(isinstance(event, TaskAttemptSucceeded) for event in events)
-    assert any(isinstance(event, HeadAdvanced) for event in events)
-    assert not any(isinstance(event, TaskAttemptFailed) for event in events)
-    assert executed == ["first"]
-    assert journal.exists()
-
-    handle.close()
-    engine.close()
-    with Engine(root, clock=FakeClock(10), host=_InProcessTestHost()) as reopened_engine:
-        with reopened_engine.open(
-            invocation_id, product, authorization=empty_runtime_authorization()
-        ) as reopened:
-            assert not journal.exists()
-            result = reopened_engine.run_until_blocked(reopened)
-
-    assert result.status == "succeeded"
-    assert executed == ["first", "second"]
-
-
-@pytest.mark.skip(reason="snapshot HEAD recovery was replaced by staged promotion receipts")
-def test_open_cannot_recover_head_from_projection_stale_to_live_runner(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    handler_entered = threading.Event()
-    release_handler = threading.Event()
-    opener_read_projection = threading.Event()
-    release_opener = threading.Event()
-    opener_done = threading.Event()
-    runner_outcome: list[object] = []
-    opener_outcome: list[object] = []
-
-    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.write_root / "out.txt").write_bytes(b"committed")
-        handler_entered.set()
-        assert release_handler.wait(timeout=5)
-        return TaskOutcome.succeeded("done")
-
-    product = _nested_task_interrupt_product(handler)
-    root = tmp_path / "open-runner-race"
-    bootstrap = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-    initial = bootstrap.start(
-        product,
-        entrypoint="main",
-        invocation_id="race",
-        seed=empty_invocation_seed(),
-        authorization=empty_runtime_authorization(),
-    )
-    journal = initial.invocation_root / "workspace" / ".HEAD-transaction.json"
-    real_sync = Ledger.ensure_durable
-    real_clear = SnapshotStore._clear_head_transaction
-
-    def pause_after_opener_projection(self: Ledger) -> None:
-        if threading.current_thread().name == "opener":
-            opener_read_projection.set()
-            assert release_opener.wait(timeout=5)
-        real_sync(self)
-
-    def crash_runner_before_journal_clear(self: SnapshotStore, root_fd: int) -> None:
-        if threading.current_thread().name == "runner":
-            raise OSError("crash before runner clears HEAD journal")
-        real_clear(self, root_fd)
-
-    monkeypatch.setattr(Ledger, "ensure_durable", pause_after_opener_projection)
-    monkeypatch.setattr(
-        SnapshotStore,
-        "_clear_head_transaction",
-        crash_runner_before_journal_clear,
-    )
-
-    def run() -> None:
-        try:
-            runner_outcome.append(bootstrap.run_until_blocked(initial))
-        except BaseException as error:
-            runner_outcome.append(error)
-
-    def open_during_run() -> None:
-        try:
-            opener_outcome.append(
-                Engine(root, clock=FakeClock(10), host=_InProcessTestHost()).open(
-                    "race", product, authorization=empty_runtime_authorization()
-                )
-            )
-        except BaseException as error:
-            opener_outcome.append(error)
-        finally:
-            opener_done.set()
-
-    runner = threading.Thread(target=run, name="runner")
-    runner.start()
-    assert handler_entered.wait(timeout=5)
-    opener = threading.Thread(target=open_during_run, name="opener")
-    opener.start()
-    opener_read_projection.wait(timeout=1)
-    if not opener_read_projection.is_set():
-        assert opener_done.wait(timeout=5)
-    release_handler.set()
-    runner.join(timeout=5)
-    release_opener.set()
-    opener.join(timeout=5)
-
-    assert not runner.is_alive()
-    assert not opener.is_alive()
-    assert len(runner_outcome) == 1
-    assert len(opener_outcome) == 1
-    assert isinstance(runner_outcome[0], EnginePublicationIndeterminate)
-    assert isinstance(opener_outcome[0], EngineConflictError)
-    assert journal.exists()
-
-    projection = fold_events(Ledger(initial.invocation_root / "ledger").read_all())
-    assert projection.head_tree_id is not None
-    reopened_engine = Engine(root, clock=FakeClock(10), host=_InProcessTestHost())
-    reopened = reopened_engine.open("race", product, authorization=empty_runtime_authorization())
-    assert reopened.workspace.head_tree_id() == projection.head_tree_id
-    assert not journal.exists()
-
-
 def test_open_cannot_reclaim_expired_lease_from_active_claimed_runner(tmp_path: Path) -> None:
     handler_entered = threading.Event()
     release_handler = threading.Event()
@@ -2990,30 +2659,6 @@ def test_runner_claim_rejects_directory_entry_replacement_after_lock(
         engine.run_until_blocked(handle)
 
     assert ledger.read_all() == before
-
-
-@pytest.mark.skip(reason="snapshot HEAD was removed from invocation state")
-def test_open_rejects_workspace_head_without_authoritative_head_advance(
-    tmp_path: Path,
-    resolved_interrupt_product: FrozenComposition,
-) -> None:
-    engine = Engine(tmp_path)
-    handle = engine.start(
-        resolved_interrupt_product,
-        entrypoint="main",
-        invocation_id="orphan-head",
-        seed=empty_invocation_seed(),
-        authorization=empty_runtime_authorization(),
-    )
-    attempt = handle.workspace.create_attempt("orphan")
-    (attempt.root / "orphan.txt").write_bytes(b"not authoritative")
-    candidate = attempt.seal()
-    handle.workspace.commit_candidate(candidate, ResourceClaims(writes=("orphan.txt",)))
-
-    with pytest.raises(EngineError, match="HEAD.*authoritative ledger"):
-        Engine(tmp_path).open(
-            "orphan-head", resolved_interrupt_product, authorization=empty_runtime_authorization()
-        )
 
 
 def test_distinct_authenticated_handler_sources_have_distinct_lock_bound_handles(
