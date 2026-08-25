@@ -89,7 +89,7 @@ class ChangeWorkspace:
 
 **Interfaces:** `ChangePaths`, `ChangeWorkspace.open()`, `safe_change_id()`, `safe_relative_path()`.
 
-- [ ] Write tests proving that `ChangeWorkspace.open(project, "BENCH-dept-001")` resolves `change_root`, `staging_root`, `runtime_root`, `generated_root`, and `apply_manifest` exactly under `project/qa/changes/BENCH-dept-001`; reject absolute roots, symlinked `qa/changes`, `/`, `..`, separators in IDs, NUL, and paths escaping the project.
+- [ ] Write tests proving that `ChangeWorkspace.open(project, "BENCH-dept-001")` accepts a canonical absolute project root and resolves `change_root`, `staging_root`, `runtime_root`, `generated_root`, and `apply_manifest` exactly under `project/qa/changes/BENCH-dept-001`; reject a missing/non-directory project, symlinked `qa/changes`, absolute or separator-bearing change IDs, `/`, `..`, NUL, and output paths escaping the project.
 - [ ] Run `uv run pytest tests/phase5/test_change_workspace_paths.py -q` and observe import failure for `assurance_product.change_workspace`.
 - [ ] Implement frozen `ChangePaths` and canonical path validation. Do not create directories in `open()`; add an explicit `initialize()` that atomically creates `.runtime/{ledger,activities,receipts}` and `.staging`.
 
@@ -245,7 +245,7 @@ Set OpenCode `directory=context.project_root`, Cursor `cwd=context.project_root`
 - Create: `packages/agent-runtime-cursor/tests/test_filesystem_sandbox.py`
 - Create: `.superpowers/sdd/2026-08-26-change-local-assurance-workspace/task-6-report.md`
 
-**Interfaces:** OpenCode session title carries a canonical signed workspace-binding envelope consumed by the installed boundary plugin; Cursor launch uses `FilesystemSandbox.wrap(request)`, supporting macOS Seatbelt and Linux bubblewrap and failing closed when unavailable.
+**Interfaces:** OpenCode session title carries a canonical digest-bound workspace-binding envelope consumed by the source-authenticated installed boundary plugin; Cursor launch uses `FilesystemSandbox.wrap(request)`, supporting macOS Seatbelt and Linux bubblewrap and failing closed when unavailable.
 
 - [ ] Add a Node-driven plugin test matrix: native `write`, `edit`, and every `apply_patch` header are redirected from an allowed logical path to `write_root/<logical-path>`; reads prefer a staged overlay; writes outside exact allowed outputs, different attempts, canonical change state owned by another node, `tests/**`, symlinks, shell escapes, and missing/invalid bindings are denied.
 - [ ] Run `uv run pytest tests/phase5/test_opencode_staging_boundary.py -q` and observe direct canonical writes in the current plugin.
@@ -552,7 +552,7 @@ Do not make routes project-configurable. The installed product owns this closed 
 
 **Interfaces:** no exported `SnapshotStore`, `WorkspaceSeed`, `capture_workspace_seed`, `materialize_snapshot`, `ResultExportV1`, tree ID, or HEAD result field remains unless a separately installed non-Assurance product has a committed test proving real use.
 
-- [ ] Add a static/import/package test that rejects production references and built-wheel files containing `workspace/trees`, `HEAD.json`, `candidate_tree_id`, `initial_tree_id`, `current_head_tree_id`, `ResultExportV1`, or whole-tree materialization APIs. Exempt documentation that records deletion history.
+- [ ] Add behavioral/import/package tests proving removed public imports fail, built wheels omit the deleted tree/workspace modules and result-export schema, status/event schemas expose no tree IDs, and a real toy plus Assurance invocation creates no `workspace/trees`, `HEAD.json`, or whole-tree export. Do not grep source text or assert human documentation wording.
 - [ ] Run the residual test and record every current failure in the task report.
 - [ ] Delete obsolete implementation and tests rather than wrapping them in compatibility aliases. Update toy engine examples to use the generic dual-root workspace with an empty write attempt.
 - [ ] Run `uv run pytest packages/graph-engine/tests tests/phase5/test_no_whole_tree_residuals.py tests/phase5/test_product_packaging.py -q` and `bash scripts/assurance_product_wheel_smoke_test.sh`.
