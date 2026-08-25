@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import replace
 
 import tempfile
@@ -17,6 +18,7 @@ from agent_runtime_opencode.config import AdapterConfigurationError, OpenCodeAda
 from agent_runtime_opencode.handler import OpenCodeHandler
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 from harness import (  # pyright: ignore[reportMissingImports]
+    WRITE_ROOT,
     _CANARY,
     _SECRET_TEXT,
     _SHA,
@@ -27,6 +29,7 @@ from harness import (  # pyright: ignore[reportMissingImports]
     agent_run_request,
     profile,
     task_request,
+    workspace_identity,
 )
 
 
@@ -42,12 +45,15 @@ class _ExactSecretPort:
 
 
 @pytest.fixture
-def opencode_context() -> TaskContext:
+def opencode_context() -> Iterator[TaskContext]:
     root = tempfile.TemporaryDirectory()
-    workspace_root = Path(root.name) / "attempt-1"
-    workspace_root.mkdir()
-    return TaskContext(
-        workspace_root=workspace_root,
+    project_root = Path(root.name) / "project"
+    write_root = project_root / WRITE_ROOT
+    write_root.mkdir(parents=True)
+    yield TaskContext(
+        project_root=project_root,
+        write_root=write_root,
+        workspace_identity=workspace_identity(),
         heartbeat=lambda: None,
         cancel_requested=lambda: False,
         invocation=InvocationMetadata(
@@ -58,6 +64,7 @@ def opencode_context() -> TaskContext:
         ),
         secrets=_ExactSecretPort({"opencode.token": _CANARY}),
     )
+    root.cleanup()
 
 
 @pytest.fixture
@@ -121,18 +128,27 @@ def test_opencode_from_request_redacts_secret_material_in_errors() -> None:
         fake.close()
 
 
-async def test_execute_sends_workspace_root_as_opencode_directory() -> None:
+async def test_execute_uses_project_root_and_request_carries_stage_root() -> None:
     fixture = _open_code_fixture(config_overrides={"project_scope": "/tmp/harness-project-copy"})
     try:
-        fixture.fake.project_scope = str(fixture.context.workspace_root.resolve())
+        fixture.fake.project_scope = str(fixture.context.project_root.resolve())
         fixture.fake.terminal_mode = "success"
         fixture.fake.sse_mode = "fast_idle"
+        agent_run = agent_run_request()
+        assert agent_run.workspace.write_root == WRITE_ROOT
+        assert fixture.context.write_root.resolve() != fixture.context.project_root.resolve()
+        assert fixture.context.write_root == fixture.context.project_root / WRITE_ROOT
         outcome = await fixture.handler.execute(fixture.request, fixture.context)
         assert outcome.status == "succeeded"
-        workspace = str(fixture.context.workspace_root.resolve())
+        project = str(fixture.context.project_root.resolve())
+        stage = str(fixture.context.write_root.resolve())
         assert fixture.fake.directories
-        assert all(item == workspace for item in fixture.fake.directories)
+        assert all(item == project for item in fixture.fake.directories)
+        assert stage not in fixture.fake.directories
         assert "/tmp/harness-project-copy" not in fixture.fake.directories
+        dumped = agent_run.model_dump(mode="json")
+        assert dumped["workspace"]["write_root"] == WRITE_ROOT
+        assert dumped["workspace"]["allowed_outputs"] == list(agent_run.workspace.allowed_outputs)
     finally:
         fixture.close()
 

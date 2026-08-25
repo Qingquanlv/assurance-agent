@@ -28,16 +28,21 @@ async def test_spawn_rejects_symlink_executable(tmp_path: Path) -> None:
     env = {"PATH": str(tmp_path)}
     argv = (str(link), "-c", "print('ok')")
     policy = argv_policy_document(argv, ("PATH",))
+    write_root = (tmp_path / "stage").resolve()
+    write_root.mkdir()
     request = ProcessLaunchRequest(
         argv=argv,
         cwd=tmp_path.resolve(),
+        write_root=write_root,
         environment=env,
         stdin=b"",
         shell=False,
         executable_version_digest=canonical_digest("1.0.0"),
         request_digest=canonical_digest({"test": "symlink"}),
         argv_policy_digest=canonical_digest(policy),
-        workspace_identity_digest=canonical_digest({"cwd": str(tmp_path.resolve())}),
+        workspace_identity_digest=canonical_digest(
+            {"project_root": str(tmp_path.resolve()), "write_root": str(write_root)}
+        ),
     )
     host = production_process_host(tmp_path)
     with pytest.raises(TaskActivityProtocolViolation, match="regular file"):
@@ -102,6 +107,7 @@ async def test_spawn_rejects_environment_name_drift(tmp_path: Path) -> None:
     request = ProcessLaunchRequest(
         argv=request.argv,
         cwd=request.cwd,
+        write_root=request.write_root,
         environment=request.environment,
         stdin=request.stdin,
         shell=request.shell,
@@ -122,6 +128,7 @@ async def test_spawn_rejects_workspace_identity_drift(tmp_path: Path) -> None:
     request = ProcessLaunchRequest(
         argv=request.argv,
         cwd=request.cwd,
+        write_root=request.write_root,
         environment=request.environment,
         stdin=request.stdin,
         shell=request.shell,

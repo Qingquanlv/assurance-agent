@@ -8,6 +8,7 @@ from pathlib import Path
 from agent_runtime_contracts import (
     AgentRunRequest,
     AgentRunResult,
+    AgentWorkspaceV1,
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
@@ -29,19 +30,21 @@ from agent_runtime_opencode.handler import OpenCodeHandler
 from agent_runtime_opencode.protocol import OpenCodeProtocolProfile, canonical_json_text
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 from graph_engine.plugin_api import (
-    AttemptWorkspaceIdentity,
     InvocationMetadata,
     SecretHandleUnauthorized,
     SecretPort,
     TaskActivitySnapshot,
     TaskContext,
     TaskRequest,
+    TaskWorkspaceIdentity,
 )
 
 
 _SHA = "a" * 64
 _CANARY = b"canary-secret-value"
 _SECRET_TEXT = "canary-secret-value"
+WRITE_ROOT = "qa/changes/CH-1/.staging/task-1/attempt-1"
+ALLOWED_OUTPUTS = ("qa/changes/CH-1/proposal.md",)
 FIXTURE_RESULT_SCHEMA = {
     "additionalProperties": False,
     "properties": {"ok": {"const": True, "type": "boolean"}},
@@ -222,6 +225,19 @@ def profile(**overrides: object) -> OpenCodeProtocolProfile:
     return OpenCodeProtocolProfile.model_validate(payload)
 
 
+def agent_workspace(
+    *,
+    write_root: str = WRITE_ROOT,
+    allowed_outputs: tuple[str, ...] = ALLOWED_OUTPUTS,
+) -> AgentWorkspaceV1:
+    payload = {
+        "schema_version": "1",
+        "write_root": write_root,
+        "allowed_outputs": allowed_outputs,
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
+
+
 def agent_run_request(*, result_schema: dict[str, object] | None = None) -> AgentRunRequest:
     schema = result_schema if result_schema is not None else FIXTURE_RESULT_SCHEMA
     return AgentRunRequest(
@@ -238,6 +254,7 @@ def agent_run_request(*, result_schema: dict[str, object] | None = None) -> Agen
             permission_profile_digest=_SHA,
             limits={"max_seconds": 120},  # type: ignore[arg-type]
         ),
+        workspace=agent_workspace(),
         request_policy_digest=_SHA,
         request_config_digest=_SHA,
     )
@@ -265,12 +282,24 @@ def task_request(agent_run: AgentRunRequest | None = None, **overrides: object) 
     return TaskRequest.model_validate(fields)
 
 
-def workspace_identity() -> AttemptWorkspaceIdentity:
-    return AttemptWorkspaceIdentity(
-        attempt_directory_id="attempt-1",
-        baseline_tree_id=_SHA,
-        attempt_identity_digest="b" * 64,
-    )
+def workspace_identity(
+    *,
+    task_id: str = "task-1",
+    attempt: int = 1,
+    attempt_id: str = "attempt-1",
+    output_paths: tuple[str, ...] = ALLOWED_OUTPUTS,
+) -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": task_id,
+        "attempt": attempt,
+        "attempt_id": attempt_id,
+        "output_paths": list(output_paths),
+        "baseline_files": [],
+        "project_digest": _SHA,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
 
 
 def prepared_snapshot(request: TaskRequest) -> TaskActivitySnapshot:
@@ -318,8 +347,9 @@ def _open_code_fixture(
     result_schema: dict[str, object] | None = None,
 ) -> OpenCodeFixture:
     root = tempfile.TemporaryDirectory()
-    workspace_root = Path(root.name) / "attempt-1"
-    workspace_root.mkdir()
+    project_root = Path(root.name) / "project"
+    write_root = project_root / WRITE_ROOT
+    write_root.mkdir(parents=True)
     schema = result_schema if result_schema is not None else FIXTURE_RESULT_SCHEMA
     run = agent_run if agent_run is not None else agent_run_request(result_schema=schema)
     fake = OpenCodeFakeServer(
@@ -327,7 +357,7 @@ def _open_code_fixture(
         create_cut=create_cut,  # type: ignore[arg-type]
         hide_sessions=hide_sessions,
         prompt_cut=prompt_cut,  # type: ignore[arg-type]
-        project_scope=str(workspace_root.resolve()),
+        project_scope=str(project_root.resolve()),
     )
     config = _config(fake, **(config_overrides or {}))
     request = task_request(run, binding_data=_binding_data(config))
@@ -347,7 +377,9 @@ def _open_code_fixture(
         heartbeats.append(1)
 
     context = TaskContext(
-        workspace_root=workspace_root,
+        project_root=project_root,
+        write_root=write_root,
+        workspace_identity=snapshot.workspace_identity,
         heartbeat=_heartbeat,
         cancel_requested=lambda: False,
         invocation=request.invocation,
@@ -418,10 +450,54 @@ def prompt_admission_body(request: TaskRequest, message_id: str) -> dict[str, ob
                     "text": canonical_json_text(thaw_json(instruction.json_content)),
                 }
             )
+    schema_document = agent_run.result_contract.schema_document
+    schema_text = (
+        "not embedded; obey the named locked result contract"
+        if schema_document is None
+        else canonical_json_text(thaw_json(schema_document))
+    )
+    parts.append(
+        {
+            "type": "text",
+            "text": (
+                "# Runtime result contract\n\n"
+                "Your final assistant response MUST be exactly one JSON object with no "
+                "Markdown fence, commentary, completion summary, or trailing text. The object "
+                "must validate against the following locked JSON Schema. This runtime contract "
+                "overrides any user-facing final-output wording in the supplied skill. It governs "
+                "only the final assistant text and does not replace required tool calls or file "
+                "writes. Complete and verify every required side effect before returning the final "
+                "JSON object.\n\n"
+                f"schema_id: {agent_run.result_contract.schema_id}\n"
+                f"schema_digest: {agent_run.result_contract.schema_digest}\n"
+                f"schema: {schema_text}"
+            ),
+        }
+    )
+    if agent_run.agent_profile is not None:
+        parts = [
+            {
+                "type": "text",
+                "text": f"<system-reminder>\n{part['text']}\n</system-reminder>",
+            }
+            for part in parts
+        ]
     body: dict[str, object] = {
         "messageID": message_id,
         "parts": parts,
     }
+    if agent_run.agent_profile is not None:
+        body["agent"] = agent_run.agent_profile
+        body["tools"] = {
+            "apply_patch": True,
+            "artifact_write": True,
+            "write": True,
+            "edit": True,
+            "ast_grep_replace": False,
+            "webfetch": False,
+            "websearch": False,
+            "websearch_web_search_exa": False,
+        }
     model = agent_run.execution.provider_model
     if model != "provider_default":
         provider, separator, model_id = model.partition("/")

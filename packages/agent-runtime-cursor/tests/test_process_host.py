@@ -30,6 +30,8 @@ def launch_request(
     cwd: Path | None = None,
 ) -> ProcessLaunchRequest:
     resolved = (cwd or tmp_path).resolve()
+    write_root = (resolved / "stage").resolve()
+    write_root.mkdir(exist_ok=True)
     executable = str(Path(sys.executable).resolve())
     command = argv or (executable, "-c", "print('ok')")
     if argv is not None and argv:
@@ -39,13 +41,16 @@ def launch_request(
     return ProcessLaunchRequest(
         argv=command,
         cwd=resolved,
+        write_root=write_root,
         environment=environment or {"PATH": os.environ.get("PATH", "/usr/bin")},
         stdin=b"",
         shell=shell,
         executable_version_digest=canonical_digest("1.0.0"),
         request_digest=canonical_digest({"test": "launch"}),
         argv_policy_digest=canonical_digest(policy),
-        workspace_identity_digest=canonical_digest({"cwd": str(resolved)}),
+        workspace_identity_digest=canonical_digest(
+            {"project_root": str(resolved), "write_root": str(write_root)}
+        ),
     )
 
 

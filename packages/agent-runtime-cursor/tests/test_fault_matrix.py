@@ -265,6 +265,7 @@ async def test_wait_refuses_to_invent_exit_for_a_running_child() -> None:
         ProcessLaunchRequest(
             argv=("/bin/cursor", "agent", "--print"),
             cwd=Path("."),
+            write_root=Path("."),
             environment={},
             stdin=b"{}",
             shell=False,

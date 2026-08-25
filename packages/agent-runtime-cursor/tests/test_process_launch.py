@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from agent_runtime_contracts import (
     AgentRunRequest,
+    AgentWorkspaceV1,
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
@@ -18,13 +19,13 @@ from agent_runtime_cursor.handler import CursorHandler
 from fake_process_host import FakeActivityPort, FakeConfinedProcessHost  # pyright: ignore[reportMissingImports]
 from graph_engine import TaskActivityProtocolViolation
 from graph_engine.plugin_api import (
-    AttemptWorkspaceIdentity,
     InvocationMetadata,
     SecretHandleUnauthorized,
     SecretPort,
     TaskActivitySnapshot,
     TaskContext,
     TaskRequest,
+    TaskWorkspaceIdentity,
 )
 from pydantic import ValidationError
 
@@ -33,6 +34,8 @@ _SHA = "a" * 64
 _CANARY = b"canary-secret-value"
 _SECRET_TEXT = "canary-secret-value"
 _CURSOR_BIN_NAME = "cursor"
+_WRITE_ROOT = "qa/changes/CH-1/.staging/task-1/attempt-1"
+_ALLOWED_OUTPUTS = ("qa/changes/CH-1/proposal.md",)
 _RESULT_SCHEMA = {
     "additionalProperties": False,
     "properties": {"ok": {"const": True, "type": "boolean"}},
@@ -89,6 +92,7 @@ def _agent_run(**overrides: object) -> AgentRunRequest:
             permission_profile_digest="b" * 64,
             limits={"max_seconds": 120},  # type: ignore[arg-type]
         ),
+        "workspace": _agent_workspace(),
         "request_policy_digest": "c" * 64,
         "request_config_digest": "d" * 64,
     }
@@ -135,22 +139,51 @@ class _ExactSecretPort:
             raise SecretHandleUnauthorized(f"unauthorized secret handle: {handle}") from error
 
 
-def _workspace_identity(root: Path) -> AttemptWorkspaceIdentity:
-    return AttemptWorkspaceIdentity(
-        attempt_directory_id=root.name,
-        baseline_tree_id="c" * 64,
-        attempt_identity_digest="d" * 64,
-    )
+def _agent_workspace(
+    *,
+    write_root: str = _WRITE_ROOT,
+    allowed_outputs: tuple[str, ...] = _ALLOWED_OUTPUTS,
+) -> AgentWorkspaceV1:
+    payload = {
+        "schema_version": "1",
+        "write_root": write_root,
+        "allowed_outputs": allowed_outputs,
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
+
+
+def _workspace_identity(
+    *,
+    attempt_id: str = "attempt-1",
+    output_paths: tuple[str, ...] = _ALLOWED_OUTPUTS,
+) -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "task-1",
+        "attempt": 1,
+        "attempt_id": attempt_id,
+        "output_paths": list(output_paths),
+        "baseline_files": [],
+        "project_digest": "c" * 64,
+        "write_root_digest": "d" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
 
 
 def _context(
     tmp_path: Path | None = None,
     *,
     secrets: SecretPort | None = None,
+    write_root: Path | None = None,
+    identity: TaskWorkspaceIdentity | None = None,
 ) -> TaskContext:
-    root = (tmp_path or Path(".")).resolve()
+    project_root = (tmp_path or Path(".")).resolve()
+    stage = (write_root or (project_root / _WRITE_ROOT)).resolve()
+    stage.mkdir(parents=True, exist_ok=True)
     return TaskContext(
-        workspace_root=root,
+        project_root=project_root,
+        write_root=stage,
+        workspace_identity=identity if identity is not None else _workspace_identity(),
         heartbeat=lambda: None,
         cancel_requested=lambda: False,
         invocation=InvocationMetadata(
@@ -163,7 +196,7 @@ def _context(
             TaskActivitySnapshot(
                 activity_id="activity-1",
                 request_digest="e" * 64,
-                workspace_identity=_workspace_identity(root),
+                workspace_identity=identity if identity is not None else _workspace_identity(),
                 state="prepared",
             )
         ),
@@ -186,11 +219,13 @@ def test_bound_activity_launch_passes_production_workspace_check(tmp_path: Path)
 async def test_cursor_launch_is_exact_and_shell_free(tmp_path: Path) -> None:
     host = FakeConfinedProcessHost()
     config = _config(tmp_path)
-    await CursorHandler(host).execute(_request(config=config), _context(tmp_path))
+    context = _context(tmp_path)
+    await CursorHandler(host).execute(_request(config=config), context)
     launch = host.launches[0]
     assert launch.argv[:3] == (config.executable, "agent", "--print")
     assert launch.shell is False
-    assert launch.cwd == tmp_path.resolve()
+    assert launch.cwd == context.project_root.resolve()
+    assert launch.cwd != context.write_root.resolve()
     assert set(launch.environment) == {"PATH", "CURSOR_API_KEY"}
     path_entries = launch.environment["PATH"].split(os.pathsep)
     assert path_entries[0] == str(Path(config.executable).resolve().parent)
@@ -263,37 +298,52 @@ async def test_launch_keeps_secrets_out_of_argv_and_fingerprint(tmp_path: Path) 
     assert launch.argv[3:5] == ("--output-format", "stream-json")
 
 
-async def test_launch_identity_binds_attempt_workspace(tmp_path: Path) -> None:
-    first_root = tmp_path / "ws-a"
-    second_root = tmp_path / "ws-b"
-    first_root.mkdir()
-    second_root.mkdir()
+async def test_launch_identity_binds_project_and_stage_roots(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    first_stage = project / "qa/changes/CH-1/.staging/task-1/attempt-1"
+    second_stage = project / "qa/changes/CH-1/.staging/task-1/attempt-2"
+    first_stage.mkdir(parents=True)
+    second_stage.mkdir(parents=True)
     config = _config(tmp_path)
     first_host = FakeConfinedProcessHost()
     second_host = FakeConfinedProcessHost()
     first_handler = CursorHandler(first_host)
     second_handler = CursorHandler(second_host)
-    await first_handler.execute(_request(config=config), _context(first_root))
-    await second_handler.execute(_request(config=config), _context(second_root))
+    first_context = _context(project, write_root=first_stage, identity=_workspace_identity())
+    second_context = _context(
+        project, write_root=second_stage, identity=_workspace_identity(attempt_id="attempt-2")
+    )
+    first_run = _agent_run(workspace=_agent_workspace())
+    second_run = _agent_run(
+        workspace=_agent_workspace(write_root="qa/changes/CH-1/.staging/task-1/attempt-2")
+    )
+    await first_handler.execute(_request(config=config, agent_run=first_run), first_context)
+    await second_handler.execute(_request(config=config, agent_run=second_run), second_context)
     first = first_host.launches[0]
     second = second_host.launches[0]
-    policy_only = canonical_digest({"cwd_policy": "attempt-workspace"})
-    assert first.cwd == first_root.resolve()
-    assert second.cwd == second_root.resolve()
+    policy_only = canonical_digest({"cwd": str(project.resolve())})
+    assert first.cwd == project.resolve()
+    assert second.cwd == project.resolve()
+    assert first.cwd != first_stage.resolve()
+    assert second.cwd != second_stage.resolve()
     assert first.workspace_identity_digest != policy_only
     assert second.workspace_identity_digest != policy_only
     assert first.workspace_identity_digest != second.workspace_identity_digest
-    assert first.request_digest == second.request_digest
-    assert first_handler.dispatch_fingerprint["request_digest"] == first.request_digest
+    assert first.workspace_identity_digest == canonical_digest(
+        {"project_root": str(project.resolve()), "write_root": str(first_stage.resolve())}
+    )
+    assert second.workspace_identity_digest == canonical_digest(
+        {"project_root": str(project.resolve()), "write_root": str(second_stage.resolve())}
+    )
+    stdin = first.stdin.decode("utf-8")
+    assert _WRITE_ROOT in stdin
+    assert str(project.resolve()) not in AgentRunRequest.model_validate_json(first.stdin).workspace.write_root
     assert first_handler.dispatch_fingerprint["workspace_identity_digest"] == (
         first.workspace_identity_digest
     )
     assert second_handler.dispatch_fingerprint["workspace_identity_digest"] == (
         second.workspace_identity_digest
-    )
-    assert (
-        first_handler.dispatch_fingerprint["workspace_identity_digest"]
-        != second_handler.dispatch_fingerprint["workspace_identity_digest"]
     )
 
 

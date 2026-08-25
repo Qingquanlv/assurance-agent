@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agent_runtime_contracts import (
     AgentRunRequest,
+    AgentWorkspaceV1,
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
@@ -18,22 +19,45 @@ from agent_runtime_cursor.handler import CursorHandler
 from agent_runtime_cursor.process import CursorProcessReceipt
 from fake_process_host import BOOT_DIGEST, FakeActivityPort, FakeConfinedProcessHost  # pyright: ignore[reportMissingImports]
 from graph_engine.plugin_api import (
-    AttemptWorkspaceIdentity,
     InvocationMetadata,
     TaskActivitySnapshot,
     TaskContext,
     TaskRequest,
+    TaskWorkspaceIdentity,
 )
 
 
 _SHA = "a" * 64
 _CANARY = b"canary-secret-value"
-_WORKSPACE_IDENTITY = AttemptWorkspaceIdentity(
-    attempt_directory_id="attempt-1",
-    baseline_tree_id="c" * 64,
-    attempt_identity_digest="d" * 64,
-)
-_WORKSPACE_DIGEST = canonical_digest(_WORKSPACE_IDENTITY.model_dump(mode="json"))
+_WRITE_ROOT = "qa/changes/CH-1/.staging/task-1/attempt-1"
+_ALLOWED_OUTPUTS = ("qa/changes/CH-1/proposal.md",)
+
+
+def _agent_workspace() -> AgentWorkspaceV1:
+    payload = {
+        "schema_version": "1",
+        "write_root": _WRITE_ROOT,
+        "allowed_outputs": _ALLOWED_OUTPUTS,
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
+
+
+def _workspace_identity() -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "task-1",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": list(_ALLOWED_OUTPUTS),
+        "baseline_files": [],
+        "project_digest": "c" * 64,
+        "write_root_digest": "d" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
+
+
+_WORKSPACE_IDENTITY = _workspace_identity()
+_WORKSPACE_DIGEST = _WORKSPACE_IDENTITY.identity_digest
 _RESULT_SCHEMA = {
     "additionalProperties": False,
     "properties": {"ok": {"const": True, "type": "boolean"}},
@@ -89,6 +113,7 @@ def _agent_run() -> AgentRunRequest:
                 permission_profile_digest="b" * 64,
                 limits={"max_seconds": 120},  # type: ignore[arg-type]
             ),
+            "workspace": _agent_workspace(),
             "request_policy_digest": "c" * 64,
             "request_config_digest": "d" * 64,
         }
@@ -132,15 +157,19 @@ def _prepared_snapshot() -> TaskActivitySnapshot:
     )
 
 
-def _spawned_receipt() -> CursorProcessReceipt:
+def _spawned_receipt() -> tuple[CursorProcessReceipt, Path, Path]:
     with tempfile.TemporaryDirectory() as raw:
         root = Path(raw)
+        write_root = (root / _WRITE_ROOT).resolve()
+        write_root.mkdir(parents=True)
         port = FakeActivityPort(_prepared_snapshot())
         host = FakeConfinedProcessHost()
         config = _config(root)
         handler = CursorHandler(host)
         context = TaskContext(
-            workspace_root=root.resolve(),
+            project_root=root.resolve(),
+            write_root=write_root,
+            workspace_identity=_WORKSPACE_IDENTITY,
             heartbeat=lambda: None,
             cancel_requested=lambda: False,
             invocation=InvocationMetadata(
@@ -153,15 +182,22 @@ def _spawned_receipt() -> CursorProcessReceipt:
             secrets=_ExactSecretPort(),
         )
         asyncio.run(handler.execute(_request(config), context))
-        return CursorProcessReceipt.model_validate(thaw_json(port.snapshot.reference)), root.resolve()
+        return (
+            CursorProcessReceipt.model_validate(thaw_json(port.snapshot.reference)),
+            root.resolve(),
+            write_root,
+        )
 
 
 def test_process_receipt_binds_non_reusable_identity() -> None:
-    receipt, cwd = _spawned_receipt()
+    receipt, project_root, write_root = _spawned_receipt()
     assert receipt.host_boot_identity_digest == BOOT_DIGEST
     assert receipt.confinement_identity
     assert receipt.process_start_token
-    assert receipt.workspace_identity_digest == canonical_digest({"cwd": str(cwd)})
+    assert receipt.workspace_identity_digest == canonical_digest(
+        {"project_root": str(project_root), "write_root": str(write_root)}
+    )
+    assert receipt.workspace_identity_digest != canonical_digest({"cwd": str(project_root)})
     assert receipt.workspace_identity_digest != _WORKSPACE_DIGEST
     assert "api-key" not in receipt.model_dump_json()
 
@@ -179,8 +215,12 @@ def test_process_receipt_is_bound_before_stream_consumption() -> None:
         host = FakeConfinedProcessHost(wait_hook=_on_wait)
         config = _config(root)
         handler = CursorHandler(host)
+        write_root = (root / _WRITE_ROOT).resolve()
+        write_root.mkdir(parents=True)
         context = TaskContext(
-            workspace_root=root.resolve(),
+            project_root=root.resolve(),
+            write_root=write_root,
+            workspace_identity=_WORKSPACE_IDENTITY,
             heartbeat=lambda: None,
             cancel_requested=lambda: False,
             invocation=InvocationMetadata(
@@ -199,3 +239,21 @@ def test_process_receipt_is_bound_before_stream_consumption() -> None:
         assert "canary" not in bound
         assert "api-key" not in bound
         assert "--resume" not in host.launches[0].argv
+
+
+async def test_bound_receipt_rejects_dual_root_identity_drift(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from cursor_harness import bind_spawned_fixture, workspace_identity  # pyright: ignore[reportMissingImports]
+
+    fixture = await bind_spawned_fixture(tmp_path)
+    drifted = replace(
+        fixture.context,
+        write_root=tmp_path / "other-stage",
+        workspace_identity=workspace_identity(attempt_id="attempt-2"),
+    )
+    (tmp_path / "other-stage").mkdir()
+    result = await fixture.handler.reconcile(fixture.request, drifted, fixture.activity)
+    assert result.status == "indeterminate"
+    assert result.reason is not None
+    assert "workspace" in result.reason

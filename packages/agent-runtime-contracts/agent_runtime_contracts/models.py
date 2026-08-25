@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import PureWindowsPath
 from typing import Any, Literal, Self
 
 from pydantic import Field, JsonValue, field_serializer, field_validator, model_serializer, model_validator
@@ -111,6 +112,50 @@ class ExecutionLimits(FrozenModel):
     max_seconds: int = Field(gt=0)
 
 
+def _validate_project_relative_path(value: str) -> str:
+    windows_path = PureWindowsPath(value)
+    if (
+        not value
+        or "\\" in value
+        or value.startswith("/")
+        or windows_path.is_absolute()
+        or bool(windows_path.drive)
+    ):
+        raise ValueError("path must be a canonical project-relative path")
+    if any(segment in {"", ".", ".."} for segment in value.split("/")):
+        raise ValueError("path must not contain absolute, parent, or dot segments")
+    return value
+
+
+class AgentWorkspaceV1(FrozenModel):
+    schema_version: Literal["1"] = "1"
+    write_root: str
+    allowed_outputs: tuple[str, ...]
+    identity_digest: str = Field(pattern=_SHA256_PATTERN)
+
+    @field_validator("write_root")
+    @classmethod
+    def _validate_write_root(cls, value: str) -> str:
+        return _validate_project_relative_path(value)
+
+    @field_validator("allowed_outputs")
+    @classmethod
+    def _validate_allowed_outputs(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_validate_project_relative_path(value) for value in values)
+        if normalized != tuple(sorted(normalized)):
+            raise ValueError("allowed outputs must be sorted exact logical paths")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("allowed outputs must be unique exact logical paths")
+        return normalized
+
+    @model_validator(mode="after")
+    def _authenticate_identity_digest(self) -> Self:
+        expected = canonical_digest(self.model_dump(mode="json", exclude={"identity_digest"}))
+        if self.identity_digest != expected:
+            raise ValueError("workspace identity digest is not canonical")
+        return self
+
+
 class FrozenExecutionSelection(FrozenModel):
     provider_model: str = Field(min_length=1)
     worker_profile: str = Field(min_length=1)
@@ -130,11 +175,25 @@ class FrozenExecutionSelection(FrozenModel):
 
 class AgentRunRequest(FrozenModel):
     schema_version: Literal["1"] = "1"
+    agent_profile: str | None = None
     instructions: tuple[InstructionPart, ...] = Field(min_length=1)
     result_contract: ResultContract
     execution: FrozenExecutionSelection
+    workspace: AgentWorkspaceV1
     request_policy_digest: str = Field(pattern=_SHA256_PATTERN)
     request_config_digest: str = Field(pattern=_SHA256_PATTERN)
+
+    @field_validator("agent_profile")
+    @classmethod
+    def _validate_agent_profile(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value or value != value.strip() or any(character.isspace() for character in value):
+            raise ValueError("agent_profile must be one exact non-empty selection")
+        lowered = value.lower()
+        if any(marker in lowered for marker in _ROUTING_MARKERS):
+            raise ValueError("agent_profile must not contain routing, fallbacks, or candidate lists")
+        return value
 
     def canonical_bytes(self) -> bytes:
         return canonical_json_bytes(self.model_dump(mode="json"))

@@ -48,7 +48,7 @@ def _durable_blobs(fixture: object, outcome: object) -> tuple[tuple[str, ...], P
     context = fixture.context  # type: ignore[attr-defined]
     dumped_outcome = canonical_json_text(outcome.model_dump(mode="json"))  # type: ignore[union-attr]
     dumped_snapshot = canonical_json_text(port.snapshot.model_dump(mode="json"))
-    workspace = context.workspace_root
+    workspace = context.write_root
     assert isinstance(workspace, Path)
     return (dumped_outcome, dumped_snapshot), workspace
 

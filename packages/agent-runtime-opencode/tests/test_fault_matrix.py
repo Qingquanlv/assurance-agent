@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from agent_runtime_contracts import AgentRunResult
@@ -11,6 +13,7 @@ from harness import (  # pyright: ignore[reportMissingImports]
     _open_code_fixture,
     _terminal_success_fixture,
     task_request,
+    workspace_identity,
 )
 
 
@@ -100,6 +103,25 @@ async def test_foreign_and_drift_fail_closed(mutator: str) -> None:
             )
         assert result.status == "indeterminate"
         assert fixture.fake.create_calls == 1
+    finally:
+        fixture.close()
+
+
+async def test_dual_root_workspace_identity_drift_is_fail_closed() -> None:
+    fixture = _terminal_success_fixture()
+    try:
+        drifted = replace(
+            fixture.context,
+            workspace_identity=workspace_identity(attempt_id="attempt-2"),
+        )
+        result = _reconcile(await fixture.handler.reconcile(fixture.request, drifted, fixture.activity))
+        assert result.status == "indeterminate"
+        assert result.reason is not None
+        assert "workspace" in result.reason
+        cancel = await fixture.handler.cancel(fixture.request, drifted, fixture.activity)
+        assert cancel.status == "indeterminate"
+        assert cancel.reason is not None
+        assert "workspace" in cancel.reason
     finally:
         fixture.close()
 
@@ -203,6 +225,29 @@ async def test_busy_session_stays_running_when_diff_errors(fault: str) -> None:
         fixture.close()
 
 
+async def test_stale_busy_session_is_aborted_and_retried() -> None:
+    fixture = _bound_fixture(
+        terminal_mode="busy",
+        config_overrides={"progress_timeout_seconds": 30},
+    )
+    try:
+        session_id = fixture.reference.session_id
+        assert session_id is not None
+        fixture.fake.set_session_updated(session_id, 1_000)
+
+        result = _reconcile(await fixture.reconcile())
+
+        assert result.status == "terminal"
+        assert result.outcome is not None
+        assert result.outcome.status == "failed"
+        assert result.outcome.failure is not None
+        assert result.outcome.failure.kind == "transient"
+        assert result.outcome.failure.retryable is True
+        assert fixture.fake.abort_calls == 1
+    finally:
+        fixture.close()
+
+
 async def test_completion_cancel_race_provider_terminal_wins() -> None:
     fixture = _terminal_success_fixture()
     try:
@@ -239,6 +284,36 @@ async def test_provider_error_is_typed_non_retryable_and_redacted() -> None:
         assert outcome.failure.retryable is False
         assert _SECRET_TEXT not in outcome.failure.message
         assert outcome.failure.message != "provider error"
+    finally:
+        fixture.close()
+
+
+async def test_transient_provider_certificate_error_is_retryable() -> None:
+    fixture = _bound_fixture(terminal_mode="error", sse_mode="fast_idle")
+    fixture.fake.error_message = "unknown certificate verification error"
+    try:
+        outcome = await fixture.handler.execute(fixture.request, fixture.context)
+        assert isinstance(outcome, TaskOutcome)
+        assert outcome.status == "failed"
+        assert outcome.failure is not None
+        assert outcome.failure.kind == "transient"
+        assert outcome.failure.retryable is True
+    finally:
+        fixture.close()
+
+
+async def test_pre_dispatch_transport_error_is_retryable_without_recovery_wedge() -> None:
+    fixture = _open_code_fixture()
+    fixture.fake.fault_on("/config", "disconnect")
+    try:
+        outcome = await fixture.handler.execute(fixture.request, fixture.context)
+
+        assert outcome.status == "failed"
+        assert outcome.failure is not None
+        assert outcome.failure.kind == "transient"
+        assert outcome.failure.retryable is True
+        assert fixture.activity.state == "prepared"
+        assert fixture.fake.create_calls == 0
     finally:
         fixture.close()
 

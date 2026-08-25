@@ -59,9 +59,7 @@ class CursorHandler:
         if port is None:
             raise ValueError("activity port is required")
         try:
-            result = await self._reconcile_process(
-                request, context, config, port.snapshot, allow_spawn=True
-            )
+            result = await self._reconcile_process(request, context, config, port.snapshot, allow_spawn=True)
         except CursorProtocolError as error:
             raise CursorDispatchIncomplete(self._redacted_reason(error, context, config)) from error
         if isinstance(result, TaskOutcome):
@@ -86,9 +84,7 @@ class CursorHandler:
         if activity.activity_id != port.snapshot.activity_id:
             return self._indeterminate("activity snapshot does not match the live port")
         try:
-            return await self._reconcile_process(
-                request, context, config, activity, allow_spawn=False
-            )
+            return await self._reconcile_process(request, context, config, activity, allow_spawn=False)
         except (
             CursorProtocolError,
             TaskActivityProtocolViolation,
@@ -119,6 +115,11 @@ class CursorHandler:
         try:
             receipt = CursorProcessReceipt.model_validate(thaw_json(activity.reference))
             host.authenticate(receipt)
+            if receipt.workspace_identity_digest != workspace_identity_digest_for(context):
+                return TaskActivityCancelResult(
+                    status="indeterminate",
+                    reason="workspace identity drifted",
+                )
         except (ValidationError, TaskActivityProtocolViolation, ValueError) as error:
             return TaskActivityCancelResult(
                 status="indeterminate",
@@ -167,7 +168,7 @@ class CursorHandler:
             raise ValueError("activity port is required")
         snapshot = port.snapshot
         agent_run = AgentRunRequest.model_validate(thaw_json(request.input))
-        mismatch = self._identity_mismatch(request, snapshot, agent_run)
+        mismatch = self._identity_mismatch(request, context, snapshot, agent_run)
         if mismatch is not None:
             if allow_spawn:
                 raise ValueError(mismatch)
@@ -306,7 +307,7 @@ class CursorHandler:
         canaries = self._canaries(context, config)
         _ = stderr_projection(terminal.stderr, canaries=canaries)
         parsed = parse_stream(
-            self._stream_input(terminal, cwd=str(context.workspace_root.resolve()), config=config),
+            self._stream_input(terminal, cwd=str(context.project_root.resolve()), config=config),
             self._limits(config, agent_run),
         )
         return reduce_terminal(
@@ -320,9 +321,12 @@ class CursorHandler:
     def _identity_mismatch(
         self,
         request: TaskRequest,
+        context: TaskContext,
         snapshot: TaskActivitySnapshot,
         agent_run: AgentRunRequest,
     ) -> str | None:
+        if context.workspace_identity.identity_digest != snapshot.workspace_identity.identity_digest:
+            return "workspace identity drifted"
         fingerprint = thaw_json(snapshot.dispatch_fingerprint) if snapshot.dispatch_fingerprint else None
         if isinstance(fingerprint, dict):
             expected_identity = canonical_digest({"attempt": request.attempt, "task_id": request.task_id})
@@ -333,6 +337,9 @@ class CursorHandler:
                 canonical_digest(agent_run.model_dump(mode="json")),
             }:
                 return "request identity drifted"
+            expected_workspace = workspace_identity_digest_for(context)
+            if fingerprint.get("workspace_identity_digest") not in {None, expected_workspace}:
+                return "workspace identity drifted"
         return None
 
     def _blocked(self, reason: str, allow_spawn: bool) -> TaskActivityReconcileResult:
@@ -393,7 +400,7 @@ class CursorHandler:
     def _require_host(self, context: TaskContext) -> ConfinedProcessHost:
         if self._host is not None:
             return self._host
-        return production_process_host(context.workspace_root.parent)
+        return production_process_host(context.write_root.parent)
 
     @staticmethod
     def _configuration_outcome(message: str) -> TaskOutcome:

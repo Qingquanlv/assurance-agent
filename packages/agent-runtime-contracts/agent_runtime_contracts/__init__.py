@@ -1,6 +1,7 @@
 from agent_runtime_contracts.models import (
     AgentRunRequest,
     AgentRunResult,
+    AgentWorkspaceV1,
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
@@ -15,6 +16,7 @@ from agent_runtime_contracts.schema import (
 __all__ = [
     "AgentRunRequest",
     "AgentRunResult",
+    "AgentWorkspaceV1",
     "FrozenExecutionSelection",
     "InstructionPart",
     "ResultContract",

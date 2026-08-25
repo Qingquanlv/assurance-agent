@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agent_runtime_contracts import (
     AgentRunRequest,
+    AgentWorkspaceV1,
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
@@ -23,7 +24,6 @@ from agent_runtime_cursor.process import (
 )
 from fake_process_host import FakeActivityPort, FakeConfinedProcessHost  # pyright: ignore[reportMissingImports]
 from graph_engine.plugin_api import (
-    AttemptWorkspaceIdentity,
     InvocationMetadata,
     SecretHandleUnauthorized,
     SecretPort,
@@ -31,23 +31,57 @@ from graph_engine.plugin_api import (
     TaskActivitySnapshot,
     TaskContext,
     TaskRequest,
+    TaskWorkspaceIdentity,
 )
 
 
 SHA = "a" * 64
 CANARY = b"canary-secret-value"
 SECRET_TEXT = "canary-secret-value"
+WRITE_ROOT = "qa/changes/CH-1/.staging/task-1/attempt-1"
+ALLOWED_OUTPUTS = ("qa/changes/CH-1/proposal.md",)
 RESULT_SCHEMA = {
     "additionalProperties": False,
     "properties": {"ok": {"const": True, "type": "boolean"}},
     "required": ["ok"],
     "type": "object",
 }
-WORKSPACE_IDENTITY = AttemptWorkspaceIdentity(
-    attempt_directory_id="attempt-1",
-    baseline_tree_id="c" * 64,
-    attempt_identity_digest="d" * 64,
-)
+
+
+def agent_workspace(
+    *,
+    write_root: str = WRITE_ROOT,
+    allowed_outputs: tuple[str, ...] = ALLOWED_OUTPUTS,
+) -> AgentWorkspaceV1:
+    payload = {
+        "schema_version": "1",
+        "write_root": write_root,
+        "allowed_outputs": allowed_outputs,
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
+
+
+def workspace_identity(
+    *,
+    task_id: str = "task-1",
+    attempt: int = 1,
+    attempt_id: str = "attempt-1",
+    output_paths: tuple[str, ...] = ALLOWED_OUTPUTS,
+) -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": task_id,
+        "attempt": attempt,
+        "attempt_id": attempt_id,
+        "output_paths": list(output_paths),
+        "baseline_files": [],
+        "project_digest": "c" * 64,
+        "write_root_digest": "d" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
+
+
+WORKSPACE_IDENTITY = workspace_identity()
 
 
 def write_cursor_bin(root: Path) -> str:
@@ -98,6 +132,7 @@ def agent_run(**overrides: object) -> AgentRunRequest:
             permission_profile_digest="b" * 64,
             limits={"max_seconds": 120},  # type: ignore[arg-type]
         ),
+        "workspace": agent_workspace(),
         "request_policy_digest": "c" * 64,
         "request_config_digest": "d" * 64,
     }
@@ -172,11 +207,18 @@ def context(
     *,
     port: FakeActivityPort | None = None,
     secrets: SecretPort | None = None,
+    write_root: Path | None = None,
+    identity: TaskWorkspaceIdentity | None = None,
 ) -> tuple[TaskContext, FakeActivityPort]:
+    project_root = root.resolve()
+    stage = (write_root or (project_root / WRITE_ROOT)).resolve()
+    stage.mkdir(parents=True, exist_ok=True)
     activity = port if port is not None else FakeActivityPort(prepared_snapshot())
     return (
         TaskContext(
-            workspace_root=root.resolve(),
+            project_root=project_root,
+            write_root=stage,
+            workspace_identity=identity if identity is not None else workspace_identity(),
             heartbeat=lambda: None,
             cancel_requested=lambda: False,
             invocation=InvocationMetadata(

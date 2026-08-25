@@ -74,6 +74,7 @@ class CancelPolicy(FrozenModel):
 class ProcessLaunchRequest:
     argv: tuple[str, ...]
     cwd: Path
+    write_root: Path
     environment: Mapping[str, str]
     stdin: bytes
     shell: bool
@@ -155,7 +156,12 @@ def argv_policy_document(argv: tuple[str, ...], environment_names: tuple[str, ..
 
 
 def workspace_identity_digest_for(context: TaskContext) -> str:
-    return canonical_digest({"cwd": str(context.workspace_root.resolve())})
+    return canonical_digest(
+        {
+            "project_root": str(context.project_root.resolve()),
+            "write_root": str(context.write_root.resolve()),
+        }
+    )
 
 
 def cursor_dispatch_fingerprint(
@@ -216,7 +222,8 @@ def build_launch_request(
     workspace_digest = workspace_identity_digest_for(context)
     return ProcessLaunchRequest(
         argv=argv,
-        cwd=context.workspace_root.resolve(),
+        cwd=context.project_root.resolve(),
+        write_root=context.write_root.resolve(),
         environment=_resolve_environment(config, executable=executable, context=context),
         stdin=canonical_json_bytes(agent_run.model_dump(mode="json")),
         shell=False,
@@ -353,11 +360,12 @@ def _validate_launch_request(request: ProcessLaunchRequest) -> None:
     if not stat.S_ISREG(mode):
         raise TaskActivityProtocolViolation("executable identity must be a regular file")
     cwd = request.cwd.resolve()
-    if not cwd.is_dir():
+    write_root = request.write_root.resolve()
+    if not cwd.is_dir() or not write_root.is_dir():
         raise TaskActivityProtocolViolation("attempt workspace is unavailable")
-    expected_workspace = canonical_digest({"cwd": str(cwd)})
+    expected_workspace = canonical_digest({"project_root": str(cwd), "write_root": str(write_root)})
     if request.workspace_identity_digest != expected_workspace:
-        raise TaskActivityProtocolViolation("workspace identity drifted from the attempt cwd")
+        raise TaskActivityProtocolViolation("workspace identity drifted from the dual-root workspace")
     policy = argv_policy_document(request.argv, tuple(sorted(request.environment)))
     if canonical_digest(policy) != request.argv_policy_digest:
         raise TaskActivityProtocolViolation("argv policy is not authentic")

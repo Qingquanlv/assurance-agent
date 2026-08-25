@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from agent_runtime_contracts import (
     AgentRunRequest,
     AgentRunResult,
+    AgentWorkspaceV1,
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
@@ -67,9 +68,23 @@ def _selection(
     return FrozenExecutionSelection.model_validate(payload)
 
 
+def _workspace(
+    *,
+    write_root: str = "qa/changes/CH-1/.staging/task-1/attempt-1",
+    allowed_outputs: tuple[str, ...] = ("qa/changes/CH-1/proposal.md",),
+) -> AgentWorkspaceV1:
+    payload = {
+        "schema_version": "1",
+        "write_root": write_root,
+        "allowed_outputs": allowed_outputs,
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
+
+
 def _request() -> AgentRunRequest:
     return AgentRunRequest(
         schema_version="1",
+        agent_profile="aa-doc-author",
         instructions=(InstructionPart.text("text/plain", "write result.json"),),
         result_contract=ResultContract(
             schema_id="fixture.result.v1",
@@ -77,6 +92,7 @@ def _request() -> AgentRunRequest:
             extraction_mode="structured",
         ),
         execution=_selection(),
+        workspace=_workspace(),
         request_policy_digest=_SHA_C,
         request_config_digest=_SHA_D,
     )
@@ -85,6 +101,7 @@ def _request() -> AgentRunRequest:
 def test_agent_run_request_is_strict_frozen_and_canonical() -> None:
     request = AgentRunRequest(
         schema_version="1",
+        agent_profile="aa-doc-author",
         instructions=(InstructionPart.text("text/plain", "write result.json"),),
         result_contract=ResultContract(
             schema_id="fixture.result.v1",
@@ -97,6 +114,7 @@ def test_agent_run_request_is_strict_frozen_and_canonical() -> None:
             permission_profile_digest="2" * 64,
             limits={"max_seconds": 120},  # type: ignore[arg-type]
         ),
+        workspace=_workspace(),
         request_policy_digest="3" * 64,
         request_config_digest="4" * 64,
     )
@@ -107,10 +125,98 @@ def test_agent_run_request_is_strict_frozen_and_canonical() -> None:
         AgentRunRequest.model_validate({**request.model_dump(), "fallback_model": "x"})
 
 
+@pytest.mark.parametrize("agent_profile", ["", " aa-doc-author", "aa doc-author", "aa-doc-author,other"])
+def test_agent_run_request_rejects_invalid_agent_profile(agent_profile: str) -> None:
+    payload = _request().model_dump(mode="json")
+    payload["agent_profile"] = agent_profile
+    with pytest.raises(ValidationError, match="agent_profile"):
+        AgentRunRequest.model_validate(payload)
+
+
 def test_agent_run_request_rejects_mutation() -> None:
     request = _request()
     with pytest.raises(ValidationError, match="frozen"):
         request.schema_version = "2"  # type: ignore[misc]
+
+
+def test_agent_workspace_accepts_canonical_relative_write_root_and_sorted_outputs() -> None:
+    workspace = _workspace(
+        write_root="qa/changes/CH-1/.staging/task-1/attempt-1",
+        allowed_outputs=("qa/changes/CH-1/cases.yaml", "qa/changes/CH-1/proposal.md"),
+    )
+    assert workspace.schema_version == "1"
+    assert workspace.write_root == "qa/changes/CH-1/.staging/task-1/attempt-1"
+    assert workspace.allowed_outputs == (
+        "qa/changes/CH-1/cases.yaml",
+        "qa/changes/CH-1/proposal.md",
+    )
+    expected = canonical_digest(workspace.model_dump(mode="json", exclude={"identity_digest"}))
+    assert workspace.identity_digest == expected
+    again = AgentWorkspaceV1.model_validate(workspace.model_dump(mode="json"))
+    assert again.identity_digest == workspace.identity_digest
+    request = _request()
+    assert request.workspace.write_root == workspace.write_root
+    with pytest.raises(ValidationError, match="frozen"):
+        request.workspace.write_root = "other"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    "write_root",
+    [
+        "/tmp/stage",
+        "C:/stage",
+        "../escape",
+        "qa/../secret",
+        "qa/changes/./attempt",
+        "qa\\changes\\stage",
+        "/qa/changes/stage",
+        "",
+        ".",
+        "..",
+    ],
+)
+def test_agent_workspace_rejects_absolute_or_parent_write_roots(write_root: str) -> None:
+    payload = _workspace().model_dump(mode="json")
+    payload["write_root"] = write_root
+    payload.pop("identity_digest")
+    payload["identity_digest"] = canonical_digest(payload)
+    with pytest.raises(ValidationError):
+        AgentWorkspaceV1.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "allowed_outputs",
+    [
+        ("/tmp/out.md",),
+        ("../escape.md",),
+        ("qa/../secret.md",),
+        ("qa/changes/./proposal.md",),
+        ("qa\\changes\\proposal.md",),
+        ("qa/changes/proposal.md", "qa/changes/cases.yaml"),
+        ("qa/changes/proposal.md", "qa/changes/proposal.md"),
+    ],
+)
+def test_agent_workspace_rejects_unsorted_absolute_or_parent_outputs(
+    allowed_outputs: tuple[str, ...],
+) -> None:
+    payload = _workspace().model_dump(mode="json")
+    payload["allowed_outputs"] = list(allowed_outputs)
+    payload.pop("identity_digest")
+    payload["identity_digest"] = canonical_digest(payload)
+    with pytest.raises(ValidationError):
+        AgentWorkspaceV1.model_validate(payload)
+
+
+def test_agent_workspace_identity_digest_is_stable_and_authenticated() -> None:
+    first = _workspace()
+    second = _workspace()
+    assert first.identity_digest == second.identity_digest
+    drifted = first.model_dump(mode="json")
+    drifted["identity_digest"] = _SHA_A
+    with pytest.raises(ValidationError, match="canonical"):
+        AgentWorkspaceV1.model_validate(drifted)
+    different = _workspace(write_root="qa/changes/CH-1/.staging/task-1/attempt-2")
+    assert different.identity_digest != first.identity_digest
 
 
 def test_instruction_part_permits_exactly_one_text_or_json_form() -> None:

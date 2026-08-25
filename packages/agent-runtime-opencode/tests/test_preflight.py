@@ -12,9 +12,11 @@ from graph_engine.plugin_api import (
     SecretPort,
     TaskContext,
     TaskRequest,
+    TaskWorkspaceIdentity,
 )
 from pydantic import ValidationError
 
+from agent_runtime_contracts.schema import canonical_digest
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
 from agent_runtime_opencode.handler import OpenCodeHandler
 from agent_runtime_opencode.protocol import (
@@ -91,9 +93,28 @@ class _ExactSecretPort:
             raise SecretHandleUnauthorized(f"unauthorized secret handle: {handle}") from error
 
 
+def _workspace_identity() -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "task-1",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": ["qa/changes/CH-1/proposal.md"],
+        "baseline_files": [],
+        "project_digest": _SHA,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
+
+
 def _context(*, secrets: SecretPort | None = None, tmp_path: Path | None = None) -> TaskContext:
+    project_root = (tmp_path or Path(".")).resolve()
+    write_root = project_root / "qa/changes/CH-1/.staging/task-1/attempt-1"
+    write_root.mkdir(parents=True, exist_ok=True)
     return TaskContext(
-        workspace_root=tmp_path or Path(".").resolve(),
+        project_root=project_root,
+        write_root=write_root,
+        workspace_identity=_workspace_identity(),
         heartbeat=lambda: None,
         cancel_requested=lambda: False,
         invocation=InvocationMetadata(
