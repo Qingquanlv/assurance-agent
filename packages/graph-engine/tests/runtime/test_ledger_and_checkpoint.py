@@ -35,6 +35,7 @@ from graph_engine.runtime.events import (
     TaskActivityDispatchStarted,
     TaskActivityPrepared,
     TaskActivityTerminalObserved,
+    TaskAttemptCommittedEffectFailed,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
@@ -1532,13 +1533,20 @@ def test_fold_rejects_success_before_all_effect_receipts() -> None:
 
 def test_fold_marks_frontier_effect_permanently_failed_and_refuses_later_attempt() -> None:
     failure = TaskFailure(kind="external_effect", message="denied", retryable=False)
+    committed_failure = TaskAttemptCommittedEffectFailed(
+        activation_id="a1",
+        attempt=1,
+        failure=failure,
+        staged_write_set_digest=_staged_write_set("task-1").staged_digest,
+        promotion_receipt_digest="c" * 64,
+    )
     envelopes = _envelopes(
         *_committed_effect_history(),
-        TaskAttemptFailed(activation_id="a1", attempt=1, failure=failure),
+        committed_failure,
     )
     projection = fold_events(envelopes)
     attempt = projection.activations[-1].attempts[-1]
-    assert attempt.status == "failed"
+    assert attempt.status == "committed_effect_failed"
     assert attempt.failure == failure
     assert tuple(effect.status for effect in projection.effects) == (
         "permanently_failed",
@@ -1546,18 +1554,18 @@ def test_fold_marks_frontier_effect_permanently_failed_and_refuses_later_attempt
     )
     assert projection.effects[0].failure == failure
     assert projection.effects[1].failure == failure
-    with pytest.raises(ProjectionError, match="non-retryable"):
+    with pytest.raises(ProjectionError, match="cannot retry"):
         fold_events(
             _envelopes(
                 *_committed_effect_history(),
-                TaskAttemptFailed(activation_id="a1", attempt=1, failure=failure),
+                committed_failure,
                 TaskAttemptStarted(activation_id="a1", attempt=2, lease_expires_at="12"),
             )
         )
 
 
-def test_fold_rejects_retryable_failure_while_effect_pending() -> None:
-    with pytest.raises(ProjectionError, match="pending effect failure must be non-retryable"):
+def test_fold_rejects_ordinary_failure_while_effect_pending() -> None:
+    with pytest.raises(ProjectionError, match="ordinary attempt outcome cannot follow"):
         fold_events(
             _envelopes(
                 *_committed_effect_history(),

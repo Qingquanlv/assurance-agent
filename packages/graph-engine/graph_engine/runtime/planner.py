@@ -26,6 +26,7 @@ from graph_engine.runtime.events import (
     NodeCompleted,
     NodeFailed,
     RuntimeEvent,
+    TaskAttemptCommittedEffectFailed,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
@@ -408,7 +409,10 @@ def _validate_external_history_transition(
             return 1
         raise PlanningError("event history task success lacks its promotion receipt")
 
-    if isinstance(event, TaskAttemptFailed | TaskAttemptStopped):
+    if isinstance(
+        event,
+        TaskAttemptFailed | TaskAttemptCommittedEffectFailed | TaskAttemptStopped,
+    ):
         return 1
 
     if isinstance(event, InterruptResumed):
@@ -469,6 +473,7 @@ def _can_defer_planned_events(
         | TaskActivityTerminalObserved
         | TaskAttemptSucceeded
         | TaskAttemptFailed
+        | TaskAttemptCommittedEffectFailed
         | TaskAttemptStopped
         | TaskCommitPrepared
         | TaskPromotionCompleted
@@ -1157,6 +1162,9 @@ def _terminal_task_activations(state: _PlannerState) -> tuple[ActivationRecord, 
         if activation.status != "active" or not activation.attempts:
             continue
         latest = activation.attempts[-1]
+        if latest.status == "committed_effect_failed":
+            terminal.append(activation)
+            continue
         if latest.status != "failed":
             continue
         if latest.activity is not None and latest.activity.state in {

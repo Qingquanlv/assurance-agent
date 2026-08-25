@@ -15,8 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import (
+    DirectoryIdentity,
     SecretPort,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
@@ -248,48 +249,68 @@ async def _run_call(
     activity_port: _ParentActivityPort | None,
     cancel_requested: Callable[[], bool],
 ) -> TaskHostCallResult:
-    project_root = _authenticate_root(
+    project_root, project_fd = _authenticate_root(
         project_root,
-        call.attempt_root.project_root_digest,
+        call.attempt_root.project_root_identity,
         label="project root",
     )
-    write_root = _authenticate_root(
-        write_root,
-        call.attempt_root.write_root_digest,
-        label="write root",
-    )
-    context = TaskContext(
-        project_root=project_root,
-        write_root=write_root,
-        workspace_identity=call.attempt_root.workspace_identity,
-        heartbeat=lambda: None,
-        cancel_requested=cancel_requested,
-        invocation=call.request.invocation,
-        activity=activity_port,
-        secrets=secrets,
-    )
-    if operation == "execute":
-        execute_call = cast(TaskHostExecuteCall, call)
-        outcome = await cast(_AsyncCallableHandler, handler).execute(execute_call.request, context)
-        return TaskHostCallResult(operation="execute", outcome=outcome)
-    if operation == "reconcile":
-        reconcile_call = cast(TaskHostReconcileCall, call)
-        if not hasattr(handler, "reconcile"):
-            raise TaskHostProtocolError("handler does not support reconcile")
-        reconcile_result = await cast(_AsyncCallableHandler, handler).reconcile(
-            reconcile_call.request, context, reconcile_call.activity
+    write_fd: int | None = None
+    try:
+        write_root, write_fd = _authenticate_root(
+            write_root,
+            call.attempt_root.write_root_identity,
+            label="write root",
         )
-        return TaskHostCallResult(operation="reconcile", reconcile_result=reconcile_result)
-    cancel_call = cast(TaskHostCancelCall, call)
-    if not hasattr(handler, "cancel"):
-        raise TaskHostProtocolError("handler does not support cancel")
-    cancel_result = await cast(_AsyncCallableHandler, handler).cancel(
-        cancel_call.request, context, cancel_call.activity
-    )
-    return TaskHostCallResult(operation="cancel", cancel_result=cancel_result)
+        context = TaskContext(
+            project_root=project_root,
+            write_root=write_root,
+            workspace_identity=call.attempt_root.workspace_identity,
+            heartbeat=lambda: None,
+            cancel_requested=cancel_requested,
+            invocation=call.request.invocation,
+            activity=activity_port,
+            secrets=secrets,
+        )
+        if operation == "execute":
+            execute_call = cast(TaskHostExecuteCall, call)
+            outcome = await cast(_AsyncCallableHandler, handler).execute(execute_call.request, context)
+            result = TaskHostCallResult(operation="execute", outcome=outcome)
+        elif operation == "reconcile":
+            reconcile_call = cast(TaskHostReconcileCall, call)
+            if not hasattr(handler, "reconcile"):
+                raise TaskHostProtocolError("handler does not support reconcile")
+            reconcile_result = await cast(_AsyncCallableHandler, handler).reconcile(
+                reconcile_call.request, context, reconcile_call.activity
+            )
+            result = TaskHostCallResult(operation="reconcile", reconcile_result=reconcile_result)
+        else:
+            cancel_call = cast(TaskHostCancelCall, call)
+            if not hasattr(handler, "cancel"):
+                raise TaskHostProtocolError("handler does not support cancel")
+            cancel_result = await cast(_AsyncCallableHandler, handler).cancel(
+                cancel_call.request, context, cancel_call.activity
+            )
+            result = TaskHostCallResult(operation="cancel", cancel_result=cancel_result)
+        _reauthenticate_pinned_root(
+            project_root,
+            project_fd,
+            call.attempt_root.project_root_identity,
+            label="project root",
+        )
+        _reauthenticate_pinned_root(
+            write_root,
+            write_fd,
+            call.attempt_root.write_root_identity,
+            label="write root",
+        )
+        return result
+    finally:
+        if write_fd is not None:
+            os.close(write_fd)
+        os.close(project_fd)
 
 
-def _authenticate_root(path: Path, expected_digest: str, *, label: str) -> Path:
+def _authenticate_root(path: Path, expected: DirectoryIdentity, *, label: str) -> tuple[Path, int]:
     supplied = Path(path)
     if not supplied.is_absolute():
         raise TaskHostProtocolError(f"{label} must be an absolute authenticated root")
@@ -299,10 +320,37 @@ def _authenticate_root(path: Path, expected_digest: str, *, label: str) -> Path:
         raise TaskHostProtocolError(f"{label} is unavailable") from error
     if supplied != resolved or not resolved.is_dir():
         raise TaskHostProtocolError(f"{label} must be a canonical authenticated root")
-    actual_digest = canonical_digest({"path": str(resolved)})
-    if actual_digest != expected_digest:
-        raise TaskHostProtocolError(f"{label} identity differs from the authenticated root")
-    return resolved
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            resolved,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        actual = DirectoryIdentity.capture(resolved, descriptor=descriptor)
+    except (OSError, ValueError) as error:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise TaskHostProtocolError(f"{label} descriptor identity is unavailable") from error
+    assert descriptor is not None
+    if actual != expected:
+        os.close(descriptor)
+        raise TaskHostProtocolError(f"{label} identity differs from the authenticated descriptor")
+    return resolved, descriptor
+
+
+def _reauthenticate_pinned_root(
+    path: Path,
+    descriptor: int,
+    expected: DirectoryIdentity,
+    *,
+    label: str,
+) -> None:
+    try:
+        actual = DirectoryIdentity.capture(path, descriptor=descriptor)
+    except (OSError, ValueError) as error:
+        raise TaskHostProtocolError(f"{label} changed while the worker was running") from error
+    if actual != expected:
+        raise TaskHostProtocolError(f"{label} changed while the worker was running")
 
 
 def main() -> int:

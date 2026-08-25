@@ -17,13 +17,18 @@ from graph_engine.runtime.events import (
     EffectApplyStarted,
     EffectReceiptRecorded,
     RuntimeEvent,
-    TaskAttemptFailed,
+    TaskAttemptCommittedEffectFailed,
     TaskAttemptSucceeded,
 )
 from graph_engine.runtime.frozen_json import thaw_json
 from graph_engine.runtime.json_schema import validate_json_schema
 from graph_engine.runtime.ledger import Ledger, append_validated_batch
-from graph_engine.runtime.models import AttemptRecord, EffectRecord, InvocationProjection
+from graph_engine.runtime.models import (
+    AttemptRecord,
+    EffectRecord,
+    InvocationProjection,
+    fold_events,
+)
 
 _Result = TypeVar("_Result")
 _SETTLEABLE = {"committed", "applying"}
@@ -115,11 +120,16 @@ class EffectExecutor:
             )
         )
         activation_id, attempt = ready[0]
+        prepared = attempt.prepared_commit
+        assert prepared is not None
+        assert prepared.promotion_receipt_digest is not None
         self._append(
             TaskAttemptSucceeded(
                 activation_id=activation_id,
                 attempt=attempt.attempt,
                 output=attempt.output,
+                staged_write_set_digest=prepared.staged_write_set_digest,
+                promotion_receipt_digest=prepared.promotion_receipt_digest,
             )
         )
         return EffectSettlement(progressed=True)
@@ -206,11 +216,34 @@ class EffectExecutor:
         validate_json_schema(thaw_json(receipt), schema.content)
 
     def _publish_failure(self, effect: EffectRecord, failure: TaskFailure) -> EffectSettlement:
+        projection = fold_events(self._ledger.read_all())
+        activation = next(
+            (item for item in projection.activations if item.activation_id == effect.activation_id),
+            None,
+        )
+        attempt = (
+            next(
+                (item for item in activation.attempts if item.attempt == effect.task_attempt),
+                None,
+            )
+            if activation is not None
+            else None
+        )
+        prepared = attempt.prepared_commit if attempt is not None else None
+        if (
+            attempt is None
+            or attempt.status != "effect_pending"
+            or prepared is None
+            or prepared.promotion_receipt_digest is None
+        ):
+            raise EffectStateError(f"effect {effect.effect_id} has no promoted prepared task commit")
         self._append(
-            TaskAttemptFailed(
+            TaskAttemptCommittedEffectFailed(
                 activation_id=effect.activation_id,
                 attempt=effect.task_attempt,
                 failure=failure,
+                staged_write_set_digest=prepared.staged_write_set_digest,
+                promotion_receipt_digest=prepared.promotion_receipt_digest,
             )
         )
         return EffectSettlement(progressed=True)

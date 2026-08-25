@@ -7,8 +7,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from graph_engine.runtime import production_worker
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import (
+    DirectoryIdentity,
     InvocationMetadata,
     ResourceClaims,
     SecretHandleUnauthorized,
@@ -91,15 +93,26 @@ def _identity(*, operation: str = "execute") -> TaskHostCallIdentity:
     )
 
 
+def _fake_directory_identity(path: str, inode: int) -> DirectoryIdentity:
+    payload = {
+        "path_digest": canonical_digest({"path": path}),
+        "device": 1,
+        "inode": inode,
+    }
+    return DirectoryIdentity(**payload, identity_digest=canonical_digest(payload))
+
+
 def _workspace_identity() -> TaskWorkspaceIdentity:
+    project = _fake_directory_identity("/project", 1)
+    write = _fake_directory_identity("/attempts/task-1/attempt-1", 2)
     payload = {
         "task_id": "task-1",
         "attempt": 1,
         "attempt_id": "attempt-1",
         "output_paths": ["out.txt"],
         "baseline_files": [],
-        "project_digest": canonical_digest({"path": "/project"}),
-        "write_root_digest": canonical_digest({"path": "/attempts/task-1/attempt-1"}),
+        "project_digest": project.identity_digest,
+        "write_root_digest": write.identity_digest,
         "layout_schema_version": "1",
     }
     return TaskWorkspaceIdentity(identity_digest=canonical_digest(payload), **payload)
@@ -107,8 +120,12 @@ def _workspace_identity() -> TaskWorkspaceIdentity:
 
 def _attempt_root() -> AttemptRootDescriptor:
     workspace = _workspace_identity()
+    project = _fake_directory_identity("/project", 1)
+    write = _fake_directory_identity("/attempts/task-1/attempt-1", 2)
     return AttemptRootDescriptor(
         workspace_identity=workspace,
+        project_root_identity=project,
+        write_root_identity=write,
         project_root_digest=workspace.project_digest,
         write_root_digest=workspace.write_root_digest,
         baseline_digest=canonical_digest([]),
@@ -217,6 +234,8 @@ def test_schema_v2_attempt_root_authenticates_both_roots_and_baseline(tmp_path: 
             {
                 "schema_version": "2",
                 "workspace_identity": workspace.identity.model_dump(mode="json"),
+                "project_root_identity": workspace.project_root_identity.model_dump(mode="json"),
+                "write_root_identity": workspace.write_root_identity.model_dump(mode="json"),
                 "project_root_digest": workspace.identity.project_digest,
                 "write_root_digest": workspace.identity.write_root_digest,
                 "baseline_digest": baseline_digest,
@@ -231,6 +250,60 @@ def test_schema_v2_attempt_root_authenticates_both_roots_and_baseline(tmp_path: 
     assert descriptor.write_root_digest == workspace.identity.write_root_digest
     assert descriptor.baseline_digest == baseline_digest
     assert "attempt_directory_id" not in descriptor.model_dump(mode="json")
+
+
+@pytest.mark.parametrize("changed", ["project_root", "write_root"])
+def test_worker_rejects_same_path_root_replacement_before_handler_execution(
+    tmp_path: Path,
+    changed: str,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    store = TaskWorkspaceStore(project_root, tmp_path / "attempts", tmp_path / "receipts")
+    executed = False
+
+    class MustNotRun:
+        async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+            nonlocal executed
+            del request, context
+            executed = True
+            return TaskOutcome.succeeded()
+
+    try:
+        binding = store.begin(task_id="task-1", attempt=1, output_paths=("out.txt",))
+        descriptor = AttemptRootDescriptor(
+            workspace_identity=binding.identity,
+            project_root_identity=binding.project_root_identity,
+            write_root_identity=binding.write_root_identity,
+            project_root_digest=binding.identity.project_digest,
+            write_root_digest=binding.identity.write_root_digest,
+            baseline_digest=canonical_digest(
+                [item.model_dump(mode="json") for item in binding.identity.baseline_files]
+            ),
+        )
+        call = _execute_call().model_copy(update={"attempt_root": descriptor})
+        original = getattr(binding, changed)
+        parked = original.with_name(f"{original.name}-parked")
+        original.rename(parked)
+        original.mkdir()
+
+        with pytest.raises(Exception, match="root|identity|descriptor|authenticated"):
+            asyncio.run(
+                production_worker._run_call(
+                    MustNotRun(),
+                    "execute",
+                    call,
+                    project_root=binding.project_root,
+                    write_root=binding.write_root,
+                    secrets=None,
+                    activity_port=None,
+                    cancel_requested=lambda: False,
+                )
+            )
+    finally:
+        store.close()
+
+    assert executed is False
 
 
 def test_task_execution_host_exposes_fixed_lifecycle_transport() -> None:

@@ -14,12 +14,14 @@ import stat
 import tempfile
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
+    DirectoryIdentity,
     PromotionReceipt,
     StagedFile,
     StagedWriteSet,
@@ -357,7 +359,7 @@ def _open_parent_at(root_fd: int, logical_path: str, *, create: bool, label: str
         raise
 
 
-def _read_regular_at(parent_fd: int, name: str, logical_path: str) -> tuple[bytes, str]:
+def _read_regular_at(parent_fd: int, name: str, logical_path: str) -> tuple[bytes, str, int]:
     before = _stat_at(parent_fd, name, "regular file")
     if stat.S_ISLNK(before.st_mode):
         raise TaskWorkspaceViolation(f"symlink is not allowed: {logical_path}")
@@ -377,15 +379,21 @@ def _read_regular_at(parent_fd: int, name: str, logical_path: str) -> tuple[byte
             chunks.append(chunk)
             digest.update(chunk)
         final = _stat_at(parent_fd, name, "regular file")
-        if not _same_inode(opened, final) or final.st_size != opened.st_size:
+        if (
+            not _same_inode(opened, final)
+            or final.st_size != opened.st_size
+            or final.st_mode != opened.st_mode
+            or final.st_mtime_ns != opened.st_mtime_ns
+            or final.st_ctime_ns != opened.st_ctime_ns
+        ):
             raise TaskWorkspaceViolation(f"regular file changed during read: {logical_path}")
-        return b"".join(chunks), digest.hexdigest()
+        return b"".join(chunks), digest.hexdigest(), stat.S_IMODE(opened.st_mode)
     finally:
         os.close(descriptor)
 
 
-def _scan_directory_fd(directory_fd: int, prefix: str) -> dict[str, str]:
-    files: dict[str, str] = {}
+def _scan_directory_fd(directory_fd: int, prefix: str) -> dict[str, tuple[str, int]]:
+    files: dict[str, tuple[str, int]] = {}
     try:
         names = sorted(os.listdir(directory_fd), key=os.fsencode)
     except OSError as error:
@@ -402,15 +410,15 @@ def _scan_directory_fd(directory_fd: int, prefix: str) -> dict[str, str]:
             finally:
                 os.close(child)
         elif stat.S_ISREG(entry.st_mode):
-            _contents, digest = _read_regular_at(directory_fd, name, logical_path)
-            files[logical_path] = digest
+            _contents, digest, mode = _read_regular_at(directory_fd, name, logical_path)
+            files[logical_path] = (digest, mode)
         else:
             raise TaskWorkspaceViolation(f"path is not a regular file: {logical_path}")
     return files
 
 
-def _manifest_for_claims_fd(root_fd: int, claims: Sequence[str]) -> dict[str, str]:
-    manifest: dict[str, str] = {}
+def _manifest_for_claims_fd(root_fd: int, claims: Sequence[str]) -> dict[str, tuple[str, int]]:
+    manifest: dict[str, tuple[str, int]] = {}
     for claim in claims:
         try:
             parent, name = _open_parent_at(root_fd, claim, create=False, label="claim parent")
@@ -430,8 +438,8 @@ def _manifest_for_claims_fd(root_fd: int, claims: Sequence[str]) -> dict[str, st
                 finally:
                     os.close(child)
             elif stat.S_ISREG(entry.st_mode):
-                _contents, digest = _read_regular_at(parent, name, claim)
-                scanned = {claim: digest}
+                _contents, digest, mode = _read_regular_at(parent, name, claim)
+                scanned = {claim: (digest, mode)}
             else:
                 raise TaskWorkspaceViolation(f"path is not a regular file: {claim}")
             manifest.update(scanned)
@@ -443,8 +451,9 @@ def _manifest_for_claims_fd(root_fd: int, claims: Sequence[str]) -> dict[str, st
 def _atomic_write_at(parent_fd: int, name: str, content: bytes) -> None:
     temporary = f".{name}.{uuid.uuid4().hex}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
+    descriptor: int | None = None
     try:
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=parent_fd)
         view = memoryview(content)
         while view:
             written = os.write(descriptor, view)
@@ -452,17 +461,105 @@ def _atomic_write_at(parent_fd: int, name: str, content: bytes) -> None:
                 raise TaskWorkspaceViolation("filesystem write returned zero bytes")
             view = view[written:]
         os.fsync(descriptor)
-    finally:
         os.close(descriptor)
-    try:
+        descriptor = None
         os.replace(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
         os.fsync(parent_fd)
     except BaseException:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         try:
             os.unlink(temporary, dir_fd=parent_fd)
         except OSError:
             pass
         raise
+
+
+def _write_named_file_at(parent_fd: int, name: str, content: bytes, mode: int) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(name, flags, 0o600, dir_fd=parent_fd)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written == 0:
+                raise TaskWorkspaceViolation("filesystem write returned zero bytes")
+            view = view[written:]
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.fsync(parent_fd)
+    except BaseException:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        try:
+            os.unlink(name, dir_fd=parent_fd)
+        except OSError:
+            pass
+        raise
+
+
+def _open_transaction_parent_at(
+    root_fd: int,
+    logical_path: str,
+    created_directories: list[str],
+) -> tuple[int, str]:
+    segments = _validate_logical_path(logical_path).split("/")
+    descriptor = os.dup(root_fd)
+    traversed: list[str] = []
+    try:
+        for segment in segments[:-1]:
+            traversed.append(segment)
+            try:
+                child = _open_directory_at(descriptor, segment, "promotion target parent")
+            except FileNotFoundError:
+                os.mkdir(segment, mode=0o700, dir_fd=descriptor)
+                os.fsync(descriptor)
+                created_directories.append("/".join(traversed))
+                child = _open_directory_at(descriptor, segment, "promotion target parent")
+            os.close(descriptor)
+            descriptor = child
+        return descriptor, segments[-1]
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _remove_created_directories(root_fd: int, created_directories: Sequence[str]) -> None:
+    for logical_path in reversed(created_directories):
+        try:
+            parent_fd, name = _open_parent_at(
+                root_fd,
+                logical_path,
+                create=False,
+                label="created promotion directory",
+            )
+        except FileNotFoundError:
+            continue
+        try:
+            os.rmdir(name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except FileNotFoundError:
+            pass
+        finally:
+            os.close(parent_fd)
+
+
+@dataclass(slots=True)
+class _PreparedPromotionFile:
+    file: StagedFile
+    parent_fd: int
+    target_name: str
+    temporary_name: str
+    backup_name: str
 
 
 class TaskWorkspaceStore:
@@ -480,6 +577,36 @@ class TaskWorkspaceStore:
         self._project_fd = _open_pinned_directory(self.project_root, "project root")
         self._attempts_fd = _open_pinned_directory(self.attempts_root, "attempts root")
         self._receipts_fd = _open_pinned_directory(self.receipts_root, "receipts root")
+        try:
+            self.project_root_identity = DirectoryIdentity.capture(
+                self.project_root, descriptor=self._project_fd
+            )
+            self.attempts_root_identity = DirectoryIdentity.capture(
+                self.attempts_root, descriptor=self._attempts_fd
+            )
+            self.receipts_root_identity = DirectoryIdentity.capture(
+                self.receipts_root, descriptor=self._receipts_fd
+            )
+        except BaseException:
+            self.close()
+            raise
+
+    def _authenticate_roots_current(self) -> None:
+        try:
+            current = (
+                DirectoryIdentity.capture(self.project_root, descriptor=self._project_fd),
+                DirectoryIdentity.capture(self.attempts_root, descriptor=self._attempts_fd),
+                DirectoryIdentity.capture(self.receipts_root, descriptor=self._receipts_fd),
+            )
+        except ValueError as error:
+            raise TaskWorkspaceViolation("task workspace root entry was replaced") from error
+        expected = (
+            self.project_root_identity,
+            self.attempts_root_identity,
+            self.receipts_root_identity,
+        )
+        if current != expected:
+            raise TaskWorkspaceViolation("task workspace root identity drifted")
 
     def close(self) -> None:
         for attribute in ("_project_fd", "_attempts_fd", "_receipts_fd"):
@@ -507,6 +634,7 @@ class TaskWorkspaceStore:
         return task_fd, write_fd
 
     def _binding_paths(self, identity: TaskWorkspaceIdentity) -> tuple[Path, Path]:
+        self._authenticate_roots_current()
         self._authenticate_identity(identity)
         safe_task_id = _safe_task_id(identity.task_id)
         task_root = self.attempts_root / safe_task_id
@@ -519,19 +647,21 @@ class TaskWorkspaceStore:
             if recorded != identity:
                 raise TaskWorkspaceViolation("task workspace identity drifted from its recorded binding")
             write_fd = _open_directory_at(task_fd, identity.attempt_id, "attempt write root")
-            os.close(write_fd)
+            try:
+                write_identity = DirectoryIdentity.capture(write_root, descriptor=write_fd)
+            finally:
+                os.close(write_fd)
+            if write_identity.identity_digest != identity.write_root_digest:
+                raise TaskWorkspaceViolation("attempt write-root identity was replaced")
         finally:
             os.close(task_fd)
         return task_root, write_root
 
     def _authenticate_identity(self, identity: TaskWorkspaceIdentity) -> None:
-        if identity.project_digest != _path_digest(self.project_root):
+        if identity.project_digest != self.project_root_identity.identity_digest:
             raise TaskWorkspaceViolation("task workspace project identity drifted")
         if identity.attempt_id != _attempt_id(identity.attempt):
             raise TaskWorkspaceViolation("task workspace attempt id does not match its attempt")
-        expected_write_root = self.attempts_root / _safe_task_id(identity.task_id) / identity.attempt_id
-        if identity.write_root_digest != _path_digest(expected_write_root):
-            raise TaskWorkspaceViolation("task workspace write-root identity drifted")
         expected = canonical_digest(identity.model_dump(mode="json", exclude={"identity_digest"}))
         if identity.identity_digest != expected:
             raise TaskWorkspaceViolation("task workspace identity digest is not canonical")
@@ -548,7 +678,11 @@ class TaskWorkspaceStore:
         if staged.staged_digest != expected:
             raise TaskWorkspaceViolation("staged write-set digest is not canonical")
         for file in staged.files:
-            if file.after_sha256 is None or not _is_covered(file.path, identity.output_paths):
+            if (
+                file.after_sha256 is None
+                or file.after_mode is None
+                or not _is_covered(file.path, identity.output_paths)
+            ):
                 raise TaskWorkspaceViolation("staged write set contains an undeclared file")
 
     def begin(
@@ -558,6 +692,7 @@ class TaskWorkspaceStore:
         attempt: int,
         output_paths: Sequence[str],
     ) -> TaskWorkspaceBinding:
+        self._authenticate_roots_current()
         claims = _normalise_output_paths(output_paths)
         safe_task_id = _safe_task_id(task_id)
         attempt_id = _attempt_id(attempt)
@@ -579,8 +714,19 @@ class TaskWorkspaceStore:
                 ):
                     raise TaskWorkspaceViolation("attempt root already belongs to another identity")
                 write_fd = _open_directory_at(task_fd, attempt_id, "attempt write root")
-                os.close(write_fd)
-                return TaskWorkspaceBinding(recorded, self.project_root, write_root)
+                try:
+                    write_identity = DirectoryIdentity.capture(write_root, descriptor=write_fd)
+                finally:
+                    os.close(write_fd)
+                if write_identity.identity_digest != recorded.write_root_digest:
+                    raise TaskWorkspaceViolation("attempt write-root identity was replaced")
+                return TaskWorkspaceBinding(
+                    recorded,
+                    self.project_root,
+                    write_root,
+                    self.project_root_identity,
+                    write_identity,
+                )
             try:
                 _stat_at(task_fd, attempt_id, "attempt write root")
             except FileNotFoundError:
@@ -589,23 +735,35 @@ class TaskWorkspaceStore:
                 raise TaskWorkspaceViolation("attempt write root exists without an authenticated identity")
             baseline = _manifest_for_claims_fd(self._project_fd, claims)
             baseline_files = tuple(
-                StagedFile(path=path, before_sha256=digest) for path, digest in sorted(baseline.items())
+                StagedFile(path=path, before_sha256=digest, before_mode=mode)
+                for path, (digest, mode) in sorted(baseline.items())
             )
             os.mkdir(attempt_id, mode=0o700, dir_fd=task_fd)
             os.fsync(task_fd)
+            write_fd = _open_directory_at(task_fd, attempt_id, "attempt write root")
+            try:
+                write_identity = DirectoryIdentity.capture(write_root, descriptor=write_fd)
+            finally:
+                os.close(write_fd)
             payload: dict[str, Any] = {
                 "task_id": task_id,
                 "attempt": attempt,
                 "attempt_id": attempt_id,
                 "output_paths": list(claims),
                 "baseline_files": [file.model_dump(mode="json") for file in baseline_files],
-                "project_digest": _path_digest(self.project_root),
-                "write_root_digest": _path_digest(write_root),
+                "project_digest": self.project_root_identity.identity_digest,
+                "write_root_digest": write_identity.identity_digest,
                 "layout_schema_version": "1",
             }
             identity = TaskWorkspaceIdentity(identity_digest=canonical_digest(payload), **payload)
             _atomic_write_at(task_fd, identity_name, canonical_json_bytes(identity.model_dump(mode="json")))
-            return TaskWorkspaceBinding(identity, self.project_root, write_root)
+            return TaskWorkspaceBinding(
+                identity,
+                self.project_root,
+                write_root,
+                self.project_root_identity,
+                write_identity,
+            )
         finally:
             os.close(task_fd)
 
@@ -620,10 +778,16 @@ class TaskWorkspaceStore:
         for path in manifest:
             if not _is_covered(path, identity.output_paths):
                 raise TaskWorkspaceViolation(f"staged path is not covered by a write claim: {path}")
-        baseline = {file.path: file.before_sha256 for file in identity.baseline_files}
+        baseline = {file.path: (file.before_sha256, file.before_mode) for file in identity.baseline_files}
         files = tuple(
-            StagedFile(path=path, before_sha256=baseline.get(path), after_sha256=digest)
-            for path, digest in sorted(manifest.items())
+            StagedFile(
+                path=path,
+                before_sha256=(baseline[path][0] if path in baseline else None),
+                before_mode=(baseline[path][1] if path in baseline else None),
+                after_sha256=digest,
+                after_mode=mode,
+            )
+            for path, (digest, mode) in sorted(manifest.items())
         )
         payload = {
             "identity_digest": identity.identity_digest,
@@ -633,7 +797,7 @@ class TaskWorkspaceStore:
 
     def _read_identity_at(self, parent_fd: int, name: str) -> TaskWorkspaceIdentity:
         try:
-            content, _digest = _read_regular_at(parent_fd, name, "task workspace identity")
+            content, _digest, _mode = _read_regular_at(parent_fd, name, "task workspace identity")
             return TaskWorkspaceIdentity.model_validate_json(content)
         except FileNotFoundError:
             raise
@@ -648,7 +812,7 @@ class TaskWorkspaceStore:
 
     def _read_receipt_at(self, name: str) -> PromotionReceipt:
         try:
-            content, _digest = _read_regular_at(self._receipts_fd, name, "promotion receipt")
+            content, _digest, _mode = _read_regular_at(self._receipts_fd, name, "promotion receipt")
             return PromotionReceipt.model_validate_json(content)
         except FileNotFoundError:
             raise
@@ -657,7 +821,7 @@ class TaskWorkspaceStore:
 
     def _verify_target_baseline(self, identity: TaskWorkspaceIdentity) -> None:
         current = _manifest_for_claims_fd(self._project_fd, identity.output_paths)
-        expected = {file.path: file.before_sha256 for file in identity.baseline_files}
+        expected = {file.path: (file.before_sha256, file.before_mode) for file in identity.baseline_files}
         if current != expected:
             raise TaskWorkspaceViolation("target drift since task workspace begin")
 
@@ -666,91 +830,317 @@ class TaskWorkspaceStore:
         if current != staged:
             raise TaskWorkspaceViolation("staged write root drifted after sealing")
 
-    def _target_state(self, file: StagedFile) -> str | None:
+    def _target_state(self, file: StagedFile) -> tuple[str, int] | None:
         try:
             parent, name = _open_parent_at(self._project_fd, file.path, create=False, label="target parent")
         except FileNotFoundError:
             return None
         try:
             try:
-                _contents, digest = _read_regular_at(parent, name, file.path)
+                _contents, digest, mode = _read_regular_at(parent, name, file.path)
             except FileNotFoundError:
                 return None
-            return digest
+            return digest, mode
         finally:
             os.close(parent)
 
     def _targets_match_staged(self, staged: StagedWriteSet) -> bool:
         for file in staged.files:
-            assert file.after_sha256 is not None
+            assert file.after_sha256 is not None and file.after_mode is not None
             try:
                 digest = self._target_state(file)
             except (FileNotFoundError, TaskWorkspaceViolation):
                 return False
-            if digest != file.after_sha256:
+            if digest != (file.after_sha256, file.after_mode):
                 return False
         return True
 
-    def _replace_file(self, identity: TaskWorkspaceIdentity, file: StagedFile) -> None:
-        assert file.after_sha256 is not None
+    @staticmethod
+    def _before_state(file: StagedFile) -> tuple[str, int] | None:
+        if file.before_sha256 is None:
+            return None
+        assert file.before_mode is not None
+        return file.before_sha256, file.before_mode
+
+    @staticmethod
+    def _after_state(file: StagedFile) -> tuple[str, int]:
+        assert file.after_sha256 is not None and file.after_mode is not None
+        return file.after_sha256, file.after_mode
+
+    @staticmethod
+    def _transaction_names(
+        file: StagedFile,
+        *,
+        index: int,
+        identity: TaskWorkspaceIdentity,
+        staged: StagedWriteSet,
+    ) -> tuple[str, str]:
+        target_name = file.path.rsplit("/", 1)[-1]
+        token = canonical_digest(
+            {
+                "identity_digest": identity.identity_digest,
+                "staged_digest": staged.staged_digest,
+                "index": index,
+                "path": file.path,
+            }
+        )[:24]
+        return f".{target_name}.{token}.tmp", f".{target_name}.{token}.rollback"
+
+    @staticmethod
+    def _ensure_named_file(
+        parent_fd: int,
+        name: str,
+        content: bytes,
+        digest: str,
+        mode: int,
+        logical_path: str,
+    ) -> None:
+        try:
+            existing_content, existing_digest, existing_mode = _read_regular_at(parent_fd, name, logical_path)
+        except FileNotFoundError:
+            _write_named_file_at(parent_fd, name, content, mode)
+            return
+        if existing_content != content or existing_digest != digest or existing_mode != mode:
+            raise TaskWorkspaceViolation(f"promotion transaction file conflicts: {logical_path}")
+
+    @staticmethod
+    def _unlink_transaction_name(parent_fd: int, name: str) -> None:
+        try:
+            os.unlink(name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            return
+
+    def _cleanup_transaction_files(self, prepared: Sequence[_PreparedPromotionFile]) -> None:
+        for item in prepared:
+            self._unlink_transaction_name(item.parent_fd, item.temporary_name)
+            self._unlink_transaction_name(item.parent_fd, item.backup_name)
+            os.fsync(item.parent_fd)
+
+    def _rollback_transaction(
+        self,
+        prepared: Sequence[_PreparedPromotionFile],
+        created_directories: Sequence[str],
+    ) -> None:
+        failures: list[BaseException] = []
+        for item in reversed(prepared):
+            try:
+                current = self._target_state_at(item.parent_fd, item.target_name, item.file.path)
+                before = self._before_state(item.file)
+                after = self._after_state(item.file)
+                if current == after:
+                    if before is None:
+                        os.unlink(item.target_name, dir_fd=item.parent_fd)
+                    else:
+                        _contents, backup_digest, backup_mode = _read_regular_at(
+                            item.parent_fd,
+                            item.backup_name,
+                            f"rollback:{item.file.path}",
+                        )
+                        if (backup_digest, backup_mode) != before:
+                            raise TaskWorkspaceViolation(
+                                f"promotion rollback backup drifted: {item.file.path}"
+                            )
+                        os.replace(
+                            item.backup_name,
+                            item.target_name,
+                            src_dir_fd=item.parent_fd,
+                            dst_dir_fd=item.parent_fd,
+                        )
+                    os.fsync(item.parent_fd)
+                elif current != before:
+                    raise TaskWorkspaceViolation(
+                        f"promotion rollback encountered target drift: {item.file.path}"
+                    )
+            except BaseException as error:
+                failures.append(error)
+        try:
+            self._cleanup_transaction_files(prepared)
+        except BaseException as error:
+            failures.append(error)
+        try:
+            _remove_created_directories(self._project_fd, created_directories)
+        except BaseException as error:
+            failures.append(error)
+        if failures:
+            failure = TaskWorkspaceViolation("promotion rollback is indeterminate")
+            for error in failures:
+                failure.add_note(f"rollback failure: {type(error).__name__}: {error}")
+            raise failure
+
+    def _execute_promotion_transaction(
+        self,
+        identity: TaskWorkspaceIdentity,
+        staged: StagedWriteSet,
+    ) -> None:
+        prepared: list[_PreparedPromotionFile] = []
+        created_directories: list[str] = []
         task_fd, write_fd = self._open_write_root(identity)
         try:
-            source_parent, source_name = _open_parent_at(
-                write_fd, file.path, create=False, label="staged parent"
-            )
             try:
-                contents, digest = _read_regular_at(source_parent, source_name, file.path)
-            finally:
-                os.close(source_parent)
-            if digest != file.after_sha256:
-                raise TaskWorkspaceViolation(f"staged file drifted before promotion: {file.path}")
-            target_parent, target_name = _open_parent_at(
-                self._project_fd, file.path, create=True, label="target parent"
-            )
-            try:
-                temporary = f".{target_name}.{uuid.uuid4().hex}.tmp"
-                descriptor = os.open(
-                    temporary,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
-                    dir_fd=target_parent,
-                )
-                try:
-                    view = memoryview(contents)
-                    while view:
-                        written = os.write(descriptor, view)
-                        if written == 0:
-                            raise TaskWorkspaceViolation("filesystem write returned zero bytes")
-                        view = view[written:]
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
-                try:
-                    current = self._target_state_at(target_parent, target_name, file.path)
-                    if current != file.before_sha256:
-                        raise TaskWorkspaceViolation(f"target drift immediately before replace: {file.path}")
-                    os.replace(temporary, target_name, src_dir_fd=target_parent, dst_dir_fd=target_parent)
-                    os.fsync(target_parent)
-                except BaseException:
+                for index, file in enumerate(staged.files):
+                    source_parent, source_name = _open_parent_at(
+                        write_fd,
+                        file.path,
+                        create=False,
+                        label="staged parent",
+                    )
                     try:
-                        os.unlink(temporary, dir_fd=target_parent)
-                    except OSError:
-                        pass
-                    raise
-            finally:
-                os.close(target_parent)
+                        contents, digest, mode = _read_regular_at(source_parent, source_name, file.path)
+                    finally:
+                        os.close(source_parent)
+                    if (digest, mode) != self._after_state(file):
+                        raise TaskWorkspaceViolation(f"staged file drifted before promotion: {file.path}")
+                    target_parent, target_name = _open_transaction_parent_at(
+                        self._project_fd,
+                        file.path,
+                        created_directories,
+                    )
+                    temporary_name, backup_name = self._transaction_names(
+                        file,
+                        index=index,
+                        identity=identity,
+                        staged=staged,
+                    )
+                    item = _PreparedPromotionFile(
+                        file=file,
+                        parent_fd=target_parent,
+                        target_name=target_name,
+                        temporary_name=temporary_name,
+                        backup_name=backup_name,
+                    )
+                    prepared.append(item)
+                    current = self._target_state_at(target_parent, target_name, file.path)
+                    before = self._before_state(file)
+                    after = self._after_state(file)
+                    if current not in {before, after}:
+                        raise TaskWorkspaceViolation(f"prior multi-file promotion is incomplete: {file.path}")
+                    if before is not None:
+                        if current == before:
+                            baseline_contents, baseline_digest, baseline_mode = _read_regular_at(
+                                target_parent, target_name, file.path
+                            )
+                            self._ensure_named_file(
+                                target_parent,
+                                backup_name,
+                                baseline_contents,
+                                baseline_digest,
+                                baseline_mode,
+                                f"rollback:{file.path}",
+                            )
+                        else:
+                            try:
+                                _backup, backup_digest, backup_mode = _read_regular_at(
+                                    target_parent,
+                                    backup_name,
+                                    f"rollback:{file.path}",
+                                )
+                            except FileNotFoundError as error:
+                                raise TaskWorkspaceViolation(
+                                    f"promoted target lacks rollback evidence: {file.path}"
+                                ) from error
+                            if (backup_digest, backup_mode) != before:
+                                raise TaskWorkspaceViolation(
+                                    f"promotion rollback backup drifted: {file.path}"
+                                )
+                    else:
+                        try:
+                            _stat_at(target_parent, backup_name, "unexpected rollback backup")
+                        except FileNotFoundError:
+                            pass
+                        else:
+                            raise TaskWorkspaceViolation(
+                                f"new promotion target has an unexpected rollback backup: {file.path}"
+                            )
+                    if current == before:
+                        self._ensure_named_file(
+                            target_parent,
+                            temporary_name,
+                            contents,
+                            digest,
+                            mode,
+                            f"temporary:{file.path}",
+                        )
+
+                for item in prepared:
+                    current = self._target_state_at(item.parent_fd, item.target_name, item.file.path)
+                    if current == self._after_state(item.file):
+                        continue
+                    if current != self._before_state(item.file):
+                        raise TaskWorkspaceViolation(
+                            f"target drift immediately before replace: {item.file.path}"
+                        )
+                    os.replace(
+                        item.temporary_name,
+                        item.target_name,
+                        src_dir_fd=item.parent_fd,
+                        dst_dir_fd=item.parent_fd,
+                    )
+                    os.fsync(item.parent_fd)
+            except BaseException:
+                self._rollback_transaction(prepared, created_directories)
+                raise
+            self._cleanup_transaction_files(prepared)
         finally:
+            for item in prepared:
+                os.close(item.parent_fd)
             os.close(write_fd)
             os.close(task_fd)
 
-    def _target_state_at(self, parent_fd: int, name: str, logical_path: str) -> str | None:
+    def _target_state_at(self, parent_fd: int, name: str, logical_path: str) -> tuple[str, int] | None:
         try:
-            _contents, digest = _read_regular_at(parent_fd, name, logical_path)
+            _contents, digest, mode = _read_regular_at(parent_fd, name, logical_path)
         except FileNotFoundError:
             return None
-        return digest
+        return digest, mode
+
+    def _cleanup_replay_artifacts(
+        self,
+        identity: TaskWorkspaceIdentity,
+        staged: StagedWriteSet,
+    ) -> None:
+        for index, file in enumerate(staged.files):
+            try:
+                parent_fd, _target_name = _open_parent_at(
+                    self._project_fd,
+                    file.path,
+                    create=False,
+                    label="promotion target parent",
+                )
+            except FileNotFoundError:
+                continue
+            try:
+                temporary_name, backup_name = self._transaction_names(
+                    file,
+                    index=index,
+                    identity=identity,
+                    staged=staged,
+                )
+                self._unlink_transaction_name(parent_fd, temporary_name)
+                self._unlink_transaction_name(parent_fd, backup_name)
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+
+    def _install_completed_receipt(
+        self,
+        expected_receipt: PromotionReceipt,
+        *,
+        receipt_name: str,
+        pending_name: str,
+    ) -> None:
+        _atomic_write_at(
+            self._receipts_fd,
+            receipt_name,
+            canonical_json_bytes(expected_receipt.model_dump(mode="json")),
+        )
+        try:
+            os.unlink(pending_name, dir_fd=self._receipts_fd)
+        except FileNotFoundError:
+            pass
+        os.fsync(self._receipts_fd)
 
     def promote(self, identity: TaskWorkspaceIdentity, staged: StagedWriteSet) -> PromotionReceipt:
+        self._authenticate_roots_current()
         self._authenticate_identity(identity)
         self._authenticate_staged(identity, staged)
         self._binding_paths(identity)
@@ -766,6 +1156,13 @@ class TaskWorkspaceStore:
             self._staged_matches_root(identity, staged)
             if not self._targets_match_staged(staged):
                 raise TaskWorkspaceViolation("completed promotion replay does not match staged targets")
+            try:
+                os.unlink(f".{identity.identity_digest}.pending.json", dir_fd=self._receipts_fd)
+            except FileNotFoundError:
+                pass
+            else:
+                os.fsync(self._receipts_fd)
+            self._cleanup_replay_artifacts(identity, staged)
             return existing
         pending_name = f".{identity.identity_digest}.pending.json"
         try:
@@ -776,15 +1173,19 @@ class TaskWorkspaceStore:
             if pending != expected_receipt:
                 raise TaskWorkspaceViolation("existing pending promotion conflicts with this replay")
             self._staged_matches_root(identity, staged)
-            remaining: list[StagedFile] = []
             for file in staged.files:
                 state = self._target_state(file)
-                if state == file.after_sha256:
-                    continue
-                if state == file.before_sha256:
-                    remaining.append(file)
+                if state in {self._before_state(file), self._after_state(file)}:
                     continue
                 raise TaskWorkspaceViolation("prior multi-file promotion is incomplete; refusing retry")
+            if self._targets_match_staged(staged):
+                self._cleanup_replay_artifacts(identity, staged)
+                self._install_completed_receipt(
+                    expected_receipt,
+                    receipt_name=receipt_name,
+                    pending_name=pending_name,
+                )
+                return expected_receipt
         else:
             self._verify_target_baseline(identity)
             self._staged_matches_root(identity, staged)
@@ -793,14 +1194,12 @@ class TaskWorkspaceStore:
                 pending_name,
                 canonical_json_bytes(expected_receipt.model_dump(mode="json")),
             )
-            remaining = list(staged.files)
-        for file in remaining:
-            self._replace_file(identity, file)
+        self._execute_promotion_transaction(identity, staged)
         if not self._targets_match_staged(staged):
             raise TaskWorkspaceViolation("promotion targets do not match staged write set")
-        _atomic_write_at(
-            self._receipts_fd, receipt_name, canonical_json_bytes(expected_receipt.model_dump(mode="json"))
+        self._install_completed_receipt(
+            expected_receipt,
+            receipt_name=receipt_name,
+            pending_name=pending_name,
         )
-        os.unlink(pending_name, dir_fd=self._receipts_fd)
-        os.fsync(self._receipts_fd)
         return expected_receipt

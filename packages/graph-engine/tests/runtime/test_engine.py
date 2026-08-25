@@ -1774,15 +1774,19 @@ def test_engine_non_last_effect_failure_returns_typed_failed_without_rerun(
     kinds = [envelope.event.kind for envelope in ledger.read_all()]
     assert kinds.count("task_promotion_completed") == 1
     assert "task_attempt_succeeded" not in kinds
+    assert "task_attempt_failed" not in kinds
+    assert kinds.count("task_attempt_committed_effect_failed") == 1
     folded = fold_events(ledger.read_all())
-    prepared = folded.activations[-1].attempts[-1].prepared_commit
+    attempt = folded.activations[-1].attempts[-1]
+    assert attempt.status == "committed_effect_failed"
+    prepared = attempt.prepared_commit
     assert prepared is not None
     assert prepared.promotion_receipt_digest is not None
     assert tuple(item.status for item in folded.effects) == ("permanently_failed", "permanently_failed")
     assert folded.status == "failed"
 
 
-def test_engine_permanent_effect_failure_does_not_rerun_handler_or_roll_back_head(
+def test_engine_permanent_effect_failure_is_explicitly_committed_not_ordinary_failed(
     tmp_path: Path,
 ) -> None:
     effect = _RecordingEffectHandler(
@@ -1818,7 +1822,11 @@ def test_engine_permanent_effect_failure_does_not_rerun_handler_or_roll_back_hea
     kinds = [envelope.event.kind for envelope in ledger.read_all()]
     assert kinds.count("task_promotion_completed") == 1
     assert "task_attempt_succeeded" not in kinds
-    prepared = fold_events(ledger.read_all()).activations[-1].attempts[-1].prepared_commit
+    assert "task_attempt_failed" not in kinds
+    assert kinds.count("task_attempt_committed_effect_failed") == 1
+    attempt = fold_events(ledger.read_all()).activations[-1].attempts[-1]
+    assert attempt.status == "committed_effect_failed"
+    prepared = attempt.prepared_commit
     assert prepared is not None
     assert prepared.promotion_receipt_digest is not None
 

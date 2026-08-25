@@ -36,7 +36,6 @@ from graph_engine.runtime.events import (
     InvocationStarted,
     NodeCompleted,
     RuntimeEvent,
-    TaskAttemptSucceeded,
     TokenOffered,
 )
 from graph_engine.runtime.frozen_json import FrozenJSONValue, freeze_json, thaw_json
@@ -55,7 +54,7 @@ from graph_engine.runtime.ledger import (
     LedgerPublicationIndeterminate,
     append_validated_batch,
 )
-from graph_engine.runtime.models import AttemptRecord, InvocationProjection, RecoveryResult, fold_events
+from graph_engine.runtime.models import InvocationProjection, RecoveryResult, fold_events
 from graph_engine.runtime.planner import (
     PlanningError,
     _start_token_id,
@@ -124,11 +123,7 @@ class InvocationHandle:
     def workspace(self) -> TaskWorkspaceStore:
         if self._closed:
             raise EngineError("invocation handle is closed")
-        return TaskWorkspaceStore(
-            self._workspace_binding.project_root,
-            self._workspace_binding.attempts_root,
-            self._workspace_binding.receipts_root,
-        )
+        return self._engine._workspace_store(self._workspace_binding)
 
     async def recover(self) -> RecoveryResult:
         if self._closed:
@@ -180,38 +175,6 @@ class RunResult(BaseModel):
     @property
     def reason(self) -> str | None:
         return self.terminal_reason
-
-
-def _ready_effect_task_success(
-    projection: InvocationProjection,
-) -> tuple[str, AttemptRecord] | None:
-    ready: list[tuple[str, AttemptRecord]] = []
-    for activation in projection.activations:
-        if not activation.attempts:
-            continue
-        attempt = activation.attempts[-1]
-        prepared = attempt.prepared_commit
-        if (
-            attempt.status != "effect_pending"
-            or prepared is None
-            or prepared.promotion_receipt_digest is None
-        ):
-            continue
-        records = tuple(
-            item
-            for item in projection.effects
-            if item.activation_id == activation.activation_id and item.task_attempt == attempt.attempt
-        )
-        if len(records) == len(prepared.effect_ids) and all(item.status == "applied" for item in records):
-            ready.append((activation.activation_id, attempt))
-    ready.sort(
-        key=lambda item: (
-            item[1].prepared_commit.task_id if item[1].prepared_commit is not None else item[0],
-            item[1].attempt,
-            item[0],
-        )
-    )
-    return ready[0] if ready else None
 
 
 class _UnavailableTaskHost:
@@ -487,11 +450,7 @@ class Engine:
             )
             if checkpoint is not None:
                 projection = checkpoint.projection
-            store = TaskWorkspaceStore(
-                workspace_binding.project_root,
-                workspace_binding.attempts_root,
-                workspace_binding.receipts_root,
-            )
+            store = self._workspace_store(workspace_binding)
             self._ensure_ledger_durable(ledger)
             self._authenticate_transition_identity(
                 invocation_id,
@@ -695,11 +654,7 @@ class Engine:
                 display_root=invocation_root / "ledger",
             )
             envelopes = ledger.read_all()
-            store = TaskWorkspaceStore(
-                workspace_binding.project_root,
-                workspace_binding.attempts_root,
-                workspace_binding.receipts_root,
-            )
+            store = self._workspace_store(workspace_binding)
             intent = self._authenticate_invocation_records(
                 invocation_id,
                 composition,
@@ -911,6 +866,41 @@ class Engine:
         ):
             raise InvocationDrift("invocation workspace binding differs from its immutable start intent")
 
+    def _workspace_store(self, binding: InvocationWorkspaceBinding) -> TaskWorkspaceStore:
+        self._authenticate_workspace_binding_current(binding)
+        store = TaskWorkspaceStore(
+            binding.project_root,
+            binding.attempts_root,
+            binding.receipts_root,
+        )
+        actual = (
+            store.project_root_identity,
+            store.attempts_root_identity,
+            store.receipts_root_identity,
+        )
+        expected = (
+            binding.project_root_identity,
+            binding.attempts_root_identity,
+            binding.receipts_root_identity,
+        )
+        if actual != expected:
+            store.close()
+            raise InvocationDrift("invocation workspace roots changed while opening")
+        return store
+
+    @staticmethod
+    def _authenticate_workspace_binding_current(binding: InvocationWorkspaceBinding) -> None:
+        try:
+            current = InvocationWorkspaceBinding(
+                binding.project_root,
+                binding.attempts_root,
+                binding.receipts_root,
+            )
+        except ValueError as error:
+            raise InvocationDrift("invocation workspace roots are no longer canonical") from error
+        if current.identity_digest != binding.identity_digest:
+            raise InvocationDrift("invocation workspace roots were replaced")
+
     def _validate_authorization_against_intent(
         self,
         authorization: InvocationRuntimeAuthorization,
@@ -1020,32 +1010,6 @@ class Engine:
                 raise EnginePublicationIndeterminate(
                     "lease reclamation publication is indeterminate"
                 ) from error
-
-            ready_success = _ready_effect_task_success(projection)
-            if ready_success is not None:
-                activation_id, attempt = ready_success
-                prepared = attempt.prepared_commit
-                assert prepared is not None
-                assert prepared.promotion_receipt_digest is not None
-                self._append_authenticated(
-                    context="planner_append",
-                    invocation_id=handle.invocation_id,
-                    composition=composition,
-                    entrypoint=handle._entrypoint,
-                    invocation_fd=invocation_fd,
-                    ledger=ledger,
-                    events=(
-                        TaskAttemptSucceeded(
-                            activation_id=activation_id,
-                            attempt=attempt.attempt,
-                            output=attempt.output,
-                            staged_write_set_digest=prepared.staged_write_set_digest,
-                            promotion_receipt_digest=prepared.promotion_receipt_digest,
-                        ),
-                    ),
-                    existing=envelopes,
-                )
-                continue
 
             if needs_settlement(projection):
                 try:

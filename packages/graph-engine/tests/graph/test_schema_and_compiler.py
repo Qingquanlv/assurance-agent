@@ -38,6 +38,7 @@ from graph_engine.plugin_api import (
     PluginContribution,
     PluginDescriptor,
     RegistryPorts,
+    ResourceClaimTemplate,
     ValidationContext,
     ValidationResult,
     validate_contribution,
@@ -204,6 +205,30 @@ def test_compiler_accepts_closed_resource_claim_templates(
         "writes": ["artifacts/{change}/generated/{family}"],
         "exclusive": [],
     }
+
+
+def test_compiled_resource_template_projection_is_deeply_immutable(
+    registry: CapabilityRegistry,
+) -> None:
+    raw = _raw_valid()
+    nodes = cast(dict[str, object], cast(dict[str, object], raw["graphs"])["root"])["nodes"]
+    ping = cast(dict[str, object], cast(dict[str, object], nodes)["ping"])
+    ping["resources"] = {
+        "parameters": {"change": "/change_id"},
+        "writes": ("artifacts/{change}",),
+    }
+    compiled = compile_workflow(_parse_raw(raw), registry)
+    before_digest = compiled.digest
+    resources = cast(
+        ResourceClaimTemplate,
+        compiled.graphs["root"].nodes["ping"].definition.resources,
+    )
+
+    with pytest.raises(TypeError):
+        resources.parameters["change"] = "/attacker"  # type: ignore[index]
+
+    assert compiled.digest == before_digest
+    assert resources.resolve({"change_id": "CHANGE-1"}).writes == ("artifacts/CHANGE-1",)
 
 
 def test_unknown_capability_fails_before_runtime() -> None:

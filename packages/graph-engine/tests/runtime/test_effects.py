@@ -48,7 +48,7 @@ from graph_engine.runtime.events import (
     EffectReceiptRecorded,
     GraphStarted,
     NodeActivated,
-    TaskAttemptFailed,
+    TaskAttemptCommittedEffectFailed,
     TaskAttemptStarted,
     TaskAttemptSucceeded,
     TaskCommitPrepared,
@@ -508,12 +508,12 @@ def test_executor_retries_transient_then_not_applied_without_burning_start_slot(
     assert third.progressed is True
     assert handler.apply_keys == (_KEY, _KEY)
     failed = ledger.read_all()[-1].event
-    assert isinstance(failed, TaskAttemptFailed)
+    assert isinstance(failed, TaskAttemptCommittedEffectFailed)
     assert failed.failure.retryable is False
     assert failed.failure.kind == "external_effect"
     folded = fold_events(ledger.read_all())
     attempt = folded.activations[-1].attempts[-1]
-    assert attempt.status == "failed"
+    assert attempt.status == "committed_effect_failed"
     assert attempt.prepared_commit is not None
     assert attempt.prepared_commit.promotion_receipt_digest == "c" * 64
 
@@ -551,7 +551,7 @@ def test_executor_rejects_invalid_receipt_without_publication(tmp_path: Path) ->
     kinds = tuple(event.event.kind for event in ledger.read_all())
     assert "effect_receipt_recorded" not in kinds
     failed = ledger.read_all()[-1].event
-    assert isinstance(failed, TaskAttemptFailed)
+    assert isinstance(failed, TaskAttemptCommittedEffectFailed)
     assert failed.failure.retryable is False
     assert failed.failure.kind == "invalid_output"
 
@@ -604,13 +604,17 @@ def test_executor_non_last_effect_failure_marks_remaining_intents_failed(
     folded = fold_events(ledger.read_all())
     assert tuple(item.status for item in folded.effects) == ("permanently_failed", "permanently_failed")
     attempt = folded.activations[-1].attempts[-1]
-    assert attempt.status == "failed"
+    assert attempt.status == "committed_effect_failed"
     assert attempt.prepared_commit is not None
     assert attempt.prepared_commit.promotion_receipt_digest == "c" * 64
     assert needs_settlement(folded) is False
     assert handler.apply_keys == (_effect_key("effect-1", {"n": 1}),)
     assert handler.reconcile_keys == ((_effect_key("effect-1", {"n": 1}),) if reconcile_result else ())
-    failed = next(event.event for event in ledger.read_all() if isinstance(event.event, TaskAttemptFailed))
+    failed = next(
+        event.event
+        for event in ledger.read_all()
+        if isinstance(event.event, TaskAttemptCommittedEffectFailed)
+    )
     assert failed.failure.retryable is False
 
 
@@ -620,15 +624,17 @@ def test_executor_publishes_permanent_failure_without_rolling_back_head(tmp_path
     settlement = asyncio.run(executor.settle_next(projection))
     assert settlement.progressed is True
     kinds = tuple(event.event.kind for event in ledger.read_all())
-    assert kinds[-1] == "task_attempt_failed"
+    assert kinds[-1] == "task_attempt_committed_effect_failed"
     assert "effect_receipt_recorded" not in kinds
-    failed = ledger.read_all()[-1].event
-    assert isinstance(failed, TaskAttemptFailed)
-    assert failed.failure.retryable is False
-    assert failed.failure.kind == "external_effect"
+    assert "task_attempt_failed" not in kinds
+    committed_failure = ledger.read_all()[-1].event
+    assert committed_failure.failure.retryable is False
+    assert committed_failure.failure.kind == "external_effect"
+    assert committed_failure.staged_write_set_digest
+    assert committed_failure.promotion_receipt_digest == "c" * 64
     folded = fold_events(ledger.read_all())
     attempt = folded.activations[-1].attempts[-1]
-    assert attempt.status == "failed"
+    assert attempt.status == "committed_effect_failed"
     assert attempt.prepared_commit is not None
     assert attempt.prepared_commit.promotion_receipt_digest == "c" * 64
 
@@ -650,11 +656,11 @@ def test_executor_exhausts_policy_as_non_retryable_failure(tmp_path: Path) -> No
     second = asyncio.run(executor.settle_next(fold_events(ledger.read_all())))
     assert second.progressed is True
     failed = ledger.read_all()[-1].event
-    assert isinstance(failed, TaskAttemptFailed)
+    assert isinstance(failed, TaskAttemptCommittedEffectFailed)
     assert failed.failure.retryable is False
     folded = fold_events(ledger.read_all())
     attempt = folded.activations[-1].attempts[-1]
-    assert attempt.status == "failed"
+    assert attempt.status == "committed_effect_failed"
     assert attempt.prepared_commit is not None
     assert attempt.prepared_commit.promotion_receipt_digest == "c" * 64
     assert handler.apply_keys == (_KEY,)
@@ -705,39 +711,31 @@ def test_executor_selects_multiple_tasks_in_canonical_order(tmp_path: Path) -> N
     assert started.effect_id == selected.effect_id
 
 
-def test_engine_publishes_task_success_after_all_receipts(tmp_path: Path) -> None:
-    from graph_engine.runtime.engine import _ready_effect_task_success
-
+def test_public_executor_publishes_digest_bound_task_success_after_all_receipts(
+    tmp_path: Path,
+) -> None:
     handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
-    _executor, ledger, projection = _effect_executor(
+    executor, ledger, projection = _effect_executor(
         tmp_path,
         handler=handler,
         state="receipts",
         effects=(("effect-1", {"n": 1}), ("effect-2", {"n": 2})),
     )
-    ready = _ready_effect_task_success(projection)
-    assert ready is not None
-    activation_id, attempt = ready
+    attempt = projection.activations[-1].attempts[-1]
     prepared = attempt.prepared_commit
     assert prepared is not None
     assert prepared.promotion_receipt_digest == "c" * 64
-    ledger.append_batch(
-        (
-            TaskAttemptSucceeded(
-                activation_id=activation_id,
-                attempt=attempt.attempt,
-                output=attempt.output,
-                staged_write_set_digest=prepared.staged_write_set_digest,
-                promotion_receipt_digest=prepared.promotion_receipt_digest,
-            ),
-        ),
-        expected_next_seq=len(ledger.read_all()) + 1,
-    )
+
+    settlement = asyncio.run(executor.settle_next(projection))
+
+    assert settlement.progressed is True
     assert handler.apply_keys == ()
     assert handler.reconcile_keys == ()
     succeeded = ledger.read_all()[-1].event
     assert isinstance(succeeded, TaskAttemptSucceeded)
     assert succeeded.output == {"ok": True}
+    assert succeeded.staged_write_set_digest == prepared.staged_write_set_digest
+    assert succeeded.promotion_receipt_digest == prepared.promotion_receipt_digest
     folded = fold_events(ledger.read_all())
     assert folded.activations[-1].attempts[-1].status == "succeeded"
     assert tuple(item.status for item in folded.effects) == ("applied", "applied")

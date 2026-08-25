@@ -179,6 +179,8 @@ def _execute_call(
 def _attempt_root(workspace: TaskWorkspaceBinding) -> AttemptRootDescriptor:
     return AttemptRootDescriptor(
         workspace_identity=workspace.identity,
+        project_root_identity=workspace.project_root_identity,
+        write_root_identity=workspace.write_root_identity,
         project_root_digest=workspace.identity.project_digest,
         write_root_digest=workspace.identity.write_root_digest,
         baseline_digest=canonical_digest(
@@ -336,6 +338,8 @@ def test_worker_rejects_substituted_project_root_before_handler_execution(tmp_pa
             {
                 "schema_version": "2",
                 "workspace_identity": binding.identity.model_dump(mode="json"),
+                "project_root_identity": binding.project_root_identity.model_dump(mode="json"),
+                "write_root_identity": binding.write_root_identity.model_dump(mode="json"),
                 "project_root_digest": binding.identity.project_digest,
                 "write_root_digest": binding.identity.write_root_digest,
                 "baseline_digest": baseline_digest,

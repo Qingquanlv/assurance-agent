@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -410,6 +411,51 @@ def test_planner_resolves_resource_template_to_concrete_claims_before_scheduling
         "exclusive": [],
     }
     assert type(plan.tasks[0].resources).__name__ == "ResourceClaims"
+
+
+@pytest.mark.parametrize(
+    "unsafe_component",
+    [
+        "",
+        ".",
+        "..",
+        "nested/path",
+        "nested\\path",
+        "nul\x00byte",
+        "control\x1fbyte",
+        "delete\x7fbyte",
+        "CON",
+        "name:stream",
+        "name?glob",
+        "trailing.",
+        "trailing ",
+    ],
+)
+def test_planner_rejects_unsafe_resource_substitution_before_recording_attempt(
+    unsafe_component: str,
+) -> None:
+    compiled = _compiled(
+        f"""
+      generate:
+        kind: task
+        capability: test.tasks.run
+        retry: policy
+        timeout: short
+        input: {{part: {json.dumps(unsafe_component)}}}
+        resources:
+          parameters: {{part: /config/part}}
+          writes: ["artifacts/{{part}}"]
+      done: {{kind: end}}
+""",
+        "      - {from: generate, to: done}",
+        start="generate",
+    )
+    projection = _projection(_invocation())
+
+    with pytest.raises(PlanningError, match="invalid_input:.*unsafe|invalid_input:.*portable"):
+        plan_next(compiled, projection)
+
+    assert all(not activation.attempts for activation in projection.activations)
 
 
 def test_planning_is_deterministic_and_does_not_mutate_projection() -> None:

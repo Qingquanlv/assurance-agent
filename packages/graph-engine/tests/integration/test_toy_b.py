@@ -174,6 +174,7 @@ _ID_FIELDS_BY_EVENT_KIND: dict[str, tuple[str, ...]] = {
     "effect_apply_started": ("effect_id",),
     "effect_receipt_recorded": ("effect_id",),
     "task_attempt_succeeded": ("activation_id",),
+    "task_attempt_committed_effect_failed": ("activation_id",),
     "task_attempt_failed": ("activation_id",),
     "task_attempt_stopped": ("activation_id",),
     "node_completed": ("activation_id",),

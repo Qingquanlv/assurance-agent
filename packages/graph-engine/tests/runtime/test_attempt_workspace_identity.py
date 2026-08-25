@@ -245,6 +245,21 @@ def test_recovery_never_recreates_lost_prepared_workspace(tmp_path: Path, mutati
         )
 
 
+def test_begin_rejects_same_name_attempt_leaf_replacement(tmp_path: Path) -> None:
+    store, identity = _prepared_attempt_store(tmp_path)
+    attempt_root = _task_root(store, identity.task_id) / identity.attempt_id  # type: ignore[attr-defined]
+    parked = attempt_root.with_name(f"{attempt_root.name}-parked")
+    attempt_root.rename(parked)
+    attempt_root.mkdir()
+
+    with pytest.raises(TaskWorkspaceViolation, match="identity|replaced|drift"):
+        store.begin(
+            task_id=identity.task_id,  # type: ignore[attr-defined]
+            attempt=identity.attempt,  # type: ignore[attr-defined]
+            output_paths=identity.output_paths,  # type: ignore[attr-defined]
+        )
+
+
 def test_identity_never_serializes_an_unrestricted_path(tmp_path: Path) -> None:
     store, identity = _prepared_attempt_store(tmp_path)
     dumped = identity.model_dump(mode="json")

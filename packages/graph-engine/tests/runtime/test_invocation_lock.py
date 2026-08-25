@@ -1651,7 +1651,7 @@ def test_engine_has_one_authenticated_authoritative_append_boundary() -> None:
         "_append_authenticated"
     }
     assert method_calls["_complete_start_at"].count("_append_authenticated") == 1
-    assert method_calls["_run_until_blocked_with_store"].count("_append_authenticated") == 2
+    assert method_calls["_run_until_blocked_with_store"].count("_append_authenticated") == 1
     assert method_calls["_resume_claimed"].count("_append_authenticated") == 1
 
 

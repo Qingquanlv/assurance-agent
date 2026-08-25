@@ -124,6 +124,8 @@ def _workspace_store(tmp_path: Path) -> tuple[TaskWorkspaceStore, AttemptRootDes
     workspace = binding.identity
     return store, AttemptRootDescriptor(
         workspace_identity=workspace,
+        project_root_identity=binding.project_root_identity,
+        write_root_identity=binding.write_root_identity,
         project_root_digest=workspace.project_digest,
         write_root_digest=workspace.write_root_digest,
         baseline_digest=canonical_digest([]),

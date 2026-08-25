@@ -257,6 +257,23 @@ class TaskAttemptFailed(RuntimeEventModel):
     promotion_receipt_digest: None = None
 
 
+class TaskAttemptCommittedEffectFailed(RuntimeEventModel):
+    """Terminal task failure after its staged writes were durably promoted."""
+
+    kind: Literal["task_attempt_committed_effect_failed"] = "task_attempt_committed_effect_failed"
+    activation_id: str
+    attempt: int = Field(ge=1)
+    failure: TaskFailure
+    staged_write_set_digest: str = Field(pattern=_SHA256_PATTERN)
+    promotion_receipt_digest: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _require_permanent_failure(self) -> Self:
+        if self.failure.retryable:
+            raise ValueError("committed effect failure must be non-retryable")
+        return self
+
+
 class TaskAttemptStopped(RuntimeEventModel):
     kind: Literal["task_attempt_stopped"] = "task_attempt_stopped"
     activation_id: str
@@ -448,6 +465,7 @@ RuntimeEvent = Annotated[
     | EffectReceiptRecorded
     | TaskAttemptSucceeded
     | TaskAttemptFailed
+    | TaskAttemptCommittedEffectFailed
     | TaskAttemptStopped
     | TaskPromotionCompleted
     | NodeCompleted
@@ -520,6 +538,7 @@ __all__ = [
     "TaskActivityPrepared",
     "TaskActivityTerminalObserved",
     "TaskAttemptFailed",
+    "TaskAttemptCommittedEffectFailed",
     "TaskAttemptStarted",
     "TaskAttemptStopped",
     "TaskAttemptSucceeded",

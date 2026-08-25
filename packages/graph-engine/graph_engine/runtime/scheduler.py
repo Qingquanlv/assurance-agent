@@ -1257,9 +1257,12 @@ class Scheduler:
             raise SchedulerStateError(str(error)) from error
 
     @staticmethod
-    def _attempt_root_descriptor(identity: TaskWorkspaceIdentity) -> AttemptRootDescriptor:
+    def _attempt_root_descriptor(workspace: TaskWorkspaceBinding) -> AttemptRootDescriptor:
+        identity = workspace.identity
         return AttemptRootDescriptor(
             workspace_identity=identity,
+            project_root_identity=workspace.project_root_identity,
+            write_root_identity=workspace.write_root_identity,
             project_root_digest=identity.project_digest,
             write_root_digest=identity.write_root_digest,
             baseline_digest=canonical_digest(
@@ -1293,7 +1296,7 @@ class Scheduler:
             capability_id=capability_id,
             capability_entrypoint=self._capability_entrypoint(capability_id),
             request=request,
-            attempt_root=self._attempt_root_descriptor(workspace.identity),
+            attempt_root=self._attempt_root_descriptor(workspace),
             activity_rpc=TaskActivityRpcIdentity(
                 invocation_id=task.invocation_id,
                 task_id=task.task_id,
@@ -1338,7 +1341,7 @@ class Scheduler:
             "capability_id": capability_id,
             "capability_entrypoint": self._capability_entrypoint(capability_id),
             "request": self._project_request(task),
-            "attempt_root": self._attempt_root_descriptor(workspace.identity),
+            "attempt_root": self._attempt_root_descriptor(workspace),
             "activity_rpc": TaskActivityRpcIdentity(
                 invocation_id=task.invocation_id,
                 task_id=task.task_id,

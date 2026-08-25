@@ -133,7 +133,7 @@ def test_start_requires_binding_and_does_not_capture_the_project_tree(
         engine.close()
 
 
-@pytest.mark.parametrize("changed", ["project_root", "attempts_root"])
+@pytest.mark.parametrize("changed", ["project_root", "attempts_root", "receipts_root"])
 def test_open_rejects_workspace_root_drift_before_reading_the_ledger(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -153,13 +153,13 @@ def test_open_rejects_workspace_root_drift_before_reading_the_ledger(
         ).close()
         replacement = _binding(tmp_path, prefix="replacement")
         values = {
-            "project_root": replacement.project_root
-            if changed == "project_root"
-            else binding.project_root,
+            "project_root": replacement.project_root if changed == "project_root" else binding.project_root,
             "attempts_root": replacement.attempts_root
             if changed == "attempts_root"
             else binding.attempts_root,
-            "receipts_root": binding.receipts_root,
+            "receipts_root": replacement.receipts_root
+            if changed == "receipts_root"
+            else binding.receipts_root,
         }
         drifted = type(binding)(**values)
 
@@ -173,6 +173,44 @@ def test_open_rejects_workspace_root_drift_before_reading_the_ledger(
                 composition,
                 authorization=empty_runtime_authorization(),
                 workspace_binding=drifted,
+            )
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("changed", ["project_root", "attempts_root", "receipts_root"])
+def test_open_rejects_same_path_root_replacement_before_reading_the_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changed: str,
+) -> None:
+    composition = _composition(tmp_path, monkeypatch)
+    binding = _binding(tmp_path)
+    engine = Engine(tmp_path / "engine")
+    try:
+        engine.start(
+            composition,
+            entrypoint="hello",
+            invocation_id="inv-same-path-binding",
+            seed=_seed(),
+            authorization=empty_runtime_authorization(),
+            workspace_binding=binding,
+        ).close()
+        original = getattr(binding, changed)
+        parked = original.with_name(f"{original.name}-parked")
+        original.rename(parked)
+        original.mkdir()
+
+        def forbidden_read(_ledger: Ledger):
+            raise AssertionError("same-path workspace replacement must fail before ledger reads")
+
+        monkeypatch.setattr(Ledger, "read_all", forbidden_read)
+        with pytest.raises(InvocationDrift, match="workspace binding|workspace roots"):
+            engine.open(
+                "inv-same-path-binding",
+                composition,
+                authorization=empty_runtime_authorization(),
+                workspace_binding=binding,
             )
     finally:
         engine.close()

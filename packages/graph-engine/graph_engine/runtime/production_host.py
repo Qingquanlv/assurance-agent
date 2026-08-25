@@ -440,6 +440,8 @@ class _ProductionTaskExecutionHost:
         if (
             call.attempt_root.project_root_digest != identity.project_digest
             or call.attempt_root.write_root_digest != identity.write_root_digest
+            or call.attempt_root.project_root_identity != binding.project_root_identity
+            or call.attempt_root.write_root_identity != binding.write_root_identity
         ):
             raise ProductionHostError("attempt workspace root identity is not authenticated")
         return binding

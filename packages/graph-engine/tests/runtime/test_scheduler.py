@@ -34,6 +34,7 @@ from graph_engine.composition.models import (
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
 from graph_engine.plugin_api import (
+    DirectoryIdentity,
     EffectApplyResult,
     EffectIntent,
     EffectPolicy,
@@ -1981,7 +1982,10 @@ def test_explicit_test_host_receives_the_exact_attempt_root(tmp_path: Path) -> N
 
     assert host.workspace_roots == [seen[0].write_root]
     assert seen[0].write_root != store.project_root
-    assert seen[0].workspace_identity.write_root_digest == canonical_digest({"path": str(seen[0].write_root)})
+    assert (
+        seen[0].workspace_identity.write_root_digest
+        == DirectoryIdentity.capture(seen[0].write_root).identity_digest
+    )
 
 
 def test_start_rejects_task_without_folded_active_activation(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ from graph_engine.composition.lock import (
 from graph_engine.errors import GraphEngineError
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
+    DirectoryIdentity,
     FrozenModel,
     SecretHandleUnauthorized,
     SecretPort,
@@ -62,6 +63,8 @@ class AttemptRootDescriptor(FrozenModel):
     schema_version: Literal["2"] = "2"
     capability_id: Literal["graph.engine.attempt-root"] = ATTEMPT_ROOT_CAPABILITY_ID
     workspace_identity: TaskWorkspaceIdentity
+    project_root_identity: DirectoryIdentity
+    write_root_identity: DirectoryIdentity
     project_root_digest: str = Field(pattern=_SHA256_PATTERN)
     write_root_digest: str = Field(pattern=_SHA256_PATTERN)
     baseline_digest: str = Field(pattern=_SHA256_PATTERN)
@@ -72,6 +75,10 @@ class AttemptRootDescriptor(FrozenModel):
             raise ValueError("attempt root project digest disagrees with workspace identity")
         if self.write_root_digest != self.workspace_identity.write_root_digest:
             raise ValueError("attempt root write digest disagrees with workspace identity")
+        if self.project_root_identity.identity_digest != self.project_root_digest:
+            raise ValueError("attempt root project stat evidence disagrees with its digest")
+        if self.write_root_identity.identity_digest != self.write_root_digest:
+            raise ValueError("attempt root write stat evidence disagrees with its digest")
         expected_baseline = canonical_digest(
             [item.model_dump(mode="json") for item in self.workspace_identity.baseline_files]
         )

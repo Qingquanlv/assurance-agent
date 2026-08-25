@@ -34,6 +34,7 @@ from graph_engine.runtime.events import (
     TaskActivityDispatchStarted,
     TaskActivityPrepared,
     TaskActivityTerminalObserved,
+    TaskAttemptCommittedEffectFailed,
     TaskAttemptFailed,
     TaskAttemptStarted,
     TaskAttemptStopped,
@@ -108,6 +109,7 @@ AttemptStatus = Literal[
     "effect_pending",
     "succeeded",
     "failed",
+    "committed_effect_failed",
     "stopped",
 ]
 EffectStatus = Literal["committed", "applying", "applied", "permanently_failed"]
@@ -254,7 +256,7 @@ class AttemptRecord(ProjectionModel):
 
     @model_validator(mode="after")
     def _validate_outcome(self) -> Self:
-        if (self.failure is not None) != (self.status == "failed"):
+        if (self.failure is not None) != (self.status in {"failed", "committed_effect_failed"}):
             raise ValueError("attempt failure is required exactly for failed status")
         if self.status == "stopped":
             if not self.stop_reason:
@@ -263,6 +265,10 @@ class AttemptRecord(ProjectionModel):
             raise ValueError("stop reason is allowed only for stopped status")
         if self.status in {"promotion_pending", "effect_pending"} and self.prepared_commit is None:
             raise ValueError("pending attempt requires a prepared commit")
+        if self.status == "committed_effect_failed" and (
+            self.prepared_commit is None or self.prepared_commit.promotion_receipt_digest is None
+        ):
+            raise ValueError("committed effect failure requires a promotion receipt")
         if self.prepared_commit is not None and self.prepared_commit.attempt != self.attempt:
             raise ValueError("prepared commit does not match the attempt")
         lease_values = (
@@ -553,7 +559,10 @@ def _validate_attempt_history(activation: ActivationRecord) -> None:
         if activation.attempts[-1].status != "succeeded":
             raise ValueError("completed task activation requires a successful attempt")
     if activation.status == "failed":
-        if activation.attempts and activation.attempts[-1].status != "failed":
+        if activation.attempts and activation.attempts[-1].status not in {
+            "failed",
+            "committed_effect_failed",
+        }:
             raise ValueError("failed activation requires a failed attempt")
         if not activation.attempts and not activation.structural_failure:
             raise ValueError("failed activation requires failed task or structural history")
@@ -814,7 +823,10 @@ def _advance_fold(
             projection = _fold_effect_apply_started(projection, event, envelope.seq)
         elif isinstance(event, EffectReceiptRecorded):
             projection = _fold_effect_receipt_recorded(projection, event, envelope.seq)
-        elif isinstance(event, TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptStopped):
+        elif isinstance(
+            event,
+            TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptCommittedEffectFailed | TaskAttemptStopped,
+        ):
             projection = _fold_task_attempt_outcome(projection, event, envelope.seq)
         elif isinstance(event, NodeCompleted):
             activation = _activation(projection, event.activation_id, envelope.seq)
@@ -833,7 +845,10 @@ def _advance_fold(
             if activation.status != "active":
                 _fail(envelope.seq, "node failed from a non-active state")
             if activation.attempts:
-                if activation.attempts[-1].status != "failed":
+                if activation.attempts[-1].status not in {
+                    "failed",
+                    "committed_effect_failed",
+                }:
                     _fail(envelope.seq, "node failed without a failed latest attempt")
                 if activation.attempts[-1].failure != event.failure:
                     _fail(envelope.seq, "node failure disagrees with latest attempt failure")
@@ -1231,7 +1246,7 @@ def _fold_effect_receipt_recorded(
 
 def _fold_task_attempt_outcome(
     projection: InvocationProjection,
-    event: TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptStopped,
+    event: (TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptCommittedEffectFailed | TaskAttemptStopped),
     seq: int,
 ) -> InvocationProjection:
     activation = _activation(projection, event.activation_id, seq)
@@ -1270,12 +1285,20 @@ def _fold_task_attempt_outcome(
             _fail(seq, "task success receipt digests disagree with the prepared commit")
         activation = activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)})
         return _replace_activation(projection, activation)
-    if attempt.status == "effect_pending":
-        if isinstance(event, TaskAttemptStopped):
-            _fail(seq, "attempt outcome without a matching active attempt")
-        if event.failure.retryable:
-            _fail(seq, "pending effect failure must be non-retryable")
+    if isinstance(event, TaskAttemptCommittedEffectFailed):
+        if attempt.status != "effect_pending":
+            _fail(seq, "committed effect failure without a matching pending effect")
+        prepared = attempt.prepared_commit
+        if prepared is None or prepared.promotion_receipt_digest is None:
+            _fail(seq, "committed effect failure before staged output promotion")
+        if (
+            event.staged_write_set_digest != prepared.staged_write_set_digest
+            or event.promotion_receipt_digest != prepared.promotion_receipt_digest
+        ):
+            _fail(seq, "committed effect failure receipt digests disagree with the prepared commit")
         return _fail_pending_effect(projection, activation, attempt, event.failure, seq)
+    if attempt.status == "effect_pending":
+        _fail(seq, "ordinary attempt outcome cannot follow staged output promotion")
     if attempt.status != "running":
         _fail(seq, "attempt outcome without a matching active attempt")
     if isinstance(event, TaskAttemptFailed):
@@ -1295,7 +1318,7 @@ def _fold_task_attempt_outcome(
 
 def _require_activity_attempt_outcome(
     attempt: AttemptRecord,
-    event: TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptStopped,
+    event: (TaskAttemptSucceeded | TaskAttemptFailed | TaskAttemptCommittedEffectFailed | TaskAttemptStopped),
     seq: int,
 ) -> None:
     activity = attempt.activity
@@ -1311,6 +1334,12 @@ def _require_activity_attempt_outcome(
             _fail(seq, "task success output disagrees with the observed terminal activity")
         if activity.staged_write_set_digest != event.staged_write_set_digest:
             _fail(seq, "task success staged write set disagrees with observed activity")
+        return
+    if isinstance(event, TaskAttemptCommittedEffectFailed):
+        if terminal.status != "succeeded":
+            _fail(seq, "committed effect failure requires a succeeded terminal activity")
+        if activity.staged_write_set_digest != event.staged_write_set_digest:
+            _fail(seq, "committed effect failure staged write set disagrees with observed activity")
         return
     if terminal.status == "succeeded":
         return
@@ -1602,7 +1631,7 @@ def _fail_pending_effect(
     }
     if not remaining_ids:
         _fail(seq, "effect failure without a pending effect")
-    attempt = attempt.model_copy(update={"status": "failed", "failure": failure})
+    attempt = attempt.model_copy(update={"status": "committed_effect_failed", "failure": failure})
     activation = activation.model_copy(update={"attempts": (*activation.attempts[:-1], attempt)})
     effects = tuple(
         item.model_copy(update={"status": "permanently_failed", "failure": failure})

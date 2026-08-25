@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field as dataclass_field
+import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
+import stat
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast, runtime_checkable
 
@@ -568,17 +570,41 @@ def _template_parameter_names(value: str) -> set[str]:
     return names
 
 
+_NON_PORTABLE_RESOURCE_CHARACTERS = frozenset('<>:"|?*')
+_NON_PORTABLE_RESOURCE_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
+
+
+def _validate_resource_parameter_component(value: str) -> str:
+    basename = value.split(".", 1)[0].upper()
+    if (
+        not value
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or value[-1] in {" ", "."}
+        or basename in _NON_PORTABLE_RESOURCE_NAMES
+        or any(character in _NON_PORTABLE_RESOURCE_CHARACTERS for character in value)
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("resource parameter resolved to an unsafe non-portable path component")
+    return value
+
+
 class ResourceClaimTemplate(FrozenModel):
     """Closed, business-neutral resource prefixes resolved from final task input."""
 
-    parameters: dict[str, str]
+    parameters: Mapping[str, str]
     reads: tuple[str, ...] = ()
     writes: tuple[str, ...] = ()
     exclusive: tuple[str, ...] = ()
 
     @field_validator("parameters")
     @classmethod
-    def _validate_parameters(cls, values: dict[str, str]) -> dict[str, str]:
+    def _validate_parameters(cls, values: Mapping[str, str]) -> Mapping[str, str]:
         if not values:
             raise ValueError("resource template parameters must not be empty")
         normalized: dict[str, str] = {}
@@ -586,7 +612,11 @@ class ResourceClaimTemplate(FrozenModel):
             if _RESOURCE_PARAMETER_PATTERN.fullmatch(name) is None:
                 raise ValueError(f"invalid resource template parameter: {name!r}")
             normalized[name] = _validate_json_pointer(pointer)
-        return dict(sorted(normalized.items()))
+        return MappingProxyType(dict(sorted(normalized.items())))
+
+    @field_serializer("parameters")
+    def _serialize_parameters(self, values: Mapping[str, str]) -> dict[str, str]:
+        return dict(values)
 
     @model_validator(mode="after")
     def _validate_closed_template(self) -> ResourceClaimTemplate:
@@ -612,9 +642,7 @@ class ResourceClaimTemplate(FrozenModel):
             for segment in template.split("/"):
                 placeholder = _RESOURCE_PLACEHOLDER_PATTERN.fullmatch(segment)
                 rendered = values[placeholder.group(1)] if placeholder is not None else segment
-                if not rendered or "/" in rendered or "\\" in rendered or rendered in {".", ".."}:
-                    raise ValueError("resource parameter resolved to an unsafe path component")
-                segments.append(rendered)
+                segments.append(_validate_resource_parameter_component(rendered))
             return "/".join(segments)
 
         return ResourceClaims(
@@ -658,11 +686,21 @@ class StagedFile(FrozenModel):
     path: str
     before_sha256: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     after_sha256: str | None = Field(default=None, pattern=_SHA256_PATTERN)
+    before_mode: int | None = Field(default=None, ge=0, le=0o7777)
+    after_mode: int | None = Field(default=None, ge=0, le=0o7777)
 
     @field_validator("path")
     @classmethod
     def _validate_path(cls, value: str) -> str:
         return _validate_task_workspace_path(value)
+
+    @model_validator(mode="after")
+    def _validate_digest_mode_pairs(self) -> StagedFile:
+        if (self.before_sha256 is None) != (self.before_mode is None):
+            raise ValueError("staged file before digest and mode must be present together")
+        if (self.after_sha256 is None) != (self.after_mode is None):
+            raise ValueError("staged file after digest and mode must be present together")
+        return self
 
 
 class TaskWorkspaceIdentity(FrozenModel):
@@ -704,8 +742,13 @@ class TaskWorkspaceIdentity(FrozenModel):
         if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
             raise ValueError("baseline files must have unique canonical order")
         for file in self.baseline_files:
-            if file.before_sha256 is None or file.after_sha256 is not None:
-                raise ValueError("baseline files must contain only a before digest")
+            if (
+                file.before_sha256 is None
+                or file.before_mode is None
+                or file.after_sha256 is not None
+                or file.after_mode is not None
+            ):
+                raise ValueError("baseline files must contain only a before digest and mode")
             if not any(
                 file.path == claim or file.path.startswith(f"{claim}/") for claim in self.output_paths
             ):
@@ -716,6 +759,57 @@ class TaskWorkspaceIdentity(FrozenModel):
         return self
 
 
+class DirectoryIdentity(FrozenModel):
+    """Path-confidential stable identity for one canonical directory entry."""
+
+    path_digest: str = Field(pattern=_SHA256_PATTERN)
+    device: int = Field(ge=0)
+    inode: int = Field(ge=0)
+    identity_digest: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> DirectoryIdentity:
+        expected = canonical_digest(self.model_dump(mode="json", exclude={"identity_digest"}))
+        if self.identity_digest != expected:
+            raise ValueError("directory identity digest is not canonical")
+        return self
+
+    @classmethod
+    def capture(cls, path: Path, *, descriptor: int | None = None) -> DirectoryIdentity:
+        canonical = _canonical_binding_directory(path, "directory")
+        owned = descriptor is None
+        opened_descriptor = descriptor
+        try:
+            before = os.stat(canonical, follow_symlinks=False)
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+                raise ValueError("directory identity requires a real directory")
+            if opened_descriptor is None:
+                opened_descriptor = os.open(
+                    canonical,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                )
+            opened = os.fstat(opened_descriptor)
+            after = os.stat(canonical, follow_symlinks=False)
+            identities = {
+                (before.st_dev, before.st_ino),
+                (opened.st_dev, opened.st_ino),
+                (after.st_dev, after.st_ino),
+            }
+            if not stat.S_ISDIR(opened.st_mode) or not stat.S_ISDIR(after.st_mode) or len(identities) != 1:
+                raise ValueError("directory entry changed while authenticating")
+            payload = {
+                "path_digest": _binding_path_digest(canonical),
+                "device": opened.st_dev,
+                "inode": opened.st_ino,
+            }
+            return cls(**payload, identity_digest=canonical_digest(payload))
+        except OSError as error:
+            raise ValueError("directory identity is unavailable") from error
+        finally:
+            if owned and opened_descriptor is not None:
+                os.close(opened_descriptor)
+
+
 @dataclass(frozen=True, slots=True)
 class TaskWorkspaceBinding:
     """Local process binding for a portable task-workspace identity."""
@@ -723,6 +817,8 @@ class TaskWorkspaceBinding:
     identity: TaskWorkspaceIdentity
     project_root: Path
     write_root: Path
+    project_root_identity: DirectoryIdentity
+    write_root_identity: DirectoryIdentity
 
 
 def _canonical_binding_directory(value: Path, label: str) -> Path:
@@ -749,6 +845,9 @@ class InvocationWorkspaceBinding:
     project_root: Path
     attempts_root: Path
     receipts_root: Path
+    _project_root_identity: DirectoryIdentity = dataclass_field(init=False, repr=False, compare=False)
+    _attempts_root_identity: DirectoryIdentity = dataclass_field(init=False, repr=False, compare=False)
+    _receipts_root_identity: DirectoryIdentity = dataclass_field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -760,18 +859,45 @@ class InvocationWorkspaceBinding:
         object.__setattr__(
             self, "receipts_root", _canonical_binding_directory(self.receipts_root, "receipts root")
         )
+        object.__setattr__(
+            self,
+            "_project_root_identity",
+            DirectoryIdentity.capture(self.project_root),
+        )
+        object.__setattr__(
+            self,
+            "_attempts_root_identity",
+            DirectoryIdentity.capture(self.attempts_root),
+        )
+        object.__setattr__(
+            self,
+            "_receipts_root_identity",
+            DirectoryIdentity.capture(self.receipts_root),
+        )
+
+    @property
+    def project_root_identity(self) -> DirectoryIdentity:
+        return self._project_root_identity
+
+    @property
+    def attempts_root_identity(self) -> DirectoryIdentity:
+        return self._attempts_root_identity
+
+    @property
+    def receipts_root_identity(self) -> DirectoryIdentity:
+        return self._receipts_root_identity
 
     @property
     def project_root_digest(self) -> str:
-        return _binding_path_digest(self.project_root)
+        return self.project_root_identity.identity_digest
 
     @property
     def attempts_root_digest(self) -> str:
-        return _binding_path_digest(self.attempts_root)
+        return self.attempts_root_identity.identity_digest
 
     @property
     def receipts_root_digest(self) -> str:
-        return _binding_path_digest(self.receipts_root)
+        return self.receipts_root_identity.identity_digest
 
     @property
     def identity_digest(self) -> str:
@@ -794,8 +920,8 @@ class StagedWriteSet(FrozenModel):
         paths = tuple(file.path for file in self.files)
         if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
             raise ValueError("staged files must have unique canonical order")
-        if any(file.after_sha256 is None for file in self.files):
-            raise ValueError("staged files must contain an after digest")
+        if any(file.after_sha256 is None or file.after_mode is None for file in self.files):
+            raise ValueError("staged files must contain an after digest and mode")
         expected = canonical_digest(
             {
                 "identity_digest": self.identity_digest,
@@ -1205,6 +1331,7 @@ __all__ = [
     "CandidateFile",
     "CandidateWriteSet",
     "CommitValidator",
+    "DirectoryIdentity",
     "DurableEffectHandler",
     "EffectApplyResult",
     "EffectIntent",
