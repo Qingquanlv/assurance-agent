@@ -1,6 +1,6 @@
 # Change-local Assurance Workspace and Achieved Publish Design
 
-**Status:** approved direction; written specification pending user review
+**Status:** approved on 2026-08-26
 
 **Date:** 2026-08-25
 
