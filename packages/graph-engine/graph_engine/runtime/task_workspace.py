@@ -1153,7 +1153,9 @@ class TaskWorkspaceStore:
 
     @staticmethod
     def _legacy_pending_construction_prefix(expected_receipt: PromotionReceipt) -> str:
-        return f".{expected_receipt.identity_digest}.pending.json."
+        # Fix Round 2 passed a leading-dot pending name to ``_atomic_write_at``,
+        # which prepended its own dot to the construction name.
+        return f"..{expected_receipt.identity_digest}.pending.json."
 
     @staticmethod
     def _is_construction_name(name: str, prefix: str) -> bool:

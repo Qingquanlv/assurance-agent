@@ -511,7 +511,7 @@ def test_pending_replay_preserves_authenticated_legacy_different_intent_construc
     store, binding, staged, project = _single_file_promotion(tmp_path)
     different = task_workspace._receipt(binding.identity.identity_digest, "f" * 64)
     different_bytes = canonical_json_bytes(different.model_dump(mode="json"))
-    legacy = store.receipts_root / f".{binding.identity.identity_digest}.pending.json.{'a' * 32}.tmp"
+    legacy = store.receipts_root / f"..{binding.identity.identity_digest}.pending.json.{'a' * 32}.tmp"
     legacy.write_bytes(different_bytes)
     legacy.chmod(0o600)
 
@@ -520,6 +520,19 @@ def test_pending_replay_preserves_authenticated_legacy_different_intent_construc
 
     assert legacy.read_bytes() == different_bytes
     assert (project / "out.txt").read_bytes() == b"before"
+
+
+def test_pending_replay_cleans_partial_legacy_construction(tmp_path: Path) -> None:
+    store, binding, staged, project = _single_file_promotion(tmp_path)
+    legacy = store.receipts_root / f"..{binding.identity.identity_digest}.pending.json.{'b' * 32}.tmp"
+    legacy.write_bytes(b'{"partial"')
+    legacy.chmod(0o600)
+
+    receipt = store.promote(binding.identity, staged)
+
+    assert not legacy.exists()
+    assert (project / "out.txt").read_bytes() == b"after"
+    assert {entry.name for entry in store.receipts_root.iterdir()} == {f"{receipt.identity_digest}.json"}
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="requires process-crash fork semantics")
