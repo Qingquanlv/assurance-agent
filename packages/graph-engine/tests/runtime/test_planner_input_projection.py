@@ -27,7 +27,7 @@ from graph_engine.graph.schema import parse_workflow
 from graph_engine.plugin_api import PluginContribution, PluginDescriptor
 from graph_engine.runtime.events import GraphStarted, InvocationStarted, TokenOffered
 from graph_engine.runtime.models import InvocationProjection, fold_events
-from graph_engine.runtime.planner import PlanningError, activation_id, plan_next
+from graph_engine.runtime.planner import PlanningError, plan_next
 
 
 class _PlaceholderHandler:

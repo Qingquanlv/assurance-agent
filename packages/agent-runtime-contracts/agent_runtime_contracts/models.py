@@ -15,6 +15,7 @@ from agent_runtime_contracts.schema import (
     freeze_json,
     reject_credentials_in_digest_input,
     thaw_json,
+    validate_result_schema_document,
 )
 
 
@@ -96,8 +97,10 @@ class ResultContract(FrozenModel):
     def _schema_document_matches_digest(self) -> Self:
         if self.schema_document is None:
             return self
-        if canonical_digest(thaw_json(self.schema_document)) != self.schema_digest:
+        thawed = thaw_json(self.schema_document)
+        if canonical_digest(thawed) != self.schema_digest:
             raise ValueError("result schema digest is not canonical")
+        validate_result_schema_document(thawed)
         return self
 
     @model_serializer(mode="wrap")

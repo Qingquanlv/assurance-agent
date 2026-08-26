@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
-import signal
 import sys
 import time
 from pathlib import Path
@@ -12,7 +10,6 @@ import pytest
 from agent_runtime_contracts.schema import canonical_digest
 from agent_runtime_cursor.process import (
     CancelPolicy,
-    HostTerminalResult,
     ProcessLaunchRequest,
     UnsupportedCursorPlatform,
     argv_policy_document,

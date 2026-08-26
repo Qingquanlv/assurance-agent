@@ -10,21 +10,32 @@ from typing import Any, cast
 
 _ALLOWED_SCHEMA_KEYS = frozenset(
     {
+        "$defs",
+        "$ref",
         "type",
         "properties",
         "required",
         "additionalProperties",
         "items",
+        "anyOf",
+        "oneOf",
         "enum",
         "const",
         "minLength",
         "maxLength",
+        "minProperties",
         "minimum",
         "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
         "minItems",
         "maxItems",
+        "pattern",
         "title",
         "description",
+        "default",
+        "discriminator",
+        "prompt_notes",
     }
 )
 _PRIMITIVE_TYPES = frozenset({"string", "number", "integer", "boolean", "null"})
@@ -98,16 +109,92 @@ def canonical_digest(value: object) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
-def _validate_schema_document(schema: object, *, path: str) -> Mapping[str, object]:
+def _local_definition(
+    reference: object,
+    *,
+    root_schema: Mapping[str, object],
+    path: str,
+) -> Mapping[str, object]:
+    if not isinstance(reference, str) or not reference.startswith("#/$defs/"):
+        raise ValueError(f"{path}: unsupported schema reference")
+    name = reference.removeprefix("#/$defs/").replace("~1", "/").replace("~0", "~")
+    definitions = root_schema.get("$defs")
+    if not isinstance(definitions, dict) or name not in definitions:
+        raise ValueError(f"{path}: unresolved schema reference {reference!r}")
+    definition = definitions[name]
+    if not isinstance(definition, dict):
+        raise ValueError(f"{path}: referenced schema must be an object")
+    return definition
+
+
+def _validate_schema_document(
+    schema: object,
+    *,
+    path: str,
+    root_schema: Mapping[str, object] | None = None,
+) -> Mapping[str, object]:
     if not isinstance(schema, dict):
         raise ValueError(f"{path}: schema must be an object")
+    if root_schema is None:
+        root_schema = schema
     unknown = set(schema) - _ALLOWED_SCHEMA_KEYS
     if unknown:
         raise ValueError(f"{path}: unsupported schema keys {sorted(unknown)}")
+
+    definitions = schema.get("$defs")
+    if definitions is not None:
+        if not isinstance(definitions, dict) or any(
+            not isinstance(name, str) for name in definitions
+        ):
+            raise ValueError(f"{path}.$defs: definitions must be an object")
+        for name, subschema in definitions.items():
+            _validate_schema_document(
+                subschema,
+                path=f"{path}.$defs.{name}",
+                root_schema=root_schema,
+            )
+
+    if "$ref" in schema:
+        _local_definition(schema["$ref"], root_schema=root_schema, path=f"{path}.$ref")
+
+    for keyword in ("anyOf", "oneOf"):
+        branches = schema.get(keyword)
+        if branches is None:
+            continue
+        if not isinstance(branches, list) or not branches:
+            raise ValueError(f"{path}.{keyword}: must be a non-empty list")
+        for index, subschema in enumerate(branches):
+            _validate_schema_document(
+                subschema,
+                path=f"{path}.{keyword}[{index}]",
+                root_schema=root_schema,
+            )
+
+    prompt_notes = schema.get("prompt_notes")
+    if prompt_notes is not None and (
+        not isinstance(prompt_notes, list)
+        or any(not isinstance(note, str) for note in prompt_notes)
+    ):
+        raise ValueError(f"{path}.prompt_notes: must be a list of strings")
+
+    discriminator = schema.get("discriminator")
+    if discriminator is not None and not isinstance(discriminator, dict):
+        raise ValueError(f"{path}.discriminator: must be an object")
+
+    if "enum" in schema and not isinstance(schema["enum"], list):
+        raise ValueError(f"{path}.enum: must be a list")
+
+    pattern = schema.get("pattern")
+    if pattern is not None:
+        if not isinstance(pattern, str):
+            raise ValueError(f"{path}.pattern: must be a string")
+        try:
+            re.compile(pattern)
+        except re.error as error:
+            raise ValueError(f"{path}.pattern: invalid regular expression") from error
+
     type_name = schema.get("type")
     if type_name == "object":
-        if schema.get("additionalProperties") is not False:
-            raise ValueError(f"{path}: object schemas must be strict")
         properties = schema.get("properties", {})
         required = schema.get("required", [])
         if not isinstance(properties, dict):
@@ -120,18 +207,66 @@ def _validate_schema_document(schema: object, *, path: str) -> Mapping[str, obje
         for name, subschema in properties.items():
             if not isinstance(name, str):
                 raise ValueError(f"{path}: property names must be strings")
-            _validate_schema_document(subschema, path=f"{path}.{name}")
+            _validate_schema_document(
+                subschema,
+                path=f"{path}.{name}",
+                root_schema=root_schema,
+            )
+        additional = schema.get("additionalProperties", True)
+        if not isinstance(additional, bool | dict):
+            raise ValueError(f"{path}: additionalProperties must be boolean or a schema")
+        if isinstance(additional, dict):
+            _validate_schema_document(
+                additional,
+                path=f"{path}.*",
+                root_schema=root_schema,
+            )
+        min_properties = schema.get("minProperties")
+        if min_properties is not None and (
+            not isinstance(min_properties, int)
+            or isinstance(min_properties, bool)
+            or min_properties < 0
+        ):
+            raise ValueError(f"{path}: minProperties must be a non-negative integer")
         if "items" in schema:
             raise ValueError(f"{path}: object schemas do not accept items")
     elif type_name == "array":
-        if "additionalProperties" in schema or "properties" in schema or "required" in schema:
+        if any(
+            key in schema
+            for key in ("additionalProperties", "properties", "required", "minProperties")
+        ):
             raise ValueError(f"{path}: array schemas do not accept object keywords")
         if "items" not in schema:
             raise ValueError(f"{path}: array schemas require items")
-        _validate_schema_document(schema["items"], path=f"{path}[]")
+        _validate_schema_document(
+            schema["items"],
+            path=f"{path}[]",
+            root_schema=root_schema,
+        )
     elif type_name in _PRIMITIVE_TYPES:
-        if any(key in schema for key in ("properties", "additionalProperties", "items", "required")):
+        if any(
+            key in schema
+            for key in ("properties", "additionalProperties", "items", "required", "minProperties")
+        ):
             raise ValueError(f"{path}: primitive schemas do not accept object or array keywords")
+    elif type_name is None and (
+        not schema
+        or "$ref" in schema
+        or "anyOf" in schema
+        or "oneOf" in schema
+        or set(schema)
+        <= {
+            "$defs",
+            "const",
+            "default",
+            "description",
+            "discriminator",
+            "enum",
+            "prompt_notes",
+            "title",
+        }
+    ):
+        pass
     else:
         raise ValueError(f"{path}: unsupported schema type {type_name!r}")
     return schema
@@ -161,8 +296,47 @@ def _json_equal(left: object, right: object) -> bool:
     return left == right
 
 
-def _validate_value(value: object, schema: Mapping[str, object], *, path: str) -> None:
-    expected = schema["type"]
+def _validate_value(
+    value: object,
+    schema: Mapping[str, object],
+    *,
+    path: str,
+    root_schema: Mapping[str, object],
+) -> None:
+    if "$ref" in schema:
+        referenced = _local_definition(schema["$ref"], root_schema=root_schema, path=path)
+        _validate_value(value, referenced, path=path, root_schema=root_schema)
+
+    for keyword, exact in (("anyOf", False), ("oneOf", True)):
+        branches = schema.get(keyword)
+        if not isinstance(branches, list):
+            continue
+        matches = 0
+        for branch in branches:
+            try:
+                _validate_value(
+                    value,
+                    cast(Mapping[str, object], branch),
+                    path=path,
+                    root_schema=root_schema,
+                )
+            except ValueError:
+                continue
+            matches += 1
+        if matches == 0 or (exact and matches != 1):
+            raise ValueError(f"{path}: value must match {keyword}")
+
+    expected = schema.get("type")
+    if expected is None:
+        if "const" in schema and not _json_equal(value, schema["const"]):
+            raise ValueError(f"{path}: value must equal const")
+        if "enum" in schema:
+            options = schema["enum"]
+            if not isinstance(options, list) or not any(
+                _json_equal(value, option) for option in options
+            ):
+                raise ValueError(f"{path}: value must be one of enum")
+        return
     actual = _json_type(value)
     if expected == "number":
         if actual not in {"integer", "number"}:
@@ -177,16 +351,33 @@ def _validate_value(value: object, schema: Mapping[str, object], *, path: str) -
             raise ValueError(f"{path}: value must be one of enum")
     if expected == "object":
         assert isinstance(value, dict)
+        min_properties = schema.get("minProperties")
+        if isinstance(min_properties, int) and len(value) < min_properties:
+            raise ValueError(f"{path}: below minProperties")
         properties = cast(dict[str, Mapping[str, object]], schema.get("properties", {}))
         required = cast(list[str], schema.get("required", []))
         missing = [name for name in required if name not in value]
         if missing:
             raise ValueError(f"{path}: missing required properties {missing}")
         extra = sorted(set(value) - set(properties))
-        if extra:
+        additional = schema.get("additionalProperties", True)
+        if extra and additional is False:
             raise ValueError(f"{path}: additional properties {extra}")
         for name, item in value.items():
-            _validate_value(item, properties[name], path=f"{path}.{name}")
+            if name in properties:
+                _validate_value(
+                    item,
+                    properties[name],
+                    path=f"{path}.{name}",
+                    root_schema=root_schema,
+                )
+            elif isinstance(additional, Mapping):
+                _validate_value(
+                    item,
+                    additional,
+                    path=f"{path}.{name}",
+                    root_schema=root_schema,
+                )
     elif expected == "array":
         assert isinstance(value, list)
         min_items = schema.get("minItems")
@@ -197,7 +388,12 @@ def _validate_value(value: object, schema: Mapping[str, object], *, path: str) -
             raise ValueError(f"{path}: above maxItems")
         item_schema = cast(Mapping[str, object], schema["items"])
         for index, item in enumerate(value):
-            _validate_value(item, item_schema, path=f"{path}[{index}]")
+            _validate_value(
+                item,
+                item_schema,
+                path=f"{path}[{index}]",
+                root_schema=root_schema,
+            )
     elif expected == "string":
         assert isinstance(value, str)
         min_length = schema.get("minLength")
@@ -206,14 +402,34 @@ def _validate_value(value: object, schema: Mapping[str, object], *, path: str) -
             raise ValueError(f"{path}: below minLength")
         if isinstance(max_length, int) and len(value) > max_length:
             raise ValueError(f"{path}: above maxLength")
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str) and re.search(pattern, value) is None:
+            raise ValueError(f"{path}: string does not match pattern")
     elif expected in {"number", "integer"}:
         assert isinstance(value, int | float) and not isinstance(value, bool)
         minimum = schema.get("minimum")
         maximum = schema.get("maximum")
+        exclusive_minimum = schema.get("exclusiveMinimum")
+        exclusive_maximum = schema.get("exclusiveMaximum")
         if isinstance(minimum, int | float) and value < minimum:
             raise ValueError(f"{path}: below minimum")
         if isinstance(maximum, int | float) and value > maximum:
             raise ValueError(f"{path}: above maximum")
+        if isinstance(exclusive_minimum, int | float) and value <= exclusive_minimum:
+            raise ValueError(f"{path}: not above exclusiveMinimum")
+        if isinstance(exclusive_maximum, int | float) and value >= exclusive_maximum:
+            raise ValueError(f"{path}: not below exclusiveMaximum")
+
+
+def validate_result_schema(
+    schema: object,
+    *,
+    schema_digest: str,
+) -> Mapping[str, object]:
+    thawed_schema = thaw_json(schema)
+    if canonical_digest(thawed_schema) != schema_digest:
+        raise ValueError("schema digest is not canonical")
+    return _validate_schema_document(thawed_schema, path="$")
 
 
 def validate_structured_result(
@@ -222,12 +438,9 @@ def validate_structured_result(
     schema: object,
     schema_digest: str,
 ) -> object:
-    thawed_schema = thaw_json(schema)
-    if canonical_digest(thawed_schema) != schema_digest:
-        raise ValueError("schema digest is not canonical")
-    checked_schema = _validate_schema_document(thawed_schema, path="$")
+    checked_schema = validate_result_schema(schema, schema_digest=schema_digest)
     thawed_value = thaw_json(value)
-    _validate_value(thawed_value, checked_schema, path="$")
+    _validate_value(thawed_value, checked_schema, path="$", root_schema=checked_schema)
     return thawed_value
 
 
@@ -308,11 +521,16 @@ _FIXTURE_RESULT_SCHEMAS: tuple[object, ...] = (
 )
 
 
+def validate_result_schema_document(schema: object) -> Mapping[str, object]:
+    return _validate_schema_document(schema, path="schema")
+
+
 def resolve_result_schema(schema_digest: str, schema_document: object | None = None) -> object:
     if schema_document is not None:
         thawed = thaw_json(schema_document)
         if canonical_digest(thawed) != schema_digest:
             raise ValueError("result schema digest is not canonical")
+        validate_result_schema_document(thawed)
         return thawed
     for schema in _FIXTURE_RESULT_SCHEMAS:
         if canonical_digest(schema) == schema_digest:

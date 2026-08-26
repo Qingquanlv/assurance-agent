@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import pytest
 
+from agent_runtime_contracts import ResultContract
+from agent_runtime_contracts.schema import canonical_digest
 from agent_runtime_opencode.discovery import OpenCodeDispatchIncomplete, expected_message_id
-from agent_runtime_opencode.observation import classify_admission
+from agent_runtime_opencode.observation import (
+    classify_admission,
+    prompt_admission_body as build_prompt_admission_body,
+    user_prompt_already_admitted,
+)
 from harness import (  # pyright: ignore[reportMissingImports]
     _bound_fixture,
     _open_code_fixture,
@@ -14,26 +20,34 @@ from harness import (  # pyright: ignore[reportMissingImports]
 )
 
 
-def _provider_envelope(expected: dict[str, object], *, session_id: str, message_id: str) -> dict[str, object]:
+def _provider_parts(expected: dict[str, object], *, session_id: str, message_id: str) -> list[dict[str, object]]:
     parts = expected["parts"]
     if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
         raise AssertionError("expected admission body must include a text part")
-    text = parts[0].get("text")
-    if not isinstance(text, str):
-        raise AssertionError("expected admission body must include a text part")
+    provider_parts: list[dict[str, object]] = []
+    for index, part in enumerate(parts):
+        text = part.get("text") if isinstance(part, dict) else None
+        if not isinstance(text, str):
+            raise AssertionError("expected admission body must include only text parts")
+        provider_parts.append(
+            {
+                "id": f"prt_live_{index}",
+                "messageID": message_id,
+                "sessionID": session_id,
+                "text": text,
+                "type": "text",
+            }
+        )
+    return provider_parts
+
+
+def _provider_envelope(expected: dict[str, object], *, session_id: str, message_id: str) -> dict[str, object]:
     return {
         "id": message_id,
         "messageID": message_id,
         "role": "user",
         "time": {"created": 1_755_923_000_000},
-        "parts": [
-            {
-                "id": "prt_live_envelope",
-                "sessionID": session_id,
-                "text": text,
-                "type": "text",
-            }
-        ],
+        "parts": _provider_parts(expected, session_id=session_id, message_id=message_id),
     }
 
 
@@ -70,15 +84,11 @@ async def test_live_get_message_info_parts_shape_is_already_admitted() -> None:
                     "role": "user",
                     "sessionID": fixture.reference.session_id,
                 },
-                "parts": [
-                    {
-                        "id": "prt_live",
-                        "messageID": fixture.reference.expected_message_id,
-                        "sessionID": fixture.reference.session_id,
-                        "text": expected["parts"][0]["text"],
-                        "type": "text",
-                    }
-                ],
+                "parts": _provider_parts(
+                    expected,
+                    session_id=fixture.reference.session_id or "",
+                    message_id=fixture.reference.expected_message_id,
+                ),
             },
         )
         result = await fixture.reconcile()
@@ -111,22 +121,56 @@ async def test_same_message_id_with_changed_body_fails_closed() -> None:
         fixture.close()
 
 
-async def test_prompt_body_forwards_exact_selection_without_extras() -> None:
-    fixture = _bound_fixture(terminal_mode="success")
+async def test_prompt_body_forwards_bounded_agent_selection_and_message_policy() -> None:
+    run = agent_run_request()
+    fixture = _bound_fixture(terminal_mode="success", agent_run=run)
     try:
         await fixture.handler.execute(fixture.request, fixture.context)
         assert fixture.fake.prompt_posts == 1
         body = fixture.fake.prompt_bodies[0]
         expected = prompt_admission_body(fixture.request, fixture.reference.expected_message_id)
         assert body == expected
-        assert set(body) <= {"messageID", "parts", "model"}
+        assert set(body) <= {"messageID", "parts", "agent", "model", "tools"}
         assert "system" not in body
-        assert "tools" not in body
         assert "fallback" not in body
-        assert "agent" not in body
+        assert body["agent"] == run.workspace.agent_profile
+        assert "tools" not in body
         assert "model" not in body
+        contract_part = body["parts"][-1]
+        assert contract_part["type"] == "text"
+        assert contract_part["text"].startswith("# Runtime result contract\n")
+        assert "final assistant response MUST be exactly one JSON object" in contract_part["text"]
+        assert "does not replace required tool calls or file writes" in contract_part["text"]
+        assert "schema_id: fixture.result.v1" in contract_part["text"]
     finally:
         fixture.close()
+
+
+def test_prompt_body_embeds_the_locked_result_schema_when_available() -> None:
+    schema = {
+        "type": "object",
+        "required": ["output_files"],
+        "properties": {"output_files": {"type": "array", "items": {"type": "string"}}},
+    }
+    run = agent_run_request().model_copy(
+        update={
+            "result_contract": ResultContract(
+                schema_id="fixture.result.v1",
+                schema_digest=canonical_digest(schema),
+                extraction_mode="structured",
+                schema_document=schema,
+            )
+        }
+    )
+    body = build_prompt_admission_body(run, "msg_contract")
+    assert '"required":["output_files"]' in body["parts"][-1]["text"]
+
+
+def test_prompt_body_does_not_add_agent_policy_without_a_bound_agent() -> None:
+    body = build_prompt_admission_body(agent_run_request(), "msg_contract")
+
+    assert "tools" not in body
+    assert not body["parts"][0]["text"].startswith("<system-reminder>")
 
 
 def test_classify_admission_accepts_provider_envelope_with_message_id() -> None:
@@ -140,6 +184,66 @@ def test_classify_admission_same_message_id_changed_text_is_conflict() -> None:
     envelope = _provider_envelope(expected, session_id="ses_1", message_id="msg_abc")
     envelope["parts"] = [{"id": "prt_changed", "sessionID": "ses_1", "text": "changed", "type": "text"}]
     assert classify_admission(envelope, expected) == "conflict"
+
+
+def test_classify_admission_same_message_id_partial_parts_are_pending() -> None:
+    expected = {
+        "messageID": "msg_abc",
+        "parts": [
+            {"type": "text", "text": "first instruction"},
+            {"type": "text", "text": "second instruction"},
+        ],
+    }
+    envelope = _provider_envelope(expected, session_id="ses_1", message_id="msg_abc")
+    envelope["parts"] = envelope["parts"][:1]
+
+    assert classify_admission(envelope, expected) == "pending"
+
+
+def test_list_fallback_treats_same_id_partial_message_as_already_admitted() -> None:
+    expected = {
+        "messageID": "msg_abc",
+        "parts": [
+            {"type": "text", "text": "first instruction"},
+            {"type": "text", "text": "second instruction"},
+        ],
+    }
+    envelope = _provider_envelope(expected, session_id="ses_1", message_id="msg_abc")
+    envelope["parts"] = envelope["parts"][:1]
+
+    assert user_prompt_already_admitted([envelope], expected) is True
+
+
+def test_list_fallback_rejects_same_id_changed_message() -> None:
+    expected = {"messageID": "msg_abc", "parts": [{"type": "text", "text": "expected"}]}
+    envelope = _provider_envelope(expected, session_id="ses_1", message_id="msg_abc")
+    envelope["parts"] = [{"type": "text", "text": "changed"}]
+
+    assert user_prompt_already_admitted([envelope], expected) is False
+
+
+async def test_partial_prompt_materialization_does_not_repost_or_fail() -> None:
+    fixture = _bound_fixture(terminal_mode="busy")
+    try:
+        expected = prompt_admission_body(fixture.request, fixture.reference.expected_message_id)
+        envelope = _provider_envelope(
+            expected,
+            session_id=fixture.reference.session_id or "",
+            message_id=fixture.reference.expected_message_id,
+        )
+        envelope["parts"] = envelope["parts"][:1]
+        fixture.fake.plant_message(
+            fixture.reference.session_id or "",
+            fixture.reference.expected_message_id,
+            envelope,
+        )
+
+        result = await fixture.reconcile()
+
+        assert result.status == "running"
+        assert fixture.fake.prompt_posts == 0
+    finally:
+        fixture.close()
 
 
 def test_classify_admission_omitted_provider_model_is_not_drift() -> None:
@@ -230,27 +334,17 @@ async def test_selected_model_info_parts_envelope_is_already_admitted() -> None:
     try:
         expected = prompt_admission_body(fixture.request, fixture.reference.expected_message_id)
         assert expected.get("model") == {"providerID": "openai", "modelID": "gpt-5.6-terra"}
-        parts = expected["parts"]
-        if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
-            raise AssertionError("expected admission body must include a text part")
-        text = parts[0].get("text")
-        if not isinstance(text, str):
-            raise AssertionError("expected admission body must include a text part")
         envelope = {
             "info": {
                 "id": fixture.reference.expected_message_id,
                 "role": "user",
                 "sessionID": fixture.reference.session_id,
             },
-            "parts": [
-                {
-                    "id": "prt_live",
-                    "messageID": fixture.reference.expected_message_id,
-                    "sessionID": fixture.reference.session_id,
-                    "text": text,
-                    "type": "text",
-                }
-            ],
+            "parts": _provider_parts(
+                expected,
+                session_id=fixture.reference.session_id or "",
+                message_id=fixture.reference.expected_message_id,
+            ),
         }
         fixture.fake.plant_message(
             fixture.reference.session_id or "",

@@ -206,7 +206,6 @@ def validate_input_projection_compile(
     direct_predecessors: frozenset[str],
     location: str,
 ) -> None:
-    from graph_engine.graph.compiler import CompileError
 
     if isinstance(projection, Mapping):
         _detect_raw_projection_cycle(projection, seen=set(), location=location)

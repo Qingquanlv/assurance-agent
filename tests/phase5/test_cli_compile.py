@@ -21,6 +21,7 @@ def test_help_exposes_exact_command_tree(cli_runner):
     result = cli_runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert command_names(result.stdout) == {
+        "archive",
         "compile",
         "bindings",
         "start",

@@ -478,18 +478,10 @@ class OpenCodeHandler:
             )
             agent = self._binding_agent_profile(request)
             record = await client.get_session(session_id)
-            if (
-                not isinstance(record, dict)
-                or record.get("title") != title
-                or record.get("agent") != agent
-            ):
+            if not isinstance(record, dict) or record.get("title") != title or record.get("agent") != agent:
                 await client.update_session(session_id, {"title": title, "agent": agent})
                 record = await client.get_session(session_id)
-            if (
-                not isinstance(record, dict)
-                or record.get("title") != title
-                or record.get("agent") != agent
-            ):
+            if not isinstance(record, dict) or record.get("title") != title or record.get("agent") != agent:
                 raise ValueError("workspace binding title is missing or invalid")
         except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError):
             return TaskActivityReconcileResult(
@@ -608,6 +600,21 @@ class OpenCodeHandler:
         dumped = thaw_json(reference.model_dump(mode="json"))
         if kind == "running":
             return TaskActivityReconcileResult(status="running", reference=dumped)
+        if kind == "succeeded":
+            status_record = status_map.get(session_id) if isinstance(status_map, dict) else None
+            if isinstance(status_record, dict) and status_record.get("type") == "busy":
+                try:
+                    await client.abort(session_id)
+                except (
+                    httpx.TransportError,
+                    httpx.HTTPStatusError,
+                    json.JSONDecodeError,
+                    ValueError,
+                ) as error:
+                    return TaskActivityReconcileResult(
+                        status="indeterminate",
+                        reason=str(error) or "busy session abort is indeterminate",
+                    )
         try:
             diff = await client.get_session_diff(session_id)
         except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:

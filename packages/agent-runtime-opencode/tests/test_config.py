@@ -35,6 +35,7 @@ _PINNED_CLIENT_ROUTES = frozenset(
         "list_messages",
         "open_sse",
         "get_session_diff",
+        "update_session",
     }
 )
 
@@ -49,6 +50,7 @@ def _valid_config_payload(**overrides: object) -> dict[str, object]:
         "project_scope": "/tmp/attempt-workspace",
         "request_timeout_seconds": 30,
         "observation_horizon_seconds": 120,
+        "progress_timeout_seconds": 60,
         "poll_interval_seconds": 1,
         "cancel_timeout_seconds": 30,
         "max_response_bytes": 65536,
@@ -102,6 +104,7 @@ def test_opencode_config_accepts_closed_handle_only_projection() -> None:
         {"max_response_bytes": 0},
         {"request_timeout_seconds": 301},
         {"observation_horizon_seconds": 3600.1},
+        {"progress_timeout_seconds": 3600.1},
         {"secret": _CANARY},
         {"authorization": "Bearer sk-secret-canary"},
     ],

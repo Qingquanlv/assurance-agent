@@ -61,24 +61,102 @@ def test_validate_structured_result_rejects_extra_properties_and_bad_digest() ->
         )
 
 
-def test_validate_structured_result_rejects_non_strict_or_open_schema() -> None:
+def test_validate_structured_result_honors_authenticated_open_schema() -> None:
     open_schema = {
         "type": "object",
         "additionalProperties": True,
         "properties": {"status": {"type": "string"}},
     }
-    with pytest.raises(ValueError, match="strict"):
+    payload = {"status": "ok", "provider_extension": {"accepted": True}}
+    assert (
         validate_structured_result(
-            {"status": "ok"},
+            payload,
             schema=open_schema,
             schema_digest=canonical_digest(open_schema),
         )
+        == payload
+    )
+
+
+def test_validate_structured_result_rejects_unsupported_remote_reference() -> None:
     with pytest.raises(ValueError, match="unsupported"):
         validate_structured_result(
             {"status": "ok"},
-            schema={"$ref": "#/definitions/result"},
-            schema_digest=canonical_digest({"$ref": "#/definitions/result"}),
+            schema={"$ref": "https://example.invalid/result.schema.json"},
+            schema_digest=canonical_digest(
+                {"$ref": "https://example.invalid/result.schema.json"}
+            ),
         )
+
+
+def test_validate_structured_result_supports_product_schema_dialect() -> None:
+    schema = {
+        "$defs": {
+            "Entry": {
+                "additionalProperties": False,
+                "properties": {
+                    "case_id": {"pattern": "^[A-Z0-9_]+$", "type": "string"},
+                    "note": {
+                        "anyOf": [{"minLength": 1, "type": "string"}, {"type": "null"}],
+                        "default": None,
+                    },
+                    "trace": {
+                        "additionalProperties": True,
+                        "minProperties": 1,
+                        "type": "object",
+                    },
+                },
+                "required": ["case_id", "trace"],
+                "type": "object",
+            }
+        },
+        "additionalProperties": False,
+        "prompt_notes": ["Return complete authoring fields"],
+        "properties": {
+            "entries": {
+                "items": {"$ref": "#/$defs/Entry"},
+                "minItems": 1,
+                "type": "array",
+            },
+            "payload": {"items": {}, "type": "array"},
+        },
+        "required": ["entries", "payload"],
+        "type": "object",
+    }
+    payload = {
+        "entries": [{"case_id": "TC_CASE_001", "note": None, "trace": {"leaf": 1}}],
+        "payload": [{"arbitrary": [1, True, None]}],
+    }
+    digest = canonical_digest(schema)
+
+    assert validate_structured_result(payload, schema=schema, schema_digest=digest) == payload
+    with pytest.raises(ValueError, match="pattern"):
+        validate_structured_result(
+            {**payload, "entries": [{"case_id": "bad-id", "trace": {}}]},
+            schema=schema,
+            schema_digest=digest,
+        )
+    with pytest.raises(ValueError, match="additional"):
+        validate_structured_result(
+            {**payload, "entries": [{"case_id": "TC_OK", "trace": {}, "extra": True}]},
+            schema=schema,
+            schema_digest=digest,
+        )
+    with pytest.raises(ValueError, match="minProperties"):
+        validate_structured_result(
+            {**payload, "entries": [{"case_id": "TC_OK", "trace": {}}]},
+            schema=schema,
+            schema_digest=digest,
+        )
+
+
+def test_validate_structured_result_enforces_exclusive_minimum() -> None:
+    schema = {"exclusiveMinimum": 0, "type": "number"}
+    digest = canonical_digest(schema)
+
+    assert validate_structured_result(0.5, schema=schema, schema_digest=digest) == 0.5
+    with pytest.raises(ValueError, match="exclusiveMinimum"):
+        validate_structured_result(0, schema=schema, schema_digest=digest)
 
 
 _LIVE_FIXTURE_SCHEMA = {
@@ -180,6 +258,14 @@ def test_result_contract_digest_must_match_schema() -> None:
             schema_id="fixture.result.v1",
             schema_digest="not-a-digest",
             extraction_mode="structured",
+        )
+    unsupported = {"type": "object", "unevaluatedProperties": False}
+    with pytest.raises(ValidationError, match="unsupported schema keys"):
+        ResultContract(
+            schema_id="fixture.result.unsupported.v1",
+            schema_digest=canonical_digest(unsupported),
+            extraction_mode="structured",
+            schema_document=unsupported,
         )
 
 

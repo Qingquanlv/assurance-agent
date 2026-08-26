@@ -31,7 +31,7 @@ PromptCut = Literal[
     "after_admission_before_response",
     "after_lost_success_response",
 ]
-TerminalMode = Literal["busy", "idle_only", "success", "open_tools", "error", "canceled"]
+TerminalMode = Literal["busy", "idle_only", "success", "success_busy", "open_tools", "error", "canceled"]
 SseMode = Literal[
     "heartbeat",
     "gap",
@@ -587,7 +587,7 @@ class OpenCodeFakeServer:
             mode = self.terminal_mode
         if omit:
             return {}
-        status_type = "busy" if mode == "busy" else "idle"
+        status_type = "busy" if mode in {"busy", "success_busy"} else "idle"
         return {session_id: {"type": status_type} for session_id in session_ids}
 
     def _session_view(self, session: dict[str, object]) -> dict[str, object]:

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import stat
 import sys
 from pathlib import Path
 
@@ -76,7 +74,9 @@ async def test_spawn_rejects_ambient_environment(tmp_path: Path, monkeypatch: py
             del timeout
             return 0
 
-        def communicate(self, input: bytes | None = None, timeout: float | None = None) -> tuple[bytes, bytes]:
+        def communicate(
+            self, input: bytes | None = None, timeout: float | None = None
+        ) -> tuple[bytes, bytes]:
             del input, timeout
             return b"", b""
 
@@ -87,8 +87,17 @@ async def test_spawn_rejects_ambient_environment(tmp_path: Path, monkeypatch: py
     await host.spawn(request)
     env = captured["kwargs"]["env"]  # type: ignore[index]
     assert isinstance(env, dict)
-    assert set(env) <= {"PATH", "PYTHONUNBUFFERED", "HOME"}
-    assert env["HOME"] == str(tmp_path.resolve())
+    assert set(env) <= {
+        "HOME",
+        "PATH",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONUNBUFFERED",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+    }
+    assert env["HOME"]
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
     assert "CURSOR_SHOULD_NOT_LEAK" not in env
     assert set(request.environment) == {"PATH"}
 
@@ -167,7 +176,9 @@ def test_macos_spawn_uses_new_process_group(tmp_path: Path, monkeypatch: pytest.
             del timeout
             return 0
 
-        def communicate(self, input: bytes | None = None, timeout: float | None = None) -> tuple[bytes, bytes]:
+        def communicate(
+            self, input: bytes | None = None, timeout: float | None = None
+        ) -> tuple[bytes, bytes]:
             del input, timeout
             return b"ok\n", b""
 
@@ -182,11 +193,24 @@ def test_macos_spawn_uses_new_process_group(tmp_path: Path, monkeypatch: pytest.
     assert kwargs.get("shell") is False
     env = kwargs["env"]
     assert isinstance(env, dict)
-    assert set(env) <= {"PATH", "PYTHONUNBUFFERED", "HOME"}
-    assert env["HOME"] == str(tmp_path.resolve())
+    assert set(env) <= {
+        "HOME",
+        "PATH",
+        "PYTHONDONTWRITEBYTECODE",
+        "PYTHONUNBUFFERED",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+    }
+    assert env["HOME"]
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
 def test_linux_spawn_records_supervised_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_bwrap = tmp_path / "bwrap"
+    fake_bwrap.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_bwrap.chmod(0o755)
+    monkeypatch.setattr("agent_runtime_cursor.filesystem_sandbox.BWRAP", fake_bwrap)
     monkeypatch.setattr(sys, "platform", "linux")
     host = LinuxProcessSupervisorHost(tmp_path)
     captured: dict[str, object] = {}
@@ -207,7 +231,9 @@ def test_linux_spawn_records_supervised_session(tmp_path: Path, monkeypatch: pyt
             del timeout
             return 0
 
-        def communicate(self, input: bytes | None = None, timeout: float | None = None) -> tuple[bytes, bytes]:
+        def communicate(
+            self, input: bytes | None = None, timeout: float | None = None
+        ) -> tuple[bytes, bytes]:
             del input, timeout
             return b"ok\n", b""
 
@@ -215,7 +241,9 @@ def test_linux_spawn_records_supervised_session(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setattr(
         host,
         "_read_proc_stat",
-        lambda pid: f"{pid} (sleep) S 1 {pid} {pid} 0 0 1 0 0 0 0 0 20 0 1 0 6161 4096 64 777777 0 0 0 0 0 0 0 0 0 0 0",
+        lambda pid: (
+            f"{pid} (sleep) S 1 {pid} {pid} 0 0 1 0 0 0 0 0 20 0 1 0 6161 4096 64 777777 0 0 0 0 0 0 0 0 0 0 0"
+        ),
     )
     import asyncio
 

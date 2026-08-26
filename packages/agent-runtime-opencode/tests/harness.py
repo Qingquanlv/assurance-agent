@@ -13,7 +13,7 @@ from agent_runtime_contracts import (
     InstructionPart,
     ResultContract,
 )
-from agent_runtime_contracts.schema import canonical_digest, thaw_json
+from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.plugin_api import TaskOutcome
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
 from agent_runtime_opencode.discovery import (
@@ -27,7 +27,7 @@ from agent_runtime_opencode.discovery import (
     prompt_body_digest,
 )
 from agent_runtime_opencode.handler import OpenCodeHandler, workspace_identity_digest_for
-from agent_runtime_opencode.protocol import OpenCodeProtocolProfile, canonical_json_text
+from agent_runtime_opencode.protocol import OpenCodeProtocolProfile
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 from graph_engine.plugin_api import (
     InvocationMetadata,
@@ -445,30 +445,9 @@ def _bound_fixture(
 
 
 def prompt_admission_body(request: TaskRequest, message_id: str) -> dict[str, object]:
-    agent_run = agent_run_from_request(request)
-    parts: list[dict[str, object]] = []
-    for instruction in agent_run.instructions:
-        if instruction.text_content is not None:
-            parts.append({"type": "text", "text": instruction.text_content})
-        else:
-            parts.append(
-                {
-                    "type": "text",
-                    "text": canonical_json_text(thaw_json(instruction.json_content)),
-                }
-            )
-    body: dict[str, object] = {
-        "messageID": message_id,
-        "parts": parts,
-    }
-    model = agent_run.execution.provider_model
-    if model != "provider_default":
-        provider, separator, model_id = model.partition("/")
-        body["model"] = {
-            "providerID": provider,
-            "modelID": model_id if separator else provider,
-        }
-    return body
+    from agent_runtime_opencode.observation import prompt_admission_body as production_body
+
+    return production_body(agent_run_from_request(request), message_id)
 
 
 def _fingerprint(config: OpenCodeAdapterConfig, profile: OpenCodeProtocolProfile) -> dict[str, object]:
