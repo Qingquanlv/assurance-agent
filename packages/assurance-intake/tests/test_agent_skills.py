@@ -125,7 +125,12 @@ def test_case_design_skill_returns_the_locked_file_receipt_contract() -> None:
     assert '"output_files"' in skill
     assert "written files are the sole source of truth" in skill
     assert "Do not duplicate the case delta" in skill
-    assert "every written `cases/**/case.yaml`" in skill
+    assert (
+        '{"output_files":["qa/changes/<change-id>/.qa.yaml",'
+        '"qa/changes/<change-id>/proposal.md",'
+        '"qa/changes/<change-id>/trace/minimum-coverage-matrix.json"]}'
+    ) in skill
+    assert "every written `cases/**/case.yaml`" not in skill
     assert '"qa/changes/<change-id>/trace/minimum-coverage-matrix.json"' in skill
     assert "The MRC matrix path is mandatory" in skill
     assert "deterministic finalize step" in skill
@@ -245,9 +250,14 @@ async def test_explore_prepare_materializes_deterministic_graph_context(tmp_path
 async def test_case_design_prepare_is_canonical_and_provider_neutral(tmp_path: Path) -> None:
     first = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
     second = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
-    assert AgentRunRequest.model_validate(first.output).canonical_bytes() == (
-        AgentRunRequest.model_validate(second.output).canonical_bytes()
+    request = AgentRunRequest.model_validate(first.output)
+    assert request.canonical_bytes() == AgentRunRequest.model_validate(second.output).canonical_bytes()
+    assert request.workspace.allowed_outputs == (
+        "qa/changes/CH-DEMO-001/.qa.yaml",
+        "qa/changes/CH-DEMO-001/proposal.md",
+        "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
     )
+    assert not any("**" in path or path.endswith("/case.yaml") for path in request.workspace.allowed_outputs)
 
 
 @pytest.mark.asyncio
@@ -708,27 +718,33 @@ async def test_case_design_finalize_rejects_legacy_full_delta_result(
 
 
 @pytest.mark.asyncio
-async def test_case_design_finalize_requires_every_written_case_in_receipt(
+async def test_case_design_finalize_does_not_require_undeclared_case_yaml(
     tmp_path: Path,
 ) -> None:
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(write_root, authored)
+    catalog = [
+        "qa/changes/CH-DEMO-001/.qa.yaml",
+        "qa/changes/CH-DEMO-001/proposal.md",
+        "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+    ]
+    assert set(catalog) == set(outputs) - {outputs[-1]}
 
     executed = await _finalize_files(
         CaseDesignFinalizeHandler(),
-        cast(JSONValue, {"output_files": outputs[:-1]}),
+        cast(JSONValue, {"output_files": catalog}),
         project,
         ["qa/changes"],
         change_id="CH-DEMO-001",
-        selected_test_families=["api"],
+        selected_test_families=[],
         write_root=write_root,
     )
 
-    assert executed.status == "failed"
-    assert executed.failure is not None
-    assert executed.failure.kind == "invalid_output"
-    assert "declare every written" in executed.failure.message
+    assert executed.status == "succeeded"
+    assert executed.output["added"] == []
+    assert executed.output["modified"] == []
+    assert "declare every written" not in str(executed.output)
 
 
 @pytest.mark.asyncio

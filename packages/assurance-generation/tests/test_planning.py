@@ -11,6 +11,7 @@ from graph_engine.canonical import canonical_json_bytes
 from tests.phase5.test_change_local_output_routing import dual_roots, execute_task
 
 from assurance_generation.operations.planning import planning_handler
+from assurance_generation.resource_loader import resource_text
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     FAMILIES,
@@ -21,6 +22,12 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     reviewed_cases,
     valid_plan_result,
 )
+
+
+def test_e2e_plan_skill_reentry_reads_family_prefixed_review() -> None:
+    skill = resource_text("skills/aa-e2e-plan/SKILL.md")
+    assert "review/e2e-plan-review.json" in skill
+    assert "review/plan-review.json" not in skill
 
 
 def _write_reviewed_cases(tmp_path: Path, family: str) -> None:

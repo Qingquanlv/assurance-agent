@@ -255,7 +255,7 @@ class FixProposalFinalizeHandler:
                         or not _under_root(path, payload.allowed_roots)
                     ):
                         raise OutputError(f"undeclared target file: {path}")
-                    _workspace_file(context.write_root, path)
+                    _workspace_file(context.project_root, path)
             if payload.artifact_paths:
                 for path in payload.artifact_paths:
                     _workspace_file(context.write_root, path)

@@ -46,7 +46,7 @@ Do not rely on prior conversation context.
 1. Write all required output files:
    - `qa/changes/<change-id>/.qa.yaml`
    - `qa/changes/<change-id>/proposal.md`
-   - `qa/changes/<change-id>/cases/<module>/case.yaml`
+   - `qa/changes/<change-id>/trace/minimum-coverage-matrix.json`
 2. Report a graph-owned state delta after writing files:
    - `phases.case_design.status = done`
    - `phases.case_design.outputs` = all output files
@@ -132,19 +132,19 @@ graph-provided `capability_leafs` list.
 ## Locked Runtime Return Contract
 
 The written files are the sole source of truth. After the final edit, read back
-`.qa.yaml`, `proposal.md`, `trace/minimum-coverage-matrix.json`, and every written `cases/**/case.yaml`. The final
+`.qa.yaml`, `proposal.md`, and `trace/minimum-coverage-matrix.json`. The final
 assistant response MUST be exactly one JSON object with one field:
 
 ```json
-{"output_files":["qa/changes/<change-id>/.qa.yaml","qa/changes/<change-id>/proposal.md","qa/changes/<change-id>/trace/minimum-coverage-matrix.json","qa/changes/<change-id>/cases/<module>/case.yaml"]}
+{"output_files":["qa/changes/<change-id>/.qa.yaml","qa/changes/<change-id>/proposal.md","qa/changes/<change-id>/trace/minimum-coverage-matrix.json"]}
 ```
 
 The MRC matrix path is mandatory even when it contains skipped-by-scope rows. List
-every authored `case.yaml`, use canonical project-relative paths, and include
+only the closed catalog outputs, use canonical project-relative paths, and include
 no path outside the current change directory. Do not duplicate the case delta in
 the response and do not add Markdown fences, commentary, status, state delta, or
-trailing text. The deterministic finalize step will load the authenticated files,
-validate the complete typed case delta, and provide it to downstream graph nodes.
+trailing text. The deterministic finalize step will load the authenticated files
+and provide them to downstream graph nodes.
 
 ---
 

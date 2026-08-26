@@ -9,6 +9,7 @@ from agent_runtime_contracts import AgentRunRequest
 from tests.phase5.test_change_local_output_routing import execute_task
 
 from assurance_generation.operations.review import review_finalize_handler, review_prepare_handler
+from assurance_generation.resource_loader import resource_text
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     FAMILIES,
@@ -16,6 +17,14 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     plan_input,
     review_result,
 )
+
+
+def test_e2e_reviewer_skill_outputs_use_family_prefixed_names() -> None:
+    skill = resource_text("skills/aa-e2e-plan-reviewer/SKILL.md")
+    assert "qa/changes/<change-id>/review/e2e-plan-review.json" in skill
+    assert "qa/changes/<change-id>/review/e2e-plan-review-summary.md" in skill
+    assert "qa/changes/<change-id>/review/plan-review.json" not in skill
+    assert "qa/changes/<change-id>/review/plan-review-summary.md" not in skill
 
 
 @pytest.mark.parametrize("family", FAMILIES)

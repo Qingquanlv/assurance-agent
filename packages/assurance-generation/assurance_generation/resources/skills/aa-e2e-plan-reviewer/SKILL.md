@@ -44,8 +44,8 @@ in `next_action`. Use `"auto_fix_plan": []` for `pass` and
 
 ### required
 
-- `qa/changes/<change-id>/review/plan-review.json`
-- `qa/changes/<change-id>/review/plan-review-summary.md`
+- `qa/changes/<change-id>/review/e2e-plan-review.json`
+- `qa/changes/<change-id>/review/e2e-plan-review-summary.md`
 
 ## Boundaries
 

@@ -217,7 +217,7 @@ async def test_fix_proposal_finalize_rejects_unknown_capability(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_fix_proposal_finalize_accepts_typed_proposal(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    target = write_root / "tests/api/test_users.py"
+    target = project / "tests/api/test_users.py"
     target.parent.mkdir(parents=True)
     target.write_text("def test_ok():\n    assert True\n")
     outcome = await execute_task(
@@ -228,6 +228,7 @@ async def test_fix_proposal_finalize_accepts_typed_proposal(tmp_path: Path) -> N
     )
     assert outcome.status == "succeeded"
     assert as_object(outcome.output)["proposals"][0]["proposal_id"] == "P1"
+    assert not (write_root / "tests/api/test_users.py").exists()
 
 
 @pytest.mark.asyncio

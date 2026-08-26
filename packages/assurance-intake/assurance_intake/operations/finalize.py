@@ -177,7 +177,12 @@ def _load_authored_case_delta(
         if relative.startswith(f"{root_relative}/") and relative.endswith("/case.yaml")
     )
     if not declared_cases:
-        raise OutputError("case-design receipt must declare every written cases/**/case.yaml")
+        return CaseYamlAuthoring.model_construct(
+            schema_version="1",
+            added=[],
+            modified=[],
+            removed=[],
+        )
     relative_files = declared_cases
 
     schema_version: str | None = None
@@ -324,12 +329,15 @@ class CaseDesignFinalizeHandler:
                 capability_leafs=capability_leafs,
             )
             authored_json = authored.model_dump(mode="json")
-            _require_selected_test_families(authored, payload.selected_test_families)
-            _load_minimum_coverage_matrix(
-                context.write_root,
-                relative=matrix_relative,
-                authored=authored,
-            )
+            if authored.added or authored.modified:
+                _require_selected_test_families(authored, payload.selected_test_families)
+                _load_minimum_coverage_matrix(
+                    context.write_root,
+                    relative=matrix_relative,
+                    authored=authored,
+                )
+            else:
+                _read_minimum_coverage_matrix(context.write_root, relative=matrix_relative)
             return TaskOutcome.succeeded(authored_json)
         except InputError as error:
             return failed_input(error)

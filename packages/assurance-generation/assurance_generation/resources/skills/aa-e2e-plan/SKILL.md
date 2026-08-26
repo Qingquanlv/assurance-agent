@@ -27,7 +27,7 @@ value is byte-for-byte present in the enum.
 
 ### optional
 
-- `qa/changes/<change-id>/review/plan-review.json`
+- `qa/changes/<change-id>/review/e2e-plan-review.json`
 - `qa/changes/<change-id>/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
@@ -85,7 +85,7 @@ Authoring tables (keep column names exact):
 - Cleanup Mapping uses `Case ID | Cleanup | Capability`.
 - Run Guidance uses `Target | Pytest Args | Markers | Environment`.
 
-When `review/plan-review.json` exists with `decision: needs_fix`, apply only
+When `review/e2e-plan-review.json` exists with `decision: needs_fix`, apply only
 the findings named in `auto_fix_plan` and only the `locator` targets they point
 at. Keep `plans/e2e-codegen-mapping.json` as the closed Case ID → symbol →
 target file contract.
