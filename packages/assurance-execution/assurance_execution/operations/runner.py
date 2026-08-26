@@ -27,7 +27,7 @@ from assurance_execution.operations.common import (
     validate_input,
 )
 from assurance_execution.operations.normalize import normalize_evidence
-from assurance_execution.operations.paths import resolve_selected_file
+from assurance_execution.operations.paths import resolve_execution_view, resolve_selected_file
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +54,8 @@ class ConfinedExecutionProcessHost:
     def spawn(self, argv: tuple[str, ...], cwd: Path) -> ProcessReceipt:
         if not argv or any("\x00" in item for item in argv):
             raise InputError("execution argv must be a confined non-empty command")
-        report_path = _confined_report_path(argv, cwd)
+        public_argv = _public_pytest_argv(argv)
+        report_path = _confined_report_path(public_argv, cwd)
         if (
             report_path is not None
             and report_path.exists()
@@ -62,13 +63,13 @@ class ConfinedExecutionProcessHost:
         ):
             raise InputError(_REPORT_REASON)
         completed = subprocess.run(  # noqa: S603
-            list(argv),
+            list(public_argv),
             cwd=str(cwd),
             capture_output=True,
             text=True,
             check=False,
             shell=False,
-            env=_scrubbed_env(),
+            env=_scrubbed_env(argv),
         )
         report = _load_confined_report(report_path, cwd)
         return ProcessReceipt(
@@ -80,9 +81,35 @@ class ConfinedExecutionProcessHost:
         )
 
 
-def _scrubbed_env() -> dict[str, str]:
+def runner_environment(batch_id: str) -> dict[str, str]:
+    return {
+        "HYPOTHESIS_STORAGE_DIRECTORY": f"/tmp/aa-hypothesis-{batch_id}",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+
+_BATCH_FLAG = "--assurance-batch-id="
+
+
+def _batch_id_from_argv(argv: tuple[str, ...]) -> str | None:
+    for item in argv:
+        if item.startswith(_BATCH_FLAG):
+            return item[len(_BATCH_FLAG) :]
+    return None
+
+
+def _public_pytest_argv(argv: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(item for item in argv if not item.startswith(_BATCH_FLAG))
+
+
+def _scrubbed_env(argv: tuple[str, ...] | None = None) -> dict[str, str]:
     env = dict(os.environ)
     env.pop("PYTEST_ADDOPTS", None)
+    batch_id = _batch_id_from_argv(argv or ())
+    if batch_id:
+        env.update(runner_environment(batch_id))
+    else:
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env
 
 
@@ -147,15 +174,53 @@ def _authenticate_selected(workspace: Path, mapping: ClosedMappingV1) -> tuple[s
     return selected
 
 
-def build_pytest_argv(selected: tuple[str, ...]) -> tuple[str, ...]:
-    return (
-        "pytest",
-        *selected,
-        "-p",
-        "no:cacheprovider",
-        "--json-report",
-        f"--json-report-file={_JSON_REPORT_FILE}",
-    )
+def _project_config(project_root: Path) -> Path | None:
+    for name in ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg"):
+        candidate = project_root / name
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
+    return None
+
+
+def build_pytest_argv(
+    selected: tuple[str, ...],
+    *,
+    rootdir: Path | None = None,
+    project_root: Path | None = None,
+    batch_id: str | None = None,
+    config: Path | None = None,
+) -> tuple[str, ...]:
+    argv: list[str] = ["pytest", *selected, "-p", "no:cacheprovider"]
+    if rootdir is not None:
+        argv.append(f"--rootdir={rootdir}")
+        argv.append(f"--confcutdir={rootdir}")
+    if project_root is not None:
+        argv.append(f"-o=pythonpath={project_root}")
+        resolved_config = config or _project_config(project_root)
+        if resolved_config is not None:
+            argv.append(f"-c={resolved_config}")
+    if batch_id is not None:
+        argv.append(f"--assurance-batch-id={batch_id}")
+    report = _JSON_REPORT_FILE
+    if rootdir is not None and project_root is not None:
+        report = f"{rootdir.relative_to(project_root).as_posix()}/{_JSON_REPORT_FILE}"
+    argv.extend(("--json-report", f"--json-report-file={report}"))
+    return tuple(argv)
+
+
+def write_canonical_evidence(
+    project: Path,
+    evidence: ExecutionEvidenceV1,
+    *,
+    filename: str = "execute-result.json",
+) -> Path:
+    if filename not in {"execute-result.json", "run-result.json"}:
+        raise InputError("canonical evidence filename is not a closed execution result")
+    relative = f"qa/changes/{evidence.change_id}/execution/{filename}"
+    path = project.joinpath(*relative.split("/"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(evidence.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def _pr_metric_input(
@@ -185,7 +250,7 @@ def run_closed_mapping(
     include_pr_metrics: bool,
 ) -> dict[str, object]:
     mapping = _closed_mapping(payload)
-    selected = _authenticate_selected(workspace, mapping)
+    selected = tuple(mapping.selected)
     if not selected:
         evidence = normalize_evidence(
             change_id=payload.change_id,
@@ -201,7 +266,14 @@ def run_closed_mapping(
             report={},
         )
         return _run_output(payload, selected, evidence, include_pr_metrics=include_pr_metrics)
-    argv = build_pytest_argv(selected)
+    view_root = resolve_execution_view(workspace, payload.change_id, payload.batch_id)
+    selected = _authenticate_selected(view_root, mapping)
+    argv = build_pytest_argv(
+        selected,
+        rootdir=view_root,
+        project_root=workspace,
+        batch_id=payload.batch_id,
+    )
     receipt = process_host.spawn(argv, workspace)
     report = receipt.report or {}
     evidence = normalize_evidence(
@@ -217,6 +289,7 @@ def run_closed_mapping(
         exit_code=receipt.exit_code,
         report=report,
     )
+    write_canonical_evidence(workspace, evidence)
     return _run_output(payload, selected, evidence, include_pr_metrics=include_pr_metrics)
 
 
@@ -256,7 +329,7 @@ class RunTestsHandler:
             payload = validate_input(RunTestsInputV1, request.input)
             output = run_closed_mapping(
                 payload,
-                context.workspace_root,
+                context.project_root,
                 self._process_host,
                 include_pr_metrics=False,
             )
@@ -278,7 +351,7 @@ class RunTestsAndCollectPrMetricsHandler:
             payload = validate_input(RunTestsInputV1, request.input)
             output = run_closed_mapping(
                 payload,
-                context.workspace_root,
+                context.project_root,
                 self._process_host,
                 include_pr_metrics=True,
             )

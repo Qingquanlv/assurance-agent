@@ -4,23 +4,35 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
+from tempfile import TemporaryDirectory
+from types import MappingProxyType
+
 from agent_runtime_contracts import AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
+    InvocationMetadata,
     ResourceClaims,
+    TaskContext,
+    TaskHandler,
+    TaskRequest,
+    TaskWorkspaceIdentity,
     ValidationContext,
 )
 from tests.phase4.agent_harness import FakeAgentAdapter
+from tests.phase4.conformance import ExecutedTask
 
 from assurance_execution.operations.runner import ExecutionProcessHost, ProcessReceipt
+from assurance_product.execution_view import ExecutionView, build_execution_view
+from assurance_product.generated_merge import MergedGeneratedSet
 
 VALID_LEAFS = ("auth.session.create", "entities.item.create")
 VALID_CASES = ("TC_A", "TC_B")
 _SHA = "a" * 64
 BINDING: dict[str, Any] = {
+    "agent_profile": "aa-executor",
     "execution": {
         "provider_model": "test-model",
         "worker_profile": "worker",
@@ -91,7 +103,7 @@ class FakePytestHost:
     def spawn(self, argv: tuple[str, ...], cwd: Path) -> ProcessReceipt:
         self.commands.append(argv)
         self.cwds.append(cwd)
-        selected = tuple(item for item in argv[1:] if not item.startswith("-") and item.endswith(".py"))
+        selected = _selected_from_argv(argv)
         tests: list[dict[str, object]] = []
         failed = 0
         passed = 0
@@ -132,6 +144,100 @@ class FakePytestHost:
                 },
             },
         )
+
+
+def _selected_from_argv(argv: tuple[str, ...]) -> tuple[str, ...]:
+    selected: list[str] = []
+    for item in argv[1:]:
+        if item.startswith("-"):
+            continue
+        if item.endswith(".py") or "::" in item:
+            selected.append(item)
+    return tuple(selected)
+
+
+def workspace_identity() -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "task-1",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": _SHA,
+        "write_root_digest": _SHA,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
+
+
+def materialize_execution_view(
+    project: Path,
+    selected: list[str],
+    *,
+    change_id: str = "CH-DEMO-001",
+    batch_id: str = "20260822T000000Z",
+) -> ExecutionView:
+    (project / "qa" / "changes" / change_id).mkdir(parents=True, exist_ok=True)
+    return build_execution_view(
+        project,
+        change_id=change_id,
+        batch_id=batch_id,
+        merged=MergedGeneratedSet(files=(), digest=canonical_digest([])),
+        selected=tuple(selected),
+    )
+
+
+async def execute_task(
+    handler: TaskHandler,
+    payload: TaskRequest | Mapping[str, Any],
+    workspace: Path | None = None,
+    *,
+    binding_data: JSONValue = None,
+) -> ExecutedTask:
+    if workspace is None:
+        with TemporaryDirectory(prefix="execution-dual-root-") as temporary:
+            return await execute_task(handler, payload, Path(temporary), binding_data=binding_data)
+    write_root = workspace / "qa" / "changes" / "CH-DEMO-001" / ".staging" / "attempt-1"
+    write_root.mkdir(parents=True, exist_ok=True)
+    invocation = InvocationMetadata(
+        invocation_id="inv-1",
+        lock_digest=_SHA,
+        composition_digest=_SHA,
+        entrypoint="phase5",
+    )
+    request = (
+        payload
+        if isinstance(payload, TaskRequest)
+        else TaskRequest(
+            invocation_id=invocation.invocation_id,
+            task_id="phase5-task",
+            graph_instance_id="phase5-graph",
+            node_id="phase5-node",
+            capability_id="test.execution.capability",
+            binding_data=binding_data,
+            invocation=invocation,
+            attempt=1,
+            input=cast(JSONValue, dict(payload)),
+        )
+    )
+    outcome = await handler.execute(
+        request,
+        TaskContext(
+            project_root=workspace,
+            write_root=write_root,
+            workspace_identity=workspace_identity(),
+            heartbeat=lambda: None,
+            cancel_requested=lambda: False,
+            invocation=invocation,
+        ),
+    )
+    files: dict[str, bytes] = {}
+    for root in (workspace, write_root):
+        for path in sorted(root.rglob("*")):
+            if path.is_symlink() or not path.is_file():
+                continue
+            files[path.relative_to(root).as_posix()] = path.read_bytes()
+    return ExecutedTask(outcome=outcome, workspace_bytes=MappingProxyType(files))
 
 
 def fake_pytest_host(*, outcomes: Mapping[str, str] | None = None) -> ExecutionProcessHost:

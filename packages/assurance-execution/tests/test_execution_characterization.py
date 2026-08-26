@@ -7,15 +7,16 @@ from typing import cast
 import pytest
 from graph_engine.canonical import JSONValue
 
-from tests.phase4.conformance import execute_task
-
 from assurance_agent.workflow.execution.scope import resolve_test_paths
 from assurance_execution.operations.normalize import NormalizeHandler
 from assurance_execution.operations.runner import classify_exit
 from assurance_execution.operations.selection import SelectHandler
+from assurance_execution.contracts.selection import selected_test_file
 from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     as_object,
+    execute_task,
     codegen_mapping,
+    materialize_execution_view,
     select_request,
 )
 
@@ -75,7 +76,7 @@ async def test_legacy_and_execution_select_the_same_mapped_tests(tmp_path: Path)
     )
     assert current.status == "succeeded"
     selected = as_object(as_object(current.output)["mapping"])["selected"]
-    assert tuple(legacy or ()) == tuple(selected)
+    assert tuple(legacy or ()) == tuple(dict.fromkeys(selected_test_file(item) for item in selected))
     assert "tests/legacy_test.py" not in selected
 
 
@@ -111,6 +112,7 @@ async def test_pr_metric_input_tracks_selected_results(tmp_path: Path) -> None:
 
     write_test(tmp_path / "tests/generated_test.py")
     write_test(tmp_path / "tests/legacy_test.py")
+    materialize_execution_view(tmp_path, ["tests/generated_test.py"])
     outcome = await execute_task(
         RunTestsAndCollectPrMetricsHandler(process_host=fake_pytest_host()),
         run_request(selected=["tests/generated_test.py"]),

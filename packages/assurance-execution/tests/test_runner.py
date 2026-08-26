@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from tests.phase4.conformance import execute_task
-
 from assurance_execution.operations.common import InputError
 from assurance_execution.operations.runner import ConfinedExecutionProcessHost, RunTestsHandler
 from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     as_object,
+    execute_task,
     executed_paths,
     fake_pytest_host,
+    materialize_execution_view,
     run_request,
     write_test,
 )
@@ -23,6 +23,7 @@ from execution_fixtures import (  # pyright: ignore[reportMissingImports]
 async def test_run_tests_executes_only_closed_mapping(tmp_path: Path) -> None:
     write_test(tmp_path / "tests/generated_test.py")
     write_test(tmp_path / "tests/legacy_test.py")
+    materialize_execution_view(tmp_path, ["tests/generated_test.py"])
     outcome = await execute_task(
         RunTestsHandler(process_host=fake_pytest_host()),
         run_request(selected=["tests/generated_test.py"]),
@@ -36,6 +37,7 @@ async def test_run_tests_executes_only_closed_mapping(tmp_path: Path) -> None:
 async def test_run_tests_rejects_symlink_and_traversal(tmp_path: Path) -> None:
     write_test(tmp_path / "tests/generated_test.py")
     (tmp_path / "tests/legacy_test.py").symlink_to(tmp_path / "tests/generated_test.py")
+    materialize_execution_view(tmp_path, ["tests/generated_test.py"])
     linked = await execute_task(
         RunTestsHandler(process_host=fake_pytest_host()),
         run_request(selected=["tests/legacy_test.py"]),
@@ -71,6 +73,7 @@ async def test_run_tests_rejects_symlink_and_traversal(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_tests_builds_argv_without_shell(tmp_path: Path) -> None:
     write_test(tmp_path / "tests/generated_test.py")
+    materialize_execution_view(tmp_path, ["tests/generated_test.py"])
     host = fake_pytest_host()
     outcome = await execute_task(
         RunTestsHandler(process_host=host),
@@ -184,6 +187,7 @@ async def test_run_tests_and_collect_pr_metrics_uses_selected_only(tmp_path: Pat
 
     write_test(tmp_path / "tests/generated_test.py")
     write_test(tmp_path / "tests/legacy_test.py")
+    materialize_execution_view(tmp_path, ["tests/generated_test.py"])
     outcome = await execute_task(
         RunTestsAndCollectPrMetricsHandler(process_host=fake_pytest_host()),
         run_request(selected=["tests/generated_test.py"]),

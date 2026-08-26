@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -9,8 +12,6 @@ import pytest
 
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import JSONValue, canonical_json_bytes
-from tests.phase4.conformance import execute_task
-
 from assurance_execution.contracts import ExecutionEvidenceV1
 from assurance_execution.operations.agent_skills import (
     ExecuteFinalizeHandler,
@@ -24,6 +25,7 @@ from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     VALID_LEAFS,
     as_object,
     closed_mapping,
+    execute_task,
     fake_agent_result,
     run_request,
 )
@@ -178,3 +180,45 @@ def test_result_contract_matches_capability_schema() -> None:
         cast(JSONValue, ExecutionEvidenceV1.model_json_schema())
     )
     assert VALID_LEAFS
+
+
+def test_execution_skills_keep_tool_environments_outside_candidate_and_use_family_runners() -> None:
+    execute = (_RESOURCES / "skills/aa-execute/SKILL.md").read_text(encoding="utf-8")
+    run = (_RESOURCES / "skills/aa-run/SKILL.md").read_text(encoding="utf-8")
+
+    for skill in (execute, run):
+        normalized = " ".join(skill.split())
+        assert "Do not create or update `.venv`" in normalized
+        assert "uv run --isolated pytest" in normalized
+        assert "uv run --isolated locust --headless" in normalized
+        assert "PYTHONDONTWRITEBYTECODE=1" in normalized
+        assert "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-<batch_id>" in normalized
+        assert "-p no:cacheprovider" in normalized
+        assert "--output=/tmp/aa-playwright-<batch_id>" in normalized
+        assert "Never" in normalized and "Locust file" in normalized and "pytest" in normalized
+
+
+def test_cache_safe_pytest_recipe_does_not_dirty_candidate(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "test_sample.py").write_text("def test_sample():\n    assert True\n", encoding="utf-8")
+    external_hypothesis = tmp_path / "external-hypothesis"
+    environment = {
+        **os.environ,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "HYPOTHESIS_STORAGE_DIRECTORY": str(external_hypothesis),
+    }
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "test_sample.py"],
+        cwd=candidate,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert not (candidate / ".pytest_cache").exists()
+    assert not list(candidate.rglob("__pycache__"))
+    assert not (candidate / ".hypothesis").exists()

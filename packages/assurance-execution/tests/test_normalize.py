@@ -6,11 +6,13 @@ from typing import Any, cast
 import pytest
 from graph_engine.canonical import JSONValue
 
-from tests.phase4.conformance import execute_task
-
 from assurance_execution.operations.normalize import NormalizeHandler
 from assurance_execution.operations.runner import classify_exit
-from execution_fixtures import as_object, closed_mapping  # pyright: ignore[reportMissingImports]
+from execution_fixtures import (  # pyright: ignore[reportMissingImports]
+    as_object,
+    closed_mapping,
+    execute_task,
+)
 
 
 def _normalize_input(
