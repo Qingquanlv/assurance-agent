@@ -24,6 +24,17 @@ ARCHIVE_EFFECT = "assurance.improvement.effect.archive.v1"
 _WARNING_RISKS = frozenset({"unknown", "critical", "high", "medium", "low"})
 
 
+class ArchivePublishReceipt(BaseModel):
+    model_config = _FROZEN
+
+    schema_version: Literal["1"]
+    change_id: str = Field(min_length=1)
+    manifest_digest: str = Field(min_length=1)
+    source_digest: str = Field(min_length=1)
+    target_baseline: str = Field(min_length=1)
+    final_digest: str = Field(min_length=1)
+
+
 class ProjectArchiveInput(BaseModel):
     model_config = _FROZEN
 
@@ -31,10 +42,13 @@ class ProjectArchiveInput(BaseModel):
     invocation_id: str = Field(min_length=1)
     archive_digest: str = Field(min_length=1)
     report: QualityReport
+    publish_receipt: ArchivePublishReceipt
     artifact_paths: tuple[str, ...] = ()
 
 
 def project_archive(payload: ProjectArchiveInput) -> dict[str, object]:
+    if payload.publish_receipt.change_id != payload.change_id:
+        raise InputError("publish receipt change_id does not match archive subject")
     if payload.report.change_id != payload.change_id:
         raise InputError("quality report change_id does not match archive subject")
     issues = payload.report.issues
@@ -90,6 +104,7 @@ class ProjectArchiveHandler:
 
 
 __all__ = [
+    "ArchivePublishReceipt",
     "ProjectArchiveHandler",
     "project_archive",
 ]

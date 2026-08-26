@@ -6,7 +6,7 @@ import pytest
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
-from tests.phase4.conformance import execute_task
+from tests.phase5.test_change_local_output_routing import execute_task
 
 from assurance_improvement.contracts.agent import ArchiveResultV1
 from assurance_improvement.operations.agent import ArchiveFinalizeHandler, ArchivePrepareHandler
@@ -133,13 +133,16 @@ async def test_apply_memory_requires_passed_eval(tmp_path: Path) -> None:
 async def test_project_archive_uses_quality_report_issue_risk(tmp_path: Path) -> None:
     outcome = await execute_task(
         ProjectArchiveHandler(),
-        {
-            "change_id": "CH-DEMO-001",
-            "invocation_id": "inv-archive-1",
-            "archive_digest": HEX_A,
-            "report": quality_report_payload(issue_risk="high"),
-            "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
-        },
+        json_value(
+            {
+                "change_id": "CH-DEMO-001",
+                "invocation_id": "inv-archive-1",
+                "archive_digest": HEX_A,
+                "report": quality_report_payload(issue_risk="high"),
+                "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
+                "publish_receipt": _publish_receipt(),
+            }
+        ),
         tmp_path,
     )
     assert outcome.status == "succeeded"
@@ -147,6 +150,81 @@ async def test_project_archive_uses_quality_report_issue_risk(tmp_path: Path) ->
     assert payload["archive_status"] == "archived_with_warnings"
     assert payload["issue_risk"] == "high"
     assert outcome.effects[0].kind == "assurance.improvement.effect.archive.v1"
+
+
+def _publish_receipt(change_id: str = "CH-DEMO-001") -> dict[str, object]:
+    return {
+        "schema_version": "1",
+        "change_id": change_id,
+        "manifest_digest": HEX_A,
+        "source_digest": HEX_A,
+        "target_baseline": HEX_A,
+        "final_digest": HEX_A,
+    }
+
+
+@pytest.mark.asyncio
+async def test_project_archive_without_publish_receipt_fails(tmp_path: Path) -> None:
+    outcome = await execute_task(
+        ProjectArchiveHandler(),
+        json_value(
+            {
+                "change_id": "CH-DEMO-001",
+                "invocation_id": "inv-archive-1",
+                "archive_digest": HEX_A,
+                "report": quality_report_payload(issue_risk="high"),
+                "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.status != "succeeded"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert "publish" in (outcome.failure.message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_project_archive_rejects_mismatched_publish_receipt(tmp_path: Path) -> None:
+    outcome = await execute_task(
+        ProjectArchiveHandler(),
+        json_value(
+            {
+                "change_id": "CH-DEMO-001",
+                "invocation_id": "inv-archive-1",
+                "archive_digest": HEX_A,
+                "report": quality_report_payload(issue_risk="clear"),
+                "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
+                "publish_receipt": _publish_receipt("CH-OTHER-001"),
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert "receipt" in (outcome.failure.message or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_project_archive_accepts_authenticated_publish_receipt(tmp_path: Path) -> None:
+    outcome = await execute_task(
+        ProjectArchiveHandler(),
+        json_value(
+            {
+                "change_id": "CH-DEMO-001",
+                "invocation_id": "inv-archive-1",
+                "archive_digest": HEX_A,
+                "report": quality_report_payload(issue_risk="clear"),
+                "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
+                "publish_receipt": _publish_receipt(),
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.status == "succeeded"
+    payload = as_object(outcome.output)
+    assert payload["archive_status"] == "archived"
+    assert payload["change_id"] == "CH-DEMO-001"
 
 
 @pytest.mark.asyncio

@@ -43,7 +43,7 @@ from assurance_product.product import (
     audit_full_graph,
     resolve_assurance_composition,
 )
-from assurance_product.status import render_status
+from assurance_product.status import ArchiveError, archive_published, render_status
 
 _SOURCE_FLAGS = (
     "product",
@@ -435,6 +435,30 @@ def export_command(
     _emit(document)
 
 
+@app.command("archive")
+@click.option("--project-dir", type=click.Path())
+@click.option("--change")
+@click.option("--json", "as_json", is_flag=True)
+def archive_command(
+    project_dir: str | None,
+    change: str | None,
+    as_json: bool,
+) -> None:
+    del as_json
+    _require_options(
+        {"project_dir": project_dir, "change": change},
+        ("project_dir", "change"),
+    )
+    try:
+        document = _archive_change(
+            project_dir=Path(cast(str, project_dir)),
+            change_id=cast(str, change),
+        )
+    except CommandError as error:
+        _fail(str(error), error.code)
+    _emit(document)
+
+
 @app.group("lock")
 def lock() -> None:
     """Authenticated invocation lock commands."""
@@ -781,6 +805,13 @@ def _export_change(*, project_dir: Path, change_id: str | None) -> dict[str, obj
     except (PublishError, ValueError, OSError) as error:
         raise CommandError(str(error)) from error
     return receipt.model_dump(mode="json")
+
+
+def _archive_change(*, project_dir: Path, change_id: str) -> dict[str, object]:
+    try:
+        return archive_published(Path(project_dir).resolve(), change_id)
+    except (ArchiveError, ValueError, OSError) as error:
+        raise CommandError(str(error)) from error
 
 
 def _read_authenticated_projection(
