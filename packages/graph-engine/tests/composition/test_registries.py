@@ -873,6 +873,38 @@ def test_registry_rejects_malformed_effect_schema_keyword_values(content: bytes)
         )
 
 
+def test_registry_wraps_overflowing_effect_schema_pattern() -> None:
+    contribution = PluginContribution(
+        schemas=(
+            SchemaContribution(
+                "toy.runtime.intent",
+                "application/schema+json",
+                b'{"pattern":"a{999999999999999999999999999999999999}"}',
+            ),
+            SchemaContribution("toy.runtime.receipt", "application/schema+json", b"{}"),
+        ),
+        effects=(
+            EffectRegistration(
+                "toy.runtime.audit",
+                "toy.runtime.intent",
+                "toy.runtime.receipt",
+                _EffectHandler(),
+                EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        RegistryConflict,
+        match="closed runtime subset.*schema pattern must be a valid regular expression",
+    ):
+        build_registries(
+            (_source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),),
+            (contribution,),
+            ("toy.runtime",),
+        )
+
+
 def test_schema_entries_require_schema_media_and_valid_json() -> None:
     for schema in (
         SchemaContribution("toy.runtime.schema", "application/json", b"{}"),

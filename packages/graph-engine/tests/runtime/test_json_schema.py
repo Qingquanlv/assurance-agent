@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from graph_engine.runtime.json_schema import match_json_schema
+from graph_engine.runtime.json_schema import match_json_schema, validate_json_schema
+
+
+_OVERFLOWING_PATTERN = "a{999999999999999999999999999999999999}"
 
 
 @pytest.mark.parametrize(
@@ -122,3 +125,15 @@ def test_closed_runtime_schema_accepts_arbitrary_precision_integer_minimum() -> 
     value = 10**1000
 
     match_json_schema(value, {"type": "integer", "minimum": value})
+
+
+def test_closed_runtime_match_normalizes_overflowing_pattern() -> None:
+    with pytest.raises(ValueError, match="schema pattern must be a valid regular expression"):
+        match_json_schema("a", {"type": "string", "pattern": _OVERFLOWING_PATTERN})
+
+
+def test_closed_runtime_validate_normalizes_overflowing_pattern() -> None:
+    schema = b'{"type":"string","pattern":"a{999999999999999999999999999999999999}"}'
+
+    with pytest.raises(ValueError, match="schema pattern must be a valid regular expression"):
+        validate_json_schema("a", schema)

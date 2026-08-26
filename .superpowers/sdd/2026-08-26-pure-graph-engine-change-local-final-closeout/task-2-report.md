@@ -224,3 +224,39 @@ Final focused verification (Phase 6 reconciliation, effects, runtime schema,
 all graph composition tests, and both installed Assurance composition nodes):
 `469 passed, 1 warning`. Ruff check, Ruff format check, and Pyright also passed
 for every fix-owned Python file.
+
+## Independent Review Fix Round 3 — Normalize Invalid Schema Patterns
+
+Independent review found one remaining exception leak in the closed `pattern`
+validator. Python's regular-expression compiler raises `OverflowError`, rather
+than `re.error`, for an extreme repetition count such as
+`a{999999999999999999999999999999999999}`. Because the validator caught only
+`re.error`, direct `match_json_schema` and `validate_json_schema` calls leaked
+the implementation exception, and effect-registry publication could not wrap
+it as `RegistryConflict`.
+
+The pattern compilation boundary now catches exactly `re.error` and
+`OverflowError` and normalizes both to the existing stable `ValueError`:
+`schema pattern must be a valid regular expression`. It does not catch
+`BaseException` or unrelated runtime failures.
+
+RED command:
+
+```console
+uv run pytest -q \
+  packages/graph-engine/tests/runtime/test_json_schema.py::test_closed_runtime_match_normalizes_overflowing_pattern \
+  packages/graph-engine/tests/runtime/test_json_schema.py::test_closed_runtime_validate_normalizes_overflowing_pattern \
+  packages/graph-engine/tests/composition/test_registries.py::test_registry_wraps_overflowing_effect_schema_pattern
+```
+
+Result before the fix: `3 failed`, each leaking `OverflowError: the repetition
+number is too large`. After the one-line exception-boundary fix: `3 passed`;
+the composition regression observes the required `RegistryConflict` wrapper.
+
+Final focused runtime-schema and registry verification: `90 passed`. Ruff check
+passed, Ruff format reported all three fix-owned Python files already formatted,
+and Pyright reported `0 errors, 0 warnings, 0 informations` for the production
+validator and direct-runtime regression file. The full historical
+`test_registries.py` remains outside the existing Pyright scope because its
+shared protocol fixtures already produce 30 unrelated type errors; this fix
+does not change those fixtures.

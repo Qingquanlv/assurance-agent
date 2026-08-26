@@ -157,7 +157,7 @@ def _assert_closed_json_schema(
             raise ValueError("schema pattern must be text")
         try:
             re.compile(pattern)
-        except re.error as error:
+        except (re.error, OverflowError) as error:
             raise ValueError("schema pattern must be a valid regular expression") from error
 
     if "const" in schema:
