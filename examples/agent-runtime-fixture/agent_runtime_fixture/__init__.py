@@ -7,6 +7,7 @@ from typing import cast
 
 from agent_runtime_contracts import (
     AgentRunRequest,
+    AgentWorkspaceV1,
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
@@ -54,6 +55,19 @@ def _result_contract(schema_bytes: bytes) -> ResultContract:
     )
 
 
+def _agent_workspace(config: Mapping[str, object]) -> AgentWorkspaceV1:
+    permissions = config.get("permissions")
+    writes = permissions.get("writes") if isinstance(permissions, Mapping) else None
+    allowed = sorted(str(item) for item in writes) if isinstance(writes, list) else ["result.json"]
+    payload = {
+        "schema_version": "1",
+        "agent_profile": "assurance-v1-doc-author",
+        "write_root": "qa/changes/CH-1/.staging/attempt-1",
+        "allowed_outputs": allowed,
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
+
+
 def assemble_request(resources: Mapping[str, bytes], config: JSONValue) -> AgentRunRequest:
     if not isinstance(config, Mapping):
         raise TypeError("fixture config must be a mapping")
@@ -68,6 +82,7 @@ def assemble_request(resources: Mapping[str, bytes], config: JSONValue) -> Agent
             permission_profile_digest=canonical_digest(config["permissions"]),
             limits={"max_seconds": 120},  # type: ignore[arg-type]
         ),
+        workspace=_agent_workspace(config),
         request_policy_digest=canonical_digest(config["request_policy"]),
         request_config_digest=canonical_digest(config),
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pydantic.root_model  # noqa: F401  # keep RootModel[list[...]] reimportable
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -19,7 +20,7 @@ from typing import Any, TypeVar, cast
 from agent_runtime_contracts import AgentRunRequest
 from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes
 from graph_engine import Engine
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_digest as engine_canonical_digest
 from graph_engine.composition import (
     ConfigTreePluginSource,
     EditableWheelPluginSource,
@@ -31,13 +32,19 @@ from graph_engine.composition import (
 from graph_engine.composition.lock import InvocationLock
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import (
+    InvocationWorkspaceBinding,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
     TaskContext,
     TaskHandler,
     TaskOutcome,
 )
+from graph_engine.runtime.activity import LedgerTaskActivityPort
+from graph_engine.runtime.ledger import Ledger
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import RunResult
+from graph_engine.runtime.host_receipts import prove_call_quiescent
 from graph_engine.runtime.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
@@ -168,6 +175,7 @@ def binding_data_template() -> dict[str, JSONValue]:
     }
     policy_digest = hashlib_sha256(policy_bytes)
     return {
+        "agent_profile": "aa-doc-author",
         "execution": execution,
         "request_policy_digest": policy_digest,
         "request_config_digest": canonical_digest(
@@ -288,6 +296,11 @@ class SixWheelTaskHost:
         self.recorded_request_bytes: bytes | None = None
         self._handlers: Mapping[str, TaskHandler] = {}
         self._store: Any = None
+        self._receipts: Any = None
+        self._ledger: Ledger | None = None
+
+    def bind_ledger(self, ledger: Ledger) -> None:
+        self._ledger = ledger
 
     def bind_invocation_runtime(
         self,
@@ -295,30 +308,113 @@ class SixWheelTaskHost:
         handlers: Mapping[str, TaskHandler],
         store: object,
         receipts: object | None = None,
+        handler_import_roots: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
-        del receipts
+        del handler_import_roots
         self._handlers = handlers
         self._store = store
+        self._receipts = receipts
+
+    def _activity_port(self, call: TaskHostExecuteCall) -> LedgerTaskActivityPort | None:
+        if self._ledger is None or call.activity_rpc.activity_id is None:
+            return None
+        return LedgerTaskActivityPort(ledger=self._ledger, identity=call.activity_rpc)
+
+    def _execute_result(self, call: TaskHostExecuteCall, outcome: TaskOutcome) -> TaskHostCallResult:
+        port = self._activity_port(call)
+        if port is not None and outcome.status == "succeeded":
+            port.mark_dispatch_started({"adapter_id": self.adapter_id, "profile": "fixture"})
+            port.bind({"adapter_id": self.adapter_id, "state": "open"})
+        self._install_terminal_receipt(call, outcome, port=port)
+        return TaskHostCallResult(operation="execute", outcome=outcome)
+
+    def _install_terminal_receipt(
+        self,
+        call: TaskHostExecuteCall,
+        outcome: TaskOutcome,
+        *,
+        port: LedgerTaskActivityPort | None,
+    ) -> None:
+        if self._receipts is None or call.identity.activity_id is None:
+            return
+        assert self._store is not None
+        identity = call.attempt_root.workspace_identity
+        binding = self._store.begin(
+            task_id=identity.task_id,
+            attempt=identity.attempt,
+            output_paths=identity.output_paths,
+        )
+        staged = self._store.seal(binding.identity)
+        snapshot = port.snapshot if port is not None else None
+        sink = self._receipts.sink_for(call.identity)
+        sink.install(
+            TaskHostTerminalReceipt(
+                host_implementation_digest=call.identity.host_implementation_digest,
+                wire_schema_version=call.identity.wire_schema_version,
+                invocation_id=call.identity.invocation_id,
+                task_id=call.identity.task_id,
+                activation_id=call.identity.activation_id,
+                attempt=call.identity.attempt,
+                activity_id=call.identity.activity_id,
+                operation=call.identity.operation,
+                request_digest=(
+                    snapshot.request_digest
+                    if snapshot is not None
+                    else engine_canonical_digest(cast(JSONValue, call.request.model_dump(mode="json")))
+                ),
+                workspace_identity_digest=binding.identity.identity_digest,
+                project_root_digest=binding.identity.project_digest,
+                write_root_digest=binding.identity.write_root_digest,
+                baseline_digest=engine_canonical_digest(
+                    [item.model_dump(mode="json") for item in binding.identity.baseline_files]
+                ),
+                staged_write_set_digest=staged.staged_digest,
+                dispatch_fingerprint_digest=(
+                    snapshot.dispatch_fingerprint_digest if snapshot is not None else None
+                ),
+                reference_digest=snapshot.reference_digest if snapshot is not None else None,
+                outcome=outcome,
+                outcome_digest=engine_canonical_digest(cast(JSONValue, outcome.model_dump(mode="json"))),
+                terminal_proof_digest=None,
+                quiescence_proof_digest=prove_call_quiescent(),
+                host_call_id=sink.host_call_id,
+            )
+        )
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
         assert self._store is not None
         request = call.request.model_copy(update={"input": _unwrap_engine_input(call)})
-        workspace_root = Path(self._store.root) / "attempts" / call.attempt_root.attempt_directory_id
-        workspace_root.mkdir(parents=True, exist_ok=True)
+        identity = call.attempt_root.workspace_identity
+        if hasattr(self._store, "begin"):
+            binding = self._store.begin(
+                task_id=identity.task_id,
+                attempt=identity.attempt,
+                output_paths=identity.output_paths,
+            )
+            project_root = binding.project_root
+            write_root = binding.write_root
+            workspace_identity = binding.identity
+        else:
+            attempts_root = Path(getattr(self._store, "attempts_root", getattr(self._store, "root")))
+            write_root = attempts_root / identity.attempt_id
+            write_root.mkdir(parents=True, exist_ok=True)
+            project_root = Path(getattr(self._store, "project_root", write_root))
+            workspace_identity = identity
         if call.capability_id in RUNTIME_EXECUTE.values():
-            outcome = self._execute_fake(request.input)
-            return TaskHostCallResult(operation="execute", outcome=outcome)
+            return self._execute_result(call, self._execute_fake(request.input))
         handler = self._handlers[call.request.capability_id]
         outcome = await handler.execute(
             request,
             TaskContext(
-                workspace_root=workspace_root,
+                project_root=project_root,
+                write_root=write_root,
+                workspace_identity=workspace_identity,
                 heartbeat=lambda: None,
                 cancel_requested=lambda: False,
                 invocation=call.request.invocation,
             ),
         )
-        return TaskHostCallResult(operation="execute", outcome=outcome)
+        return self._execute_result(call, outcome)
 
     def _execute_fake(self, payload: JSONValue) -> TaskOutcome:
         agent_request = AgentRunRequest.model_validate(payload)
@@ -349,8 +445,9 @@ class SixWheelTaskHost:
         )
 
     def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[TaskHostTerminalReceipt, ...]:
-        del identity
-        return ()
+        if self._receipts is None:
+            return ()
+        return self._receipts.authenticate(identity)
 
 
 def resolve_fixture(
@@ -413,14 +510,72 @@ def _engine_call(fn: Callable[..., _T], *args: object) -> _T:
         return pool.submit(fn, *args).result()
 
 
+def _seed_fixture_project(project_root: Path) -> None:
+    matrix = [
+        {
+            "mrc_id": "MRC-API-001",
+            "key": "auth.session.create",
+            "required": True,
+            "covered_by_cases": ["TC_MENU_001"],
+            "status": "covered",
+            "skip_reason": None,
+            "category": "api",
+            "layer": "api",
+        },
+        {
+            "mrc_id": "MRC-API-002",
+            "key": "entities.item.create",
+            "required": True,
+            "covered_by_cases": ["TC_MENU_002"],
+            "status": "covered",
+            "skip_reason": None,
+            "category": "api",
+            "layer": "api",
+        },
+    ]
+    matrix_path = project_root / "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    matrix_path.parent.mkdir(parents=True, exist_ok=True)
+    if not matrix_path.exists():
+        matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+    source = project_root / "src" / "app.py"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    if not source.exists():
+        source.write_text("def create_item():\n    return None\n", encoding="utf-8")
+
+
+def _workspace_binding(engine_root: Path) -> InvocationWorkspaceBinding:
+    engine_root.mkdir(parents=True, exist_ok=True)
+    project_root = engine_root.parent / f".{engine_root.name}-project"
+    attempts_root = engine_root.parent / f".{engine_root.name}-attempts"
+    receipts_root = engine_root.parent / f".{engine_root.name}-receipts"
+    for path in (project_root, attempts_root, receipts_root):
+        path.mkdir(parents=True, exist_ok=True)
+    _seed_fixture_project(project_root)
+    return InvocationWorkspaceBinding(
+        project_root=project_root,
+        attempts_root=attempts_root,
+        receipts_root=receipts_root,
+    )
+
+
 def _start_until_blocked(
     engine_root: Path,
     host: SixWheelTaskHost,
     composition: FrozenComposition,
     invocation_id: str,
 ) -> tuple[RunResult, Path]:
+    authorization = empty_runtime_authorization()
+    binding = _workspace_binding(engine_root)
     with Engine(engine_root, host=host) as engine:
-        with engine.start(composition, entrypoint="fixture", invocation_id=invocation_id) as handle:
+        with engine.start(
+            composition,
+            entrypoint="fixture",
+            invocation_id=invocation_id,
+            seed=empty_invocation_seed(),
+            authorization=authorization,
+            workspace_binding=binding,
+        ) as handle:
+            host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
             result = engine.run_until_blocked(handle)
             return result, handle.invocation_root
 
@@ -431,8 +586,16 @@ def _open_until_blocked(
     composition: FrozenComposition,
     invocation_id: str,
 ) -> RunResult:
+    authorization = empty_runtime_authorization()
+    binding = _workspace_binding(engine_root)
     with Engine(engine_root, host=host) as engine:
-        with engine.open(invocation_id, composition) as handle:
+        with engine.open(
+            invocation_id,
+            composition,
+            authorization=authorization,
+            workspace_binding=binding,
+        ) as handle:
+            host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
             return engine.run_until_blocked(handle)
 
 
@@ -618,7 +781,7 @@ def _import_activation(product_root: Path, workspace: Path) -> Iterator[None]:
     finally:
         sys.path[:] = path_snapshot
         for name in tuple(sys.modules):
-            if name not in module_snapshot:
+            if name not in module_snapshot and not name.startswith("pydantic"):
                 del sys.modules[name]
         sys.modules.update(module_snapshot)
         importlib.invalidate_caches()

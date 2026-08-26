@@ -463,27 +463,33 @@ def _run_engine(
         engine.close()
 
 
-def _published_workspace_output(workspace_root: Path, expected_path: str) -> Path:
-    head_path = workspace_root / "HEAD.json"
-    if not head_path.is_file():
-        raise SystemExit(f"workspace HEAD is missing: {head_path}")
-    head = json.loads(head_path.read_text(encoding="utf-8"))
-    tree_id = head.get("tree_id") if isinstance(head, dict) else None
-    if not isinstance(tree_id, str) or not tree_id:
-        raise SystemExit("workspace HEAD is missing tree_id")
-    published = workspace_root / "trees" / tree_id / expected_path
-    if not published.is_file():
+def _attempt_write_root(output: Path, item: ManifestItem) -> Path:
+    return output / "engine" / "invocations" / item.item_id / "attempts"
+
+
+def _published_workspace_output(write_root: Path, expected_path: str) -> Path:
+    matches = sorted(
+        path
+        for path in write_root.rglob(expected_path)
+        if path.is_file() and not path.is_symlink() and "trees" not in path.parts
+    )
+    if not matches:
+        leftover_head = write_root.parent / "workspace" / "HEAD.json"
+        if leftover_head.is_file():
+            raise SystemExit("whole-tree workspace HEAD is not the published write-root output")
+        raise SystemExit(f"expected write-root output {expected_path!r} is missing under {write_root}")
+    if len(matches) != 1:
         raise SystemExit(
-            f"expected workspace output {expected_path!r} is missing from published tree {tree_id}"
+            f"expected exactly one write-root output {expected_path!r} under {write_root}, found {len(matches)}"
         )
-    return published
+    return matches[0]
 
 
 def _validate_workspace_output(manifest: dict[str, Any], output: Path, item: ManifestItem) -> None:
     expected_path = manifest["expected_output"]["path"]
     expected_digest = manifest["expected_output"]["digest"]
-    workspace_root = output / "engine" / "invocations" / item.item_id / "workspace"
-    published = _published_workspace_output(workspace_root, expected_path)
+    write_root = _attempt_write_root(output, item)
+    published = _published_workspace_output(write_root, expected_path)
     actual_digest = canonical_digest(json.loads(published.read_text(encoding="utf-8")))
     if actual_digest != expected_digest:
         raise SystemExit(

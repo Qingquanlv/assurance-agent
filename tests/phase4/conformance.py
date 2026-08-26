@@ -11,7 +11,7 @@ from typing import cast
 import json
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import (
     CandidateFile,
@@ -30,6 +30,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
     TaskStatus,
+    TaskWorkspaceIdentity,
     ValidationContext,
 )
 
@@ -181,6 +182,20 @@ def _assert_canonical_bytes(item_id: str, media_type: str, content: bytes) -> No
         raise AssertionError(f"{item_id} content is not canonical JSON")
 
 
+def _workspace_identity() -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "phase4-task",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": _DETERMINISTIC_DIGEST,
+        "write_root_digest": _DETERMINISTIC_DIGEST,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
+
+
 async def _execute_in_workspace(
     handler: TaskHandler,
     request: TaskRequest | JSONValue,
@@ -192,7 +207,9 @@ async def _execute_in_workspace(
     outcome = await handler.execute(
         task_request,
         TaskContext(
-            workspace_root=workspace,
+            project_root=workspace,
+            write_root=workspace,
+            workspace_identity=_workspace_identity(),
             heartbeat=lambda: None,
             cancel_requested=lambda: False,
             invocation=task_request.invocation,

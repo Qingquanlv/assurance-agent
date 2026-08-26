@@ -16,6 +16,7 @@ import httpx
 
 from agent_runtime_contracts import (
     AgentRunRequest,
+    AgentWorkspaceV1,
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
@@ -103,6 +104,16 @@ def _load_adapter_test_module(package: str, module: str) -> Any:
     return __import__(module)
 
 
+def _agent_workspace() -> AgentWorkspaceV1:
+    payload = {
+        "schema_version": "1",
+        "agent_profile": "assurance-v1-doc-author",
+        "write_root": "qa/changes/CH-1/.staging/attempt-1",
+        "allowed_outputs": ["result.json"],
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
+
+
 def agent_run_request() -> AgentRunRequest:
     schema_digest = canonical_digest(RESULT_SCHEMA)
     return AgentRunRequest(
@@ -119,6 +130,7 @@ def agent_run_request() -> AgentRunRequest:
             permission_profile_digest=_SHA,
             limits={"max_seconds": 120},  # type: ignore[arg-type]
         ),
+        workspace=_agent_workspace(),
         request_policy_digest=_SHA,
         request_config_digest=_SHA,
     )

@@ -52,19 +52,20 @@ def _load_run_item(repo_root: Path):
     return module
 
 
-def test_workspace_output_is_the_published_head_tree(tmp_path: Path, repo_root: Path) -> None:
+def test_workspace_output_is_the_dual_root_write_set(tmp_path: Path, repo_root: Path) -> None:
     run_item = _load_run_item(repo_root)
     payload = {"artifact": "result.json", "status": "ok"}
     item_id = "phase3-opencode-live"
-    tree_id = "5" * 64
-    workspace = tmp_path / "engine" / "invocations" / item_id / "workspace"
-    published = workspace / "trees" / tree_id / "result.json"
-    leftover = workspace / "attempts" / ("a" * 64) / "result.json"
+    write_root = tmp_path / "engine" / "invocations" / item_id / "attempts" / "task-1" / "attempt-1"
+    leftover_workspace = tmp_path / "engine" / "invocations" / item_id / "workspace"
+    published = write_root / "result.json"
+    leftover = leftover_workspace / "trees" / ("5" * 64) / "result.json"
     published.parent.mkdir(parents=True)
     leftover.parent.mkdir(parents=True)
     published.write_text(json.dumps(payload), encoding="utf-8")
     leftover.write_text(json.dumps({"status": "stale"}), encoding="utf-8")
-    (workspace / "HEAD.json").write_text(json.dumps({"tree_id": tree_id}), encoding="utf-8")
+    (leftover_workspace).mkdir(parents=True, exist_ok=True)
+    (leftover_workspace / "HEAD.json").write_text(json.dumps({"tree_id": "5" * 64}), encoding="utf-8")
     manifest = json.loads((repo_root / "benchmark" / "agent-runtime-phase3" / "manifest.json").read_text())
     item = run_item.ManifestItem(
         adapter="opencode",
@@ -76,3 +77,8 @@ def test_workspace_output_is_the_published_head_tree(tmp_path: Path, repo_root: 
         secret_env="OPENCODE_PHASE3_TOKEN",
     )
     run_item._validate_workspace_output(manifest, tmp_path, item)
+    selected = run_item._published_workspace_output(
+        tmp_path / "engine" / "invocations" / item_id / "attempts",
+        "result.json",
+    )
+    assert selected == published

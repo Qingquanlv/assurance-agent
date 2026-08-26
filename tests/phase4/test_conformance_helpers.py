@@ -31,6 +31,7 @@ from graph_engine_toy_a.plugin import ToyAPlugin
 
 from agent_runtime_contracts import (
     AgentRunRequest,
+    AgentWorkspaceV1,
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
@@ -47,6 +48,21 @@ from tests.phase4.wheel_isolation import ALLOWED_PACKAGES, isolate_package
 
 MINIMAL_PRODUCT = Path(__file__).resolve().parent / "fixtures" / "minimal-product.yaml"
 _SHA = "a" * 64
+
+
+def _agent_workspace(
+    *,
+    write_root: str = "qa/changes/CH-1/.staging/attempt-1",
+    allowed_outputs: tuple[str, ...] = ("qa/changes/CH-1/proposal.md",),
+    agent_profile: str = "assurance-v1-doc-author",
+) -> AgentWorkspaceV1:
+    payload = {
+        "schema_version": "1",
+        "agent_profile": agent_profile,
+        "write_root": write_root,
+        "allowed_outputs": list(allowed_outputs),
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
 
 class _ProviderWithUndeclaredResource:
@@ -141,7 +157,7 @@ class _MixedKindSchemaAndPersonaProvider:
 
 class _EchoHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        (context.workspace_root / "echo.txt").write_bytes(b"echo\n")
+        (context.write_root / "echo.txt").write_bytes(b"echo\n")
         return TaskOutcome.succeeded(request.input)
 
 
@@ -158,6 +174,7 @@ class _PrepareHandler:
                 extraction_mode="structured",
             ),
             execution=FrozenExecutionSelection.model_validate(binding["execution"]),
+            workspace=_agent_workspace(),
             request_policy_digest=str(binding["request_policy_digest"]),
             request_config_digest=str(binding["request_config_digest"]),
         )
@@ -246,6 +263,7 @@ async def test_execute_task_returns_outcome_and_workspace_bytes(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_agent_skill_harness_finalizes_fake_adapter_result() -> None:
     binding = {
+        "agent_profile": "aa-doc-author",
         "execution": {
             "provider_model": "test-model",
             "worker_profile": "worker",
@@ -282,6 +300,7 @@ def test_fake_adapter_records_canonical_request_bytes_and_digest() -> None:
                 "limits": {"max_seconds": 5},
             }
         ),
+        workspace=_agent_workspace(),
         request_policy_digest=_SHA,
         request_config_digest=_SHA,
     )
