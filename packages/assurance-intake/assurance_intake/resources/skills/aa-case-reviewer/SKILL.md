@@ -10,11 +10,22 @@ Do not rely on prior conversation context.
 
 **Before doing any work:**
 
-1. Read graph-owned case-design phase status.
-2. Verify `phases.case_design.status == done`.
-3. Read input files from disk: `.qa.yaml`, `proposal.md`, `cases/<module>/case.yaml`.
+1. Treat invocation of this skill by the product graph as authenticated predecessor proof
+   that case-design finalize completed successfully. Graph phase state is not a workspace
+   artifact: do not search `.qa.yaml` or any project file for `phases.case_design.status`.
+   Its absence on disk is not a blocker.
+2. If graph-owned run context explicitly includes `phases.case_design.status`, verify that
+   it is `done`; an explicit contradictory value is a STOP condition.
+3. Read input files from disk: `.qa.yaml`, `proposal.md`,
+   `trace/minimum-coverage-matrix.json`, and `cases/<module>/case.yaml`.
 4. Independently read the relevant **product source code** for every product fact used in the verdict. At minimum inspect the implementation entry point plus the controller/service/schema/model or frontend component needed to verify the proposed scenarios. Do not treat proposal, case, Explore advisory, requirements, docs, or tests as product-fact evidence.
-5. If any required artifact is missing, or relevant product source cannot be read, **STOP** before a normal pass/needs-fix verdict. Do not invent product behavior. If the orchestrator requires a JSON artifact for diagnostics, write `needs_human_review` with the missing evidence identified.
+5. Distinguish author-owned outputs from external evidence. A missing or invalid
+   case-design output (`.qa.yaml`, `proposal.md`, case YAML, or MRC matrix) is a
+   mechanically fixable authoring defect: return `needs_fix` with an exact locator
+   and repair plan. If relevant product source cannot be read, **STOP** before a
+   normal pass/needs-fix verdict; do not invent product behavior. If the orchestrator
+   requires a JSON artifact for that external-evidence failure, write
+   `needs_human_review` with the missing evidence identified.
 6. Use files read in this invocation as the sole source of truth; do not rely on the case author's conclusions or prior conversation.
 
 **After completing work:**
@@ -73,7 +84,7 @@ Required independent evidence:
 <product source files relevant to the requirement>
 ```
 
-Source verification is mandatory even when Explore or Case Design already read the same files. The reviewer must repeat the read independently and must not copy `source_code_evidence` from `explore/advisory.json` as a substitute.
+Source verification is mandatory even when Explore or Case Design already read the same files. The reviewer must repeat the read independently and must not copy `source_code_evidence` from `explore/exploration.json` as a substitute.
 
 Optional reference files:
 
@@ -128,7 +139,7 @@ Review the generated case artifacts for:
 
 ### Explore soft check (Phase 0.5 — warning only, not blocker)
 
-When `explore/advisory.json` exists and `phases.explore.status == done`:
+When `explore/exploration.json` exists and `phases.explore.status == done`:
 
 ```
 FOR EACH watchlist item WHERE confidence == high:
@@ -174,12 +185,12 @@ Finding example:
 
 ### Minimum Required Coverage gate (hard)
 
-When `risk-advisory/advisory.json` or `explore/advisory.json` contains `minimum_required_coverage`:
+When `risk-advisory/advisory.json` or `explore/exploration.json` contains `minimum_required_coverage`:
 
 ```text
 FOR EACH required MRC item:
-  It MUST appear in at least one case trace.minimum_required_coverage
-  It MUST appear in trace/minimum-coverage-matrix.json covered_by_cases
+  It MUST appear as one exact row in trace/minimum-coverage-matrix.json
+  A covered row MUST name at least one existing case in covered_by_cases
   The covering case type/layer MUST match the MRC layer (api/e2e/both)
   Closed-category keys (data_integrity / negative / auth / e2e_if_enabled journey)
   MUST cite the DataKnowledge / journey closed set — not freely invented names
@@ -188,9 +199,38 @@ FOR EACH required MRC item:
 Violations:
 
 - required MRC item has no covering case → `needs_fix`
-- matrix and case.yaml trace disagree → `needs_fix`
-- e2e_if_enabled item is skipped without explicit skipped_by_scope + reason → `needs_human_review`
+- matrix references a missing case or a case in the wrong layer → `needs_fix`
+- e2e_if_enabled item is skipped without explicit skipped_by_scope + reason → `needs_fix`
+  (the author must either cover it or add the explicit reason). Escalate to human
+  only when an explicit reason exists and conflicts with another frozen scope input.
 - closed-category MRC key absent from `.aa/data-knowledge.yaml` / declared journey set **and** no matching `plans/data-knowledge.proposal.*.yaml` `discovered_candidates` entry → `needs_fix` (case-design must not invent MRC keys; unknown keys require a knowledge proposal)
+
+Do not require or suggest `trace.minimum_required_coverage` in case YAML. Case
+`trace` is a separate capability proof map whose keys must be exact graph-provided
+typed capability leaves; MRC IDs and MRC keys belong only in
+`trace/minimum-coverage-matrix.json`.
+
+Treat the MRC document as a complete coverage inventory, not as an implicit
+business oracle. Every advisory MRC item must have one row, but
+`required: true` does not by itself define an expected product behavior:
+
+- When an explicit requirement or a resolved Explore `assertion_intent` fixes
+  the expected behavior, require a covering case and use `needs_fix` for a
+  missing row, fixture, step, assertion, or mapping.
+- When a scenario was introduced only by advisory expansion, lies outside the
+  explicit owner requirement, and has no frozen oracle, its exact matrix row is
+  `skipped_by_scope` with an empty case list and a precise reason. If the author
+  omitted that row or invented an assertion, return bounded `needs_fix` to add
+  the skipped row or narrow the unsupported assertion. Do not create a blocking
+  `needs_review` item and do not ask a human to define optional new behavior.
+- Use `needs_human_review` only when the explicit owner requirement itself
+  requires the ambiguous behavior and available frozen inputs/source do not
+  select one meaning.
+
+A matching `discovered_candidates[].knowledge_key` authenticates proposed
+closed-category vocabulary for an MRC row. It does not promote that key into an
+L1 capability leaf. Never require a proposed MRC key in case `trace`; verify
+case trace only against the graph-provided typed L1 leaf set.
 
 `case-review.json` should include:
 
@@ -233,6 +273,13 @@ Look for:
 
 If a requirement is ambiguous, do not invent product behavior. Mark it as human review required.
 
+This ambiguity rule does not override frozen Explore intent. When the authenticated
+Explore advisory answers an open question with `assertion_intent: assert_ideal`,
+the ideal invariant named by that priority hint is the expected behavior for case
+design even when current source violates it. Treat that source mismatch as the bug
+the later execution/issue-analysis flow is meant to detect; do not route it to
+human review and do not ask case-design to preserve the current faulty behavior.
+
 ### 2. Case Clarity
 
 Each case should have clear:
@@ -274,7 +321,6 @@ modified:
     # ... all required case fields
 removed:
   - case_id: "TC_USER_AUTH_003"
-    reason: "..."
 ```
 
 Review every case under `added` and `modified`. Review every entry under `removed`.
@@ -283,8 +329,12 @@ Do not expect a top-level `case_id` in the change delta file — cases are alway
 
 **Required fields per case under `added` / `modified`:**
 
+`CaseYamlAuthoring is the sole required-field source`; do not import required
+fields from legacy case examples. In particular, `tags` is not required,
+`framework` cannot be null, and `trace` must be non-empty.
+
 ```yaml
-case_id: "TC_[A-Z0-9]+(_[A-Z0-9]+)*_[0-9]{3}"  # underscore-only; e.g. TC_USER_001, TC_USER_AUTH_002 — hyphens are NOT allowed
+case_id: "TC_USER_AUTH_002"          # non-empty letters/digits/underscores only
 title: "..."
 status: draft|active|deprecated
 priority: P0|P1|P2|P3
@@ -294,14 +344,13 @@ module: "..."
 requirement_id: "..."
 feature_name: "..."
 test_condition_id: "..."               # required (TBD acceptable with rationale)
-design_technique: use_case|equivalence_partitioning|boundary_value_analysis|...
+design_technique: "..."                 # non-empty test-design description
 objective: "..."
-tags: []
 summary: "..."
 preconditions: []
 test_data: []
-steps: []
-assertions: []
+steps: ["at least one step"]
+assertions: ["at least one observable assertion"]
 postconditions: []
 edge_cases: []
 related_cases: []
@@ -319,13 +368,14 @@ regression:
 automation:
   required: true|false
   # no `target` field — top-level `type` (API|E2E|Fuzz|Performance) is the single source of truth
-  framework: pytest|pytest-playwright|schemathesis|locust|null
+  framework: pytest|pytest-playwright|schemathesis|locust
   status: not_automated|planned|automated|flaky|deprecated
-  confirmed_by: user|null
-  confirmed_at: <ISO-8601|null>
-  fuzz: { endpoints: [...], expectations: [...] }          # only when type: Fuzz
-  performance: { scenario: { capability, endpoint, thresholds, load } }   # only when type: Performance
-trace: {}
+  confirmed_by: user|null                                  # optional; omission means null
+  confirmed_at: <ISO-8601|null>                            # optional; omission means null
+  fuzz: { endpoints: [{method, path}], property, expectations: [...] }    # only when type: Fuzz
+  performance: { scenario: { capability, endpoint: "GET /path", thresholds, load } } # only when type: Performance
+trace:
+  <exact graph-provided typed capability leaf>: {covered: true}
 ```
 
 **`automation_targets` field:** For change delta files produced by `aa-case-design`, `automation_targets` is **forbidden** and must be flagged as a blocker. Legacy stable case files in `qa/cases/**` may use it for reference, but the change delta under `qa/changes/<change-id>/cases/**/case.yaml` must use the `automation` block.
@@ -354,6 +404,15 @@ For E2E cases, check:
 - Test data is available or constructible
 - Assertions can be checked with Playwright or pytest
 - No hidden manual-only step is required
+
+An authenticated graph capability plus DataKnowledge entry is constructible test
+evidence. In particular, when `auth.e2e_limited_user_login` and
+`capabilities.adapters.e2e.auth.seed_limited_user` are provided, a limited-user
+precondition may rely on those declared factories and navigate directly to the
+known page route before asserting permission-directed action visibility. Exact
+role/menu/API binding mechanics belong in E2E planning and code generation. Do not
+escalate that case to human review merely because the product component does not
+itself define the test fixture.
 
 For API cases, check:
 
@@ -409,15 +468,15 @@ Check whether the case links back to:
 
 Case YAML must NOT contain any of the following. Flag as a blocker if found:
 
-Structured endpoint identity is the one field-level distinction: for Fuzz and
-Performance cases, `automation.fuzz.endpoints[]` and
-`automation.performance.scenario.endpoint` must remain non-empty semantic endpoint identifiers
-(for example, `department create operation`). They are not
-execution mappings. A literal HTTP route such as `/api/v1/dept/create` is still
-forbidden there, but the finding must instruct the fixer to replace the route
-with a semantic identifier, never remove or empty the schema-required field.
+Fuzz and Performance are the field-level exception to the general rule below:
+`automation.fuzz.endpoints[]` must contain concrete `method` + absolute `path`
+objects and `automation.fuzz.property` plus non-empty `expectations` are required.
+`automation.performance.scenario.endpoint` must identify the concrete HTTP
+operation as `METHOD /absolute/path`, together with an exact capability leaf,
+explicit positive load, and absolute thresholds. Do not flag those schema-owned
+fields as forbidden execution detail.
 
-- HTTP method or endpoint path (e.g. `POST /api/v1/...`, `GET /api/...`)
+- HTTP method or endpoint path outside the schema-owned Fuzz/Performance fields above
 - `Authorization` header values (e.g. `Bearer ${token}`)
 - Concrete request URLs with environment host (e.g. `https://prod.example.com/...`)
 - Hard-coded auth tokens, real credentials, or secrets
@@ -530,6 +589,17 @@ Return one of these decisions:
 - Issues are clear and can be automatically fixed.
 - No product decision is required.
 - No high-risk ambiguity exists.
+- The requirement, frozen artifacts, and independently read product source make the intended
+  behavior unambiguous, and the repair is a bounded edit to the case/proposal artifacts that the
+  independent `aa-case-design` agent can apply from explicit locators and instructions.
+- The case claims a behavior but omits the directly required fixture, step, or assertion. For
+  example, when a source-verified parent/child tree assertion has only root test data, adding a
+  child fixture plus the matching steps and assertions is a `needs_fix` repair; it does not require
+  a person to rediscover already-proven behavior.
+- Severity alone does not require human review. A high-severity finding may still be mechanically fixable
+  when its desired result and exact edit scope are already proven. In that situation you
+  **must use `needs_fix`**, populate `auto_fix_plan`, and route back to the independent case-design
+  agent.
 
 **Use `needs_human_review` when:**
 
@@ -537,7 +607,14 @@ Return one of these decisions:
 - Test scope needs confirmation.
 - Auth/role/data behavior is unknown.
 - A missing requirement cannot be inferred from files.
-- Risk level is high or critical.
+- The required repair has two or more plausible product meanings and the available evidence does
+  not select one. High or critical risk by itself is not such an ambiguity.
+
+An optional assertion invented by the case author is not, by itself, a reason to
+ask a person to define new business behavior. When that assertion is not required
+by the requirement or frozen MRC, return `needs_fix` with the bounded repair
+"remove or narrow the unsupported assertion". Human review is reserved for an
+ambiguity that blocks an explicitly required scenario.
 
 **Use `reject` when:**
 
@@ -598,7 +675,9 @@ When `decision == "needs_fix"`, ALL of the following MUST hold — violating any
 - Every `auto_fix_plan[].finding_id` MUST reference an existing entry in `findings`.
 - Every referenced finding MUST have `auto_fix_allowed == true`.
 - Every referenced finding MUST have `human_review_required == false`.
-- Findings with `severity in ["high", "critical"]` MUST NOT be referenced in `auto_fix_plan`.
+- Findings with `severity == "critical"` MUST NOT be referenced in `auto_fix_plan`.
+- A `high` finding MAY be referenced only when requirement/product-source evidence proves one
+  intended repair and the plan names a bounded artifact locator and exact fields or steps to edit.
 
 ---
 
@@ -626,6 +705,8 @@ Examples of auto-fixable findings:
 - YAML formatting issue
 - Duplicate title that can be renamed safely
 - Missing assertion that is directly implied by a step
+- Missing fixture or step needed by an existing assertion when the requirement and independently
+  verified product source prove the intended behavior and the affected case locator is exact
 
 Set `human_review_required = true` when:
 
@@ -634,6 +715,9 @@ Set `human_review_required = true` when:
 - Test scope is disputed
 - A requirement interpretation is uncertain
 - The fix would require inventing business behavior
+
+Severity alone does not require human review. Choose the route from evidence ambiguity and repair
+scope, not from the highest finding severity.
 
 ---
 
@@ -754,20 +838,15 @@ Use this structure:
 
 ## Final Response
 
-After writing the files, respond with:
+After writing both files, re-open `case-review.json` and parse it. Return the complete parsed JSON object
+as the final assistant response. The response must
+be exactly the same object written to `case-review.json`, including every field
+required by the injected result contract. Do not wrap it in a Markdown fence or
+add prose before or after it.
 
-```
-Case review completed.
-
-Decision: <decision>
-Risk: <risk_level>
-Human review required: <true|false>
-Auto fix allowed: <true|false>
-
-Files:
-- qa/changes/<change-id>/review/case-review.json
-- qa/changes/<change-id>/review/case-review-summary.md
-```
+Do not return only the routing fields (`decision`, `risk_level`,
+`human_review_required`, `auto_fix_allowed`, `next_action`). The graph needs the
+complete review object even though the same object also exists on disk.
 
 Do not claim the review passed unless `decision = pass`.
 

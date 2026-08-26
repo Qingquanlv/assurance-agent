@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import canonical_json_bytes
-from tests.phase4.conformance import execute_task
+from tests.phase5.test_change_local_output_routing import execute_task
 
 from assurance_improvement.contracts.agent import ImprovementReviewResultV1
 from assurance_improvement.resource_loader import resource_bytes
@@ -306,3 +306,35 @@ def test_apply_review_helper_matches_legacy_transition_graph() -> None:
         )
     )
     assert updated.state.value == "approved"
+
+
+@pytest.mark.asyncio
+async def test_failed_review_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
+    from assurance_improvement.operations.agent import ImprovementReviewFinalizeHandler
+    from tests.phase5.test_change_local_output_routing import dual_roots
+
+    project, write_root = dual_roots(tmp_path)
+    canonical = project / "qa/changes/CH-DEMO-001/review/improvement-review.json"
+    canonical.parent.mkdir(parents=True)
+    original = b'{"schema_version":"1"}\n'
+    canonical.write_bytes(original)
+    prepared = await execute_task(
+        ImprovementReviewPrepareHandler(),
+        skill_input(),
+        project,
+        binding_data=BINDING,
+        write_root=write_root,
+    )
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    assert request.workspace.allowed_outputs == ("qa/changes/CH-DEMO-001/review/improvement-review.json",)
+    failed = await execute_task(
+        ImprovementReviewFinalizeHandler(),
+        locked_review_input({**REVIEW_RESULT, "evidence_traceability": "incomplete"}),
+        project,
+        write_root=write_root,
+    )
+    assert failed.status == "failed"
+    assert failed.failure is not None
+    assert failed.failure.kind == "invalid_output"
+    assert canonical.read_bytes() == original

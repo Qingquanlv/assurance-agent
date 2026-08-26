@@ -6,7 +6,7 @@ from typing import cast
 import pytest
 
 from agent_runtime_contracts import AgentRunRequest
-from tests.phase4.conformance import execute_task
+from tests.phase5.test_change_local_output_routing import execute_task
 
 from assurance_generation.operations.review import review_finalize_handler, review_prepare_handler
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
@@ -59,9 +59,6 @@ async def test_plan_review_finalize_rejects_wrong_family(family: str, tmp_path: 
     other = "e2e" if family == "api" else "api"
     payload = review_result(family)
     payload["review_type"] = f"{other}-plan"
-    if other in {"fuzz", "performance"}:
-        payload["auto_fix_allowed"] = False
-        payload["human_review_required"] = True
     executed = await execute_task(
         review_finalize_handler(family),
         fake_agent_result(payload),
@@ -89,6 +86,13 @@ async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: 
     assert "reviewer persona" in (persona.text_content or "").lower()
     assert reviewed.media_type == "application/json"
     assert constraints.media_type == "application/json"
+    schema = request.result_contract.schema_document
+    assert schema is not None
+    thawed_schema = cast(dict[str, object], schema)
+    properties = cast(dict[str, object], thawed_schema["properties"])
+    required_capabilities = cast(dict[str, object], properties["required_capabilities"])
+    items = cast(dict[str, object], required_capabilities["items"])
+    assert items["enum"] == ("auth.session.create", "entities.item.create")
 
 
 @pytest.mark.parametrize("family", FAMILIES)

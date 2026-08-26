@@ -1,4 +1,4 @@
-"""Constructor-closed four-family plan-review prepare/finalize handlers."""
+"""Capability-closed four-family plan-review prepare/finalize handlers."""
 
 from __future__ import annotations
 
@@ -20,7 +20,9 @@ from assurance_generation.operations.planning import (
     failed_input,
     failed_output,
     leafs_of,
+    plan_review_outputs,
     prepare_plan_outcome,
+    resolve_family,
     validate_plan_input,
 )
 
@@ -33,34 +35,42 @@ _REVIEW_SKILL_FILES: dict[Family, str] = {
 
 
 class PlanReviewPrepareHandler:
-    def __init__(self, family: Family) -> None:
-        self._family: Family = closed_family(family)
+    def __init__(self, family: Family | None = None) -> None:
+        self._family: Family | None = None if family is None else closed_family(family)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            business, cases = validate_plan_input(request.input)
+            family = resolve_family(self._family, request)
+            business, cases = validate_plan_input(
+                request.input,
+                family=family,
+                workspace=context.project_root,
+            )
             binding = AgentBindingDataV1.model_validate(request.binding_data)
             return prepare_plan_outcome(
-                family=self._family,
-                skill_path=_REVIEW_SKILL_FILES[self._family],
+                family=family,
+                skill_path=_REVIEW_SKILL_FILES[family],
                 persona_path=REVIEW_PERSONA,
                 business=business,
                 cases=cases,
                 binding=binding,
                 result_schema_id=PLAN_REVIEW_RESULT_ID,
+                context=context,
+                allowed_outputs=plan_review_outputs(business.change_id, family),
+                close_result_capabilities=True,
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)
 
 
 class PlanReviewFinalizeHandler:
-    def __init__(self, family: Family) -> None:
-        self._family: Family = closed_family(family)
+    def __init__(self, family: Family | None = None) -> None:
+        self._family: Family | None = None if family is None else closed_family(family)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
+            family = resolve_family(self._family, request)
             payload = AgentFinalizeInputV1.model_validate(request.input)
             try:
                 document = PlanReviewAuthoring.model_validate(
@@ -69,11 +79,11 @@ class PlanReviewFinalizeHandler:
                 )
             except ValidationError as error:
                 raise OutputError(str(error)) from error
-            expected = f"{self._family}-plan"
+            expected = f"{family}-plan"
             if document.review_type != expected:
                 raise OutputError(f"review_type {document.review_type!r} does not match {expected}")
             return TaskOutcome.succeeded(document.model_dump(mode="json"))
-        except ValidationError as error:
+        except (InputError, ValidationError) as error:
             return failed_input(error)
         except OutputError as error:
             return failed_output(str(error))

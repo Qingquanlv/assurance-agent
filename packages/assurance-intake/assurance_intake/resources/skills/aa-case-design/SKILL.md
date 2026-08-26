@@ -18,7 +18,7 @@ Do not rely on prior conversation context.
    - `run_context.interaction_mode == interactive` → keep the existing clarification dialogue and explicit user approval before writing files.
 2. **Explore gate (Phase 1.1):** If `phases.explore` exists (written by `aa-explore`), apply gate logic from this repo's `aa-explore/SKILL.md` (Context Contract + Phase 1 gate):
    - `status == pending` → **STOP**
-   - `status == done` → read `explore/advisory.json`; missing file → **STOP**
+   - `status == done` → read `explore/exploration.json`; missing file → **STOP**
    - `mode == required` and `status in [failed, unavailable]` → **STOP**
    - `mode == advisory` and `status in [skipped, unavailable, failed]` → record warning, continue without advisory
 3. Read **Required** inputs:
@@ -52,6 +52,99 @@ Do not rely on prior conversation context.
    - `phases.case_design.outputs` = all output files
    The graph owns phase state. Do not write an orchestration state file.
 3. Record any warnings or known issues in the reported state delta.
+
+Write these artifacts strictly one file at a time. Invoke exactly one file-mutation
+tool call, wait until it reports completion, read the file back, and only then begin
+the next file. Never issue parallel `write`, `edit`, `artifact_write`, or
+`apply_patch` calls. When using `apply_patch`, create or update only one output file
+per call; do not batch the four case-design outputs into one patch.
+
+When `selected_test_families` is non-empty, it is the graph-authoritative automation
+scope. For every selected family (`api`, `e2e`, `fuzz`, `performance`), author at
+least one `added` or `modified` case with the matching `type` and
+`automation.required: true`. Explore recommendations may shape depth, but may not
+remove a graph-selected family.
+
+Every authored case must set `trace` to a non-empty mapping whose keys are copied
+exactly from graph-provided `capability_leafs`. Never invent a capability key and
+never use an intermediate prefix such as `entities.dept` when the graph provides
+only typed leaves below it.
+
+Treat `capability_leafs` as a closed enum, not as a naming convention. Test type
+does not select an adapter namespace: an API case does not imply that an
+`capabilities.adapters.api.<module>.*` leaf exists. Never construct a key by
+changing the family, module, or suffix of another list member. Immediately before
+writing each key, locate the complete candidate string in the graph-provided list;
+if exact string membership cannot be established, choose a different listed leaf.
+
+Every `trace` value is an object with the single field `covered: true`; a bare
+boolean is invalid. In abstract form, `trace` maps an exact, unchanged list member
+to `{covered: true}`. The words used to describe that abstract form are not a
+capability key and must never be copied into an artifact.
+
+Before returning, read back every case and reject your own draft if any trace
+entry has the form `<capability-leaf>: true`, `<capability-leaf>: false`, or an
+empty object. The deterministic finalize step validates this shape exactly.
+
+For a Fuzz case, use this exact executable shape; descriptions such as
+`department create operation` are not endpoints:
+
+```yaml
+automation:
+  required: true
+  framework: schemathesis
+  status: planned
+  fuzz:
+    endpoints:
+      - method: POST
+        path: /api/v1/dept
+    property: dept.create.payload
+    expectations:
+      - no generated input returns a 5xx response
+      - accepted responses conform to the declared response schema
+```
+
+For a Performance case, declare both absolute thresholds and an explicit load;
+phrases such as `fixed concurrent load` are not a load definition:
+
+```yaml
+automation:
+  required: true
+  framework: locust
+  status: planned
+  performance:
+    scenario:
+      capability: <an exact unchanged member of capability_leafs>
+      endpoint: GET /api/v1/dept/tree
+      load:
+        concurrency: 10
+        spawn_rate_per_second: 2
+        duration_seconds: 60
+      thresholds:
+        p95_ms: 500
+        error_rate_max: 0.01
+```
+
+The angle-bracketed value above is explanatory notation, not a literal value.
+The Performance `capability` and every `trace` key must be an exact member of the
+graph-provided `capability_leafs` list.
+
+## Locked Runtime Return Contract
+
+The written files are the sole source of truth. After the final edit, read back
+`.qa.yaml`, `proposal.md`, `trace/minimum-coverage-matrix.json`, and every written `cases/**/case.yaml`. The final
+assistant response MUST be exactly one JSON object with one field:
+
+```json
+{"output_files":["qa/changes/<change-id>/.qa.yaml","qa/changes/<change-id>/proposal.md","qa/changes/<change-id>/trace/minimum-coverage-matrix.json","qa/changes/<change-id>/cases/<module>/case.yaml"]}
+```
+
+The MRC matrix path is mandatory even when it contains skipped-by-scope rows. List
+every authored `case.yaml`, use canonical project-relative paths, and include
+no path outside the current change directory. Do not duplicate the case delta in
+the response and do not add Markdown fences, commentary, status, state delta, or
+trailing text. The deterministic finalize step will load the authenticated files,
+validate the complete typed case delta, and provide it to downstream graph nodes.
 
 ---
 
@@ -96,7 +189,7 @@ Every `interactive` QA change goes through this process. A one-line fix, a small
 
 Maintain a visible checklist for each item, or use the available task/todo tool if the environment supports it. Complete them in order:
 
-0. **Explore gate** — read `phases.explore`; if `done`, read `explore/advisory.json` (internal; no dump to user); collect `open_questions_for_case_design[]`:
+0. **Explore gate** — read `phases.explore`; if `done`, read `explore/exploration.json` (internal; no dump to user); collect `open_questions_for_case_design[]`:
    - `status=answered` (or legacy `answer != null`) resolves the assertion intent for **that specific `pitfall_ref` only** (do not re-ask that exact pitfall in interactive mode), but do **not** mark the whole category satisfied.
    - `status=deferred` or `assertion_intent=undecided` means use neutral wording and do not assert the pitfall as known-accepted behavior.
    - `status=unanswered` is allowed only in `interactive` mode before Step 4; in `autonomous` mode it is a STOP because Explore should have applied `auto_default`.
@@ -104,7 +197,7 @@ Maintain a visible checklist for each item, or use the available task/todo tool 
 1. **Derive change ID** — format `<TICKET-ID>-<short-kebab-description>`
 2. **Explore QA context** — check `qa/cases/`, `tests/`, `qa/knowledge/`, `qa/changes/`
 3. **Identify target module** — ask one module confirmation question at a time; decompose if multiple independent modules are involved
-   - If `phases.explore.status == done`: after module confirm, show **3–5 bullet Explore 摘要** (confidence tags; path to `advisory.json`; no full dump)
+   - If `phases.explore.status == done`: after module confirm, show **3–5 bullet Explore 摘要** (confidence tags; path to `exploration.json`; no full dump)
 4. **Mode branch**:
    - `interactive`: ask clarifying questions one at a time — cover 8 categories; **prioritize watchlist / `exception_scenarios`** when advisory exists; lead macro categories with the `test_strategy` proposal (confirm/override) when present; treat advisory answered OQs as already-resolved for that specific pitfall; surface unresolved OQs as part of their category's question.
    - `autonomous`: skip planned user questions. Adopt `test_strategy` where supported by evidence, choose conservative defaults for missing macro categories, and keep `deferred` / `undecided` pitfalls neutral.
@@ -197,7 +290,7 @@ If `priority_hint.hint` text still reads like neutral pitfall reproduction but `
 
 **`test_strategy` as a macro-plan starting point (when advisory `done`):**
 
-`aa-explore` may populate `advisory.json.test_strategy` (scope / data_focus / layer_recommendation / approach) as an evidence-derived proposal. This skill still owns the macro categories (`module_confirmation`, `change_type`, `test_types`, `data_needs`, `target_selection_depth`, `out_of_scope`) — `test_strategy` does not pre-answer them. Instead, when asking each of those categories, lead with the relevant `test_strategy` slice as a recommendation to confirm or override, rather than asking open-ended:
+`aa-explore` may populate `exploration.json.test_strategy` (scope / data_focus / layer_recommendation / approach) as an evidence-derived proposal. This skill still owns the macro categories (`module_confirmation`, `change_type`, `test_types`, `data_needs`, `target_selection_depth`, `out_of_scope`) — `test_strategy` does not pre-answer them. Instead, when asking each of those categories, lead with the relevant `test_strategy` slice as a recommendation to confirm or override, rather than asking open-ended:
 
 > "Explore 基于代码证据建议覆盖 API + E2E，并对 UserCreate/UserUpdate schema 增加 Fuzz（依据：发现用户输入 schema SC-SCHEMA-002/004）。是否采用此方案，还是需要调整？"
 
@@ -246,8 +339,8 @@ Hard rules:
 - E2E keeps 1 happy-path case + at most 2–3 critical exception flows.
 - The same assertion point MUST NOT appear across cases of different `type`.
 - **Fuzz does not replace functional assertions**: every Fuzz case MUST set `related_cases` pointing at the corresponding functional (API) case.
-- **Fuzz / Performance endpoint identity is semantic**: `automation.fuzz.endpoints[]` and `automation.performance.scenario.endpoint` are semantic endpoint identifiers (for example, `department create operation`), not a literal HTTP route such as `/api/v1/dept/create` and not a method/path pair. These fields must remain non-empty because downstream plans map the semantic identity to the concrete route; never satisfy the no-route rule by deleting them.
-- **Performance MUST carry execution identity and thresholds**: a Performance case must set non-empty `automation.performance.scenario.capability` and the semantic `automation.performance.scenario.endpoint`, plus `automation.performance.scenario.thresholds`; omission is invalid (reviewer blocker).
+- **Fuzz / Performance endpoint identity is concrete**: `automation.fuzz.endpoints[]` must contain typed `method` plus absolute `path` values, and `automation.performance.scenario.endpoint` must be `METHOD /absolute/path`. Semantic labels such as `department create operation` or `department tree listing` are invalid. These two schema-owned locations are the only endpoint-detail exceptions in case YAML.
+- **Performance MUST carry execution identity, load, and thresholds**: a Performance case must set an exact typed-leaf `automation.performance.scenario.capability`, a concrete `automation.performance.scenario.endpoint`, a positive `load`, and absolute `thresholds`; omission is invalid (reviewer blocker).
 - **Fuzz / Performance are additive cases** — they do not cancel the API/E2E functional coverage of the same endpoint.
 - **Selected-layer automation closure** — before writing the final files, read the automated layers named by `.qa.yaml` `approval.approved_approach`. For every selected `API`, `E2E`, `Fuzz`, or `Performance` layer, the case delta MUST contain at least one `added` or `modified` case with the same exact `type` and `automation.required: true`. A selected layer whose cases are all optional (`automation.required: false`) is invalid. Never repair this mismatch by silently removing a pre-approved layer from `.qa.yaml` or marking it declined in `proposal.md`; author a valid required case for that layer, or preserve an explicitly approved scope change from the user/workflow.
 
@@ -405,9 +498,22 @@ Minimum Required Coverage keys are a **closed set**. Do **not** freely invent MR
 
 **When a needed `data_integrity` / `negative` / auth / journey key is missing from the closed set:**
 
-1. Do **not** write the invented key into `trace/minimum-coverage-matrix.json` or `trace.minimum_required_coverage` as if it were already known.
-2. Emit a knowledge proposal under `qa/changes/<change-id>/plans/data-knowledge.proposal.<layer>.yaml` with the missing key listed in `discovered_candidates` (and describe it under `proposal.md` Data Needs).
-3. Leave the MRC matrix row unmapped / out of scope until a human promotes the proposal into L1 — never bypass the proposal path to score “full coverage”.
+1. Emit a knowledge proposal under
+   `qa/changes/<change-id>/plans/data-knowledge.proposal.<layer>.yaml` with the
+   exact proposed `knowledge_key` listed in `discovered_candidates` (and
+   describe it under `proposal.md` Data Needs).
+2. Keep the MRC inventory complete: every advisory MRC item still gets exactly
+   one matrix row. Use the proposed `knowledge_key` as that row's authenticated
+   vocabulary. When a frozen requirement or resolved Explore
+   `assertion_intent` supplies the oracle, map the row to the covering case and
+   mark it `covered`. When no frozen oracle exists and the scenario is only an
+   advisory expansion beyond the explicit requirement, use `required: true`,
+   `status: skipped_by_scope`, an empty `covered_by_cases`, and a precise
+   `skip_reason` stating that the advisory expansion lacks a frozen oracle.
+3. Do not put the proposed key in case `trace` until promotion. Case `trace`
+   remains an L1 typed-capability proof map and is independent from MRC rows.
+   Never omit the MRC row and never claim promotion merely to score full
+   coverage.
 
 Use the complete runtime envelope below for either authorized layer, changing only
 source-backed values and the output suffix (`api` or `e2e`):
@@ -451,6 +557,9 @@ source-backed fact exists, omit that entity entirely and leave `entities: {}`; n
 emit placeholders such as `entities: {role: {constraints: {}}}`.
 
 Self-review must fail if any `data_integrity` / `negative` / journey MRC key was invented without a corresponding knowledge proposal.
+Self-review must also fail when any item from every advisory
+`minimum_required_coverage` category is absent from the matrix. A required row
+may be `skipped_by_scope`, but it may not disappear.
 
 ---
 
@@ -665,7 +774,7 @@ Format is fixed — reviewer uses `case_id` to cross-check each case's `type`.
 
 <!-- Include this section ONLY when phases.explore.status == done. Otherwise write: _skipped (no advisory)_ -->
 
-- advisory: `explore/advisory.json` (status: done | degraded)
+- advisory: `explore/exploration.json` (status: done | degraded)
 - source_code_read: true | false
 - test_strategy: adopted as-is | adopted with overrides | not provided
   - proposal: <test_strategy.approach, if present>
@@ -912,7 +1021,10 @@ removed: []
 
 Every case under `added` or `modified` must satisfy the field contract in `assurance_intake.contracts` (`CaseYamlAuthoring`). There is no `automation.target` field — top-level `type` is the single source of truth for the test target.
 
-`trace` is required on every case. When `risk-advisory/advisory.json` or `explore/advisory.json` contains `minimum_required_coverage`, every required MRC item must be mapped to at least one case via `trace.minimum_required_coverage`; do not rely on title/name inference. Downstream archive / execution may enrich other trace fields.
+`trace` is required on every case. Its keys are exact graph-provided typed
+capability leaves and each value must be `{covered: true}` as shown above. Do not
+put MRC IDs or an intermediate grouping key such as `minimum_required_coverage`
+inside `trace`; MRC-to-case mapping belongs in the separate coverage matrix.
 
 MRC keys must obey **MRC closed-key discipline** above: never invent closed-category keys; unknown keys require a knowledge proposal (`discovered_candidates`), not a silent matrix entry.
 
@@ -926,6 +1038,12 @@ Also write `qa/changes/<change-id>/trace/minimum-coverage-matrix.json`:
   status: covered | skipped_by_scope
   skip_reason: null
 ```
+
+This is a required case-design output, not reviewer-owned diagnostics. Include it
+in the final `output_files` receipt and read it back before returning. Every
+`status: covered` row must name at least one authored case in `covered_by_cases`;
+every `status: skipped_by_scope` row must have an empty `covered_by_cases` list and
+a non-empty `skip_reason`.
 
 `mrc_id and key must each be unique across the entire matrix`. When two
 categories describe the same obligation, keep one row and map all relevant
@@ -1053,9 +1171,9 @@ regression:
   rationale: P0 核心认证链路。
 ```
 
-**Forbidden in case YAML — these belong in `plans/api-plan.md` or `tests/`:**
+**Forbidden in case YAML — these belong in `plans/api-plan.md` or `tests/`, except for the schema-owned Fuzz/Performance endpoint fields above:**
 
-- `method`, `path`, `headers` mappings (`POST /api/v1/base/logout`)
+- `method`, `path`, `headers` mappings outside `automation.fuzz.endpoints[]` and `automation.performance.scenario.endpoint`
 - `Authorization` header values (`Bearer ${token}`, `Bearer invalid.token.string`)
 - Concrete request URLs with environment host (`https://prod.example.com/api/...`)
 - Hard-coded auth tokens, real credentials, or secrets
@@ -1319,8 +1437,8 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 32. `automation` — has `required`, `framework`, `status` (there is **no** `automation.target` — `type` is the single source of truth).
     - `automation.framework` — one of `pytest`, `pytest-playwright`, `schemathesis`, `locust`, `null`, and MUST match `type`: API→pytest, E2E→pytest-playwright, Fuzz→schemathesis, Performance→locust.
     - `automation.status` — one of `not_automated`, `planned`, `automated`, `flaky`, `deprecated`.
-    - When `type == Fuzz`: `automation.fuzz.endpoints` is present and non-empty, contains semantic endpoint identifiers rather than literal HTTP routes, and `related_cases` points at ≥1 non-Fuzz case.
-    - When `type == Performance`: `automation.performance.scenario.capability` and the semantic endpoint identifier `automation.performance.scenario.endpoint` are non-empty strings (never a literal HTTP route), and `automation.performance.scenario.thresholds` has non-empty `p95_ms` and `error_rate_max` (no placeholders).
+    - When `type == Fuzz`: `automation.fuzz.endpoints` is present and non-empty, every item contains a concrete HTTP `method` and absolute `path`, and `related_cases` points at ≥1 non-Fuzz case.
+    - When `type == Performance`: `automation.performance.scenario.capability` is an exact typed leaf, `automation.performance.scenario.endpoint` is concrete `METHOD /absolute/path`, `load` is explicit and positive, and `thresholds` has non-empty `p95_ms` and `error_rate_max` (no placeholders).
 33. `regression` — has `candidate`, `tier`, `rationale`.
 34. `regression.selection_reason` — present (may be empty list).
 35. `regression.maintenance_rule` — present and non-empty.
@@ -1468,7 +1586,7 @@ Stop and address these before continuing:
 - Case YAML MUST be at `qa/changes/<id>/cases/<module>/case.yaml` — never at `qa/cases/` directly.
 - case.yaml must NOT contain `change:` or `proposal:` top-level blocks.
 - Cases must be natural language — `objective`, `summary`, `preconditions`, `test_data`, `steps`, `assertions`, `postconditions`, `edge_cases`, `related_cases`.
-- NEVER write `method/path/headers`, auth tokens, pytest code, Playwright code, locators, execution history, or secrets in case YAML.
+- NEVER write `method/path/headers` outside the required Fuzz/Performance endpoint fields, auth tokens, pytest code, Playwright code, locators, execution history, or secrets in case YAML.
 - Apply Delta Operation Rules: read target case file before writing, classify each case correctly.
 - Self-review the YAML before invoking aa-case-reviewer.
 - Do NOT generate plans in this skill. Plans are generated by aa-api-plan and aa-e2e-plan.
@@ -1492,7 +1610,7 @@ Stop and address these before continuing:
 - **Transparent defaults (`autonomous`)** — Skip the user wait, but still write `.qa.yaml` `approval.mode: autonomous` (gate-required) and mark `proposal.md` with `generation_mode: autonomous` plus defaults / unresolved gaps
 - **Never strip `.qa.yaml` approval** — Rewriting `.qa.yaml` must keep or rewrite a complete `approval` block; omitting it makes `case-design-gate` STOP
 - **proposal.md first** — Write the proposal before writing cases
-- **Natural language cases** — Describe what to test in plain language; leave method/path/auth/code to aa-api-plan; include objective, postconditions, edge_cases, related_cases, automation.status, regression
+- **Natural language cases** — Describe functional steps and assertions in plain language; leave general method/path/auth/code to aa-api-plan, while still providing the required concrete Fuzz/Performance endpoint fields; include objective, postconditions, edge_cases, related_cases, automation.status, regression
 - **Delta operations are explicit** — Decide added/modified/removed at write time, not at archive time
 - **Validate before invoking** — Self-review the case YAML before handing off to aa-case-reviewer
-- **No execution details in cases** — `method/path/headers` belong in `plans/api-plan.md`
+- **No general execution details in cases** — `method/path/headers` belong in `plans/api-plan.md`, except for the required schema-owned Fuzz/Performance endpoint identity

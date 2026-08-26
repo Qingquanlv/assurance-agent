@@ -25,20 +25,23 @@ Do not rely on prior conversation context.
 
 **After completing work:**
 
-1. Write `qa/changes/<change-id>/explore/advisory.json`
-2. Immediately read `qa/changes/<change-id>/explore/advisory.json` back. This is a hard completion condition: if the read reports missing/error, continue writing and do not validate or return. Prefer the native `write` tool. When `write` is unavailable in the provider runtime, base64-encode the complete UTF-8 JSON and use the bounded structured CLI fallback:
-
-   ```bash
-   write the explore advisory artifact \
-     --change <change-id> \
-     --project-dir <project-root> \
-     --payload-base64 <base64-of-complete-advisory-json>
-   ```
-
-   Never use Python, `tee`, a heredoc, `ast_grep_replace`, or a shell command suffix to create this artifact.
+1. Write `qa/changes/<change-id>/explore/exploration.json`
+   - Use the native `write` tool directly. Do not call `aa risk`, `aa artifact`,
+     `base64`, or any shell command; the explorer agent has no shell write authority.
+   - Write the complete advisory in one operation. A placeholder or reduced object is
+     invalid even when it contains `schema_version`, `change_id`, `watchlist`, and
+     `open_questions_for_case_design`.
+2. Immediately read `qa/changes/<change-id>/explore/exploration.json` back. This is a hard
+   completion condition: if the read reports missing/error, continue writing and do
+   not return. Native `write` is mandatory in this execution profile; there is no CLI
+   or shell fallback. Never use Python, `tee`, a heredoc, `base64`, `aa risk`,
+   `aa artifact`, `ast_grep_replace`, or a shell command suffix to create this artifact.
 3. Do **not** write `qa/changes/<change-id>/explore/advisory.md`
-4. Run `validate the explore advisory artifact --change <change-id> --project-dir <project-root>` only after the read-back succeeds.
-5. On validation failure → report state delta `phases.explore.status = failed` with `validation_errors`
+4. After read-back, verify every field listed under `exploration.json schema (MVP)` and
+   `test_strategy` is present and populated. The product finalizer performs the
+   authoritative validation after this agent returns.
+5. On a read-back or completeness failure, continue correcting the artifact; do not
+   claim success or return a reduced object.
 6. On success → report state delta `phases.explore.status = done` with counts and outputs (see Step 7). The graph owns phase state; report the delta and do not write an orchestration state file.
 
 ---
@@ -55,20 +58,15 @@ Produce the **Explore** artifacts (Phase 0.5) from deterministic historical fact
 
 ---
 
-## Step 1 — Run `materialize the explore context artifact`
+## Step 1 — Read the graph-materialized Explore context
 
-```bash
-materialize the explore context artifact \
-  --change <change-id> \
-  --project-dir <project-root> \
-  [--diff-base main] \
-  [--archive-depth 10] \
-  [--requirement <path-if-file>] \
-  [--staleness-days 30]
-```
+The deterministic prepare node has already written
+`qa/changes/<change-id>/explore/context.json`. Read that file directly with the native
+`read` tool. Do not run a command to recreate, validate, or replace it.
 
-- CLI **exit != 0** → set `phases.explore.status = failed`; output one-line error; stop.
-- CLI success → read `qa/changes/<change-id>/explore/context.json`.
+- Missing or unreadable context → return only the files that actually exist; the
+  product finalizer will reject an incomplete successful result.
+- Read succeeds → continue to Step 2.
 
 ---
 
@@ -150,7 +148,7 @@ Move actually-read items from `not_inspected` to `available`:
 
 ## Step 4 — LLM synthesis
 
-Read `context.json`, requirement text, **and source code evidence collected in Step 3**. Produce `advisory.json` only.
+Read `context.json`, requirement text, **and source code evidence collected in Step 3**. Produce `exploration.json` only.
 
 ### LLM Hard Rules
 
@@ -177,10 +175,19 @@ Read `context.json`, requirement text, **and source code evidence collected in S
 12. `open_questions_for_case_design` items are advisory draft only in Step 4. Set `status: "unanswered"` and leave `answer`, `answer_text`, `assertion_intent`, `answered_via`, and `deferred_reason` as `null`; they are resolved in Step 5 according to `run_context.interaction_mode`.
 13. Every `open_questions_for_case_design` item MUST set `pitfall_ref` to the guidance id it resolves (`PH-*` or `WL-*` preferred; `SC-*` only when no PH/WL exists yet). Each item asks: should we ignore the assertion for this discovered pitfall, or what should it assert (known-bug behavior vs ideal behavior). Do **not** generate open_questions about module confirmation, change type, test types, data needs, or target selection/depth — those macro decisions belong exclusively in `test_strategy` for `aa-case-design` to resolve. After Step 5, the answer MUST be propagated into the linked `priority_hint` / `watchlist` / `suggested_scenario` per the reconciliation table — an answered OQ must never contradict its linked guidance item.
 14. If a `confidence: low` or `confidence: medium` guidance item already contains an assertion direction, it MUST have a linked `open_question` and must not bypass Step 5 resolution. `validate the explore advisory artifact` enforces this.
+15. `context_ref` is a locked artifact-local reference. Set it to the exact string
+    `"explore/context.json"`. Do not expand it to
+    `qa/changes/<change-id>/explore/context.json`, an absolute path, or any other
+    equivalent-looking path; the product finalizer rejects non-canonical values.
 
-### advisory.json schema (MVP)
+### exploration.json schema (MVP)
 
-Required top-level fields: `schema_version`, `change_id`, `context_ref`, `generated_at`, `executive_summary`, `watchlist`, `evidence_inventory`, `case_design_guidance`, `minimum_required_coverage`, `open_questions_for_case_design`. `test_strategy` is optional but should be populated whenever evidence supports it.
+Required top-level fields: `schema_version`, `change_id`, `context_ref`, `generated_at`,
+`executive_summary`, `watchlist`, `evidence_inventory`, `source_code_evidence`,
+`case_design_guidance`, `minimum_required_coverage`, `open_questions_for_case_design`,
+and `test_strategy`. `test_strategy.layer_recommendation` must contain all four layers,
+including explicit declined entries when evidence does not support a layer.
+The required `context_ref` value is exactly `"explore/context.json"`.
 
 ### `case_design_guidance.priority_hints` — schema and derivation
 
@@ -351,7 +358,7 @@ For every `status: "unanswered"` OQ:
 - Set `status = "answered"` and `answered_via = "auto_default"`.
 - Leave `answer` / `answer_text` empty unless a short default rationale is useful.
 
-Then run Step 5 reconciliation exactly like interactive answers. Auto decisions are allowed in `autonomous` mode, but they must be visible in `advisory.json`; never rewrite a low-confidence assertion as if a human confirmed it.
+Then run Step 5 reconciliation exactly like interactive answers. Auto decisions are allowed in `autonomous` mode, but they must be visible in `exploration.json`; never rewrite a low-confidence assertion as if a human confirmed it.
 
 ### Interactive branch
 
@@ -382,7 +389,7 @@ Do NOT ask about test scope, layer, data needs, or target selection in this step
 - After all questions are asked (or user skips ≥3 in a row), **reconcile `case_design_guidance` with the collected answers** (mandatory — do not proceed to Step 6 until done), then output:
   `"已记录回答，继续生成最终 advisory。"` and proceed to Step 6.
 
-Answers are persisted into `advisory.json` — `aa-case-design` reads the propagated `assertion_intent` on `priority_hints` / `watchlist` / `suggested_scenarios`, not just the raw OQ entries.
+Answers are persisted into `exploration.json` — `aa-case-design` reads the propagated `assertion_intent` on `priority_hints` / `watchlist` / `suggested_scenarios`, not just the raw OQ entries.
 
 ### Step 5 reconciliation — propagate assertion decisions into guidance
 
@@ -417,20 +424,23 @@ After reconciliation, re-run a mental check: for every answered OQ, no surviving
 
 ---
 
-## Step 6 — Validate
+## Step 6 — Read-back completeness check
 
-```bash
-validate the explore advisory artifact --change <change-id> --project-dir <project-root>
-```
+Read `exploration.json` and verify the required top-level fields above, the three
+`case_design_guidance` arrays, all three `evidence_inventory` arrays, a non-empty
+`minimum_required_coverage` object, and four `test_strategy.layer_recommendation`
+entries. Do not run a validator command. The product finalizer performs the
+authoritative typed validation after this agent returns.
 
-- Fail → `status = failed`; if `mode == required` → STOP before Phase 1.
-- Pass → proceed to Step 7.
+- Incomplete → rewrite the complete object and repeat the read-back check.
+- Complete → proceed to Step 7.
 
 ---
 
 ## Step 7 — Graph-owned state delta
 
-Report the following delta. The graph owns phase state and applies it:
+Ensure the written artifacts contain the inputs needed for the graph to derive the
+following delta. Do not return this delta separately; the graph owns phase state:
 
 ```yaml
 phases:
@@ -438,7 +448,7 @@ phases:
     status: done | failed | unavailable
     outputs:
       - explore/context.json
-      - explore/advisory.json    # only when done
+      - explore/exploration.json    # only when done
     priority_hints_count: <n>
     watchlist_high_count: <n>
     degraded: <bool from context.json>
@@ -450,49 +460,17 @@ phases:
 
 ---
 
-## Final Output (user-facing)
+## Final Output (runtime contract)
 
-**Do NOT output a step-by-step execution log or compliance checklist.** After writing artifacts, show:
+Do not output a user-facing summary, step log, phase delta, or compliance checklist.
+After both artifacts are written and read-back validation succeeds, return structured JSON only:
 
-**When `status = done`:**
-
-```
-✓ Explore 完成 — explore/advisory.json
-
-[Priority Hints]
-- PH-001 <hint> [high/medium]
-- ...
-
-[Watchlist]
-- WL-001 <item> [high/medium] → <case-design category>
-- ...
-
-[Test Strategy 提案]
-- approach: <test_strategy.approach>
-- layers: <layer> (<depth>) — <rationale> ...
-
-（low confidence 项已省略；详见 advisory.json）
-
-下一步：运行 aa-case-design，Skill 将读取 test_strategy 提案与已记录的断言取舍。
+```json
+{"output_files":["qa/changes/<change-id>/explore/exploration.json"]}
 ```
 
-- 仅展示 `confidence: high` 或 `medium` 的项。
-- 若所有项均为 `low` 但有代码 evidence（SC-* 证据），输出：`⚠ 无历史证据；advisory 基于代码结构合成，置信度上限 medium。`
-- 若所有项均为 `low` 且无任何 evidence，输出：`⚠ 无历史证据，advisory 未能提供有效信号。建议补充 qa/archive/ 后重试。`
-- 不展示文件清单、执行步骤表、合规说明。
-
-**When `status = unavailable`:**
-
-```
-⚠ Explore 跳过 — 历史数据不足（<degraded_reasons>），源码也为空
-Phase 1 aa-case-design 将在无 advisory 的情况下继续。
-```
-
-**When `status = failed`:**
-
-```
-✗ Explore 失败 — <error>
-```
+For `unavailable` or `failed`, return the same object shape listing only the declared
+explore files that were actually written. Do not invent a path and do not return prose.
 
 ---
 

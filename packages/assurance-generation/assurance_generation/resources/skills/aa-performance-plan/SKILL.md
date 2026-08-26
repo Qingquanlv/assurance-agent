@@ -7,6 +7,17 @@ Turn the approved Performance portion of a reviewed case document into
 reviewable implementation plans. Schema truth is `assurance_generation.contracts`
 for the plan result and `assurance_intake.contracts` for reviewed cases.
 
+## Locked Capability Selection
+
+The result contract's `required_capabilities` enum is the sole whitelist for
+the top-level result, every coverage row, and every performance scenario's
+`capability`. Copy exact strings from that enum; never construct a key from a
+namespace, helper name, or analogous layer. A declared leaf in one namespace
+does not imply a same-suffix `capabilities.adapters.performance.*` leaf. If the
+exact needed leaf is not in the enum, describe the gap in the plan/review
+readiness; do not emit a virtual key. Before returning, reject your own result
+unless every capability value is byte-for-byte present in the enum.
+
 ## Inputs
 
 ### required
@@ -16,6 +27,7 @@ for the plan result and `assurance_intake.contracts` for reviewed cases.
 
 ### optional
 
+- `qa/changes/<change-id>/review/performance-plan-review.json`
 - `qa/changes/<change-id>/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
@@ -40,6 +52,12 @@ file.
 
 ## Domain Notes
 
+When `review/performance-plan-review.json` exists with `decision: needs_fix`,
+apply only the findings named in `auto_fix_plan` and only the artifact sections
+identified by their locators. Reinspect the cited source before editing, keep
+unrelated plan decisions unchanged, and return the complete updated plan
+package for another review round.
+
 Task Mapping uses `Case ID | Task Method | Target File`.
 
 Task Mapping is a strict one-to-one execution-entry relation:
@@ -58,9 +76,39 @@ Every setup lifecycle must document a concrete positive seed and how each field
 was validated against the frozen OpenAPI/fact evidence. Never assume a reserved
 domain such as `example.test` satisfies an email validator.
 
+For every string seed with a source-declared maximum length, include a literal character budget
+for the complete rendered value, including prefixes, uniqueness fragments, and hierarchy suffixes.
+Before returning, count every concrete root, child, and grandchild seed name separately; each must
+fit the product limit. Do not merely state that a value is within the limit. For a 20-character
+department-name limit, a length-safe pattern is `p<uuid8>r`, `p<uuid8>c`, and `p<uuid8>g` (10
+characters each). Never use a pattern such as `perfdept<uuid10>root`, whose rendered length is 22.
+
 Inspect the declared router response construction and existing load-test
 support code before specifying measured assertions. Preserve the observed
 envelope level.
+
+### Seed identifier closure
+
+Before writing a seed lifecycle, inspect the exact create response in router
+source or frozen OpenAPI evidence. The plan must not assume `data.id` or
+`data.dept_id` merely because an existing helper expects one.
+
+If create does not return an identifier, the plan must name a source-backed
+identifier lookup that can resolve the record from a run-unique seed value. It
+must state the exact lookup operation, response envelope, match key, identifier
+field, ambiguity handling, and how the resolved ID is used for descendants and
+child-first cleanup. A list/tree lookup by a run-unique name is valid only when
+the inspected router/schema source proves that operation returns both the name
+and identifier. If neither the create response nor a supported lookup yields an
+ID, do not invent one or claim codegen readiness.
+
+### Runtime host closure
+
+Inspect the existing load-test target and declared runtime configuration. When
+the runtime provides `API_BASE_URL` or `BASE_URL`, the performance codegen plan
+must explicitly replace hard-coded hosts with those environment variables and
+state the precedence. Do not preserve or introduce a localhost fallback unless
+the declared runtime contract explicitly requires it.
 
 Valid example:
 
@@ -91,3 +139,15 @@ Factory Mapping section (required):
 The typed plan result must include scenario identity and numeric thresholds
 (`p95_ms`, `error_rate_max`). Every planned case must have operation and risk
 coverage. Capability keys must be exact typed leaves.
+
+Before returning, verify all of the following:
+
+- every created seed ID comes from the observed create envelope or a named,
+  source-backed identifier lookup;
+- every concrete seed string has an explicit literal character budget and fits each source-declared
+  minimum/maximum length after all uniqueness and hierarchy suffixes are included;
+- cleanup uses only IDs established by that lifecycle;
+- the codegen plan tells codegen to replace hard-coded hosts whenever the
+  runtime exposes `API_BASE_URL` or `BASE_URL`;
+- no response field or runtime fallback was inferred from an existing helper
+  without corroborating product/runtime evidence.

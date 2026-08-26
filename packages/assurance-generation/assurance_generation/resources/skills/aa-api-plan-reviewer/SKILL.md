@@ -4,9 +4,30 @@ Capability-owned API plan review skill. Do not select a provider, model, or
 adapter.
 
 Review the API plan package and emit a `PlanReviewAuthoring` document from
-`assurance_generation.contracts`. Mechanical plan-check facts arrive as inputs;
-do not infer or apply a policy action from them — the downstream gate owns
-routing.
+`assurance_generation.contracts`. When mechanical plan-check facts are present,
+treat them as evidence only; the downstream gate owns routing. Their absence is
+not a reason to stop because this skill independently reviews the plan package.
+
+Evidence-proven, bounded defects use `needs_fix`: set `auto_fix_allowed: true`,
+`human_review_required: false`, `codegen_readiness: not_ready`, and list every
+bounded finding ID in `auto_fix_plan`. Severity alone does not require human
+review. Use `needs_human_review` only when correction requires a missing
+product, policy, authorization, or safety decision; then prohibit automatic
+repair and leave `auto_fix_plan` empty. A codegen-ready `pass` never requires
+human review.
+
+`auto_fix_plan` has one exact JSON shape: an array of non-empty finding ID
+strings, for example `"auto_fix_plan": ["API-PLAN-001", "API-PLAN-002"]`.
+Never put objects, `finding_id`/`action` pairs, prose, or locator data in this
+array. Put repair detail in the matching finding's `message` and `locator`, and
+in `next_action`. Use `"auto_fix_plan": []` for `pass` and
+`needs_human_review`.
+
+Do not stop the review after finding the first defect. Before choosing a
+decision, complete one exhaustive pass across every required plan artifact,
+every mapping row, and every source-backed runtime boundary used by the plan.
+Return all independently observable defects in the same review document so a
+single bounded planner re-entry can repair the whole package.
 
 ## Inputs
 
@@ -17,7 +38,6 @@ routing.
 - `qa/changes/<change-id>/plans/api-codegen-plan.md`
 - `qa/changes/<change-id>/plans/api-codegen-mapping.json`
 - `qa/changes/<change-id>/plans/m3-review-summary.md`
-- `qa/changes/<change-id>/review/api-plan-checks.json`
 - `qa/changes/<change-id>/cases/**/case.yaml`
 
 ### optional
@@ -36,7 +56,16 @@ routing.
 
 ## Boundaries
 
-Write only the review outputs listed above.
+Write only the review outputs listed above. Authorizing bounded planner re-entry
+does not permit the reviewer to edit plan files. Each automatic finding must
+point to an exact plan artifact and bounded key/section that the planner can
+revise from observed source.
+
+A finding locator authorizes exactly one artifact and key/section. When one
+conceptual defect requires edits in multiple artifacts or sections, emit one
+finding per target, give each finding its own locator, and include every finding
+ID in `auto_fix_plan`. Never request an edit to an artifact that is not named by
+the matching finding's locator.
 
 Do not write plan Markdown, tests, or knowledge files.
 
@@ -58,6 +87,11 @@ Required capability closure:
   `needs_human_review` with `not_ready` instead of `pass` with a virtual key.
 - Emit `pass` with `ready` / `ready_with_warnings` only when every required key
   resolves exactly.
+- Treat capabilities as consumed reusable fixtures/helpers, not as aliases for
+  the SUT operations under test. A source-proven direct HTTP call using declared
+  auth and target-local helpers does not require a same-operation API adapter
+  leaf. Do not request a new adapter solely because the case exercises create,
+  list, get, update, or delete endpoints.
 
 Runtime contract closure:
 
@@ -66,7 +100,33 @@ Runtime contract closure:
   router source. Naming convention is not evidence.
 - Compare seed and mutation payloads with the registered request schema and
   compare identifier extraction with the real response shape.
+- Trace each planned lifecycle end to end: create, identifier resolution,
+  follow-up read, mutation, assertions, and cleanup. Validate every lookup used
+  for both root and nested entities. For a tree endpoint, inspect whether server
+  filtering happens before tree reconstruction; a filtered child that no longer
+  has a returned root must use an unfiltered tree plus bounded recursive exact
+  matching instead.
 - A missing operation, wrong HTTP method, unverified payload field, or assumed
   response identifier is a non-pass finding with `not_ready`.
 - Inspect the declared API and shared test-data trees before claiming a mapped
   test, fixture, or helper is absent.
+- For every mapped helper that is absent, validate in the same review both its
+  generated target and its actual source-backed implementation boundary,
+  including required fixture or credential handoff. Do not assume an HTTP
+  transport can expose persistence-only rows when the inspected router has no
+  such operation; map a source-proven database/session read boundary instead.
+- When existing source or a declared typed capability proves a corrected method,
+  payload, identifier lookup, or mapping, use bounded `needs_fix`; do not require
+  a human merely because the defect is high severity.
+- Preserve a frozen Explore/case oracle whose `assertion_intent` is
+  `assert_ideal`. When current source implements the opposite behavior, that
+  mismatch is the product defect the test must expose, not a missing product or
+  authorization decision. Do not reopen the decision or route it to human
+  review. A stale knowledge note describing current behavior does not override
+  the frozen assertion intent.
+- An exact typed capability leaf may name a fixture/helper that codegen must
+  implement under its declared writable test roots. If that exact symbol is not
+  on disk yet but the plan maps its bounded generated target, treat the absence
+  as codegen work (or bounded `needs_fix` when the mapping is incomplete), not
+  as a human approval requirement. Escalate only when the capability leaf itself
+  is absent or the required implementation would cross the declared write set.

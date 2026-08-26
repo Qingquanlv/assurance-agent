@@ -9,7 +9,7 @@ import pytest
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
-from tests.phase4.conformance import execute_task
+from tests.phase5.test_change_local_output_routing import execute_task
 
 from assurance_improvement.contracts.agent import RetroAnalysisResultV3
 from assurance_improvement.contracts.delivery import artifact_digest
@@ -400,3 +400,22 @@ async def test_reconcile_persists_knowledge_delta_and_supersedes() -> None:
     assert as_object(improvements[predecessor_id])["state"] == ImprovementState.SUPERSEDED.value
     assert any(event["type"] == "improvement_superseded" for event in payload["events"])
     assert as_object(improvements[new_id])["kind"] == ImprovementKind.DOMAIN_KNOWLEDGE.value
+
+
+@pytest.mark.asyncio
+async def test_failed_retro_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
+    from tests.phase5.test_change_local_output_routing import dual_roots
+
+    project, write_root = dual_roots(tmp_path)
+    canonical = project / "qa/changes/CH-DEMO-001/retro/retro.json"
+    canonical.parent.mkdir(parents=True)
+    original = b'{"schema_version":"3"}\n'
+    canonical.write_bytes(original)
+    outcome = await execute_task(
+        RetroFinalizeHandler(),
+        {"agent_result": {}},
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "failed"
+    assert canonical.read_bytes() == original

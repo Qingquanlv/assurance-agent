@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
@@ -118,7 +119,7 @@ def test_case_authoring_rejects_fake_capability_leaf() -> None:
 
 
 def test_case_authoring_rejects_prefix_capability_leaf() -> None:
-    raw = authoring_payload(trace={"entities.item": {}})
+    raw = authoring_payload(trace={"entities.item": {"covered": True}})
     with pytest.raises(ValidationError, match="capability key is not a declared typed leaf"):
         CaseYamlAuthoring.model_validate(raw, context={"capability_leafs": VALID_LEAFS})
 
@@ -126,7 +127,85 @@ def test_case_authoring_rejects_prefix_capability_leaf() -> None:
 def test_case_authoring_accepts_exact_typed_leaf() -> None:
     raw = authoring_payload(trace={"entities.item.create": {"covered": True}})
     model = CaseYamlAuthoring.model_validate(raw, context={"capability_leafs": VALID_LEAFS})
-    assert model.added[0].trace["entities.item.create"] == {"covered": True}
+    assert model.added[0].trace["entities.item.create"].model_dump() == {"covered": True}
+
+
+def test_case_authoring_rejects_scalar_trace_coverage() -> None:
+    raw = authoring_payload(trace={"entities.item.create": True})
+    with pytest.raises(ValidationError, match="valid dictionary or instance of CaseTraceCoverage"):
+        CaseYamlAuthoring.model_validate(raw, context={"capability_leafs": VALID_LEAFS})
+
+
+def test_case_authoring_rejects_empty_capability_trace() -> None:
+    raw = authoring_payload()
+    with pytest.raises(ValidationError, match="Dictionary should have at least 1 item"):
+        CaseYamlAuthoring.model_validate(raw, context={"capability_leafs": VALID_LEAFS})
+
+
+def test_fuzz_case_requires_typed_endpoint_property_and_expectations() -> None:
+    raw = deepcopy(authoring_payload(trace={"entities.item.create": {"covered": True}}))
+    case = cast(dict[str, object], cast(list[object], raw["added"])[0])
+    case["type"] = "Fuzz"
+    case["related_cases"] = ["TC_API_001"]
+    case["automation"] = {
+        "required": True,
+        "framework": "schemathesis",
+        "status": "planned",
+        "fuzz": {
+            "endpoints": [{"method": "POST", "path": "/items"}],
+            "property": "item.create.payload",
+        },
+    }
+
+    with pytest.raises(ValidationError, match="expectations"):
+        CaseYamlAuthoring.model_validate(raw, context={"capability_leafs": VALID_LEAFS})
+
+
+def test_performance_case_requires_explicit_load_definition() -> None:
+    raw = deepcopy(authoring_payload(trace={"entities.item.create": {"covered": True}}))
+    case = cast(dict[str, object], cast(list[object], raw["added"])[0])
+    case["type"] = "Performance"
+    case["automation"] = {
+        "required": True,
+        "framework": "locust",
+        "status": "planned",
+        "performance": {
+            "scenario": {
+                "capability": "entities.item.create",
+                "endpoint": "POST /items",
+                "thresholds": {"p95_ms": 200, "error_rate_max": 0.01},
+            }
+        },
+    }
+
+    with pytest.raises(ValidationError, match="load"):
+        CaseYamlAuthoring.model_validate(raw, context={"capability_leafs": VALID_LEAFS})
+
+
+def test_performance_case_requires_concrete_http_endpoint() -> None:
+    raw = deepcopy(authoring_payload(trace={"entities.item.create": {"covered": True}}))
+    case = cast(dict[str, object], cast(list[object], raw["added"])[0])
+    case["type"] = "Performance"
+    case["automation"] = {
+        "required": True,
+        "framework": "locust",
+        "status": "planned",
+        "performance": {
+            "scenario": {
+                "capability": "entities.item.create",
+                "endpoint": "item listing",
+                "load": {
+                    "concurrency": 10,
+                    "spawn_rate_per_second": 2,
+                    "duration_seconds": 60,
+                },
+                "thresholds": {"p95_ms": 200, "error_rate_max": 0.01},
+            }
+        },
+    }
+
+    with pytest.raises(ValidationError, match="endpoint"):
+        CaseYamlAuthoring.model_validate(raw, context={"capability_leafs": VALID_LEAFS})
 
 
 def test_intake_schema_bytes_equal_model_schema() -> None:
@@ -142,6 +221,14 @@ def test_intake_schema_bytes_equal_model_schema() -> None:
     assert schema_bytes("assurance.intake.schema.case-review.v1") == canonical_json_bytes(
         cast(JSONValue, CaseReviewResultV1.model_json_schema())
     )
+
+
+def test_case_review_result_schema_exposes_typed_finding_locators() -> None:
+    schema = CaseReviewResultV1.model_json_schema()
+
+    assert schema["properties"]["findings"]["items"] == {
+        "$ref": "#/$defs/CaseReviewFindingV1"
+    }
 
 
 def test_intake_imports_no_legacy_package() -> None:

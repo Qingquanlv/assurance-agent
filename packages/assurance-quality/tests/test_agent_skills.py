@@ -11,7 +11,7 @@ from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
 from tests.phase4.agent_harness import FakeAgentAdapter
-from tests.phase4.conformance import execute_task
+from tests.phase5.test_change_local_output_routing import execute_task
 
 from assurance_quality.contracts.agent import (
     FactBaselineResultV1,
@@ -60,6 +60,7 @@ _TOKEN = re.compile(
     re.IGNORECASE,
 )
 BINDING: dict[str, JSONValue] = {
+    "agent_profile": "aa-doc-author",
     "execution": {
         "provider_model": "test-model",
         "worker_profile": "worker",
@@ -472,3 +473,24 @@ def test_quality_plugin_has_no_product_hooks_import() -> None:
     assert "assurance_kernel" not in names
     assert "agent_runtime_opencode" not in names
     assert "agent_runtime_cursor" not in names
+
+
+@pytest.mark.asyncio
+async def test_failed_report_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
+    from tests.phase5.test_change_local_output_routing import dual_roots
+
+    project, write_root = dual_roots(tmp_path)
+    canonical = project / "qa/changes/CH-DEMO-001/report/report.md"
+    canonical.parent.mkdir(parents=True)
+    original = b"# Canonical report\n"
+    canonical.write_bytes(original)
+    outcome = await execute_task(
+        ReportFinalizeHandler(),
+        fake_agent_result({"schema_version": "1.0"}),
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert canonical.read_bytes() == original

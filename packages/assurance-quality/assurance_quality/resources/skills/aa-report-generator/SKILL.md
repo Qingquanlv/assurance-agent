@@ -30,4 +30,5 @@ generate-report handler owns `quality_score` and `final_status`.
 - Do not write minimum-coverage JSON; that projection is owned by a deterministic handler.
 - Do not emit provider session transcripts or secret-bearing diagnostics.
 - Use the locked execution binding from the prepare request.
+- Write the typed result to `qa/changes/<change-id>/report/report.md`.
 - Return the typed result and stop.

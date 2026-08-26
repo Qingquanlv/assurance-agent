@@ -6,6 +6,17 @@ Turn the approved Fuzz portion of a reviewed case document into reviewable
 implementation plans. Schema truth is `assurance_generation.contracts` for the
 plan result and `assurance_intake.contracts` for reviewed cases.
 
+## Locked Capability Selection
+
+The result contract's `required_capabilities` enum is the sole whitelist for
+the top-level result and every coverage row. Copy exact strings from that enum;
+never construct a key from a namespace, helper name, or analogous layer. A
+declared leaf in one namespace does not imply a same-suffix
+`capabilities.adapters.fuzz.*` leaf. If the exact needed leaf is not in the
+enum, describe the gap in the plan/review readiness; do not emit a virtual key.
+Before returning, reject your own result unless every capability value is
+byte-for-byte present in the enum.
+
 ## Inputs
 
 ### required
@@ -15,6 +26,7 @@ plan result and `assurance_intake.contracts` for reviewed cases.
 
 ### optional
 
+- `qa/changes/<change-id>/review/fuzz-plan-review.json`
 - `qa/changes/<change-id>/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
@@ -38,6 +50,12 @@ into codegen. The graph owns phase state. Do not write an orchestration state
 file.
 
 ## Domain Notes
+
+When `review/fuzz-plan-review.json` exists with `decision: needs_fix`, apply
+only the findings named in `auto_fix_plan` and only the artifact sections
+identified by their locators. Reinspect the cited source before editing, keep
+unrelated plan decisions unchanged, and return the complete updated plan
+package for another review round.
 
 Both `fuzz-plan.md` and `fuzz-codegen-plan.md` must be independently
 consumable. Each file must contain the exact `## Test Function Mapping` heading
@@ -65,6 +83,14 @@ pass an email validator.
 
 Derive rejection oracles from constraints that actually exist in the declared
 OpenAPI/router schema. Plan cleanup for every mutation that can create state.
+
+If the requirement freezes the project's existing response contract but the
+OpenAPI operation omits a success content schema, inspect the actual response
+class/envelope in source. Plan exact assertions against that source-backed
+contract and record the OpenAPI documentation gap for later issue analysis;
+do not invent a schema and do not require a new owner decision. Use the
+source-proven application import for any `app.openapi()` fallback and validate
+positive seeds against the real request model.
 
 Factory Mapping section (required):
 

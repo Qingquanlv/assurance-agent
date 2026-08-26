@@ -7,7 +7,7 @@ from typing import Any, Literal, cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract
+from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
@@ -52,6 +52,39 @@ _RESULT_FILES: dict[str, str] = {
 }
 
 DomainName = Literal["issue", "workflow", "eval", "discovery", "coverage_gap"]
+_BOUNDED_PROFILES = {
+    "aa-archiver": "assurance-v1-archiver",
+    "aa-doc-author": "assurance-v1-doc-author",
+    "aa-executor": "assurance-v1-executor",
+    "aa-explorer": "assurance-v1-explorer",
+    "aa-reporter": "assurance-v1-reporter",
+    "aa-reviewer": "assurance-v1-reviewer",
+    "aa-test-author": "assurance-v1-test-author",
+}
+_IMPROVEMENT_OUTPUTS = {
+    RETRO_SKILL: lambda change_id: (f"qa/changes/{change_id}/retro/retro.json",),
+    RETRO_EVAL_SKILL: lambda change_id: (f"qa/changes/{change_id}/retro/retro-eval-analysis.json",),
+    RETRO_ISSUE_SKILL: lambda change_id: (f"qa/changes/{change_id}/retro/retro-issue-analysis.json",),
+    RETRO_WORKFLOW_SKILL: lambda change_id: (f"qa/changes/{change_id}/retro/retro-workflow-analysis.json",),
+    REVIEW_SKILL: lambda change_id: (f"qa/changes/{change_id}/review/improvement-review.json",),
+    ARCHIVE_SKILL: lambda change_id: (f"qa/changes/{change_id}/archive/archive-receipt.json",),
+}
+
+
+def agent_workspace(
+    context: TaskContext,
+    *,
+    allowed_outputs: tuple[str, ...],
+    agent_profile: str,
+) -> AgentWorkspaceV1:
+    write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
+    payload = {
+        "schema_version": "1",
+        "agent_profile": _BOUNDED_PROFILES.get(agent_profile, agent_profile),
+        "write_root": write_root,
+        "allowed_outputs": tuple(sorted(set(allowed_outputs))),
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
 
 def result_contract(schema_id: str) -> ResultContract:
@@ -78,6 +111,7 @@ def prepare_outcome(
     business: Any,
     binding: AgentBindingDataV1,
     result_schema_id: str,
+    context: TaskContext,
 ) -> TaskOutcome:
     agent_request = AgentRunRequest(
         instructions=(
@@ -87,6 +121,11 @@ def prepare_outcome(
         ),
         result_contract=result_contract(result_schema_id),
         execution=binding.execution,
+        workspace=agent_workspace(
+            context,
+            allowed_outputs=_IMPROVEMENT_OUTPUTS[skill_path](business.change_id),
+            agent_profile=binding.agent_profile,
+        ),
         request_policy_digest=binding.request_policy_digest,
         request_config_digest=binding.request_config_digest,
     )
@@ -97,7 +136,9 @@ def _structured(payload: AgentFinalizeInputV1) -> object:
     return thaw_json(payload.agent_result.structured_result)
 
 
-def _prepare(skill: str, persona: str, result_id: str, request: TaskRequest) -> TaskOutcome:
+def _prepare(
+    skill: str, persona: str, result_id: str, request: TaskRequest, context: TaskContext
+) -> TaskOutcome:
     business = validate_input(ImprovementSkillInputV1, request.input)
     binding = validate_binding(request.binding_data)
     return prepare_outcome(
@@ -106,6 +147,7 @@ def _prepare(skill: str, persona: str, result_id: str, request: TaskRequest) -> 
         business=business,
         binding=binding,
         result_schema_id=result_id,
+        context=context,
     )
 
 
@@ -158,54 +200,48 @@ def _finalize_retro(
 
 class RetroPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _prepare(RETRO_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request)
+            return _prepare(RETRO_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
 
 class RetroEvalPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _prepare(RETRO_EVAL_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request)
+            return _prepare(RETRO_EVAL_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
 
 class RetroIssuePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _prepare(RETRO_ISSUE_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request)
+            return _prepare(RETRO_ISSUE_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
 
 class RetroWorkflowPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _prepare(RETRO_WORKFLOW_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request)
+            return _prepare(RETRO_WORKFLOW_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
 
 class ImprovementReviewPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _prepare(REVIEW_SKILL, REVIEWER_PERSONA, REVIEW_RESULT_ID, request)
+            return _prepare(REVIEW_SKILL, REVIEWER_PERSONA, REVIEW_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
 
 class ArchivePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _prepare(ARCHIVE_SKILL, ARCHIVER_PERSONA, ARCHIVE_RESULT_ID, request)
+            return _prepare(ARCHIVE_SKILL, ARCHIVER_PERSONA, ARCHIVE_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 

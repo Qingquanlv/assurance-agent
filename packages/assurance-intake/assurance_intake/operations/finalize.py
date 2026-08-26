@@ -3,18 +3,26 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import cast
 
+import yaml
 from pydantic import ValidationError
 
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
-from assurance_intake.contracts import CaseReviewResultV1, CaseYamlAuthoring
+from assurance_intake.contracts import (
+    CaseReviewResultV1,
+    CaseYamlAuthoring,
+    MinimumCoverageMatrixAuthoring,
+)
 from assurance_intake.contracts.agent import AgentFinalizeInputV1, ArtifactListResultV1
+from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.review import CaseMinimumCoverageReview
 from assurance_intake.operations.agent_skills import InputError, failed_input, validate_input
 
 
@@ -58,7 +66,11 @@ def _canonical_relative(path: str) -> bool:
 def _workspace_file(workspace: Path, relative: str) -> Path:
     if not _canonical_relative(relative):
         raise OutputError(f"output file path must be canonical and relative: {relative}")
-    path = workspace.joinpath(*PurePosixPath(relative).parts)
+    path = workspace
+    for part in PurePosixPath(relative).parts:
+        path = path / part
+        if path.is_symlink():
+            raise OutputError(f"declared output file is a symlink: {relative}")
     if path.is_symlink():
         raise OutputError(f"declared output file is missing: {relative}")
     try:
@@ -106,11 +118,150 @@ def _finalize_artifact_list(payload: AgentFinalizeInputV1, workspace: Path) -> l
     return _authenticate_files(workspace, document.output_files, payload.artifact_paths)
 
 
+def _validate_explore_outputs(workspace: Path, declared: tuple[str, ...]) -> None:
+    for relative in declared:
+        if not relative.endswith("/explore/exploration.json"):
+            continue
+        path = _workspace_file(workspace, relative)
+        try:
+            document = ExploreAdvisoryV1.model_validate_json(path.read_bytes())
+        except (ValidationError, ValueError) as error:
+            raise OutputError(f"invalid exploration.json: {error}") from error
+        parts = PurePosixPath(relative).parts
+        if len(parts) < 5 or parts[:2] != ("qa", "changes"):
+            raise OutputError(f"invalid exploration.json path: {relative}")
+        if document.change_id != parts[2]:
+            raise OutputError("exploration.json change_id does not match its change directory")
+        if document.context_ref != "explore/context.json":
+            raise OutputError("exploration.json context_ref must be explore/context.json")
+
+
+def _require_selected_test_families(
+    document: CaseYamlAuthoring,
+    selected: tuple[str, ...],
+) -> None:
+    authored = {
+        entry.type.lower() for entry in (*document.added, *document.modified) if entry.automation.required
+    }
+    missing = [family for family in selected if family not in authored]
+    if missing:
+        raise OutputError(
+            "case design is missing required automated cases for selected test families: "
+            + ", ".join(missing)
+        )
+
+
+def _case_change_id(value: str | None) -> str:
+    if value is None:
+        raise InputError("change_id is required for case-design finalize")
+    posix = PurePosixPath(value)
+    if len(posix.parts) != 1 or not _canonical_relative(value):
+        raise InputError("change_id must be a canonical path segment")
+    return value
+
+
+def _load_authored_case_delta(
+    workspace: Path,
+    *,
+    change_id: str,
+    locked: tuple[str, ...],
+    declared: tuple[str, ...],
+    capability_leafs: frozenset[str],
+) -> CaseYamlAuthoring:
+    if not locked:
+        raise InputError("artifact_paths must lock the expected output files")
+    root_relative = f"qa/changes/{change_id}/cases"
+    declared_cases = sorted(
+        relative
+        for relative in declared
+        if relative.startswith(f"{root_relative}/") and relative.endswith("/case.yaml")
+    )
+    if not declared_cases:
+        raise OutputError("case-design receipt must declare every written cases/**/case.yaml")
+    relative_files = declared_cases
+
+    schema_version: str | None = None
+    aggregate: dict[str, object] = {"added": [], "modified": [], "removed": []}
+    for relative in relative_files:
+        if not _allowed_by_lock(relative, locked):
+            raise OutputError(f"undeclared output file: {relative}")
+        path = _workspace_file(workspace, relative)
+        if not path.is_file() or path.is_symlink():
+            raise OutputError(f"declared output file is missing: {relative}")
+        try:
+            raw = yaml.safe_load(path.read_bytes())
+            document = CaseYamlAuthoring.model_validate(
+                raw,
+                context={"capability_leafs": capability_leafs},
+            )
+        except (OSError, yaml.YAMLError, ValidationError, TypeError, ValueError) as error:
+            raise OutputError(f"invalid written case.yaml {relative}: {error}") from error
+        if schema_version is None:
+            schema_version = document.schema_version
+        elif document.schema_version != schema_version:
+            raise OutputError("written case.yaml files use inconsistent schema_version values")
+        for section in ("added", "modified", "removed"):
+            cast(list[object], aggregate[section]).extend(document.model_dump(mode="json")[section])
+
+    aggregate["schema_version"] = schema_version
+    try:
+        return CaseYamlAuthoring.model_validate(
+            aggregate,
+            context={"capability_leafs": capability_leafs},
+        )
+    except ValidationError as error:
+        raise OutputError(f"invalid aggregate written case delta: {error}") from error
+
+
+def _load_minimum_coverage_matrix(
+    workspace: Path,
+    *,
+    relative: str,
+    authored: CaseYamlAuthoring,
+) -> MinimumCoverageMatrixAuthoring:
+    document = _read_minimum_coverage_matrix(workspace, relative=relative)
+
+    cases = {entry.case_id: entry for entry in (*authored.added, *authored.modified)}
+    category_layer = {
+        "api": "api",
+        "negative": "api",
+        "data_integrity": "api",
+        "e2e": "e2e",
+        "e2e_if_enabled": "e2e",
+    }
+    for row in document.root:
+        expected_layer = row.layer or (category_layer.get(row.category) if row.category else None)
+        for case_id in row.covered_by_cases:
+            case = cases.get(case_id)
+            if case is None:
+                raise OutputError(
+                    f"minimum coverage row {row.mrc_id} references unknown authored case: {case_id}"
+                )
+            if expected_layer in {"api", "e2e"} and case.type.lower() != expected_layer:
+                raise OutputError(
+                    f"minimum coverage row {row.mrc_id} requires {expected_layer} case coverage"
+                )
+    return document
+
+
+def _read_minimum_coverage_matrix(
+    workspace: Path,
+    *,
+    relative: str,
+) -> MinimumCoverageMatrixAuthoring:
+    path = _workspace_file(workspace, relative)
+    try:
+        document = MinimumCoverageMatrixAuthoring.model_validate(json.loads(path.read_bytes()))
+    except (OSError, json.JSONDecodeError, ValidationError, TypeError, ValueError) as error:
+        raise OutputError(f"invalid minimum-coverage-matrix.json: {error}") from error
+    return document
+
+
 class IntakeFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
-            artifacts = _finalize_artifact_list(payload, context.workspace_root)
+            artifacts = _finalize_artifact_list(payload, context.write_root)
             return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
         except InputError as error:
             return failed_input(error)
@@ -122,7 +273,15 @@ class ExploreFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
-            artifacts = _finalize_artifact_list(payload, context.workspace_root)
+            if not payload.artifact_paths:
+                raise InputError("artifact_paths must lock the expected output files")
+            document = _artifact_list(payload)
+            change_id = _case_change_id(payload.change_id)
+            expected = {f"qa/changes/{change_id}/explore/exploration.json"}
+            if set(document.output_files) != expected:
+                raise OutputError("explore receipt must declare exactly exploration.json")
+            _validate_explore_outputs(context.write_root, document.output_files)
+            artifacts = _finalize_artifact_list(payload, context.write_root)
             return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
         except InputError as error:
             return failed_input(error)
@@ -132,18 +291,46 @@ class ExploreFinalizeHandler:
 
 class CaseDesignFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
-            structured = _structured(payload)
-            try:
-                document = CaseYamlAuthoring.model_validate(
-                    structured,
-                    context={"capability_leafs": _leafs(payload.capability_leafs)},
+            change_id = _case_change_id(payload.change_id)
+            capability_leafs = _leafs(payload.capability_leafs)
+            receipt = _artifact_list(payload)
+            change_root = f"qa/changes/{change_id}"
+            for relative in receipt.output_files:
+                if not relative.startswith(f"{change_root}/"):
+                    raise OutputError("case-design receipt may contain only current change outputs")
+            matrix_relative = f"{change_root}/trace/minimum-coverage-matrix.json"
+            required = {
+                f"{change_root}/.qa.yaml",
+                f"{change_root}/proposal.md",
+                matrix_relative,
+            }
+            missing = sorted(required.difference(receipt.output_files))
+            if missing:
+                raise OutputError(
+                    "case-design receipt is missing required output files: " + ", ".join(missing)
                 )
-            except ValidationError as error:
-                raise OutputError(str(error)) from error
-            return TaskOutcome.succeeded(document.model_dump(mode="json"))
+            _authenticate_files(
+                context.write_root,
+                receipt.output_files,
+                payload.artifact_paths,
+            )
+            authored = _load_authored_case_delta(
+                context.write_root,
+                change_id=change_id,
+                locked=payload.artifact_paths,
+                declared=receipt.output_files,
+                capability_leafs=capability_leafs,
+            )
+            authored_json = authored.model_dump(mode="json")
+            _require_selected_test_families(authored, payload.selected_test_families)
+            _load_minimum_coverage_matrix(
+                context.write_root,
+                relative=matrix_relative,
+                authored=authored,
+            )
+            return TaskOutcome.succeeded(authored_json)
         except InputError as error:
             return failed_input(error)
         except OutputError as error:
@@ -152,17 +339,28 @@ class CaseDesignFinalizeHandler:
 
 class CaseReviewFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
             try:
                 document = CaseReviewResultV1.model_validate(_structured(payload))
             except ValidationError as error:
                 raise OutputError(str(error)) from error
-            _require_known_leafs(
-                document.minimum_coverage.missing,
-                _leafs(payload.capability_leafs),
-                kind="case review",
+            change_id = _case_change_id(payload.change_id or document.change_id)
+            if document.change_id != change_id:
+                raise OutputError("case review change_id does not match locked change_id")
+            matrix = _read_minimum_coverage_matrix(
+                context.project_root,
+                relative=f"qa/changes/{change_id}/trace/minimum-coverage-matrix.json",
+            )
+            required = [row for row in matrix.root if row.required]
+            expected_projection = {
+                "total_required": len(required),
+                "covered": sum(row.status == "covered" for row in required),
+                "skipped_by_scope": sum(row.status == "skipped_by_scope" for row in required),
+                "missing": [row.key for row in required if row.status == "skipped_by_scope"],
+            }
+            document = document.model_copy(
+                update={"minimum_coverage": CaseMinimumCoverageReview.model_validate(expected_projection)}
             )
             return TaskOutcome.succeeded(document.model_dump(mode="json"))
         except InputError as error:

@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import JSONValue, canonical_json_bytes
-from tests.phase4.conformance import execute_task
+from tests.phase5.test_change_local_output_routing import dual_roots, execute_task
 
 from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.operations.proposal import (
@@ -39,6 +39,7 @@ _TOKEN = re.compile(
 )
 _SHA = "a" * 64
 BINDING: dict[str, Any] = {
+    "agent_profile": "aa-doc-author",
     "execution": {
         "provider_model": "test-model",
         "worker_profile": "worker",
@@ -215,9 +216,16 @@ async def test_fix_proposal_finalize_rejects_unknown_capability(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_fix_proposal_finalize_accepts_typed_proposal(tmp_path: Path) -> None:
-    (tmp_path / "tests/api").mkdir(parents=True)
-    (tmp_path / "tests/api/test_users.py").write_text("def test_ok():\n    assert True\n")
-    outcome = await execute_task(FixProposalFinalizeHandler(), fake_agent_result(valid_proposal()), tmp_path)
+    project, write_root = dual_roots(tmp_path)
+    target = write_root / "tests/api/test_users.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("def test_ok():\n    assert True\n")
+    outcome = await execute_task(
+        FixProposalFinalizeHandler(),
+        fake_agent_result(valid_proposal()),
+        project,
+        write_root=write_root,
+    )
     assert outcome.status == "succeeded"
     assert as_object(outcome.output)["proposals"][0]["proposal_id"] == "P1"
 
@@ -341,8 +349,10 @@ async def test_coverage_repair_prepare_and_finalize(tmp_path: Path) -> None:
         "files_modified": ["tests/api/test_users.py"],
         "addressed_items": ["TC_A"],
     }
-    (tmp_path / "tests/api").mkdir(parents=True)
-    (tmp_path / "tests/api/test_users.py").write_text("def test_ok():\n    assert True\n")
+    project, write_root = dual_roots(tmp_path)
+    target = write_root / "tests/api/test_users.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("def test_ok():\n    assert True\n")
     from agent_runtime_contracts import AgentRunResult
     from agent_runtime_contracts.schema import canonical_digest
     from tests.phase4.agent_harness import FakeAgentAdapter
@@ -372,7 +382,8 @@ async def test_coverage_repair_prepare_and_finalize(tmp_path: Path) -> None:
             "artifact_paths": ["tests/api/test_users.py"],
             "prepare": repair_prepare,
         },
-        tmp_path,
+        project,
+        write_root=write_root,
     )
     assert finalized.status == "succeeded"
 
@@ -439,6 +450,27 @@ async def test_coverage_repair_finalize_rejects_unknown_locator(tmp_path: Path) 
     assert finalized.failure is not None
     assert finalized.failure.kind == "invalid_output"
     assert finalized.failure.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_failed_proposal_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    canonical = project / "qa/changes/CH-DEMO-001/healing/fix-proposal.json"
+    canonical.parent.mkdir(parents=True)
+    original = b'{"schema_version":"1"}\n'
+    canonical.write_bytes(original)
+    raw = valid_proposal()
+    raw["proposals"][0]["files_to_modify"] = ["tests/api/missing.py"]  # type: ignore[index]
+    outcome = await execute_task(
+        FixProposalFinalizeHandler(),
+        fake_agent_result(raw),
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert canonical.read_bytes() == original
 
 
 def test_healing_resources_forbid_legacy_and_provider_names() -> None:

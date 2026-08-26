@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract
+from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
 from graph_engine.frozen_json import thaw_json
@@ -40,6 +40,31 @@ FIX_PROPOSAL_RESULT_ID = "assurance.healing.result.fix-proposal.v1"
 COVERAGE_REPAIR_RESULT_ID = "assurance.healing.result.coverage-repair.v1"
 _FIX_RESULT_FILE = "result-contracts/fix-proposal.v1.schema.json"
 _REPAIR_RESULT_FILE = "result-contracts/coverage-repair.v1.schema.json"
+_BOUNDED_PROFILES = {
+    "aa-archiver": "assurance-v1-archiver",
+    "aa-doc-author": "assurance-v1-doc-author",
+    "aa-executor": "assurance-v1-executor",
+    "aa-explorer": "assurance-v1-explorer",
+    "aa-reporter": "assurance-v1-reporter",
+    "aa-reviewer": "assurance-v1-reviewer",
+    "aa-test-author": "assurance-v1-test-author",
+}
+
+
+def agent_workspace(
+    context: TaskContext,
+    *,
+    allowed_outputs: tuple[str, ...],
+    agent_profile: str,
+) -> AgentWorkspaceV1:
+    write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
+    payload = {
+        "schema_version": "1",
+        "agent_profile": _BOUNDED_PROFILES.get(agent_profile, agent_profile),
+        "write_root": write_root,
+        "allowed_outputs": tuple(sorted(set(allowed_outputs))),
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
 
 def result_contract(schema_id: str, relative: str) -> ResultContract:
@@ -60,7 +85,14 @@ def validate_binding(data: object) -> AgentBindingDataV1:
 
 
 def prepare_outcome(
-    *, skill_path: str, business: Any, binding: AgentBindingDataV1, result_id: str, result_file: str
+    *,
+    skill_path: str,
+    business: Any,
+    binding: AgentBindingDataV1,
+    result_id: str,
+    result_file: str,
+    context: TaskContext,
+    allowed_outputs: tuple[str, ...],
 ) -> TaskOutcome:
     agent_request = AgentRunRequest(
         instructions=(
@@ -70,6 +102,11 @@ def prepare_outcome(
         ),
         result_contract=result_contract(result_id, result_file),
         execution=binding.execution,
+        workspace=agent_workspace(
+            context,
+            allowed_outputs=allowed_outputs,
+            agent_profile=binding.agent_profile,
+        ),
         request_policy_digest=binding.request_policy_digest,
         request_config_digest=binding.request_config_digest,
     )
@@ -171,7 +208,6 @@ def _brief_locator_ids(brief: CoverageRepairBrief) -> set[str]:
 
 class FixProposalPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
             business = validate_input(FixProposalInputV1, request.input)
             binding = validate_binding(request.binding_data)
@@ -181,6 +217,8 @@ class FixProposalPrepareHandler:
                 binding=binding,
                 result_id=FIX_PROPOSAL_RESULT_ID,
                 result_file=_FIX_RESULT_FILE,
+                context=context,
+                allowed_outputs=(f"qa/changes/{business.change_id}/healing/fix-proposal.json",),
             )
         except InputError as error:
             return failed_input(error)
@@ -217,10 +255,10 @@ class FixProposalFinalizeHandler:
                         or not _under_root(path, payload.allowed_roots)
                     ):
                         raise OutputError(f"undeclared target file: {path}")
-                    _workspace_file(context.workspace_root, path)
+                    _workspace_file(context.write_root, path)
             if payload.artifact_paths:
                 for path in payload.artifact_paths:
-                    _workspace_file(context.workspace_root, path)
+                    _workspace_file(context.write_root, path)
             return TaskOutcome.succeeded(cast(JSONValue, proposal.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
@@ -230,7 +268,6 @@ class FixProposalFinalizeHandler:
 
 class CoverageRepairPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
             business = validate_input(CoverageRepairInputV1, request.input)
             binding = validate_binding(request.binding_data)
@@ -240,6 +277,8 @@ class CoverageRepairPrepareHandler:
                 binding=binding,
                 result_id=COVERAGE_REPAIR_RESULT_ID,
                 result_file=_REPAIR_RESULT_FILE,
+                context=context,
+                allowed_outputs=(f"qa/changes/{business.change_id}/healing/coverage-repair.json",),
             )
         except InputError as error:
             return failed_input(error)
@@ -271,9 +310,9 @@ class CoverageRepairFinalizeHandler:
             for path in summary.files_modified:
                 if path not in allowed or not _under_root(path, payload.allowed_roots):
                     raise OutputError(f"undeclared target file: {path}")
-                _workspace_file(context.workspace_root, path)
+                _workspace_file(context.write_root, path)
             for path in payload.artifact_paths:
-                _workspace_file(context.workspace_root, path)
+                _workspace_file(context.write_root, path)
             return TaskOutcome.succeeded(cast(JSONValue, summary.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)

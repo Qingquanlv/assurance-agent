@@ -125,3 +125,8 @@ class ChangeWorkspace:
                 except OSError:
                     pass
             raise ValueError("could not initialize change workspace") from exc
+
+    def output_route(self, capability_alias: str) -> tuple[str, ...]:
+        from assurance_product.output_routes import OutputRouteCatalog
+
+        return OutputRouteCatalog().outputs(capability_alias, self.paths.change_root.name)

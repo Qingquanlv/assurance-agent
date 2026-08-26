@@ -7,6 +7,24 @@ Turn the approved API portion of a reviewed case document into reviewable
 implementation plans. Schema truth is `assurance_generation.contracts` for the
 plan result and `assurance_intake.contracts` for reviewed cases.
 
+## Locked Capability Selection
+
+The result contract's `required_capabilities` enum is the sole whitelist for
+the top-level result and every coverage row. Copy exact strings from that enum;
+never construct a key from a namespace, helper name, or analogous layer. In
+particular, a declared `capabilities.domain_factories.*` leaf does not imply a
+same-suffix `capabilities.adapters.api.*` leaf. If a genuinely consumed helper
+or fixture leaf is not in the enum, describe the gap in the plan/review
+readiness; do not emit a virtual key. Before returning, reject your own result
+unless every capability value is byte-for-byte present in the enum.
+
+The SUT endpoint being tested is not itself a capability dependency. A mapped
+API test may issue a source-proven HTTP request directly with its declared auth
+fixture and existing target-local request helpers. Do not invent a missing API
+adapter requirement merely because the test performs create, list, get,
+update, or delete operations. Require an adapter leaf only when the plan
+actually consumes that cataloged reusable adapter symbol.
+
 ## Inputs
 
 ### required
@@ -68,6 +86,13 @@ the declared product source and test inputs. A plan must describe the observed
 contract, including create operations whose success response has no identifier
 and therefore requires a supported follow-up lookup.
 
+When the frozen Explore advisory and reviewed case set
+`assertion_intent: assert_ideal`, keep that ideal oracle even when current source
+implements the opposite behavior. The source mismatch is the defect the later
+test and issue-analysis flow must expose; do not turn it into an unresolved
+authorization decision. Map exact L1-declared fixture/helper symbols to bounded
+codegen targets when their implementations are not on disk yet.
+
 Do not use `removed` cases as plan scope.
 
 Do not continue past planning into codegen.
@@ -83,17 +108,25 @@ separate Plan Readiness and Codegen Readiness. Unknown product facts remain
 explicit review items or blockers; they are never guessed.
 
 When `review/api-plan-review.json` exists with `decision: needs_fix`, apply only
-the findings' `locator` targets. Do not rewrite unmentioned plan sections or
-mapping rows. Keep `plans/api-codegen-mapping.json` as the closed Case ID →
-symbol → target file contract; the markdown plan is narrative only.
+the findings named in `auto_fix_plan` and only their `locator` targets. Apply
+every listed finding in the same planner re-entry; do not return after repairing
+only the first finding. Treat each locator as authorizing exactly its named
+artifact and key/section, and do not infer permission to edit a second artifact
+from prose in another finding. Do not rewrite unmentioned plan sections or
+mapping rows. Keep
+`plans/api-codegen-mapping.json` as the closed Case ID → symbol → target file
+contract; the markdown plan is narrative only.
 
 Shared business-valid factories belong in `tests/testdata/domain/`. They own
 domain defaults and invariant-preserving create/cleanup behavior, return plain
 snapshots, and contain no HTTP client, browser, property, or load-test glue.
 
-API lifecycle and transport glue belongs in `tests/api/adapters/`. A plan maps
-each data need to a shared domain factory and an API adapter. The first active
-codegen layer may own a shared module that is absent from L1 as
+Reusable cross-test API lifecycle and transport glue belongs in
+`tests/api/adapters/`. A plan maps each external reusable data need to a shared
+domain factory or API adapter when it actually consumes one. Requests that are
+the behavior under test, and existing helpers private to the closed-mapping
+target, stay in that mapped API test and do not require an adapter capability.
+The first active codegen layer may own a shared module that is absent from L1 as
 `create-if-missing`; every L1-declared symbol and every later-layer reference
 is `reuse`.
 

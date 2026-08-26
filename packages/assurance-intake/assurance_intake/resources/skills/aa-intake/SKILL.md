@@ -23,6 +23,10 @@ of the write):
 1. `qa/changes/<change-id>/requirement.md` — the locked requirement text
 2. `qa/changes/<change-id>/.qa.yaml` — `change_id` only; do not invent approval
 
+Call the native `write` tool exactly twice, once for each required file. Then
+read both files back and verify their content. A final JSON response without
+those successful tool calls is invalid, even if the paths are listed correctly.
+
 ## Forbidden
 
 - Do not ask clarifying or scope questions.

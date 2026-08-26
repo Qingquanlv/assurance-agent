@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import CandidateWriteSet, ValidationResult
-from tests.phase4.conformance import execute_task
+from tests.phase5.test_change_local_output_routing import execute_task
 
 from assurance_quality.operations.report import DashboardHandler, GenerateReportHandler
 from assurance_quality.validators.report import ReportValidator

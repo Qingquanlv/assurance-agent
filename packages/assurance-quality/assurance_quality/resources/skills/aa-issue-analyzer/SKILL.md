@@ -34,4 +34,5 @@ Schema truth is `assurance_quality.contracts` for `IssueAnalysisResultV1`.
 - Do not include raw secrets in hypotheses.
 - The runtime stamps `candidate_digest` after validation.
 - Use the locked execution binding from the prepare request.
+- Write the typed result to `qa/changes/<change-id>/inspect/issue-analysis.json`.
 - Return the typed result and stop.

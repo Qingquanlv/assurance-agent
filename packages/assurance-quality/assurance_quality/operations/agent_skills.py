@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract
+from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
@@ -61,6 +61,40 @@ _RESULT_FILES: dict[str, str] = {
     REPORT_RESULT_ID: "result-contracts/report.v1.schema.json",
 }
 
+_BOUNDED_PROFILES = {
+    "aa-archiver": "assurance-v1-archiver",
+    "aa-doc-author": "assurance-v1-doc-author",
+    "aa-executor": "assurance-v1-executor",
+    "aa-explorer": "assurance-v1-explorer",
+    "aa-reporter": "assurance-v1-reporter",
+    "aa-reviewer": "assurance-v1-reviewer",
+    "aa-test-author": "assurance-v1-test-author",
+}
+_QUALITY_OUTPUTS = {
+    FACT_BASELINE_RESULT_ID: lambda change_id: (f"qa/changes/{change_id}/facts/fact-baseline.json",),
+    INSPECTION_RESULT_ID: lambda change_id: (f"qa/changes/{change_id}/inspect/inspection.json",),
+    ISSUE_ANALYSIS_RESULT_ID: lambda change_id: (f"qa/changes/{change_id}/inspect/issue-analysis.json",),
+    ISSUE_TRIAGE_RESULT_ID: lambda change_id: (f"qa/changes/{change_id}/inspect/issue-triage.json",),
+    REPORT_RESULT_ID: lambda change_id: (f"qa/changes/{change_id}/report/report.md",),
+}
+
+
+def agent_workspace(
+    context: TaskContext,
+    *,
+    allowed_outputs: tuple[str, ...],
+    agent_profile: str,
+) -> AgentWorkspaceV1:
+    write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
+    payload = {
+        "schema_version": "1",
+        "agent_profile": _BOUNDED_PROFILES.get(agent_profile, agent_profile),
+        "write_root": write_root,
+        "allowed_outputs": tuple(sorted(set(allowed_outputs))),
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
+
+
 _TRIAGE_ACTIONS = frozenset(
     {
         "confirm_assessment",
@@ -98,6 +132,7 @@ def prepare_outcome(
     business: Any,
     binding: AgentBindingDataV1,
     result_schema_id: str,
+    context: TaskContext,
 ) -> TaskOutcome:
     agent_request = AgentRunRequest(
         instructions=(
@@ -107,6 +142,11 @@ def prepare_outcome(
         ),
         result_contract=result_contract(result_schema_id),
         execution=binding.execution,
+        workspace=agent_workspace(
+            context,
+            allowed_outputs=_QUALITY_OUTPUTS[result_schema_id](business.change_id),
+            agent_profile=binding.agent_profile,
+        ),
         request_policy_digest=binding.request_policy_digest,
         request_config_digest=binding.request_config_digest,
     )
@@ -117,7 +157,9 @@ def _structured(payload: AgentFinalizeInputV1) -> object:
     return thaw_json(payload.agent_result.structured_result)
 
 
-def _prepare(skill: str, persona: str, result_id: str, request: TaskRequest) -> TaskOutcome:
+def _prepare(
+    skill: str, persona: str, result_id: str, request: TaskRequest, context: TaskContext
+) -> TaskOutcome:
     business = validate_input(QualitySkillInputV1, request.input)
     binding = validate_binding(request.binding_data)
     return prepare_outcome(
@@ -126,50 +168,48 @@ def _prepare(skill: str, persona: str, result_id: str, request: TaskRequest) -> 
         business=business,
         binding=binding,
         result_schema_id=result_id,
+        context=context,
     )
 
 
 class FactBaselinePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _prepare(FACT_BASELINE_SKILL, EXPLORER_PERSONA, FACT_BASELINE_RESULT_ID, request)
+            return _prepare(FACT_BASELINE_SKILL, EXPLORER_PERSONA, FACT_BASELINE_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
 
 class InspectPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _prepare(INSPECT_SKILL, EXPLORER_PERSONA, INSPECTION_RESULT_ID, request)
+            return _prepare(INSPECT_SKILL, EXPLORER_PERSONA, INSPECTION_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
 
 class IssueAnalysisPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _prepare(ISSUE_ANALYSIS_SKILL, EXPLORER_PERSONA, ISSUE_ANALYSIS_RESULT_ID, request)
+            return _prepare(
+                ISSUE_ANALYSIS_SKILL, EXPLORER_PERSONA, ISSUE_ANALYSIS_RESULT_ID, request, context
+            )
         except InputError as error:
             return failed_input(error)
 
 
 class IssueTriagePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _prepare(ISSUE_TRIAGE_SKILL, REVIEWER_PERSONA, ISSUE_TRIAGE_RESULT_ID, request)
+            return _prepare(ISSUE_TRIAGE_SKILL, REVIEWER_PERSONA, ISSUE_TRIAGE_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
 
 class ReportPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _prepare(REPORT_SKILL, REPORTER_PERSONA, REPORT_RESULT_ID, request)
+            return _prepare(REPORT_SKILL, REPORTER_PERSONA, REPORT_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 

@@ -32,4 +32,5 @@ for `RetroAnalysisResultV3` with `domain=eval`.
 - Never write `slice_sha256` or calculate a digest.
 - Do not emit provider session transcripts or secret-bearing diagnostics.
 - Use the locked execution binding from the prepare request.
+- Write the typed result to `qa/changes/<change-id>/retro/retro-eval-analysis.json`.
 - Return the typed result and stop.

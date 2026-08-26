@@ -6,6 +6,17 @@ Turn the approved E2E portion of a reviewed case document into reviewable
 implementation plans. Schema truth is `assurance_generation.contracts` for the
 plan result and `assurance_intake.contracts` for reviewed cases.
 
+## Locked Capability Selection
+
+The result contract's `required_capabilities` enum is the sole whitelist for
+the top-level result and every coverage row. Copy exact strings from that enum;
+never construct a key from a namespace, helper name, or analogous layer. In
+particular, a declared `capabilities.domain_factories.*` leaf does not imply a
+same-suffix `capabilities.adapters.e2e.*` leaf. If the exact needed leaf is not
+in the enum, describe the gap in the plan/review readiness; do not emit a
+virtual key. Before returning, reject your own result unless every capability
+value is byte-for-byte present in the enum.
+
 ## Inputs
 
 ### required
