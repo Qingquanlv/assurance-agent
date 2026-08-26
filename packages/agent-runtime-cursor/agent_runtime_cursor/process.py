@@ -56,6 +56,7 @@ class CursorProcessReceipt(FrozenModel):
     request_digest: str = Field(pattern=_SHA256_PATTERN)
     argv_policy_digest: str = Field(pattern=_SHA256_PATTERN)
     workspace_identity_digest: str = Field(pattern=_SHA256_PATTERN)
+    sandbox_profile_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     started_at: float
     stream_session_id: str | None = None
 
@@ -82,6 +83,9 @@ class ProcessLaunchRequest:
     request_digest: str
     argv_policy_digest: str
     workspace_identity_digest: str
+    sandbox_profile: str = ""
+    sandbox_profile_digest: str | None = None
+    temp_root: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,14 +570,17 @@ class _BaseProductionConfinedProcessHost:
 
     async def spawn(self, request: ProcessLaunchRequest) -> ConfinedProcess:
         identity = self.preflight(request)
-        env = dict(_spawn_environment(request))
+        from agent_runtime_cursor.filesystem_sandbox import FilesystemSandbox
+
+        wrapped = FilesystemSandbox.wrap(request)
+        env = dict(_spawn_environment(wrapped))
         started_at = time.time()
         process = subprocess.Popen(
-            list(request.argv),
+            list(wrapped.argv),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            cwd=str(request.cwd.resolve()),
+            cwd=str(wrapped.cwd.resolve()),
             env=env,
             shell=False,
             start_new_session=True,
@@ -598,6 +605,7 @@ class _BaseProductionConfinedProcessHost:
             request_digest=request.request_digest,
             argv_policy_digest=request.argv_policy_digest,
             workspace_identity_digest=request.workspace_identity_digest,
+            sandbox_profile_digest=wrapped.sandbox_profile_digest,
             started_at=started_at,
         )
         receipt_mac = _receipt_mac(self._mac_key, receipt)

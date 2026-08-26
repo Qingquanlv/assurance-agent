@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assurance.product/schemas/workspace-binding-v1.json",
+  "title": "WorkspaceBindingV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "session_id",
+    "agent_profile",
+    "project_root_digest",
+    "write_root",
+    "allowed_outputs",
+    "task_id",
+    "attempt",
+    "attempt_id",
+    "digest"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "session_id": { "type": "string", "minLength": 1 },
+    "agent_profile": { "type": "string", "minLength": 1 },
+    "project_root_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "write_root": { "type": "string", "minLength": 1 },
+    "allowed_outputs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "task_id": { "type": "string", "minLength": 1 },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "attempt_id": { "type": "string", "minLength": 1 },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}
