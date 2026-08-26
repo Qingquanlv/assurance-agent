@@ -30,12 +30,11 @@ from graph_engine.runtime.secret_sources import (
 from graph_engine.runtime.seed import InvocationSeed
 from graph_engine.runtime.tree_io import (
     SeedCapturePolicy,
-    SnapshotExportError,
     capture_workspace_seed,
 )
 
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
-from assurance_product.export import ResultExportError, export_invocation
+from assurance_product.export import PublishError, publish_achieved, select_publish_change
 from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1
 from assurance_product.product import (
     AssuranceCompositionError,
@@ -419,54 +418,18 @@ def resume_command(
 
 
 @app.command("export")
-@click.option("--destination", type=click.Path())
-@click.option("--engine-root", type=click.Path())
-@click.option("--invocation-id")
-@click.option("--product")
-@click.option("--binding-dist")
-@click.option("--binding-entrypoint")
-@click.option("--binding-declaration")
-@click.option("--config-tree", type=click.Path())
-@click.option("--secret", "secrets", multiple=True)
+@click.option("--project-dir", type=click.Path())
+@click.option("--change")
 @click.option("--json", "as_json", is_flag=True)
 def export_command(
-    destination: str | None,
-    engine_root: str | None,
-    invocation_id: str | None,
-    product: str | None,
-    binding_dist: str | None,
-    binding_entrypoint: str | None,
-    binding_declaration: str | None,
-    config_tree: str | None,
-    secrets: tuple[str, ...],
+    project_dir: str | None,
+    change: str | None,
     as_json: bool,
 ) -> None:
     del as_json
-    _require_options(
-        {
-            "destination": destination,
-            "engine_root": engine_root,
-            "invocation_id": invocation_id,
-            "product": product,
-            "binding_dist": binding_dist,
-            "binding_entrypoint": binding_entrypoint,
-            "binding_declaration": binding_declaration,
-            "config_tree": config_tree,
-        },
-        ("destination", *_EXISTING_FLAGS),
-    )
+    _require_options({"project_dir": project_dir}, ("project_dir",))
     try:
-        document = _export_invocation(
-            destination=Path(cast(str, destination)),
-            engine_root=Path(cast(str, engine_root)),
-            invocation_id=cast(str, invocation_id),
-            product=cast(str, product),
-            binding_dist=cast(str, binding_dist),
-            binding_entrypoint=cast(str, binding_entrypoint),
-            binding_declaration=cast(str, binding_declaration),
-            config_tree=cast(str, config_tree),
-            secrets=secrets,
-        )
+        document = _export_change(project_dir=Path(cast(str, project_dir)), change_id=change)
     except CommandError as error:
         _fail(str(error), error.code)
     _emit(document)
@@ -810,43 +773,14 @@ def _resume_invocation(
     return result, _RUN_EXIT[result.status][1]
 
 
-def _export_invocation(
-    *,
-    destination: Path,
-    engine_root: Path,
-    invocation_id: str,
-    product: str,
-    binding_dist: str,
-    binding_entrypoint: str,
-    binding_declaration: str,
-    config_tree: str,
-    secrets: Sequence[str],
-) -> dict[str, object]:
-    composition, _projection, _identity = _open_authenticated(
-        engine_root=engine_root,
-        invocation_id=invocation_id,
-        product=product,
-        binding_dist=binding_dist,
-        binding_entrypoint=binding_entrypoint,
-        binding_declaration=binding_declaration,
-        config_tree=config_tree,
-        secrets=secrets,
-    )
-    authorization = _authorize_secrets(composition, secrets)
+def _export_change(*, project_dir: Path, change_id: str | None) -> dict[str, object]:
     try:
-        with create_engine(engine_root, authorization) as engine:
-            exported = export_invocation(
-                engine,
-                invocation_id,
-                destination,
-                authorization=authorization,
-            )
-    except (ResultExportError, SnapshotExportError, EngineError, GraphEngineError, OSError) as error:
+        project = Path(project_dir).resolve()
+        selected = select_publish_change(project, change_id)
+        receipt = publish_achieved(project, selected)
+    except (PublishError, ValueError, OSError) as error:
         raise CommandError(str(error)) from error
-    document = exported.model_dump(mode="json")
-    document["tree_id"] = exported.status.current_head_tree_id
-    document["destination"] = str(destination)
-    return document
+    return receipt.model_dump(mode="json")
 
 
 def _read_authenticated_projection(

@@ -753,21 +753,60 @@ class ExportedArtifactV1(FrozenModel):
         return _canonical_token(value, "media_type")
 
 
-class ResultExportV1(FrozenModel):
-    schema_version: Literal["1"]
-    invocation_id: str
-    lock_digest: str = Field(pattern=_SHA256)
-    event_stream_digest: str = Field(pattern=_SHA256)
-    result_tree_digest: str
-    status: StatusV1
-    artifact_index: tuple[ExportedArtifactV1, ...]
+class PublishFileV1(FrozenModel):
+    target_path: str
+    source_path: str
+    source_sha256: str
+    baseline_sha256: str | None
+    final_sha256: str
+    temp_name: str
+    backup_name: str
 
-    @field_validator("result_tree_digest")
+    @field_validator("target_path", "source_path")
     @classmethod
-    def _result_tree_digest(cls, value: str) -> str:
-        prefix, separator, digest = value.partition(":")
-        if prefix != "sha256" or not separator or len(digest) != 64:
-            raise ValueError("result_tree_digest must be sha256: plus 64 lowercase hex")
-        if any(character not in "0123456789abcdef" for character in digest):
-            raise ValueError("result_tree_digest must be sha256: plus 64 lowercase hex")
+    def _relative_path(cls, value: str) -> str:
+        return _canonical_artifact_prefixes((value,))[0]
+
+    @field_validator("temp_name", "backup_name")
+    @classmethod
+    def _component(cls, value: str) -> str:
+        if not value or "/" in value or "\\" in value or value in {".", ".."}:
+            raise ValueError("temp/backup name must be one path component")
         return value
+
+
+class PublishReceiptV1(FrozenModel):
+    schema_version: Literal["1"]
+    change_id: str
+    manifest_digest: str = Field(pattern=_SHA256)
+    source_digest: str = Field(pattern=_SHA256)
+    target_baseline: str = Field(pattern=_SHA256)
+    final_digest: str = Field(pattern=_SHA256)
+    files: tuple[PublishFileV1, ...]
+
+    @field_validator("change_id")
+    @classmethod
+    def _change_id(cls, value: str) -> str:
+        return _canonical_token(value, "change_id")
+
+
+class PublishJournalRecordV1(FrozenModel):
+    phase: Literal["prepared", "replacing", "committed", "rolled_back"]
+    change_id: str
+    manifest_digest: str = Field(pattern=_SHA256)
+    source_digest: str = Field(pattern=_SHA256)
+    target_baseline: str = Field(pattern=_SHA256)
+    temp_identity: str = Field(pattern=_SHA256)
+    backup_identity: str = Field(pattern=_SHA256)
+    final_digest: str = Field(pattern=_SHA256)
+    files: tuple[PublishFileV1, ...]
+
+    @field_validator("change_id")
+    @classmethod
+    def _change_id(cls, value: str) -> str:
+        return _canonical_token(value, "change_id")
+
+
+class PublishJournalV1(FrozenModel):
+    schema_version: Literal["1"]
+    records: tuple[PublishJournalRecordV1, ...]

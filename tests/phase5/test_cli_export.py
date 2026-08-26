@@ -4,72 +4,33 @@ import json
 from importlib.resources import files
 from pathlib import Path
 
-import pytest
-
-from tests.phase5.cli_support import (
-    SECRET_ENV,
-    SECRET_VALUE,
-    common_lifecycle_args,
-    parse_json_output,
-    scripted_engine_factory,
-    source_args,
-)
-from tests.phase5.composition_harness import request_for
-
-pytestmark = pytest.mark.usefixtures("installed_sources")
+from tests.phase5.cli_support import parse_json_output
+from tests.phase5.test_result_export import CHANGE_ID, TARGET_A, TARGET_B, write_achieved
 
 
-def _export_schema() -> dict[str, object]:
-    raw = files("assurance_product").joinpath("resources/schemas/result-export-v1.json").read_bytes()
+def _schema() -> dict[str, object]:
+    raw = files("assurance_product").joinpath("resources/schemas/publish-receipt-v1.json").read_bytes()
     return json.loads(raw.decode("utf-8"))
 
 
-def test_cli_export_writes_authenticated_result_export(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
-):
-    from assurance_product import cli
+def test_cli_export_publishes_explicit_change(cli_runner, tmp_path: Path) -> None:
     from assurance_product.cli import app
-    from assurance_product.models import ResultExportV1
-    from assurance_product.product import resolve_assurance_composition
+    from assurance_product.models import PublishReceiptV1
 
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    monkeypatch.setattr(cli, "create_engine", scripted_engine_factory())
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, _project_dir, _engine_root = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-cli-export-001",
-    )
-    run = cli_runner.invoke(app, ["run", *args])
-    assert run.exit_code == 0, run.output
-    destination = tmp_path / "cli-export"
+    project = write_achieved(tmp_path)
     result = cli_runner.invoke(
         app,
-        [
-            "export",
-            "--json",
-            "--destination",
-            str(destination),
-            "--engine-root",
-            args[args.index("--engine-root") + 1],
-            "--invocation-id",
-            "inv-cli-export-001",
-            *source_args(installed_sources),
-            "--secret",
-            args[args.index("--secret") + 1],
-        ],
+        ["export", "--json", "--project-dir", str(project), "--change", CHANGE_ID],
     )
+
     assert result.exit_code == 0, result.output
     document = parse_json_output(result.stdout)
-    exported = ResultExportV1.model_validate({key: document[key] for key in ResultExportV1.model_fields})
-    assert exported.schema_version == "1"
-    assert exported.status.status == "completed"
-    assert exported.lock_digest == composition.lock_digest
-    assert (destination / "manifest.json").is_file()
-    assert (destination / "result-tree").is_dir()
-    schema = _export_schema()
-    assert schema["title"] == "ResultExportV1"
+    receipt = PublishReceiptV1.model_validate(document)
+    assert receipt.change_id == CHANGE_ID
+    assert (project / TARGET_A).read_bytes() == b"generated-a\n"
+    assert (project / TARGET_B).read_bytes() == b"generated-b\n"
+    schema = _schema()
+    assert schema["title"] == "PublishReceiptV1"
     assert schema["additionalProperties"] is False
     required = schema["required"]
     assert isinstance(required, list)
@@ -77,36 +38,77 @@ def test_cli_export_writes_authenticated_result_export(
         assert key in document
 
 
-def test_cli_export_refuses_running_invocation(cli_runner, installed_sources, tmp_path: Path, monkeypatch):
+def test_cli_export_selects_single_unpublished_achieved_change(cli_runner, tmp_path: Path) -> None:
     from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
 
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, _project_dir, _engine_root = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-cli-export-running",
+    project = write_achieved(tmp_path)
+    result = cli_runner.invoke(app, ["export", "--project-dir", str(project)])
+
+    assert result.exit_code == 0, result.output
+    document = parse_json_output(result.stdout)
+    assert document["change_id"] == CHANGE_ID
+    assert (project / TARGET_A).read_bytes() == b"generated-a\n"
+
+
+def test_cli_export_rejects_zero_candidates_without_mutation(cli_runner, tmp_path: Path) -> None:
+    from assurance_product.cli import app
+
+    project = write_achieved(tmp_path, state="running", publication="not_ready")
+    original = (project / TARGET_A).read_bytes()
+
+    result = cli_runner.invoke(app, ["export", "--project-dir", str(project)])
+
+    assert result.exit_code != 0
+    assert "achieved unpublished" in result.output or "found 0" in result.output
+    assert (project / TARGET_A).read_bytes() == original
+    assert not (project / "qa" / "changes" / CHANGE_ID / "publish-receipt.json").exists()
+
+
+def test_cli_export_rejects_multiple_candidates_without_mutation(cli_runner, tmp_path: Path) -> None:
+    from assurance_product.cli import app
+
+    other = "CH-PUB-002"
+    project = write_achieved(tmp_path)
+    write_achieved(
+        tmp_path,
+        change_id=other,
+        files=((TARGET_A, b"generated-other\n", b"original-other\n"),),
+        extras={},
+        project=project,
     )
-    started = cli_runner.invoke(app, ["start", *args])
-    assert started.exit_code == 0, started.output
-    destination = tmp_path / "running-cli-export"
+    first = (project / TARGET_A).read_bytes()
+
+    result = cli_runner.invoke(app, ["export", "--project-dir", str(project)])
+
+    assert result.exit_code != 0
+    assert CHANGE_ID in result.output
+    assert other in result.output
+    assert (project / TARGET_A).read_bytes() == first
+    assert not (project / "qa" / "changes" / CHANGE_ID / "publish-receipt.json").exists()
+    assert not (project / "qa" / "changes" / other / "publish-receipt.json").exists()
+
+
+def test_cli_export_explicit_change_wins(cli_runner, tmp_path: Path) -> None:
+    from assurance_product.cli import app
+
+    other = "CH-PUB-002"
+    project = write_achieved(tmp_path)
+    write_achieved(
+        tmp_path,
+        change_id=other,
+        files=(("tests/api/test_other.py", b"generated-other\n", b"original-other\n"),),
+        extras={},
+        project=project,
+    )
+
     result = cli_runner.invoke(
         app,
-        [
-            "export",
-            "--json",
-            "--destination",
-            str(destination),
-            "--engine-root",
-            args[args.index("--engine-root") + 1],
-            "--invocation-id",
-            "inv-cli-export-running",
-            *source_args(installed_sources),
-            "--secret",
-            args[args.index("--secret") + 1],
-        ],
+        ["export", "--project-dir", str(project), "--change", other],
     )
-    assert result.exit_code == 40, result.output
-    assert not destination.exists()
+
+    assert result.exit_code == 0, result.output
+    document = parse_json_output(result.stdout)
+    assert document["change_id"] == other
+    assert (project / "tests/api/test_other.py").read_bytes() == b"generated-other\n"
+    assert (project / TARGET_A).read_bytes() == b"original-a\n"
+    assert not (project / "qa" / "changes" / CHANGE_ID / "publish-receipt.json").exists()
