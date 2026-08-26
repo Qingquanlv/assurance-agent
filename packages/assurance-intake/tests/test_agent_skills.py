@@ -120,6 +120,27 @@ def test_explore_skill_returns_the_locked_result_contract() -> None:
     assert '{"output_files":["qa/changes/<change-id>/explore/exploration.json"]}' in skill
 
 
+def test_explore_resources_require_complete_output_even_when_evidence_is_degraded() -> None:
+    resources = {
+        "skill": resource_text("skills/aa-explore/SKILL.md"),
+        "persona": resource_text("personas/explorer.md"),
+        "prompt": resource_text("prompts/explore.md"),
+    }
+
+    for content in resources.values():
+        assert "advisory.json" not in content
+        assert "exploration.json" in content
+        assert "degraded" in content.lower()
+        assert "no-source" in content.lower()
+        assert "must still" in content.lower()
+
+    skill = resources["skill"]
+    assert "do not return structured success" in skill.lower()
+    assert 'never return `{"output_files":[]}`' in skill.lower()
+    assert "must not synthesize such a state as successful" in skill.lower()
+    assert "return only the non-empty structured" in resources["persona"].lower()
+
+
 def test_case_design_skill_returns_the_locked_file_receipt_contract() -> None:
     skill = resource_text("skills/aa-case-design/SKILL.md")
     assert "final assistant response" in " ".join(skill.split())

@@ -81,7 +81,7 @@ class CaseReviewInputV1(_SkillInputV1):
 
 
 class ArtifactListResultV1(FrozenModel):
-    output_files: tuple[str, ...]
+    output_files: tuple[str, ...] = Field(min_length=1)
 
     @field_validator("output_files")
     @classmethod

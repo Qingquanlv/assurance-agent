@@ -31,6 +31,9 @@ Do not rely on prior conversation context.
    - Write the complete advisory in one operation. A placeholder or reduced object is
      invalid even when it contains `schema_version`, `change_id`, `watchlist`, and
      `open_questions_for_case_design`.
+   - Autonomous, degraded, and no-source runs MUST still write a complete valid
+     `exploration.json`. Weak or absent evidence changes the evidence fields and
+     confidence, never the required output file.
 2. Immediately read `qa/changes/<change-id>/explore/exploration.json` back. This is a hard
    completion condition: if the read reports missing/error, continue writing and do
    not return. Native `write` is mandatory in this execution profile; there is no CLI
@@ -64,32 +67,37 @@ The deterministic prepare node has already written
 `qa/changes/<change-id>/explore/context.json`. Read that file directly with the native
 `read` tool. Do not run a command to recreate, validate, or replace it.
 
-- Missing or unreadable context → return only the files that actually exist; the
-  product finalizer will reject an incomplete successful result.
+- Missing or unreadable context → fail the task. Do not return structured success,
+  especially not `{"output_files":[]}`; without authenticated context there is no
+  valid `exploration.json` to receipt.
 - Read succeeds → continue to Step 2.
 
 ---
 
 ## Step 2 — Weak-data gate
 
-Check `context.degraded` and `phases.explore.weak_data_treat_as` (default: `done`):
+Check `context.degraded` and record `phases.explore.weak_data_treat_as` as context. It
+does not waive the required artifact:
 
 | `degraded` | `weak_data_treat_as` | `degraded_reasons` | Action |
 |------------|----------------------|--------------------|--------|
 | false | any | — | Continue to Step 3 (source read) |
 | true | `done` | partial (not all 3) | Continue to Step 3; cap confidence at `medium` |
-| true | `unavailable` | any | Skip Steps 3–5 → `status = unavailable` → END |
-| true | any | all 3 present | **Do NOT immediately go to unavailable** — proceed to Step 3 to attempt source code read first |
+| true | `unavailable` | any | Continue to Step 3; describe the evidence limitation in the artifact |
+| true | any | all 3 present | Continue to Step 3 and attempt source code read |
 
-**Revised hard rule:** If ALL THREE of `no_diff`, `no_cases`, `no_history` are present in `degraded_reasons`, proceed to Step 3 and attempt source code read. Only if source code is also empty (no routes, no models, empty project directory) does `status = unavailable` apply. Source code structure is valid evidence; do not fabricate unavailability when the codebase is readable.
-
-When `status = unavailable` (confirmed after Step 3): report the `phases.explore.status = unavailable` state delta (see Context Contract), output one-line notice, stop.
+**Hard rule:** If ALL THREE of `no_diff`, `no_cases`, `no_history` are present in
+`degraded_reasons`, proceed to Step 3. If source code is also empty, this is a
+no-source degraded run: continue to Step 4 and write the complete artifact with honest
+empty evidence-backed signals. Never convert weak evidence into a successful empty
+receipt.
 
 ---
 
 ## Step 3 — Shallow source code read (新增)
 
-Read source code structure to supplement or replace missing historical evidence. This step is always executed unless `weak_data_treat_as = unavailable`.
+Read source code structure to supplement or replace missing historical evidence. This
+step is always executed when authenticated context is available.
 
 ### What to read
 
@@ -132,7 +140,9 @@ All `source: "source_code"` evidence has `parse_confidence_cap: "medium"` — co
 
 After reading, if **no** routes, models, or frontend structure were found (project directory is empty or unreadable):
 - AND historical data was also empty (all 3 degraded_reasons present)
-- THEN → `status = unavailable`; report the state delta (see Context Contract); output one-line notice; stop.
+- THEN → continue to Step 4 as a no-source degraded run. Keep evidence-backed signal
+  arrays empty, explain the evidence limit, and still write the complete valid
+  `exploration.json`.
 
 Otherwise continue to Step 4.
 
@@ -445,7 +455,7 @@ following delta. Do not return this delta separately; the graph owns phase state
 ```yaml
 phases:
   explore:
-    status: done | failed | unavailable
+    status: done | failed
     outputs:
       - explore/context.json
       - explore/exploration.json    # only when done
@@ -469,14 +479,17 @@ After both artifacts are written and read-back validation succeeds, return struc
 {"output_files":["qa/changes/<change-id>/explore/exploration.json"]}
 ```
 
-For `unavailable` or `failed`, return the same object shape listing only the declared
-explore files that were actually written. Do not invent a path and do not return prose.
+Every successful run returns exactly the non-empty receipt above. If missing or
+unreadable context prevents writing a valid artifact, fail without structured success;
+never return `{"output_files":[]}`. Degraded and no-source runs are successful only
+after the complete `exploration.json` has been written and read back.
 
 ---
 
 ## Phase 1 gate (summary)
 
 - `status == pending` → Phase 1 **STOP**
-- `status == done` → Phase 1 must read advisory; missing files → STOP
-- `mode == required` and `status in [failed, unavailable]` → Phase 1 **STOP**
-- `mode == advisory` and `status in [skipped, unavailable, failed]` → warning + continue without advisory
+- `status == done` → Phase 1 must read `exploration.json`; missing file → STOP
+- A non-`done` terminal state already materialized by the graph is handled by the
+  graph's locked mode. The explorer MUST NOT synthesize such a state as successful
+  completion or use it to omit `exploration.json`.

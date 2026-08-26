@@ -285,3 +285,28 @@
   Implementer verification passed 134 tests; controller rerun passed the exact
   lifecycle, declaration-byte parity and both provider compilations (4 tests).
   Independent spec/standards review found no blocking issue.
+- Task 3 explore-result ruling: live `125840-d52816df` crossed intake finalize
+  and Explore prepare/promotion, then the provider completed normally with an
+  empty `output_files` receipt. The Explore skill authorized `unavailable` and
+  empty-success paths for weak/no-source evidence while the finalizer required
+  exactly `exploration.json`; the persona and prompt also retained the obsolete
+  `advisory.json` name. Treat this as one capability-owned result-contract
+  contradiction, not provider instability or an adapter retry. Cost if wrong:
+  forcing an artifact without evidence could invite fabrication, so the degraded
+  shape must keep evidence-backed signals empty and state limitations explicitly.
+- Task 3 explore-result correction: Explore skill, persona and prompt now require
+  a complete read-back `exploration.json` for autonomous, degraded and no-source
+  success; missing context fails without structured success. The shared artifact
+  receipt model and all three installed receipt schemas reject empty lists with
+  `minItems: 1`, while valid multi-file receipts remain accepted. Controller
+  verification passed 38 focused tests, Ruff/format and focused Pyright; independent
+  rereview found the obsolete terminal-state summary and extra-prose risk resolved
+  with no remaining P1/P2. The next live run must use a fresh invocation/session
+  because the result-contract digest changed.
+- Task 3 explore-result overlap ruling: take ownership of the existing Explorer
+  persona native-write wording and the one-line case-design receipt-schema/resource
+  parity hunks because this correction changes the same indivisible lines and the
+  shared non-empty receipt must cover all three installed artifact-list agents.
+  Other dirty Intake contracts/tests remain unstaged. Cost if wrong: this commit may
+  attribute two already-written Phase 5 contract alignments to Task 3, but omitting
+  them would leave the committed installed schema inconsistent with the tested model.
