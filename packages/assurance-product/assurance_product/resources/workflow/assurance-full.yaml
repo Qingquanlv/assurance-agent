@@ -480,7 +480,21 @@ graphs:
         kind: task
         capability: assurance.product.agent.intake.case-review.prepare
         input: *prepare-input
-        input_projection: *prepare-projection
+        input_projection:
+          type: object
+          fields:
+            change_id:
+              type: root_pointer
+              pointer: /change_id
+            case_delta_paths:
+              type: root_pointer
+              pointer: /case_delta_paths
+            capability_leafs:
+              type: root_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: root_pointer
+              pointer: /allowed_artifact_paths
         retry: once
         timeout: short
       execute:

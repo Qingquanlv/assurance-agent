@@ -16,8 +16,12 @@ Do not rely on prior conversation context.
    Its absence on disk is not a blocker.
 2. If graph-owned run context explicitly includes `phases.case_design.status`, verify that
    it is `done`; an explicit contradictory value is a STOP condition.
-3. Read input files from disk: `.qa.yaml`, `proposal.md`,
-   `trace/minimum-coverage-matrix.json`, and `cases/<module>/case.yaml`.
+3. Treat the JSON instruction's non-empty `review_input_paths` as the complete,
+   authenticated case-design input set. Read every path exactly as provided with
+   the native read tool. Do not discover these inputs with glob: ignored change
+   files may be absent from search results. The set contains `.qa.yaml`,
+   `proposal.md`, `trace/minimum-coverage-matrix.json`, and every exact
+   `cases/<module>/case.yaml` path locked by `case_delta_paths`.
 4. Independently read the relevant **product source code** for every product fact used in the verdict. At minimum inspect the implementation entry point plus the controller/service/schema/model or frontend component needed to verify the proposed scenarios. Do not treat proposal, case, Explore advisory, requirements, docs, or tests as product-fact evidence.
 5. Distinguish author-owned outputs from external evidence. A missing or invalid
    case-design output (`.qa.yaml`, `proposal.md`, case YAML, or MRC matrix) is a
@@ -69,14 +73,19 @@ Use this skill when:
 The user or orchestrator should provide:
 
 - `change_id`
+- `case_delta_paths` — the exact current-change `cases/<module>/case.yaml` paths
+- `review_input_paths` — the complete exact case-design input paths; read every item
 
 Expected input files:
 
 ```text
 qa/changes/<change-id>/proposal.md
-qa/changes/<change-id>/cases/**/*.yaml
+qa/changes/<change-id>/cases/<locked-module>/case.yaml
 qa/changes/<change-id>/.qa.yaml
 ```
+
+Do not use glob to discover these files. Read the exact `review_input_paths` from
+the JSON instruction even when `qa/changes/**` is ignored by repository search.
 
 Required independent evidence:
 

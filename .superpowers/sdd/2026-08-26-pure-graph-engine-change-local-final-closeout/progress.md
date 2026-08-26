@@ -379,3 +379,33 @@
   an earlier valid result while reducer selected a later invalid artifact. The
   shared filtered selector and mixed-candidate regression resolve the finding;
   final independent rereview reports no new P1/P2.
+- Task 3 case-review input ruling: live `144256-0fbe82c2` proved case-design and
+  the OpenCode busy-terminal correction both succeeded, but case-review then
+  reported all four promoted inputs missing. Its first glob could not discover
+  ignored `qa/changes/**` files, while root-level `glob`/`grep(path=".")` was
+  separately rejected by the read boundary. Bind the exact current-change case
+  paths into case-review input, fail closed in prepare if any locked input is
+  absent, instruct the reviewer to use exact native reads, and allow read-only
+  search at the authenticated project root; do not broaden write authority or
+  depend on ignored-file discovery. Cost if wrong: reviewer input could drift
+  from the promoted case delta, or root search could escape the session project.
+- Task 3 case-review input correction: `CaseReviewInputV1` now authenticates
+  exact current-change case paths and deterministic `review_input_paths`;
+  prepare verifies every regular non-symlink input before dispatch. The workflow
+  projects `case_delta_paths`, the skill forbids glob discovery for case inputs,
+  and OpenCode allows only the project root itself as an additional read-search
+  target while retaining outside-root rejection. Local verification passed 13
+  focused tests, product declaration/workflow compilation, Ruff, format, and
+  production/boundary Pyright; the full Intake test file retains unrelated
+  pre-existing Pyright errors at line 1004.
+- Task 3 live completion deferred by explicit user instruction on 2026-08-26:
+  skip the current OpenCode validation step and continue later tasks. Therefore
+  `144256-0fbe82c2` is diagnostic evidence only, Task 3 is not marked complete,
+  and no Phase 5 provider-live admission artifact is fabricated from it.
+- Task 3 case-review input review fix round 1/5: independent review found one
+  Important intermediate-directory symlink escape and one test-coverage minor.
+  Prepare now lstat-checks every path component, requires a regular single-link
+  file under the resolved project root, and rejects a current-change case path
+  redirected to a sibling change. Regressions cover that escape and the graph's
+  exact `/case_delta_paths` projection; 8 focused tests passed. No OpenCode live
+  validation was resumed.

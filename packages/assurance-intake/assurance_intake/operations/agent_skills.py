@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from pydantic import ValidationError
@@ -84,6 +85,36 @@ def case_review_outputs(change_id: str) -> tuple[str, ...]:
             )
         )
     )
+
+
+def case_review_inputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tuple[str, ...]:
+    change_root = f"qa/changes/{change_id}"
+    return tuple(
+        sorted(
+            (
+                f"{change_root}/.qa.yaml",
+                *case_delta_paths,
+                f"{change_root}/proposal.md",
+                f"{change_root}/trace/minimum-coverage-matrix.json",
+            )
+        )
+    )
+
+
+def _require_regular_project_input(project_root: Path, relative: str) -> None:
+    root = project_root.resolve()
+    path = root
+    for part in PurePosixPath(relative).parts:
+        path = path / part
+        if path.is_symlink():
+            raise InputError(f"case-review input must not contain a symlink: {relative}")
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root)
+    except (OSError, ValueError) as error:
+        raise InputError(f"missing case-review input: {relative}") from error
+    if resolved != path or not path.is_file() or path.stat().st_nlink != 1:
+        raise InputError(f"case-review input must be a regular single-link file: {relative}")
 
 
 def _logical_write_root(context: TaskContext) -> str:
@@ -261,6 +292,12 @@ class CaseReviewPrepareHandler:
         try:
             business = validate_input(CaseReviewInputV1, request.input)
             binding = validate_binding(request.binding_data)
+            review_inputs = case_review_inputs(business.change_id, business.case_delta_paths)
+            for relative in review_inputs:
+                _require_regular_project_input(context.project_root, relative)
+            business = CaseReviewInputV1.model_validate(
+                {**business.model_dump(mode="json"), "review_input_paths": review_inputs}
+            )
             return prepare_outcome(
                 skill_path=CASE_REVIEW_SKILL,
                 persona_path=CASE_REVIEW_PERSONA,

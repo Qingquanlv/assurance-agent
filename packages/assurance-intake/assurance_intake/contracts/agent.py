@@ -121,7 +121,35 @@ class CaseDesignInputV1(_SkillInputV1):
 
 
 class CaseReviewInputV1(_SkillInputV1):
-    pass
+    case_delta_paths: tuple[str, ...] = Field(min_length=1)
+    review_input_paths: tuple[str, ...] = ()
+
+    @field_validator("case_delta_paths", "review_input_paths")
+    @classmethod
+    def _review_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        canonical = _canonical_relative_paths(value)
+        if canonical != value:
+            raise ValueError("case-review paths must be sorted and unique")
+        return canonical
+
+    @model_validator(mode="after")
+    def _paths_match_change(self) -> CaseReviewInputV1:
+        _validate_case_delta_paths(self.change_id, self.case_delta_paths)
+        if self.review_input_paths:
+            change_root = f"qa/changes/{self.change_id}"
+            expected = tuple(
+                sorted(
+                    (
+                        f"{change_root}/.qa.yaml",
+                        *self.case_delta_paths,
+                        f"{change_root}/proposal.md",
+                        f"{change_root}/trace/minimum-coverage-matrix.json",
+                    )
+                )
+            )
+            if self.review_input_paths != expected:
+                raise ValueError("review_input_paths must exactly match current case-design outputs")
+        return self
 
 
 class ArtifactListResultV1(FrozenModel):

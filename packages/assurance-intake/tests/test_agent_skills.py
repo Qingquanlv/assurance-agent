@@ -22,6 +22,7 @@ from assurance_intake.operations import (
     CaseDesignFinalizeHandler,
     CaseDesignPrepareHandler,
     CaseReviewFinalizeHandler,
+    CaseReviewPrepareHandler,
     ExploreFinalizeHandler,
     ExplorePrepareHandler,
     IntakeFinalizeHandler,
@@ -49,6 +50,9 @@ CASE_INPUT: dict[str, JSONValue] = {
     "artifact_paths": ["qa/changes/CH-DEMO-001/explore/advisory.json"],
     "selected_test_families": ["api", "e2e", "fuzz", "performance"],
     "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
+}
+CASE_REVIEW_INPUT: dict[str, JSONValue] = {
+    key: value for key, value in CASE_INPUT.items() if key != "selected_test_families"
 }
 INTAKE_INPUT: dict[str, JSONValue] = {
     "change_id": "RET-dept-management",
@@ -338,6 +342,67 @@ async def test_case_design_prepare_rejects_mismatched_exploration_identity(tmp_p
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
     assert "change_id" in prepared.failure.message
+
+
+@pytest.mark.asyncio
+async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: Path) -> None:
+    change_root = tmp_path / "qa/changes/CH-DEMO-001"
+    (change_root / "trace").mkdir(parents=True)
+    (change_root / "cases/menus").mkdir(parents=True)
+    (change_root / ".qa.yaml").write_text("change_id: CH-DEMO-001\n", encoding="utf-8")
+    (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
+    (change_root / "trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
+    (change_root / "cases/menus/case.yaml").write_text(
+        "schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n",
+        encoding="utf-8",
+    )
+
+    prepared = await run_prepare(CaseReviewPrepareHandler(), CASE_REVIEW_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    assert business["case_delta_paths"] == ("qa/changes/CH-DEMO-001/cases/menus/case.yaml",)
+    assert business["review_input_paths"] == (
+        "qa/changes/CH-DEMO-001/.qa.yaml",
+        "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+        "qa/changes/CH-DEMO-001/proposal.md",
+        "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+    )
+
+
+@pytest.mark.asyncio
+async def test_case_review_prepare_rejects_missing_locked_input(tmp_path: Path) -> None:
+    prepared = await run_prepare(CaseReviewPrepareHandler(), CASE_REVIEW_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert prepared.failure.kind == "invalid_input"
+    assert "missing case-review input" in prepared.failure.message
+
+
+@pytest.mark.asyncio
+async def test_case_review_prepare_rejects_intermediate_directory_symlink(tmp_path: Path) -> None:
+    change_root = tmp_path / "qa/changes/CH-DEMO-001"
+    sibling_cases = tmp_path / "qa/changes/CH-SIBLING/cases/menus"
+    (change_root / "trace").mkdir(parents=True)
+    (change_root / "cases").mkdir()
+    sibling_cases.mkdir(parents=True)
+    (change_root / ".qa.yaml").write_text("change_id: CH-DEMO-001\n", encoding="utf-8")
+    (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
+    (change_root / "trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
+    (sibling_cases / "case.yaml").write_text(
+        "schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n",
+        encoding="utf-8",
+    )
+    (change_root / "cases/menus").symlink_to(sibling_cases, target_is_directory=True)
+
+    prepared = await run_prepare(CaseReviewPrepareHandler(), CASE_REVIEW_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert prepared.failure.kind == "invalid_input"
+    assert "must not contain a symlink" in prepared.failure.message
 
 
 @pytest.mark.asyncio

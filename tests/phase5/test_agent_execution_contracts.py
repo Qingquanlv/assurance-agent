@@ -292,6 +292,8 @@ try {
 
     assert run("read", {"filePath": "inside.txt"}).returncode == 0
     assert run("glob", {"pattern": "**/*.py"}).returncode == 0
+    assert run("glob", {"pattern": "**/*.py", "path": "."}).returncode == 0
+    assert run("grep", {"pattern": "inside", "path": "."}).returncode == 0
     for tool, args in (
         ("read", {"filePath": str(outside)}),
         ("glob", {"pattern": "**/*", "path": str(tmp_path)}),

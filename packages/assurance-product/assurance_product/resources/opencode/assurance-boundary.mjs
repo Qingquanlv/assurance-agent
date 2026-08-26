@@ -85,7 +85,7 @@ const canonicalize = (candidate, root) => {
 const relativeLogical = (root, candidate) => {
   const canonical = canonicalize(candidate, root);
   const relative = path.relative(root, canonical);
-  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error("Assurance write boundary: path is not allowed");
   }
   return relative.split(path.sep).join("/");
@@ -380,6 +380,10 @@ const rewriteRead = (tool, args, binding, root) => {
     return;
   }
   const logical = relativeLogical(root, target);
+  if (logical === "") {
+    args[key] = root;
+    return;
+  }
   const staged = stagedPhysical(root, binding.write_root, logical);
   if (exists(staged) && !isSymlink(staged)) {
     args[key] = staged;
