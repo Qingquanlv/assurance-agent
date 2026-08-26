@@ -42,6 +42,7 @@ class OpenCodeActivityReference(FrozenModel):
 class OpenCodeSessionCreateRequest(FrozenModel):
     title: str = Field(min_length=1)
     metadata: OpenCodeDiscoveryMetadata
+    agent: str | None = None
 
 
 def adapter_source_digest() -> str:

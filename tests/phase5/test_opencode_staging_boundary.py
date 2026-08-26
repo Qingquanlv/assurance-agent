@@ -152,9 +152,10 @@ def _task_context(project: Path) -> TaskContext:
     )
 
 
-def _workspace() -> AgentWorkspaceV1:
+def _workspace(*, agent_profile: str = _AGENT) -> AgentWorkspaceV1:
     payload = {
         "schema_version": "1",
+        "agent_profile": agent_profile,
         "write_root": _WRITE_ROOT,
         "allowed_outputs": [_ALLOWED],
     }
@@ -166,19 +167,37 @@ def test_product_and_adapter_builders_produce_the_same_plugin_acceptable_title(t
 
     project = tmp_path / "project"
     project.mkdir()
-    product = _binding_title(project)
+    workspace = _workspace()
+    product = _binding_title(project, agent_profile=workspace.agent_profile)
     adapter = adapter_title(
         _task_context(project),
-        _workspace(),
+        workspace,
         _SESSION_ID,
-        agent_profile=_AGENT,
     )
     assert adapter == product
     assert adapter.startswith("aa-workspace-binding-v1:")
     plugin = _install(project)
-    args = _allowed(
-        _run(plugin, session=_session(project, adapter), tool="write", args={"filePath": _ALLOWED})
-    )
+    session = _session(project, adapter, agent=workspace.agent_profile)
+    document = json.loads(adapter.split(":", 1)[1])
+    assert document["agent_profile"] == workspace.agent_profile
+    assert session["agent"] == document["agent_profile"]
+    args = _allowed(_run(plugin, session=session, tool="write", args={"filePath": _ALLOWED}))
+    assert args["filePath"] == str(_staged(project, _ALLOWED))
+
+
+def test_stamped_production_title_is_plugin_acceptable_and_session_agent_matches(tmp_path: Path) -> None:
+    from agent_runtime_opencode.workspace_binding import workspace_binding_title as adapter_title
+
+    project = tmp_path / "project"
+    project.mkdir()
+    workspace = _workspace(agent_profile="assurance-v1-executor")
+    title = adapter_title(_task_context(project), workspace, _SESSION_ID)
+    document = json.loads(title.split(":", 1)[1])
+    assert document["agent_profile"] == "assurance-v1-executor"
+    session = _session(project, title, agent=workspace.agent_profile)
+    assert session["agent"] == document["agent_profile"]
+    plugin = _install(project)
+    args = _allowed(_run(plugin, session=session, tool="write", args={"filePath": _ALLOWED}))
     assert args["filePath"] == str(_staged(project, _ALLOWED))
 
 
@@ -477,6 +496,51 @@ def test_executor_project_root_mv_is_denied(tmp_path: Path) -> None:
         ),
         "shell",
     )
+
+
+def test_executor_chained_python_rename_after_view_substring_is_denied(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    session = _session(
+        project,
+        _binding_title(project, agent_profile="assurance-v1-executor"),
+        agent="assurance-v1-executor",
+    )
+    command = (
+        f"{_EXECUTOR_VIEW_COMMAND}; python -c "
+        f'"import os; os.rename({str(project)!r}, {str(project) + ".bak"!r})"'
+    )
+    _denied(_run(plugin, session=session, tool="bash", args={"command": command}), "shell")
+
+
+def test_executor_echo_view_then_rm_outside_view_is_denied(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    session = _session(
+        project,
+        _binding_title(project, agent_profile="assurance-v1-executor"),
+        agent="assurance-v1-executor",
+    )
+    _denied(
+        _run(
+            plugin,
+            session=session,
+            tool="bash",
+            args={"command": "echo qa/changes/CH-1/.staging/execution/x; rm -rf /Users"},
+        ),
+        "shell",
+    )
+
+
+def test_artifact_write_redirects_allowed_logical_path_to_write_root(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    session = _session(project, _binding_title(project))
+    args = _allowed(_run(plugin, session=session, tool="artifact_write", args={"filePath": _ALLOWED}))
+    assert args["filePath"] == str(_staged(project, _ALLOWED))
 
 
 def test_author_profile_cannot_run_execution_view_shell(tmp_path: Path) -> None:

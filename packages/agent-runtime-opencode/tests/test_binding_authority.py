@@ -16,6 +16,7 @@ from graph_engine.plugin_api import (
 )
 
 from agent_runtime_opencode.config import AdapterConfigurationError, OpenCodeAdapterConfig
+from agent_runtime_opencode.discovery import agent_run_from_request
 from agent_runtime_opencode.handler import OpenCodeHandler
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 from harness import (  # pyright: ignore[reportMissingImports]
@@ -186,12 +187,17 @@ async def test_execute_stamps_binding_title_after_create_before_prompt_admission
         assert title is not None
         assert title.startswith("aa-workspace-binding-v1:")
         document = json.loads(title.split(":", 1)[1])
+        agent_run = agent_run_from_request(fixture.request)
         assert document["session_id"] == session_id
+        assert document["agent_profile"] == agent_run.workspace.agent_profile
+        assert document["agent_profile"] != agent_run.execution.worker_profile
         assert document["write_root"] == WRITE_ROOT
         assert document["allowed_outputs"] == list(ALLOWED_OUTPUTS)
         assert document["task_id"] == "task-1"
         assert document["attempt"] == 1
         assert document["attempt_id"] == "attempt-1"
+        record = fixture.fake._sessions[session_id]
+        assert record.get("agent") == document["agent_profile"]
         records = fixture.fake.records
         create_at = _first_record_index(records, method="POST", path="/session")
         stamp_at = _first_record_index(records, method="PATCH", path_suffix=f"/session/{session_id}")

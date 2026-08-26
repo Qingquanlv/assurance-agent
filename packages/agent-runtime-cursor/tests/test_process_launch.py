@@ -146,6 +146,7 @@ def _agent_workspace(
 ) -> AgentWorkspaceV1:
     payload = {
         "schema_version": "1",
+        "agent_profile": "assurance-v1-doc-author",
         "write_root": write_root,
         "allowed_outputs": allowed_outputs,
     }

@@ -36,6 +36,7 @@ _ALLOWED_OUTPUTS = ("qa/changes/CH-1/proposal.md",)
 def _agent_workspace() -> AgentWorkspaceV1:
     payload = {
         "schema_version": "1",
+        "agent_profile": "assurance-v1-doc-author",
         "write_root": _WRITE_ROOT,
         "allowed_outputs": _ALLOWED_OUTPUTS,
     }

@@ -16,11 +16,13 @@ const REQUIRED_KEYS = [
   "task_id",
   "write_root",
 ];
-const WRITE_TOOLS = new Set(["apply_patch", "edit", "write"]);
+const WRITE_TOOLS = new Set(["apply_patch", "artifact_write", "edit", "write"]);
 const READ_TOOLS = new Set(["read", "glob", "grep"]);
 const SHELL_TOOLS = new Set(["bash", "interactive_bash"]);
 const EXECUTOR_PROFILE = "assurance-v1-executor";
-const EXECUTION_VIEW = /(?:^|[/"'=\s])qa\/changes\/[^/\s"'\\]+\/\.staging\/execution\/[^/\s"'\\]+/;
+const EXECUTION_VIEW_RELATIVE = /^qa\/changes\/[^/]+\/\.staging\/execution\/[^/]+$/;
+const HYPOTHESIS_CACHE = /^\/tmp\/aa-hypothesis-[A-Za-z0-9._-]+$/;
+const SHELL_CHAIN = /[;\n\r`]|&&|\|\||(?<!\$)\||\$\(/;
 const PATCH_HEADERS = /^(Add File|Update File|Delete File|Move to): /;
 
 const canonicalJson = (value) => {
@@ -217,21 +219,61 @@ const rewriteNativeWrites = (args, rewrite) => {
   if (!found) throw new Error("write tool has no file path");
 };
 
-const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const mutatesProjectOrOutputParent = (command, root, binding) => {
-  if (!/\b(mv|rm|ln)\b/.test(command)) return false;
-  if (command.includes(root)) return true;
-  const parents = new Set(
-    binding.allowed_outputs
-      .map((item) => item.split("/").slice(0, -1).join("/"))
-      .filter(Boolean),
-  );
-  for (const parent of parents) {
-    if (parent.includes(".staging/execution/")) continue;
-    if (command.includes(parent)) return true;
+const tokenizeShell = (command) => {
+  const tokens = [];
+  const pattern = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match = pattern.exec(command);
+  while (match !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3]);
+    match = pattern.exec(command);
   }
-  return false;
+  return tokens;
+};
+
+const looksLikePath = (value) => value.includes("/") || value.includes("\\") || value === "." || value === "..";
+
+const pathCandidates = (command) => {
+  const found = [];
+  for (const token of tokenizeShell(command)) {
+    if (token.includes("=") && !token.startsWith("-")) {
+      const value = token.slice(token.indexOf("=") + 1);
+      if (looksLikePath(value)) found.push(value);
+      continue;
+    }
+    if (looksLikePath(token)) found.push(token);
+  }
+  return found;
+};
+
+const isExecutionViewPath = (value, root) => {
+  if (EXECUTION_VIEW_RELATIVE.test(value)) return true;
+  const prefix = `${root}/`;
+  if (value.startsWith(prefix) && EXECUTION_VIEW_RELATIVE.test(value.slice(prefix.length))) {
+    return true;
+  }
+  const windowsPrefix = `${root}\\`;
+  return value.startsWith(windowsPrefix)
+    && EXECUTION_VIEW_RELATIVE.test(value.slice(windowsPrefix.length).split("\\").join("/"));
+};
+
+const outputParents = (binding) => new Set(
+  binding.allowed_outputs
+    .map((item) => item.split("/").slice(0, -1).join("/"))
+    .filter((parent) => parent && !parent.includes(".staging/execution/")),
+);
+
+const isDeniedLocation = (value, root, binding) => {
+  if (value === root || value === `${root}/` || value === `${root}\\`) return true;
+  const relative = value.startsWith(`${root}/`)
+    ? value.slice(root.length + 1)
+    : value.startsWith(`${root}\\`)
+      ? value.slice(root.length + 1).split("\\").join("/")
+      : value;
+  if (relative === "" || relative === ".") return true;
+  for (const parent of outputParents(binding)) {
+    if (relative === parent || value === parent) return true;
+  }
+  return !isExecutionViewPath(value, root) && !HYPOTHESIS_CACHE.test(value);
 };
 
 const assertExecutorShell = (binding, root, args) => {
@@ -239,16 +281,14 @@ const assertExecutorShell = (binding, root, args) => {
     throw new Error("Assurance write boundary: shell escape is not allowed");
   }
   const command = typeof args?.command === "string" ? args.command : "";
-  if (!command) {
+  if (!command || SHELL_CHAIN.test(command)) {
     throw new Error("Assurance write boundary: shell escape is not allowed");
   }
-  const absoluteView = new RegExp(
-    `${escapeRegExp(root)}[/\\\\]qa[/\\\\]changes[/\\\\][^/\\s"'\\\\]+[/\\\\]\\.staging[/\\\\]execution[/\\\\][^/\\s"'\\\\]+`,
-  );
-  if (!EXECUTION_VIEW.test(command) && !absoluteView.test(command)) {
+  const paths = pathCandidates(command);
+  if (paths.length === 0 || !paths.some((item) => isExecutionViewPath(item, root))) {
     throw new Error("Assurance write boundary: shell escape is not allowed");
   }
-  if (mutatesProjectOrOutputParent(command, root, binding)) {
+  if (paths.some((item) => isDeniedLocation(item, root, binding))) {
     throw new Error("Assurance write boundary: shell escape is not allowed");
   }
   if (/\b(pytest|locust|uv)\b/.test(command)) {

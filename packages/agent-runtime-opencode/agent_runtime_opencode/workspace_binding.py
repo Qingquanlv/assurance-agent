@@ -66,8 +66,6 @@ def workspace_binding_title(
     context: TaskContext,
     workspace: AgentWorkspaceV1,
     session_id: str,
-    *,
-    agent_profile: str,
 ) -> str:
     write_root = _relative_write_root(context)
     if write_root != workspace.write_root:
@@ -75,7 +73,7 @@ def workspace_binding_title(
     identity = context.workspace_identity
     document = workspace_binding_document(
         session_id=session_id,
-        agent_profile=agent_profile,
+        agent_profile=workspace.agent_profile,
         project_root=context.project_root,
         write_root=workspace.write_root,
         allowed_outputs=workspace.allowed_outputs,

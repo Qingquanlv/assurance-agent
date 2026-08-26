@@ -72,9 +72,11 @@ def _workspace(
     *,
     write_root: str = "qa/changes/CH-1/.staging/task-1/attempt-1",
     allowed_outputs: tuple[str, ...] = ("qa/changes/CH-1/proposal.md",),
+    agent_profile: str = "assurance-v1-doc-author",
 ) -> AgentWorkspaceV1:
     payload = {
         "schema_version": "1",
+        "agent_profile": agent_profile,
         "write_root": write_root,
         "allowed_outputs": allowed_outputs,
     }
@@ -128,6 +130,34 @@ def test_agent_run_request_rejects_agent_profile() -> None:
     payload["agent_profile"] = "aa-doc-author"
     with pytest.raises(ValidationError, match="extra"):
         AgentRunRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "agent_profile",
+    [
+        "assurance-v1-doc-author",
+        "assurance-v1-reviewer",
+        "assurance-v1-executor",
+    ],
+)
+def test_agent_workspace_accepts_closed_bounded_agent_profiles(agent_profile: str) -> None:
+    workspace = _workspace(agent_profile=agent_profile)
+    assert workspace.agent_profile == agent_profile
+    expected = canonical_digest(workspace.model_dump(mode="json", exclude={"identity_digest"}))
+    assert workspace.identity_digest == expected
+
+
+@pytest.mark.parametrize(
+    "agent_profile",
+    ["assurance-worker", "fixture-v1", "aa-doc-author", "assurance-v1-author", ""],
+)
+def test_agent_workspace_rejects_unbounded_agent_profiles(agent_profile: str) -> None:
+    payload = _workspace().model_dump(mode="json")
+    payload["agent_profile"] = agent_profile
+    payload.pop("identity_digest")
+    payload["identity_digest"] = canonical_digest(payload)
+    with pytest.raises(ValidationError):
+        AgentWorkspaceV1.model_validate(payload)
 
 
 def test_agent_run_request_rejects_mutation() -> None:

@@ -357,7 +357,11 @@ class OpenCodeHandler:
         metadata: OpenCodeDiscoveryMetadata,
         expected: dict[str, str],
     ) -> TaskActivityReconcileResult:
-        body = OpenCodeSessionCreateRequest(title=f"aa:{metadata.activity_id}", metadata=metadata)
+        body = OpenCodeSessionCreateRequest(
+            title=f"aa:{metadata.activity_id}",
+            metadata=metadata,
+            agent=self._binding_agent_profile(request),
+        )
         payload = body.model_dump(mode="json")
         if "id" in payload or "parentID" in payload:
             raise ValueError("create must not supply a session id or parentID")
@@ -456,11 +460,7 @@ class OpenCodeHandler:
         return reference, record
 
     def _binding_agent_profile(self, request: TaskRequest) -> str:
-        agent_run = agent_run_from_request(request)
-        profile = getattr(agent_run, "agent_profile", None)
-        if isinstance(profile, str) and profile:
-            return profile
-        return agent_run.execution.worker_profile
+        return agent_run_from_request(request).workspace.agent_profile
 
     async def _stamp_workspace_binding(
         self,
@@ -475,13 +475,21 @@ class OpenCodeHandler:
                 context,
                 agent_run.workspace,
                 session_id,
-                agent_profile=self._binding_agent_profile(request),
             )
+            agent = self._binding_agent_profile(request)
             record = await client.get_session(session_id)
-            if not isinstance(record, dict) or record.get("title") != title:
-                await client.update_session(session_id, {"title": title})
+            if (
+                not isinstance(record, dict)
+                or record.get("title") != title
+                or record.get("agent") != agent
+            ):
+                await client.update_session(session_id, {"title": title, "agent": agent})
                 record = await client.get_session(session_id)
-            if not isinstance(record, dict) or record.get("title") != title:
+            if (
+                not isinstance(record, dict)
+                or record.get("title") != title
+                or record.get("agent") != agent
+            ):
                 raise ValueError("workspace binding title is missing or invalid")
         except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError):
             return TaskActivityReconcileResult(

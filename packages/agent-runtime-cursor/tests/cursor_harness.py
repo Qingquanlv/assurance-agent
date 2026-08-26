@@ -52,9 +52,11 @@ def agent_workspace(
     *,
     write_root: str = WRITE_ROOT,
     allowed_outputs: tuple[str, ...] = ALLOWED_OUTPUTS,
+    agent_profile: str = "assurance-v1-doc-author",
 ) -> AgentWorkspaceV1:
     payload = {
         "schema_version": "1",
+        "agent_profile": agent_profile,
         "write_root": write_root,
         "allowed_outputs": allowed_outputs,
     }

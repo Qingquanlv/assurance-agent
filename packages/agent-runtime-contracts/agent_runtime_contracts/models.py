@@ -127,8 +127,20 @@ def _validate_project_relative_path(value: str) -> str:
     return value
 
 
+BoundedAgentProfile = Literal[
+    "assurance-v1-archiver",
+    "assurance-v1-doc-author",
+    "assurance-v1-executor",
+    "assurance-v1-explorer",
+    "assurance-v1-reporter",
+    "assurance-v1-reviewer",
+    "assurance-v1-test-author",
+]
+
+
 class AgentWorkspaceV1(FrozenModel):
     schema_version: Literal["1"] = "1"
+    agent_profile: BoundedAgentProfile
     write_root: str
     allowed_outputs: tuple[str, ...]
     identity_digest: str = Field(pattern=_SHA256_PATTERN)

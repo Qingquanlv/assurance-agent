@@ -199,6 +199,7 @@ class OpenCodeFakeServer:
                 "id": sid,
                 "title": "seed",
                 "directory": self.project_scope,
+                "agent": "build",
                 "metadata": dict(metadata if metadata is not None else self.metadata),
             }
             if parent_id:
@@ -340,6 +341,7 @@ class OpenCodeFakeServer:
                 "id": session_id,
                 "title": parsed.get("title"),
                 "directory": self.project_scope,
+                "agent": parsed.get("agent"),
                 "metadata": parsed.get("metadata"),
             }
             self._sessions[session_id] = session
@@ -433,8 +435,11 @@ class OpenCodeFakeServer:
         if not isinstance(title, str) or not title:
             self._write_json(handler, 400, {"error": "title is required"})
             return
+        agent = parsed.get("agent")
         with self._lock:
             session["title"] = title
+            if isinstance(agent, str) and agent:
+                session["agent"] = agent
             view = self._session_view(session)
         self._write_json(handler, 200, view)
 
