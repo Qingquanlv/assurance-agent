@@ -356,8 +356,10 @@ graphs:
               type: root_pointer
               pointer: /allowed_artifact_paths
         resources:
+          parameters:
+            change_id: /change_id
           reads: [qa]
-          writes: [qa/changes]
+          writes: ["qa/changes/{change_id}/explore/context.json"]
         retry: once
         timeout: short
       execute:

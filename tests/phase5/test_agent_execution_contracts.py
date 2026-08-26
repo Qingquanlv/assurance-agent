@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -9,7 +10,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from agent_runtime_contracts import AgentRunRequest
 from graph_engine.plugin_api import ResourceClaimTemplate, TaskOutcome
+from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskRequest
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
@@ -404,6 +407,101 @@ def test_exact_current_change_claims_do_not_scan_a_symlinked_sibling_on_promotio
 
     assert historical_link.is_symlink()
     assert (project / claims[0]).read_text(encoding="utf-8") == "current change only\n"
+
+
+def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
+    tmp_path: Path,
+) -> None:
+    from assurance_intake.operations import ExplorePrepareHandler
+    from assurance_product.product import load_canonical_workflow
+
+    project = tmp_path / "project"
+    current_id = "CH-CURRENT-001"
+    sibling_id = "CH-HISTORICAL-001"
+    current = project / "qa" / "changes" / current_id
+    sibling = project / "qa" / "changes" / sibling_id
+    current.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    requirement = current / "requirement.md"
+    requirement.write_text("# Current requirement\n\nCover item creation.\n", encoding="utf-8")
+    outside = tmp_path / "historical-state"
+    outside.mkdir()
+    sentinel = outside / "sentinel.json"
+    sentinel.write_text('{"historical":true}\n', encoding="utf-8")
+    historical_link = sibling / ".runtime"
+    historical_link.symlink_to(outside, target_is_directory=True)
+
+    resources = load_canonical_workflow().graphs["explore"].nodes["prepare"].resources
+    assert isinstance(resources, ResourceClaimTemplate)
+    assert resources.parameters == {"change_id": "/change_id"}
+    assert resources.reads == ("qa",)
+    claims = resources.resolve({"change_id": current_id}).writes
+    assert claims == (f"qa/changes/{current_id}/explore/context.json",)
+
+    store = TaskWorkspaceStore(project, current / ".staging", current / ".runtime" / "receipts")
+    try:
+        binding = store.begin(task_id="explore-prepare", attempt=1, output_paths=claims)
+        invocation = InvocationMetadata(
+            invocation_id="inv-explore-prepare",
+            lock_digest="a" * 64,
+            composition_digest="b" * 64,
+            entrypoint="intake",
+        )
+        request = TaskRequest(
+            invocation_id=invocation.invocation_id,
+            task_id=binding.identity.task_id,
+            graph_instance_id="explore-graph",
+            node_id="prepare",
+            capability_id="assurance.intake.explore.prepare",
+            binding_data={
+                "agent_profile": "aa-explorer",
+                "execution": {
+                    "provider_model": "test-model",
+                    "worker_profile": "worker",
+                    "permission_profile_digest": "c" * 64,
+                    "limits": {"max_seconds": 5},
+                },
+                "request_policy_digest": "d" * 64,
+                "request_config_digest": "e" * 64,
+            },
+            invocation=invocation,
+            attempt=1,
+            input={
+                "change_id": current_id,
+                "capability_leafs": ["entities.item.create"],
+                "artifact_paths": [f"qa/changes/{current_id}/requirement.md"],
+            },
+        )
+        outcome = asyncio.run(
+            ExplorePrepareHandler().execute(
+                request,
+                TaskContext(
+                    project_root=project,
+                    write_root=binding.write_root,
+                    workspace_identity=binding.identity,
+                    heartbeat=lambda: None,
+                    cancel_requested=lambda: False,
+                    invocation=invocation,
+                ),
+            ),
+        )
+
+        assert outcome.status == "succeeded"
+        agent_request = AgentRunRequest.model_validate(outcome.output)
+        assert agent_request.workspace.scope_id == current_id
+        staged_context = binding.write_root / claims[0]
+        document = json.loads(staged_context.read_bytes())
+        assert document["change_id"] == current_id
+        assert document["requirement_summary"] == "# Current requirement\n\nCover item creation.\n"
+
+        store.promote(binding.identity, store.seal(binding.identity))
+    finally:
+        store.close()
+
+    assert historical_link.is_symlink()
+    assert sentinel.read_text(encoding="utf-8") == '{"historical":true}\n'
+    assert tuple(path.name for path in outside.iterdir()) == ("sentinel.json",)
+    assert (project / claims[0]).read_bytes() == staged_context.read_bytes()
 
 
 def test_transient_agent_provider_failure_retries_the_skill_node(
