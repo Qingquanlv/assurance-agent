@@ -110,3 +110,10 @@
   dialect restriction and added standard-dialect regression; commits
   `e1960ec..b075512`).
 - Task 2: complete (commits `7225c06..b075512`, review clean; 1 deferred minor).
+- Task 3: Ruling: take ownership of the existing dirty
+  `.superpowers/sdd/2026-08-22-pure-graph-engine-phase5-assurance-product-assembly/opencode-benchmark.md`
+  hunk because it is the immediately preceding failed OpenCode evidence that
+  Task 3 must retain and supersede; preserve it verbatim and append authenticated
+  Task 3 evidence rather than dropping or restaging unrelated files — cost if
+  wrong: the Task 3 commit also freezes an earlier Task 17 diagnostic note that
+  its original author intended to keep uncommitted.
