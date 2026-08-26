@@ -10,7 +10,6 @@
     "requirement",
     "run_mode",
     "selected_test_families",
-    "auto_archive",
     "capability_catalog",
     "product_policy",
     "data_knowledge",
@@ -27,7 +26,6 @@
       "uniqueItems": true,
       "items": { "enum": ["api", "e2e", "fuzz", "performance"] }
     },
-    "auto_archive": { "type": "boolean" },
     "capability_catalog": { "$ref": "#/$defs/resourceRef" },
     "product_policy": { "$ref": "#/$defs/resourceRef" },
     "data_knowledge": { "$ref": "#/$defs/resourceRef" },
@@ -58,7 +56,8 @@
       { "required": ["endpoint"] },
       { "required": ["executable"] },
       { "required": ["host"] },
-      { "required": ["secret"] }
+      { "required": ["secret"] },
+      { "required": ["auto_archive"] }
     ]
   },
   "$defs": {

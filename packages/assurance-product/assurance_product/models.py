@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 from pathlib import Path, PurePosixPath
 from typing import Literal
 import unicodedata
@@ -173,6 +174,7 @@ class OpenCodeBindingV1(FrozenModel):
     project_scope: str = Field(min_length=1)
     request_timeout_seconds: float = Field(gt=0, le=300)
     observation_horizon_seconds: float = Field(gt=0, le=3600)
+    progress_timeout_seconds: float = Field(default=300, gt=0, le=3600)
     poll_interval_seconds: float = Field(gt=0, le=60)
     cancel_timeout_seconds: float = Field(gt=0, le=300)
     max_response_bytes: int = Field(gt=0, le=4_000_000)
@@ -511,7 +513,7 @@ class ProductInputV1(FrozenModel):
     requirement: str
     run_mode: Literal["case", "implement", "verify"]
     selected_test_families: tuple[Literal["api", "e2e", "fuzz", "performance"], ...]
-    auto_archive: bool
+    capability_leafs: tuple[str, ...]
     capability_catalog: ResourceRefV1
     product_policy: ResourceRefV1
     data_knowledge: ResourceRefV1
@@ -544,6 +546,15 @@ class ProductInputV1(FrozenModel):
     @classmethod
     def _allowed_artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _canonical_artifact_prefixes(value)
+
+    @field_validator("capability_leafs")
+    @classmethod
+    def _capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item or item != item.strip() or "." not in item for item in value):
+            raise ValueError("capability_leafs must contain canonical dotted keys")
+        if value != tuple(sorted(set(value))):
+            raise ValueError("capability_leafs must be sorted and unique")
+        return value
 
     def validate_for_entrypoint(self, entrypoint: str) -> ProductInputV1:
         validate_entrypoint_families(entrypoint, self.selected_test_families)
@@ -586,6 +597,18 @@ def authenticate_product_input_resources(value: ProductInputV1, composition: obj
         digest = getattr(entry, "sha256", None)
         if digest != ref.sha256:
             raise ValueError(f"resource digest drifted: {ref.resource_id}")
+    catalog_entry = resources.get(value.capability_catalog.resource_id)
+    if catalog_entry is None:
+        raise ValueError("capability catalog is not registered")
+    try:
+        catalog = json.loads(catalog_entry.content.decode("utf-8"))
+    except (AttributeError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("capability catalog is not canonical JSON") from error
+    leafs = catalog.get("typed_leafs") if isinstance(catalog, Mapping) else None
+    if not isinstance(leafs, list) or any(not isinstance(item, str) for item in leafs):
+        raise ValueError("capability catalog is missing typed_leafs")
+    if value.capability_leafs != tuple(leafs):
+        raise ValueError("product capability_leafs disagree with the authenticated catalog")
 
 
 class GraphStatusV1(FrozenModel):
@@ -642,13 +665,56 @@ class PendingInterruptStatusV1(FrozenModel):
     reason_category: str
 
 
+class ChangeProjectionV1(FrozenModel):
+    change_id: str
+    state: Literal["running", "blocked", "interrupted", "stopped", "failed", "achieved"]
+
+    @field_validator("change_id")
+    @classmethod
+    def _change_id(cls, value: str) -> str:
+        return _canonical_token(value, "change_id")
+
+
+class ApplyProjectionV1(FrozenModel):
+    manifest_digest: str | None
+    file_count: int = Field(ge=0)
+
+
+class PublicationProjectionV1(FrozenModel):
+    status: Literal["not_ready", "ready", "published", "drifted"]
+
+
+class ApplyManifestFileV1(FrozenModel):
+    target_path: str
+    source_path: str
+    source_sha256: str
+    baseline_sha256: str | None
+    mode: int
+    operation: str
+
+    @field_validator("target_path", "source_path")
+    @classmethod
+    def _relative_path(cls, value: str) -> str:
+        return _canonical_artifact_prefixes((value,))[0]
+
+
+class ApplyManifestV1(FrozenModel):
+    schema_version: Literal["1"]
+    change_id: str
+    digest: str
+    files: tuple[ApplyManifestFileV1, ...]
+
+    @field_validator("change_id")
+    @classmethod
+    def _change_id(cls, value: str) -> str:
+        return _canonical_token(value, "change_id")
+
+
 class StatusV1(FrozenModel):
     schema_version: Literal["1"]
     invocation_id: str
     lock_digest: str
     root_input_digest: str
-    initial_tree_id: str
-    current_head_tree_id: str
     status: Literal["running", "blocked", "interrupted", "stopped", "failed", "completed"]
     entrypoint: str
     graph_hierarchy: tuple[GraphStatusV1, ...]
@@ -659,6 +725,9 @@ class StatusV1(FrozenModel):
     adapter_evidence: tuple[AdapterEvidenceRefV1, ...]
     pending_interrupt: PendingInterruptStatusV1 | None
     terminal_reason: str | None
+    change: ChangeProjectionV1
+    apply: ApplyProjectionV1
+    publication: PublicationProjectionV1
 
 
 class ExportedArtifactV1(FrozenModel):

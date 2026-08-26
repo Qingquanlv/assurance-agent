@@ -5,15 +5,20 @@ import pytest
 pytestmark = pytest.mark.usefixtures("product_runner")
 
 
-def test_full_archives_only_when_requested(product_runner):
-    archived = product_runner(entrypoint="full", auto_archive=True).run_to_terminal()
-    unarchived = product_runner(entrypoint="full", auto_archive=False).run_to_terminal()
-    assert archived.terminal_tail == ("quality.report", "improvement.archive")
-    assert unarchived.terminal_tail == ("quality.report",)
+def test_full_ends_at_achieved_without_archive(product_runner):
+    result = product_runner(entrypoint="full").run_to_terminal()
+    assert result.status == "completed"
+    assert result.terminal_tail == ("quality.report",)
+    assert "improvement.archive" not in result.logical_steps
+    assert "improvement.retro" not in result.logical_steps
+    assert "improvement.improvement-review" not in result.logical_steps
+
+
+def test_archive_remains_a_separate_entrypoint(product_runner):
+    archived = product_runner(entrypoint="archive").run_to_terminal()
     assert archived.status == "completed"
-    assert unarchived.status == "completed"
-    assert "improvement.retro" not in archived.logical_steps
-    assert "improvement.improvement-review" not in archived.logical_steps
+    assert "improvement.archive" in archived.logical_steps
+    assert "quality.report" not in archived.logical_steps
 
 
 def test_retro_and_improvement_are_independent_entrypoints(product_runner):

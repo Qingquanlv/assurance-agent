@@ -81,23 +81,43 @@ graphs:
       case-review:
         kind: subgraph
         graph: case-review
-      review-human-gate:
+      review-pass-gate:
         kind: gate
-        expression: "decision == 'needs-human'"
-        input_projection: &review-decision
+        expression: &case-review-pass-expression >-
+          (decision == 'pass' or decision == 'approved') and
+          human_review_required == false
+        input_projection: &case-review-route-projection
           type: object
           fields:
             decision:
               type: predecessor_pointer
               predecessor: case-review
               pointer: /decision
-      review-pass-gate:
+            auto_fix_allowed:
+              type: predecessor_pointer
+              predecessor: case-review
+              pointer: /auto_fix_allowed
+            human_review_required:
+              type: predecessor_pointer
+              predecessor: case-review
+              pointer: /human_review_required
+      review-fix-gate:
         kind: gate
-        expression: "decision != 'needs-human'"
-        input_projection: *review-decision
+        expression: &case-review-fix-expression >-
+          (decision == 'needs_fix' or decision == 'changes_requested') and
+          auto_fix_allowed == true and human_review_required == false
+        input_projection: *case-review-route-projection
+      review-human-gate:
+        kind: gate
+        expression: &case-review-human-expression >-
+          not (((decision == 'pass' or decision == 'approved') and
+          human_review_required == false) or
+          ((decision == 'needs_fix' or decision == 'changes_requested') and
+          auto_fix_allowed == true and human_review_required == false))
+        input_projection: *case-review-route-projection
       human-review:
         kind: interrupt
-        reason: needs-human
+        reason: needs_human_review
         actions: [approve, reject]
       generation:
         kind: subgraph
@@ -181,22 +201,6 @@ graphs:
       report:
         kind: subgraph
         graph: quality-report
-      archive-gate:
-        kind: gate
-        expression: "auto_archive == true"
-        input_projection: &auto-archive-selection
-          type: object
-          fields:
-            auto_archive:
-              type: root_pointer
-              pointer: /auto_archive
-      skip-archive-gate:
-        kind: gate
-        expression: "auto_archive == false"
-        input_projection: *auto-archive-selection
-      archive:
-        kind: subgraph
-        graph: improvement-archive
       done:
         kind: end
     edges:
@@ -207,14 +211,19 @@ graphs:
       - from: case-design
         to: case-review
       - from: case-review
-        to: review-human-gate
-      - from: case-review
         to: review-pass-gate
-      - from: review-human-gate
-        to: human-review
-        condition: 'output.value == true'
+      - from: case-review
+        to: review-fix-gate
+      - from: case-review
+        to: review-human-gate
       - from: review-pass-gate
         to: generation
+        condition: 'output.value == true'
+      - from: review-fix-gate
+        to: case-design
+        condition: 'output.value == true'
+      - from: review-human-gate
+        to: human-review
         condition: 'output.value == true'
       - from: human-review
         to: generation
@@ -254,16 +263,6 @@ graphs:
       - from: coverage-repair
         to: generation
       - from: report
-        to: archive-gate
-      - from: report
-        to: skip-archive-gate
-      - from: archive-gate
-        to: archive
-        condition: 'output.value == true'
-      - from: skip-archive-gate
-        to: done
-        condition: 'output.value == true'
-      - from: archive
         to: done
   intake:
     max_activations: 8
@@ -284,7 +283,7 @@ graphs:
               type: root_pointer
               pointer: /requirement
             capability_leafs:
-              type: config_pointer
+              type: root_pointer
               pointer: /capability_leafs
             artifact_paths:
               type: root_pointer
@@ -310,7 +309,7 @@ graphs:
               type: predecessor
               predecessor: execute
             capability_leafs:
-              type: config_pointer
+              type: root_pointer
               pointer: /capability_leafs
             artifact_paths:
               type: root_pointer
@@ -341,11 +340,14 @@ graphs:
               type: root_pointer
               pointer: /change_id
             capability_leafs:
-              type: config_pointer
+              type: root_pointer
               pointer: /capability_leafs
             artifact_paths:
               type: root_pointer
               pointer: /allowed_artifact_paths
+        resources:
+          reads: [qa]
+          writes: [qa/changes]
         retry: once
         timeout: short
       execute:
@@ -360,7 +362,21 @@ graphs:
         kind: task
         capability: assurance.product.agent.intake.explore.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection:
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            change_id:
+              type: root_pointer
+              pointer: /change_id
+            capability_leafs:
+              type: root_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: root_pointer
+              pointer: /allowed_artifact_paths
         retry: once
         timeout: short
       done:
@@ -380,7 +396,21 @@ graphs:
         kind: task
         capability: assurance.product.agent.intake.case-design.prepare
         input: *prepare-input
-        input_projection: *prepare-projection
+        input_projection:
+          type: object
+          fields:
+            change_id:
+              type: root_pointer
+              pointer: /change_id
+            selected_test_families:
+              type: root_pointer
+              pointer: /selected_test_families
+            capability_leafs:
+              type: root_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: root_pointer
+              pointer: /allowed_artifact_paths
         retry: once
         timeout: short
       execute:
@@ -395,7 +425,24 @@ graphs:
         kind: task
         capability: assurance.product.agent.intake.case-design.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection:
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            change_id:
+              type: root_pointer
+              pointer: /change_id
+            selected_test_families:
+              type: root_pointer
+              pointer: /selected_test_families
+            capability_leafs:
+              type: root_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: root_pointer
+              pointer: /allowed_artifact_paths
         retry: once
         timeout: short
       done:
@@ -579,7 +626,7 @@ graphs:
       - from: join-selected
         to: done
   generation-api:
-    max_activations: 8
+    max_activations: 64
     start: plan
     nodes:
       plan:
@@ -588,9 +635,65 @@ graphs:
       plan-review:
         kind: subgraph
         graph: generation-api-plan-review
+      plan-review-pass-gate:
+        kind: gate
+        expression: &plan-review-pass-expression >-
+          (decision == 'pass' or decision == 'approved') and
+          codegen_readiness != 'not_ready' and human_review_required == false
+        input_projection: &plan-review-route-projection
+          type: object
+          fields:
+            decision:
+              type: predecessor_pointer
+              predecessor: plan-review
+              pointer: /decision
+            codegen_readiness:
+              type: predecessor_pointer
+              predecessor: plan-review
+              pointer: /codegen_readiness
+            auto_fix_allowed:
+              type: predecessor_pointer
+              predecessor: plan-review
+              pointer: /auto_fix_allowed
+            human_review_required:
+              type: predecessor_pointer
+              predecessor: plan-review
+              pointer: /human_review_required
+      plan-review-fix-gate:
+        kind: gate
+        expression: &plan-review-fix-expression >-
+          (decision == 'needs_fix' or decision == 'changes_requested') and
+          auto_fix_allowed == true and human_review_required == false
+        input_projection: *plan-review-route-projection
+      plan-review-human-gate:
+        kind: gate
+        expression: &plan-review-human-expression >-
+          not (((decision == 'pass' or decision == 'approved') and
+          codegen_readiness != 'not_ready' and human_review_required == false) or
+          ((decision == 'needs_fix' or decision == 'changes_requested') and
+          auto_fix_allowed == true and human_review_required == false))
+        input_projection: *plan-review-route-projection
+      plan-human-review:
+        kind: interrupt
+        reason: api_plan_needs_human_review
+        actions: [approve]
       codegen:
         kind: subgraph
         graph: generation-api-codegen
+      codegen-pass-gate:
+        kind: gate
+        expression: &codegen-pass-expression 'needs_fix == false'
+        input_projection: &codegen-route-projection
+          type: object
+          fields:
+            needs_fix:
+              type: predecessor_pointer
+              predecessor: codegen
+              pointer: /needs_fix
+      codegen-fix-gate:
+        kind: gate
+        expression: &codegen-fix-expression 'needs_fix == true'
+        input_projection: *codegen-route-projection
       codegen-fix:
         kind: subgraph
         graph: generation-api-codegen-fix
@@ -600,9 +703,32 @@ graphs:
       - from: plan
         to: plan-review
       - from: plan-review
+        to: plan-review-pass-gate
+      - from: plan-review
+        to: plan-review-fix-gate
+      - from: plan-review
+        to: plan-review-human-gate
+      - from: plan-review-pass-gate
+        to: codegen
+        condition: 'output.value == true'
+      - from: plan-review-fix-gate
+        to: plan
+        condition: 'output.value == true'
+      - from: plan-review-human-gate
+        to: plan-human-review
+        condition: 'output.value == true'
+      - from: plan-human-review
         to: codegen
       - from: codegen
+        to: codegen-pass-gate
+      - from: codegen
+        to: codegen-fix-gate
+      - from: codegen-pass-gate
+        to: done
+        condition: 'output.value == true'
+      - from: codegen-fix-gate
         to: codegen-fix
+        condition: 'output.value == true'
       - from: codegen-fix
         to: done
   generation-api-plan:
@@ -746,7 +872,7 @@ graphs:
       - from: finalize
         to: done
   generation-e2e:
-    max_activations: 8
+    max_activations: 64
     start: plan
     nodes:
       plan:
@@ -755,9 +881,33 @@ graphs:
       plan-review:
         kind: subgraph
         graph: generation-e2e-plan-review
+      plan-review-pass-gate:
+        kind: gate
+        expression: *plan-review-pass-expression
+        input_projection: *plan-review-route-projection
+      plan-review-fix-gate:
+        kind: gate
+        expression: *plan-review-fix-expression
+        input_projection: *plan-review-route-projection
+      plan-review-human-gate:
+        kind: gate
+        expression: *plan-review-human-expression
+        input_projection: *plan-review-route-projection
+      plan-human-review:
+        kind: interrupt
+        reason: e2e_plan_needs_human_review
+        actions: [approve]
       codegen:
         kind: subgraph
         graph: generation-e2e-codegen
+      codegen-pass-gate:
+        kind: gate
+        expression: *codegen-pass-expression
+        input_projection: *codegen-route-projection
+      codegen-fix-gate:
+        kind: gate
+        expression: *codegen-fix-expression
+        input_projection: *codegen-route-projection
       codegen-fix:
         kind: subgraph
         graph: generation-e2e-codegen-fix
@@ -767,9 +917,32 @@ graphs:
       - from: plan
         to: plan-review
       - from: plan-review
+        to: plan-review-pass-gate
+      - from: plan-review
+        to: plan-review-fix-gate
+      - from: plan-review
+        to: plan-review-human-gate
+      - from: plan-review-pass-gate
+        to: codegen
+        condition: 'output.value == true'
+      - from: plan-review-fix-gate
+        to: plan
+        condition: 'output.value == true'
+      - from: plan-review-human-gate
+        to: plan-human-review
+        condition: 'output.value == true'
+      - from: plan-human-review
         to: codegen
       - from: codegen
+        to: codegen-pass-gate
+      - from: codegen
+        to: codegen-fix-gate
+      - from: codegen-pass-gate
+        to: done
+        condition: 'output.value == true'
+      - from: codegen-fix-gate
         to: codegen-fix
+        condition: 'output.value == true'
       - from: codegen-fix
         to: done
   generation-e2e-plan:
@@ -913,7 +1086,7 @@ graphs:
       - from: finalize
         to: done
   generation-fuzz:
-    max_activations: 8
+    max_activations: 64
     start: plan
     nodes:
       plan:
@@ -922,6 +1095,22 @@ graphs:
       plan-review:
         kind: subgraph
         graph: generation-fuzz-plan-review
+      plan-review-pass-gate:
+        kind: gate
+        expression: *plan-review-pass-expression
+        input_projection: *plan-review-route-projection
+      plan-review-fix-gate:
+        kind: gate
+        expression: *plan-review-fix-expression
+        input_projection: *plan-review-route-projection
+      plan-review-human-gate:
+        kind: gate
+        expression: *plan-review-human-expression
+        input_projection: *plan-review-route-projection
+      plan-human-review:
+        kind: interrupt
+        reason: fuzz_plan_needs_human_review
+        actions: [approve]
       codegen:
         kind: subgraph
         graph: generation-fuzz-codegen
@@ -931,6 +1120,21 @@ graphs:
       - from: plan
         to: plan-review
       - from: plan-review
+        to: plan-review-pass-gate
+      - from: plan-review
+        to: plan-review-fix-gate
+      - from: plan-review
+        to: plan-review-human-gate
+      - from: plan-review-pass-gate
+        to: codegen
+        condition: 'output.value == true'
+      - from: plan-review-fix-gate
+        to: plan
+        condition: 'output.value == true'
+      - from: plan-review-human-gate
+        to: plan-human-review
+        condition: 'output.value == true'
+      - from: plan-human-review
         to: codegen
       - from: codegen
         to: done
@@ -1040,7 +1244,7 @@ graphs:
       - from: finalize
         to: done
   generation-performance:
-    max_activations: 8
+    max_activations: 64
     start: plan
     nodes:
       plan:
@@ -1049,6 +1253,22 @@ graphs:
       plan-review:
         kind: subgraph
         graph: generation-performance-plan-review
+      plan-review-pass-gate:
+        kind: gate
+        expression: *plan-review-pass-expression
+        input_projection: *plan-review-route-projection
+      plan-review-fix-gate:
+        kind: gate
+        expression: *plan-review-fix-expression
+        input_projection: *plan-review-route-projection
+      plan-review-human-gate:
+        kind: gate
+        expression: *plan-review-human-expression
+        input_projection: *plan-review-route-projection
+      plan-human-review:
+        kind: interrupt
+        reason: performance_plan_needs_human_review
+        actions: [approve]
       codegen:
         kind: subgraph
         graph: generation-performance-codegen
@@ -1058,6 +1278,21 @@ graphs:
       - from: plan
         to: plan-review
       - from: plan-review
+        to: plan-review-pass-gate
+      - from: plan-review
+        to: plan-review-fix-gate
+      - from: plan-review
+        to: plan-review-human-gate
+      - from: plan-review-pass-gate
+        to: codegen
+        condition: 'output.value == true'
+      - from: plan-review-fix-gate
+        to: plan
+        condition: 'output.value == true'
+      - from: plan-review-human-gate
+        to: plan-human-review
+        condition: 'output.value == true'
+      - from: plan-human-review
         to: codegen
       - from: codegen
         to: done
@@ -1174,7 +1409,18 @@ graphs:
         kind: task
         capability: assurance.product.agent.execution.execute.prepare
         input: *prepare-input
-        input_projection: *prepare-projection
+        input_projection: &execution-prepare-projection
+          type: object
+          fields:
+            change_id:
+              type: root_pointer
+              pointer: /change_id
+            selected_test_families:
+              type: root_pointer
+              pointer: /selected_test_families
+            capability_leafs:
+              type: root_pointer
+              pointer: /capability_leafs
         retry: once
         timeout: short
       execute:
@@ -1189,7 +1435,21 @@ graphs:
         kind: task
         capability: assurance.product.agent.execution.execute.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection: &execution-finalize-projection
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            change_id:
+              type: root_pointer
+              pointer: /change_id
+            selected_test_families:
+              type: root_pointer
+              pointer: /selected_test_families
+            capability_leafs:
+              type: root_pointer
+              pointer: /capability_leafs
         retry: once
         timeout: short
       done:
@@ -1209,7 +1469,7 @@ graphs:
         kind: task
         capability: assurance.product.agent.execution.run.prepare
         input: *prepare-input
-        input_projection: *prepare-projection
+        input_projection: *execution-prepare-projection
         retry: once
         timeout: short
       execute:
@@ -1224,7 +1484,7 @@ graphs:
         kind: task
         capability: assurance.product.agent.execution.run.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection: *execution-finalize-projection
         retry: once
         timeout: short
       done:
@@ -1795,7 +2055,7 @@ graphs:
         graph: improvement-review
       review-human-gate:
         kind: gate
-        expression: "decision == 'needs-human'"
+        expression: "decision != 'pass' and decision != 'approved'"
         input_projection: &apply-review-decision
           type: object
           fields:
@@ -1805,11 +2065,11 @@ graphs:
               pointer: /decision
       review-pass-gate:
         kind: gate
-        expression: "decision != 'needs-human'"
+        expression: "decision == 'pass' or decision == 'approved'"
         input_projection: *apply-review-decision
       human-review:
         kind: interrupt
-        reason: needs-human
+        reason: needs_human_review
         actions: [approve, reject]
       apply:
         kind: task

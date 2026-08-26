@@ -37,7 +37,7 @@ def valid_product_input(**overrides: object) -> dict[str, object]:
         "requirement": "Add login",
         "run_mode": "case",
         "selected_test_families": (),
-        "auto_archive": False,
+        "capability_leafs": (),
         "capability_catalog": {
             "resource_id": "assurance.product.configuration.capability-catalog",
             "sha256": _SHA,
@@ -69,6 +69,15 @@ def test_product_input_is_closed_and_stable():
     assert value.schema_version == "1"
     with pytest.raises(ValidationError):
         ProductInputV1.model_validate({**valid_product_input(), "model": "ambient"})
+
+
+def test_product_input_rejects_auto_archive():
+    from assurance_product.models import ProductInputV1
+
+    with pytest.raises(ValidationError):
+        ProductInputV1.model_validate(valid_product_input(auto_archive=False))
+    with pytest.raises(ValidationError):
+        ProductInputV1.model_validate(valid_product_input(auto_archive=True))
 
 
 def test_product_input_normalizes_change_id_and_requirement():
@@ -110,6 +119,17 @@ def test_product_input_requires_canonical_family_order():
         ProductInputV1.model_validate(valid_product_input(selected_test_families=("e2e", "api")))
     with pytest.raises(ValidationError):
         ProductInputV1.model_validate(valid_product_input(selected_test_families=("api", "api")))
+
+
+def test_product_input_requires_sorted_unique_capability_leafs():
+    from assurance_product.models import ProductInputV1
+
+    value = ProductInputV1.model_validate(
+        valid_product_input(capability_leafs=("auth.session", "entities.user"))
+    )
+    assert value.capability_leafs == ("auth.session", "entities.user")
+    with pytest.raises(ValidationError):
+        ProductInputV1.model_validate(valid_product_input(capability_leafs=("entities.user", "auth.session")))
 
 
 def test_product_input_requires_sorted_relative_artifact_prefixes():
@@ -186,7 +206,7 @@ def test_product_input_authenticates_resource_refs_against_composition(installed
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     refs = {
         "capability_catalog": _ref_from_composition(
-            composition, "assurance.product.configuration.project-config"
+            composition, "assurance.product.configuration.capability-catalog"
         ),
         "product_policy": _ref_from_composition(
             composition, "assurance.product.configuration.product-policy"
@@ -210,6 +230,12 @@ def test_product_input_authenticates_resource_refs_against_composition(installed
     }
     with pytest.raises((ValidationError, ValueError)):
         ProductInputV1.model_validate(valid_product_input(**missing)).authenticate_against(composition)
+
+    forged_leafs = ProductInputV1.model_validate(
+        valid_product_input(capability_leafs=("entities.virtual",), **refs)
+    )
+    with pytest.raises(ValueError, match="authenticated catalog"):
+        forged_leafs.authenticate_against(composition)
 
 
 def _ref_from_composition(composition: FrozenComposition, resource_id: str) -> dict[str, str]:

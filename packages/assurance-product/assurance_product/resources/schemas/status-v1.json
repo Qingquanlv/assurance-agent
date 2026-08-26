@@ -9,8 +9,6 @@
     "invocation_id",
     "lock_digest",
     "root_input_digest",
-    "initial_tree_id",
-    "current_head_tree_id",
     "status",
     "entrypoint",
     "graph_hierarchy",
@@ -20,15 +18,16 @@
     "durable_effects",
     "adapter_evidence",
     "pending_interrupt",
-    "terminal_reason"
+    "terminal_reason",
+    "change",
+    "apply",
+    "publication"
   ],
   "properties": {
     "schema_version": { "const": "1" },
     "invocation_id": { "type": "string", "minLength": 1 },
     "lock_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "root_input_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "initial_tree_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "current_head_tree_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "status": {
       "enum": ["running", "blocked", "interrupted", "stopped", "failed", "completed"]
     },
@@ -59,13 +58,18 @@
     "pending_interrupt": {
       "anyOf": [{ "$ref": "#/$defs/pendingInterrupt" }, { "type": "null" }]
     },
-    "terminal_reason": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+    "terminal_reason": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+    "change": { "$ref": "#/$defs/changeProjection" },
+    "apply": { "$ref": "#/$defs/applyProjection" },
+    "publication": { "$ref": "#/$defs/publicationProjection" }
   },
   "not": {
     "anyOf": [
       { "required": ["secret"] },
       { "required": ["transcript"] },
-      { "required": ["chain_of_thought"] }
+      { "required": ["chain_of_thought"] },
+      { "required": ["initial_tree_id"] },
+      { "required": ["current_head_tree_id"] }
     ]
   },
   "$defs": {
@@ -147,6 +151,34 @@
         "activity_id": { "type": "string", "minLength": 1 },
         "reference_digest": { "type": "string", "minLength": 1 },
         "terminal_receipt_digest": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+    "changeProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["change_id", "state"],
+      "properties": {
+        "change_id": { "type": "string", "minLength": 1, "pattern": "^\\S+$" },
+        "state": {
+          "enum": ["running", "blocked", "interrupted", "stopped", "failed", "achieved"]
+        }
+      }
+    },
+    "applyProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_digest", "file_count"],
+      "properties": {
+        "manifest_digest": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+        "file_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "publicationProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["not_ready", "ready", "published", "drifted"] }
       }
     },
     "pendingInterrupt": {

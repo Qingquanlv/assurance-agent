@@ -14,6 +14,7 @@ from graph_engine.frozen_json import freeze_json, thaw_json
 from graph_engine.graph.input_projection import project_task_input
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
+    InvocationWorkspaceBinding,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
     TaskContext,
@@ -199,6 +200,25 @@ class _ScriptedTaskHost:
             if self._exhausted:
                 return TaskOutcome.stopped("coverage_budget_exhausted", output)
             return TaskOutcome.succeeded(output)
+        if capability_id.startswith(_GENERATION_PREFIX) and capability_id.endswith(".plan-review.finalize"):
+            return TaskOutcome.succeeded(
+                {
+                    "decision": "pass",
+                    "codegen_readiness": "ready",
+                    "auto_fix_allowed": False,
+                    "human_review_required": False,
+                }
+            )
+        if capability_id == _CASE_REVIEW_FINALIZE:
+            fixable = self._review_decision in {"needs_fix", "changes_requested"}
+            human = self._review_decision in {"needs_human_review", "reject"}
+            return TaskOutcome.succeeded(
+                {
+                    "decision": self._review_decision,
+                    "auto_fix_allowed": fixable,
+                    "human_review_required": human,
+                }
+            )
         if capability_id in _REVIEW_FINALIZES:
             return TaskOutcome.succeeded({"decision": self._review_decision, "needs_fix": False})
         if capability_id == _FIX_PROPOSAL_FINALIZE and self._healing_decision == "disallowed":
@@ -246,7 +266,6 @@ class ProductRun:
         *,
         entrypoint: str,
         selected_test_families: tuple[str, ...],
-        auto_archive: bool,
         review_decision: str,
         healing_decision: str,
         completion_order: Literal["forward", "reverse"] = "forward",
@@ -259,7 +278,6 @@ class ProductRun:
     ) -> None:
         self._entrypoint = entrypoint
         self._selected_test_families = selected_test_families
-        self._auto_archive = auto_archive
         self._review_decision = review_decision
         self._healing_decision = healing_decision
         self._completion_order: Literal["forward", "reverse"] = completion_order
@@ -327,7 +345,6 @@ class ProductRun:
         payload = _product_input(
             selected_test_families=self._selected_test_families,
             coverage_rounds=self._resolved_coverage_rounds(),
-            auto_archive=self._auto_archive,
         )
         return (
             ProductInputV1.model_validate(payload)
@@ -363,16 +380,29 @@ class ProductRun:
             invocation_id=invocation_id,
             seed=seed,
             authorization=empty_runtime_authorization(),
+            workspace_binding=_workspace_binding(self._engine_root / invocation_id),
         )
         result = engine.run_until_blocked(handle)
         return result.projection, result.status, result.reason, engine, handle
+
+
+def _workspace_binding(root: Path) -> InvocationWorkspaceBinding:
+    project_root = root.parent / f".{root.name}-project"
+    attempts_root = root.parent / f".{root.name}-attempts"
+    receipts_root = root.parent / f".{root.name}-receipts"
+    for path in (project_root, attempts_root, receipts_root):
+        path.mkdir(exist_ok=True)
+    return InvocationWorkspaceBinding(
+        project_root=project_root,
+        attempts_root=attempts_root,
+        receipts_root=receipts_root,
+    )
 
 
 def _product_input(
     *,
     selected_test_families: tuple[str, ...],
     coverage_rounds: int = 1,
-    auto_archive: bool = False,
 ) -> dict[str, object]:
     return {
         "schema_version": "1",
@@ -380,7 +410,7 @@ def _product_input(
         "requirement": "Add login",
         "run_mode": "implement",
         "selected_test_families": selected_test_families,
-        "auto_archive": auto_archive,
+        "capability_leafs": (),
         "capability_catalog": {
             "resource_id": "assurance.product.configuration.capability-catalog",
             "sha256": _SHA,
@@ -648,7 +678,6 @@ def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
         *,
         entrypoint: str = "full",
         selected_test_families: tuple[str, ...] | None = None,
-        auto_archive: bool = False,
         review_decision: str = "pass",
         healing_decision: str = "allowed",
         completion_order: Literal["forward", "reverse"] = "forward",
@@ -666,7 +695,6 @@ def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
         return ProductRun(
             entrypoint=entrypoint,
             selected_test_families=families,
-            auto_archive=auto_archive,
             review_decision=review_decision,
             healing_decision=healing_decision,
             completion_order=completion_order,

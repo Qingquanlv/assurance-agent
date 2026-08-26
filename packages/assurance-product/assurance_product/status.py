@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
+import json
+from pathlib import Path
 from typing import Literal, cast
 
 from graph_engine.canonical import JSONValue, canonical_digest
@@ -12,13 +15,19 @@ from graph_engine.runtime.models import (
     InvocationProjection,
 )
 
+from assurance_product.generated_merge import merge_generated
 from assurance_product.models import (
     AdapterEvidenceRefV1,
+    ApplyManifestFileV1,
+    ApplyManifestV1,
+    ApplyProjectionV1,
+    ChangeProjectionV1,
     CoverageProgressV1,
     EffectStatusV1,
     GraphStatusV1,
     NodeStatusV1,
     PendingInterruptStatusV1,
+    PublicationProjectionV1,
     StatusV1,
 )
 
@@ -41,20 +50,26 @@ def project_status_fields(
     root_input_digest: str | None = None,
     initial_tree_id: str | None = None,
     selected_test_families: tuple[str, ...] = (),
+    change_id: str | None = None,
+    apply_manifest_digest: str | None = None,
+    apply_file_count: int = 0,
+    publication_status: Literal["not_ready", "ready", "published", "drifted"] = "not_ready",
 ) -> dict[str, object]:
+    del initial_tree_id
     if projection.status == "not_started" or projection.invocation_id is None:
         raise ValueError("cannot project status for an unstarted invocation")
     if projection.lock_digest is None or projection.entrypoint is None:
         raise ValueError("started projection requires complete invocation identity")
     families = selected_test_families or _selected_families(projection)
+    status = _status_class(projection)
+    resolved_change = change_id or _change_id(projection)
+    change_state = _change_state(status, publication_status)
     return {
         "schema_version": "1",
         "invocation_id": projection.invocation_id,
         "lock_digest": projection.lock_digest,
         "root_input_digest": root_input_digest or _require_digest(root_input_digest),
-        "initial_tree_id": initial_tree_id or _require_digest(initial_tree_id),
-        "current_head_tree_id": projection.head_tree_id or initial_tree_id or _require_digest(None),
-        "status": _status_class(projection),
+        "status": status,
         "entrypoint": projection.entrypoint,
         "graph_hierarchy": tuple(_graph_status(item) for item in projection.graph_instances),
         "node_states": tuple(_node_status(item) for item in projection.activations),
@@ -64,6 +79,9 @@ def project_status_fields(
         "adapter_evidence": tuple(_adapter_evidence(projection)),
         "pending_interrupt": _pending_interrupt(projection),
         "terminal_reason": projection.terminal_reason,
+        "change": ChangeProjectionV1(change_id=resolved_change, state=change_state),
+        "apply": ApplyProjectionV1(manifest_digest=apply_manifest_digest, file_count=apply_file_count),
+        "publication": PublicationProjectionV1(status=publication_status),
     }
 
 
@@ -73,6 +91,10 @@ def render_status(
     root_input_digest: str | None = None,
     initial_tree_id: str | None = None,
     selected_test_families: tuple[str, ...] = (),
+    change_id: str | None = None,
+    apply_manifest_digest: str | None = None,
+    apply_file_count: int = 0,
+    publication_status: Literal["not_ready", "ready", "published", "drifted"] = "not_ready",
 ) -> StatusV1:
     return StatusV1.model_validate(
         project_status_fields(
@@ -80,13 +102,141 @@ def render_status(
             root_input_digest=root_input_digest,
             initial_tree_id=initial_tree_id,
             selected_test_families=selected_test_families,
+            change_id=change_id,
+            apply_manifest_digest=apply_manifest_digest,
+            apply_file_count=apply_file_count,
+            publication_status=publication_status,
         )
     )
 
 
+def finalize_achieved(
+    project_root: Path,
+    change_id: str,
+    families: tuple[str, ...],
+    *,
+    invocation: Mapping[str, object] | StatusV1,
+) -> StatusV1:
+    project = Path(project_root)
+    merged = merge_generated(project, change_id, families)
+    _require_execution_gate(project, change_id)
+    _require_quality_gate(project, change_id)
+    manifest = _apply_manifest(project, change_id, merged)
+    status = _achieved_status(invocation, change_id, manifest)
+    change_root = project / "qa" / "changes" / change_id
+    _write_canonical_json(change_root / "apply-manifest.json", manifest.model_dump(mode="json"))
+    _write_canonical_json(change_root / "status.json", status.model_dump(mode="json"))
+    return status
+
+
+def _change_state(
+    status: Literal["running", "blocked", "interrupted", "stopped", "failed", "completed"],
+    publication_status: Literal["not_ready", "ready", "published", "drifted"],
+) -> Literal["running", "blocked", "interrupted", "stopped", "failed", "achieved"]:
+    if status == "completed" and publication_status in {"ready", "published"}:
+        return "achieved"
+    if status == "blocked":
+        return "blocked"
+    if status == "interrupted":
+        return "interrupted"
+    if status == "stopped":
+        return "stopped"
+    if status == "failed":
+        return "failed"
+    return "running"
+
+
 def _require_digest(value: str | None) -> str:
     del value
-    raise ValueError("status projection requires root-input and initial-tree identities")
+    raise ValueError("status projection requires a root-input digest")
+
+
+def _change_id(projection: InvocationProjection) -> str:
+    for graph in projection.graph_instances:
+        if graph.parent_graph_instance_id is not None:
+            continue
+        payload = thaw_json(graph.input)
+        if isinstance(payload, Mapping):
+            change_id = payload.get("change_id")
+            if isinstance(change_id, str) and change_id:
+                return change_id
+    raise ValueError("status projection requires a change_id")
+
+
+def _require_execution_gate(project: Path, change_id: str) -> None:
+    path = project / "qa" / "changes" / change_id / "execution" / "execute-result.json"
+    payload = _read_json_object(path, "execution evidence")
+    status = payload.get("status")
+    if status != "passed":
+        raise ValueError(f"execution gate failed: {status!r}")
+
+
+def _require_quality_gate(project: Path, change_id: str) -> None:
+    inspect_path = project / "qa" / "changes" / change_id / "inspect" / "inspection.json"
+    report_path = project / "qa" / "changes" / change_id / "report" / "report.md"
+    payload = _read_json_object(inspect_path, "quality evidence")
+    coverage = payload.get("coverage")
+    if not isinstance(coverage, Mapping) or coverage.get("decision") is not True:
+        raise ValueError("quality gate failed")
+    if not report_path.is_file() or report_path.is_symlink():
+        raise ValueError("quality gate failed: report is missing")
+
+
+def _apply_manifest(project: Path, change_id: str, merged: object) -> ApplyManifestV1:
+    files = []
+    for item in getattr(merged, "files"):
+        target = project.joinpath(*str(item.target_path).split("/"))
+        baseline = None
+        if target.is_file() and not target.is_symlink() and target.stat().st_nlink == 1:
+            baseline = f"sha256:{hashlib.sha256(target.read_bytes()).hexdigest()}"
+        files.append(
+            ApplyManifestFileV1(
+                target_path=item.target_path,
+                source_path=item.staged_path,
+                source_sha256=item.sha256,
+                baseline_sha256=baseline,
+                mode=item.mode,
+                operation=item.operation,
+            )
+        )
+    ordered = tuple(sorted(files, key=lambda item: item.target_path))
+    return ApplyManifestV1(
+        schema_version="1",
+        change_id=change_id,
+        digest=str(getattr(merged, "digest")),
+        files=ordered,
+    )
+
+
+def _achieved_status(
+    invocation: Mapping[str, object] | StatusV1,
+    change_id: str,
+    manifest: ApplyManifestV1,
+) -> StatusV1:
+    payload = invocation.model_dump(mode="json") if isinstance(invocation, StatusV1) else dict(invocation)
+    payload["change"] = {"change_id": change_id, "state": "achieved"}
+    payload["apply"] = {"manifest_digest": manifest.digest, "file_count": len(manifest.files)}
+    payload["publication"] = {"status": "ready"}
+    return StatusV1.model_validate(payload)
+
+
+def _read_json_object(path: Path, label: str) -> Mapping[str, object]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} is missing")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{label} is invalid") from error
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"{label} is invalid")
+    return payload
+
+
+def _write_canonical_json(path: Path, payload: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 def _status_class(
