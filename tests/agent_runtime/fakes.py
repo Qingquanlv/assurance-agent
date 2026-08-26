@@ -415,12 +415,15 @@ class ConfinedTestHost:
 
     def _install_receipt(
         self,
-        identity: TaskHostCallIdentity,
+        call: TaskHostExecuteCall | TaskHostReconcileCall,
         activity: TaskActivitySnapshot,
         outcome: TaskOutcome,
     ) -> None:
+        identity = call.identity
         if self._receipts is None or identity.activity_id is None:
             return
+        assert self._store is not None
+        staged = self._store.seal(activity.workspace_identity)
         quiescence = prove_call_quiescent()
         sink = self._receipts.sink_for(identity)
         sink.install(
@@ -437,8 +440,8 @@ class ConfinedTestHost:
                 workspace_identity_digest=activity.workspace_identity.identity_digest,
                 project_root_digest=activity.workspace_identity.project_digest,
                 write_root_digest=activity.workspace_identity.write_root_digest,
-                baseline_digest=activity.workspace_identity.identity_digest,
-                staged_write_set_digest=activity.staged_write_set_digest or ("d" * 64),
+                baseline_digest=call.attempt_root.baseline_digest,
+                staged_write_set_digest=staged.staged_digest,
                 dispatch_fingerprint_digest=activity.dispatch_fingerprint_digest,
                 reference_digest=activity.reference_digest,
                 outcome=outcome,
@@ -456,7 +459,7 @@ class ConfinedTestHost:
         outcome = await handler.execute(call.request, context)
         activity = context.activity.snapshot if context.activity is not None else None
         if activity is not None:
-            self._install_receipt(call.identity, activity, outcome)
+            self._install_receipt(call, activity, outcome)
         if self.cut == "after_terminal_receipt":
             raise RuntimeError("after_terminal_receipt")
         return TaskHostCallResult(operation="execute", outcome=outcome)
@@ -468,7 +471,7 @@ class ConfinedTestHost:
         result = await handler.reconcile(call.request, context, call.activity)
         self.last_reconcile = result
         if result.status == "terminal" and result.outcome is not None and context.activity is not None:
-            self._install_receipt(call.identity, context.activity.snapshot, result.outcome)
+            self._install_receipt(call, context.activity.snapshot, result.outcome)
         return TaskHostCallResult(operation="reconcile", reconcile_result=result)
 
     async def cancel(self, call: TaskHostCancelCall) -> TaskHostCallResult:

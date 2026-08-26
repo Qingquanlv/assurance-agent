@@ -106,7 +106,7 @@ import importlib.util
 
 import graph_engine
 
-assert graph_engine.ENGINE_API_VERSION == "1.0"
+assert graph_engine.ENGINE_API_VERSION == "2.0"
 for package in ("assurance_agent", "assurance_kernel", "graph_engine_toy_a", "graph_engine_toy_b"):
     assert importlib.util.find_spec(package) is None, package
 PY
@@ -192,7 +192,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Mapping
 from pathlib import Path
 
 from graph_engine.canonical import canonical_digest
@@ -202,26 +202,56 @@ from graph_engine.composition import (
     WheelPluginSource,
     WheelProductSource,
 )
-from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
+from graph_engine.plugin_api import (
+    InvocationWorkspaceBinding,
+    TaskContext,
+    TaskHandler,
+)
 from graph_engine.runtime.engine import Engine
+from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostExecuteCall
 from graph_engine.runtime.ledger import Ledger
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.runtime.seed import empty_invocation_seed
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 
 class TrustedSmokeHost:
     """Explicit in-process host for reviewed toy-wheel smoke execution only."""
 
-    async def execute(
+    def __init__(self) -> None:
+        self._handlers: Mapping[str, TaskHandler] = {}
+        self._store: TaskWorkspaceStore | None = None
+
+    def bind_invocation_runtime(
         self,
-        handler: TaskHandler,
-        request: TaskRequest,
         *,
-        workspace_root: Path,
-        heartbeat: Callable[[], None],
-    ) -> TaskOutcome:
-        return await handler.execute(
-            request,
-            TaskContext(workspace_root=workspace_root, heartbeat=heartbeat),
+        handlers: Mapping[str, TaskHandler],
+        store: TaskWorkspaceStore,
+    ) -> None:
+        self._handlers = handlers
+        self._store = store
+
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        assert self._store is not None
+        handler = self._handlers[call.request.capability_id]
+        identity = call.attempt_root.workspace_identity
+        binding = self._store.begin(
+            task_id=identity.task_id,
+            attempt=identity.attempt,
+            output_paths=identity.output_paths,
         )
+        outcome = await handler.execute(
+            call.request,
+            TaskContext(
+                project_root=binding.project_root,
+                write_root=binding.write_root,
+                workspace_identity=binding.identity,
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=call.request.invocation,
+            ),
+        )
+        return TaskHostCallResult(operation="execute", outcome=outcome)
 
 
 for package in ("assurance_agent", "assurance_kernel", "graph_engine_toy_a"):
@@ -243,8 +273,26 @@ resolved = RegistryPlatform().resolve(
         ),
     )
 )
-with Engine(Path(sys.argv[1]), host=TrustedSmokeHost()) as engine:
-    with engine.start(resolved, entrypoint="review", invocation_id="smoke-b") as handle:
+root = Path(sys.argv[1])
+project_root = root.parent / f".{root.name}-project"
+attempts_root = root.parent / f".{root.name}-attempts"
+receipts_root = root.parent / f".{root.name}-receipts"
+for path in (project_root, attempts_root, receipts_root):
+    path.mkdir(exist_ok=True)
+workspace_binding = InvocationWorkspaceBinding(
+    project_root=project_root,
+    attempts_root=attempts_root,
+    receipts_root=receipts_root,
+)
+with Engine(root, host=TrustedSmokeHost()) as engine:
+    with engine.start(
+        resolved,
+        entrypoint="review",
+        invocation_id="smoke-b",
+        seed=empty_invocation_seed(),
+        authorization=empty_runtime_authorization(),
+        workspace_binding=workspace_binding,
+    ) as handle:
         blocked = engine.run_until_blocked(handle)
         assert blocked.status == "interrupted", blocked
         with engine.resume(handle, action="approve", payload={"reviewer": "smoke"}) as resumed:
