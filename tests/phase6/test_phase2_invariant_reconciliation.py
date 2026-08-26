@@ -1,0 +1,60 @@
+from __future__ import annotations
+
+import subprocess
+import sys
+
+import pytest
+
+from graph_engine.composition import SchemaEntry
+from graph_engine.runtime.json_schema import match_json_schema
+
+
+_CURRENT_BEHAVIORAL_NODES = {
+    "effect_crash_recovery": (
+        "packages/graph-engine/tests/runtime/test_effects.py::"
+        "test_executor_reconciles_after_apply_started_without_blind_reapply"
+    ),
+    "retry_exhaustion": (
+        "packages/graph-engine/tests/runtime/test_effects.py::"
+        "test_executor_exhausts_policy_as_non_retryable_failure"
+    ),
+    "composition_source_authentication": (
+        "packages/graph-engine/tests/composition/test_wheel_sources.py::"
+        "test_load_rejects_arbitrary_preloaded_module_at_authenticated_path"
+    ),
+    "toy_a_crash_recovery": (
+        "packages/graph-engine/tests/runtime/test_effects.py::"
+        "test_executor_reconciles_after_apply_started_without_blind_reapply"
+    ),
+    "installed_wheel_isolation": (
+        "packages/graph-engine/tests/test_cli.py::"
+        "test_run_executes_only_the_explicit_product_plugin_bundle"
+    ),
+}
+
+
+@pytest.mark.parametrize("invariant_id", sorted(_CURRENT_BEHAVIORAL_NODES))
+def test_phase2_retained_behavioral_node_still_passes(invariant_id: str) -> None:
+    """Exercise the current node that proves a retired Phase 2 invariant."""
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", _CURRENT_BEHAVIORAL_NODES[invariant_id]],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_closed_schema_rejects_unknown_keywords_before_runtime_or_registry_use() -> None:
+    schema = b'{"type":"string","minLength":1}'
+
+    with pytest.raises(ValueError, match="unsupported schema keyword: minLength"):
+        match_json_schema("ok", {"type": "string", "minLength": 1})
+
+    with pytest.raises(ValueError, match="unsupported schema keyword: minLength"):
+        SchemaEntry.from_content(
+            schema_id="phase.six.schema",
+            owner_id="phase.six",
+            media_type="application/schema+json",
+            content=schema,
+        )

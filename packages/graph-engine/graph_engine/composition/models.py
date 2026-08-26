@@ -822,6 +822,7 @@ class SchemaEntry:
                 "schema entry dialect disagrees with content: "
                 f"{self.dialect!r}; expected {expected_dialect!r}"
             )
+        _assert_closed_json_schema(_schema_document_from_content(content))
 
     @classmethod
     def from_content(
@@ -844,6 +845,16 @@ class SchemaEntry:
 
 
 def _schema_dialect_from_content(content: bytes) -> str | None:
+    document = _schema_document_from_content(content)
+    if not isinstance(document, dict):
+        return None
+    dialect = document.get("$schema")
+    if dialect is not None and not isinstance(dialect, str):
+        raise ValueError("schema entry dialect must be text")
+    return dialect
+
+
+def _schema_document_from_content(content: bytes) -> dict[str, object] | bool:
     try:
         document = json.loads(
             content,
@@ -854,12 +865,50 @@ def _schema_dialect_from_content(content: bytes) -> str | None:
         raise ValueError("schema entry content must be valid JSON") from error
     if not isinstance(document, dict | bool):
         raise ValueError("schema entry content must be a JSON object or boolean")
-    if not isinstance(document, dict):
-        return None
-    dialect = document.get("$schema")
-    if dialect is not None and not isinstance(dialect, str):
-        raise ValueError("schema entry dialect must be text")
-    return dialect
+    return document
+
+
+_SUPPORTED_SCHEMA_KEYWORDS = frozenset(
+    {
+        "$schema",
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "const",
+        "enum",
+    }
+)
+_CLOSED_JSON_SCHEMA_DIALECT = "https://graph-engine.dev/json-schema/closed/1.0"
+
+
+def _assert_closed_json_schema(schema: object) -> None:
+    if schema is True or schema is False:
+        return
+    if not isinstance(schema, dict):
+        raise ValueError("schema must be a JSON object")
+    unknown = tuple(sorted(key for key in schema if key not in _SUPPORTED_SCHEMA_KEYWORDS))
+    if unknown:
+        raise ValueError(f"unsupported schema keyword: {unknown[0]}")
+    dialect = schema.get("$schema")
+    if dialect is not None:
+        if not isinstance(dialect, str):
+            raise ValueError("schema entry dialect must be text")
+        if dialect != _CLOSED_JSON_SCHEMA_DIALECT:
+            raise ValueError(f"unsupported schema dialect: {dialect!r}")
+    properties = schema.get("properties")
+    if properties is not None:
+        if not isinstance(properties, dict):
+            raise ValueError("schema properties must be an object")
+        for nested in properties.values():
+            _assert_closed_json_schema(nested)
+    items = schema.get("items")
+    if items is not None:
+        _assert_closed_json_schema(items)
+    additional = schema.get("additionalProperties")
+    if additional is not None and additional is not True and additional is not False:
+        _assert_closed_json_schema(additional)
 
 
 def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

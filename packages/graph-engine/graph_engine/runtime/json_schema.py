@@ -3,6 +3,21 @@ from __future__ import annotations
 import json
 
 
+CLOSED_JSON_SCHEMA_DIALECT = "https://graph-engine.dev/json-schema/closed/1.0"
+_SUPPORTED_KEYWORDS = frozenset(
+    {
+        "$schema",
+        "type",
+        "properties",
+        "required",
+        "additionalProperties",
+        "items",
+        "const",
+        "enum",
+    }
+)
+
+
 def validate_json_schema(instance: object, schema_bytes: bytes) -> None:
     try:
         schema = json.loads(schema_bytes.decode("utf-8"))
@@ -12,6 +27,39 @@ def validate_json_schema(instance: object, schema_bytes: bytes) -> None:
 
 
 def match_json_schema(instance: object, schema: object) -> None:
+    assert_closed_json_schema(schema)
+    _match_closed_json_schema(instance, schema)
+
+
+def assert_closed_json_schema(schema: object) -> None:
+    if schema is True or schema is False:
+        return
+    if not isinstance(schema, dict):
+        raise ValueError("schema must be a JSON object")
+    unknown = tuple(sorted(key for key in schema if key not in _SUPPORTED_KEYWORDS))
+    if unknown:
+        raise ValueError(f"unsupported schema keyword: {unknown[0]}")
+    dialect = schema.get("$schema")
+    if dialect is not None:
+        if not isinstance(dialect, str):
+            raise ValueError("schema dialect must be text")
+        if dialect != CLOSED_JSON_SCHEMA_DIALECT:
+            raise ValueError(f"unsupported schema dialect: {dialect!r}")
+    properties = schema.get("properties")
+    if properties is not None:
+        if not isinstance(properties, dict):
+            raise ValueError("schema properties must be an object")
+        for nested in properties.values():
+            assert_closed_json_schema(nested)
+    items = schema.get("items")
+    if items is not None:
+        assert_closed_json_schema(items)
+    additional = schema.get("additionalProperties")
+    if additional is not None and additional is not True and additional is not False:
+        assert_closed_json_schema(additional)
+
+
+def _match_closed_json_schema(instance: object, schema: object) -> None:
     if schema is True:
         return
     if schema is False:
