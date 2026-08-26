@@ -234,6 +234,11 @@ def validate_codegen_input(
             raise InputError(str(error)) from error
     if plan.family != family:
         raise InputError(f"reviewed plan family {plan.family!r} does not match {family}")
+    if plan.change_id != business.change_id:
+        raise InputError(
+            f"reviewed plan change_id {plan.change_id!r} does not match business change_id "
+            f"{business.change_id!r}"
+        )
     constraints: FamilyConstraintsV1 = business.family_constraints or constraints_for_cases(
         family=family,
         change_id=business.change_id,
@@ -263,6 +268,11 @@ def validate_codegen_fix_input(
         raise InputError("codegen-fix requires family_constraints and baseline_tree_id")
     if plan.family != family:
         raise InputError(f"reviewed plan family {plan.family!r} does not match {family}")
+    if plan.change_id != business.change_id:
+        raise InputError(
+            f"reviewed plan change_id {plan.change_id!r} does not match business change_id "
+            f"{business.change_id!r}"
+        )
     return business, plan, cases
 
 
@@ -315,6 +325,7 @@ def prepare_codegen_outcome(
     binding: AgentBindingDataV1,
     result_schema_id: str,
     context: TaskContext,
+    scope_id: str,
     allowed_outputs: tuple[str, ...],
 ) -> TaskOutcome:
     agent_request = AgentRunRequest(
@@ -331,7 +342,7 @@ def prepare_codegen_outcome(
             context,
             allowed_outputs=allowed_outputs,
             agent_profile=binding.agent_profile,
-            scope_id=plan.change_id,
+            scope_id=scope_id,
         ),
         request_policy_digest=binding.request_policy_digest,
         request_config_digest=binding.request_config_digest,
@@ -495,6 +506,7 @@ class CodegenPrepareHandler:
                 binding=binding,
                 result_schema_id=CODEGEN_RESULT_ID,
                 context=context,
+                scope_id=business.change_id,
                 allowed_outputs=codegen_outputs(
                     business.change_id,
                     family,
@@ -573,6 +585,7 @@ class CodegenFixPrepareHandler:
                 binding=binding,
                 result_schema_id=CODEGEN_FIX_RESULT_ID,
                 context=context,
+                scope_id=business.change_id,
                 allowed_outputs=codegen_outputs(
                     business.change_id,
                     family,

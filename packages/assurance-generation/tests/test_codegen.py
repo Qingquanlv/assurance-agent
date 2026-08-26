@@ -18,7 +18,10 @@ from assurance_generation.operations.codegen import (
     codegen_fix_finalize_handler,
     codegen_fix_prepare_handler,
     codegen_prepare_handler,
+    validate_codegen_fix_input,
+    validate_codegen_input,
 )
+from assurance_generation.operations.planning import InputError
 from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     FAMILIES,
     codegen_fix_input,
@@ -69,6 +72,22 @@ def _write_plan_mapping(workspace: Path, family: str, targets: list[str]) -> Non
     path.write_text(json.dumps(document), encoding="utf-8")
 
 
+def test_codegen_input_rejects_reviewed_plan_for_a_different_change(tmp_path: Path) -> None:
+    payload = codegen_input("api")
+    payload["reviewed_plan"]["change_id"] = "CH-OTHER-001"
+
+    with pytest.raises(InputError, match="reviewed plan change_id"):
+        validate_codegen_input(payload, "api", tmp_path)
+
+
+def test_codegen_fix_input_rejects_reviewed_plan_for_a_different_change() -> None:
+    payload = codegen_fix_input("api")
+    payload["reviewed_plan"]["change_id"] = "CH-OTHER-001"
+
+    with pytest.raises(InputError, match="reviewed plan change_id"):
+        validate_codegen_fix_input(payload, "api")
+
+
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_claimed_but_missing_file(tmp_path: Path) -> None:
     outcome = await execute_task(
@@ -116,6 +135,7 @@ async def test_codegen_prepare_uses_reviewed_plan_and_baseline(family: str, tmp_
     )
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
+    assert request.workspace.scope_id == CHANGE_ID
     assert len(request.instructions) == 5
     skill, persona, plan, cases, context = request.instructions
     assert f"{family} codegen" in (skill.text_content or "").lower()
@@ -432,6 +452,7 @@ async def test_codegen_fix_prepare_includes_allowed_paths(family: str, tmp_path:
     )
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
+    assert request.workspace.scope_id == CHANGE_ID
     skill, _persona, _plan, _cases, context = request.instructions
     assert f"{family} codegen fix" in (skill.text_content or "").lower()
     context_payload = cast(dict[str, object], context.json_content)
