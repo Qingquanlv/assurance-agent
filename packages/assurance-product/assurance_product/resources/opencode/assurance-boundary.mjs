@@ -248,18 +248,38 @@ const tokenizeShell = (command) => {
 
 const looksLikePath = (value) => value.includes("/") || value.includes("\\") || value === "." || value === "..";
 
+const assignmentValue = (token) => {
+  const eq = token.indexOf("=");
+  if (eq <= 0) return null;
+  let value = token.slice(eq + 1);
+  while (value.includes("=")) {
+    value = value.slice(value.indexOf("=") + 1);
+  }
+  return value;
+};
+
 const pathCandidates = (command) => {
   const found = [];
   for (const token of tokenizeShell(command)) {
-    if (token.includes("=") && !token.startsWith("-")) {
-      const value = token.slice(token.indexOf("=") + 1);
-      if (looksLikePath(value)) found.push(value);
+    if (token.includes("=")) {
+      const value = assignmentValue(token);
+      if (value !== null && looksLikePath(value)) found.push(value);
       continue;
     }
     if (looksLikePath(token)) found.push(token);
   }
   return found;
 };
+
+const OUTPUT_FLAG = /(?:output|file|log|html|xml|dir|cache|basetemp|junit|result)$/i;
+
+const isOutputDestinationFlag = (token) => (
+  token.startsWith("-") && !token.includes("=") && OUTPUT_FLAG.test(token.replace(/^-+/, ""))
+);
+
+const isAllowedOutputTarget = (value, root) => (
+  HYPOTHESIS_CACHE.test(value) || PLAYWRIGHT_OUTPUT.test(value) || isExecutionViewPath(value, root)
+);
 
 const isExecutionViewPath = (value, root) => {
   if (EXECUTION_VIEW_RELATIVE.test(value)) return true;
@@ -297,18 +317,27 @@ const isDeniedLocation = (value, root, binding) => {
 const matchesExecutorGrammar = (command) => EXECUTOR_GRAMMARS.some((pattern) => pattern.test(command));
 
 const isCwdRelativeOutput = (token, root) => {
-  const eq = token.indexOf("=");
-  if (eq <= 0) {
+  const value = assignmentValue(token);
+  if (value === null) {
     return token === "." || token === ".." || token.startsWith("./") || token.startsWith("../");
   }
-  const value = token.slice(eq + 1);
   if (!value) return true;
-  if (HYPOTHESIS_CACHE.test(value) || PLAYWRIGHT_OUTPUT.test(value) || isExecutionViewPath(value, root)) {
+  if (isAllowedOutputTarget(value, root)) {
     return false;
   }
-  const key = token.slice(0, eq);
-  return /(?:output|file|log|html|xml|dir|cache|basetemp|junit|result)$/i.test(key)
-    || looksLikePath(value);
+  const key = token.slice(0, token.indexOf("="));
+  return OUTPUT_FLAG.test(key) || looksLikePath(value);
+};
+
+const hasDeniedTwoTokenOutput = (tokens, root) => {
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (!isOutputDestinationFlag(tokens[index])) continue;
+    const next = tokens[index + 1];
+    if (next === undefined || next.startsWith("-") || !isAllowedOutputTarget(next, root)) {
+      return true;
+    }
+  }
+  return false;
 };
 
 const assertExecutorShell = (binding, root, args) => {
@@ -323,7 +352,7 @@ const assertExecutorShell = (binding, root, args) => {
   if (tokens.some((token) => token === "-c" || /^python\d*$/.test(token))) {
     throw new Error("Assurance write boundary: shell escape is not allowed");
   }
-  if (tokens.some((token) => isCwdRelativeOutput(token, root))) {
+  if (tokens.some((token) => isCwdRelativeOutput(token, root)) || hasDeniedTwoTokenOutput(tokens, root)) {
     throw new Error("Assurance write boundary: shell escape is not allowed");
   }
   const paths = pathCandidates(command);

@@ -463,9 +463,10 @@ _EXECUTOR_VIEW_COMMAND = (
     "uv run --isolated pytest -p no:cacheprovider --rootdir "
     "qa/changes/CH-1/.staging/execution/api"
 )
+_PLAYWRIGHT_VIEW_COMMAND = "npx playwright test --config=qa/changes/CH-1/.staging/execution/e2e"
+_NPM_VIEW_COMMAND = "npm test --prefix qa/changes/CH-1/.staging/execution/api"
 _CWD_RENAME = (
-    "python -c "
-    "\"__import__('os').rename(__import__('os').getcwd(), __import__('os').getcwd()+'.bak')\""
+    "python -c \"__import__('os').rename(__import__('os').getcwd(), __import__('os').getcwd()+'.bak')\""
 )
 
 
@@ -480,6 +481,19 @@ def test_executor_execution_view_shell_is_allowed(tmp_path: Path) -> None:
     )
     args = _allowed(_run(plugin, session=session, tool="bash", args={"command": _EXECUTOR_VIEW_COMMAND}))
     assert args["command"] == _EXECUTOR_VIEW_COMMAND
+
+
+def test_executor_playwright_config_view_shell_is_allowed(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    session = _session(
+        project,
+        _binding_title(project, agent_profile="assurance-v1-executor"),
+        agent="assurance-v1-executor",
+    )
+    args = _allowed(_run(plugin, session=session, tool="bash", args={"command": _PLAYWRIGHT_VIEW_COMMAND}))
+    assert args["command"] == _PLAYWRIGHT_VIEW_COMMAND
 
 
 def test_executor_project_root_mv_is_denied(tmp_path: Path) -> None:
@@ -550,6 +564,27 @@ def test_executor_echo_view_then_rm_outside_view_is_denied(tmp_path: Path) -> No
 def test_executor_cwd_root_mutation_bypasses_are_denied_by_installed_plugin(
     tmp_path: Path, command: str
 ) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    session = _session(
+        project,
+        _binding_title(project, agent_profile="assurance-v1-executor"),
+        agent="assurance-v1-executor",
+    )
+    _denied(_run(plugin, session=session, tool="bash", args={"command": command}), "shell")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"{_EXECUTOR_VIEW_COMMAND} --html hijack",
+        f"{_EXECUTOR_VIEW_COMMAND} --basetemp hijack",
+        f"{_EXECUTOR_VIEW_COMMAND} --override-ini=cache_dir=.",
+        f"{_NPM_VIEW_COMMAND} --cache hijack",
+    ],
+)
+def test_executor_cwd_output_flags_are_denied_by_installed_plugin(tmp_path: Path, command: str) -> None:
     project = tmp_path / "project"
     project.mkdir()
     plugin = _install(project)
