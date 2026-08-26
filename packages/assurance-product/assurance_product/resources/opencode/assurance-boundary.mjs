@@ -22,7 +22,23 @@ const SHELL_TOOLS = new Set(["bash", "interactive_bash"]);
 const EXECUTOR_PROFILE = "assurance-v1-executor";
 const EXECUTION_VIEW_RELATIVE = /^qa\/changes\/[^/]+\/\.staging\/execution\/[^/]+$/;
 const HYPOTHESIS_CACHE = /^\/tmp\/aa-hypothesis-[A-Za-z0-9._-]+$/;
-const SHELL_CHAIN = /[;\n\r`]|&&|\|\||(?<!\$)\||\$\(/;
+const SHELL_UNSAFE = /[;\n\r`<>]|&&|\|\||(?<!\$)\||\$\(|<\(|>\(/;
+const EXECUTION_VIEW_PATTERN = String.raw`qa/changes/[^/\s]+/\.staging/execution/[^/\s]+`;
+const HYPOTHESIS_PATTERN = String.raw`/tmp/aa-hypothesis-[A-Za-z0-9._-]+`;
+const PLAYWRIGHT_OUTPUT = /^\/tmp\/aa-playwright-[A-Za-z0-9._-]+$/;
+const EXECUTOR_GRAMMARS = [
+  new RegExp(String.raw`^npm run test --prefix ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`),
+  new RegExp(String.raw`^npm test --prefix ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`),
+  new RegExp(String.raw`^npx playwright test --config=${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`),
+  new RegExp(String.raw`^pnpm --dir ${EXECUTION_VIEW_PATTERN} run test(?:\s+\S+)*$`),
+  new RegExp(String.raw`^pnpm --dir ${EXECUTION_VIEW_PATTERN} test(?:\s+\S+)*$`),
+  new RegExp(
+    String.raw`^PYTHONDONTWRITEBYTECODE=1 HYPOTHESIS_STORAGE_DIRECTORY=${HYPOTHESIS_PATTERN} uv run --isolated pytest -p no:cacheprovider --rootdir ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`,
+  ),
+  new RegExp(
+    String.raw`^PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`,
+  ),
+];
 const PATCH_HEADERS = /^(Add File|Update File|Delete File|Move to): /;
 
 const canonicalJson = (value) => {
@@ -273,7 +289,26 @@ const isDeniedLocation = (value, root, binding) => {
   for (const parent of outputParents(binding)) {
     if (relative === parent || value === parent) return true;
   }
-  return !isExecutionViewPath(value, root) && !HYPOTHESIS_CACHE.test(value);
+  return !isExecutionViewPath(value, root)
+    && !HYPOTHESIS_CACHE.test(value)
+    && !PLAYWRIGHT_OUTPUT.test(value);
+};
+
+const matchesExecutorGrammar = (command) => EXECUTOR_GRAMMARS.some((pattern) => pattern.test(command));
+
+const isCwdRelativeOutput = (token, root) => {
+  const eq = token.indexOf("=");
+  if (eq <= 0) {
+    return token === "." || token === ".." || token.startsWith("./") || token.startsWith("../");
+  }
+  const value = token.slice(eq + 1);
+  if (!value) return true;
+  if (HYPOTHESIS_CACHE.test(value) || PLAYWRIGHT_OUTPUT.test(value) || isExecutionViewPath(value, root)) {
+    return false;
+  }
+  const key = token.slice(0, eq);
+  return /(?:output|file|log|html|xml|dir|cache|basetemp|junit|result)$/i.test(key)
+    || looksLikePath(value);
 };
 
 const assertExecutorShell = (binding, root, args) => {
@@ -281,26 +316,19 @@ const assertExecutorShell = (binding, root, args) => {
     throw new Error("Assurance write boundary: shell escape is not allowed");
   }
   const command = typeof args?.command === "string" ? args.command : "";
-  if (!command || SHELL_CHAIN.test(command)) {
+  if (!command || SHELL_UNSAFE.test(command) || !matchesExecutorGrammar(command)) {
+    throw new Error("Assurance write boundary: shell escape is not allowed");
+  }
+  const tokens = tokenizeShell(command);
+  if (tokens.some((token) => token === "-c" || /^python\d*$/.test(token))) {
+    throw new Error("Assurance write boundary: shell escape is not allowed");
+  }
+  if (tokens.some((token) => isCwdRelativeOutput(token, root))) {
     throw new Error("Assurance write boundary: shell escape is not allowed");
   }
   const paths = pathCandidates(command);
-  if (paths.length === 0 || !paths.some((item) => isExecutionViewPath(item, root))) {
-    throw new Error("Assurance write boundary: shell escape is not allowed");
-  }
   if (paths.some((item) => isDeniedLocation(item, root, binding))) {
     throw new Error("Assurance write boundary: shell escape is not allowed");
-  }
-  if (/\b(pytest|locust|uv)\b/.test(command)) {
-    if (!command.includes("PYTHONDONTWRITEBYTECODE=1")) {
-      throw new Error("Assurance write boundary: shell escape is not allowed");
-    }
-    if (/\buv\b/.test(command) && !command.includes("--isolated")) {
-      throw new Error("Assurance write boundary: shell escape is not allowed");
-    }
-    if (/\bpytest\b/.test(command) && !command.includes("-p no:cacheprovider")) {
-      throw new Error("Assurance write boundary: shell escape is not allowed");
-    }
   }
 };
 

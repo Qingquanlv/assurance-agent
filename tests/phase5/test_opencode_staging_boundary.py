@@ -463,6 +463,10 @@ _EXECUTOR_VIEW_COMMAND = (
     "uv run --isolated pytest -p no:cacheprovider --rootdir "
     "qa/changes/CH-1/.staging/execution/api"
 )
+_CWD_RENAME = (
+    "python -c "
+    "\"__import__('os').rename(__import__('os').getcwd(), __import__('os').getcwd()+'.bak')\""
+)
 
 
 def test_executor_execution_view_shell_is_allowed(tmp_path: Path) -> None:
@@ -532,6 +536,29 @@ def test_executor_echo_view_then_rm_outside_view_is_denied(tmp_path: Path) -> No
         ),
         "shell",
     )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"{_CWD_RENAME} qa/changes/CH-1/.staging/execution/api",
+        f"PYTHONDONTWRITEBYTECODE=1 uv run --isolated {_CWD_RENAME} qa/changes/CH-1/.staging/execution/api",
+        f"{_EXECUTOR_VIEW_COMMAND} <({_CWD_RENAME})",
+        f"{_EXECUTOR_VIEW_COMMAND} >hijack",
+    ],
+)
+def test_executor_cwd_root_mutation_bypasses_are_denied_by_installed_plugin(
+    tmp_path: Path, command: str
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    session = _session(
+        project,
+        _binding_title(project, agent_profile="assurance-v1-executor"),
+        agent="assurance-v1-executor",
+    )
+    _denied(_run(plugin, session=session, tool="bash", args={"command": command}), "shell")
 
 
 def test_artifact_write_redirects_allowed_logical_path_to_write_root(tmp_path: Path) -> None:
