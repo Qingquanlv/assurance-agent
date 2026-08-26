@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from graph_engine.plugin_api import TaskOutcome
+from graph_engine.plugin_api import ResourceClaimTemplate, TaskOutcome
 from graph_engine.runtime.engine import Engine
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 from tests.phase5.cli_support import (
     SECRET_ENV,
@@ -341,6 +342,68 @@ def test_all_agent_skills_have_one_bound_agent_and_execution_contract() -> None:
         assert contract.agent_profile == expected_agent
         assert contract.resources.writes
         assert graph_nodes[execute_alias].resources == contract.resources
+
+
+def test_agent_execute_contracts_render_exact_current_change_output_claims() -> None:
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+    from assurance_product.output_routes import OutputRouteCatalog, execute_alias_for_prepare
+
+    change_id = "CH-CURRENT-001"
+    catalog = OutputRouteCatalog()
+    forbidden_prefixes = (
+        "qa/changes",
+        "tests",
+        "qa/retro",
+        "qa/improvements",
+        "qa/archive",
+        "qa/cases",
+    )
+    for prepare_id, contract in AGENT_EXECUTION_CONTRACTS.items():
+        execute_alias = execute_alias_for_prepare(prepare_id)
+        assert isinstance(contract.resources, ResourceClaimTemplate)
+        assert contract.resources.parameters == {"change_id": "/change_id"}
+        resolved = contract.resources.resolve({"change_id": change_id})
+        assert resolved.writes == catalog.outputs(execute_alias, change_id)
+        assert all(path.startswith(f"qa/changes/{change_id}/") for path in resolved.writes)
+        assert all("/.runtime/" not in path and "/.staging/" not in path for path in resolved.writes)
+        assert all(path not in forbidden_prefixes for path in resolved.writes)
+
+
+def test_exact_current_change_claims_do_not_scan_a_symlinked_sibling_on_promotion(tmp_path: Path) -> None:
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+
+    project = tmp_path / "project"
+    current_id = "CH-CURRENT-001"
+    sibling_id = "CH-HISTORICAL-001"
+    current = project / "qa" / "changes" / current_id
+    sibling = project / "qa" / "changes" / sibling_id
+    current.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    outside = tmp_path / "historical-state"
+    outside.mkdir()
+    historical_link = sibling / ".runtime"
+    historical_link.symlink_to(outside, target_is_directory=True)
+
+    template = AGENT_EXECUTION_CONTRACTS["assurance.intake.intake.prepare"].resources
+    assert isinstance(template, ResourceClaimTemplate)
+    claims = template.resolve({"change_id": current_id}).writes
+    store = TaskWorkspaceStore(project, current / ".staging", current / ".runtime" / "receipts")
+    try:
+        binding = store.begin(task_id="intake-execute", attempt=1, output_paths=claims)
+        assert all(path.startswith(f"qa/changes/{current_id}/") for path in binding.identity.output_paths)
+        assert all(
+            "/.runtime/" not in path and "/.staging/" not in path for path in binding.identity.output_paths
+        )
+
+        target = binding.write_root / claims[0]
+        target.parent.mkdir(parents=True)
+        target.write_text("current change only\n", encoding="utf-8")
+        store.promote(binding.identity, store.seal(binding.identity))
+    finally:
+        store.close()
+
+    assert historical_link.is_symlink()
+    assert (project / claims[0]).read_text(encoding="utf-8") == "current change only\n"
 
 
 def test_transient_agent_provider_failure_retries_the_skill_node(

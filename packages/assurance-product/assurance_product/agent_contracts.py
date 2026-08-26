@@ -4,7 +4,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from graph_engine.graph.schema import RetryPolicyDef, WorkflowDef
-from graph_engine.plugin_api import FrozenModel, ResourceClaims
+from graph_engine.plugin_api import FrozenModel, ResourceClaimTemplate, ResourceClaims
 
 from assurance_product.models import PREPARE_IDS, alias_ids_for_prepare
 from assurance_product.output_routes import OutputRouteCatalog, execute_alias_for_prepare
@@ -13,24 +13,34 @@ from assurance_product.output_routes import OutputRouteCatalog, execute_alias_fo
 class AgentExecutionContract(FrozenModel):
     skill_id: str
     agent_profile: str
-    resources: ResourceClaims
+    resources: ResourceClaims | ResourceClaimTemplate
 
 
 def _contract(
+    prepare_id: str,
     skill_id: str,
     agent_profile: str,
-    *,
-    writes: tuple[str, ...],
 ) -> AgentExecutionContract:
+    change_id = "CHANGE-ID-PLACEHOLDER"
+    execute_alias = execute_alias_for_prepare(prepare_id)
+    expected = OutputRouteCatalog().outputs(execute_alias, change_id)
+    marker = f"qa/changes/{change_id}/"
+    writes = tuple(path.replace(marker, "qa/changes/{change_id}/", 1) for path in expected)
+    if any(
+        path == source or not source.startswith(marker) for path, source in zip(writes, expected, strict=True)
+    ):
+        raise ValueError(f"agent output route is not a current-change path: {execute_alias}")
     return AgentExecutionContract(
         skill_id=skill_id,
         agent_profile=agent_profile,
-        resources=ResourceClaims(reads=("qa",), writes=writes),
+        resources=ResourceClaimTemplate(
+            parameters={"change_id": "/change_id"},
+            reads=("qa",),
+            writes=writes,
+        ),
     )
 
 
-_CHANGE_WRITES = ("qa/changes",)
-_TEST_WRITES = ("qa/changes", "tests")
 _AGENT_RETRY_NAME = "agent-transient"
 _AGENT_RETRY_POLICY = RetryPolicyDef(max_attempts=12, retry_on=("transient",))
 _ARCHIVER_PROFILE = "assurance-v1-archiver"
@@ -41,101 +51,57 @@ _REPORTER_PROFILE = "assurance-v1-reporter"
 _REVIEWER_PROFILE = "assurance-v1-reviewer"
 _TEST_AUTHOR_PROFILE = "assurance-v1-test-author"
 
+_AGENT_SKILL_PROFILES: Mapping[str, tuple[str, str]] = MappingProxyType(
+    {
+        "assurance.intake.case-design.prepare": ("aa-case-design", _DOC_AUTHOR_PROFILE),
+        "assurance.intake.case-review.prepare": ("aa-case-reviewer", _REVIEWER_PROFILE),
+        "assurance.intake.explore.prepare": ("aa-explore", _EXPLORER_PROFILE),
+        "assurance.intake.intake.prepare": ("aa-intake", _DOC_AUTHOR_PROFILE),
+        "assurance.generation.api.codegen-fix.prepare": ("aa-api-codegen-fixer", _TEST_AUTHOR_PROFILE),
+        "assurance.generation.api.codegen.prepare": ("aa-api-codegen", _TEST_AUTHOR_PROFILE),
+        "assurance.generation.api.plan-review.prepare": ("aa-api-plan-reviewer", _REVIEWER_PROFILE),
+        "assurance.generation.api.plan.prepare": ("aa-api-plan", _DOC_AUTHOR_PROFILE),
+        "assurance.generation.e2e.codegen-fix.prepare": ("aa-e2e-codegen-fixer", _TEST_AUTHOR_PROFILE),
+        "assurance.generation.e2e.codegen.prepare": ("aa-e2e-codegen", _TEST_AUTHOR_PROFILE),
+        "assurance.generation.e2e.plan-review.prepare": ("aa-e2e-plan-reviewer", _REVIEWER_PROFILE),
+        "assurance.generation.e2e.plan.prepare": ("aa-e2e-plan", _DOC_AUTHOR_PROFILE),
+        "assurance.generation.fuzz.codegen.prepare": ("aa-fuzz-codegen", _TEST_AUTHOR_PROFILE),
+        "assurance.generation.fuzz.plan-review.prepare": ("aa-fuzz-plan-reviewer", _REVIEWER_PROFILE),
+        "assurance.generation.fuzz.plan.prepare": ("aa-fuzz-plan", _DOC_AUTHOR_PROFILE),
+        "assurance.generation.performance.codegen.prepare": ("aa-performance-codegen", _TEST_AUTHOR_PROFILE),
+        "assurance.generation.performance.plan-review.prepare": (
+            "aa-performance-plan-reviewer",
+            _REVIEWER_PROFILE,
+        ),
+        "assurance.generation.performance.plan.prepare": ("aa-performance-plan", _DOC_AUTHOR_PROFILE),
+        "assurance.execution.execute.prepare": ("aa-execute", _EXECUTOR_PROFILE),
+        "assurance.execution.run.prepare": ("aa-run", _EXECUTOR_PROFILE),
+        "assurance.healing.coverage-repair.prepare": ("aa-coverage-repair", _TEST_AUTHOR_PROFILE),
+        "assurance.healing.fix-proposal.prepare": ("aa-fix-proposal", _DOC_AUTHOR_PROFILE),
+        "assurance.quality.fact-baseline.prepare": ("aa-fact-baseline", _DOC_AUTHOR_PROFILE),
+        "assurance.quality.inspect.prepare": ("aa-inspect", _REVIEWER_PROFILE),
+        "assurance.quality.issue-analysis.prepare": ("aa-issue-analyzer", _REPORTER_PROFILE),
+        "assurance.quality.issue-triage.prepare": ("aa-issue-triage-advisor", _REPORTER_PROFILE),
+        "assurance.quality.report.prepare": ("aa-report-generator", _REPORTER_PROFILE),
+        "assurance.improvement.archive.prepare": ("aa-archive", _ARCHIVER_PROFILE),
+        "assurance.improvement.improvement-review.prepare": ("aa-improvement-reviewer", _REVIEWER_PROFILE),
+        "assurance.improvement.retro-eval-analysis.prepare": ("aa-retro-eval-analysis", _DOC_AUTHOR_PROFILE),
+        "assurance.improvement.retro-issue-analysis.prepare": (
+            "aa-retro-issue-analysis",
+            _DOC_AUTHOR_PROFILE,
+        ),
+        "assurance.improvement.retro-workflow-analysis.prepare": (
+            "aa-retro-workflow-analysis",
+            _DOC_AUTHOR_PROFILE,
+        ),
+        "assurance.improvement.retro.prepare": ("aa-retro", _DOC_AUTHOR_PROFILE),
+    }
+)
+
 AGENT_EXECUTION_CONTRACTS: Mapping[str, AgentExecutionContract] = MappingProxyType(
     {
-        "assurance.intake.case-design.prepare": _contract(
-            "aa-case-design", _DOC_AUTHOR_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.intake.case-review.prepare": _contract(
-            "aa-case-reviewer", _REVIEWER_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.intake.explore.prepare": _contract("aa-explore", _EXPLORER_PROFILE, writes=_CHANGE_WRITES),
-        "assurance.intake.intake.prepare": _contract("aa-intake", _DOC_AUTHOR_PROFILE, writes=_CHANGE_WRITES),
-        "assurance.generation.api.codegen-fix.prepare": _contract(
-            "aa-api-codegen-fixer", _TEST_AUTHOR_PROFILE, writes=_TEST_WRITES
-        ),
-        "assurance.generation.api.codegen.prepare": _contract(
-            "aa-api-codegen", _TEST_AUTHOR_PROFILE, writes=_TEST_WRITES
-        ),
-        "assurance.generation.api.plan-review.prepare": _contract(
-            "aa-api-plan-reviewer", _REVIEWER_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.generation.api.plan.prepare": _contract(
-            "aa-api-plan", _DOC_AUTHOR_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.generation.e2e.codegen-fix.prepare": _contract(
-            "aa-e2e-codegen-fixer", _TEST_AUTHOR_PROFILE, writes=_TEST_WRITES
-        ),
-        "assurance.generation.e2e.codegen.prepare": _contract(
-            "aa-e2e-codegen", _TEST_AUTHOR_PROFILE, writes=_TEST_WRITES
-        ),
-        "assurance.generation.e2e.plan-review.prepare": _contract(
-            "aa-e2e-plan-reviewer", _REVIEWER_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.generation.e2e.plan.prepare": _contract(
-            "aa-e2e-plan", _DOC_AUTHOR_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.generation.fuzz.codegen.prepare": _contract(
-            "aa-fuzz-codegen", _TEST_AUTHOR_PROFILE, writes=_TEST_WRITES
-        ),
-        "assurance.generation.fuzz.plan-review.prepare": _contract(
-            "aa-fuzz-plan-reviewer", _REVIEWER_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.generation.fuzz.plan.prepare": _contract(
-            "aa-fuzz-plan", _DOC_AUTHOR_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.generation.performance.codegen.prepare": _contract(
-            "aa-performance-codegen", _TEST_AUTHOR_PROFILE, writes=_TEST_WRITES
-        ),
-        "assurance.generation.performance.plan-review.prepare": _contract(
-            "aa-performance-plan-reviewer", _REVIEWER_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.generation.performance.plan.prepare": _contract(
-            "aa-performance-plan", _DOC_AUTHOR_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.execution.execute.prepare": _contract(
-            "aa-execute", _EXECUTOR_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.execution.run.prepare": _contract("aa-run", _EXECUTOR_PROFILE, writes=_CHANGE_WRITES),
-        "assurance.healing.coverage-repair.prepare": _contract(
-            "aa-coverage-repair", _TEST_AUTHOR_PROFILE, writes=_TEST_WRITES
-        ),
-        "assurance.healing.fix-proposal.prepare": _contract(
-            "aa-fix-proposal", _DOC_AUTHOR_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.quality.fact-baseline.prepare": _contract(
-            "aa-fact-baseline", _DOC_AUTHOR_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.quality.inspect.prepare": _contract(
-            "aa-inspect", _REVIEWER_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.quality.issue-analysis.prepare": _contract(
-            "aa-issue-analyzer", _REPORTER_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.quality.issue-triage.prepare": _contract(
-            "aa-issue-triage-advisor", _REPORTER_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.quality.report.prepare": _contract(
-            "aa-report-generator", _REPORTER_PROFILE, writes=_CHANGE_WRITES
-        ),
-        "assurance.improvement.archive.prepare": _contract(
-            "aa-archive", _ARCHIVER_PROFILE, writes=("qa/archive", "qa/cases")
-        ),
-        "assurance.improvement.improvement-review.prepare": _contract(
-            "aa-improvement-reviewer", _REVIEWER_PROFILE, writes=("qa/improvements",)
-        ),
-        "assurance.improvement.retro-eval-analysis.prepare": _contract(
-            "aa-retro-eval-analysis", _DOC_AUTHOR_PROFILE, writes=("qa/retro",)
-        ),
-        "assurance.improvement.retro-issue-analysis.prepare": _contract(
-            "aa-retro-issue-analysis", _DOC_AUTHOR_PROFILE, writes=("qa/retro",)
-        ),
-        "assurance.improvement.retro-workflow-analysis.prepare": _contract(
-            "aa-retro-workflow-analysis", _DOC_AUTHOR_PROFILE, writes=("qa/retro",)
-        ),
-        "assurance.improvement.retro.prepare": _contract(
-            "aa-retro", _DOC_AUTHOR_PROFILE, writes=("qa/retro",)
-        ),
+        prepare_id: _contract(prepare_id, skill_id, agent_profile)
+        for prepare_id, (skill_id, agent_profile) in _AGENT_SKILL_PROFILES.items()
     }
 )
 
