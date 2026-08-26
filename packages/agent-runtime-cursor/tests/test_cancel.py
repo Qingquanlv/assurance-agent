@@ -5,6 +5,7 @@ from pathlib import Path
 from agent_runtime_contracts import AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest, thaw_json
 from fake_process_host import FakeConfinedProcessHost  # pyright: ignore[reportMissingImports]
+from graph_engine.plugin_api import TaskRequest
 from cursor_harness import bind_spawned_fixture, complete_stream, init_only_stream  # pyright: ignore[reportMissingImports]
 
 
@@ -60,4 +61,19 @@ async def test_cancel_rejects_foreign_host_identity(tmp_path: Path) -> None:
     assert result.status == "indeterminate"
     assert result.status != "acknowledged"
     assert result.reason is not None
+    assert fixture.host.terminations == []
+
+
+async def test_cancel_rejects_request_drift_before_termination(tmp_path: Path) -> None:
+    fixture = await bind_spawned_fixture(tmp_path)
+    request_payload = fixture.request.model_dump(mode="json")
+    agent_input = request_payload["input"]
+    assert isinstance(agent_input, dict)
+    agent_input["request_config_digest"] = "f" * 64
+    drifted = TaskRequest.model_validate(request_payload)
+
+    result = await fixture.handler.cancel(drifted, fixture.context, fixture.activity)
+
+    assert result.status == "indeterminate"
+    assert result.reason == "request identity drifted"
     assert fixture.host.terminations == []

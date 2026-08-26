@@ -101,6 +101,7 @@ class OpenCodeFakeServer:
         self.create_bodies: list[dict[str, object]] = []
         self.prompt_bodies: list[dict[str, object]] = []
         self.title_update_bodies: list[dict[str, object]] = []
+        self.title_update_response_session_id: str | None = None
         self.reject_title_updates = False
         self.directories: list[str] = []
         self.sse_cursors: list[str | None] = []
@@ -442,6 +443,9 @@ class OpenCodeFakeServer:
         with self._lock:
             session["title"] = title
             view = self._session_view(session)
+            response_session_id = self.title_update_response_session_id
+        if response_session_id is not None:
+            view["id"] = response_session_id
         self._write_json(handler, 200, view)
 
     def _handle_prompt(self, handler: BaseHTTPRequestHandler, session_id: str, body: bytes) -> None:

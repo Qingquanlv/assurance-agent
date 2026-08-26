@@ -519,9 +519,20 @@ class OpenCodeHandler:
             agent = agent_run.workspace.agent_profile
             record = await client.get_session(session_id)
             if not isinstance(record, dict) or record.get("title") != title:
-                await client.update_session(session_id, {"title": title})
+                updated = await client.update_session(session_id, {"title": title})
+                if (
+                    not isinstance(updated, dict)
+                    or updated.get("id") != session_id
+                    or updated.get("title") != title
+                ):
+                    raise ValueError("workspace binding title is missing or invalid")
                 record = await client.get_session(session_id)
-            if not isinstance(record, dict) or record.get("title") != title or record.get("agent") != agent:
+            if (
+                not isinstance(record, dict)
+                or record.get("id") != session_id
+                or record.get("title") != title
+                or record.get("agent") != agent
+            ):
                 raise ValueError("workspace binding title is missing or invalid")
         except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError):
             return TaskActivityReconcileResult(

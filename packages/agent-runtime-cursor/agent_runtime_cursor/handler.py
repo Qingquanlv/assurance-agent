@@ -130,6 +130,11 @@ class CursorHandler:
                     status="indeterminate",
                     reason="workspace identity drifted",
                 )
+            if receipt.request_digest != canonical_digest(agent_run.model_dump(mode="json")):
+                return TaskActivityCancelResult(
+                    status="indeterminate",
+                    reason="request identity drifted",
+                )
         except (ValidationError, TaskActivityProtocolViolation, ValueError) as error:
             return TaskActivityCancelResult(
                 status="indeterminate",

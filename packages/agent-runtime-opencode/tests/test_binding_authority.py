@@ -281,6 +281,21 @@ async def test_invalid_binding_title_fails_closed_before_prompt_admission() -> N
         fixture.close()
 
 
+async def test_binding_update_wrong_session_id_fails_closed_before_prompt_admission() -> None:
+    fixture = _open_code_fixture()
+    try:
+        fixture.fake.sse_mode = "fast_idle"
+        fixture.fake.title_update_response_session_id = "ses_foreign"
+
+        outcome = await fixture.handler.execute(fixture.request, fixture.context)
+
+        assert outcome.status == "failed"
+        assert fixture.fake.prompt_posts == 0
+        assert fixture.fake.title_update_bodies
+    finally:
+        fixture.close()
+
+
 async def test_opencode_cancel_parses_binding_independently(opencode_context: TaskContext) -> None:
     fixture = _terminal_success_fixture()
     try:
