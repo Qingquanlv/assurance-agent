@@ -116,3 +116,102 @@ def test_crash_after_rolled_back_leaves_baseline(tmp_path: Path, monkeypatch: py
     receipt = export_mod.publish_achieved(project, CHANGE_ID)
     assert (project / TARGET_A).read_bytes() == b"generated-a\n"
     assert receipt.change_id == CHANGE_ID
+
+
+def test_mixed_already_matching_replace_failure_leaves_matching_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_product import export as export_mod
+    from assurance_product.models import PublishJournalV1
+
+    files = (
+        (TARGET_A, b"generated-a\n", None),
+        (TARGET_B, b"generated-b\n", b"original-b\n"),
+    )
+    project = write_achieved(tmp_path, files=files)
+    already = project / TARGET_A
+    already.parent.mkdir(parents=True, exist_ok=True)
+    already.write_bytes(b"generated-a\n")
+
+    def boom(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise OSError("forced replace failure")
+
+    monkeypatch.setattr(export_mod, "_replace_published_file", boom)
+    with pytest.raises(export_mod.PublishError):
+        export_mod.publish_achieved(project, CHANGE_ID)
+
+    assert already.is_file()
+    assert already.read_bytes() == b"generated-a\n"
+    assert (project / TARGET_B).read_bytes() == b"original-b\n"
+    assert not (project / "qa" / "changes" / CHANGE_ID / "publish-receipt.json").exists()
+    journal = PublishJournalV1.model_validate_json(
+        (project / "qa" / "changes" / CHANGE_ID / "publish-journal.json").read_bytes()
+    )
+    assert journal.records[-1].phase == "rolled_back"
+
+
+def test_restore_failure_after_replace_still_journals_rolled_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_product import export as export_mod
+    from assurance_product.models import PublishJournalV1
+
+    project = write_achieved(tmp_path)
+    original = export_mod._replace_published_file
+    calls = {"count": 0}
+
+    def boom(parent: Path, temporary_name: str, target_name: str) -> None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            original(parent, temporary_name, target_name)
+            return
+        for leftover in project.rglob("*.bak"):
+            leftover.unlink()
+        raise OSError("forced replace failure")
+
+    monkeypatch.setattr(export_mod, "_replace_published_file", boom)
+    with pytest.raises(export_mod.PublishError):
+        export_mod.publish_achieved(project, CHANGE_ID)
+
+    journal = PublishJournalV1.model_validate_json(
+        (project / "qa" / "changes" / CHANGE_ID / "publish-journal.json").read_bytes()
+    )
+    assert journal.records[-1].phase == "rolled_back"
+    assert not (project / "qa" / "changes" / CHANGE_ID / "publish-receipt.json").exists()
+
+
+def test_journal_transaction_identity_mismatch_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from graph_engine.canonical import canonical_json_bytes
+
+    from assurance_product import export as export_mod
+    from assurance_product.models import PublishJournalV1
+
+    project = write_achieved(tmp_path)
+
+    def crash(name: str) -> None:
+        if name == "prepared":
+            raise RuntimeError("crash after prepared")
+
+    monkeypatch.setattr(export_mod, "_journal_cut", crash)
+    with pytest.raises(RuntimeError, match="prepared"):
+        export_mod.publish_achieved(project, CHANGE_ID)
+
+    path = project / "qa" / "changes" / CHANGE_ID / "publish-journal.json"
+    journal = PublishJournalV1.model_validate_json(path.read_bytes())
+    record = journal.records[-1]
+    mutated = record.model_copy(update={"temp_identity": "0" * 64, "backup_identity": "1" * 64})
+    path.write_bytes(
+        canonical_json_bytes(PublishJournalV1(schema_version="1", records=(mutated,)).model_dump(mode="json"))
+        + b"\n"
+    )
+
+    monkeypatch.setattr(export_mod, "_journal_cut", lambda _name: None)
+    with pytest.raises(export_mod.PublishError, match="journal"):
+        export_mod.publish_achieved(project, CHANGE_ID)
+
+    assert (project / TARGET_A).read_bytes() == b"original-a\n"
+    assert (project / TARGET_B).read_bytes() == b"original-b\n"
+    assert not (project / "qa" / "changes" / CHANGE_ID / "publish-receipt.json").exists()

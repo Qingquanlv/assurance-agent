@@ -191,10 +191,16 @@ def _rollback_and_raise(
     bindings: _Bindings,
     records: tuple[PublishJournalRecordV1, ...],
 ) -> NoReturn:
-    _rollback_targets(workspace, planned)
+    restore_error: BaseException | None = None
+    try:
+        _rollback_targets(workspace, planned)
+    except (OSError, PublishError) as error:
+        restore_error = error
     _append_journal(workspace, records, bindings, files, "rolled_back")
     _journal_cut("rolled_back")
     _cleanup_transaction(workspace, planned)
+    if restore_error is not None:
+        raise PublishError("publish rolled back to the target baseline") from restore_error
     raise PublishError("publish rolled back to the target baseline")
 
 
@@ -272,6 +278,8 @@ def _replace_targets(workspace: ChangeWorkspace, planned: tuple[_PlannedFile, ..
 
 def _rollback_targets(workspace: ChangeWorkspace, planned: tuple[_PlannedFile, ...]) -> None:
     for item in reversed(planned):
+        if item.already_matching:
+            continue
         parent = _project_file(workspace.paths.project_root, item.spec.target_path).parent
         target = parent / _leaf(item.spec.target_path)
         try:
@@ -297,10 +305,7 @@ def _rollback_targets(workspace: ChangeWorkspace, planned: tuple[_PlannedFile, .
             finally:
                 os.close(directory)
         elif current not in {item.spec.baseline_sha256, None}:
-            if item.already_matching and current == item.spec.source_sha256:
-                continue
-            if current != item.spec.baseline_sha256 and not item.already_matching:
-                raise PublishError(f"publish rollback encountered target drift: {item.spec.target_path}")
+            raise PublishError(f"publish rollback encountered target drift: {item.spec.target_path}")
 
 
 def _target_has_source(workspace: ChangeWorkspace, item: _PlannedFile) -> bool:
@@ -412,6 +417,8 @@ def _record_matches(record: PublishJournalRecordV1, bindings: _Bindings) -> bool
         and record.manifest_digest == bindings.manifest_digest
         and record.source_digest == bindings.source_digest
         and record.target_baseline == bindings.target_baseline
+        and record.temp_identity == bindings.temp_identity
+        and record.backup_identity == bindings.backup_identity
         and record.final_digest == bindings.final_digest
     )
 
