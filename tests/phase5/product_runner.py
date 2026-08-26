@@ -106,6 +106,7 @@ class TerminalResult:
     stop_reason: str | None
     has_nested_stop: bool
     report: ReportTrace
+    change: object
     _engine: Engine
     _handle: InvocationHandle
     _composition: FrozenComposition
@@ -477,11 +478,24 @@ def _terminal_from_run(
         stop_reason=stop_reason,
         has_nested_stop=_has_nested_stop(projection),
         report=flow.report,
+        change=_change_projection(projection),
         _engine=engine,
         _handle=handle,
         _composition=composition,
         _engines=engines,
     )
+
+
+def _change_projection(projection: InvocationProjection) -> object:
+    from graph_engine.canonical import canonical_digest
+
+    from assurance_product.status import render_status
+
+    root = next(item for item in projection.graph_instances if item.parent_graph_instance_id is None)
+    return render_status(
+        projection,
+        root_input_digest=canonical_digest(thaw_json(root.input)),
+    ).change
 
 
 def _prepare_stem(capability: str) -> str | None:

@@ -201,7 +201,13 @@ graphs:
       report:
         kind: subgraph
         graph: quality-report
-      done:
+      retro:
+        kind: subgraph
+        graph: retro
+      improvement:
+        kind: subgraph
+        graph: improvement-apply
+      achieved:
         kind: end
     edges:
       - from: intake
@@ -263,7 +269,11 @@ graphs:
       - from: coverage-repair
         to: generation
       - from: report
-        to: done
+        to: retro
+      - from: retro
+        to: improvement
+      - from: improvement
+        to: achieved
   intake:
     max_activations: 8
     start: prepare

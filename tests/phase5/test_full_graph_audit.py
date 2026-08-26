@@ -95,11 +95,18 @@ def test_full_graph_has_no_archive_branch_and_keeps_retro_improvement():
     workflow = _workflow()
     full = workflow.graphs["full"]
     full_nodes = set(full.nodes)
+    full_reachable = _reachable_graphs(workflow, "full")
     assert not any(name in full_nodes for name in _ARCHIVE_NODE_MARKERS)
-    assert "archive" not in _reachable_graphs(workflow, "full")
-    assert "improvement-archive" not in _reachable_graphs(workflow, "full")
+    assert "archive" not in full_reachable
+    assert "improvement-archive" not in full_reachable
     assert not any("archive" in f"{edge.from_}->{edge.to}" for edge in full.edges)
     assert set(_REQUIRED_RETRO_IMPROVEMENT).issubset(workflow.graphs)
+    assert "retro" in full_reachable
+    assert "improvement-retro" in full_reachable
+    assert "improvement-retro-eval-analysis" in full_reachable
+    assert "improvement-review" in full_reachable
+    assert "improvement-apply" in full_reachable
+    assert "achieved" in full_nodes
     assert workflow.entrypoints["archive"] == "archive"
     assert workflow.entrypoints["retro"] == "retro"
     assert workflow.entrypoints["improvement-review"] == "improvement-review"

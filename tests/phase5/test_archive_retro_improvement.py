@@ -8,10 +8,19 @@ pytestmark = pytest.mark.usefixtures("product_runner")
 def test_full_ends_at_achieved_without_archive(product_runner):
     result = product_runner(entrypoint="full").run_to_terminal()
     assert result.status == "completed"
-    assert result.terminal_tail == ("quality.report",)
+    assert result.change.state == "achieved"
     assert "improvement.archive" not in result.logical_steps
-    assert "improvement.retro" not in result.logical_steps
-    assert "improvement.improvement-review" not in result.logical_steps
+    assert "improvement.retro" in result.logical_steps
+    assert "improvement.improvement-review" in result.logical_steps
+    assert result.terminal_tail == (
+        "quality.report",
+        "improvement.retro",
+        "improvement.retro-eval-analysis",
+        "improvement.retro-issue-analysis",
+        "improvement.retro-workflow-analysis",
+        "improvement.improvement-review",
+        "improvement.apply",
+    )
 
 
 def test_archive_remains_a_separate_entrypoint(product_runner):

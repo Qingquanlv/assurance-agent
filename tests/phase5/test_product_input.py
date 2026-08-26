@@ -71,6 +71,29 @@ def test_product_input_is_closed_and_stable():
         ProductInputV1.model_validate({**valid_product_input(), "model": "ambient"})
 
 
+def test_product_input_document_satisfies_model_and_schema():
+    import json
+    from importlib.resources import files
+
+    from assurance_product.models import ProductInputV1
+
+    schema = json.loads(
+        files("assurance_product")
+        .joinpath("resources/schemas/product-input-v1.json")
+        .read_text(encoding="utf-8")
+    )
+    document = valid_product_input(capability_leafs=("auth.session", "entities.user"))
+    value = ProductInputV1.model_validate(document)
+    required = schema["required"]
+    properties = schema["properties"]
+    assert isinstance(required, list)
+    assert isinstance(properties, dict)
+    assert "capability_leafs" in required
+    assert "capability_leafs" in properties
+    assert value.capability_leafs == ("auth.session", "entities.user")
+    assert document["capability_leafs"] == ("auth.session", "entities.user")
+
+
 def test_product_input_rejects_auto_archive():
     from assurance_product.models import ProductInputV1
 

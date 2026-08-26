@@ -194,3 +194,25 @@ def test_finalize_achieved_rejects_invalid_merge_without_writing(tmp_path: Path)
     change = project / "qa" / "changes" / CHANGE_ID
     assert not (change / "status.json").exists()
     assert not (change / "apply-manifest.json").exists()
+
+
+def test_finalize_achieved_requires_terminal_full_success(tmp_path: Path):
+    from assurance_product.status import finalize_achieved
+
+    project = _ready_change(tmp_path)
+    pending = {
+        "node_id": "human-review",
+        "actions": ("approve", "reject"),
+        "reason_category": "needs_human_review",
+    }
+
+    with pytest.raises(ValueError, match="terminal"):
+        finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status(status="failed"))
+    with pytest.raises(ValueError, match="interrupt"):
+        finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status(pending_interrupt=pending))
+    with pytest.raises(ValueError, match="full"):
+        finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status(entrypoint="archive"))
+
+    change = project / "qa" / "changes" / CHANGE_ID
+    assert not (change / "status.json").exists()
+    assert not (change / "apply-manifest.json").exists()

@@ -63,7 +63,11 @@ def project_status_fields(
     families = selected_test_families or _selected_families(projection)
     status = _status_class(projection)
     resolved_change = change_id or _change_id(projection)
-    change_state = _change_state(status, publication_status)
+    change_state = _change_state(
+        status,
+        publication_status,
+        entrypoint=projection.entrypoint or "",
+    )
     return {
         "schema_version": "1",
         "invocation_id": projection.invocation_id,
@@ -118,6 +122,7 @@ def finalize_achieved(
     invocation: Mapping[str, object] | StatusV1,
 ) -> StatusV1:
     project = Path(project_root)
+    _require_terminal_full_success(invocation)
     merged = merge_generated(project, change_id, families)
     _require_execution_gate(project, change_id)
     _require_quality_gate(project, change_id)
@@ -129,11 +134,23 @@ def finalize_achieved(
     return status
 
 
+def _require_terminal_full_success(invocation: Mapping[str, object] | StatusV1) -> None:
+    payload = invocation.model_dump(mode="json") if isinstance(invocation, StatusV1) else dict(invocation)
+    if payload.get("entrypoint") != "full":
+        raise ValueError("achieved requires the full entrypoint")
+    if payload.get("status") != "completed":
+        raise ValueError("achieved requires terminal workflow success")
+    if payload.get("pending_interrupt") is not None:
+        raise ValueError("achieved requires no pending interrupt")
+
+
 def _change_state(
     status: Literal["running", "blocked", "interrupted", "stopped", "failed", "completed"],
     publication_status: Literal["not_ready", "ready", "published", "drifted"],
+    *,
+    entrypoint: str = "",
 ) -> Literal["running", "blocked", "interrupted", "stopped", "failed", "achieved"]:
-    if status == "completed" and publication_status in {"ready", "published"}:
+    if status == "completed" and (entrypoint == "full" or publication_status in {"ready", "published"}):
         return "achieved"
     if status == "blocked":
         return "blocked"

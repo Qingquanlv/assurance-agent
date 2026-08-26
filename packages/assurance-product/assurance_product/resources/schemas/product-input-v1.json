@@ -10,6 +10,7 @@
     "requirement",
     "run_mode",
     "selected_test_families",
+    "capability_leafs",
     "capability_catalog",
     "product_policy",
     "data_knowledge",
@@ -25,6 +26,15 @@
       "type": "array",
       "uniqueItems": true,
       "items": { "enum": ["api", "e2e", "fuzz", "performance"] }
+    },
+    "capability_leafs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^\\S+\\.\\S+$"
+      }
     },
     "capability_catalog": { "$ref": "#/$defs/resourceRef" },
     "product_policy": { "$ref": "#/$defs/resourceRef" },
