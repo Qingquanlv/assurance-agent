@@ -528,7 +528,7 @@ class CodegenFinalizeHandler:
             document = _finalize_authoring(payload, family)
             allowed = payload.allowed_paths or payload.artifact_paths
             files = _complete_files(
-                context.write_root,
+                context.project_root,
                 document.files,
                 document.mapping,
                 change_id=document.change_id,
@@ -547,7 +547,7 @@ class CodegenFinalizeHandler:
                 context={"capability_leafs": leafs_of(payload.capability_leafs)},
             )
             _authenticate_manifest(
-                context.write_root,
+                context.project_root,
                 document=document,
                 capability_leafs=payload.capability_leafs,
             )
@@ -612,7 +612,7 @@ class CodegenFixFinalizeHandler:
             if payload.baseline_tree_id is None:
                 raise OutputError("codegen-fix requires a baseline tree identity")
             files = _complete_files(
-                context.write_root,
+                context.project_root,
                 document.files,
                 document.mapping,
                 change_id=document.change_id,
@@ -633,7 +633,7 @@ class CodegenFixFinalizeHandler:
                 context={"capability_leafs": leafs_of(payload.capability_leafs)},
             )
             _authenticate_manifest(
-                context.write_root,
+                context.project_root,
                 document=document,
                 capability_leafs=payload.capability_leafs,
             )

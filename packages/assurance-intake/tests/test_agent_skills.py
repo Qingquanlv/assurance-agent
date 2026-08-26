@@ -14,6 +14,7 @@ from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskHandler, TaskOutcome
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.phase5.test_change_local_output_routing import dual_roots, execute_task
 
@@ -503,7 +504,7 @@ def _valid_explore_advisory() -> dict[str, Any]:
 async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
     relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
-    path = write_root / relative
+    path = project / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(_valid_explore_advisory()).encode()
     path.write_bytes(payload)
@@ -531,7 +532,7 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
 async def test_explore_finalize_rejects_placeholder_advisory(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
     relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
-    path = write_root / relative
+    path = project / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -562,19 +563,33 @@ async def test_explore_finalize_rejects_placeholder_advisory(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path) -> None:
-    project, write_root = dual_roots(tmp_path, "RET-dept-management")
+    project = tmp_path
+    change_root = project / "qa/changes/RET-dept-management"
     relative = "qa/changes/RET-dept-management/requirement.md"
-    path = write_root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = b"# RET-dept-management\n\nCover department CRUD.\n"
-    path.write_bytes(payload)
-    executed = await _finalize_files(
-        IntakeFinalizeHandler(),
-        {"output_files": [relative]},
+    store = TaskWorkspaceStore(
         project,
-        ["qa/archive", "qa/cases", "qa/changes"],
-        write_root=write_root,
+        change_root / ".staging",
+        change_root / ".runtime/receipts",
     )
+    try:
+        execute = store.begin(task_id="intake-execute", attempt=1, output_paths=(relative,))
+        path = execute.write_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        store.promote(execute.identity, store.seal(execute.identity))
+
+        finalize = store.begin(task_id="intake-finalize", attempt=1, output_paths=())
+        assert list(finalize.write_root.iterdir()) == []
+        executed = await _finalize_files(
+            IntakeFinalizeHandler(),
+            {"output_files": [relative]},
+            project,
+            ["qa/archive", "qa/cases", "qa/changes"],
+            write_root=finalize.write_root,
+        )
+    finally:
+        store.close()
     assert executed.status == "succeeded"
     assert executed.output == {
         "artifacts": [{"path": relative, "digest": hashlib.sha256(payload).hexdigest()}]
@@ -585,7 +600,7 @@ async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path)
 async def test_intake_finalize_rejects_file_outside_locked_prefix(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
     relative = "qa/notes/outside.md"
-    path = write_root / relative
+    path = project / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"nope\n")
     executed = await _finalize_files(
@@ -605,7 +620,7 @@ async def test_intake_finalize_rejects_file_outside_locked_prefix(tmp_path: Path
 async def test_intake_finalize_returns_artifact_digests(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
     relative = "qa/changes/CH-DEMO-001/explore/advisory.json"
-    path = write_root / relative
+    path = project / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = b'{"ok":true}'
     path.write_bytes(payload)
@@ -623,13 +638,45 @@ async def test_intake_finalize_returns_artifact_digests(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_intake_finalize_rejects_file_present_only_in_its_write_root(tmp_path: Path) -> None:
+    project = tmp_path
+    change_root = project / "qa/changes/CH-DEMO-001"
+    relative = "qa/changes/CH-DEMO-001/requirement.md"
+    store = TaskWorkspaceStore(
+        project,
+        change_root / ".staging",
+        change_root / ".runtime/receipts",
+    )
+    try:
+        finalize = store.begin(task_id="intake-finalize", attempt=1, output_paths=())
+        staged_only = finalize.write_root / relative
+        staged_only.parent.mkdir(parents=True, exist_ok=True)
+        staged_only.write_text("unpromoted\n", encoding="utf-8")
+
+        executed = await _finalize_files(
+            IntakeFinalizeHandler(),
+            {"output_files": [relative]},
+            project,
+            [relative],
+            write_root=finalize.write_root,
+        )
+    finally:
+        store.close()
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert executed.failure.message == f"declared output file is missing: {relative}"
+
+
+@pytest.mark.asyncio
 async def test_case_design_finalize_accepts_typed_authoring(tmp_path: Path) -> None:
     authored = cast(
         JSONValue,
         yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8")),
     )
     project, write_root = dual_roots(tmp_path)
-    outputs = _write_case_design_outputs(write_root, authored)
+    outputs = _write_case_design_outputs(project, authored)
     executed = await _finalize_files(
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
@@ -650,7 +697,7 @@ async def test_case_design_finalize_requires_minimum_coverage_matrix(tmp_path: P
         yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8")),
     )
     project, write_root = dual_roots(tmp_path)
-    outputs = _write_case_design_outputs(write_root, authored)
+    outputs = _write_case_design_outputs(project, authored)
     matrix = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
     outputs.remove(matrix)
 
@@ -677,7 +724,7 @@ async def test_case_design_finalize_rejects_missing_selected_family(tmp_path: Pa
         yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8")),
     )
     project, write_root = dual_roots(tmp_path)
-    outputs = _write_case_design_outputs(write_root, authored)
+    outputs = _write_case_design_outputs(project, authored)
     executed = await _finalize_files(
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
@@ -699,7 +746,7 @@ async def test_case_design_finalize_rejects_legacy_full_delta_result(
 ) -> None:
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     project, write_root = dual_roots(tmp_path)
-    _write_case_design_outputs(write_root, authored)
+    _write_case_design_outputs(project, authored)
 
     executed = await _finalize_files(
         CaseDesignFinalizeHandler(),
@@ -723,7 +770,7 @@ async def test_case_design_finalize_does_not_require_undeclared_case_yaml(
 ) -> None:
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     project, write_root = dual_roots(tmp_path)
-    outputs = _write_case_design_outputs(write_root, authored)
+    outputs = _write_case_design_outputs(project, authored)
     catalog = [
         "qa/changes/CH-DEMO-001/.qa.yaml",
         "qa/changes/CH-DEMO-001/proposal.md",
@@ -754,7 +801,7 @@ async def test_case_design_finalize_rejects_invalid_written_case_yaml(tmp_path: 
     authored = deepcopy(structured)
     authored["added"][1]["automation"]["performance"]["scenario"]["endpoint"] = "menu tree listing"
     project, write_root = dual_roots(tmp_path)
-    outputs = _write_case_design_outputs(write_root, authored)
+    outputs = _write_case_design_outputs(project, authored)
 
     executed = await _finalize_files(
         CaseDesignFinalizeHandler(),
@@ -806,7 +853,7 @@ async def test_case_review_finalize_replaces_projection_drift_from_authenticated
 async def test_explore_finalize_rejects_empty_artifact_paths(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
     relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
-    path = write_root / relative
+    path = project / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_valid_explore_advisory()), encoding="utf-8")
     executed = await _finalize_files(

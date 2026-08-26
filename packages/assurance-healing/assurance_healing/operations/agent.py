@@ -266,7 +266,7 @@ class FixProposalFinalizeHandler:
                     _workspace_file(context.project_root, path)
             if payload.artifact_paths:
                 for path in payload.artifact_paths:
-                    _workspace_file(context.write_root, path)
+                    _workspace_file(context.project_root, path)
             return TaskOutcome.succeeded(cast(JSONValue, proposal.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
@@ -318,9 +318,9 @@ class CoverageRepairFinalizeHandler:
             for path in summary.files_modified:
                 if path not in allowed or not _under_root(path, payload.allowed_roots):
                     raise OutputError(f"undeclared target file: {path}")
-                _workspace_file(context.write_root, path)
+                _workspace_file(context.project_root, path)
             for path in payload.artifact_paths:
-                _workspace_file(context.write_root, path)
+                _workspace_file(context.project_root, path)
             return TaskOutcome.succeeded(cast(JSONValue, summary.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)

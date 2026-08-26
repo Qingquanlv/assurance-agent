@@ -351,7 +351,7 @@ async def test_coverage_repair_prepare_and_finalize(tmp_path: Path) -> None:
         "addressed_items": ["TC_A"],
     }
     project, write_root = dual_roots(tmp_path)
-    target = write_root / "tests/api/test_users.py"
+    target = project / "tests/api/test_users.py"
     target.parent.mkdir(parents=True)
     target.write_text("def test_ok():\n    assert True\n")
     from agent_runtime_contracts import AgentRunResult

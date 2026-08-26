@@ -132,7 +132,7 @@ async def test_plan_finalize_accepts_typed_family_plan(family: str, tmp_path: Pa
     project, write_root = dual_roots(tmp_path)
     files = family_plan_files(family)
     for relative in files:
-        path = write_root / relative
+        path = project / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("ok\n", encoding="utf-8")
     executed = await execute_task(
@@ -172,7 +172,7 @@ async def test_plan_finalize_accepts_files_below_declared_artifact_root(tmp_path
     project, write_root = dual_roots(tmp_path)
     files = family_plan_files("api")
     for relative in files:
-        path = write_root / relative
+        path = project / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("ok\n", encoding="utf-8")
     executed = await execute_task(

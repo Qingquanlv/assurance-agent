@@ -222,17 +222,14 @@ def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_pat
     assert request.workspace.agent_profile == "assurance-v1-doc-author"
 
 
-def test_failed_explore_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
+def test_failed_explore_validation_does_not_mutate_promoted_output(tmp_path: Path) -> None:
     from assurance_intake.operations import ExploreFinalizeHandler
 
     project, write_root = dual_roots(tmp_path)
     canonical = project / "qa/changes/CH-DEMO-001/explore/exploration.json"
     canonical.parent.mkdir(parents=True, exist_ok=True)
-    original = b'{"schema_version":"1","change_id":"CH-DEMO-001"}\n'
-    canonical.write_bytes(original)
-    staged = write_root / "qa/changes/CH-DEMO-001/explore/exploration.json"
-    staged.parent.mkdir(parents=True, exist_ok=True)
-    staged.write_text("not-json", encoding="utf-8")
+    promoted = b"not-json"
+    canonical.write_bytes(promoted)
 
     executed = asyncio.run(
         execute_task(
@@ -257,5 +254,5 @@ def test_failed_explore_validation_leaves_canonical_outputs_unchanged(tmp_path: 
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
-    assert canonical.read_bytes() == original
+    assert canonical.read_bytes() == promoted
     assert ".staging" not in json.dumps(cast(Mapping[str, Any], executed.output or {}))

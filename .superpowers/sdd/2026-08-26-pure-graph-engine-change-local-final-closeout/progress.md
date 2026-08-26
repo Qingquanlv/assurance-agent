@@ -117,3 +117,154 @@
   Task 3 evidence rather than dropping or restaging unrelated files — cost if
   wrong: the Task 3 commit also freezes an earlier Task 17 diagnostic note that
   its original author intended to keep uncommitted.
+- Task 2 reopened: the first fresh Task 3 live run reached composition and
+  failed before provider contact with `invalid schema content:
+  assurance.intake.schema.case-authoring.v1`. Task 2's closed-schema invariant
+  was placed at the generic `SchemaEntry` seam, but the closed vocabulary is a
+  durable-effect runtime constraint; ordinary contributed agent/result schemas
+  require standard keywords such as `$defs`, `$ref`, `anyOf`, and `minLength`.
+  Move the fail-closed check to schemas referenced by effect intent/receipt and
+  retain generic schema JSON authentication — cost if wrong: an unsupported
+  effect schema could reach runtime, or product composition could remain
+  blocked before provider admission.
+- Task 2 reopened ruling: after moving validation to effect use, the installed
+  healing/improvement effect schemas themselves require a finite set of normal
+  JSON-Schema applicator/assertion keywords. Preserve those product contracts
+  and extend the closed interpreter only to the exact installed effect-schema
+  vocabulary, with local-reference safety and unknown-keyword rejection; do not
+  weaken schemas to fit the old tiny subset — cost if wrong: incomplete keyword
+  semantics could admit invalid durable-effect payloads or an unnecessarily
+  broad vocabulary could make future unsupported schemas appear executable.
+- Task 2 reopened fix round 2/5: independent review of `4addd93` found two
+  Important fail-close gaps: unhashable/non-text `type` raises `TypeError`
+  instead of a schema `ValueError`, and explicitly present `null` keyword values
+  are treated as absent for multiple structural/assertion keywords (including a
+  null `$schema` dialect). Both remain open pending an implementation fix and
+  rereview.
+- Task 2 reopened fix round 2 result: `a4495ff` addressed both prior Important
+  findings; rereview found one new Important because `re.compile()` can raise
+  `OverflowError` for an extreme repetition count, which currently escapes
+  direct runtime and effect-registry composition instead of becoming the
+  stable closed-schema rejection. Fix round 3/5 is open for that exception
+  boundary only.
+- Task 2 reopened fix round 3/5: `5910649` normalizes extreme-regex
+  `OverflowError` into `ValueError`; direct runtime and effect-registry
+  regressions pass, and independent rereview reports all findings addressed
+  with no new Critical/Important breakage. Task 2 is complete again at
+  `4addd93` + `a4495ff` + `5910649` (469-test broad focused evidence from round
+  2 plus 90-test schema/registry evidence from round 3).
+- Task 3 preflight ruling: after schema composition passed, the next fresh run
+  failed before provider contact because the tracked-but-dirty Phase 5 graph
+  inventory is stale for the current `full/retro`, `full/improvement`, and
+  `full/achieved` nodes. Take ownership of that generated inventory hunk,
+  regenerate the entire document from the compiled workflow, verify exact
+  nodes/edges/aliases/entrypoint closures, and commit it before retrying live;
+  do not change the canonical workflow to match stale evidence — cost if wrong:
+  Task 3 source authentication could bind provider evidence to an uncommitted or
+  incomplete graph inventory.
+- Task 3 workspace-claim ruling: the next committed-source run reached
+  `intake.execute`, but its static `qa/changes` contract caused
+  `TaskWorkspaceStore` to scan an unrelated 2026-08-18 change and reject that
+  change's legacy runtime symlink. The installed `OutputRouteCatalog` already
+  defines exact current-change outputs, so render closed resource templates from
+  `/change_id` and those catalog routes for every agent execute alias; never
+  delete historical data or teach the business-neutral engine to special-case
+  `qa/changes` — cost if wrong: sibling changes can block/corrupt each other, or
+  an overly broad current-change claim can race `events.jsonl`/`status.json`.
+- Task 3 harness ruling: a non-zero `aa-next run` with no structured run result
+  is a deterministic local failure and must terminate the benchmark with
+  evidence, not loop until the eight-hour horizon — cost if wrong: a genuinely
+  recoverable structured activity result could be mistaken for an unstructured
+  process crash, so the fail-fast condition must require absence of a parsed
+  run result.
+- Task 3 installed-declaration ruling: live `110426-f941c51d` proved the Python
+  contract generator and installed wheel declaration had drifted: the
+  invocation lock still contained broad execute writes even though the source
+  contract tests were green. Treat both generated product declarations as
+  Task 3-owned authenticated source, add byte-for-byte generator parity and
+  installed-provider resource assertions, and regenerate them through the
+  existing writer before retrying live; do not bypass wheel declaration loading
+  at runtime — cost if wrong: tests can validate an uninstalled dynamic graph
+  while production executes stale unsafe claims.
+- Task 3 scope-propagation ruling: execute receives the closed
+  `AgentRunRequest`, so the exact resource template must resolve an opaque safe
+  scope component from `workspace.scope_id`; it must not infer product identity
+  from prompt instructions or parse output paths. Task 3 takes ownership of the
+  six pre-existing capability `agent_workspace()` helper hunks because they are
+  limited to constructing this same workspace contract (including the already
+  required logical write-root normalization) and cannot be staged separately
+  from scope propagation; no other capability hunk is admitted — cost if wrong:
+  a broader Phase 5 change could be accidentally attributed to live admission,
+  or adapters could receive a non-canonical envelope.
+- Task 3 installed-declaration fix round 1/5: independent review of `b88bf79`
+  found one Important scope-authentication gap in generation codegen: workspace
+  scope came from the reviewed plan while allowed outputs came from the business
+  input, and plan/business change identity was not required equal. Reject that
+  drift during codegen and codegen-fix input validation and cover both paths
+  before rereview; no provider retry while the finding remains open.
+- Task 3 deterministic preflight correction: `435b75b` replaces every
+  assurance-product execute claim with an exact `/change_id` template projected
+  from `OutputRouteCatalog`; its sibling-symlink begin/promote regression passes.
+  `8b67a91` makes an unstructured non-zero `aa-next run` fail closed without
+  status polling and limits run-result parsing to the current invocation.
+  Focused Phase 5 suite: `33 passed` (one existing schema-shadow warning); no
+  provider-live command was run during this correction.
+- Task 3 installed-workspace-claim correction: `b88bf79` refreshes both
+  declarations only through `write_committed_product_declarations()` and adds
+  byte-for-byte parity plus provider-loaded-manifest coverage. To retain the
+  closed direct `AgentRunRequest` adapter interface, the execute template now
+  resolves from the authenticated safe `workspace.scope_id`, populated from
+  each product prepare business `change_id`; it does not inspect prompts or
+  outputs. GREEN: 59 AgentWorkspace tests, 5 provider tests, 8 agent-contract
+  tests, 7 CLI-compile tests, and 2 packaging tests; Ruff/format/Pyright clean.
+  No provider-live command was run.
+- Task 3 codegen scope-authentication correction: `d0df49d` requires the
+  reviewed plan and validated business `change_id` to match for normal codegen
+  and codegen-fix before preparation, then uses the validated business ID as
+  `workspace.scope_id`. RED observed both validators accepting mismatch;
+  GREEN is 71 focused codegen tests plus Ruff/format and source Pyright clean.
+  No provider-live command was run; the full existing codegen test file's
+  Pyright still has 12 unchanged assertion errors at lines 158/162.
+- Task 3 execute-workspace ruling: live `113601-058d301c` created OpenCode
+  session `ses_fc22480e8ffexonOfWBTDvl5Tr`, but failed before prompt admission.
+  The prepare request authenticated `.staging/544101…/attempt-1` while the
+  execute task authenticated `.staging/83c585…/attempt-1`; the adapter compared
+  them before PATCH and collapsed the mismatch into `workspace binding title is
+  missing or invalid`. A direct full-length title probe succeeded, ruling out
+  provider title length. Rebind the effective agent request from the current
+  execute `TaskContext` for both adapters and make the OpenCode PATCH conform to
+  the v1.18.4 title-only API; do not weaken the staging boundary or reuse the
+  prepare task root — cost if wrong: the model could write to a different task's
+  staging area, or replay could authenticate a prompt against the wrong attempt.
+- Task 3 execute-workspace correction: `9363fdb` adds one shared effective-run
+  rebinder and makes OpenCode and Cursor dispatch, prompt/stdin, receipt,
+  reconcile, cancel and terminal reduction use the current authenticated
+  execute attempt root while leaving the ledger-bound original `TaskRequest`
+  unchanged. OpenCode session PATCH is now title-only and its fake rejects extra
+  fields. GREEN: 377 passed, 1 skipped; focused Ruff/format/Pyright clean.
+- Task 3 adapter-recovery review fix: independent review found Cursor cancel did
+  not compare the receipt request digest before termination and OpenCode did not
+  authenticate the PATCH response session ID. `c083442` closes both, adds
+  fail-closed drift/wrong-ID regressions, and revalidates the post-PATCH GET
+  ID/title/agent. GREEN: 303 passed, 1 skipped; controller rerun of the two
+  negative tests passed; independent rereview found no remaining
+  Critical/Important issue.
+- Task 3 finalize-root ruling: live `122211-ac0d6364` proved adapter execution,
+  provider admission and promotion succeeded, but the following deterministic
+  `intake.finalize` looked for project-relative predecessor outputs in its own
+  new empty `write_root`. A finalize task does not inherit the execute task's
+  staging directory; after the execute promotion receipt is durable, prior
+  outputs are authoritative under `context.project_root`. Correct the same
+  read-root error in Intake, Generation, Execution and Healing finalizers while
+  leaving prepare/current-task writes on `context.write_root`; do not copy a
+  project base view or reuse predecessor staging. Cost if wrong: later semantic
+  validation can reject valid promoted files or accidentally authenticate an
+  unpromoted candidate from the wrong attempt.
+- Task 3 finalize-root correction: deterministic finalizers now read promoted
+  predecessor files from `context.project_root`; a real `TaskWorkspaceStore`
+  regression proves execute staging A -> seal/promote -> empty finalize staging
+  B succeeds, while a file present only in finalize staging is rejected.
+  Related package and Phase 5 suites passed (implementer: 406 tests; controller
+  focused rerun: 167 tests), focused Ruff/format/Pyright passed, and independent
+  spec/standards reviews found no blocking issue. The existing execution
+  finalizer canonical-write boundary remains explicitly outside this correction.

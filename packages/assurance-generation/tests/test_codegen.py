@@ -242,7 +242,7 @@ async def test_codegen_prepare_hydrates_missing_business_input_from_workspace(
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_empty_files_when_mapping_is_live(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, "api", "tests/api/test_users.py")
+    _write_generated(project, "api", "tests/api/test_users.py")
     executed = await execute_task(
         codegen_finalize_handler("api"),
         fake_agent_result(codegen_result(files=[])),
@@ -260,8 +260,8 @@ async def test_codegen_finalize_rejects_partial_mapping_listing(tmp_path: Path) 
     first = "tests/api/test_users.py"
     second = "tests/api/test_orders.py"
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, "api", first)
-    _write_generated(write_root, "api", second)
+    _write_generated(project, "api", first)
+    _write_generated(project, "api", second)
     payload = codegen_result(files=[first])
     payload["mapping"]["entries"] = [
         payload["mapping"]["entries"][0],
@@ -288,8 +288,8 @@ async def test_codegen_finalize_keeps_support_as_extra_hashed_entry(tmp_path: Pa
     mapped = family_test_file("api")
     support = "tests/api/conftest.py"
     project, write_root = dual_roots(tmp_path)
-    mapped_digest = _write_generated(write_root, "api", mapped)
-    support_digest = _write_generated(write_root, "api", support, b"fixture\n")
+    mapped_digest = _write_generated(project, "api", mapped)
+    support_digest = _write_generated(project, "api", support, b"fixture\n")
     payload = codegen_result(files=[mapped])
     payload["files"].append(
         {
@@ -324,7 +324,7 @@ async def test_codegen_finalize_keeps_support_as_extra_hashed_entry(tmp_path: Pa
 async def test_codegen_finalize_authenticates_workspace_bytes(family: str, tmp_path: Path) -> None:
     relative = family_test_file(family)
     project, write_root = dual_roots(tmp_path)
-    digest = _write_generated(write_root, family, relative)
+    digest = _write_generated(project, family, relative)
     executed = await execute_task(
         codegen_finalize_handler(family),
         fake_agent_result(codegen_result(files=[relative], family=family)),
@@ -345,11 +345,11 @@ async def test_codegen_finalize_authenticates_workspace_bytes(family: str, tmp_p
 async def test_codegen_finalize_rejects_manifest_that_differs_from_result(tmp_path: Path) -> None:
     relative = family_test_file("api")
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, "api", relative)
+    _write_generated(project, "api", relative)
     payload = codegen_result(files=[relative])
     manifest = dict(payload)
     manifest["required_capabilities"] = ["auth.session.create"]
-    manifest_path = write_root / "qa/changes/CH-DEMO-001/codegen/api-generated-files.json"
+    manifest_path = project / "qa/changes/CH-DEMO-001/codegen/api-generated-files.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
@@ -370,7 +370,7 @@ async def test_codegen_finalize_rejects_manifest_that_differs_from_result(tmp_pa
 async def test_codegen_finalize_accepts_files_below_declared_artifact_roots(tmp_path: Path) -> None:
     relative = family_test_file("api")
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, "api", relative)
+    _write_generated(project, "api", relative)
     executed = await execute_task(
         codegen_finalize_handler("api"),
         fake_agent_result(
@@ -389,7 +389,7 @@ async def test_codegen_finalize_rejects_wrong_family(family: str, tmp_path: Path
     other = "e2e" if family == "api" else "api"
     relative = family_test_file(other)
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, other, relative)
+    _write_generated(project, other, relative)
     payload = codegen_result(files=[relative], family=other)
     executed = await execute_task(
         codegen_finalize_handler(family),
@@ -408,7 +408,7 @@ async def test_codegen_finalize_rejects_wrong_family(family: str, tmp_path: Path
 async def test_codegen_finalize_rejects_unknown_leaf(family: str, tmp_path: Path) -> None:
     relative = family_test_file(family)
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, family, relative)
+    _write_generated(project, family, relative)
     payload = codegen_result(files=[relative], family=family, required_capabilities=["auth.fake"])
     executed = await execute_task(
         codegen_finalize_handler(family),
@@ -427,8 +427,8 @@ async def test_codegen_finalize_rejects_undeclared_file(family: str, tmp_path: P
     relative = family_test_file(family)
     extra = "tests/unmapped_test.py"
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, family, relative)
-    _write_generated(write_root, family, extra)
+    _write_generated(project, family, relative)
+    _write_generated(project, family, extra)
     payload = codegen_result(files=[relative, extra], family=family)
     executed = await execute_task(
         codegen_finalize_handler(family),
@@ -471,8 +471,8 @@ async def test_codegen_fix_finalize_rejects_file_outside_allowed_set(family: str
     allowed = family_test_file(family)
     extra = "tests/testdata/domain/users.py"
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, family, allowed)
-    _write_generated(write_root, family, extra)
+    _write_generated(project, family, allowed)
+    _write_generated(project, family, extra)
     payload = codegen_result(files=[allowed, extra], family=family)
     executed = await execute_task(
         codegen_fix_finalize_handler(family),
@@ -555,7 +555,7 @@ async def test_codegen_finalize_rejects_target_outside_family_policy(family: str
     other = "e2e" if family == "api" else "api"
     foreign = family_test_file(other)
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, family, foreign)
+    _write_generated(project, family, foreign)
     payload = codegen_result(files=[foreign], family=family)
     payload["mapping"]["entries"][0]["target_file"] = foreign
     executed = await execute_task(

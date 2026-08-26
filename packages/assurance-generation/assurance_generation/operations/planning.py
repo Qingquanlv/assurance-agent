@@ -472,7 +472,7 @@ class PlanFinalizeHandler:
             if document.family != family:
                 raise OutputError(f"plan family {document.family!r} does not match {family}")
             if payload.artifact_paths:
-                _authenticate_files(context.write_root, document.output_files, payload.artifact_paths)
+                _authenticate_files(context.project_root, document.output_files, payload.artifact_paths)
             return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
         except (InputError, ValidationError) as error:
             return failed_input(error)

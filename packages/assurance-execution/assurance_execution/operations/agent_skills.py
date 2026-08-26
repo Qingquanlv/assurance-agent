@@ -458,7 +458,7 @@ class ExecuteFinalizeHandler:
                 workspace=context.project_root,
                 model=ExecuteInputV1,
             )
-            evidence = _finalize_evidence(payload, context.write_root)
+            evidence = _finalize_evidence(payload, context.project_root)
             write_canonical_evidence(context.project_root, evidence, filename="execute-result.json")
             return TaskOutcome.succeeded(cast(JSONValue, evidence.model_dump(mode="json")))
         except InputError as error:
@@ -475,7 +475,7 @@ class RunFinalizeHandler:
                 workspace=context.project_root,
                 model=RunSkillInputV1,
             )
-            evidence = _finalize_evidence(payload, context.write_root)
+            evidence = _finalize_evidence(payload, context.project_root)
             write_canonical_evidence(context.project_root, evidence, filename="run-result.json")
             return TaskOutcome.succeeded(cast(JSONValue, evidence.model_dump(mode="json")))
         except InputError as error:

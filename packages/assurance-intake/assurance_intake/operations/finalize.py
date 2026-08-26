@@ -266,7 +266,7 @@ class IntakeFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
-            artifacts = _finalize_artifact_list(payload, context.write_root)
+            artifacts = _finalize_artifact_list(payload, context.project_root)
             return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
         except InputError as error:
             return failed_input(error)
@@ -285,8 +285,8 @@ class ExploreFinalizeHandler:
             expected = {f"qa/changes/{change_id}/explore/exploration.json"}
             if set(document.output_files) != expected:
                 raise OutputError("explore receipt must declare exactly exploration.json")
-            _validate_explore_outputs(context.write_root, document.output_files)
-            artifacts = _finalize_artifact_list(payload, context.write_root)
+            _validate_explore_outputs(context.project_root, document.output_files)
+            artifacts = _finalize_artifact_list(payload, context.project_root)
             return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
         except InputError as error:
             return failed_input(error)
@@ -317,12 +317,12 @@ class CaseDesignFinalizeHandler:
                     "case-design receipt is missing required output files: " + ", ".join(missing)
                 )
             _authenticate_files(
-                context.write_root,
+                context.project_root,
                 receipt.output_files,
                 payload.artifact_paths,
             )
             authored = _load_authored_case_delta(
-                context.write_root,
+                context.project_root,
                 change_id=change_id,
                 locked=payload.artifact_paths,
                 declared=receipt.output_files,
@@ -332,12 +332,12 @@ class CaseDesignFinalizeHandler:
             if authored.added or authored.modified:
                 _require_selected_test_families(authored, payload.selected_test_families)
                 _load_minimum_coverage_matrix(
-                    context.write_root,
+                    context.project_root,
                     relative=matrix_relative,
                     authored=authored,
                 )
             else:
-                _read_minimum_coverage_matrix(context.write_root, relative=matrix_relative)
+                _read_minimum_coverage_matrix(context.project_root, relative=matrix_relative)
             return TaskOutcome.succeeded(authored_json)
         except InputError as error:
             return failed_input(error)
