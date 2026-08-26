@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,39 @@ def _write_receipt(project: Path, payload: object, *, change_id: str = CHANGE_ID
     path = _change_root(project, change_id) / "publish-receipt.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _load_receipt(project: Path) -> dict[str, object]:
+    payload = json.loads((_change_root(project) / "publish-receipt.json").read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise TypeError("publish receipt must be an object")
+    return payload
+
+
+def _receipt_files(receipt: dict[str, object]) -> list[dict[str, object]]:
+    files = receipt.get("files")
+    if not isinstance(files, list):
+        raise TypeError("publish receipt files must be a list")
+    return [dict(item) for item in files if isinstance(item, dict)]
+
+
+def _flip_digest(value: str) -> str:
+    return value[:-1] + ("0" if value[-1] != "0" else "1")
+
+
+def _assert_archive_rejects_receipt(
+    project: Path, *, published: bytes, change_files: dict[str, bytes]
+) -> None:
+    from assurance_product.status import ArchiveError, archive_published
+
+    with pytest.raises(ArchiveError, match="receipt|manifest"):
+        archive_published(project, CHANGE_ID)
+
+    assert _change_root(project).is_dir()
+    assert not _archive_root(project).exists()
+    assert _tree_files(_change_root(project)) == change_files
+    assert (project / TARGET_A).read_bytes() == published
+    assert (project / TARGET_B).read_bytes() == b"generated-b\n"
 
 
 def test_archive_before_publish_fails_unchanged(tmp_path: Path) -> None:
@@ -175,3 +209,145 @@ def test_cli_archive_after_publish(cli_runner, tmp_path: Path) -> None:
     assert not _change_root(project).exists()
     assert _tree_files(_archive_root(project)) == before
     assert (project / TARGET_A).read_bytes() == b"generated-a\n"
+
+
+def test_archive_rejects_wrong_manifest_digest(tmp_path: Path) -> None:
+    from assurance_product.export import publish_achieved
+
+    project = write_achieved(tmp_path)
+    publish_achieved(project, CHANGE_ID)
+    receipt = _load_receipt(project)
+    _write_receipt(project, {**receipt, "manifest_digest": _flip_digest(str(receipt["manifest_digest"]))})
+    _assert_archive_rejects_receipt(
+        project,
+        published=(project / TARGET_A).read_bytes(),
+        change_files=_tree_files(_change_root(project)),
+    )
+
+
+def test_archive_rejects_extra_receipt_file(tmp_path: Path) -> None:
+    from assurance_product.export import publish_achieved
+
+    project = write_achieved(tmp_path)
+    publish_achieved(project, CHANGE_ID)
+    receipt = _load_receipt(project)
+    files = _receipt_files(receipt)
+    extra = dict(files[0])
+    extra["target_path"] = "tests/api/extra.py"
+    extra["temp_name"] = "extra.tmp"
+    extra["backup_name"] = "extra.bak"
+    receipt["files"] = [*files, extra]
+    _write_receipt(project, receipt)
+    _assert_archive_rejects_receipt(
+        project,
+        published=(project / TARGET_A).read_bytes(),
+        change_files=_tree_files(_change_root(project)),
+    )
+
+
+def test_archive_rejects_missing_receipt_file(tmp_path: Path) -> None:
+    from assurance_product.export import publish_achieved
+
+    project = write_achieved(tmp_path)
+    publish_achieved(project, CHANGE_ID)
+    receipt = _load_receipt(project)
+    receipt["files"] = _receipt_files(receipt)[1:]
+    _write_receipt(project, receipt)
+    _assert_archive_rejects_receipt(
+        project,
+        published=(project / TARGET_A).read_bytes(),
+        change_files=_tree_files(_change_root(project)),
+    )
+
+
+def test_archive_rejects_tampered_source_digest(tmp_path: Path) -> None:
+    from assurance_product.export import publish_achieved
+
+    project = write_achieved(tmp_path)
+    publish_achieved(project, CHANGE_ID)
+    receipt = _load_receipt(project)
+    _write_receipt(project, {**receipt, "source_digest": _flip_digest(str(receipt["source_digest"]))})
+    _assert_archive_rejects_receipt(
+        project,
+        published=(project / TARGET_A).read_bytes(),
+        change_files=_tree_files(_change_root(project)),
+    )
+
+
+def test_archive_rejects_tampered_final_digest(tmp_path: Path) -> None:
+    from assurance_product.export import publish_achieved
+
+    project = write_achieved(tmp_path)
+    publish_achieved(project, CHANGE_ID)
+    receipt = _load_receipt(project)
+    _write_receipt(project, {**receipt, "final_digest": _flip_digest(str(receipt["final_digest"]))})
+    _assert_archive_rejects_receipt(
+        project,
+        published=(project / TARGET_A).read_bytes(),
+        change_files=_tree_files(_change_root(project)),
+    )
+
+
+def test_archive_rejects_mismatched_rename_leftover(tmp_path: Path) -> None:
+    from assurance_product.export import publish_achieved
+    from assurance_product.status import ArchiveError, archive_published
+
+    project = write_achieved(tmp_path)
+    publish_achieved(project, CHANGE_ID)
+    source = _change_root(project)
+    destination = _archive_root(project)
+    shutil.copytree(source, destination)
+    (destination / "status.json").write_bytes(b'{"tampered":true}\n')
+    change_files = _tree_files(source)
+    published = (project / TARGET_A).read_bytes()
+
+    with pytest.raises(ArchiveError, match="archive destination already exists"):
+        archive_published(project, CHANGE_ID)
+
+    assert source.is_dir()
+    assert destination.is_dir()
+    assert _tree_files(source) == change_files
+    assert (project / TARGET_A).read_bytes() == published
+
+
+def test_archive_resumes_committed_rename_leftover_without_publishing(tmp_path: Path) -> None:
+    from assurance_product.export import publish_achieved
+    from assurance_product.status import archive_published
+
+    project = write_achieved(tmp_path)
+    publish_achieved(project, CHANGE_ID)
+    source = _change_root(project)
+    destination = _archive_root(project)
+    shutil.copytree(source, destination)
+    leftover = _tree_files(source)
+    published = (project / TARGET_A).read_bytes()
+    published_mtime = (project / TARGET_A).stat().st_mtime_ns
+
+    result = archive_published(project, CHANGE_ID)
+
+    assert result["change_id"] == CHANGE_ID
+    assert result["archive_root"] == f"qa/archive/{CHANGE_ID}"
+    assert not source.exists()
+    assert _tree_files(destination) == leftover
+    assert (project / TARGET_A).read_bytes() == published
+    assert (project / TARGET_A).stat().st_mtime_ns == published_mtime
+
+
+def test_archive_returns_existing_archive_when_change_is_gone(tmp_path: Path) -> None:
+    from assurance_product.export import publish_achieved
+    from assurance_product.status import archive_published
+
+    project = write_achieved(tmp_path)
+    publish_achieved(project, CHANGE_ID)
+    first = archive_published(project, CHANGE_ID)
+    archived = _tree_files(_archive_root(project))
+    published = (project / TARGET_A).read_bytes()
+    published_mtime = (project / TARGET_A).stat().st_mtime_ns
+
+    result = archive_published(project, CHANGE_ID)
+
+    assert result == first
+    assert not _change_root(project).exists()
+    assert _tree_files(_archive_root(project)) == archived
+    assert (project / TARGET_A).read_bytes() == published
+    assert (project / TARGET_A).stat().st_mtime_ns == published_mtime

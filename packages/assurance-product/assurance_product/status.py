@@ -156,6 +156,9 @@ def archive_published(project_root: Path, change_id: str) -> dict[str, object]:
     try:
         workspace = ChangeWorkspace.open(Path(project_root).resolve(), safe_change_id(change_id))
     except ValueError as error:
+        archived = _existing_archive_without_change(Path(project_root).resolve(), change_id)
+        if archived is not None:
+            return archived
         raise ArchiveError(str(error)) from error
     status = _read_archive_status(workspace)
     if status.change.state != "achieved" or status.change.change_id != workspace.paths.change_root.name:
@@ -167,6 +170,21 @@ def archive_published(project_root: Path, change_id: str) -> dict[str, object]:
     return {
         "change_id": workspace.paths.change_root.name,
         "archive_root": f"qa/archive/{archive_root.name}",
+    }
+
+
+def _existing_archive_without_change(project: Path, change_id: str) -> dict[str, object] | None:
+    try:
+        resolved_id = safe_change_id(change_id)
+    except ValueError:
+        return None
+    destination = project / "qa" / "archive" / resolved_id
+    source = project / "qa" / "changes" / resolved_id
+    if source.exists() or destination.is_symlink() or not destination.is_dir():
+        return None
+    return {
+        "change_id": resolved_id,
+        "archive_root": f"qa/archive/{resolved_id}",
     }
 
 
@@ -218,7 +236,7 @@ def _relocate_change(workspace: ChangeWorkspace) -> Path:
     archive_parent = _ensure_archive_parent(workspace.paths.project_root)
     destination = archive_parent / source.name
     if destination.exists():
-        raise ArchiveError("archive destination already exists")
+        return _finish_committed_archive(source, destination)
     if _same_filesystem(source, archive_parent):
         os.rename(source, destination)
         _fsync_directory(archive_parent)
@@ -227,13 +245,30 @@ def _relocate_change(workspace: ChangeWorkspace) -> Path:
     try:
         _copy_verified_tree(source, temporary)
         os.rename(temporary, destination)
-        _fsync_directory(archive_parent)
     except Exception:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
         raise
+    try:
+        _fsync_directory(archive_parent)
+    except OSError:
+        pass
+    return _finish_committed_archive(source, destination)
+
+
+def _finish_committed_archive(source: Path, destination: Path) -> Path:
+    if destination.is_symlink() or not destination.is_dir():
+        raise ArchiveError("archive destination already exists")
+    if not source.exists():
+        return destination
+    if _tree_file_bytes(source) != _tree_file_bytes(destination):
+        raise ArchiveError("archive destination already exists")
     shutil.rmtree(source)
     return destination
+
+
+def _tree_file_bytes(root: Path) -> dict[str, bytes]:
+    return {relative: content for relative, content, _mode in _collect_regular_files(root)}
 
 
 def _ensure_archive_parent(project: Path) -> Path:

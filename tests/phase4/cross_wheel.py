@@ -22,7 +22,11 @@ from assurance_generation.operations.planning import validate_plan_input
 from assurance_healing.contracts.agent import FixProposalInputV1
 from assurance_healing.contracts.status import HealingStatusV1
 from assurance_healing.operations.proposal import FixProposalFinalizeHandler, FixProposalPrepareHandler
-from assurance_improvement.operations.archive import ProjectArchiveInput, project_archive
+from assurance_improvement.operations.archive import (
+    ArchivePublishReceipt,
+    ProjectArchiveInput,
+    project_archive,
+)
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_quality.contracts.coverage import CoverageGapsDocument
 from assurance_quality.contracts.report import QualityReport
@@ -489,6 +493,14 @@ def _consume_quality_report(payload: dict[str, Any], leafs: frozenset[str]) -> o
             invocation_id="inv-archive-1",
             archive_digest=_HEX,
             report=report,
+            publish_receipt=ArchivePublishReceipt(
+                schema_version="1",
+                change_id=report.change_id,
+                manifest_digest=_HEX,
+                source_digest=_HEX,
+                target_baseline=_HEX,
+                final_digest=_HEX,
+            ),
         )
     )
 

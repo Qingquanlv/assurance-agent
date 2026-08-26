@@ -286,6 +286,14 @@ def test_archive_summary_warns_on_non_clear_issue_risk() -> None:
                 "archive_digest": HEX_A,
                 "report": quality_report_payload(issue_risk="high"),
                 "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
+                "publish_receipt": {
+                    "schema_version": "1",
+                    "change_id": CHANGE_ID,
+                    "manifest_digest": HEX_A,
+                    "source_digest": HEX_A,
+                    "target_baseline": HEX_A,
+                    "final_digest": HEX_A,
+                },
             }
         )
     )
