@@ -176,6 +176,9 @@ def _claim_target(project_root: Path, claim: str) -> Path:
     raise AssertionError("validated claim path has at least one segment")
 
 
+_PRODUCT_RUNTIME_DIRS = frozenset({".runtime", ".staging"})
+
+
 def _scan_directory(path: Path, prefix: str) -> dict[str, str]:
     _require_directory(path, "directory")
     files: dict[str, str] = {}
@@ -184,6 +187,8 @@ def _scan_directory(path: Path, prefix: str) -> dict[str, str]:
     except OSError as error:
         raise TaskWorkspaceViolation(f"cannot enumerate directory: {prefix}") from error
     for entry in entries:
+        if entry.name in _PRODUCT_RUNTIME_DIRS:
+            continue
         logical_path = f"{prefix}/{entry.name}" if prefix else entry.name
         value = _lstat(entry, "directory entry")
         if stat.S_ISLNK(value.st_mode):
@@ -403,6 +408,8 @@ def _scan_directory_fd(directory_fd: int, prefix: str) -> dict[str, tuple[str, i
     except OSError as error:
         raise TaskWorkspaceViolation(f"cannot enumerate directory: {prefix}") from error
     for name in names:
+        if name in _PRODUCT_RUNTIME_DIRS:
+            continue
         logical_path = f"{prefix}/{name}" if prefix else name
         entry = _stat_at(directory_fd, name, "directory entry")
         if stat.S_ISLNK(entry.st_mode):

@@ -14,7 +14,7 @@ from tests.phase5.cli_support import (
     scripted_engine_factory,
     source_args,
 )
-from tests.phase5.composition_harness import request_for
+from tests.phase5.composition_harness import InstalledSources, request_for
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
@@ -24,6 +24,28 @@ def _status_schema() -> dict[str, object]:
     return json.loads(raw.decode("utf-8"))
 
 
+def _existing_args(
+    *,
+    project_dir: Path,
+    change_id: str,
+    invocation_id: str,
+    installed_sources: InstalledSources,
+    secret: str,
+) -> list[str]:
+    return [
+        "--project-dir",
+        str(project_dir),
+        "--change",
+        change_id,
+        "--invocation-id",
+        invocation_id,
+        *source_args(installed_sources),
+        "--secret",
+        secret,
+        "--json",
+    ]
+
+
 def test_status_json_matches_schema_after_start(cli_runner, installed_sources, tmp_path: Path, monkeypatch):
     from assurance_product.cli import app
     from assurance_product.models import StatusV1
@@ -31,7 +53,7 @@ def test_status_json_matches_schema_after_start(cli_runner, installed_sources, t
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, _project_dir, _engine_root = common_lifecycle_args(
+    args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
         composition=composition,
@@ -43,14 +65,13 @@ def test_status_json_matches_schema_after_start(cli_runner, installed_sources, t
         app,
         [
             "status",
-            "--json",
-            "--engine-root",
-            args[args.index("--engine-root") + 1],
-            "--invocation-id",
-            "inv-status-001",
-            *source_args(installed_sources),
-            "--secret",
-            args[args.index("--secret") + 1],
+            *_existing_args(
+                project_dir=project_dir,
+                change_id=change_id,
+                invocation_id="inv-status-001",
+                installed_sources=installed_sources,
+                secret=args[args.index("--secret") + 1],
+            ),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -60,7 +81,10 @@ def test_status_json_matches_schema_after_start(cli_runner, installed_sources, t
     assert status.invocation_id == "inv-status-001"
     assert status.lock_digest == composition.lock_digest
     assert status.entrypoint == "intake"
+    assert status.change.change_id == change_id
     assert status.status in {"running", "blocked", "interrupted", "stopped", "failed", "completed"}
+    assert "initial_tree_id" not in document
+    assert "current_head_tree_id" not in document
     schema = _status_schema()
     assert schema["title"] == "StatusV1"
     assert schema["additionalProperties"] is False
@@ -73,6 +97,7 @@ def test_status_json_matches_schema_after_start(cli_runner, installed_sources, t
 def test_render_status_projects_started_invocation(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ):
+    from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
     from assurance_product.status import render_status
@@ -87,7 +112,7 @@ def test_render_status_projects_started_invocation(
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, _project_dir, engine_root = common_lifecycle_args(
+    args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
         composition=composition,
@@ -103,19 +128,27 @@ def test_render_status_projects_started_invocation(
         secret_sources=secrets,
         digest=runtime_authorization_digest(secrets),
     )
-    with Engine(engine_root, host=None) as engine:
-        with engine.open("inv-render-001", composition, authorization=authorization) as handle:
+    workspace = ChangeWorkspace.open(project_dir, change_id)
+    with Engine(workspace.paths.runtime_root, host=None) as engine:
+        with engine.open(
+            "inv-render-001",
+            composition,
+            authorization=authorization,
+            workspace_binding=workspace.runtime_binding(),
+        ) as handle:
             envelopes = Ledger(handle.invocation_root / "ledger").read_all()
             projection = fold_events(envelopes)
             start_doc = parse_json_output(started.stdout)
             status = render_status(
                 projection,
                 root_input_digest=start_doc["root_input_digest"],
-                initial_tree_id=start_doc["seed_tree_id"],
+                change_id=change_id,
             )
     assert status.invocation_id == "inv-render-001"
     assert status.lock_digest == composition.lock_digest
-    assert status.current_head_tree_id
+    assert status.change.change_id == change_id
+    assert "seed_tree_id" not in start_doc
+    assert "current_head_tree_id" not in status.model_dump(mode="json")
     assert status.graph_hierarchy
 
 
@@ -127,7 +160,7 @@ def test_lock_show_prints_authenticated_closed_projection(
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, _project_dir, _engine_root = common_lifecycle_args(
+    args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
         composition=composition,
@@ -140,14 +173,13 @@ def test_lock_show_prints_authenticated_closed_projection(
         [
             "lock",
             "show",
-            "--json",
-            "--engine-root",
-            args[args.index("--engine-root") + 1],
-            "--invocation-id",
-            "inv-lock-001",
-            *source_args(installed_sources),
-            "--secret",
-            args[args.index("--secret") + 1],
+            *_existing_args(
+                project_dir=project_dir,
+                change_id=change_id,
+                invocation_id="inv-lock-001",
+                installed_sources=installed_sources,
+                secret=args[args.index("--secret") + 1],
+            ),
         ],
     )
     assert result.exit_code == 0, result.output
@@ -170,7 +202,7 @@ def test_status_after_run_is_authoritative_completed_projection(
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     monkeypatch.setattr(cli, "create_engine", scripted_engine_factory())
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, _project_dir, _engine_root = common_lifecycle_args(
+    args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
         composition=composition,
@@ -182,18 +214,18 @@ def test_status_after_run_is_authoritative_completed_projection(
         app,
         [
             "status",
-            "--json",
-            "--engine-root",
-            args[args.index("--engine-root") + 1],
-            "--invocation-id",
-            "inv-status-run-001",
-            *source_args(installed_sources),
-            "--secret",
-            args[args.index("--secret") + 1],
+            *_existing_args(
+                project_dir=project_dir,
+                change_id=change_id,
+                invocation_id="inv-status-run-001",
+                installed_sources=installed_sources,
+                secret=args[args.index("--secret") + 1],
+            ),
         ],
     )
     assert result.exit_code == 0, result.output
     status = StatusV1.model_validate(parse_json_output(result.stdout))
     assert status.status == "completed"
     assert status.entrypoint == "intake"
+    assert status.change.change_id == change_id
     assert status.pending_interrupt is None

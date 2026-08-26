@@ -14,7 +14,6 @@ from graph_engine.frozen_json import freeze_json, thaw_json
 from graph_engine.graph.input_projection import project_task_input
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
-    InvocationWorkspaceBinding,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
     TaskContext,
@@ -370,10 +369,15 @@ class ProductRun:
         return projection, status
 
     def _run_engine_open(self) -> tuple[InvocationProjection, str, str | None, Engine, InvocationHandle]:
+        from assurance_product.product import prepare_change_workspace
+
         root_input = self._root_input()
         seed = empty_invocation_seed(root_input=cast(JSONValue, root_input))
         invocation_id = f"assurance-{uuid.uuid4().hex}"
-        engine = Engine(self._engine_root / invocation_id, host=self._host())
+        project = (self._engine_root / invocation_id / "project").resolve()
+        project.mkdir(parents=True)
+        workspace = prepare_change_workspace(project, "CH-DEMO-001")
+        engine = Engine(workspace.paths.runtime_root, host=self._host())
         self._engines.append(engine)
         handle = engine.start(
             self._composition,
@@ -381,23 +385,10 @@ class ProductRun:
             invocation_id=invocation_id,
             seed=seed,
             authorization=empty_runtime_authorization(),
-            workspace_binding=_workspace_binding(self._engine_root / invocation_id),
+            workspace_binding=workspace.runtime_binding(),
         )
         result = engine.run_until_blocked(handle)
         return result.projection, result.status, result.reason, engine, handle
-
-
-def _workspace_binding(root: Path) -> InvocationWorkspaceBinding:
-    project_root = root.parent / f".{root.name}-project"
-    attempts_root = root.parent / f".{root.name}-attempts"
-    receipts_root = root.parent / f".{root.name}-receipts"
-    for path in (project_root, attempts_root, receipts_root):
-        path.mkdir(exist_ok=True)
-    return InvocationWorkspaceBinding(
-        project_root=project_root,
-        attempts_root=attempts_root,
-        receipts_root=receipts_root,
-    )
 
 
 def _product_input(

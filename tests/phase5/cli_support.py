@@ -27,9 +27,7 @@ from graph_engine.runtime.secret_sources import (
     SecretSourceBinding,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.seed import InvocationSeed
-from graph_engine.runtime.tree_io import SeedCapturePolicy, capture_workspace_seed
-from graph_engine.runtime.workspace import SnapshotStore
+from graph_engine.runtime.seed import empty_invocation_seed
 
 from tests.phase5.composition_harness import InstalledSources, request_for
 from tests.phase5.product_runner import _ScriptedTaskHost
@@ -102,10 +100,9 @@ def write_product_input(
     **overrides: object,
 ) -> Path:
     payload = valid_product_input(
-        capability_catalog=_first_resource_ref(
+        capability_catalog=ref_from_composition(
             composition,
             "assurance.product.configuration.capability-catalog",
-            "assurance.product.configuration.project-config",
         ),
         product_policy=_first_resource_ref(
             composition,
@@ -156,25 +153,39 @@ class _CompletingScriptedHost(_ScriptedTaskHost):
             healing_decision=healing_decision,
         )
         self._handlers: Mapping[str, TaskHandler] = {}
-        self._store: SnapshotStore | None = None
+        self._store: object | None = None
         self._receipts: TerminalReceiptStore | None = None
 
     def bind_invocation_runtime(
         self,
         *,
         handlers: Mapping[str, TaskHandler],
-        store: SnapshotStore,
+        store: object,
         receipts: TerminalReceiptStore | None = None,
+        handler_import_roots: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
+        del handler_import_roots
         self._handlers = handlers
         self._store = store
         if receipts is not None:
             self._receipts = receipts
 
+    def _invocation_ledger(self, invocation_id: str) -> Ledger | None:
+        store = self._store
+        if store is None:
+            return None
+        snapshot_root = getattr(store, "root", None)
+        if snapshot_root is not None:
+            return Ledger(Path(snapshot_root).parent / "ledger")
+        receipts_root = getattr(store, "receipts_root", None)
+        if receipts_root is not None:
+            return Ledger(Path(receipts_root).parent / "invocations" / invocation_id / "ledger")
+        return None
+
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
         outcome = self._outcome(call.request.capability_id)
-        if call.activity_rpc.activity_id is not None and self._store is not None:
-            ledger = Ledger(self._store.root.parent / "ledger")
+        ledger = self._invocation_ledger(call.identity.invocation_id)
+        if call.activity_rpc.activity_id is not None and ledger is not None:
             port = LedgerTaskActivityPort(ledger=ledger, identity=call.activity_rpc)
             port.mark_dispatch_started(_DISPATCH_FINGERPRINT)
             port.bind(_ACTIVITY_REFERENCE)
@@ -192,7 +203,14 @@ class _CompletingScriptedHost(_ScriptedTaskHost):
         activity: TaskActivitySnapshot,
         outcome: TaskOutcome,
     ) -> None:
-        if self._receipts is None or identity.activity_id is None:
+        if self._receipts is None or identity.activity_id is None or self._store is None:
+            return
+        seal = getattr(self._store, "seal", None)
+        if seal is None:
+            return
+        try:
+            staged_digest = seal(activity.workspace_identity).staged_digest
+        except Exception:
             return
         sink = self._receipts.sink_for(identity)
         sink.install(
@@ -206,7 +224,13 @@ class _CompletingScriptedHost(_ScriptedTaskHost):
                 activity_id=identity.activity_id,
                 operation=identity.operation,
                 request_digest=activity.request_digest,
-                workspace_identity_digest=activity.workspace_identity.attempt_identity_digest,
+                workspace_identity_digest=activity.workspace_identity.identity_digest,
+                project_root_digest=activity.workspace_identity.project_digest,
+                write_root_digest=activity.workspace_identity.write_root_digest,
+                baseline_digest=canonical_digest(
+                    [item.model_dump(mode="json") for item in activity.workspace_identity.baseline_files]
+                ),
+                staged_write_set_digest=staged_digest,
                 dispatch_fingerprint_digest=activity.dispatch_fingerprint_digest,
                 reference_digest=activity.reference_digest,
                 outcome=outcome,
@@ -248,6 +272,7 @@ class LifecycleInvocation:
     lock_digest: str
     composition: FrozenComposition
     project_dir: Path
+    change_id: str
     engine_root: Path
 
 
@@ -274,12 +299,13 @@ def start_lifecycle_invocation(
     drive: bool = False,
     require_succeeded: bool = True,
     entrypoint: str = "intake",
+    change_id: str = "CH-DEMO-001",
     families: tuple[str, ...] = (),
     extra_project_files: Mapping[str, str] | None = None,
     host_factory=None,
 ) -> LifecycleInvocation:
     from assurance_product.models import ProductInputV1
-    from assurance_product.product import resolve_assurance_composition
+    from assurance_product.product import prepare_change_workspace, resolve_assurance_composition
 
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     project_dir = write_project_dir(tmp_path / "project")
@@ -291,27 +317,22 @@ def start_lifecycle_invocation(
         tmp_path / "input.json",
         composition,
         selected_test_families=families,
+        change_id=change_id,
     )
     product_input = ProductInputV1.model_validate_json(input_path.read_text(encoding="utf-8"))
-    workspace = capture_workspace_seed(project_dir, policy=SeedCapturePolicy())
     root_input = cast(JSONValue, product_input.model_dump(mode="json"))
-    seed = InvocationSeed(
-        schema_version="1",
-        root_input=root_input,
-        root_input_digest=canonical_digest(root_input),
-        workspace=workspace,
-    )
+    seed = empty_invocation_seed(root_input=root_input)
     authorization = lifecycle_authorization()
-    engine_root = tmp_path / "engine-root"
-    engine_root.mkdir(exist_ok=True)
+    workspace = prepare_change_workspace(project_dir, change_id)
     factory = scripted_engine_factory() if host_factory is None else host_factory
-    engine = factory(engine_root, authorization)
+    engine = factory(workspace.paths.runtime_root, authorization)
     handle = engine.start(
         composition,
         entrypoint=entrypoint,
         invocation_id=invocation_id,
         seed=seed,
         authorization=authorization,
+        workspace_binding=workspace.runtime_binding(),
     )
     try:
         if drive:
@@ -327,7 +348,8 @@ def start_lifecycle_invocation(
         lock_digest=composition.lock_digest,
         composition=composition,
         project_dir=project_dir,
-        engine_root=engine_root,
+        change_id=change_id,
+        engine_root=workspace.paths.runtime_root,
     )
 
 
@@ -357,13 +379,12 @@ def common_lifecycle_args(
     composition: FrozenComposition,
     invocation_id: str,
     entrypoint: str = "intake",
+    change_id: str = "CH-DEMO-001",
     families: tuple[str, ...] = (),
     extra: Mapping[str, object] | None = None,
-) -> tuple[list[str], Path, Path]:
+) -> tuple[list[str], Path, str]:
     project_dir = write_project_dir(tmp_path / "project")
-    engine_root = tmp_path / "engine-root"
-    engine_root.mkdir()
-    overrides = {"selected_test_families": families, **dict(extra or {})}
+    overrides = {"selected_test_families": families, "change_id": change_id, **dict(extra or {})}
     input_path = write_product_input(
         tmp_path / "input.json",
         composition,
@@ -372,8 +393,8 @@ def common_lifecycle_args(
     args = [
         "--project-dir",
         str(project_dir),
-        "--engine-root",
-        str(engine_root),
+        "--change",
+        change_id,
         "--invocation-id",
         invocation_id,
         *source_args(installed_sources),
@@ -385,4 +406,4 @@ def common_lifecycle_args(
         f"{SECRET_HANDLE}=env:{SECRET_ENV}",
         "--json",
     ]
-    return args, project_dir, engine_root
+    return args, project_dir, change_id

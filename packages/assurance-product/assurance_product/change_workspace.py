@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from graph_engine.plugin_api import InvocationWorkspaceBinding
+
 
 def _mkdir(path: Path) -> None:
     path.mkdir()
@@ -50,6 +52,15 @@ def require_real_directory(path: Path) -> Path:
     return candidate
 
 
+def _ensure_real_directory(path: Path, created: list[Path]) -> None:
+    if path.exists():
+        if path.is_symlink() or not path.is_dir():
+            raise ValueError("change workspace directories must be real directories")
+        return
+    _mkdir(path)
+    created.append(path)
+
+
 def require_descendant(project: Path, path: Path) -> Path:
     try:
         resolved = path.resolve(strict=True)
@@ -86,10 +97,34 @@ class ChangeWorkspace:
         )
         return cls(paths)
 
+    @classmethod
+    def prepare(cls, project_root: Path, change_id: str) -> ChangeWorkspace:
+        project = require_real_directory(project_root)
+        resolved_id = safe_change_id(change_id)
+        qa = project / "qa"
+        changes = qa / "changes"
+        change = changes / resolved_id
+        created: list[Path] = []
+        try:
+            _ensure_real_directory(qa, created)
+            _ensure_real_directory(changes, created)
+            _ensure_real_directory(change, created)
+            workspace = cls.open(project, resolved_id)
+            workspace.initialize()
+        except Exception:
+            for path in reversed(created):
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+            raise
+        return workspace
+
     def initialize(self) -> None:
         runtime = self.paths.runtime_root
         staging = self.paths.staging_root
-        expected_runtime = {"ledger", "activities", "receipts"}
+        required_runtime = {"activities", "receipts"}
+        allowed_runtime = required_runtime | {"invocations", "ledger"}
         runtime_exists = runtime.exists()
         staging_exists = staging.exists()
         if runtime_exists != staging_exists:
@@ -99,11 +134,10 @@ class ChangeWorkspace:
                 raise ValueError("change workspace contains a symlink")
             if not runtime.is_dir() or not staging.is_dir():
                 raise ValueError("change workspace contains a non-directory path")
-            if {child.name for child in runtime.iterdir()} != expected_runtime:
+            children = {child.name for child in runtime.iterdir()}
+            if not required_runtime.issubset(children) or not children.issubset(allowed_runtime):
                 raise ValueError("runtime directory has an incomplete layout")
-            if any(
-                (runtime / name).is_symlink() or not (runtime / name).is_dir() for name in expected_runtime
-            ):
+            if any((runtime / name).is_symlink() or not (runtime / name).is_dir() for name in children):
                 raise ValueError("runtime directory contains a non-directory path")
             return
 
@@ -115,7 +149,7 @@ class ChangeWorkspace:
 
         try:
             create_directory(runtime)
-            for name in ("ledger", "activities", "receipts"):
+            for name in ("activities", "receipts"):
                 create_directory(runtime / name)
             create_directory(staging)
         except OSError as exc:
@@ -125,6 +159,13 @@ class ChangeWorkspace:
                 except OSError:
                     pass
             raise ValueError("could not initialize change workspace") from exc
+
+    def runtime_binding(self) -> InvocationWorkspaceBinding:
+        return InvocationWorkspaceBinding(
+            project_root=self.paths.project_root,
+            attempts_root=self.paths.staging_root,
+            receipts_root=self.paths.runtime_root / "receipts",
+        )
 
     def output_route(self, capability_alias: str) -> tuple[str, ...]:
         from assurance_product.output_routes import OutputRouteCatalog

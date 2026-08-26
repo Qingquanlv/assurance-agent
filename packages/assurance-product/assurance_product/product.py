@@ -29,6 +29,8 @@ from graph_engine.graph.compiler import CompiledWorkflow
 from graph_engine.graph.schema import WorkflowDef, parse_workflow
 from graph_engine.plugin_api import FrozenModel, ProviderSource
 
+from assurance_product.agent_contracts import bind_agent_execution_contracts
+from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.models import (
     CONFIGURATION_PLUGIN_ID,
     CONFIGURATION_PLUGIN_VERSION,
@@ -72,8 +74,19 @@ _PLUGIN_VERSIONS: dict[str, str] = {
 _WORKFLOW_PATH = Path(__file__).resolve().parent / "resources" / "workflow" / "assurance-full.yaml"
 
 
+def prepare_change_workspace(project_root: Path, change_id: str) -> ChangeWorkspace:
+    return ChangeWorkspace.prepare(Path(project_root).resolve(), change_id)
+
+
+def reopen_change_workspace(project_root: Path, change_id: str) -> ChangeWorkspace:
+    workspace = ChangeWorkspace.open(Path(project_root).resolve(), change_id)
+    workspace.initialize()
+    return workspace
+
+
 def load_canonical_workflow() -> WorkflowDef:
-    return parse_workflow(_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    workflow = parse_workflow(_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    return bind_agent_execution_contracts(workflow)
 
 
 def _canonical_workflow_document() -> dict[str, JSONValue]:
@@ -89,7 +102,9 @@ _PROVIDERS: dict[AdapterName, str] = {
     "opencode": "AssuranceOpenCodeProductProvider",
     "cursor": "AssuranceCursorProductProvider",
 }
-_PREPARE_DATA_FIELDS = frozenset({"execution", "request_policy_digest", "request_config_digest"})
+_PREPARE_DATA_FIELDS = frozenset(
+    {"agent_profile", "execution", "request_policy_digest", "request_config_digest"}
+)
 _PREPARE_EXECUTION_FIELDS = frozenset(
     {"provider_model", "worker_profile", "permission_profile_digest", "limits"}
 )

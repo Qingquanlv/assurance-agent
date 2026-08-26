@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import hashlib
 import json
 import os
@@ -42,6 +42,7 @@ _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_
 _FILE_WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
 _RECEIPT_NAME = "publish-receipt.json"
 _STATUS_NAME = "status.json"
+_EVENTS_NAME = "events.jsonl"
 _MANIFEST_NAME = "apply-manifest.json"
 
 
@@ -130,6 +131,30 @@ def render_status(
             publication_status=publication_status,
         )
     )
+
+
+def write_runtime_projections(
+    workspace: ChangeWorkspace,
+    projection: InvocationProjection,
+    envelopes: Sequence[object],
+    *,
+    root_input_digest: str,
+) -> StatusV1:
+    status = render_status(
+        projection,
+        root_input_digest=root_input_digest,
+        change_id=workspace.paths.change_root.name,
+    )
+    _write_canonical_json(workspace.paths.change_root / _STATUS_NAME, status.model_dump(mode="json"))
+    lines = []
+    for envelope in envelopes:
+        dump = getattr(envelope, "model_dump", None)
+        if dump is None:
+            raise ValueError("ledger envelope is not serializable")
+        lines.append(json.dumps(dump(mode="json"), sort_keys=True, separators=(",", ":")))
+    payload = ("\n".join(lines) + "\n") if lines else ""
+    _write_text(workspace.paths.change_root / _EVENTS_NAME, payload)
+    return status
 
 
 def finalize_achieved(
@@ -482,9 +507,13 @@ def _read_json_object(path: Path, label: str) -> Mapping[str, object]:
 
 
 def _write_canonical_json(path: Path, payload: Mapping[str, object]) -> None:
+    _write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _write_text(path: Path, payload: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.write_text(payload, encoding="utf-8")
     temporary.replace(path)
 
 

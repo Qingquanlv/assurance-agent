@@ -8,7 +8,7 @@ from typing import Literal, NoReturn, cast
 import click
 from pydantic import ValidationError
 
-from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.canonical import JSONValue
 from graph_engine.composition import (
     CapabilityBindingEntry,
     ConfigTreePluginSource,
@@ -27,13 +27,10 @@ from graph_engine.runtime.secret_sources import (
     authorize_binding_secret_handles,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.seed import InvocationSeed
-from graph_engine.runtime.tree_io import (
-    SeedCapturePolicy,
-    capture_workspace_seed,
-)
+from graph_engine.runtime.seed import empty_invocation_seed
 
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
+from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.export import PublishError, publish_achieved, select_publish_change
 from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1
 from assurance_product.product import (
@@ -41,9 +38,11 @@ from assurance_product.product import (
     AssuranceCompositionRequest,
     GraphAuditResult,
     audit_full_graph,
+    prepare_change_workspace,
+    reopen_change_workspace,
     resolve_assurance_composition,
 )
-from assurance_product.status import ArchiveError, archive_published, render_status
+from assurance_product.status import ArchiveError, archive_published, render_status, write_runtime_projections
 
 _SOURCE_FLAGS = (
     "product",
@@ -54,13 +53,13 @@ _SOURCE_FLAGS = (
 )
 _START_FLAGS = (
     "project_dir",
-    "engine_root",
+    "change",
     "invocation_id",
     *_SOURCE_FLAGS,
     "entrypoint",
     "input",
 )
-_EXISTING_FLAGS = ("engine_root", "invocation_id", *_SOURCE_FLAGS)
+_EXISTING_FLAGS = ("project_dir", "change", "invocation_id", *_SOURCE_FLAGS)
 _RUN_EXIT = {
     "succeeded": (0, "completed"),
     "stopped": (20, "stopped"),
@@ -169,7 +168,7 @@ def bindings_build(manifest: str | None, output_dir: str | None, as_json: bool) 
 
 @app.command("start")
 @click.option("--project-dir", type=click.Path())
-@click.option("--engine-root", type=click.Path())
+@click.option("--change")
 @click.option("--invocation-id")
 @click.option("--product")
 @click.option("--binding-dist")
@@ -182,7 +181,7 @@ def bindings_build(manifest: str | None, output_dir: str | None, as_json: bool) 
 @click.option("--json", "as_json", is_flag=True)
 def start_command(
     project_dir: str | None,
-    engine_root: str | None,
+    change: str | None,
     invocation_id: str | None,
     product: str | None,
     binding_dist: str | None,
@@ -198,7 +197,7 @@ def start_command(
     _require_options(
         {
             "project_dir": project_dir,
-            "engine_root": engine_root,
+            "change": change,
             "invocation_id": invocation_id,
             "product": product,
             "binding_dist": binding_dist,
@@ -213,7 +212,7 @@ def start_command(
     try:
         document = _start_invocation(
             project_dir=Path(cast(str, project_dir)),
-            engine_root=Path(cast(str, engine_root)),
+            change_id=cast(str, change),
             invocation_id=cast(str, invocation_id),
             product=cast(str, product),
             binding_dist=cast(str, binding_dist),
@@ -231,7 +230,7 @@ def start_command(
 
 @app.command("run")
 @click.option("--project-dir", type=click.Path())
-@click.option("--engine-root", type=click.Path())
+@click.option("--change")
 @click.option("--invocation-id")
 @click.option("--product")
 @click.option("--binding-dist")
@@ -244,7 +243,7 @@ def start_command(
 @click.option("--json", "as_json", is_flag=True)
 def run_command(
     project_dir: str | None,
-    engine_root: str | None,
+    change: str | None,
     invocation_id: str | None,
     product: str | None,
     binding_dist: str | None,
@@ -259,7 +258,8 @@ def run_command(
     del as_json
     _require_options(
         {
-            "engine_root": engine_root,
+            "project_dir": project_dir,
+            "change": change,
             "invocation_id": invocation_id,
             "product": product,
             "binding_dist": binding_dist,
@@ -271,8 +271,8 @@ def run_command(
     )
     try:
         result, mapped = _run_invocation(
-            project_dir=None if project_dir is None else Path(project_dir),
-            engine_root=Path(cast(str, engine_root)),
+            project_dir=Path(cast(str, project_dir)),
+            change_id=cast(str, change),
             invocation_id=cast(str, invocation_id),
             product=cast(str, product),
             binding_dist=cast(str, binding_dist),
@@ -297,7 +297,8 @@ def run_command(
 
 
 @app.command("status")
-@click.option("--engine-root", type=click.Path())
+@click.option("--project-dir", type=click.Path())
+@click.option("--change")
 @click.option("--invocation-id")
 @click.option("--product")
 @click.option("--binding-dist")
@@ -307,7 +308,8 @@ def run_command(
 @click.option("--secret", "secrets", multiple=True)
 @click.option("--json", "as_json", is_flag=True)
 def status_command(
-    engine_root: str | None,
+    project_dir: str | None,
+    change: str | None,
     invocation_id: str | None,
     product: str | None,
     binding_dist: str | None,
@@ -320,7 +322,8 @@ def status_command(
     del as_json
     _require_options(
         {
-            "engine_root": engine_root,
+            "project_dir": project_dir,
+            "change": change,
             "invocation_id": invocation_id,
             "product": product,
             "binding_dist": binding_dist,
@@ -332,7 +335,8 @@ def status_command(
     )
     try:
         projection, identity = _read_authenticated_projection(
-            engine_root=Path(cast(str, engine_root)),
+            project_dir=Path(cast(str, project_dir)),
+            change_id=cast(str, change),
             invocation_id=cast(str, invocation_id),
             product=cast(str, product),
             binding_dist=cast(str, binding_dist),
@@ -344,7 +348,7 @@ def status_command(
         document = render_status(
             projection,
             root_input_digest=identity["root_input_digest"],
-            initial_tree_id=identity["initial_tree_id"],
+            change_id=cast(str, change),
         ).model_dump(mode="json")
     except CommandError as error:
         _fail(str(error), error.code)
@@ -352,7 +356,8 @@ def status_command(
 
 
 @app.command("resume")
-@click.option("--engine-root", type=click.Path())
+@click.option("--project-dir", type=click.Path())
+@click.option("--change")
 @click.option("--invocation-id")
 @click.option("--product")
 @click.option("--binding-dist")
@@ -364,7 +369,8 @@ def status_command(
 @click.option("--reason")
 @click.option("--json", "as_json", is_flag=True)
 def resume_command(
-    engine_root: str | None,
+    project_dir: str | None,
+    change: str | None,
     invocation_id: str | None,
     product: str | None,
     binding_dist: str | None,
@@ -379,7 +385,8 @@ def resume_command(
     del as_json
     _require_options(
         {
-            "engine_root": engine_root,
+            "project_dir": project_dir,
+            "change": change,
             "invocation_id": invocation_id,
             "product": product,
             "binding_dist": binding_dist,
@@ -393,7 +400,8 @@ def resume_command(
     )
     try:
         result, mapped = _resume_invocation(
-            engine_root=Path(cast(str, engine_root)),
+            project_dir=Path(cast(str, project_dir)),
+            change_id=cast(str, change),
             invocation_id=cast(str, invocation_id),
             product=cast(str, product),
             binding_dist=cast(str, binding_dist),
@@ -465,7 +473,8 @@ def lock() -> None:
 
 
 @lock.command("show")
-@click.option("--engine-root", type=click.Path())
+@click.option("--project-dir", type=click.Path())
+@click.option("--change")
 @click.option("--invocation-id")
 @click.option("--product")
 @click.option("--binding-dist")
@@ -475,7 +484,8 @@ def lock() -> None:
 @click.option("--secret", "secrets", multiple=True)
 @click.option("--json", "as_json", is_flag=True)
 def lock_show(
-    engine_root: str | None,
+    project_dir: str | None,
+    change: str | None,
     invocation_id: str | None,
     product: str | None,
     binding_dist: str | None,
@@ -488,7 +498,8 @@ def lock_show(
     del as_json
     _require_options(
         {
-            "engine_root": engine_root,
+            "project_dir": project_dir,
+            "change": change,
             "invocation_id": invocation_id,
             "product": product,
             "binding_dist": binding_dist,
@@ -500,7 +511,8 @@ def lock_show(
     )
     try:
         composition, _projection, _identity = _open_authenticated(
-            engine_root=Path(cast(str, engine_root)),
+            project_dir=Path(cast(str, project_dir)),
+            change_id=cast(str, change),
             invocation_id=cast(str, invocation_id),
             product=cast(str, product),
             binding_dist=cast(str, binding_dist),
@@ -645,24 +657,37 @@ def _load_product_input(path: Path, *, entrypoint: str, composition: FrozenCompo
         raise CommandError(str(error)) from error
 
 
-def _capture_seed(project_dir: Path, product_input: ProductInputV1) -> InvocationSeed:
+def _bind_workspace(project_dir: Path, change_id: str, *, create: bool) -> ChangeWorkspace:
     try:
-        workspace = capture_workspace_seed(project_dir, policy=SeedCapturePolicy())
-    except (GraphEngineError, OSError, ValidationError) as error:
+        if create:
+            return prepare_change_workspace(project_dir, change_id)
+        return reopen_change_workspace(project_dir, change_id)
+    except ValueError as error:
         raise CommandError(str(error)) from error
-    root_input = cast(JSONValue, product_input.model_dump(mode="json"))
-    return InvocationSeed(
-        schema_version="1",
-        root_input=root_input,
-        root_input_digest=canonical_digest(root_input),
-        workspace=workspace,
-    )
+
+
+def _write_projections(
+    workspace: ChangeWorkspace,
+    projection: InvocationProjection,
+    envelopes: Sequence[object],
+    *,
+    root_input_digest: str,
+) -> None:
+    try:
+        write_runtime_projections(
+            workspace,
+            projection,
+            envelopes,
+            root_input_digest=root_input_digest,
+        )
+    except (OSError, ValueError) as error:
+        raise CommandError(str(error)) from error
 
 
 def _start_invocation(
     *,
     project_dir: Path,
-    engine_root: Path,
+    change_id: str,
     invocation_id: str,
     product: str,
     binding_dist: str,
@@ -683,33 +708,43 @@ def _start_invocation(
         config_tree=config_tree,
     )
     product_input = _load_product_input(input_path, entrypoint=entrypoint, composition=composition)
+    if product_input.change_id != change_id:
+        raise CommandError("change does not match product input change_id")
     authorization = _authorize_secrets(composition, secrets)
-    seed = _capture_seed(project_dir, product_input)
+    seed = empty_invocation_seed(root_input=cast(JSONValue, product_input.model_dump(mode="json")))
+    workspace = _bind_workspace(project_dir, change_id, create=True)
     try:
-        with create_engine(engine_root, authorization) as engine:
+        with create_engine(workspace.paths.runtime_root, authorization) as engine:
             with engine.start(
                 composition,
                 entrypoint=entrypoint,
                 invocation_id=invocation_id,
                 seed=seed,
                 authorization=authorization,
-            ):
-                pass
+                workspace_binding=workspace.runtime_binding(),
+            ) as handle:
+                envelopes = Ledger(handle.invocation_root / "ledger").read_all()
+                _write_projections(
+                    workspace,
+                    fold_events(envelopes),
+                    envelopes,
+                    root_input_digest=seed.root_input_digest,
+                )
     except (EngineError, GraphEngineError, OSError, ValidationError) as error:
         raise CommandError(str(error)) from error
     return {
         "invocation_id": invocation_id,
+        "change_id": change_id,
         "lock_digest": composition.lock_digest,
         "composition_digest": composition.digest,
-        "seed_tree_id": seed.workspace.tree_id,
         "root_input_digest": seed.root_input_digest,
     }
 
 
 def _run_invocation(
     *,
-    project_dir: Path | None,
-    engine_root: Path,
+    project_dir: Path,
+    change_id: str,
     invocation_id: str,
     product: str,
     binding_dist: str,
@@ -728,29 +763,56 @@ def _run_invocation(
         config_tree=config_tree,
     )
     authorization = _authorize_secrets(composition, secrets)
-    exists = (engine_root / "invocations" / invocation_id).is_dir()
+    workspace = _bind_workspace(project_dir, change_id, create=True)
+    binding = workspace.runtime_binding()
+    exists = (workspace.paths.runtime_root / "invocations" / invocation_id).is_dir()
     try:
-        with create_engine(engine_root, authorization) as engine:
+        with create_engine(workspace.paths.runtime_root, authorization) as engine:
             if exists:
-                with engine.open(invocation_id, composition, authorization=authorization) as handle:
+                with engine.open(
+                    invocation_id,
+                    composition,
+                    authorization=authorization,
+                    workspace_binding=binding,
+                ) as handle:
                     result = engine.run_until_blocked(handle)
+                    envelopes = Ledger(handle.invocation_root / "ledger").read_all()
+                    identity = _start_identity(envelopes)
+                    _write_projections(
+                        workspace,
+                        result.projection,
+                        envelopes,
+                        root_input_digest=identity["root_input_digest"],
+                    )
             else:
-                if project_dir is None or entrypoint is None or input_path is None:
-                    raise CommandError("first run requires --project-dir, --entrypoint, and --input")
+                if entrypoint is None or input_path is None:
+                    raise CommandError("first run requires --entrypoint and --input")
                 if entrypoint not in PRODUCT_ENTRYPOINTS:
                     raise CommandError(f"unknown product entrypoint: {entrypoint}")
                 product_input = _load_product_input(
                     input_path, entrypoint=entrypoint, composition=composition
                 )
-                seed = _capture_seed(project_dir, product_input)
+                if product_input.change_id != change_id:
+                    raise CommandError("change does not match product input change_id")
+                seed = empty_invocation_seed(
+                    root_input=cast(JSONValue, product_input.model_dump(mode="json"))
+                )
                 with engine.start(
                     composition,
                     entrypoint=entrypoint,
                     invocation_id=invocation_id,
                     seed=seed,
                     authorization=authorization,
+                    workspace_binding=binding,
                 ) as handle:
                     result = engine.run_until_blocked(handle)
+                    envelopes = Ledger(handle.invocation_root / "ledger").read_all()
+                    _write_projections(
+                        workspace,
+                        result.projection,
+                        envelopes,
+                        root_input_digest=seed.root_input_digest,
+                    )
     except EngineConflictError as error:
         raise CommandError(str(error)) from error
     except (EngineError, GraphEngineError, OSError, ValidationError) as error:
@@ -760,7 +822,8 @@ def _run_invocation(
 
 def _resume_invocation(
     *,
-    engine_root: Path,
+    project_dir: Path,
+    change_id: str,
     invocation_id: str,
     product: str,
     binding_dist: str,
@@ -779,13 +842,27 @@ def _resume_invocation(
         config_tree=config_tree,
     )
     authorization = _authorize_secrets(composition, secrets)
+    workspace = _bind_workspace(project_dir, change_id, create=False)
     try:
-        with create_engine(engine_root, authorization) as engine:
-            opened = engine.open(invocation_id, composition, authorization=authorization)
+        with create_engine(workspace.paths.runtime_root, authorization) as engine:
+            opened = engine.open(
+                invocation_id,
+                composition,
+                authorization=authorization,
+                workspace_binding=workspace.runtime_binding(),
+            )
             try:
                 resumed = engine.resume(opened, action=action, payload={"reason": reason})
                 try:
                     result = engine.run_until_blocked(resumed)
+                    envelopes = Ledger(resumed.invocation_root / "ledger").read_all()
+                    identity = _start_identity(envelopes)
+                    _write_projections(
+                        workspace,
+                        result.projection,
+                        envelopes,
+                        root_input_digest=identity["root_input_digest"],
+                    )
                 finally:
                     resumed.close()
             finally:
@@ -801,6 +878,7 @@ def _export_change(*, project_dir: Path, change_id: str | None) -> dict[str, obj
     try:
         project = Path(project_dir).resolve()
         selected = select_publish_change(project, change_id)
+        ChangeWorkspace.open(project, selected)
         receipt = publish_achieved(project, selected)
     except (PublishError, ValueError, OSError) as error:
         raise CommandError(str(error)) from error
@@ -816,7 +894,8 @@ def _archive_change(*, project_dir: Path, change_id: str) -> dict[str, object]:
 
 def _read_authenticated_projection(
     *,
-    engine_root: Path,
+    project_dir: Path,
+    change_id: str,
     invocation_id: str,
     product: str,
     binding_dist: str,
@@ -826,7 +905,8 @@ def _read_authenticated_projection(
     secrets: Sequence[str],
 ) -> tuple[InvocationProjection, dict[str, str]]:
     _composition, projection, identity = _open_authenticated(
-        engine_root=engine_root,
+        project_dir=project_dir,
+        change_id=change_id,
         invocation_id=invocation_id,
         product=product,
         binding_dist=binding_dist,
@@ -840,7 +920,8 @@ def _read_authenticated_projection(
 
 def _open_authenticated(
     *,
-    engine_root: Path,
+    project_dir: Path,
+    change_id: str,
     invocation_id: str,
     product: str,
     binding_dist: str,
@@ -857,14 +938,26 @@ def _open_authenticated(
         config_tree=config_tree,
     )
     authorization = _authorize_secrets(composition, secrets)
-    if not (engine_root / "invocations" / invocation_id).is_dir():
+    workspace = _bind_workspace(project_dir, change_id, create=False)
+    if not (workspace.paths.runtime_root / "invocations" / invocation_id).is_dir():
         raise CommandError(f"invocation is missing: {invocation_id}")
     try:
-        with create_engine(engine_root, authorization) as engine:
-            with engine.open(invocation_id, composition, authorization=authorization) as handle:
+        with create_engine(workspace.paths.runtime_root, authorization) as engine:
+            with engine.open(
+                invocation_id,
+                composition,
+                authorization=authorization,
+                workspace_binding=workspace.runtime_binding(),
+            ) as handle:
                 envelopes = Ledger(handle.invocation_root / "ledger").read_all()
                 projection = fold_events(envelopes)
                 identity = _start_identity(envelopes)
+                _write_projections(
+                    workspace,
+                    projection,
+                    envelopes,
+                    root_input_digest=identity["root_input_digest"],
+                )
     except EngineConflictError as error:
         raise CommandError(str(error)) from error
     except (EngineError, GraphEngineError, OSError, ValidationError) as error:
@@ -878,7 +971,4 @@ def _start_identity(envelopes: Sequence[object]) -> dict[str, str]:
     event = getattr(envelopes[0], "event", None)
     if not isinstance(event, InvocationStarted):
         raise CommandError("invocation ledger lacks its canonical bootstrap")
-    return {
-        "root_input_digest": event.root_input_digest,
-        "initial_tree_id": event.initial_tree_id,
-    }
+    return {"root_input_digest": event.root_input_digest}
