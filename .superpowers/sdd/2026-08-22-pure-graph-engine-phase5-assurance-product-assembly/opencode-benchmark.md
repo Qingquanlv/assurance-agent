@@ -1,42 +1,50 @@
 # OpenCode provider-live benchmark
 
-**Item:** `opencode-ret-dept-management`
-**Product:** `assurance-opencode`
-**Entrypoint:** `full`
-**Started:** 2026-08-23T06:46:10Z
-**Ended:** (in progress)
-**Terminal status:** `running`
-**Lock digest:** `9fbf87b7d489cb78d563fe9954ff25d8d4606f2203fe0c77fec54e94286a279f`
-**Outcome:** incomplete
+The Phase 5 live item drives the **real SUT**. The Assurance result is the
+change directory, not a harness result tree.
+
+```text
+<sut>/qa/changes/<change-id>/
+```
+
+`results/<run>/` holds only harness diagnostics: logs, timing, isolated
+wheels/venv, and `evidence.json`. It is not an alternate result source and
+must not contain `project/`, `export/`, `workspace/`, `HEAD.json`, a latest
+pointer, or a result registry.
+
+## Run identity
+
+A run derives a unique deterministic change ID from item ID + stamp + nonce:
+
+```text
+BENCH-<item-id>-<stamp>-<nonce>
+```
+
+The driver invokes:
+
+```text
+aa start|run|status --project-dir <sut> --change <id>
+aa export --project-dir <sut> --change <id>   # only after achieved
+```
+
+Export is called once after the change is achieved. Failure leaves original
+SUT tests unchanged and does not publish.
+
+## Evidence fields
+
+Live evidence records `sut_root`, `change_id`, `change_root`, terminal
+status, publish receipt, provider session/process reference, and logs.
+Those fields are diagnostics for the harness, not a second result tree.
 
 ## Routing
 
-Every prepare ID is locked to `openai/gpt-5.6-terra` / `max`.
+Every OpenCode prepare ID is locked to `openai/gpt-5.6-terra` / `max`.
+Product-installed locked OpenCode profiles are preflighted; the live run
+does not install OpenCode configuration into the SUT.
 
-## Status
+## Commands
 
-Authoritative invocation remains `running` (`pending_interrupt` null, coverage unset). Ledger: intake `prepare` succeeded; intake `execute` bound (`task_activity_bound`) and has stayed bound without `prompt identity conflict`. Export has not been attempted. Resume was not invoked. Provider conversation text was not used as status. Runtime secret bytes are not present in this file.
-
-```json
-{
-  "coverage_progress": null,
-  "entrypoint": "full",
-  "lock_digest": "9fbf87b7d489cb78d563fe9954ff25d8d4606f2203fe0c77fec54e94286a279f",
-  "selected_test_families": [
-    "api",
-    "e2e",
-    "fuzz",
-    "performance"
-  ],
-  "status": "running",
-  "terminal_reason": null
-}
+```bash
+benchmark/assurance-product-phase5/run-opencode.sh
+benchmark/assurance-product-phase5/run-cursor.sh
 ```
-
-## Notes
-
-Fresh invocation `opencode-20260823-064610` (not a resume). Isolated compile/start succeeded. Compiled workflow class `short.run_seconds` is `3600`.
-
-Two earlier fresh attempts after the worker-crash fix (`opencode-20260823-062828`, `opencode-20260823-063339`) reached bind, then `execute` returned `TaskOutcome.failed(external_effect, prompt identity conflict, retryable=False)` instead of raising `OpenCodeDispatchIncomplete`. No `activity_recovery`. Live GET `/session/{id}/message/{id}` is `{info, parts}` with `info.id` equal to the minted `messageID`; OpenCode prepends extra text to the first stored part. Containment on same-`messageID` texts is what let this third run stay `running` past that re-observe.
-
-Expected terminal `completed` has not been reached yet. The live `run-opencode.sh` process was left running.

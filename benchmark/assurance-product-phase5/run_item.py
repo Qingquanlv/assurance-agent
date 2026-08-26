@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from fnmatch import fnmatchcase
 import json
 import os
 import re
@@ -10,12 +11,18 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+import yaml
+
+from assurance_product.configuration import capability_leafs_from_knowledge
 
 _AMBIENT_OVERRIDE_VARS = frozenset(
     {
@@ -31,40 +38,9 @@ _CREDENTIAL_PATTERN = re.compile(
     r"(?i)(api[_-]?key|authorization|bearer|token|secret)\s*[:=]\s*\S+|sk-[A-Za-z0-9-]+"
 )
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "stopped", "interrupted"})
-_SUT_COPY_IGNORE = {
-    ".git",
-    ".venv",
-    "node_modules",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".hypothesis",
-    ".history",
-    ".opencode",
-    ".playwright-mcp",
-    ".cursor",
-    ".claude",
-    ".sisyphus",
-    ".auth",
-    ".tmp",
-    ".vscode",
-    ".DS_Store",
-    ".superpowers",
-    ".graph-runtime",
-    "benchmark-results",
-    "benchmark",
-    "eval",
-    "eval-fixtures",
-    "qa",
-    "deploy",
-    "skills",
-    "dist",
-    "build",
-    "opencode.json",
-    "worker.err",
-    "Untitled",
-}
+_OPENCODE_RESOLVED_READ_TIMEOUT_SECONDS = 300
+_OPENCODE_RESOLVED_RETRY_BACKOFF_SECONDS = 10
+_OPENCODE_RESOLVED_READ_ATTEMPTS = 3
 _WRITE_PRODUCT_INPUT = r"""
 from __future__ import annotations
 
@@ -83,11 +59,13 @@ def _ref(composition, resource_id: str) -> dict[str, str]:
     return {"resource_id": resource_id, "sha256": entry.sha256}
 
 
-def _first_ref(composition, *resource_ids: str) -> dict[str, str]:
-    for resource_id in resource_ids:
-        if resource_id in composition.registries.resources.entries:
-            return _ref(composition, resource_id)
-    raise KeyError(resource_ids)
+def _catalog_leafs(composition, resource_id: str) -> list[str]:
+    entry = composition.registries.resources.entries[resource_id]
+    document = json.loads(entry.content.decode("utf-8"))
+    leafs = document.get("typed_leafs") if isinstance(document, dict) else None
+    if not isinstance(leafs, list) or any(not isinstance(item, str) for item in leafs):
+        raise ValueError("authenticated capability catalog is missing typed_leafs")
+    return leafs
 
 
 def main() -> int:
@@ -103,21 +81,18 @@ def main() -> int:
             configuration_tree=ConfigTreePluginSource(path=Path(arguments["config_tree"])),
         )
     )
+    catalog_ref = _ref(composition, "assurance.product.configuration.capability-catalog")
     payload = {
         "schema_version": "1",
         "change_id": arguments["change_id"],
         "requirement": arguments["requirement"],
         "run_mode": "case",
         "selected_test_families": list(arguments["selected_test_families"]),
-        "auto_archive": bool(arguments["auto_archive"]),
-        "capability_catalog": _first_ref(
-            composition,
-            "assurance.product.configuration.capability-catalog",
-            "assurance.product.configuration.project-config",
-        ),
+        "capability_leafs": _catalog_leafs(composition, catalog_ref["resource_id"]),
+        "capability_catalog": catalog_ref,
         "product_policy": _ref(composition, "assurance.product.configuration.product-policy"),
         "data_knowledge": _ref(composition, "assurance.product.configuration.data-knowledge"),
-        "allowed_artifact_paths": ["qa/archive", "qa/cases", "qa/changes"],
+        "allowed_artifact_paths": ["qa/archive", "qa/cases", "qa/changes", "tests"],
         "budgets": {
             "review_rounds": 2,
             "coverage_rounds": 2,
@@ -129,96 +104,6 @@ def main() -> int:
     value.validate_for_entrypoint(arguments["entrypoint"]).authenticate_against(composition)
     destination = Path(arguments["output"])
     destination.write_text(json.dumps(value.model_dump(mode="json"), indent=2, sort_keys=True) + "\n")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-"""
-_VALIDATE_EXPORT = r"""
-from __future__ import annotations
-
-import json
-import sys
-from pathlib import Path
-
-from graph_engine.composition import ConfigTreePluginSource, WheelPluginSource
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.models import fold_events
-
-from assurance_product.models import ResultExportV1
-from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
-
-
-AGENT_PREFIX = "assurance.product.agent."
-OPERATION_STEPS = {
-    "assurance.improvement.apply-memory-improvement": "improvement.apply",
-    "assurance.improvement.evaluate-memory-improvement": "improvement.evaluate",
-    "assurance.improvement.export-change-improvement": "improvement.export",
-    "assurance.improvement.rollback-memory-improvement": "improvement.rollback",
-}
-
-
-def _logical_step(capability: str) -> str | None:
-    operation = OPERATION_STEPS.get(capability)
-    if operation is not None:
-        return operation
-    if not capability.startswith(AGENT_PREFIX) or not capability.endswith(".finalize"):
-        return None
-    return capability.removeprefix(AGENT_PREFIX).removesuffix(".finalize")
-
-
-def main() -> int:
-    arguments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    export_root = Path(arguments["export_root"])
-    document = json.loads((export_root / "manifest.json").read_text(encoding="utf-8"))
-    exported = ResultExportV1.model_validate(document)
-    composition = resolve_assurance_composition(
-        AssuranceCompositionRequest(
-            product_entrypoint=arguments["product"],
-            deployment_source=WheelPluginSource(
-                distribution=arguments["binding_dist"],
-                entrypoint_name="deployment",
-                declaration_path=arguments["binding_declaration"],
-            ),
-            configuration_tree=ConfigTreePluginSource(path=Path(arguments["config_tree"])),
-        )
-    )
-    ledger = Ledger(Path(arguments["engine_root"]) / "invocations" / arguments["invocation_id"] / "ledger")
-    projection = fold_events(ledger.read_all())
-    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
-    steps: list[str] = []
-    for activation in projection.activations:
-        if activation.status not in {"completed", "stopped"}:
-            continue
-        graph = graphs[activation.graph_instance_id]
-        node = composition.workflow.graphs[graph.graph_id].nodes[activation.node_id]
-        if node.definition.kind != "task" or node.definition.capability is None:
-            continue
-        step = _logical_step(node.definition.capability)
-        if step is not None:
-            steps.append(step)
-    Path(arguments["output"]).write_text(
-        json.dumps(
-            {
-                "schema_version": exported.schema_version,
-                "invocation_id": exported.invocation_id,
-                "lock_digest": exported.lock_digest,
-                "status": exported.status.status,
-                "selected_test_families": list(exported.status.selected_test_families),
-                "logical_steps": steps,
-                "artifact_ids": [item.artifact_id for item in exported.artifact_index],
-                "coverage_progress": None
-                if exported.status.coverage_progress is None
-                else exported.status.coverage_progress.model_dump(mode="json"),
-                "durable_effects": [item.kind for item in exported.status.durable_effects],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
     return 0
 
 
@@ -303,14 +188,46 @@ def _resolve_sut(repo: Path, relative: str) -> Path:
     raise SystemExit(f"live SUT is missing at {relative}")
 
 
-def _copy_sut(source: Path, destination: Path) -> None:
-    def ignore(path: str, names: list[str]) -> set[str]:
-        del path
-        ignored = {name for name in names if name in _SUT_COPY_IGNORE}
-        ignored.update(name for name in names if name.startswith("db.sqlite3"))
-        return ignored
+def derive_change_id(*, item_id: str, stamp: str, nonce: str) -> str:
+    parts = (("item", item_id), ("stamp", stamp), ("nonce", nonce))
+    for label, value in parts:
+        if not value or any(character in value for character in ("/", "\\", " ", "\x00")):
+            raise SystemExit(f"{label} is not a safe change-id component")
+    return f"BENCH-{item_id}-{stamp}-{nonce}"
 
-    shutil.copytree(source, destination, ignore=ignore, symlinks=False)
+
+def _prepare_project_config_tree(config_tree: Path, project_dir: Path) -> None:
+    knowledge_path = project_dir / ".aa" / "data-knowledge.yaml"
+    if not knowledge_path.is_file() or knowledge_path.is_symlink():
+        raise SystemExit("live SUT must provide a regular .aa/data-knowledge.yaml")
+    try:
+        knowledge = yaml.safe_load(knowledge_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        raise SystemExit("live SUT data knowledge is not valid YAML") from error
+    if not isinstance(knowledge, dict):
+        raise SystemExit("live SUT data knowledge must be a mapping")
+    destination_knowledge = config_tree / ".aa" / "data-knowledge.yaml"
+    destination_knowledge.write_text(
+        yaml.safe_dump(knowledge, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    config_path = config_tree / ".aa" / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        raise SystemExit("benchmark project configuration must be a mapping")
+    config["data_knowledge"] = knowledge
+    config["capability_catalog"] = {
+        "schema_version": "1",
+        "typed_leafs": list(capability_leafs_from_knowledge(knowledge)),
+    }
+    (config_tree / ".aa" / "capability-catalog.json").write_text(
+        json.dumps(config["capability_catalog"], sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    config_path.write_text(
+        yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
 
 
 _PRODUCT_WHEEL_PACKAGES = (
@@ -324,6 +241,7 @@ _PRODUCT_WHEEL_PACKAGES = (
     "assurance-improvement",
     "assurance-product",
     "agent-runtime-opencode",
+    "agent-runtime-cursor",
 )
 
 
@@ -372,6 +290,7 @@ def _prepare_installed_product_env(
     repo: Path,
     output: Path,
     env: Mapping[str, str],
+    adapter: str,
 ) -> tuple[Path, Path]:
     dist_root = output / "wheels"
     dist_root.mkdir()
@@ -410,12 +329,12 @@ def _prepare_installed_product_env(
             str(python),
             "--find-links",
             str(dist_root),
-            "assurance-product[opencode]",
+            f"assurance-product[{adapter}]",
         ],
         cwd=repo,
         env=env,
         timeout=180,
-        label="install assurance-product[opencode]",
+        label=f"install assurance-product[{adapter}]",
     )
     if not aa_next.is_file():
         raise SystemExit("isolated env is missing aa-next")
@@ -498,12 +417,170 @@ def _check_opencode(endpoint: str) -> int:
     return 0
 
 
-def _write_deployment_manifest(path: Path, item: Mapping[str, Any], *, project_scope: str) -> None:
+def _agent_profile_errors(
+    resolved_config: Mapping[str, Any], expected_config: Mapping[str, Any]
+) -> list[str]:
+    errors: list[str] = []
+    resolved_agents = resolved_config.get("agent")
+    expected_agents = expected_config.get("agent")
+    if not isinstance(resolved_agents, Mapping):
+        return ["resolved OpenCode config has no agent mapping"]
+    if not isinstance(expected_agents, Mapping):
+        return ["installed OpenCode config has no agent mapping"]
+    for profile, expected_value in expected_agents.items():
+        if not isinstance(profile, str) or not isinstance(expected_value, Mapping):
+            errors.append(f"installed OpenCode agent definition is invalid: {profile!r}")
+            continue
+        resolved_value = resolved_agents.get(profile)
+        if not isinstance(resolved_value, Mapping):
+            errors.append(f"{profile}: agent is absent from resolved OpenCode config")
+            continue
+        expected_prompt = expected_value.get("prompt")
+        if resolved_value.get("prompt") != expected_prompt:
+            errors.append(f"{profile}: resolved prompt differs from installed project profile")
+        expected_permission = expected_value.get("permission")
+        resolved_permission = resolved_value.get("permission")
+        if not isinstance(expected_permission, Mapping) or not isinstance(resolved_permission, Mapping):
+            errors.append(f"{profile}: permission mapping is absent")
+            continue
+        for permission, expected_rule in expected_permission.items():
+            resolved_rule = resolved_permission.get(permission)
+            if isinstance(expected_rule, Mapping):
+                if not isinstance(resolved_rule, Mapping):
+                    errors.append(f"{profile}: permission {permission!s} is not a rule mapping")
+                    continue
+                for pattern, action in expected_rule.items():
+                    actual = resolved_rule.get(pattern)
+                    if actual != action:
+                        errors.append(
+                            f"{profile}: permission {permission!s}[{pattern!r}] resolved to "
+                            f"{actual!r}, expected {action!r}"
+                        )
+                for pattern, action in resolved_rule.items():
+                    if action == "allow" and expected_rule.get(pattern) != "allow":
+                        expected_allows = (
+                            candidate
+                            for candidate, candidate_action in expected_rule.items()
+                            if candidate_action == "allow" and isinstance(candidate, str)
+                        )
+                        is_narrower_allow = isinstance(pattern, str) and any(
+                            fnmatchcase(pattern, candidate) for candidate in expected_allows
+                        )
+                        if pattern not in expected_rule and not is_narrower_allow:
+                            errors.append(
+                                f"{profile}: permission {permission!s}[{pattern!r}] has an ambient allow"
+                            )
+            elif resolved_rule != expected_rule:
+                errors.append(
+                    f"{profile}: permission {permission!s} resolved to {resolved_rule!r}, "
+                    f"expected {expected_rule!r}"
+                )
+        expected_tools = expected_value.get("tools")
+        resolved_tools = resolved_value.get("tools")
+        if not isinstance(expected_tools, Mapping):
+            errors.append(f"{profile}: installed tools mapping is absent")
+            continue
+        for tool, enabled in expected_tools.items():
+            if not isinstance(tool, str):
+                errors.append(f"{profile}: installed tool name is not text")
+                continue
+            if tool in expected_permission and isinstance(expected_permission[tool], Mapping):
+                continue
+            actual: object
+            if isinstance(resolved_tools, Mapping) and tool in resolved_tools:
+                actual = resolved_tools[tool]
+            else:
+                action = resolved_permission.get(tool)
+                actual = (
+                    {"allow": True, "deny": False}.get(action, action) if isinstance(action, str) else action
+                )
+            if actual is not enabled:
+                errors.append(f"{profile}: tool {tool!s} resolved to {actual!r}, expected {enabled!r}")
+    return errors
+
+
+def _product_locked_opencode_config() -> dict[str, Any]:
+    from assurance_product.opencode_agents import _opencode_config
+
+    document = json.loads(_opencode_config())
+    if not isinstance(document, dict):
+        raise SystemExit("product-locked OpenCode config is not an object")
+    return document
+
+
+def _check_opencode_agent_profiles(endpoint: str, project_dir: Path) -> list[str]:
+    try:
+        expected = _product_locked_opencode_config()
+    except (SystemExit, OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
+        return [f"could not read product-locked OpenCode agent config: {error}"]
+    last_error: Exception | None = None
+    for attempt in range(_OPENCODE_RESOLVED_READ_ATTEMPTS):
+        try:
+            query = urlencode({"directory": str(project_dir.resolve())})
+            request = Request(
+                f"{endpoint.rstrip('/')}/config?{query}",
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            with urlopen(request, timeout=_OPENCODE_RESOLVED_READ_TIMEOUT_SECONDS) as response:  # noqa: S310 - pinned local endpoint
+                raw = response.read(4_000_001)
+            if len(raw) > 4_000_000:
+                return ["resolved OpenCode config exceeds 4 MB"]
+            resolved = json.loads(raw.decode("utf-8"))
+            break
+        except (OSError, URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            last_error = error
+            if attempt + 1 < _OPENCODE_RESOLVED_READ_ATTEMPTS:
+                time.sleep(_OPENCODE_RESOLVED_RETRY_BACKOFF_SECONDS)
+    else:
+        return [f"could not read resolved OpenCode agent config: {last_error}"]
+    if not isinstance(expected, Mapping) or not isinstance(resolved, Mapping):
+        return ["OpenCode agent config must resolve to an object"]
+    return _agent_profile_errors(resolved, expected)
+
+
+def _check_opencode_boundary_plugin(endpoint: str, project_dir: Path) -> list[str]:
+    last_error: Exception | None = None
+    for attempt in range(_OPENCODE_RESOLVED_READ_ATTEMPTS):
+        try:
+            query = urlencode({"directory": str(project_dir.resolve())})
+            request = Request(
+                f"{endpoint.rstrip('/')}/experimental/tool/ids?{query}",
+                headers={"Accept": "application/json"},
+                method="GET",
+            )
+            with urlopen(request, timeout=_OPENCODE_RESOLVED_READ_TIMEOUT_SECONDS) as response:  # noqa: S310 - pinned local endpoint
+                raw = response.read(1_000_001)
+            if len(raw) > 1_000_000:
+                return ["resolved OpenCode tool surface exceeds 1 MB"]
+            tools = json.loads(raw.decode("utf-8"))
+            break
+        except (OSError, URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            last_error = error
+            if attempt + 1 < _OPENCODE_RESOLVED_READ_ATTEMPTS:
+                time.sleep(_OPENCODE_RESOLVED_RETRY_BACKOFF_SECONDS)
+    else:
+        return [f"could not read resolved OpenCode tool surface: {last_error}"]
+    if not isinstance(tools, list) or any(not isinstance(item, str) for item in tools):
+        return ["resolved OpenCode tool surface must be a string list"]
+    if "assurance_boundary_v1" not in tools:
+        return ["resolved OpenCode tool surface is missing assurance_boundary_v1"]
+    return []
+
+
+def _write_deployment_manifest(
+    path: Path,
+    item: Mapping[str, Any],
+    *,
+    project_scope: str,
+    adapter: str,
+) -> None:
     binding = dict(item["adapter_binding"])
-    binding["project_scope"] = project_scope
+    if adapter == "opencode":
+        binding["project_scope"] = project_scope
     document = {
         "schema_version": "1",
-        "runtime_plugin_id": "runtime.opencode",
+        "runtime_plugin_id": f"runtime.{adapter}",
         "adapter_binding": binding,
         "routes": item["routing_assignments"],
         "permission_profiles": {
@@ -547,6 +624,9 @@ def _write_evidence_markdown(path: Path, payload: Mapping[str, Any]) -> None:
         f"**Item:** `{safe.get('item_id', '')}`",
         f"**Product:** `{safe.get('product', '')}`",
         f"**Entrypoint:** `{safe.get('entrypoint', '')}`",
+        f"**SUT:** `{safe.get('sut_root', '')}`",
+        f"**Change ID:** `{safe.get('change_id', '')}`",
+        f"**Change root:** `{safe.get('change_root', '')}`",
         f"**Started:** {safe.get('started_at', '')}",
         f"**Ended:** {safe.get('ended_at', '')}",
         f"**Terminal status:** `{safe.get('terminal_status', 'unknown')}`",
@@ -616,24 +696,44 @@ def _status_steps(status: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(steps)
 
 
+def _change_is_achieved(status: Mapping[str, Any]) -> bool:
+    change = status.get("change")
+    return isinstance(change, Mapping) and change.get("state") == "achieved"
+
+
+def _provider_reference(
+    status: Mapping[str, Any], *, adapter: str, item: Mapping[str, Any]
+) -> dict[str, Any]:
+    session = None
+    evidence = status.get("adapter_evidence") or []
+    if evidence and isinstance(evidence[0], Mapping):
+        session = evidence[0].get("activity_id") or evidence[0].get("activation_id")
+    raw_binding = item.get("adapter_binding")
+    binding = raw_binding if isinstance(raw_binding, Mapping) else {}
+    if adapter == "opencode":
+        process = {"endpoint": binding.get("endpoint"), "protocol": "opencode-http-v1"}
+    else:
+        process = {"executable": binding.get("executable"), "protocol": "confined_process"}
+    return {"session": session, "process": process}
+
+
 def _validate_live_result(
     *,
     item: Mapping[str, Any],
     status: Mapping[str, Any],
-    export_validation: Mapping[str, Any] | None,
 ) -> list[str]:
     errors: list[str] = []
     expected = str(item["expected_terminal"])
     actual = str(status.get("status") or "")
     if actual != expected:
         errors.append(f"terminal status {actual!r} != {expected!r}")
+    if expected == "completed" and not _change_is_achieved(status):
+        errors.append("completed status is not an achieved change")
     families = tuple(status.get("selected_test_families") or ())
     required_families = tuple(item["selected_test_families"])
     if families != required_families:
         errors.append(f"selected families {families!r} != {required_families!r}")
-    steps = (
-        tuple(export_validation.get("logical_steps") or []) if export_validation else _status_steps(status)
-    )
+    steps = _status_steps(status)
     missing = [step for step in item["required_steps"] if step not in steps]
     if missing:
         errors.append(f"missing required workflow steps: {missing}")
@@ -647,10 +747,6 @@ def _validate_live_result(
             errors.append(f"absent selected-family branches: {missing_families}")
     if "quality.report" not in steps:
         errors.append("missing report")
-    if item.get("auto_archive") is True and "improvement.archive" not in steps:
-        errors.append("auto_archive is true but improvement.archive did not run")
-    if item.get("auto_archive") is False and "improvement.archive" in steps:
-        errors.append("auto_archive is false but improvement.archive ran")
     coverage = status.get("coverage_progress")
     if isinstance(coverage, Mapping):
         used = coverage.get("round")
@@ -662,6 +758,24 @@ def _validate_live_result(
     return errors
 
 
+def _lifecycle_args(
+    *,
+    project_dir: Path,
+    change_id: str,
+    invocation_id: str,
+    source_args: Sequence[str],
+) -> list[str]:
+    return [
+        "--project-dir",
+        str(project_dir),
+        "--change",
+        change_id,
+        "--invocation-id",
+        invocation_id,
+        *source_args,
+    ]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--item", required=True)
@@ -669,6 +783,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--poll-seconds", type=int, default=30)
     parser.add_argument("--timeout-seconds", type=int, default=28800)
+    parser.add_argument("--nonce")
+    parser.add_argument("--stamp")
     arguments = parser.parse_args(argv)
 
     _reject_ambient_overrides()
@@ -676,29 +792,49 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest_path = repo / "benchmark" / "assurance-product-phase5" / "manifest.json"
     document = _load_manifest(manifest_path)
     item = _manifest_item(document, arguments.item, arguments.adapter)
-    if arguments.adapter != "opencode":
-        return _fail("this runner currently accepts only the OpenCode item")
 
     started_at = _utc_now()
+    stamp = arguments.stamp or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    nonce = arguments.nonce or uuid.uuid4().hex[:8]
+    change_id = derive_change_id(item_id=arguments.item, stamp=stamp, nonce=nonce)
     output = arguments.output
     if output is None:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        output = repo / "benchmark" / "assurance-product-phase5" / "results" / f"opencode-{stamp}"
+        output = (
+            repo
+            / "benchmark"
+            / "assurance-product-phase5"
+            / "results"
+            / f"{arguments.adapter}-{stamp}-{nonce}"
+        )
     output = output.resolve()
     if output.exists() and any(output.iterdir()):
         return _fail(f"result directory must be fresh and empty: {output}")
     output.mkdir(parents=True, exist_ok=True)
+
+    try:
+        sut_root = _resolve_sut(repo, str(item["sut_root"]))
+    except SystemExit as error:
+        return _fail(str(error))
+    change_root = sut_root / "qa" / "changes" / change_id
+    run_log = output / "run.log"
+    run_log.touch()
 
     evidence: dict[str, Any] = {
         "item_id": arguments.item,
         "product": item["product"],
         "entrypoint": item["entrypoint"],
         "sut_item_id": item["sut_item_id"],
+        "sut_root": str(sut_root),
+        "change_id": change_id,
+        "change_root": str(change_root),
         "selected_test_families": list(item["selected_test_families"]),
-        "auto_archive": item["auto_archive"],
         "adapter_version": item["adapter_version"],
-        "provider_model": "openai/gpt-5.6-terra",
-        "worker_profile": "max",
+        "provider_model": next(
+            iter({route.get("provider_model") for route in item["routing_assignments"].values()})
+        ),
+        "worker_profile": next(
+            iter({route.get("worker_profile") for route in item["routing_assignments"].values()})
+        ),
         "started_at": started_at,
         "ended_at": None,
         "terminal_status": None,
@@ -707,14 +843,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "notes": "",
         "status": {},
         "validation": {},
+        "publish_receipt": None,
+        "provider": {"session": None, "process": None},
+        "logs": {"run_log": str(run_log)},
     }
-    evidence_md = (
-        repo
-        / ".superpowers"
-        / "sdd"
-        / "2026-08-22-pure-graph-engine-phase5-assurance-product-assembly"
-        / "opencode-benchmark.md"
-    )
+    evidence_md = output / "evidence.md"
 
     def finish(code: int, *, notes: str, status: Mapping[str, Any] | None = None) -> int:
         evidence["ended_at"] = _utc_now()
@@ -732,6 +865,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             evidence["terminal_status"] = status.get("status")
             evidence["lock_digest"] = status.get("lock_digest") or evidence.get("lock_digest")
+            evidence["provider"] = _provider_reference(status, adapter=arguments.adapter, item=item)
         evidence["notes"] = notes
         _write_json(output / "evidence.json", _redact_evidence(evidence))
         _write_evidence_markdown(evidence_md, evidence)
@@ -739,38 +873,57 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     env = os.environ.copy()
     secret_env = str(item["secret_env"])
-    _load_opencode_secret(secret_env)
-    env[secret_env] = os.environ[secret_env]
+    if arguments.adapter == "opencode":
+        _load_opencode_secret(secret_env)
+    env[secret_env] = os.environ.get(secret_env, "")
     isolated_env = dict(env)
     isolated_env.pop("PYTHONPATH", None)
     isolated_env.pop("UV_PROJECT", None)
     isolated_env["PYTHONNOUSERSITE"] = "1"
 
-    endpoint = str(item["adapter_binding"]["endpoint"])
-    preflight = _check_opencode(endpoint)
-    if preflight != 0:
-        evidence["outcome"] = "blocked"
-        return finish(preflight, notes=f"OpenCode preflight failed at {endpoint}")
+    if arguments.adapter == "opencode":
+        endpoint = str(item["adapter_binding"]["endpoint"])
+        preflight = _check_opencode(endpoint)
+        if preflight != 0:
+            evidence["outcome"] = "blocked"
+            return finish(preflight, notes=f"OpenCode preflight failed at {endpoint}")
+        evidence["provider"] = {
+            "session": None,
+            "process": {"endpoint": endpoint, "protocol": "opencode-http-v1"},
+        }
 
     try:
-        isolated_python, aa_next = _prepare_installed_product_env(repo=repo, output=output, env=env)
+        isolated_python, aa_next = _prepare_installed_product_env(
+            repo=repo, output=output, env=env, adapter=arguments.adapter
+        )
     except SystemExit as error:
         evidence["outcome"] = "blocked"
         return finish(1, notes=str(error))
     isolated_env["PATH"] = f"{aa_next.parent}{os.pathsep}{isolated_env.get('PATH', '')}"
 
-    project_dir = output / "project"
-    try:
-        _copy_sut(_resolve_sut(repo, str(item["sut_root"])), project_dir)
-    except SystemExit as error:
-        evidence["outcome"] = "blocked"
-        return finish(1, notes=str(error))
+    project_dir = sut_root
+    if arguments.adapter == "opencode":
+        endpoint = str(item["adapter_binding"]["endpoint"])
+        agent_profile_errors = _check_opencode_agent_profiles(endpoint, project_dir)
+        agent_profile_errors.extend(_check_opencode_boundary_plugin(endpoint, project_dir))
+        if agent_profile_errors:
+            evidence["outcome"] = "blocked"
+            return finish(
+                1,
+                notes="OpenCode resolved agent preflight failed: " + "; ".join(agent_profile_errors),
+            )
 
     config_tree = output / "config-tree"
     shutil.copytree(repo / "tests" / "phase5" / "fixtures" / "project-config", config_tree)
+    _prepare_project_config_tree(config_tree, project_dir)
 
     deployment_manifest = output / "deployment.yaml"
-    _write_deployment_manifest(deployment_manifest, item, project_scope=str(project_dir))
+    _write_deployment_manifest(
+        deployment_manifest,
+        item,
+        project_scope=str(project_dir),
+        adapter=arguments.adapter,
+    )
     wheel_dir = output / "binding-wheel"
     wheel_dir.mkdir()
     built = _aa_next(
@@ -834,10 +987,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "binding_dist": binding_dist,
             "binding_declaration": binding_declaration,
             "config_tree": str(config_tree),
-            "change_id": item["sut_item_id"],
+            "change_id": change_id,
             "requirement": requirement,
             "selected_test_families": list(item["selected_test_families"]),
-            "auto_archive": item["auto_archive"],
             "entrypoint": item["entrypoint"],
             "output": str(input_path),
         },
@@ -854,20 +1006,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         evidence["outcome"] = "blocked"
         return finish(written.returncode, notes=f"product input write failed: {written.stderr.strip()}")
 
-    engine_root = output / "engine"
-    engine_root.mkdir()
-    invocation_id = arguments.item
+    invocation_id = change_id
+    change_args = _lifecycle_args(
+        project_dir=project_dir,
+        change_id=change_id,
+        invocation_id=invocation_id,
+        source_args=source_args,
+    )
     started = _aa_next(
         aa_next,
         "start",
         "--json",
-        "--project-dir",
-        str(project_dir),
-        "--engine-root",
-        str(engine_root),
-        "--invocation-id",
-        invocation_id,
-        *source_args,
+        *change_args,
         "--entrypoint",
         str(item["entrypoint"]),
         "--input",
@@ -884,31 +1034,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     start_doc = _parse_json(started.stdout, label="start")
     evidence["lock_digest"] = start_doc.get("lock_digest") or evidence.get("lock_digest")
 
-    run_log = output / "run.log"
     deadline = time.monotonic() + arguments.timeout_seconds
     last_status: dict[str, Any] = {}
     last_run: dict[str, Any] = {}
     transitions: list[dict[str, Any]] = []
-    parked_recovery = False
     run_args = [
         "run",
         "--json",
-        "--engine-root",
-        str(engine_root),
-        "--invocation-id",
-        invocation_id,
-        *source_args,
+        *change_args,
         "--secret",
         _secret_arg(item),
     ]
     status_args = [
         "status",
         "--json",
-        "--engine-root",
-        str(engine_root),
-        "--invocation-id",
-        invocation_id,
-        *source_args,
+        *change_args,
         "--secret",
         _secret_arg(item),
     ]
@@ -970,9 +1110,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     status=last_status,
                 )
             if last_run.get("terminal_reason") == "activity_recovery":
-                if parked_recovery:
-                    break
-                parked_recovery = True
                 time.sleep(min(arguments.poll_seconds, max(0, deadline - time.monotonic())))
                 continue
         if last_status.get("status") in _TERMINAL_STATUSES:
@@ -980,9 +1117,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         time.sleep(min(arguments.poll_seconds, max(0, deadline - time.monotonic())))
 
     evidence["validation"] = {"transitions": transitions, "last_run": last_run}
-    if last_status.get("status") != item["expected_terminal"]:
+    errors = _validate_live_result(item=item, status=last_status)
+    if (
+        errors
+        or last_status.get("status") != item["expected_terminal"]
+        or not _change_is_achieved(last_status)
+    ):
         evidence["outcome"] = "blocked"
-        detail = f"live item did not reach {item['expected_terminal']!r}"
+        evidence["validation"] = {**evidence["validation"], "errors": errors}
+        detail = "; ".join(errors) if errors else f"live item did not reach {item['expected_terminal']!r}"
         run_reason = last_run.get("terminal_reason")
         if run_reason:
             detail = f"{detail}; last aa-next run returned {last_run.get('status')!r}/{run_reason!r}"
@@ -992,20 +1135,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             status=last_status,
         )
 
-    export_root = output / "export"
     exported = _aa_next(
         aa_next,
         "export",
         "--json",
-        "--destination",
-        str(export_root),
-        "--engine-root",
-        str(engine_root),
-        "--invocation-id",
-        invocation_id,
-        *source_args,
-        "--secret",
-        _secret_arg(item),
+        "--project-dir",
+        str(project_dir),
+        "--change",
+        change_id,
         cwd=repo,
         env=isolated_env,
         timeout=600,
@@ -1016,51 +1153,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             exported.returncode, notes=f"export failed: {exported.stderr.strip()}", status=last_status
         )
     export_doc = _parse_json(exported.stdout, label="export")
+    evidence["publish_receipt"] = export_doc
     evidence["lock_digest"] = export_doc.get("lock_digest") or evidence.get("lock_digest")
-
-    (helper_dir / "validate_export.py").write_text(_VALIDATE_EXPORT, encoding="utf-8")
-    validate_args = helper_dir / "validate_export.args.json"
-    validation_path = output / "export-validation.json"
-    _write_json(
-        validate_args,
-        {
-            "export_root": str(export_root),
-            "product": item["product"],
-            "binding_dist": binding_dist,
-            "binding_declaration": binding_declaration,
-            "config_tree": str(config_tree),
-            "engine_root": str(engine_root),
-            "invocation_id": invocation_id,
-            "output": str(validation_path),
-        },
-    )
-    validated = subprocess.run(  # noqa: S603
-        [str(isolated_python), str(helper_dir / "validate_export.py"), str(validate_args)],
-        cwd=repo,
-        env=isolated_env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    export_validation: dict[str, Any] | None = None
-    if validated.returncode == 0 and validation_path.is_file():
-        export_validation = json.loads(validation_path.read_text(encoding="utf-8"))
-    errors = _validate_live_result(item=item, status=last_status, export_validation=export_validation)
-    evidence["validation"] = {
-        "transitions": transitions,
-        "export": export_validation or {},
-        "errors": errors,
-    }
-    if errors:
-        evidence["outcome"] = "blocked"
-        return finish(1, notes="; ".join(errors), status=last_status)
     evidence["outcome"] = "completed"
-    evidence["artifact_digests"] = {
-        "export_lock_digest": export_doc.get("lock_digest"),
-        "result_tree_digest": export_doc.get("result_tree_digest"),
-        "event_stream_digest": export_doc.get("event_stream_digest"),
-    }
-    return finish(0, notes="live item reached completed and export validated", status=last_status)
+    return finish(0, notes="live item reached achieved and export published once", status=last_status)
 
 
 if __name__ == "__main__":

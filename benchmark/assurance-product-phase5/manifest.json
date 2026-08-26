@@ -7,6 +7,7 @@
         "endpoint": "http://127.0.0.1:4096",
         "max_response_bytes": 4000000,
         "observation_horizon_seconds": 3600,
+        "progress_timeout_seconds": 300,
         "poll_interval_seconds": 2,
         "project_scope": "live-project",
         "protocol_profile": "opencode-http-v1",
@@ -16,7 +17,6 @@
         "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003"
       },
       "adapter_version": "0.1.0",
-      "auto_archive": true,
       "deployment_binding_routes": {
         "assurance.execution.execute.prepare": {
           "limits": {
