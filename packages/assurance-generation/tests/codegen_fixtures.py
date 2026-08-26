@@ -33,6 +33,15 @@ def family_test_file(family: str) -> str:
     return FAMILY_TEST_FILES[family]
 
 
+def staged_generated_file(
+    family: str,
+    target: str | None = None,
+    *,
+    change_id: str = "CH-DEMO-001",
+) -> str:
+    return f"qa/changes/{change_id}/generated/{family}/files/{target or family_test_file(family)}"
+
+
 def family_symbol(family: str) -> str:
     return f"test_{family_case_id(family).lower()}__happy_path"
 
@@ -142,6 +151,7 @@ __all__ = [
     "family_case_id",
     "family_symbol",
     "family_test_file",
+    "staged_generated_file",
     "fake_agent_result",
     "generated_candidate",
     "mapping_document",

@@ -18,23 +18,29 @@ the resulting generated files, mapping, and fix candidate.
 - allowed file set (the only paths this invocation may write)
 - `qa/changes/<change-id>/codegen/e2e-codegen-summary.md`
 - `qa/changes/<change-id>/codegen/e2e-generated-files.json`
-- current generated tests under `tests/e2e/**`
+- current generated tests under `qa/changes/<change-id>/generated/e2e/files/tests/e2e/**`
 
 ### optional
 
-- `tests/testdata/**` when the allowed file set names those paths
+- `qa/changes/<change-id>/generated/e2e/files/tests/testdata/**` when the allowed
+  file set names those logical `tests/testdata/**` targets
 
 ## Outputs
 
 ### required
 
 - updated generated-files document and closed mapping for the allowed paths
-- corrected files named in the allowed file set
+- corrected staged files named in the allowed file set under
+  `qa/changes/<change-id>/generated/e2e/files/`
+
+The generated-files manifest and mapping keep `target_path="tests/..."`. Do not
+write generated tests into the original `tests/**` tree.
 
 ## Boundaries
 
-Write only the files named in the fix input. Reject any other generated or
-modified test path.
+Write only the staged files named in the fix input. Reject any other generated
+or modified test path. Physical writes stay under
+`qa/changes/<change-id>/generated/e2e/files/`.
 
 Do not modify product source.
 

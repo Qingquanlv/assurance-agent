@@ -21,6 +21,7 @@ from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     family_symbol,
     family_test_file,
     mapping_document,
+    staged_generated_file,
     validation_context,
 )
 
@@ -77,6 +78,7 @@ def test_family_codegen_characterization_missing_extra_and_unknown_leaf(family: 
     extra = _load(f"{family}-codegen-extra-file.json")
     unknown = _load(f"{family}-codegen-unknown-leaf.json")
     path = family_test_file(family)
+    staged = staged_generated_file(family, path)
     mapping = CodegenMapping.model_validate(valid["mapping"])
     accepted = GeneratedFilesValidator(
         family=family,
@@ -89,7 +91,7 @@ def test_family_codegen_characterization_missing_extra_and_unknown_leaf(family: 
         },
         write_roots=(f"{path.rsplit('/', 1)[0]}/", "tests/testdata/", "qa/changes/"),
     ).validate(
-        candidate_with(path, f"qa/changes/CH-DEMO-001/codegen/{family}-generated-files.json"),
+        candidate_with(staged, f"qa/changes/CH-DEMO-001/codegen/{family}-generated-files.json"),
         validation_context(),
     )
     assert accepted.accepted is True
@@ -101,7 +103,10 @@ def test_family_codegen_characterization_missing_extra_and_unknown_leaf(family: 
     extra_result = GeneratedFilesValidator(
         family=family,
         mapping=CodegenMapping.model_validate(extra["mapping"]),
-    ).validate(candidate_with(path, extra["extra_file"]), validation_context())
+    ).validate(
+        candidate_with(staged, staged_generated_file(family, extra["extra_file"])),
+        validation_context(),
+    )
     assert extra_result.accepted is False
     with pytest.raises(ValidationError, match="unknown capability leaf"):
         CodegenResultV1.model_validate(unknown, context={"capability_leafs": frozenset(VALID_LEAFS)})

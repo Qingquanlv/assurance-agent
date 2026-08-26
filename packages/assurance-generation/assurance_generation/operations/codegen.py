@@ -266,16 +266,43 @@ def validate_codegen_fix_input(
     return business, plan, cases
 
 
-def codegen_outputs(change_id: str, family: Family, *, fix: bool = False) -> tuple[str, ...]:
+def codegen_outputs(
+    change_id: str,
+    family: Family,
+    *,
+    fix: bool = False,
+    mapping_targets: tuple[str, ...] = (),
+) -> tuple[str, ...]:
     suffix = "-fix" if fix else ""
-    return tuple(
-        sorted(
-            (
-                f"qa/changes/{change_id}/codegen/{family}-codegen{suffix}-summary.md",
-                f"qa/changes/{change_id}/codegen/{family}-generated-files.json",
-            )
-        )
+    ordinary = (
+        f"qa/changes/{change_id}/codegen/{family}-codegen{suffix}-summary.md",
+        f"qa/changes/{change_id}/codegen/{family}-generated-files.json",
     )
+    staged = tuple(staged_generated_path(change_id, family, target) for target in mapping_targets)
+    return tuple(sorted((*ordinary, *staged)))
+
+
+def _closed_mapping_targets(workspace: Path, plan: PlanResultV1, family: Family) -> tuple[str, ...]:
+    mapping_name = f"{family}-codegen-mapping.json"
+    relatives = tuple(path for path in plan.output_files if PurePosixPath(path).name == mapping_name)
+    if not relatives:
+        relatives = (f"qa/changes/{plan.change_id}/plans/{mapping_name}",)
+    for relative in relatives:
+        try:
+            canonical_relative_path(relative)
+        except ValueError as error:
+            raise InputError(str(error)) from error
+        path = workspace.joinpath(*PurePosixPath(relative).parts)
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            mapping = CodegenMapping.model_validate(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, UnicodeError, json.JSONDecodeError, ValidationError) as error:
+            raise InputError(f"closed codegen mapping is invalid: {relative}: {error}") from error
+        if mapping.layer != family:
+            raise InputError(f"closed mapping layer {mapping.layer!r} does not match {family}")
+        return tuple(sorted({item.target_file for item in mapping.entries}))
+    return ()
 
 
 def prepare_codegen_outcome(
@@ -467,7 +494,11 @@ class CodegenPrepareHandler:
                 binding=binding,
                 result_schema_id=CODEGEN_RESULT_ID,
                 context=context,
-                allowed_outputs=codegen_outputs(business.change_id, family),
+                allowed_outputs=codegen_outputs(
+                    business.change_id,
+                    family,
+                    mapping_targets=_closed_mapping_targets(context.project_root, plan, family),
+                ),
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)
@@ -541,7 +572,12 @@ class CodegenFixPrepareHandler:
                 binding=binding,
                 result_schema_id=CODEGEN_FIX_RESULT_ID,
                 context=context,
-                allowed_outputs=codegen_outputs(business.change_id, family, fix=True),
+                allowed_outputs=codegen_outputs(
+                    business.change_id,
+                    family,
+                    fix=True,
+                    mapping_targets=tuple(business.allowed_paths),
+                ),
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)
@@ -623,6 +659,7 @@ __all__ = [
     "codegen_finalize_handler",
     "codegen_fix_finalize_handler",
     "codegen_fix_prepare_handler",
+    "codegen_outputs",
     "codegen_prepare_handler",
     "codegen_result_contract",
 ]

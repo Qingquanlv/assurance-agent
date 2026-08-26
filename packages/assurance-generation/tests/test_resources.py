@@ -172,6 +172,18 @@ def test_api_plan_review_is_exhaustive_and_locators_are_single_target() -> None:
     assert "each locator as authorizing exactly its named artifact" in planner
 
 
+def test_codegen_fixer_skills_read_and_write_staged_family_prefix() -> None:
+    for family in ("api", "e2e"):
+        skill = resource_text(f"skills/aa-{family}-codegen-fixer/SKILL.md")
+        normalized = " ".join(skill.split())
+        staged_tests = f"qa/changes/<change-id>/generated/{family}/files/tests/{family}/**"
+        staged_data = f"qa/changes/<change-id>/generated/{family}/files/tests/testdata/**"
+        assert staged_tests in skill
+        assert staged_data in skill
+        assert f"current generated tests under `tests/{family}/**`" not in skill
+        assert "Do not write generated tests into the original `tests/**` tree." in normalized
+
+
 def test_e2e_codegen_uses_importable_support_modules_instead_of_conftest_imports() -> None:
     skill = " ".join(resource_text("skills/aa-e2e-codegen/SKILL.md").split())
 

@@ -81,6 +81,19 @@ def logical_generated_target(path: str) -> str:
     return path
 
 
+def _is_unprefixed_sut_test(path: str) -> bool:
+    return path == "tests" or path.startswith("tests/")
+
+
+def _accepts_generated_write(path: str, write_roots: tuple[str, ...], family: Family | None = None) -> bool:
+    if not _canonical_relative(path) or _is_unprefixed_sut_test(path):
+        return False
+    target = logical_generated_target(path)
+    if not under_write_root(path, write_roots) and not under_write_root(target, write_roots):
+        return False
+    return not (target != path and family is not None and not family_allows_target(family, target))
+
+
 def _is_mapping_target_module(path: str) -> bool:
     posix = PurePosixPath(path)
     if not posix.parts or posix.parts[0] != "tests" or posix.suffix != ".py":
@@ -174,11 +187,7 @@ class GeneratedFilesValidator:
             target = logical_generated_target(path)
             if self._require_mapping and _is_mapping_target_module(target) and target not in mapped:
                 return ValidationResult(accepted=False, reason=_UNMAPPED_REASON.format(path=target))
-            if not under_write_root(path, self._write_roots) and not under_write_root(
-                target, self._write_roots
-            ):
-                return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
-            if target != path and self._family is not None and not family_allows_target(self._family, target):
+            if not _accepts_generated_write(path, self._write_roots, self._family):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
         extra_bytes = sorted(set(self._file_bytes) - set(listed))
         if extra_bytes:
@@ -314,11 +323,7 @@ class CodegenMappingValidator:
         del context
         listed = tuple(item.path for item in candidate.files)
         for path in listed:
-            target = logical_generated_target(path)
-            if not _canonical_relative(path) or (
-                not under_write_root(path, self._write_roots)
-                and not under_write_root(target, self._write_roots)
-            ):
+            if not _accepts_generated_write(path, self._write_roots):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
         mapping = self._mapping or _load_mapping(self._file_bytes)
         if mapping is None:
@@ -358,10 +363,7 @@ class CodegenFixCandidateValidator:
         listed = tuple(item.path for item in candidate.files)
         for path in listed:
             target = logical_generated_target(path)
-            if not _canonical_relative(path) or (
-                not under_write_root(path, self._write_roots)
-                and not under_write_root(target, self._write_roots)
-            ):
+            if not _accepts_generated_write(path, self._write_roots, self._family):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
             if self._allowed_paths and path not in self._allowed_paths and target not in self._allowed_paths:
                 return ValidationResult(accepted=False, reason=_ALLOWED_REASON.format(path=path))

@@ -27,6 +27,8 @@ from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     family_case_id,
     family_test_file,
     fake_agent_result,
+    mapping_document,
+    staged_generated_file,
 )
 from planning_fixtures import BINDING as PLAN_BINDING  # pyright: ignore[reportMissingImports]
 from planning_fixtures import VALID_LEAFS, reviewed_cases  # pyright: ignore[reportMissingImports]
@@ -49,6 +51,22 @@ def _write_reviewed_cases(tmp_path: Path, family: str) -> None:
     path = tmp_path / "qa/changes/CH-DEMO-001/cases/items/case.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(reviewed_cases(family), sort_keys=False), encoding="utf-8")
+
+
+def _write_plan_mapping(workspace: Path, family: str, targets: list[str]) -> None:
+    entries = [
+        {
+            "case_id": f"TC_{family.upper()}_{index:03d}",
+            "symbol": f"test_tc_{family}_{index:03d}__happy_path",
+            "target_file": target,
+        }
+        for index, target in enumerate(targets, start=1)
+    ]
+    document = mapping_document(family, target_file=targets[0])
+    document["entries"] = entries
+    path = workspace / f"qa/changes/CH-DEMO-001/plans/{family}-codegen-mapping.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document), encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -126,6 +144,55 @@ async def test_codegen_prepare_uses_reviewed_plan_and_baseline(family: str, tmp_
     file_definition = cast(dict[str, object], definitions["CodegenGeneratedFileAuthoring"])
     file_properties = cast(dict[str, object], file_definition["properties"])
     assert "content_sha256" not in file_properties
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_codegen_prepare_authorizes_exact_staged_mapping_targets(family: str, tmp_path: Path) -> None:
+    mapped = family_test_file(family)
+    extra = f"tests/{family}/test_unmapped.py" if family != "performance" else "tests/perf/test_unmapped.py"
+    _write_plan_mapping(tmp_path, family, [mapped])
+
+    prepared = await execute_task(
+        codegen_prepare_handler(family),
+        codegen_input(family),
+        tmp_path,
+        binding_data=PLAN_BINDING,
+    )
+
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    staged = staged_generated_file(family, mapped)
+    assert staged in request.workspace.allowed_outputs
+    assert staged_generated_file(family, extra) not in request.workspace.allowed_outputs
+    assert all("**" not in path for path in request.workspace.allowed_outputs)
+    assert all(not path.startswith("tests/") for path in request.workspace.allowed_outputs)
+    assert (
+        f"qa/changes/CH-DEMO-001/codegen/{family}-generated-files.json" in request.workspace.allowed_outputs
+    )
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_codegen_prepare_omits_generated_writes_when_mapping_is_absent(
+    family: str, tmp_path: Path
+) -> None:
+    prepared = await execute_task(
+        codegen_prepare_handler(family),
+        codegen_input(family),
+        tmp_path,
+        binding_data=PLAN_BINDING,
+    )
+
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    assert request.workspace.allowed_outputs == (
+        f"qa/changes/CH-DEMO-001/codegen/{family}-codegen-summary.md",
+        f"qa/changes/CH-DEMO-001/codegen/{family}-generated-files.json",
+    )
+    assert all(
+        not path.startswith("qa/changes/CH-DEMO-001/generated/") for path in request.workspace.allowed_outputs
+    )
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -371,6 +438,10 @@ async def test_codegen_fix_prepare_includes_allowed_paths(family: str, tmp_path:
     assert list(cast(list[str], context_payload["allowed_paths"])) == [family_test_file(family)]
     proposal = cast(dict[str, object], context_payload["approved_proposal"])
     assert proposal["status"] == "approved"
+    staged = staged_generated_file(family)
+    assert staged in request.workspace.allowed_outputs
+    assert all("**" not in path for path in request.workspace.allowed_outputs)
+    assert all(not path.startswith("tests/") for path in request.workspace.allowed_outputs)
 
 
 @pytest.mark.parametrize("family", ("api", "e2e"))
