@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from dataclasses import replace
 
@@ -18,11 +19,13 @@ from agent_runtime_opencode.config import AdapterConfigurationError, OpenCodeAda
 from agent_runtime_opencode.handler import OpenCodeHandler
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 from harness import (  # pyright: ignore[reportMissingImports]
+    ALLOWED_OUTPUTS,
     WRITE_ROOT,
     _CANARY,
     _SECRET_TEXT,
     _SHA,
     _binding_data,
+    _bound_fixture,
     _config,
     _open_code_fixture,
     _terminal_success_fixture,
@@ -149,6 +152,69 @@ async def test_execute_uses_project_root_and_request_carries_stage_root() -> Non
         dumped = agent_run.model_dump(mode="json")
         assert dumped["workspace"]["write_root"] == WRITE_ROOT
         assert dumped["workspace"]["allowed_outputs"] == list(agent_run.workspace.allowed_outputs)
+    finally:
+        fixture.close()
+
+
+def _first_record_index(
+    records: tuple[object, ...],
+    *,
+    method: str,
+    path_suffix: str | None = None,
+    path: str | None = None,
+) -> int:
+    for index, record in enumerate(records):
+        recorded_path = getattr(record, "path")
+        if getattr(record, "method") != method:
+            continue
+        if path is not None and recorded_path == path:
+            return index
+        if path_suffix is not None and recorded_path.endswith(path_suffix):
+            return index
+    raise AssertionError(f"missing {method} {path or path_suffix}")
+
+
+async def test_execute_stamps_binding_title_after_create_before_prompt_admission() -> None:
+    fixture = _open_code_fixture()
+    try:
+        fixture.fake.sse_mode = "fast_idle"
+        outcome = await fixture.handler.execute(fixture.request, fixture.context)
+        assert outcome.status == "succeeded"
+        session_id = fixture.reference.session_id
+        assert session_id is not None
+        title = fixture.fake.session_title(session_id)
+        assert title is not None
+        assert title.startswith("aa-workspace-binding-v1:")
+        document = json.loads(title.split(":", 1)[1])
+        assert document["session_id"] == session_id
+        assert document["write_root"] == WRITE_ROOT
+        assert document["allowed_outputs"] == list(ALLOWED_OUTPUTS)
+        assert document["task_id"] == "task-1"
+        assert document["attempt"] == 1
+        assert document["attempt_id"] == "attempt-1"
+        records = fixture.fake.records
+        create_at = _first_record_index(records, method="POST", path="/session")
+        stamp_at = _first_record_index(records, method="PATCH", path_suffix=f"/session/{session_id}")
+        admit_at = _first_record_index(records, method="POST", path_suffix="/prompt_async")
+        assert create_at < stamp_at < admit_at
+        assert fixture.fake.title_update_bodies
+        assert fixture.fake.title_update_bodies[0]["title"] == title
+    finally:
+        fixture.close()
+
+
+async def test_invalid_binding_title_fails_closed_before_prompt_admission() -> None:
+    fixture = _bound_fixture(terminal_mode="success", sse_mode="fast_idle")
+    try:
+        fixture.fake.reject_title_updates = True
+        assert fixture.fake.session_title(fixture.reference.session_id or "") == "seed"
+        try:
+            outcome = await fixture.handler.execute(fixture.request, fixture.context)
+        except Exception:
+            outcome = None
+        assert fixture.fake.prompt_posts == 0
+        if outcome is not None:
+            assert outcome.status != "succeeded"
     finally:
         fixture.close()
 

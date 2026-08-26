@@ -100,6 +100,8 @@ class OpenCodeFakeServer:
         self.metadata = dict(metadata or {})
         self.create_bodies: list[dict[str, object]] = []
         self.prompt_bodies: list[dict[str, object]] = []
+        self.title_update_bodies: list[dict[str, object]] = []
+        self.reject_title_updates = False
         self.directories: list[str] = []
         self.sse_cursors: list[str | None] = []
         self.terminal_mode: TerminalMode = "success"
@@ -212,6 +214,14 @@ class OpenCodeFakeServer:
         with self._lock:
             session = self._sessions[session_id]
             session["metadata"] = dict(metadata)
+
+    def session_title(self, session_id: str) -> str | None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return None
+            title = session.get("title")
+            return title if isinstance(title, str) else None
 
     def _record(self, method: str, path: str, body: bytes) -> None:
         recorded = RecordedCall(
@@ -367,6 +377,9 @@ class OpenCodeFakeServer:
         parts = remainder.split("/")
         session_id = parts[0]
         if len(parts) == 1:
+            if handler.command == "PATCH":
+                self._handle_title_update(handler, session_id, body)
+                return
             if handler.command != "GET":
                 self._write_json(handler, 405, {"error": "method not allowed"})
                 return
@@ -393,6 +406,37 @@ class OpenCodeFakeServer:
             self._handle_messages(handler, session_id, parts)
             return
         self._write_json(handler, 404, {"error": "not found"})
+
+    def _handle_title_update(
+        self,
+        handler: BaseHTTPRequestHandler,
+        session_id: str,
+        body: bytes,
+    ) -> None:
+        try:
+            parsed = json.loads(body.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            parsed = {}
+        if not isinstance(parsed, dict):
+            parsed = {}
+        with self._lock:
+            self.title_update_bodies.append(parsed)
+            reject = self.reject_title_updates
+            session = self._sessions.get(session_id)
+        if reject:
+            self._write_json(handler, 500, {"error": "title update rejected"})
+            return
+        if session is None:
+            self._write_json(handler, 404, {"error": "not found"})
+            return
+        title = parsed.get("title")
+        if not isinstance(title, str) or not title:
+            self._write_json(handler, 400, {"error": "title is required"})
+            return
+        with self._lock:
+            session["title"] = title
+            view = self._session_view(session)
+        self._write_json(handler, 200, view)
 
     def _handle_prompt(self, handler: BaseHTTPRequestHandler, session_id: str, body: bytes) -> None:
         try:
@@ -619,6 +663,9 @@ def _make_handler(fake: OpenCodeFakeServer) -> type[BaseHTTPRequestHandler]:
             fake.handle(self)
 
         def do_POST(self) -> None:
+            fake.handle(self)
+
+        def do_PATCH(self) -> None:
             fake.handle(self)
 
         def log_message(self, format: str, *args: object) -> None:

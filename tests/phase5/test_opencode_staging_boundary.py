@@ -7,7 +7,9 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+from agent_runtime_contracts import AgentWorkspaceV1
 from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes
+from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskWorkspaceIdentity
 
 from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
 
@@ -117,6 +119,67 @@ def _staged(project: Path, logical: str, write_root: str = _WRITE_ROOT) -> Path:
 def _install(project: Path) -> Path:
     _config, plugin = install_opencode_agents(project)
     return plugin
+
+
+def _task_context(project: Path) -> TaskContext:
+    write_root = project / _WRITE_ROOT
+    write_root.mkdir(parents=True, exist_ok=True)
+    identity_payload = {
+        "task_id": "task-1",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [_ALLOWED],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskContext(
+        project_root=project,
+        write_root=write_root,
+        workspace_identity=TaskWorkspaceIdentity(
+            **identity_payload,
+            identity_digest=canonical_digest(identity_payload),
+        ),
+        heartbeat=lambda: None,
+        cancel_requested=lambda: False,
+        invocation=InvocationMetadata(
+            invocation_id="inv-1",
+            lock_digest="a" * 64,
+            composition_digest="b" * 64,
+            entrypoint="runtime.opencode.execute",
+        ),
+    )
+
+
+def _workspace() -> AgentWorkspaceV1:
+    payload = {
+        "schema_version": "1",
+        "write_root": _WRITE_ROOT,
+        "allowed_outputs": [_ALLOWED],
+    }
+    return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
+
+
+def test_product_and_adapter_builders_produce_the_same_plugin_acceptable_title(tmp_path: Path) -> None:
+    from agent_runtime_opencode.workspace_binding import workspace_binding_title as adapter_title
+
+    project = tmp_path / "project"
+    project.mkdir()
+    product = _binding_title(project)
+    adapter = adapter_title(
+        _task_context(project),
+        _workspace(),
+        _SESSION_ID,
+        agent_profile=_AGENT,
+    )
+    assert adapter == product
+    assert adapter.startswith("aa-workspace-binding-v1:")
+    plugin = _install(project)
+    args = _allowed(
+        _run(plugin, session=_session(project, adapter), tool="write", args={"filePath": _ALLOWED})
+    )
+    assert args["filePath"] == str(_staged(project, _ALLOWED))
 
 
 def test_workspace_binding_is_digest_bound_and_requires_session_identity(tmp_path: Path) -> None:
@@ -372,6 +435,58 @@ def test_binding_session_and_digest_must_match(tmp_path: Path) -> None:
             args={"filePath": _ALLOWED},
         ),
         "binding",
+    )
+
+
+_EXECUTOR_VIEW_COMMAND = (
+    "PYTHONDONTWRITEBYTECODE=1 "
+    "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-1 "
+    "uv run --isolated pytest -p no:cacheprovider --rootdir "
+    "qa/changes/CH-1/.staging/execution/api"
+)
+
+
+def test_executor_execution_view_shell_is_allowed(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    session = _session(
+        project,
+        _binding_title(project, agent_profile="assurance-v1-executor"),
+        agent="assurance-v1-executor",
+    )
+    args = _allowed(_run(plugin, session=session, tool="bash", args={"command": _EXECUTOR_VIEW_COMMAND}))
+    assert args["command"] == _EXECUTOR_VIEW_COMMAND
+
+
+def test_executor_project_root_mv_is_denied(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    session = _session(
+        project,
+        _binding_title(project, agent_profile="assurance-v1-executor"),
+        agent="assurance-v1-executor",
+    )
+    _denied(
+        _run(
+            plugin,
+            session=session,
+            tool="bash",
+            args={"command": f"mv {project} {project.parent / 'project.bak'}"},
+        ),
+        "shell",
+    )
+
+
+def test_author_profile_cannot_run_execution_view_shell(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    session = _session(project, _binding_title(project))
+    _denied(
+        _run(plugin, session=session, tool="bash", args={"command": _EXECUTOR_VIEW_COMMAND}),
+        "shell",
     )
 
 

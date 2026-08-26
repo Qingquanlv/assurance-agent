@@ -131,6 +131,9 @@ class OpenCodeHttpClient:
     async def get_session(self, session_id: str) -> dict[str, Any]:
         return await self._json("GET", f"/session/{_path_segment(session_id, 'session id')}")
 
+    async def update_session(self, session_id: str, body: Mapping[str, object]) -> dict[str, Any]:
+        return await self._json("PATCH", f"/session/{_path_segment(session_id, 'session id')}", body)
+
     async def admit_message(self, session_id: str, body: Mapping[str, object]) -> dict[str, Any]:
         path = f"/session/{_path_segment(session_id, 'session id')}/prompt_async"
         raw = await self._read("POST", path, body=body, accept="application/json")

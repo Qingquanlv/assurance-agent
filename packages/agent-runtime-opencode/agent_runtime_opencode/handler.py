@@ -50,6 +50,7 @@ from agent_runtime_opencode.protocol import (
     resolve_advertised_profile,
 )
 from agent_runtime_opencode.reducer import reduce_terminal
+from agent_runtime_opencode.workspace_binding import workspace_binding_title
 
 
 def workspace_identity_digest_for(context: TaskContext) -> str:
@@ -274,6 +275,7 @@ class OpenCodeHandler:
                 client,
                 port,
                 request,
+                context,
                 snapshot,
                 expected,
                 allow_create=allow_create and was_prepared,
@@ -319,6 +321,7 @@ class OpenCodeHandler:
         client: OpenCodeHttpClient,
         port: TaskActivityPort,
         request: TaskRequest,
+        context: TaskContext,
         snapshot: TaskActivitySnapshot,
         expected: dict[str, str],
         *,
@@ -339,7 +342,7 @@ class OpenCodeHandler:
         if len(matches) == 1:
             return self._bind_match(port, matches[0], expected)
         if allow_create:
-            return await self._create_and_bind(client, port, metadata, expected)
+            return await self._create_and_bind(client, port, request, context, metadata, expected)
         return TaskActivityReconcileResult(
             status="indeterminate",
             reason="pending observation after ambiguous create",
@@ -349,6 +352,8 @@ class OpenCodeHandler:
         self,
         client: OpenCodeHttpClient,
         port: TaskActivityPort,
+        request: TaskRequest,
+        context: TaskContext,
         metadata: OpenCodeDiscoveryMetadata,
         expected: dict[str, str],
     ) -> TaskActivityReconcileResult:
@@ -357,6 +362,12 @@ class OpenCodeHandler:
         if "id" in payload or "parentID" in payload:
             raise ValueError("create must not supply a session id or parentID")
         record = await client.create_session(payload)
+        session_id = record.get("id") if isinstance(record, dict) else None
+        if isinstance(session_id, str) and session_id:
+            stamped = await self._stamp_workspace_binding(client, request, context, session_id)
+            if stamped is not None:
+                self._bind_match(port, record, expected)
+                return stamped
         return self._bind_match(port, record, expected)
 
     async def _reconcile_bound(
@@ -373,6 +384,15 @@ class OpenCodeHandler:
         if isinstance(bound, TaskActivityReconcileResult):
             return bound
         reference, record = bound
+        session_id = reference.session_id
+        if not session_id:
+            return TaskActivityReconcileResult(
+                status="indeterminate",
+                reason="bound session identity is unknown",
+            )
+        stamped = await self._stamp_workspace_binding(client, request, context, session_id)
+        if stamped is not None:
+            return stamped
         admitted = await self._admit_prompt(client, request, reference)
         if admitted is not None:
             return admitted
@@ -434,6 +454,41 @@ class OpenCodeHandler:
                 reason="foreign session metadata",
             )
         return reference, record
+
+    def _binding_agent_profile(self, request: TaskRequest) -> str:
+        agent_run = agent_run_from_request(request)
+        profile = getattr(agent_run, "agent_profile", None)
+        if isinstance(profile, str) and profile:
+            return profile
+        return agent_run.execution.worker_profile
+
+    async def _stamp_workspace_binding(
+        self,
+        client: OpenCodeHttpClient,
+        request: TaskRequest,
+        context: TaskContext,
+        session_id: str,
+    ) -> TaskActivityReconcileResult | None:
+        agent_run = agent_run_from_request(request)
+        try:
+            title = workspace_binding_title(
+                context,
+                agent_run.workspace,
+                session_id,
+                agent_profile=self._binding_agent_profile(request),
+            )
+            record = await client.get_session(session_id)
+            if not isinstance(record, dict) or record.get("title") != title:
+                await client.update_session(session_id, {"title": title})
+                record = await client.get_session(session_id)
+            if not isinstance(record, dict) or record.get("title") != title:
+                raise ValueError("workspace binding title is missing or invalid")
+        except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError):
+            return TaskActivityReconcileResult(
+                status="indeterminate",
+                reason="workspace binding title is missing or invalid",
+            )
+        return None
 
     async def _admit_prompt(
         self,

@@ -19,6 +19,8 @@ const REQUIRED_KEYS = [
 const WRITE_TOOLS = new Set(["apply_patch", "edit", "write"]);
 const READ_TOOLS = new Set(["read", "glob", "grep"]);
 const SHELL_TOOLS = new Set(["bash", "interactive_bash"]);
+const EXECUTOR_PROFILE = "assurance-v1-executor";
+const EXECUTION_VIEW = /(?:^|[/"'=\s])qa\/changes\/[^/\s"'\\]+\/\.staging\/execution\/[^/\s"'\\]+/;
 const PATCH_HEADERS = /^(Add File|Update File|Delete File|Move to): /;
 
 const canonicalJson = (value) => {
@@ -215,6 +217,53 @@ const rewriteNativeWrites = (args, rewrite) => {
   if (!found) throw new Error("write tool has no file path");
 };
 
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const mutatesProjectOrOutputParent = (command, root, binding) => {
+  if (!/\b(mv|rm|ln)\b/.test(command)) return false;
+  if (command.includes(root)) return true;
+  const parents = new Set(
+    binding.allowed_outputs
+      .map((item) => item.split("/").slice(0, -1).join("/"))
+      .filter(Boolean),
+  );
+  for (const parent of parents) {
+    if (parent.includes(".staging/execution/")) continue;
+    if (command.includes(parent)) return true;
+  }
+  return false;
+};
+
+const assertExecutorShell = (binding, root, args) => {
+  if (binding.agent_profile !== EXECUTOR_PROFILE) {
+    throw new Error("Assurance write boundary: shell escape is not allowed");
+  }
+  const command = typeof args?.command === "string" ? args.command : "";
+  if (!command) {
+    throw new Error("Assurance write boundary: shell escape is not allowed");
+  }
+  const absoluteView = new RegExp(
+    `${escapeRegExp(root)}[/\\\\]qa[/\\\\]changes[/\\\\][^/\\s"'\\\\]+[/\\\\]\\.staging[/\\\\]execution[/\\\\][^/\\s"'\\\\]+`,
+  );
+  if (!EXECUTION_VIEW.test(command) && !absoluteView.test(command)) {
+    throw new Error("Assurance write boundary: shell escape is not allowed");
+  }
+  if (mutatesProjectOrOutputParent(command, root, binding)) {
+    throw new Error("Assurance write boundary: shell escape is not allowed");
+  }
+  if (/\b(pytest|locust|uv)\b/.test(command)) {
+    if (!command.includes("PYTHONDONTWRITEBYTECODE=1")) {
+      throw new Error("Assurance write boundary: shell escape is not allowed");
+    }
+    if (/\buv\b/.test(command) && !command.includes("--isolated")) {
+      throw new Error("Assurance write boundary: shell escape is not allowed");
+    }
+    if (/\bpytest\b/.test(command) && !command.includes("-p no:cacheprovider")) {
+      throw new Error("Assurance write boundary: shell escape is not allowed");
+    }
+  }
+};
+
 const rewriteRead = (tool, args, binding, root) => {
   const keys = tool === "read" ? ["filePath", "file_path", "path"] : ["path"];
   let target = null;
@@ -263,7 +312,11 @@ export default async ({ client }) => ({
     const root = canonicalize(session.directory, session.directory);
     const binding = parseBinding(session, root);
     if (SHELL_TOOLS.has(tool)) {
-      throw new Error("Assurance write boundary: shell escape is not allowed");
+      if (tool !== "bash") {
+        throw new Error("Assurance write boundary: shell escape is not allowed");
+      }
+      assertExecutorShell(binding, root, output.args);
+      return;
     }
     if (READ_TOOLS.has(tool)) {
       rewriteRead(tool, output.args, binding, root);
