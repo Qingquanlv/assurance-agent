@@ -27,8 +27,7 @@ _CURRENT_BEHAVIORAL_NODES = {
         "test_executor_reconciles_after_apply_started_without_blind_reapply"
     ),
     "installed_wheel_isolation": (
-        "packages/graph-engine/tests/test_cli.py::"
-        "test_run_executes_only_the_explicit_product_plugin_bundle"
+        "packages/graph-engine/tests/test_cli.py::test_run_executes_only_the_explicit_product_plugin_bundle"
     ),
 }
 
@@ -58,3 +57,20 @@ def test_closed_schema_rejects_unknown_keywords_before_runtime_or_registry_use()
             media_type="application/schema+json",
             content=schema,
         )
+
+
+def test_closed_schema_accepts_declared_standard_dialects() -> None:
+    schema = b'{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"string"}'
+
+    match_json_schema(
+        "ok",
+        {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "string"},
+    )
+
+    entry = SchemaEntry.from_content(
+        schema_id="phase.six.standard-dialect",
+        owner_id="phase.six",
+        media_type="application/schema+json",
+        content=schema,
+    )
+    assert entry.dialect == "https://json-schema.org/draft/2020-12/schema"

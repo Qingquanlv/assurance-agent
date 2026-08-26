@@ -880,7 +880,6 @@ _SUPPORTED_SCHEMA_KEYWORDS = frozenset(
         "enum",
     }
 )
-_CLOSED_JSON_SCHEMA_DIALECT = "https://graph-engine.dev/json-schema/closed/1.0"
 
 
 def _assert_closed_json_schema(schema: object) -> None:
@@ -895,8 +894,6 @@ def _assert_closed_json_schema(schema: object) -> None:
     if dialect is not None:
         if not isinstance(dialect, str):
             raise ValueError("schema entry dialect must be text")
-        if dialect != _CLOSED_JSON_SCHEMA_DIALECT:
-            raise ValueError(f"unsupported schema dialect: {dialect!r}")
     properties = schema.get("properties")
     if properties is not None:
         if not isinstance(properties, dict):

@@ -42,3 +42,40 @@ The brief's literal focused command also names the deleted
 with “file or directory not found”. The Phase 6 reconciliation test is the
 replacement schema coverage, and the equivalent runnable focused command above
 is green.
+
+## Fix Round 1 — Preserve Declared Dialect Compatibility
+
+Removed the unrequested `$schema` value restriction from the runtime and
+`SchemaEntry` closed-keyword validators. They continue to require a text
+`$schema` value and reject unknown keywords recursively.
+
+Regression red command:
+
+```console
+uv run pytest tests/phase6/test_phase2_invariant_reconciliation.py::test_closed_schema_accepts_declared_standard_dialects -q
+```
+
+Regression red output:
+
+```console
+FAILED tests/phase6/test_phase2_invariant_reconciliation.py::test_closed_schema_accepts_declared_standard_dialects
+ValueError: unsupported schema dialect: 'https://json-schema.org/draft/2020-12/schema'
+```
+
+Green verification command:
+
+```console
+uv run pytest tests/phase6/test_phase2_invariant_reconciliation.py packages/graph-engine/tests/composition/test_registries.py packages/graph-engine/tests/runtime/test_effects.py -q
+uv run ruff check packages/graph-engine/graph_engine/runtime/json_schema.py packages/graph-engine/graph_engine/composition/models.py tests/phase6/test_phase2_invariant_reconciliation.py
+uv run ruff format --check packages/graph-engine/graph_engine/runtime/json_schema.py packages/graph-engine/graph_engine/composition/models.py tests/phase6/test_phase2_invariant_reconciliation.py
+uv run pyright packages/graph-engine/graph_engine/runtime/json_schema.py packages/graph-engine/graph_engine/composition/models.py tests/phase6/test_phase2_invariant_reconciliation.py
+```
+
+Green verification output:
+
+```console
+54 passed, 1 warning in 5.69s
+All checks passed!
+3 files already formatted
+0 errors, 0 warnings, 0 informations
+```

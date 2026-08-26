@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 
-CLOSED_JSON_SCHEMA_DIALECT = "https://graph-engine.dev/json-schema/closed/1.0"
 _SUPPORTED_KEYWORDS = frozenset(
     {
         "$schema",
@@ -43,8 +42,6 @@ def assert_closed_json_schema(schema: object) -> None:
     if dialect is not None:
         if not isinstance(dialect, str):
             raise ValueError("schema dialect must be text")
-        if dialect != CLOSED_JSON_SCHEMA_DIALECT:
-            raise ValueError(f"unsupported schema dialect: {dialect!r}")
     properties = schema.get("properties")
     if properties is not None:
         if not isinstance(properties, dict):
