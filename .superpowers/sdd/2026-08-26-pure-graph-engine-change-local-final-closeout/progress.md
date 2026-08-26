@@ -96,3 +96,17 @@
   fail-closed P1/P2 recognition, and negative admission coverage; commits
   `6d32686..6c4a6d7`).
 - Task 1: complete (commits `e712943..6c4a6d7`, review clean).
+- Task 2: Ruling: historical Toy A effect business behavior no longer exists in
+  the pure graph-engine example, so the retained crash invariant is authenticated
+  at the product-neutral durable-effect seam and paired with the isolated
+  graph-engine wheel smoke; do not restore Toy A business effects merely to
+  reproduce the old smoke script — cost if wrong: an isolated installed Toy A
+  process could expose a recovery integration defect not covered by the generic
+  effect test and current smoke.
+- Task 2: minor (deferred): runtime and composition currently duplicate the
+  closed JSON-Schema keyword validator; final whole-branch review must decide
+  whether a dependency-neutral shared module is warranted.
+- Task 2: fix round 1/5 (1 addressed, 0 open — removed unrequested `$schema`
+  dialect restriction and added standard-dialect regression; commits
+  `e1960ec..b075512`).
+- Task 2: complete (commits `7225c06..b075512`, review clean; 1 deferred minor).
