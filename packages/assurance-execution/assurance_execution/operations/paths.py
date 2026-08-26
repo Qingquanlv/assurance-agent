@@ -27,6 +27,18 @@ def execution_view_relative(change_id: str, batch_id: str) -> str:
     )
 
 
+def resolve_canonical_evidence(project: Path, change_id: str, filename: str) -> Path:
+    closed = _safe_component(change_id, label="change_id")
+    relative = f"qa/changes/{closed}/execution/{filename}"
+    path = project.joinpath(*PurePosixPath(relative).parts)
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(project.resolve())
+    except ValueError as error:
+        raise InputError(f"canonical evidence path escapes the project: {relative}") from error
+    return path
+
+
 def resolve_execution_view(project: Path, change_id: str, batch_id: str) -> Path:
     relative = execution_view_relative(change_id, batch_id)
     path = project.joinpath(*PurePosixPath(relative).parts)

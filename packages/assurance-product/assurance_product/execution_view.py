@@ -42,19 +42,19 @@ def build_execution_view(
     if view_root.exists():
         raise ValueError(f"conflict: execution view already exists: {relative_root}")
     planned = _plan_view_files(project, merged, selected_targets)
-    created: list[Path] = []
+    created = False
     try:
         view_root.parent.mkdir(parents=True, exist_ok=True)
         view_root.mkdir()
-        created.append(view_root)
+        created = True
         for relative, (payload, mode) in planned.items():
             destination = _join(view_root, relative)
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(payload)
             destination.chmod(mode)
-            created.append(destination)
     except OSError as error:
-        _rollback(created)
+        if created and view_root.exists():
+            shutil.rmtree(view_root, ignore_errors=True)
         raise ValueError("could not materialize execution view") from error
     digest = canonical_digest(
         [[relative, _digest_bytes(payload), mode] for relative, (payload, mode) in planned.items()]
@@ -155,17 +155,6 @@ def _join(root: Path, relative: str) -> Path:
 
 def _digest_bytes(payload: bytes) -> str:
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
-
-
-def _rollback(created: list[Path]) -> None:
-    for path in reversed(created):
-        try:
-            if path.is_file():
-                path.unlink()
-            elif path.is_dir():
-                path.rmdir()
-        except OSError:
-            pass
 
 
 __all__ = [

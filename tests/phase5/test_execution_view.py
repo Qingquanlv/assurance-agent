@@ -196,6 +196,39 @@ def test_cleanup_does_not_delete_canonical_evidence(tmp_path: Path) -> None:
     assert json.loads(evidence.read_text(encoding="utf-8")) == {"status": "passed"}
 
 
+def test_failed_materialization_does_not_leave_a_blocking_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _project(tmp_path)
+    _promote(project, "api", CANDIDATE_TARGET, b"generated-candidate\n")
+    merged = merge_generated(project, CHANGE_ID, ("api",))
+
+    def boom(self: Path, data: bytes) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_bytes", boom)
+    with pytest.raises(ValueError, match="could not materialize"):
+        build_execution_view(
+            project,
+            change_id=CHANGE_ID,
+            batch_id=BATCH_ID,
+            merged=merged,
+            selected=_selected(CANDIDATE_TARGET),
+        )
+    monkeypatch.undo()
+
+    view = build_execution_view(
+        project,
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        merged=merged,
+        selected=_selected(CANDIDATE_TARGET),
+    )
+    assert view.root == f"qa/changes/{CHANGE_ID}/.staging/execution/{BATCH_ID}"
+    shadowed = project.joinpath(*view.root.split("/"), *CANDIDATE_TARGET.split("/"))
+    assert shadowed.read_bytes() == b"generated-candidate\n"
+
+
 def test_execution_view_digest_covers_selected_materialized_files(tmp_path: Path) -> None:
     project = _project(tmp_path)
     _promote(project, "api", CANDIDATE_TARGET, b"generated-candidate\n")

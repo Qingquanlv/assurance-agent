@@ -146,13 +146,22 @@ class FakePytestHost:
         )
 
 
+def _canonical_selector(item: str) -> str:
+    marker = "/.staging/execution/"
+    if marker not in item:
+        return item
+    remainder = item.split(marker, 1)[1]
+    parts = remainder.split("/", 1)
+    return parts[1] if len(parts) == 2 else item
+
+
 def _selected_from_argv(argv: tuple[str, ...]) -> tuple[str, ...]:
     selected: list[str] = []
     for item in argv[1:]:
         if item.startswith("-"):
             continue
         if item.endswith(".py") or "::" in item:
-            selected.append(item)
+            selected.append(_canonical_selector(item))
     return tuple(selected)
 
 

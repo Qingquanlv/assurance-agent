@@ -83,7 +83,7 @@ async def test_run_tests_builds_argv_without_shell(tmp_path: Path) -> None:
     assert outcome.status == "succeeded"
     argv = host.commands[0]
     assert argv[0] == "pytest"
-    assert "tests/generated_test.py" in argv
+    assert any(item.endswith("tests/generated_test.py") for item in argv)
     assert "-p" in argv and "no:cacheprovider" in argv
     assert "--json-report" in argv
     report_flags = [item for item in argv if item.startswith("--json-report-file=")]

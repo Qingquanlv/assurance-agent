@@ -3,25 +3,30 @@ from __future__ import annotations
 import hashlib
 import json
 import stat
+import subprocess
 from pathlib import Path
 from typing import cast
 
 import pytest
+from assurance_execution.contracts.agent import RunTestsInputV1
+from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_execution.contracts.selection import ClosedMappingV1
 from assurance_execution.operations.common import InputError
+from assurance_execution.operations.normalize import normalize_evidence
 from assurance_execution.operations.runner import (
     ProcessReceipt,
     build_pytest_argv,
     run_closed_mapping,
     runner_environment,
+    write_canonical_evidence,
 )
-from assurance_execution.contracts.agent import RunTestsInputV1
+from assurance_product.execution_view import build_execution_view, discard_execution_view
 from assurance_product.generated_merge import (
     GeneratedFileV2,
     GeneratedOperation,
     TestFamily,
     merge_generated,
 )
-from assurance_product.execution_view import build_execution_view, discard_execution_view
 
 CHANGE_ID = "CH-DEMO-001"
 BATCH_ID = "20260822T000000Z"
@@ -118,7 +123,9 @@ class RecordingHost:
         self.cwds.append(cwd)
         if self.crash:
             raise InputError("runner crashed before writing a report")
-        selected = tuple(item for item in argv[1:] if not item.startswith("-") and "::" in item)
+        selected = tuple(
+            _canonical_selector(item) for item in argv[1:] if not item.startswith("-") and "::" in item
+        )
         tests = [
             {
                 "nodeid": item if "::" in item else f"{item}::test_ok",
@@ -296,3 +303,157 @@ def test_canonical_evidence_is_written_only_after_validated_output(tmp_path: Pat
     assert payload["batch_id"] == BATCH_ID
     assert payload["mapping_digest"] == output["mapping_digest"]
     assert (project / "app" / "main.py").read_bytes() == b"APP = 1\n"
+
+
+def _canonical_selector(item: str) -> str:
+    marker = "/.staging/execution/"
+    if marker not in item:
+        return item
+    remainder = item.split(marker, 1)[1]
+    parts = remainder.split("/", 1)
+    return parts[1] if len(parts) == 2 else item
+
+
+class LivePytestHost:
+    def spawn(self, argv: tuple[str, ...], cwd: Path) -> ProcessReceipt:
+        public = tuple(
+            item
+            for item in argv
+            if not item.startswith("--assurance-batch-id=")
+            and item != "--json-report"
+            and not item.startswith("--json-report-file=")
+        )
+        completed = subprocess.run(  # noqa: S603
+            list(public),
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+            shell=False,
+        )
+        selected = tuple(
+            _canonical_selector(item)
+            for item in public[1:]
+            if not item.startswith("-") and ("::" in item or item.endswith(".py"))
+        )
+        failed = completed.returncode != 0
+        outcome = "failed" if failed else "passed"
+        tests = [
+            {
+                "nodeid": item if "::" in item else f"{item}::test_ok",
+                "outcome": outcome,
+                "call": {
+                    "outcome": outcome,
+                    "duration": 0.001,
+                    "longrepr": (completed.stdout + completed.stderr) if failed else "",
+                },
+            }
+            for item in selected
+        ]
+        return ProcessReceipt(
+            command=argv,
+            exit_code=int(completed.returncode),
+            stdout=completed.stdout or "",
+            stderr=completed.stderr or "",
+            report={
+                "tests": tests,
+                "exitcode": int(completed.returncode),
+                "summary": {
+                    "collected": len(selected),
+                    "passed": 0 if failed else len(selected),
+                    "failed": len(selected) if failed else 0,
+                    "skipped": 0,
+                },
+            },
+        )
+
+
+def test_real_pytest_runs_shadowed_view_file_not_failing_sut(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _write(project, CANDIDATE_TARGET, b'def test_ok():\n    assert False, "SUT_RAN"\n')
+    _promote(project, CANDIDATE_TARGET, b"def test_ok():\n    assert True\n")
+    merged = merge_generated(project, CHANGE_ID, ("api",))
+    selected = (f"{CANDIDATE_TARGET}::test_ok",)
+    view = build_execution_view(
+        project,
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        merged=merged,
+        selected=selected,
+    )
+
+    output = run_closed_mapping(
+        RunTestsInputV1.model_validate(_run_payload(list(selected))),
+        project,
+        LivePytestHost(),
+        include_pr_metrics=False,
+    )
+
+    evidence = output["evidence"]
+    assert isinstance(evidence, dict)
+    assert evidence["status"] == "passed"
+    assert "SUT_RAN" not in json.dumps(output)
+    assert (project / CANDIDATE_TARGET).read_text(
+        encoding="utf-8"
+    ) == 'def test_ok():\n    assert False, "SUT_RAN"\n'
+    shadowed = project.joinpath(*view.root.split("/"), *CANDIDATE_TARGET.split("/"))
+    assert shadowed.read_text(encoding="utf-8") == "def test_ok():\n    assert True\n"
+
+
+def _closed_evidence(change_id: str) -> ExecutionEvidenceV1:
+    selected = [f"{CANDIDATE_TARGET}::test_ok"]
+    leafs = frozenset({"auth.session.create", "entities.item.create"})
+    cases = frozenset({"TC_A", "TC_B"})
+    mapping = ClosedMappingV1.model_validate(
+        {
+            "selected": selected,
+            "mappings": [
+                {
+                    "test": selected[0],
+                    "case_id": "TC_A",
+                    "capability": "entities.item.create",
+                    "layer": "api",
+                }
+            ],
+        },
+        context={"capability_leafs": leafs, "case_ids": cases},
+    )
+    return normalize_evidence(
+        change_id=change_id,
+        batch_id=BATCH_ID,
+        selected_targets={"api": True, "e2e": False, "fuzz": False, "performance": False},
+        mapping=mapping,
+        capability_leafs=leafs,
+        case_ids=cases,
+        baseline_tree_id="b" * 64,
+        runner_profile_digest="c" * 64,
+        command=("pytest",),
+        exit_code=0,
+        report={
+            "tests": [
+                {
+                    "nodeid": selected[0],
+                    "outcome": "passed",
+                    "call": {"outcome": "passed", "duration": 0.001, "longrepr": ""},
+                }
+            ],
+            "exitcode": 0,
+            "summary": {"collected": 1, "passed": 1, "failed": 0, "skipped": 0},
+        },
+    )
+
+
+def test_canonical_evidence_change_id_cannot_escape_the_project(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "qa" / "changes").mkdir(parents=True)
+    outside = tmp_path / "outside"
+
+    with pytest.raises((InputError, ValueError)):
+        write_canonical_evidence(project, _closed_evidence("../../outside"))
+    with pytest.raises((InputError, ValueError)):
+        write_canonical_evidence(project, _closed_evidence(".."))
+
+    assert not outside.exists()
+    assert list(project.rglob("execute-result.json")) == []
+    assert list(tmp_path.rglob("execute-result.json")) == []

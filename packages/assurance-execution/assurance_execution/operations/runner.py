@@ -27,7 +27,11 @@ from assurance_execution.operations.common import (
     validate_input,
 )
 from assurance_execution.operations.normalize import normalize_evidence
-from assurance_execution.operations.paths import resolve_execution_view, resolve_selected_file
+from assurance_execution.operations.paths import (
+    resolve_canonical_evidence,
+    resolve_execution_view,
+    resolve_selected_file,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +186,19 @@ def _project_config(project_root: Path) -> Path | None:
     return None
 
 
+def _view_prefixed_selectors(
+    selected: tuple[str, ...],
+    *,
+    rootdir: Path,
+    project_root: Path,
+) -> tuple[str, ...]:
+    prefix = rootdir.relative_to(project_root).as_posix()
+    prefixed: list[str] = []
+    for item in selected:
+        prefixed.append(item if item.startswith(f"{prefix}/") else f"{prefix}/{item}")
+    return tuple(prefixed)
+
+
 def build_pytest_argv(
     selected: tuple[str, ...],
     *,
@@ -190,7 +207,10 @@ def build_pytest_argv(
     batch_id: str | None = None,
     config: Path | None = None,
 ) -> tuple[str, ...]:
-    argv: list[str] = ["pytest", *selected, "-p", "no:cacheprovider"]
+    targets = selected
+    if rootdir is not None and project_root is not None:
+        targets = _view_prefixed_selectors(selected, rootdir=rootdir, project_root=project_root)
+    argv: list[str] = ["pytest", *targets, "-p", "no:cacheprovider"]
     if rootdir is not None:
         argv.append(f"--rootdir={rootdir}")
         argv.append(f"--confcutdir={rootdir}")
@@ -216,8 +236,7 @@ def write_canonical_evidence(
 ) -> Path:
     if filename not in {"execute-result.json", "run-result.json"}:
         raise InputError("canonical evidence filename is not a closed execution result")
-    relative = f"qa/changes/{evidence.change_id}/execution/{filename}"
-    path = project.joinpath(*relative.split("/"))
+    path = resolve_canonical_evidence(project, evidence.change_id, filename)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(evidence.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8")
     return path
