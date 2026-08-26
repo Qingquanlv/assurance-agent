@@ -325,7 +325,10 @@ const isCwdRelativeOutput = (token, root) => {
   if (isAllowedOutputTarget(value, root)) {
     return false;
   }
-  const key = token.slice(0, token.indexOf("="));
+  const lastEq = token.lastIndexOf("=");
+  const before = token.slice(0, lastEq);
+  const prevEq = before.lastIndexOf("=");
+  const key = prevEq >= 0 ? before.slice(prevEq + 1) : before;
   return OUTPUT_FLAG.test(key) || looksLikePath(value);
 };
 

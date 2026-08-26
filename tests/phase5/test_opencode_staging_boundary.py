@@ -581,6 +581,9 @@ def test_executor_cwd_root_mutation_bypasses_are_denied_by_installed_plugin(
         f"{_EXECUTOR_VIEW_COMMAND} --html hijack",
         f"{_EXECUTOR_VIEW_COMMAND} --basetemp hijack",
         f"{_EXECUTOR_VIEW_COMMAND} --override-ini=cache_dir=.",
+        f"{_EXECUTOR_VIEW_COMMAND} --override-ini=cache_dir=hijack",
+        f"{_EXECUTOR_VIEW_COMMAND} --override-ini=cache_dir=.cache",
+        f"{_EXECUTOR_VIEW_COMMAND} --override-ini=cache_dir=tmp",
         f"{_NPM_VIEW_COMMAND} --cache hijack",
     ],
 )
