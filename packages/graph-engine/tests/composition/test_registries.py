@@ -794,6 +794,40 @@ def test_registry_rejects_dangling_effect_schemas(
         )
 
 
+def test_registry_rejects_unsupported_keyword_only_for_effect_schema() -> None:
+    contribution = PluginContribution(
+        schemas=(
+            SchemaContribution(
+                "toy.runtime.intent",
+                "application/schema+json",
+                b'{"type":"string","format":"email"}',
+            ),
+            SchemaContribution("toy.runtime.receipt", "application/schema+json", b"{}"),
+            SchemaContribution(
+                "toy.runtime.product-schema",
+                "application/schema+json",
+                b'{"type":"string","format":"email"}',
+            ),
+        ),
+        effects=(
+            EffectRegistration(
+                "toy.runtime.audit",
+                "toy.runtime.intent",
+                "toy.runtime.receipt",
+                _EffectHandler(),
+                EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
+            ),
+        ),
+    )
+
+    with pytest.raises(RegistryConflict, match="unsupported schema keyword: format"):
+        build_registries(
+            (_source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),),
+            (contribution,),
+            ("toy.runtime",),
+        )
+
+
 def test_schema_entries_require_schema_media_and_valid_json() -> None:
     for schema in (
         SchemaContribution("toy.runtime.schema", "application/json", b"{}"),

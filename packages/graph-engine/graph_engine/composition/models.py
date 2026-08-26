@@ -17,6 +17,7 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
+from graph_engine.json_schema import assert_closed_json_schema
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.plugin_api import (
     CommitValidator,
@@ -822,7 +823,6 @@ class SchemaEntry:
                 "schema entry dialect disagrees with content: "
                 f"{self.dialect!r}; expected {expected_dialect!r}"
             )
-        _assert_closed_json_schema(_schema_document_from_content(content))
 
     @classmethod
     def from_content(
@@ -866,46 +866,6 @@ def _schema_document_from_content(content: bytes) -> dict[str, object] | bool:
     if not isinstance(document, dict | bool):
         raise ValueError("schema entry content must be a JSON object or boolean")
     return document
-
-
-_SUPPORTED_SCHEMA_KEYWORDS = frozenset(
-    {
-        "$schema",
-        "type",
-        "properties",
-        "required",
-        "additionalProperties",
-        "items",
-        "const",
-        "enum",
-    }
-)
-
-
-def _assert_closed_json_schema(schema: object) -> None:
-    if schema is True or schema is False:
-        return
-    if not isinstance(schema, dict):
-        raise ValueError("schema must be a JSON object")
-    unknown = tuple(sorted(key for key in schema if key not in _SUPPORTED_SCHEMA_KEYWORDS))
-    if unknown:
-        raise ValueError(f"unsupported schema keyword: {unknown[0]}")
-    dialect = schema.get("$schema")
-    if dialect is not None:
-        if not isinstance(dialect, str):
-            raise ValueError("schema entry dialect must be text")
-    properties = schema.get("properties")
-    if properties is not None:
-        if not isinstance(properties, dict):
-            raise ValueError("schema properties must be an object")
-        for nested in properties.values():
-            _assert_closed_json_schema(nested)
-    items = schema.get("items")
-    if items is not None:
-        _assert_closed_json_schema(items)
-    additional = schema.get("additionalProperties")
-    if additional is not None and additional is not True and additional is not False:
-        _assert_closed_json_schema(additional)
 
 
 def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -1311,10 +1271,19 @@ class RegistrySet:
                 if resource_id not in self.resources.entries:
                     raise ValueError(f"binding resource is not registered: {resource_id}")
         for effect in self.effects.entries.values():
-            if effect.intent_schema_id not in self.schemas.entries:
-                raise ValueError(f"effect intent schema is not registered: {effect.intent_schema_id}")
-            if effect.receipt_schema_id not in self.schemas.entries:
-                raise ValueError(f"effect receipt schema is not registered: {effect.receipt_schema_id}")
+            for role, schema_id in (
+                ("intent", effect.intent_schema_id),
+                ("receipt", effect.receipt_schema_id),
+            ):
+                schema = self.schemas.entries.get(schema_id)
+                if schema is None:
+                    raise ValueError(f"effect {role} schema is not registered: {schema_id}")
+                try:
+                    assert_closed_json_schema(_schema_document_from_content(schema.content))
+                except ValueError as error:
+                    raise ValueError(
+                        f"effect {role} schema is outside the closed runtime subset: {schema_id}: {error}"
+                    ) from error
 
 
 class PluginRequirement(FrozenModel):

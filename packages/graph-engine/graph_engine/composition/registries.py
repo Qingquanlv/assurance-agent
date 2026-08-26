@@ -71,13 +71,16 @@ def _build_registries(
     capability_view = _build_capability_registry(owned)
     effect_view = _build_effect_registry(owned)
     _validate_executable_registry_sets(owned, capability_view, effect_view)
-    registries = RegistrySet(
-        sources=source_view,
-        capabilities=capability_view,
-        schemas=schema_view,
-        resources=resource_view,
-        effects=effect_view,
-    )
+    try:
+        registries = RegistrySet(
+            sources=source_view,
+            capabilities=capability_view,
+            schemas=schema_view,
+            resources=resource_view,
+            effects=effect_view,
+        )
+    except (TypeError, ValueError) as error:
+        raise RegistryConflict(str(error)) from error
     validate_registry_contribution_authorities(
         registries,
         {item.owner_id: item.authenticated.authority for item in owned},

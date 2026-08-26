@@ -44,19 +44,26 @@ def test_phase2_retained_behavioral_node_still_passes(invariant_id: str) -> None
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def test_closed_schema_rejects_unknown_keywords_before_runtime_or_registry_use() -> None:
-    schema = b'{"type":"string","minLength":1}'
+def test_runtime_schema_rejects_unknown_keywords_at_direct_use() -> None:
+    with pytest.raises(ValueError, match="unsupported schema keyword: format"):
+        match_json_schema("ok", {"type": "string", "format": "email"})
 
-    with pytest.raises(ValueError, match="unsupported schema keyword: minLength"):
-        match_json_schema("ok", {"type": "string", "minLength": 1})
 
-    with pytest.raises(ValueError, match="unsupported schema keyword: minLength"):
-        SchemaEntry.from_content(
-            schema_id="phase.six.schema",
-            owner_id="phase.six",
-            media_type="application/schema+json",
-            content=schema,
-        )
+def test_product_schema_entry_accepts_standard_rich_keywords() -> None:
+    schema = (
+        b'{"$defs":{"nonempty":{"type":"string","minLength":1}},'
+        b'"properties":{"name":{"$ref":"#/$defs/nonempty"}},'
+        b'"required":["name"],"type":"object"}'
+    )
+
+    entry = SchemaEntry.from_content(
+        schema_id="phase.six.rich-product-schema",
+        owner_id="phase.six",
+        media_type="application/schema+json",
+        content=schema,
+    )
+
+    assert entry.content == schema
 
 
 def test_closed_schema_accepts_declared_standard_dialects() -> None:
