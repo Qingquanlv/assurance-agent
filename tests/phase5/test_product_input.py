@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from importlib.resources import files
+import re
 import unicodedata
 
 import pytest
@@ -37,6 +40,7 @@ def valid_product_input(**overrides: object) -> dict[str, object]:
         "requirement": "Add login",
         "run_mode": "case",
         "selected_test_families": (),
+        "case_delta_paths": (),
         "capability_leafs": (),
         "capability_catalog": {
             "resource_id": "assurance.product.configuration.capability-catalog",
@@ -72,9 +76,6 @@ def test_product_input_is_closed_and_stable():
 
 
 def test_product_input_document_satisfies_model_and_schema():
-    import json
-    from importlib.resources import files
-
     from assurance_product.models import ProductInputV1
 
     schema = json.loads(
@@ -90,6 +91,7 @@ def test_product_input_document_satisfies_model_and_schema():
     assert isinstance(properties, dict)
     assert "capability_leafs" in required
     assert "capability_leafs" in properties
+    assert "case_delta_paths" in properties
     assert value.capability_leafs == ("auth.session", "entities.user")
     assert document["capability_leafs"] == ("auth.session", "entities.user")
 
@@ -176,6 +178,67 @@ def test_product_input_requires_sorted_relative_artifact_prefixes():
         )
 
 
+@pytest.mark.parametrize(
+    "case_delta_paths",
+    [
+        ("qa/changes/CH-SIBLING/cases/system/dept/case.yaml",),
+        (
+            "qa/changes/CH-DEMO-001/cases/system/role/case.yaml",
+            "qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",
+        ),
+        ("qa/changes/CH-DEMO-001/cases/system/dept/not-case.yaml",),
+        ("qa/changes/CH-DEMO-001/cases/case.yaml",),
+        (" qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",),
+        ("qa/changes/CH-DEMO-001/cases/部门/case.yaml",),
+        ("qa/changes/CH-DEMO-001/cases/system/../../../../CH-SIBLING/cases/x/case.yaml",),
+    ],
+)
+def test_product_input_requires_exact_current_change_case_delta_paths(
+    case_delta_paths: tuple[str, ...],
+) -> None:
+    from assurance_product.models import ProductInputV1
+
+    with pytest.raises(ValidationError):
+        ProductInputV1.model_validate(valid_product_input(case_delta_paths=case_delta_paths))
+
+
+def test_product_input_accepts_exact_current_change_case_delta_path() -> None:
+    from assurance_product.models import ProductInputV1
+
+    path = "qa/changes/CH-DEMO-001/cases/system/dept/case.yaml"
+    value = ProductInputV1.model_validate(valid_product_input(case_delta_paths=(path,)))
+    assert value.case_delta_paths == (path,)
+
+
+def test_case_delta_path_model_matches_public_schema_ascii_shape() -> None:
+    schema = json.loads(
+        files("assurance_product")
+        .joinpath("resources/schemas/product-input-v1.json")
+        .read_text(encoding="utf-8")
+    )
+    pattern = re.compile(schema["properties"]["case_delta_paths"]["items"]["pattern"])
+    valid = "qa/changes/CH-DEMO-001/cases/system/dept/case.yaml"
+    invalid = (
+        f" {valid}",
+        "qa/changes/CH-DEMO-001/cases/部门/case.yaml",
+        "qa/changes/CH-SIBLING/cases/system/dept/not-case.yaml",
+        ("qa/changes/CH-DEMO-001/cases/system/../../../../CH-SIBLING/cases/x/case.yaml"),
+    )
+    assert pattern.fullmatch(valid)
+    assert all(pattern.fullmatch(path) is None for path in invalid)
+
+
+@pytest.mark.parametrize("entrypoint", ("full", "intake", "case"))
+def test_case_design_entrypoints_require_exact_case_delta_paths(entrypoint: str) -> None:
+    from assurance_product.models import ProductInputV1
+
+    selected = ("api",) if entrypoint == "full" else ()
+    with pytest.raises(ValueError, match="case_delta_paths"):
+        ProductInputV1.model_validate(
+            valid_product_input(selected_test_families=selected)
+        ).validate_for_entrypoint(entrypoint)
+
+
 def test_resource_ref_sha256_is_lowercase_hex():
     from assurance_product.models import ProductInputV1
 
@@ -203,7 +266,10 @@ def test_resource_ref_sha256_is_lowercase_hex():
 def test_empty_family_entrypoints_require_empty_selection(entrypoint: str):
     from assurance_product.models import ProductInputV1
 
-    value = ProductInputV1.model_validate(valid_product_input())
+    case_delta_paths = (
+        ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",) if entrypoint in {"intake", "case"} else ()
+    )
+    value = ProductInputV1.model_validate(valid_product_input(case_delta_paths=case_delta_paths))
     value.validate_for_entrypoint(entrypoint)
     with pytest.raises(ValueError):
         ProductInputV1.model_validate(
@@ -215,11 +281,17 @@ def test_empty_family_entrypoints_require_empty_selection(entrypoint: str):
 def test_full_and_execute_require_non_empty_families(entrypoint: str):
     from assurance_product.models import ProductInputV1
 
+    case_delta_paths = ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",) if entrypoint == "full" else ()
     ProductInputV1.model_validate(
-        valid_product_input(selected_test_families=("api",))
+        valid_product_input(
+            selected_test_families=("api",),
+            case_delta_paths=case_delta_paths,
+        )
     ).validate_for_entrypoint(entrypoint)
     with pytest.raises(ValueError):
-        ProductInputV1.model_validate(valid_product_input()).validate_for_entrypoint(entrypoint)
+        ProductInputV1.model_validate(
+            valid_product_input(case_delta_paths=case_delta_paths)
+        ).validate_for_entrypoint(entrypoint)
 
 
 def test_product_input_authenticates_resource_refs_against_composition(installed_sources):

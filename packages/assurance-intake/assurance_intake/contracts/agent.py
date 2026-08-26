@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
+from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
 
+from assurance_intake.contracts.explore import ExploreAdvisoryV1
+
 _SHA256 = r"^[0-9a-f]{64}$"
+_FAMILY_ORDER = ("api", "e2e", "fuzz", "performance")
+TestFamily = Literal["api", "e2e", "fuzz", "performance"]
 
 
 def _sorted_unique(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
@@ -34,7 +39,26 @@ def _canonical_relative_paths(values: tuple[str, ...]) -> tuple[str, ...]:
     return paths
 
 
+def _canonical_test_families(values: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
+    if len(values) != len(set(values)):
+        raise ValueError("selected_test_families must not contain duplicates")
+    expected = tuple(family for family in _FAMILY_ORDER if family in values)
+    if values != expected:
+        raise ValueError("selected_test_families must use canonical family order")
+    return values
+
+
+def _validate_case_delta_paths(change_id: str, paths: tuple[str, ...]) -> tuple[str, ...]:
+    prefix = ("qa", "changes", change_id, "cases")
+    for path in paths:
+        parts = PurePosixPath(path).parts
+        if len(parts) < 6 or parts[:4] != prefix or parts[-1] != "case.yaml":
+            raise ValueError("case_delta_paths must be exact current-change cases/<module>/case.yaml paths")
+    return paths
+
+
 class AgentBindingDataV1(FrozenModel):
+    agent_profile: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     execution: FrozenExecutionSelection
     request_policy_digest: str = Field(pattern=_SHA256)
     request_config_digest: str = Field(pattern=_SHA256)
@@ -73,7 +97,27 @@ class ExploreInputV1(_SkillInputV1):
 
 
 class CaseDesignInputV1(_SkillInputV1):
-    pass
+    selected_test_families: tuple[TestFamily, ...] = ()
+    case_delta_paths: tuple[str, ...] = Field(min_length=1)
+    exploration: ExploreAdvisoryV1 | None = None
+
+    @field_validator("selected_test_families")
+    @classmethod
+    def _selected_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
+        return _canonical_test_families(value)
+
+    @field_validator("case_delta_paths")
+    @classmethod
+    def _case_delta_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        canonical = _canonical_relative_paths(value)
+        if canonical != value:
+            raise ValueError("case_delta_paths must be sorted and unique")
+        return canonical
+
+    @model_validator(mode="after")
+    def _case_delta_paths_match_change(self) -> CaseDesignInputV1:
+        _validate_case_delta_paths(self.change_id, self.case_delta_paths)
+        return self
 
 
 class CaseReviewInputV1(_SkillInputV1):
@@ -91,8 +135,11 @@ class ArtifactListResultV1(FrozenModel):
 
 class AgentFinalizeInputV1(FrozenModel):
     agent_result: AgentRunResult
+    change_id: str | None = Field(default=None, min_length=1)
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
+    selected_test_families: tuple[TestFamily, ...] = ()
+    case_delta_paths: tuple[str, ...] = ()
 
     @field_validator("capability_leafs")
     @classmethod
@@ -103,3 +150,26 @@ class AgentFinalizeInputV1(FrozenModel):
     @classmethod
     def _artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _canonical_relative_paths(value)
+
+    @field_validator("selected_test_families")
+    @classmethod
+    def _selected_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
+        return _canonical_test_families(value)
+
+    @field_validator("case_delta_paths")
+    @classmethod
+    def _case_delta_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value:
+            return ()
+        canonical = _canonical_relative_paths(value)
+        if canonical != value:
+            raise ValueError("case_delta_paths must be sorted and unique")
+        return canonical
+
+    @model_validator(mode="after")
+    def _case_delta_paths_match_change(self) -> AgentFinalizeInputV1:
+        if self.case_delta_paths:
+            if self.change_id is None:
+                raise ValueError("change_id is required with case_delta_paths")
+            _validate_case_delta_paths(self.change_id, self.case_delta_paths)
+        return self

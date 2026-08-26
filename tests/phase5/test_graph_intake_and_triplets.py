@@ -152,6 +152,21 @@ def test_canonical_workflow_is_loaded_from_yaml():
     assert isinstance(requirement, RootPointerProjection)
     assert requirement.pointer == "/requirement"
     assert "requirement" not in explore_prepare.fields
+    case_design = workflow.graphs["case-design"]
+    case_prepare = case_design.nodes["prepare"].input_projection
+    case_finalize = case_design.nodes["finalize"].input_projection
+    assert isinstance(case_prepare, ObjectProjection)
+    assert isinstance(case_finalize, ObjectProjection)
+    finalize_change_id = case_finalize.fields["change_id"]
+    assert isinstance(finalize_change_id, RootPointerProjection)
+    assert finalize_change_id.pointer == "/change_id"
+    for projection in (case_prepare, case_finalize):
+        selected = projection.fields["selected_test_families"]
+        assert isinstance(selected, RootPointerProjection)
+        assert selected.pointer == "/selected_test_families"
+        case_delta_paths = projection.fields["case_delta_paths"]
+        assert isinstance(case_delta_paths, RootPointerProjection)
+        assert case_delta_paths.pointer == "/case_delta_paths"
 
 
 def test_every_agent_node_is_one_closed_triplet(compiled_product_workflow):

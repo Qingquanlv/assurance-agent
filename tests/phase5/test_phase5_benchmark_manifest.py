@@ -57,6 +57,7 @@ class BenchmarkItem:
     product: str
     entrypoint: str
     selected_test_families: tuple[str, ...]
+    case_modules: tuple[str, ...]
     adapter_version: str
     expected_terminal: str
     required_steps: tuple[str, ...]
@@ -92,6 +93,7 @@ def _load_item(raw: Mapping[str, Any]) -> BenchmarkItem:
         product=str(raw["product"]),
         entrypoint=str(raw["entrypoint"]),
         selected_test_families=tuple(raw["selected_test_families"]),
+        case_modules=tuple(raw["case_modules"]),
         adapter_version=str(raw["adapter_version"]),
         expected_terminal=str(raw["expected_terminal"]),
         required_steps=tuple(raw["required_steps"]),
@@ -125,6 +127,7 @@ def test_opencode_benchmark_is_one_full_locked_item(phase5_manifest):
     assert item.product == "assurance-opencode"
     assert item.entrypoint == "full"
     assert item.selected_test_families == ("api", "e2e", "fuzz", "performance")
+    assert item.case_modules == ("system/dept",)
     assert item.adapter_version == "0.1.0"
     assert item.expected_terminal == "completed"
     assert item.required_steps == FULL_WORKFLOW_REQUIRED_STEPS

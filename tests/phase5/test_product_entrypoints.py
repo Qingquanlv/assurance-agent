@@ -115,7 +115,12 @@ def test_new_empty_family_entrypoints_accept_empty_selection(entrypoint):
     from assurance_product.models import ProductInputV1
     from tests.phase5.test_product_input import valid_product_input
 
-    ProductInputV1.model_validate(valid_product_input()).validate_for_entrypoint(entrypoint)
+    case_delta_paths = (
+        ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",) if entrypoint in {"intake", "case"} else ()
+    )
+    ProductInputV1.model_validate(
+        valid_product_input(case_delta_paths=case_delta_paths)
+    ).validate_for_entrypoint(entrypoint)
 
 
 def _reachable_graphs(workflow, entrypoint: str) -> set[str]:

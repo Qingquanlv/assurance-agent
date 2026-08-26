@@ -176,6 +176,14 @@ class OutputRouteCatalog:
             raise ValueError(f"unknown capability output route: {capability_alias}")
         return builder(change_id)
 
+    def resource_claims(self, capability_alias: str, change_id: str) -> tuple[str, ...]:
+        """Return task-store claims; provider output admission remains exact."""
+
+        outputs = self.outputs(capability_alias, change_id)
+        if capability_alias == "assurance.intake.case-design.execute":
+            return _sorted_paths(*outputs, _change(change_id, "cases"))
+        return outputs
+
 
 __all__ = [
     "OutputRouteCatalog",

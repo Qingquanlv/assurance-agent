@@ -334,6 +334,11 @@ def start_lifecycle_invocation(
         composition,
         selected_test_families=families,
         change_id=change_id,
+        case_delta_paths=(
+            (f"qa/changes/{change_id}/cases/system/dept/case.yaml",)
+            if entrypoint in {"full", "intake", "case"}
+            else ()
+        ),
     )
     product_input = ProductInputV1.model_validate_json(input_path.read_text(encoding="utf-8"))
     root_input = cast(JSONValue, product_input.model_dump(mode="json"))

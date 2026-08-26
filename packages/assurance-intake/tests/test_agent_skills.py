@@ -48,6 +48,7 @@ CASE_INPUT: dict[str, JSONValue] = {
     "capability_leafs": list(VALID_LEAFS),
     "artifact_paths": ["qa/changes/CH-DEMO-001/explore/advisory.json"],
     "selected_test_families": ["api", "e2e", "fuzz", "performance"],
+    "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
 }
 INTAKE_INPUT: dict[str, JSONValue] = {
     "change_id": "RET-dept-management",
@@ -147,8 +148,13 @@ def test_case_design_skill_returns_the_locked_file_receipt_contract() -> None:
     assert '"output_files"' in skill
     assert "written files are the sole source of truth" in skill
     assert "Do not duplicate the case delta" in skill
+    assert "case_delta_paths" in skill
+    assert "phases.explore.status == done" not in skill
+    assert "Emit a knowledge proposal" not in skill
+    assert "Never inspect `.qa.yaml` `phases.explore`" in skill
     assert (
         '{"output_files":["qa/changes/<change-id>/.qa.yaml",'
+        '"qa/changes/<change-id>/cases/<trusted-module>/case.yaml",'
         '"qa/changes/<change-id>/proposal.md",'
         '"qa/changes/<change-id>/trace/minimum-coverage-matrix.json"]}'
     ) in skill
@@ -276,10 +282,62 @@ async def test_case_design_prepare_is_canonical_and_provider_neutral(tmp_path: P
     assert request.canonical_bytes() == AgentRunRequest.model_validate(second.output).canonical_bytes()
     assert request.workspace.allowed_outputs == (
         "qa/changes/CH-DEMO-001/.qa.yaml",
+        "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
         "qa/changes/CH-DEMO-001/proposal.md",
         "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
     )
-    assert not any("**" in path or path.endswith("/case.yaml") for path in request.workspace.allowed_outputs)
+    assert not any("**" in path for path in request.workspace.allowed_outputs)
+    assert request.workspace.allowed_outputs.count("qa/changes/CH-DEMO-001/cases/menus/case.yaml") == 1
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp_path: Path) -> None:
+    relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    advisory = _valid_explore_advisory()
+    advisory["minimum_required_coverage"] = {"api": ["create_item"]}
+    path.write_text(json.dumps(advisory), encoding="utf-8")
+
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    exploration = cast(Mapping[str, object], business["exploration"])
+    assert exploration["change_id"] == "CH-DEMO-001"
+    assert dict(cast(Mapping[str, object], exploration["minimum_required_coverage"])) == {
+        "api": ("create_item",)
+    }
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_allows_missing_exploration_for_standalone_case(
+    tmp_path: Path,
+) -> None:
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    assert business["exploration"] is None
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_rejects_mismatched_exploration_identity(tmp_path: Path) -> None:
+    relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    advisory = _valid_explore_advisory()
+    advisory["change_id"] = "CH-SIBLING"
+    path.write_text(json.dumps(advisory), encoding="utf-8")
+
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert prepared.failure.kind == "invalid_input"
+    assert "change_id" in prepared.failure.message
 
 
 @pytest.mark.asyncio
@@ -405,6 +463,7 @@ async def _finalize_files(
     change_id: str | None = None,
     selected_test_families: list[str] | None = None,
     write_root: Path | None = None,
+    case_delta_paths: list[str] | None = None,
 ) -> Any:
     result = fake_agent_result(structured_result)
     executed = await execute_task(
@@ -416,6 +475,15 @@ async def _finalize_files(
                 "capability_leafs": list(VALID_LEAFS),
                 "artifact_paths": artifact_paths,
                 "selected_test_families": selected_test_families or [],
+                "case_delta_paths": (
+                    case_delta_paths
+                    if case_delta_paths is not None
+                    else (
+                        ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"]
+                        if isinstance(handler, CaseDesignFinalizeHandler)
+                        else []
+                    )
+                ),
                 **({"change_id": change_id} if change_id is not None else {}),
             },
         ),
@@ -712,6 +780,34 @@ async def test_case_design_finalize_accepts_typed_authoring(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_case_design_finalize_rejects_unlocked_module_or_sibling_case(tmp_path: Path) -> None:
+    authored = cast(
+        JSONValue,
+        yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8")),
+    )
+    project, write_root = dual_roots(tmp_path)
+    outputs = _write_case_design_outputs(project, authored)
+
+    for locked in (
+        ["qa/changes/CH-DEMO-001/cases/roles/case.yaml"],
+        ["qa/changes/CH-SIBLING/cases/menus/case.yaml"],
+    ):
+        executed = await _finalize_files(
+            CaseDesignFinalizeHandler(),
+            cast(JSONValue, {"output_files": outputs}),
+            project,
+            ["qa/changes"],
+            change_id="CH-DEMO-001",
+            selected_test_families=["api"],
+            write_root=write_root,
+            case_delta_paths=locked,
+        )
+        assert executed.status == "failed"
+        assert executed.failure is not None
+        assert executed.failure.kind in {"invalid_input", "invalid_output"}
+
+
+@pytest.mark.asyncio
 async def test_case_design_finalize_requires_minimum_coverage_matrix(tmp_path: Path) -> None:
     authored = cast(
         JSONValue,
@@ -786,7 +882,7 @@ async def test_case_design_finalize_rejects_legacy_full_delta_result(
 
 
 @pytest.mark.asyncio
-async def test_case_design_finalize_does_not_require_undeclared_case_yaml(
+async def test_case_design_finalize_requires_every_locked_case_yaml(
     tmp_path: Path,
 ) -> None:
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
@@ -809,10 +905,10 @@ async def test_case_design_finalize_does_not_require_undeclared_case_yaml(
         write_root=write_root,
     )
 
-    assert executed.status == "succeeded"
-    assert executed.output["added"] == []
-    assert executed.output["modified"] == []
-    assert "declare every written" not in str(executed.output)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "case_delta_paths" in executed.failure.message
 
 
 @pytest.mark.asyncio

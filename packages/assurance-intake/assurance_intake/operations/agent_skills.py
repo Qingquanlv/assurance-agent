@@ -20,7 +20,7 @@ from assurance_intake.contracts.agent import (
     ExploreInputV1,
     IntakeInputV1,
 )
-from assurance_intake.contracts.explore import build_explore_context
+from assurance_intake.contracts.explore import ExploreAdvisoryV1, build_explore_context
 from assurance_intake.resource_loader import resource_bytes, resource_text
 
 INTAKE_SKILL = "skills/aa-intake/SKILL.md"
@@ -62,10 +62,11 @@ def explore_outputs(change_id: str) -> tuple[str, ...]:
     return (f"qa/changes/{change_id}/explore/exploration.json",)
 
 
-def case_design_outputs(change_id: str) -> tuple[str, ...]:
+def case_design_outputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(
         sorted(
             (
+                *case_delta_paths,
                 f"qa/changes/{change_id}/.qa.yaml",
                 f"qa/changes/{change_id}/proposal.md",
                 f"qa/changes/{change_id}/trace/minimum-coverage-matrix.json",
@@ -224,6 +225,21 @@ class CaseDesignPrepareHandler:
         try:
             business = CaseDesignInputV1.model_validate(request.input)
             binding = AgentBindingDataV1.model_validate(request.binding_data)
+            exploration_relative = f"qa/changes/{business.change_id}/explore/exploration.json"
+            exploration_path = context.project_root.joinpath(*exploration_relative.split("/"))
+            exploration = None
+            if exploration_path.exists() or exploration_path.is_symlink():
+                if not exploration_path.is_file() or exploration_path.is_symlink():
+                    raise InputError("exploration.json must be a regular file")
+                try:
+                    exploration = ExploreAdvisoryV1.model_validate_json(exploration_path.read_bytes())
+                except (OSError, ValidationError, ValueError) as error:
+                    raise InputError(f"invalid exploration.json: {error}") from error
+                if exploration.change_id != business.change_id:
+                    raise InputError("exploration.json change_id does not match case-design change_id")
+                if exploration.context_ref != "explore/context.json":
+                    raise InputError("exploration.json context_ref must be explore/context.json")
+            business = business.model_copy(update={"exploration": exploration})
             return prepare_outcome(
                 skill_path=CASE_DESIGN_SKILL,
                 persona_path=CASE_DESIGN_PERSONA,
@@ -231,9 +247,12 @@ class CaseDesignPrepareHandler:
                 binding=binding,
                 result_schema_id=CASE_DESIGN_RESULT_ID,
                 context=context,
-                allowed_outputs=case_design_outputs(business.change_id),
+                allowed_outputs=case_design_outputs(
+                    business.change_id,
+                    business.case_delta_paths,
+                ),
             )
-        except ValidationError as error:
+        except (InputError, ValidationError) as error:
             return failed_input(error)
 
 

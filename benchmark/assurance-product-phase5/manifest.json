@@ -651,6 +651,9 @@
         "fuzz",
         "performance"
       ],
+      "case_modules": [
+        "system/dept"
+      ],
       "sut_item_id": "RET-dept-management",
       "sut_root": "benchmark/vue-fastapi-admin"
     }

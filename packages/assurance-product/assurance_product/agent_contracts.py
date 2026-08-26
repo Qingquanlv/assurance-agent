@@ -23,13 +23,17 @@ def _contract(
 ) -> AgentExecutionContract:
     change_id = "CHANGE-ID-PLACEHOLDER"
     execute_alias = execute_alias_for_prepare(prepare_id)
-    expected = OutputRouteCatalog().outputs(execute_alias, change_id)
+    catalog = OutputRouteCatalog()
+    exact_outputs = catalog.outputs(execute_alias, change_id)
+    expected = catalog.resource_claims(execute_alias, change_id)
     marker = f"qa/changes/{change_id}/"
     writes = tuple(path.replace(marker, "qa/changes/{change_id}/", 1) for path in expected)
     if any(
         path == source or not source.startswith(marker) for path, source in zip(writes, expected, strict=True)
     ):
         raise ValueError(f"agent output route is not a current-change path: {execute_alias}")
+    if any(path not in expected for path in exact_outputs):
+        raise ValueError(f"agent output claim omits an exact output route: {execute_alias}")
     return AgentExecutionContract(
         skill_id=skill_id,
         agent_profile=agent_profile,

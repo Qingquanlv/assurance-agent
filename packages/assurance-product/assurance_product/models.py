@@ -489,6 +489,28 @@ def _canonical_artifact_prefixes(values: tuple[str, ...]) -> tuple[str, ...]:
     return ordered
 
 
+def _exact_case_delta_paths(values: tuple[str, ...]) -> tuple[str, ...]:
+    if values != tuple(sorted(set(values))):
+        raise ValueError("case_delta_paths must be sorted and unique")
+    allowed = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+    for path in values:
+        posix = PurePosixPath(path)
+        if (
+            not path
+            or path != path.strip()
+            or not path.isascii()
+            or posix.is_absolute()
+            or "\\" in path
+            or posix.as_posix() != path
+            or any(
+                part in {"", ".", ".."} or any(character not in allowed for character in part)
+                for part in posix.parts
+            )
+        ):
+            raise ValueError("case_delta_paths must be exact ASCII relative POSIX paths")
+    return values
+
+
 class ResourceRefV1(FrozenModel):
     resource_id: str
     sha256: str = Field(pattern=_SHA256)
@@ -513,6 +535,7 @@ class ProductInputV1(FrozenModel):
     requirement: str
     run_mode: Literal["case", "implement", "verify"]
     selected_test_families: tuple[Literal["api", "e2e", "fuzz", "performance"], ...]
+    case_delta_paths: tuple[str, ...] = ()
     capability_leafs: tuple[str, ...]
     capability_catalog: ResourceRefV1
     product_policy: ResourceRefV1
@@ -547,6 +570,22 @@ class ProductInputV1(FrozenModel):
     def _allowed_artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _canonical_artifact_prefixes(value)
 
+    @field_validator("case_delta_paths")
+    @classmethod
+    def _case_delta_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _exact_case_delta_paths(value)
+
+    @model_validator(mode="after")
+    def _case_delta_paths_match_change(self) -> ProductInputV1:
+        prefix = ("qa", "changes", self.change_id, "cases")
+        for path in self.case_delta_paths:
+            parts = PurePosixPath(path).parts
+            if len(parts) < 6 or parts[:4] != prefix or parts[-1] != "case.yaml":
+                raise ValueError(
+                    "case_delta_paths must be exact current-change cases/<module>/case.yaml paths"
+                )
+        return self
+
     @field_validator("capability_leafs")
     @classmethod
     def _capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
@@ -558,6 +597,11 @@ class ProductInputV1(FrozenModel):
 
     def validate_for_entrypoint(self, entrypoint: str) -> ProductInputV1:
         validate_entrypoint_families(entrypoint, self.selected_test_families)
+        requires_case_delta = entrypoint in {"full", "intake", "case"}
+        if requires_case_delta and not self.case_delta_paths:
+            raise ValueError(f"{entrypoint} requires non-empty exact case_delta_paths")
+        if not requires_case_delta and self.case_delta_paths:
+            raise ValueError(f"{entrypoint} does not consume case_delta_paths")
         return self
 
     def authenticate_against(self, composition: object) -> ProductInputV1:

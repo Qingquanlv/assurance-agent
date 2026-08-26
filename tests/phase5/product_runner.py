@@ -346,6 +346,8 @@ class ProductRun:
             selected_test_families=self._selected_test_families,
             coverage_rounds=self._resolved_coverage_rounds(),
         )
+        if self._entrypoint not in {"full", "intake", "case"}:
+            payload["case_delta_paths"] = ()
         return (
             ProductInputV1.model_validate(payload)
             .validate_for_entrypoint(self._entrypoint)
@@ -402,6 +404,7 @@ def _product_input(
         "requirement": "Add login",
         "run_mode": "implement",
         "selected_test_families": selected_test_families,
+        "case_delta_paths": ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",),
         "capability_leafs": (),
         "capability_catalog": {
             "resource_id": "assurance.product.configuration.capability-catalog",

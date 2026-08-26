@@ -417,6 +417,9 @@ graphs:
             selected_test_families:
               type: root_pointer
               pointer: /selected_test_families
+            case_delta_paths:
+              type: root_pointer
+              pointer: /case_delta_paths
             capability_leafs:
               type: root_pointer
               pointer: /capability_leafs
@@ -449,6 +452,9 @@ graphs:
             selected_test_families:
               type: root_pointer
               pointer: /selected_test_families
+            case_delta_paths:
+              type: root_pointer
+              pointer: /case_delta_paths
             capability_leafs:
               type: root_pointer
               pointer: /capability_leafs

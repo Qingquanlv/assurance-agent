@@ -195,9 +195,10 @@ def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> N
             resources = graph_nodes[execute_capability].resources
             assert isinstance(resources, ResourceClaimTemplate)
             assert resources.parameters == {"change_id": "/workspace/scope_id"}
-            assert resources.resolve({"workspace": {"scope_id": change_id}}).writes == catalog.outputs(
-                execute_alias_for_prepare(prepare_id), change_id
-            )
+            execute_alias = execute_alias_for_prepare(prepare_id)
+            assert resources.resolve(
+                {"workspace": {"scope_id": change_id}}
+            ).writes == catalog.resource_claims(execute_alias, change_id)
 
 
 def _runtime_source(adapter: str) -> ProviderSource:

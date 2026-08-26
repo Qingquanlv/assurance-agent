@@ -316,6 +316,21 @@ class CaseDesignFinalizeHandler:
                 raise OutputError(
                     "case-design receipt is missing required output files: " + ", ".join(missing)
                 )
+            if not payload.case_delta_paths:
+                raise InputError("case_delta_paths must lock at least one exact case.yaml output")
+            declared_cases = {
+                relative
+                for relative in receipt.output_files
+                if relative.startswith(f"{change_root}/cases/") and relative.endswith("/case.yaml")
+            }
+            expected_cases = set(payload.case_delta_paths)
+            if declared_cases != expected_cases:
+                missing_cases = sorted(expected_cases - declared_cases)
+                unexpected_cases = sorted(declared_cases - expected_cases)
+                raise OutputError(
+                    "case-design receipt case paths do not match locked case_delta_paths; "
+                    f"missing={missing_cases}, unexpected={unexpected_cases}"
+                )
             _authenticate_files(
                 context.project_root,
                 receipt.output_files,
@@ -329,8 +344,9 @@ class CaseDesignFinalizeHandler:
                 capability_leafs=capability_leafs,
             )
             authored_json = authored.model_dump(mode="json")
-            if authored.added or authored.modified:
+            if payload.selected_test_families:
                 _require_selected_test_families(authored, payload.selected_test_families)
+            if authored.added or authored.modified:
                 _load_minimum_coverage_matrix(
                     context.project_root,
                     relative=matrix_relative,

@@ -366,7 +366,7 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
         assert isinstance(contract.resources, ResourceClaimTemplate)
         assert contract.resources.parameters == {"change_id": "/workspace/scope_id"}
         resolved = contract.resources.resolve({"workspace": {"scope_id": change_id}})
-        assert resolved.writes == catalog.outputs(execute_alias, change_id)
+        assert resolved.writes == catalog.resource_claims(execute_alias, change_id)
         assert all(path.startswith(f"qa/changes/{change_id}/") for path in resolved.writes)
         assert all("/.runtime/" not in path and "/.staging/" not in path for path in resolved.writes)
         assert all(path not in forbidden_prefixes for path in resolved.writes)

@@ -341,6 +341,8 @@ def _resource_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, objec
 
 
 def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object], ...]:
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+
     adapter_data = bindings.adapter_binding.model_dump(mode="json")
     execute_target = f"{bindings.runtime_plugin_id}.execute"
     secret_handles = list(adapter_secret_handles(bindings.adapter_binding))
@@ -349,6 +351,7 @@ def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object
         assignment = bindings.routes[prepare_id]
         prepare_alias, execute_alias, finalize_alias = alias_ids_for_prepare(prepare_id)
         stem = prepare_id.removesuffix(".prepare")
+        agent_profile = AGENT_EXECUTION_CONTRACTS[prepare_id].agent_profile
         permission_digest = canonical_digest(
             bindings.permission_profiles[assignment.permission_profile_id].model_dump(mode="json")
         )
@@ -359,6 +362,7 @@ def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object
             {
                 "adapter_plugin_id": bindings.runtime_plugin_id,
                 "adapter_configuration_digest": bindings.adapter_binding.adapter_configuration_digest,
+                "agent_profile": agent_profile,
                 "provider_model": assignment.provider_model,
                 "worker_profile": assignment.worker_profile,
                 "permission_profile_digest": permission_digest,
@@ -371,6 +375,7 @@ def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object
                 "capability_id": prepare_alias,
                 "target_capability_id": prepare_id,
                 "data": {
+                    "agent_profile": agent_profile,
                     "execution": {
                         "provider_model": assignment.provider_model,
                         "worker_profile": assignment.worker_profile,

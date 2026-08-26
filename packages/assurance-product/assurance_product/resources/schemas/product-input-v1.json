@@ -27,6 +27,15 @@
       "uniqueItems": true,
       "items": { "enum": ["api", "e2e", "fuzz", "performance"] }
     },
+    "case_delta_paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))qa/changes/[A-Za-z0-9._-]+/cases/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/case\\.yaml$"
+      }
+    },
     "capability_leafs": {
       "type": "array",
       "uniqueItems": true,

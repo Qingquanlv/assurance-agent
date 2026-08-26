@@ -16,11 +16,10 @@ Do not rely on prior conversation context.
 1. Read graph-owned run context when the graph provides it.
    - `run_context.interaction_mode == autonomous` (default when absent) → do not run planned clarification dialogue or require user approval; generate from Explore `test_strategy` + resolved `open_questions`, then hand off to `aa-case-reviewer`.
    - `run_context.interaction_mode == interactive` → keep the existing clarification dialogue and explicit user approval before writing files.
-2. **Explore gate (Phase 1.1):** If `phases.explore` exists (written by `aa-explore`), apply gate logic from this repo's `aa-explore/SKILL.md` (Context Contract + Phase 1 gate):
-   - `status == pending` → **STOP**
-   - `status == done` → read `explore/exploration.json`; missing file → **STOP**
-   - `mode == required` and `status in [failed, unavailable]` → **STOP**
-   - `mode == advisory` and `status in [skipped, unavailable, failed]` → record warning, continue without advisory
+2. **Explore input:** consume the graph-provided typed `exploration` object when it
+   is non-null. Never inspect `.qa.yaml` `phases.explore`, and do not reopen a
+   legacy advisory filename. A null `exploration` means the standalone `case`
+   entrypoint supplied no Explore result; continue without advisory.
 3. Read **Required** inputs:
    - user requirement text
    - relevant backend and/or frontend product source files under the project source root
@@ -47,6 +46,7 @@ Do not rely on prior conversation context.
    - `qa/changes/<change-id>/.qa.yaml`
    - `qa/changes/<change-id>/proposal.md`
    - `qa/changes/<change-id>/trace/minimum-coverage-matrix.json`
+   - every exact path in graph-provided `case_delta_paths`
 2. Report a graph-owned state delta after writing files:
    - `phases.case_design.status = done`
    - `phases.case_design.outputs` = all output files
@@ -132,15 +132,17 @@ graph-provided `capability_leafs` list.
 ## Locked Runtime Return Contract
 
 The written files are the sole source of truth. After the final edit, read back
-`.qa.yaml`, `proposal.md`, and `trace/minimum-coverage-matrix.json`. The final
+`.qa.yaml`, `proposal.md`, `trace/minimum-coverage-matrix.json`, and every exact
+graph-provided `case_delta_paths` file. The final
 assistant response MUST be exactly one JSON object with one field:
 
 ```json
-{"output_files":["qa/changes/<change-id>/.qa.yaml","qa/changes/<change-id>/proposal.md","qa/changes/<change-id>/trace/minimum-coverage-matrix.json"]}
+{"output_files":["qa/changes/<change-id>/.qa.yaml","qa/changes/<change-id>/cases/<trusted-module>/case.yaml","qa/changes/<change-id>/proposal.md","qa/changes/<change-id>/trace/minimum-coverage-matrix.json"]}
 ```
 
-The MRC matrix path is mandatory even when it contains skipped-by-scope rows. List
-only the closed catalog outputs, use canonical project-relative paths, and include
+The MRC matrix path is mandatory, and every `case_delta_paths` entry is mandatory,
+even when the matrix contains skipped-by-scope rows. List only graph-declared exact outputs, use
+canonical project-relative paths, and include
 no path outside the current change directory. Do not duplicate the case delta in
 the response and do not add Markdown fences, commentary, status, state delta, or
 trailing text. The deterministic finalize step will load the authenticated files
@@ -189,15 +191,17 @@ Every `interactive` QA change goes through this process. A one-line fix, a small
 
 Maintain a visible checklist for each item, or use the available task/todo tool if the environment supports it. Complete them in order:
 
-0. **Explore gate** — read `phases.explore`; if `done`, read `explore/exploration.json` (internal; no dump to user); collect `open_questions_for_case_design[]`:
+0. **Explore input** — if graph-provided `exploration` is non-null, consume it
+   directly (internal; no dump to user) and collect `open_questions_for_case_design[]`:
    - `status=answered` (or legacy `answer != null`) resolves the assertion intent for **that specific `pitfall_ref` only** (do not re-ask that exact pitfall in interactive mode), but do **not** mark the whole category satisfied.
    - `status=deferred` or `assertion_intent=undecided` means use neutral wording and do not assert the pitfall as known-accepted behavior.
    - `status=unanswered` is allowed only in `interactive` mode before Step 4; in `autonomous` mode it is a STOP because Explore should have applied `auto_default`.
    Also read propagated `assertion_intent` on `case_design_guidance.priority_hints[]`, `watchlist[]`, and `suggested_scenarios[]` — when present, treat the hint/scenario text as the authoritative test directive (do not reinterpret neutral pitfall wording); also read `test_strategy` (if present) as a **macro plan proposal** for scope/data/layer/approach.
 1. **Derive change ID** — format `<TICKET-ID>-<short-kebab-description>`
 2. **Explore QA context** — check `qa/cases/`, `tests/`, `qa/knowledge/`, `qa/changes/`
-3. **Identify target module** — ask one module confirmation question at a time; decompose if multiple independent modules are involved
-   - If `phases.explore.status == done`: after module confirm, show **3–5 bullet Explore 摘要** (confidence tags; path to `exploration.json`; no full dump)
+3. **Use trusted target modules** — derive them only from exact graph-provided
+   `case_delta_paths`; never guess a module or write a different case path.
+   - If `exploration` is non-null: use its typed contents as the Explore advisory.
 4. **Mode branch**:
    - `interactive`: ask clarifying questions one at a time — cover 8 categories; **prioritize watchlist / `exception_scenarios`** when advisory exists; lead macro categories with the `test_strategy` proposal (confirm/override) when present; treat advisory answered OQs as already-resolved for that specific pitfall; surface unresolved OQs as part of their category's question.
    - `autonomous`: skip planned user questions. Adopt `test_strategy` where supported by evidence, choose conservative defaults for missing macro categories, and keep `deferred` / `undecided` pitfalls neutral.
@@ -222,7 +226,12 @@ Maintain a visible checklist for each item, or use the available task/todo tool 
        approved_at: <ISO timestamp>
      ```
    `the declared status projection` enforces this through `case-design-gate`; `cases/` existing on disk is not enough for case-design to be `done`.
-9. **Write `proposal.md`** — must include `## Explore Input` when advisory `done`; `_skipped` placeholder otherwise; plus `## Test Types Considered` (all four layers, selected/declined + reason) and `## Layer Rationale`; include `generation_mode: autonomous` when no user approval was requested. It must also contain exactly one product-source attestation section in this form:
+9. **Write `proposal.md`** — must include a populated `## Explore Input` when
+   graph-provided `exploration` is non-null; use `_skipped` only when it is null.
+   Also include `## Test Types Considered` (all four layers, selected/declined +
+   reason) and `## Layer Rationale`; include `generation_mode: autonomous` when no
+   user approval was requested. It must also contain exactly one product-source
+   attestation section in this form:
    ```markdown
    ## Product Source Verification
 
@@ -231,7 +240,7 @@ Maintain a visible checklist for each item, or use the available task/todo tool 
      - `project/relative/product/source.py`
    ```
    List only product source files read directly during this invocation. Do not cite requirements, Explore artifacts, QA cases, tests, plans, generated files, or documentation as product source. Omitting the section, repeating it, setting `independently_read` to false, or providing an empty/non-product path list makes the proposal invalid.
-10. **Write case delta YAML** — to `qa/changes/<change-id>/cases/<module>/case.yaml`
+10. **Write case delta YAML** — to every exact graph-provided `case_delta_paths` path
 11. **Self-review case delta YAML** — validate schema; **case.yaml MUST NOT contain advisory metadata** (see below)
 12. **Hand off** — report completion; orchestrator invokes `aa-case-reviewer`
 
@@ -498,65 +507,22 @@ Minimum Required Coverage keys are a **closed set**. Do **not** freely invent MR
 
 **When a needed `data_integrity` / `negative` / auth / journey key is missing from the closed set:**
 
-1. Emit a knowledge proposal under
-   `qa/changes/<change-id>/plans/data-knowledge.proposal.<layer>.yaml` with the
-   exact proposed `knowledge_key` listed in `discovered_candidates` (and
-   describe it under `proposal.md` Data Needs).
+1. Do not create a data-knowledge proposal file; it is not an authorized output.
+   Record the missing closed key under `proposal.md` **Data Needs**.
 2. Keep the MRC inventory complete: every advisory MRC item still gets exactly
-   one matrix row. Use the proposed `knowledge_key` as that row's authenticated
-   vocabulary. When a frozen requirement or resolved Explore
+   one matrix row. When a frozen requirement or resolved Explore
    `assertion_intent` supplies the oracle, map the row to the covering case and
    mark it `covered`. When no frozen oracle exists and the scenario is only an
    advisory expansion beyond the explicit requirement, use `required: true`,
    `status: skipped_by_scope`, an empty `covered_by_cases`, and a precise
    `skip_reason` stating that the advisory expansion lacks a frozen oracle.
-3. Do not put the proposed key in case `trace` until promotion. Case `trace`
+3. Do not put the unavailable key in case `trace`. Case `trace`
    remains an L1 typed-capability proof map and is independent from MRC rows.
    Never omit the MRC row and never claim promotion merely to score full
    coverage.
 
-Use the complete runtime envelope below for either authorized layer, changing only
-source-backed values and the output suffix (`api` or `e2e`):
-
-### Canonical missing-key proposal
-
-```yaml
-schema_version: "1"
-based_on_l1_version: 1
-mode: delta
-accounts: {}
-auth: {}
-entities: {}
-auth_matrix: {}
-capabilities:
-  domain_factories: {}
-  adapters:
-    api: {}
-    e2e: {}
-    fuzz: {}
-    performance: {}
-  cleanup: {}
-discovered_candidates:
-  - id: DK-CASE-USER-001
-    knowledge_key: entities.user.constraints.password_reset_requires_current_password
-    evidence: "app/api/v1/user/user.py:reset_password"
-needs_review:
-  - Confirm the source-backed constraint before promotion into L1.
-promotion_checklist:
-  - "Run aa knowledge validate --change <change-id> before promotion."
-```
-
-For a delta, set `based_on_l1_version` to the current L1 `version`. For a bootstrap
-proposal, set it to `null` and set `mode: bootstrap`. Validate the entire document
-against `DataKnowledgeProposal`; do not emit only `discovered_candidates` or an inner
-entity fragment.
-
-Keep every entity entry structurally meaningful: an `entities.<name>` mapping must
-contain at least one non-empty `constraints` or `required_fields` entry. If no such
-source-backed fact exists, omit that entity entirely and leave `entities: {}`; never
-emit placeholders such as `entities: {role: {constraints: {}}}`.
-
-Self-review must fail if any `data_integrity` / `negative` / journey MRC key was invented without a corresponding knowledge proposal.
+Self-review must fail if any `data_integrity` / `negative` / journey MRC key was
+invented as authenticated vocabulary or if any unauthorized proposal file was written.
 Self-review must also fail when any item from every advisory
 `minimum_required_coverage` category is absent from the matrix. A required row
 may be `skipped_by_scope`, but it may not disappear.
@@ -772,7 +738,7 @@ Format is fixed — reviewer uses `case_id` to cross-check each case's `type`.
 
 ## Explore Input
 
-<!-- Include this section ONLY when phases.explore.status == done. Otherwise write: _skipped (no advisory)_ -->
+<!-- Populate this section when graph-provided exploration is non-null. Otherwise write: _skipped (no advisory)_ -->
 
 - advisory: `explore/exploration.json` (status: done | degraded)
 - source_code_read: true | false
@@ -1026,7 +992,10 @@ capability leaves and each value must be `{covered: true}` as shown above. Do no
 put MRC IDs or an intermediate grouping key such as `minimum_required_coverage`
 inside `trace`; MRC-to-case mapping belongs in the separate coverage matrix.
 
-MRC keys must obey **MRC closed-key discipline** above: never invent closed-category keys; unknown keys require a knowledge proposal (`discovered_candidates`), not a silent matrix entry.
+MRC keys must obey **MRC closed-key discipline** above: never invent
+closed-category keys. Record an unknown key in `proposal.md` **Data Needs** and
+retain its matrix row as `skipped_by_scope` with a precise reason; do not write a
+knowledge-proposal file or a silent covered matrix entry.
 
 Also write `qa/changes/<change-id>/trace/minimum-coverage-matrix.json`:
 
@@ -1469,9 +1438,8 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 50. `.qa.yaml` exists at `qa/changes/<change-id>/.qa.yaml`.
 51. MRC closed keys: every `data_integrity` / `negative` / journey key in
     `trace/minimum-coverage-matrix.json` cites `.aa/data-knowledge.yaml` or the
-    declared journey set; any unknown key has a matching
-    `plans/data-knowledge.proposal.*.yaml` `discovered_candidates` entry (never
-    invent MRC keys into the matrix alone).
+    declared journey set; any unavailable key is documented in `proposal.md`
+    Data Needs and retained as `skipped_by_scope` with a precise reason.
 52. MRC row identity: reject any duplicate mrc_id or key across the entire
     `trace/minimum-coverage-matrix.json` document.
 

@@ -310,3 +310,45 @@
   Other dirty Intake contracts/tests remain unstaged. Cost if wrong: this commit may
   attribute two already-written Phase 5 contract alignments to Task 3, but omitting
   them would leave the committed installed schema inconsistent with the tested model.
+- Task 3 case-delta ruling: live `132110-a9d717c6` proved Explore now succeeds,
+  but case-design could not write its required
+  `qa/changes/<change-id>/cases/<module>/case.yaml`: the skill/finalizer required
+  that artifact while the installed resource claim and provider output boundary
+  authorized only `.qa.yaml`, `proposal.md`, and the MRC matrix. The provider then
+  returned an empty matrix and deterministic finalize rejected it. Treat the
+  benchmark manifest's trusted module list as the closed source of exact case
+  delta paths; project those paths through ProductInput and case-design, keep the
+  graph-engine resource claim at the current-change `cases` prefix only, and keep
+  provider/finalize admission exact. Do not infer modules from model prose or open
+  sibling changes. Cost if wrong: an under-declared contract repeats the live
+  failure, while a broader provider boundary could let a model overwrite an
+  unrelated module or change.
+- Task 3 case-delta correction: the benchmark now expands sorted trusted
+  `case_modules` into exact current-change `case_delta_paths`; `full`, `intake`,
+  and `case` require them while unrelated entrypoints reject them. Case-design
+  prepare embeds a typed promoted Explore result when present, authorizes the
+  three fixed artifacts plus exact case files, and finalize requires the receipt's
+  case set to equal the locked input. The skill consumes embedded Explore, writes
+  only trusted case paths, and records unavailable closed MRC keys as Data Needs +
+  `skipped_by_scope` rather than an unauthorized proposal file. Both installed
+  product declarations were regenerated through the existing writer. Controller
+  verification: 153 focused intake/product/entrypoint/routing tests passed;
+  focused Ruff/format/Pyright are clean.
+- Task 3 case-delta review fix round 1/5: independent review found three Important
+  inconsistencies: one stale skill paragraph still demanded a knowledge-proposal
+  file, ProductInput normalized case paths more permissively than its public
+  schema, and the output helper allowed an impossible empty default. All three are
+  fixed by consistent skill wording, an exact ASCII path validator with parity
+  coverage, and a required helper argument. Rereview found one remaining Important
+  sibling-escape because the exact validator still admitted `..` segments; that
+  boundary now rejects empty/`.`/`..` segments and has a cross-change regression.
+  Final independent rereview reports all four findings resolved with no new P1/P2.
+- Task 3 case-delta overlap ruling: take ownership of the existing dirty
+  CaseDesign contract/test hunks that define selected families, typed Explore
+  input, case-authoring fields, and the agent-profile binding field/builder that
+  the already-committed prepare handlers require, where the exact case path
+  contract cannot compile or be meaningfully tested without them. Preserve
+  unrelated execution/generation/healing/configuration changes unstaged. Cost if
+  wrong: the Task 3 correction may also freeze closely related Phase 5 contract
+  work, but splitting those same models and fixtures would leave generated schemas
+  or tests describing an impossible intermediate interface.

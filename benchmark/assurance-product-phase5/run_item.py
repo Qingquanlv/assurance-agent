@@ -88,6 +88,10 @@ def main() -> int:
         "requirement": arguments["requirement"],
         "run_mode": "case",
         "selected_test_families": list(arguments["selected_test_families"]),
+        "case_delta_paths": [
+            f"qa/changes/{arguments['change_id']}/cases/{module}/case.yaml"
+            for module in arguments["case_modules"]
+        ],
         "capability_leafs": _catalog_leafs(composition, catalog_ref["resource_id"]),
         "capability_catalog": catalog_ref,
         "product_policy": _ref(composition, "assurance.product.configuration.product-policy"),
@@ -174,6 +178,20 @@ def _manifest_item(document: Mapping[str, Any], item_id: str, adapter: str) -> d
     families = tuple(item.get("selected_test_families") or ())
     if item.get("entrypoint") == "full" and families != ("api", "e2e", "fuzz", "performance"):
         raise SystemExit("full entrypoint requires all four families in canonical order")
+    raw_case_modules = item.get("case_modules")
+    if not isinstance(raw_case_modules, list) or any(
+        not isinstance(module, str) for module in raw_case_modules
+    ):
+        raise SystemExit("case_modules must be a list of strings")
+    case_modules = tuple(module for module in raw_case_modules if isinstance(module, str))
+    if not case_modules or case_modules != tuple(sorted(set(case_modules))):
+        raise SystemExit("case_modules must be a non-empty sorted unique list")
+    for module in case_modules:
+        if not isinstance(module, str) or any(
+            not part or part in {".", ".."} or not re.fullmatch(r"[A-Za-z0-9._-]+", part)
+            for part in module.split("/")
+        ):
+            raise SystemExit(f"case_modules contains an unsafe module path: {module!r}")
     return item
 
 
@@ -994,6 +1012,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "change_id": change_id,
             "requirement": requirement,
             "selected_test_families": list(item["selected_test_families"]),
+            "case_modules": list(item["case_modules"]),
             "entrypoint": item["entrypoint"],
             "output": str(input_path),
         },
