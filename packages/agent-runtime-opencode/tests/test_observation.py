@@ -257,6 +257,58 @@ async def test_busy_session_is_aborted_after_complete_structured_result_is_captu
         fixture.close()
 
 
+async def test_busy_artifact_array_with_pending_continuation_is_not_aborted() -> None:
+    fixture = _bound_fixture(terminal_mode="artifact_array_busy")
+    try:
+        result = await fixture.reconcile()
+
+        assert result.status == "running"
+        assert fixture.fake.abort_calls == 0
+    finally:
+        fixture.close()
+
+
+async def test_busy_schema_invalid_candidate_is_not_aborted() -> None:
+    fixture = _bound_fixture(terminal_mode="success_busy")
+    fixture.fake.structured_result = {"artifact": "minimum-coverage-matrix.json"}
+    try:
+        result = await fixture.reconcile()
+
+        assert result.status == "running"
+        assert fixture.fake.abort_calls == 0
+    finally:
+        fixture.close()
+
+
+async def test_busy_valid_receipt_wins_over_later_invalid_artifact() -> None:
+    fixture = _bound_fixture(terminal_mode="mixed_result_busy")
+    try:
+        result = await fixture.reconcile()
+
+        assert result.status == "terminal"
+        assert result.outcome is not None
+        assert result.outcome.status == "succeeded"
+        assert fixture.fake.abort_calls == 1
+    finally:
+        fixture.close()
+
+
+async def test_idle_invalid_only_candidate_has_precise_invalid_output() -> None:
+    fixture = _bound_fixture(terminal_mode="success")
+    fixture.fake.structured_result = {"artifact": "minimum-coverage-matrix.json"}
+    try:
+        result = await fixture.reconcile()
+
+        assert result.status == "terminal"
+        assert result.outcome is not None
+        assert result.outcome.status == "failed"
+        assert result.outcome.failure is not None
+        assert result.outcome.failure.kind == "invalid_output"
+        assert result.outcome.failure.message == "$: missing required properties ['ok']"
+    finally:
+        fixture.close()
+
+
 def test_completed_write_tool_content_is_the_structured_result() -> None:
     messages = [
         {
@@ -298,6 +350,26 @@ def test_completed_write_tool_content_is_the_structured_result() -> None:
         )
         == "succeeded"
     )
+
+
+def test_top_level_json_array_does_not_expose_nested_object_as_result() -> None:
+    messages = [
+        {
+            "info": {"id": "msg_artifact_write", "role": "assistant"},
+            "parts": [
+                {
+                    "type": "tool",
+                    "tool": "artifact_write",
+                    "state": {
+                        "status": "completed",
+                        "input": {"content": '[{"mrc_id":"MRC-API-001","required":true}]'},
+                    },
+                }
+            ],
+        }
+    ]
+
+    assert structured_result_from_messages(messages) is None
 
 
 def test_running_write_tool_is_not_a_structured_result() -> None:

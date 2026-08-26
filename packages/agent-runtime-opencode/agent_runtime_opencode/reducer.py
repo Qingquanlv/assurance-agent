@@ -70,7 +70,14 @@ def _reduce_success(
     diff: object | None,
     canaries: Sequence[str | bytes],
 ) -> TaskOutcome:
-    structured = structured_result_from_messages(messages)
+    structured = contract_result_candidate_from_messages(
+        messages,
+        agent_run=agent_run,
+        request=request,
+        canaries=canaries,
+    )
+    if structured is None:
+        structured = structured_result_from_messages(messages)
     if not isinstance(structured, dict):
         return TaskOutcome.failed(
             "invalid_output",
@@ -78,14 +85,12 @@ def _reduce_success(
             retryable=False,
         )
     try:
-        schema = _result_schema(request, agent_run.result_contract)
-        validated = validate_structured_result(
+        validated = _validate_result_candidate(
             structured,
-            schema=schema,
-            schema_digest=agent_run.result_contract.schema_digest,
+            agent_run=agent_run,
+            request=request,
+            canaries=canaries,
         )
-        reject_credentials_in_digest_input(validated)
-        reject_canaries_in_payload(validated, canaries=canaries)
     except (TypeError, ValueError) as error:
         return TaskOutcome.failed(
             "invalid_output",
@@ -115,6 +120,61 @@ def _reduce_success(
         }
     )
     return TaskOutcome.succeeded(result.model_dump(mode="json"))
+
+
+def contract_result_candidate_from_messages(
+    messages: Sequence[object],
+    *,
+    agent_run: AgentRunRequest,
+    request: TaskRequest,
+    canaries: Sequence[str | bytes],
+) -> dict[str, Any] | None:
+    return structured_result_from_messages(
+        messages,
+        accept=lambda candidate: result_candidate_satisfies_contract(
+            candidate,
+            agent_run=agent_run,
+            request=request,
+            canaries=canaries,
+        ),
+    )
+
+
+def result_candidate_satisfies_contract(
+    candidate: Mapping[str, object],
+    *,
+    agent_run: AgentRunRequest,
+    request: TaskRequest,
+    canaries: Sequence[str | bytes],
+) -> bool:
+    try:
+        _validate_result_candidate(
+            candidate,
+            agent_run=agent_run,
+            request=request,
+            canaries=canaries,
+        )
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _validate_result_candidate(
+    candidate: Mapping[str, object],
+    *,
+    agent_run: AgentRunRequest,
+    request: TaskRequest,
+    canaries: Sequence[str | bytes],
+) -> object:
+    schema = _result_schema(request, agent_run.result_contract)
+    validated = validate_structured_result(
+        candidate,
+        schema=schema,
+        schema_digest=agent_run.result_contract.schema_digest,
+    )
+    reject_credentials_in_digest_input(validated)
+    reject_canaries_in_payload(validated, canaries=canaries)
+    return validated
 
 
 def _result_schema(request: TaskRequest, contract: ResultContract) -> object:

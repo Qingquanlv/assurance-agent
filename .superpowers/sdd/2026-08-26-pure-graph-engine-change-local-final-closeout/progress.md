@@ -352,3 +352,30 @@
   wrong: the Task 3 correction may also freeze closely related Phase 5 contract
   work, but splitting those same models and fixtures would leave generated schemas
   or tests describing an impossible intermediate interface.
+- Task 3 OpenCode result-race ruling: live `141439-41852bc4` proved the exact
+  case-delta boundary works: case-design wrote and read back `.qa.yaml`,
+  `proposal.md`, `cases/system/dept/case.yaml`, and the MRC matrix. The adapter
+  nevertheless failed execute with `missing required properties ['output_files']`.
+  OpenCode evidence shows the completed MRC top-level JSON array was scanned for
+  inner objects; one MRC row was mistaken for a structured result while the
+  session was still busy, so the adapter aborted the just-created final assistant
+  continuation and produced `MessageAbortedError`. Require a candidate to pass
+  the current locked result schema plus credential/canary checks before a busy
+  session can become terminal or be aborted; do not hard-code assurance fields or
+  tool names. Cost if wrong: invalid artifact JSON can still terminate a live
+  continuation, or an overly specific adapter rule can break other installed
+  products.
+- Task 3 OpenCode result-race correction: exact top-level non-object JSON no
+  longer exposes nested objects as a result. Handler and reducer now share one
+  contract-filtered candidate selector; a busy session aborts only after a safe
+  candidate exists, and reducer consumes the same latest valid candidate. When no
+  valid candidate exists, idle reduction still falls back to the raw candidate to
+  preserve a precise `invalid_output`. Regressions cover MRC array + pending
+  continuation, schema-invalid busy, canary-bearing busy, valid busy, valid then
+  later invalid artifact, and invalid-only idle. Controller verification: 167
+  OpenCode adapter tests passed; six changed files pass Ruff/format/Pyright.
+- Task 3 OpenCode result-race review fix round 1/5: independent review found one
+  Important candidate-selection drift: the first handler revision could abort on
+  an earlier valid result while reducer selected a later invalid artifact. The
+  shared filtered selector and mixed-candidate regression resolve the finding;
+  final independent rereview reports no new P1/P2.

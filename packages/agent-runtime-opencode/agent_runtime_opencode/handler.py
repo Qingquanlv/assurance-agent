@@ -49,7 +49,7 @@ from agent_runtime_opencode.protocol import (
     canonical_json_text,
     resolve_advertised_profile,
 )
-from agent_runtime_opencode.reducer import reduce_terminal
+from agent_runtime_opencode.reducer import contract_result_candidate_from_messages, reduce_terminal
 from agent_runtime_opencode.workspace_binding import workspace_binding_title
 
 
@@ -654,6 +654,14 @@ class OpenCodeHandler:
         if kind == "succeeded":
             status_record = status_map.get(session_id) if isinstance(status_map, dict) else None
             if isinstance(status_record, dict) and status_record.get("type") == "busy":
+                safe_result = contract_result_candidate_from_messages(
+                    messages,
+                    agent_run=agent_run,
+                    request=request,
+                    canaries=canaries,
+                )
+                if safe_result is None:
+                    return TaskActivityReconcileResult(status="running", reference=dumped)
                 try:
                     await client.abort(session_id)
                 except (

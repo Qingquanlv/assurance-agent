@@ -261,9 +261,7 @@ def _admission_identity_matches(candidate: Mapping[str, object], expected: Mappi
     return not _admission_model_conflicts(candidate, expected)
 
 
-def _admission_model_conflicts(
-    candidate: Mapping[str, object], expected: Mapping[str, object]
-) -> bool:
+def _admission_model_conflicts(candidate: Mapping[str, object], expected: Mapping[str, object]) -> bool:
     expected_model = _model_identity(expected.get("model"))
     if expected_model is None:
         return False
@@ -353,7 +351,11 @@ def classify_provider_state(
     return "running"
 
 
-def structured_result_from_messages(messages: Sequence[object]) -> dict[str, Any] | None:
+def structured_result_from_messages(
+    messages: Sequence[object],
+    *,
+    accept: Callable[[Mapping[str, Any]], bool] | None = None,
+) -> dict[str, Any] | None:
     found: dict[str, Any] | None = None
     for message in messages:
         if not isinstance(message, dict):
@@ -377,13 +379,13 @@ def structured_result_from_messages(messages: Sequence[object]) -> dict[str, Any
                 if not isinstance(text, str):
                     continue
                 parsed = _json_object_from_text(text)
-                if parsed is not None:
+                if parsed is not None and (accept is None or accept(parsed)):
                     found = parsed
                 continue
             if part.get("type") != "tool":
                 continue
             parsed = _json_object_from_completed_tool(part)
-            if parsed is not None:
+            if parsed is not None and (accept is None or accept(parsed)):
                 found = parsed
     return found
 
@@ -409,8 +411,8 @@ def _json_object_from_text(text: str) -> dict[str, Any] | None:
         parsed = json.loads(stripped)
     except json.JSONDecodeError:
         parsed = None
-    if isinstance(parsed, dict):
-        return parsed
+    else:
+        return parsed if isinstance(parsed, dict) else None
     decoder = json.JSONDecoder()
     found: dict[str, Any] | None = None
     for index, char in enumerate(text):

@@ -31,7 +31,17 @@ PromptCut = Literal[
     "after_admission_before_response",
     "after_lost_success_response",
 ]
-TerminalMode = Literal["busy", "idle_only", "success", "success_busy", "open_tools", "error", "canceled"]
+TerminalMode = Literal[
+    "artifact_array_busy",
+    "busy",
+    "idle_only",
+    "mixed_result_busy",
+    "success",
+    "success_busy",
+    "open_tools",
+    "error",
+    "canceled",
+]
 SseMode = Literal[
     "heartbeat",
     "gap",
@@ -544,6 +554,57 @@ class OpenCodeFakeServer:
         mode = self.terminal_mode
         if mode == "busy" or mode == "idle_only":
             return []
+        if mode == "artifact_array_busy":
+            return [
+                {
+                    "info": {"id": "msg_artifact_write", "role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "artifact_write",
+                            "state": {
+                                "status": "completed",
+                                "input": {
+                                    "content": json.dumps(
+                                        [
+                                            {
+                                                "mrc_id": "MRC-API-001",
+                                                "required": True,
+                                            }
+                                        ]
+                                    )
+                                },
+                            },
+                        }
+                    ],
+                },
+                {
+                    "info": {"id": "msg_pending_continuation", "role": "assistant"},
+                    "parts": [],
+                },
+            ]
+        if mode == "mixed_result_busy":
+            return [
+                {
+                    "info": {"id": "msg_valid_receipt", "role": "assistant"},
+                    "parts": [{"type": "text", "text": json.dumps({"ok": True})}],
+                },
+                {
+                    "info": {"id": "msg_later_artifact", "role": "assistant"},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "artifact_write",
+                            "state": {
+                                "status": "completed",
+                                "input": {
+                                    "content": json.dumps({"artifact": "minimum-coverage-matrix.json"})
+                                },
+                            },
+                        }
+                    ],
+                },
+            ]
         if mode == "error":
             return [
                 {
@@ -592,7 +653,9 @@ class OpenCodeFakeServer:
             mode = self.terminal_mode
         if omit:
             return {}
-        status_type = "busy" if mode in {"busy", "success_busy"} else "idle"
+        status_type = (
+            "busy" if mode in {"artifact_array_busy", "busy", "mixed_result_busy", "success_busy"} else "idle"
+        )
         return {session_id: {"type": status_type} for session_id in session_ids}
 
     def _session_view(self, session: dict[str, object]) -> dict[str, object]:

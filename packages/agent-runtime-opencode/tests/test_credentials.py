@@ -116,6 +116,21 @@ async def test_structured_result_canary_is_invalid_output() -> None:
         fixture.close()
 
 
+async def test_busy_structured_result_with_canary_is_not_aborted() -> None:
+    fixture = _bound_fixture(
+        terminal_mode="success_busy",
+        result_schema=_NOTE_SCHEMA,
+    )
+    fixture.fake.structured_result = {"ok": True, "note": _SECRET_TEXT}
+    try:
+        result = await fixture.reconcile()
+
+        assert result.status == "running"
+        assert fixture.fake.abort_calls == 0
+    finally:
+        fixture.close()
+
+
 async def test_provider_error_redacts_canary_from_typed_failure() -> None:
     handler, stream = _capture_logs()
     fixture = _bound_fixture(terminal_mode="error", sse_mode="fast_idle")
