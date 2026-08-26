@@ -135,7 +135,7 @@ def test_run_executes_only_the_explicit_product_plugin_bundle(tmp_path: Path) ->
     assert len(document["compiled_digest"]) == 64
     assert len(document["lock_digest"]) == 64
     assert len(document["ledger_digest"]) == 64
-    assert len(document["final_tree_id"]) == 64
+    assert "final_tree_id" not in document
     assert (invocation_root / "invocations" / "smoke").is_dir()
 
     repeated = _run_cli(

@@ -68,3 +68,37 @@ def test_product_metadata_exposes_only_two_product_entry_points(built_product_wh
         "assurance-cursor": "assurance_product.product:AssuranceCursorProductProvider",
     }
     assert "assurance-agent" not in metadata.requires_dist
+
+
+@pytest.fixture
+def built_engine_wheel(tmp_path: Path) -> Path:
+    subprocess.run(
+        [
+            "uv",
+            "build",
+            "--package",
+            "graph-engine",
+            "--out-dir",
+            str(tmp_path / "engine"),
+        ],
+        check=True,
+    )
+    wheels = tuple((tmp_path / "engine").glob("*.whl"))
+    assert len(wheels) == 1
+    return wheels[0]
+
+
+def test_wheels_omit_whole_tree_modules_and_result_export_schema(
+    built_engine_wheel: Path, built_product_wheel: Path
+) -> None:
+    with zipfile.ZipFile(built_engine_wheel) as archive:
+        engine_names = archive.namelist()
+    assert all("tree_io" not in Path(name).parts for name in engine_names)
+    assert all(Path(name).name != "workspace.py" for name in engine_names)
+    assert all("result-export" not in name for name in engine_names)
+
+    with zipfile.ZipFile(built_product_wheel) as archive:
+        product_names = archive.namelist()
+    assert all("result-export" not in name for name in product_names)
+    assert all("tree_io" not in Path(name).parts for name in product_names)
+    assert all(Path(name).name != "workspace.py" for name in product_names)

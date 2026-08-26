@@ -67,9 +67,7 @@
     "anyOf": [
       { "required": ["secret"] },
       { "required": ["transcript"] },
-      { "required": ["chain_of_thought"] },
-      { "required": ["initial_tree_id"] },
-      { "required": ["current_head_tree_id"] }
+      { "required": ["chain_of_thought"] }
     ]
   },
   "$defs": {

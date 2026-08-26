@@ -370,15 +370,6 @@ class EffectReceiptRecorded(RuntimeEventModel):
         return value
 
 
-class HeadAdvanced(RuntimeEventModel):
-    kind: Literal["head_advanced"] = "head_advanced"
-    task_id: str
-    activation_id: str
-    attempt: int = Field(ge=1)
-    previous_tree_id: str = Field(pattern=_SHA256_PATTERN)
-    tree_id: str = Field(pattern=_SHA256_PATTERN)
-
-
 class NodeCompleted(RuntimeEventModel):
     kind: Literal["node_completed"] = "node_completed"
     activation_id: str
@@ -521,7 +512,6 @@ __all__ = [
     "GraphCompleted",
     "GraphFailed",
     "GraphStarted",
-    "HeadAdvanced",
     "InterruptResumed",
     "InvocationFinished",
     "InvocationStarted",

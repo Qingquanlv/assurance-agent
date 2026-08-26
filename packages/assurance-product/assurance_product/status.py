@@ -67,14 +67,12 @@ def project_status_fields(
     projection: InvocationProjection,
     *,
     root_input_digest: str | None = None,
-    initial_tree_id: str | None = None,
     selected_test_families: tuple[str, ...] = (),
     change_id: str | None = None,
     apply_manifest_digest: str | None = None,
     apply_file_count: int = 0,
     publication_status: Literal["not_ready", "ready", "published", "drifted"] = "not_ready",
 ) -> dict[str, object]:
-    del initial_tree_id
     if projection.status == "not_started" or projection.invocation_id is None:
         raise ValueError("cannot project status for an unstarted invocation")
     if projection.lock_digest is None or projection.entrypoint is None:
@@ -112,7 +110,6 @@ def render_status(
     projection: InvocationProjection,
     *,
     root_input_digest: str | None = None,
-    initial_tree_id: str | None = None,
     selected_test_families: tuple[str, ...] = (),
     change_id: str | None = None,
     apply_manifest_digest: str | None = None,
@@ -123,7 +120,6 @@ def render_status(
         project_status_fields(
             projection,
             root_input_digest=root_input_digest,
-            initial_tree_id=initial_tree_id,
             selected_test_families=selected_test_families,
             change_id=change_id,
             apply_manifest_digest=apply_manifest_digest,

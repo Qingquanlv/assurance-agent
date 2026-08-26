@@ -39,6 +39,7 @@ from graph_engine.composition import (
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
     CommitValidator,
+    InvocationWorkspaceBinding,
     PluginDescriptor,
     ProviderSource,
     RecoverableTaskHandler,
@@ -66,7 +67,9 @@ from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import PlannedTask, fold_events
 from graph_engine.runtime.planner import plan_next
 from graph_engine.runtime.scheduler import AttemptResult, Scheduler, SystemClock
-from graph_engine.runtime.workspace import SnapshotStore
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.runtime.seed import empty_invocation_seed
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 from tests.agent_runtime.conformance import (
     AdapterCut,
@@ -357,7 +360,7 @@ class ConfinedTestHost:
         ledger: Ledger | None = None,
     ) -> None:
         self._handlers: Mapping[str, TaskHandler] = {}
-        self._store: SnapshotStore | None = None
+        self._store: TaskWorkspaceStore | None = None
         self._receipts: TerminalReceiptStore | None = None
         self._ledger = ledger
         self._secrets = dict(secrets)
@@ -377,7 +380,7 @@ class ConfinedTestHost:
         self,
         *,
         handlers: Mapping[str, TaskHandler],
-        store: SnapshotStore,
+        store: TaskWorkspaceStore,
         receipts: TerminalReceiptStore | None = None,
     ) -> None:
         self._handlers = handlers
@@ -387,12 +390,19 @@ class ConfinedTestHost:
 
     def _context(self, call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall) -> TaskContext:
         assert self._store is not None
-        workspace_root = self._store.root / "attempts" / call.attempt_root.attempt_directory_id
+        identity = call.attempt_root.workspace_identity
+        binding = self._store.begin(
+            task_id=identity.task_id,
+            attempt=identity.attempt,
+            output_paths=identity.output_paths,
+        )
         port = None
         if call.activity_rpc.activity_id is not None and self._ledger is not None:
             port = LedgerTaskActivityPort(ledger=self._ledger, identity=call.activity_rpc)
         context = TaskContext(
-            workspace_root=workspace_root,
+            project_root=binding.project_root,
+            write_root=binding.write_root,
+            workspace_identity=binding.identity,
             heartbeat=lambda: None,
             cancel_requested=lambda: False,
             invocation=call.request.invocation,
@@ -424,7 +434,11 @@ class ConfinedTestHost:
                 activity_id=identity.activity_id,
                 operation=identity.operation,
                 request_digest=activity.request_digest,
-                workspace_identity_digest=activity.workspace_identity.attempt_identity_digest,
+                workspace_identity_digest=activity.workspace_identity.identity_digest,
+                project_root_digest=activity.workspace_identity.project_digest,
+                write_root_digest=activity.workspace_identity.write_root_digest,
+                baseline_digest=activity.workspace_identity.identity_digest,
+                staged_write_set_digest=activity.staged_write_set_digest or ("d" * 64),
                 dispatch_fingerprint_digest=activity.dispatch_fingerprint_digest,
                 reference_digest=activity.reference_digest,
                 outcome=outcome,
@@ -485,11 +499,11 @@ class _Scenario:
     host: ConfinedTestHost
     scheduler: Scheduler
     ledger: Ledger
-    store: SnapshotStore
+    store: TaskWorkspaceStore
     task: PlannedTask
     receipts: TerminalReceiptStore
     provider: Any
-    workspace_cm: SnapshotStore
+    workspace_cm: TaskWorkspaceStore
     agent_run: AgentRunRequest
     roots: tuple[Path, ...]
 
@@ -497,7 +511,9 @@ class _Scenario:
         closer = getattr(self.provider, "close", None)
         if callable(closer):
             closer()
-        self.workspace_cm.__exit__(None, None, None)
+        closer = getattr(self.workspace_cm, "__exit__", None)
+        if callable(closer):
+            closer(None, None, None)
         self.handle.close()
         self.engine.close()
 
@@ -580,7 +596,24 @@ class _AdapterHarness:
         host = ConfinedTestHost(secrets=secrets, binding_data={"result_schema": RESULT_SCHEMA})
         host.cut = host_cut
         engine = Engine(engine_root, clock=SystemClock(), host=host)
-        handle = engine.start(composition, entrypoint="main", invocation_id=invocation_id)
+        project_root = engine_root.parent / f".{engine_root.name}-project"
+        attempts_root = engine_root.parent / f".{engine_root.name}-attempts"
+        receipts_root = engine_root.parent / f".{engine_root.name}-receipts"
+        for path in (project_root, attempts_root, receipts_root):
+            path.mkdir(exist_ok=True)
+        workspace_binding = InvocationWorkspaceBinding(
+            project_root=project_root,
+            attempts_root=attempts_root,
+            receipts_root=receipts_root,
+        )
+        handle = engine.start(
+            composition,
+            entrypoint="main",
+            invocation_id=invocation_id,
+            seed=empty_invocation_seed(),
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        )
         ledger = Ledger(handle.invocation_root / "ledger")
         host.bind_ledger(ledger)
         envelopes = ledger.read_all()
@@ -593,7 +626,7 @@ class _AdapterHarness:
         task = self._unwrap_task(plan.tasks[0])
         receipts = TerminalReceiptStore.open_or_create(handle.invocation_root / "receipts")
         workspace_cm = handle.workspace
-        store = workspace_cm.__enter__()
+        store = workspace_cm
         owner_id = engine_digest(
             {
                 "invocation_id": invocation_id,

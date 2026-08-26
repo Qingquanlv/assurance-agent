@@ -23,13 +23,13 @@ async def _seed(request: TaskRequest, context: TaskContext) -> TaskOutcome:
 async def _left(request: TaskRequest, context: TaskContext) -> TaskOutcome:
     if request.attempt == 1:
         return TaskOutcome.failed("transient", "retry the left branch")
-    (context.workspace_root / "left.txt").write_text("left\n", encoding="utf-8")
+    (context.write_root / "left.txt").write_text("left\n", encoding="utf-8")
     return TaskOutcome.succeeded({"left": True})
 
 
 async def _child(request: TaskRequest, context: TaskContext) -> TaskOutcome:
     del request
-    (context.workspace_root / "child.txt").write_text("child\n", encoding="utf-8")
+    (context.write_root / "child.txt").write_text("child\n", encoding="utf-8")
     return TaskOutcome.succeeded({"child": True})
 
 

@@ -20,7 +20,7 @@ class _GreetHandler:
         config = cast(dict[str, str], cast(dict[str, JSONValue], request.input)["config"])
         name = config["name"]
         message = f"hello {name}"
-        (context.workspace_root / "greeting.txt").write_text(f"{message}\n", encoding="utf-8")
+        (context.write_root / "greeting.txt").write_text(f"{message}\n", encoding="utf-8")
         return TaskOutcome.succeeded(cast(JSONValue, {"message": message}))
 
 

@@ -6,10 +6,6 @@ from graph_engine.runtime.events import InvocationStarted
 from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
 
 _EMPTY_SEED = empty_invocation_seed()
-# Legacy fold-only histories seed projection head to this tree before the first commit.
-SYNTHETIC_INITIAL_TREE_ID = "0" * 64
-# Some scheduler fold fixtures still advance from this explicit baseline.
-SYNTHETIC_BASELINE_TREE_ID = "b" * 64
 
 
 def synthetic_invocation_started(

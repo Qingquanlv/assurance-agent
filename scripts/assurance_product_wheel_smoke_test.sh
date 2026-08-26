@@ -182,7 +182,12 @@ def inspect_wheel_archive(wheel: Path, *, deployment: bool) -> None:
         )
         if any(name in LEGACY_DISTS for name in requirements):
             raise SystemExit(f"legacy requirement in {wheel.name}: {requirements}")
+        if dist_name == "graph-engine":
+            if any("tree_io" in Path(member).parts or Path(member).name == "workspace.py" for member in names):
+                raise SystemExit(f"whole-tree residual module in {wheel.name}")
         if dist_name == "assurance-product":
+            if any("result-export" in member for member in names):
+                raise SystemExit(f"result-export schema in {wheel.name}")
             entry_points_name = next(
                 (name for name in names if name.endswith(".dist-info/entry_points.txt")),
                 None,

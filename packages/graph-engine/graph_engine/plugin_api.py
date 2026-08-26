@@ -235,28 +235,6 @@ def _require_terminal_observation(
         raise ValueError("only successful terminal activity may carry a promotion receipt")
 
 
-class AttemptWorkspaceIdentity(FrozenModel):
-    attempt_directory_id: str
-    baseline_tree_id: str = Field(pattern=_SHA256_PATTERN)
-    attempt_identity_digest: str = Field(pattern=_SHA256_PATTERN)
-    layout_schema_version: Literal["1"] = "1"
-
-    @field_validator("attempt_directory_id")
-    @classmethod
-    def _reject_host_path(cls, value: str) -> str:
-        windows_path = PureWindowsPath(value)
-        if (
-            not value
-            or "/" in value
-            or "\\" in value
-            or value in {".", ".."}
-            or windows_path.is_absolute()
-            or bool(windows_path.drive)
-        ):
-            raise ValueError("attempt directory id must not contain a host path")
-        return value
-
-
 class TaskActivitySnapshot(FrozenModel):
     activity_id: str = Field(min_length=1)
     request_digest: str = Field(pattern=_SHA256_PATTERN)
@@ -1326,7 +1304,6 @@ def validate_contribution(descriptor: PluginDescriptor, contribution: PluginCont
 
 __all__ = [
     "ActivityState",
-    "AttemptWorkspaceIdentity",
     "CapabilityBindingContribution",
     "CandidateFile",
     "CandidateWriteSet",

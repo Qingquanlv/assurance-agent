@@ -254,16 +254,12 @@ with Engine(Path(sys.argv[1]), host=TrustedSmokeHost()) as engine:
             ledger_digest = canonical_digest(
                 [envelope.model_dump(mode="json") for envelope in envelopes]
             )
-            with resumed.workspace as workspace:
-                final_tree_id = workspace.head_tree_id()
-
 evidence = {
     "blocked_status": blocked.status,
     "terminal_status": completed.status,
     "compiled_digest": resolved.workflow.digest,
     "lock_digest": resolved.lock_digest,
     "ledger_digest": ledger_digest,
-    "final_tree_id": final_tree_id,
 }
 print("TOY_B_EVIDENCE=" + json.dumps(evidence, sort_keys=True, separators=(",", ":")))
 PY

@@ -29,13 +29,13 @@ from graph_engine.composition import (
 )
 from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
-    AttemptWorkspaceIdentity,
     InvocationMetadata,
     TaskActivitySnapshot,
     TaskContext,
     TaskHandler,
     TaskOutcome,
     TaskRequest,
+    TaskWorkspaceIdentity,
 )
 from graph_engine.runtime.host_protocol import (
     AttemptRootDescriptor,
@@ -254,6 +254,20 @@ async def resolve_fixture_composition(target: str) -> FixtureBinding:
     )
 
 
+def _workspace_identity() -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "fixture-task",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
+
+
 def _task_request(fixture: FixtureBinding, workspace_root: Path) -> tuple[TaskRequest, _ActivityPort]:
     binding = fixture.composition.registries.capabilities.bindings["fixture.binding.run"]
     request = TaskRequest.model_validate(
@@ -279,11 +293,7 @@ def _task_request(fixture: FixtureBinding, workspace_root: Path) -> tuple[TaskRe
     snapshot = TaskActivitySnapshot(
         activity_id="fixture-activity",
         request_digest=canonical_digest(request.model_dump(mode="json")),
-        workspace_identity=AttemptWorkspaceIdentity(
-            attempt_directory_id=workspace_root.name,
-            baseline_tree_id=_SHA,
-            attempt_identity_digest="b" * 64,
-        ),
+        workspace_identity=_workspace_identity(),
         state="prepared",
     )
     return request, _ActivityPort(snapshot)
@@ -305,7 +315,9 @@ class _FixtureDispatchHost(ConfinedTestHost):
 
     def _context(self, call: TaskHostExecuteCall) -> TaskContext:  # type: ignore[override]
         context = TaskContext(
-            workspace_root=self._workspace_root,
+            project_root=self._workspace_root.parent,
+            write_root=self._workspace_root,
+            workspace_identity=_workspace_identity(),
             heartbeat=lambda: None,
             cancel_requested=lambda: False,
             invocation=call.request.invocation,

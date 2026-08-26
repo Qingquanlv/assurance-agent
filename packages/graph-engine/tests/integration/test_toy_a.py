@@ -34,11 +34,6 @@ def _toy_a_composition(
         source,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    plugin_path = source / "graph_engine_toy_a" / "plugin.py"
-    plugin_path.write_text(
-        plugin_path.read_text(encoding="utf-8").replace("context.workspace_root", "context.write_root"),
-        encoding="utf-8",
-    )
     source_files = tuple(
         sorted(path.relative_to(source).as_posix() for path in source.rglob("*") if path.is_file())
     )

@@ -20,6 +20,7 @@ from graph_engine.composition import (
 )
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
+    InvocationWorkspaceBinding,
     RecoverableTaskHandler,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
@@ -39,6 +40,7 @@ from graph_engine.runtime.host_protocol import (
     TaskHostTerminalReceipt,
 )
 from graph_engine.runtime.ledger import Ledger
+from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 
 class _CliSourceError(GraphEngineError):
@@ -55,13 +57,13 @@ class _TrustedWheelPluginHost:
 
     def __init__(self) -> None:
         self._handlers: Mapping[str, TaskHandler] = {}
-        self._store: object | None = None
+        self._store: TaskWorkspaceStore | None = None
 
     def bind_invocation_runtime(
         self,
         *,
         handlers: Mapping[str, TaskHandler],
-        store: object,
+        store: TaskWorkspaceStore,
     ) -> None:
         if any(isinstance(handler, RecoverableTaskHandler) for handler in handlers.values()):
             raise GraphEngineError("CLI wheel host refuses recoverable handlers")
@@ -98,11 +100,18 @@ class _TrustedWheelPluginHost:
         refused = self._refuse_recoverable(handler, "execute")
         if refused is not None:
             return refused
-        workspace_root = Path(self._store.root) / "attempts" / call.attempt_root.attempt_directory_id  # type: ignore[attr-defined]
+        identity = call.attempt_root.workspace_identity
+        binding = self._store.begin(
+            task_id=identity.task_id,
+            attempt=identity.attempt,
+            output_paths=identity.output_paths,
+        )
         outcome = await handler.execute(
             call.request,
             TaskContext(
-                workspace_root=workspace_root,
+                project_root=binding.project_root,
+                write_root=binding.write_root,
+                workspace_identity=binding.identity,
                 heartbeat=lambda: None,
                 cancel_requested=lambda: False,
                 invocation=call.request.invocation,
@@ -273,6 +282,19 @@ def _compile_document(
     }
 
 
+def _workspace_binding(root: Path) -> InvocationWorkspaceBinding:
+    project_root = root.parent / f".{root.name}-project"
+    attempts_root = root.parent / f".{root.name}-attempts"
+    receipts_root = root.parent / f".{root.name}-receipts"
+    for path in (project_root, attempts_root, receipts_root):
+        path.mkdir(exist_ok=True)
+    return InvocationWorkspaceBinding(
+        project_root=project_root,
+        attempts_root=attempts_root,
+        receipts_root=receipts_root,
+    )
+
+
 def _run_document(
     composition: FrozenComposition,
     *,
@@ -284,12 +306,15 @@ def _run_document(
     invocation_id: str,
     root: Path,
 ) -> tuple[RunResult, dict[str, JSONValue]]:
+    workspace_binding = _workspace_binding(root)
     with Engine(root, host=_TrustedWheelPluginHost()) as engine:
         with engine.start(
             composition,
             entrypoint=entrypoint,
             invocation_id=invocation_id,
-            seed=empty_invocation_seed(), authorization=empty_runtime_authorization(),
+            seed=empty_invocation_seed(),
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
         ) as handle:
             result = engine.run_until_blocked(handle)
             envelopes = Ledger(handle.invocation_root / "ledger").read_all()
@@ -297,8 +322,6 @@ def _run_document(
                 JSONValue,
                 [envelope.model_dump(mode="json") for envelope in envelopes],
             )
-            with handle.workspace as workspace:
-                final_tree_id = workspace.head_tree_id()
 
     document = _compile_document(
         composition,
@@ -315,7 +338,6 @@ def _run_document(
             "actions": list(result.actions),
             "output": cast(JSONValue, result.model_dump(mode="json")["output"]),
             "ledger_digest": canonical_digest(ledger_document),
-            "final_tree_id": final_tree_id,
         }
     )
     return result, document

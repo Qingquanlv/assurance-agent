@@ -730,29 +730,6 @@ class StatusV1(FrozenModel):
     publication: PublicationProjectionV1
 
 
-class ExportedArtifactV1(FrozenModel):
-    artifact_id: str
-    relative_path: str
-    media_type: str
-    sha256: str = Field(pattern=_SHA256)
-
-    @field_validator("artifact_id")
-    @classmethod
-    def _artifact_id(cls, value: str) -> str:
-        return _canonical_token(value, "artifact_id")
-
-    @field_validator("relative_path")
-    @classmethod
-    def _relative_path(cls, value: str) -> str:
-        prefixes = _canonical_artifact_prefixes((value,))
-        return prefixes[0]
-
-    @field_validator("media_type")
-    @classmethod
-    def _media_type(cls, value: str) -> str:
-        return _canonical_token(value, "media_type")
-
-
 class PublishFileV1(FrozenModel):
     target_path: str
     source_path: str

@@ -7,8 +7,8 @@ from pydantic import ValidationError
 
 from agent_runtime_contracts import AgentRunRequest, FrozenExecutionSelection
 from agent_runtime_contracts.schema import canonical_json_bytes, thaw_json
-from graph_engine import AttemptWorkspaceIdentity, SecretHandleUnauthorized
-from graph_engine.plugin_api import TaskContext
+from graph_engine import SecretHandleUnauthorized
+from graph_engine.plugin_api import TaskContext, TaskWorkspaceIdentity
 
 
 RecoveryProfile = Literal["durable_reference", "confined_process"]
@@ -230,27 +230,27 @@ async def assert_common_runtime_adapter_contract(harness: RuntimeAdapterHarness)
 def _assert_prepared_workspace_identity(value: object) -> None:
     identity = _workspace_identity(value)
     assert identity.layout_schema_version == "1"
-    assert identity.attempt_directory_id
-    assert "/" not in identity.attempt_directory_id
-    assert identity.attempt_identity_digest
+    assert identity.attempt_id
+    assert "/" not in identity.attempt_id
+    assert identity.identity_digest
 
 
 def _assert_same_attempt_workspace(left: object, right: object) -> None:
     first = _workspace_identity(left)
     second = _workspace_identity(right)
     assert first.layout_schema_version == second.layout_schema_version == "1"
-    assert first.attempt_directory_id == second.attempt_directory_id
-    assert first.attempt_identity_digest == second.attempt_identity_digest
-    assert first.attempt_directory_id
-    assert "/" not in first.attempt_directory_id
+    assert first.attempt_id == second.attempt_id
+    assert first.identity_digest == second.identity_digest
+    assert first.attempt_id
+    assert "/" not in first.attempt_id
 
 
-def _workspace_identity(value: object) -> AttemptWorkspaceIdentity:
-    if isinstance(value, AttemptWorkspaceIdentity):
+def _workspace_identity(value: object) -> TaskWorkspaceIdentity:
+    if isinstance(value, TaskWorkspaceIdentity):
         return value
     if isinstance(value, dict):
-        return AttemptWorkspaceIdentity.model_validate(value)
-    raise AssertionError(f"workspace identity is not public AttemptWorkspaceIdentity: {type(value)!r}")
+        return TaskWorkspaceIdentity.model_validate(value)
+    raise AssertionError(f"workspace identity is not public TaskWorkspaceIdentity: {type(value)!r}")
 
 
 def _assert_strict_request_parsing(fixture: PreparedAdapterFixture) -> None:
@@ -283,8 +283,15 @@ def _assert_no_instruction_or_routing_mutation(fixture: PreparedAdapterFixture) 
 def _assert_no_ledger_store_exposure(context_exposed: tuple[str, ...]) -> None:
     assert context_exposed
     assert _FORBIDDEN_CONTEXT.isdisjoint(context_exposed)
-    assert "workspace_root" in context_exposed
-    assert set(TaskContext.__dataclass_fields__) >= {"workspace_root", "heartbeat", "activity", "secrets"}
+    assert "write_root" in context_exposed
+    assert set(TaskContext.__dataclass_fields__) >= {
+        "project_root",
+        "write_root",
+        "workspace_identity",
+        "heartbeat",
+        "activity",
+        "secrets",
+    }
 
 
 def _assert_authorized_secrets_only(harness: RuntimeAdapterHarness) -> None:
