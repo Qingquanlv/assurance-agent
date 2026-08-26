@@ -204,6 +204,15 @@ class _FakeAA:
         return _completed(0)
 
 
+class _UnstructuredRunAA(_FakeAA):
+    def handle_aa(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        if len(command) > 1 and command[1] == "run":
+            return _completed(23, stdout="deterministic local runner failure\n")
+        if len(command) > 1 and command[1] == "status":
+            raise AssertionError("unstructured non-zero run must fail before status polling")
+        return super().handle_aa(command)
+
+
 def _wire_fake(runner, monkeypatch: pytest.MonkeyPatch, fake: _FakeAA, sut: Path) -> None:
     python = Path("/tmp/fake-python")
     aa_next = Path("/tmp/fake-aa-next")
@@ -362,6 +371,55 @@ def test_failure_leaves_original_sut_tests_unchanged_and_skips_export(
     assert evidence["change_root"] == str(sut / "qa" / "changes" / change_id)
     assert evidence["terminal_status"] == "failed"
     assert evidence.get("publish_receipt") in (None, {})
+
+
+def test_nonzero_unstructured_run_fails_closed_without_status_polling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
+    output = tmp_path / "results" / "opencode-unstructured-run"
+    fake = _UnstructuredRunAA(
+        sut=sut,
+        change_id=change_id,
+        terminal=_achieved_status(change_id=change_id),
+        export_receipt=None,
+    )
+    _wire_fake(runner, monkeypatch, fake, sut)
+
+    code = runner.main(
+        [
+            "--item",
+            ITEM_ID,
+            "--adapter",
+            "opencode",
+            "--output",
+            str(output),
+            "--nonce",
+            NONCE,
+            "--stamp",
+            STAMP,
+        ]
+    )
+
+    evidence = json.loads((output / "evidence.json").read_text(encoding="utf-8"))
+    assert code == 23
+    assert evidence["outcome"] == "blocked"
+    assert evidence["validation"]["last_run"]["returncode"] == 23
+    assert "structured run result" in evidence["notes"]
+    assert all(command[1] != "status" for command in fake.commands if len(command) > 1)
+
+
+def test_run_result_parser_does_not_reuse_a_prior_invocation_json_object(tmp_path: Path) -> None:
+    runner = _load_runner()
+    run_log = tmp_path / "run.log"
+    run_log.write_text('{"status":"running"}\n', encoding="utf-8")
+    current_start = run_log.stat().st_size
+    with run_log.open("a", encoding="utf-8") as stream:
+        stream.write("deterministic local runner failure\n")
+
+    assert runner._last_json_object(run_log, start=current_start) is None
 
 
 def test_preflight_uses_product_locked_profiles_and_does_not_install(

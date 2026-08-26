@@ -352,8 +352,12 @@ def _parse_json(output: str, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def _last_json_object(path: Path) -> dict[str, Any] | None:
-    text = path.read_text(encoding="utf-8")
+def _last_json_object(path: Path, *, start: int = 0) -> dict[str, Any] | None:
+    if start < 0:
+        raise ValueError("run log start offset must be non-negative")
+    with path.open(encoding="utf-8") as stream:
+        stream.seek(start)
+        text = stream.read()
     for line in reversed(text.splitlines()):
         stripped = line.strip()
         if not stripped.startswith("{"):
@@ -1059,6 +1063,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             evidence["outcome"] = "blocked"
             evidence["validation"] = {"transitions": transitions, "last_run": last_run}
             return finish(1, notes="timed out waiting for a terminal aa-next status", status=last_status)
+        run_start = run_log.stat().st_size
         with run_log.open("a", encoding="utf-8") as log:
             run_proc = subprocess.run(  # noqa: S603
                 [str(aa_next), *run_args],
@@ -1069,11 +1074,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 timeout=max(1, int(remaining)),
                 check=False,
             )
-        last_run = _last_json_object(run_log) or {
+        parsed_run = _last_json_object(run_log, start=run_start)
+        last_run = parsed_run or {
             "status": None,
             "terminal_reason": None,
             "returncode": run_proc.returncode,
         }
+        if run_proc.returncode != 0 and parsed_run is None:
+            evidence["outcome"] = "blocked"
+            evidence["validation"] = {"transitions": transitions, "last_run": last_run}
+            return finish(
+                run_proc.returncode,
+                notes="aa-next run exited non-zero without a structured run result",
+            )
         status_proc = _aa_next(
             aa_next,
             *status_args,
