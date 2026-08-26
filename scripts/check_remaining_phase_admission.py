@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 
+from pydantic import ValidationError
+
 from tests.phase6.conformance import (
     ChangeLocalAdmissionV1,
     EXPECTED_RESIDUAL_MAPPINGS,
@@ -62,7 +64,10 @@ def _verify_ancestry(source_commit: str) -> None:
 
 
 def _verify_admission(admission_path: Path) -> None:
-    admission = ChangeLocalAdmissionV1.model_validate(_read_json(admission_path))
+    try:
+        admission = ChangeLocalAdmissionV1.model_validate(_read_json(admission_path))
+    except ValidationError as error:
+        raise ValueError("invalid admission evidence") from error
     _require(_sha256(UPSTREAM_PLAN) == admission.plan_sha256, "Change-local plan digest mismatch")
     _require(_sha256(UPSTREAM_SPEC) == admission.spec_sha256, "Change-local spec digest mismatch")
     _require(
@@ -78,6 +83,9 @@ def _verify_admission(admission_path: Path) -> None:
         "not accepted upstream evidence cannot be admitted as complete",
     )
 
+    waiver_ids = tuple(waiver.waiver_id for waiver in admission.waivers)
+    _require(len(waiver_ids) == len(set(waiver_ids)), "duplicate waiver id")
+    _require(len(waiver_ids) == len(REQUIRED_WAIVERS), "unwaived upstream blocker")
     actual_waivers = {
         waiver.waiver_id: (waiver.disposition, waiver.replacement_tasks, waiver.approved_by)
         for waiver in admission.waivers
@@ -90,14 +98,17 @@ def _verify_admission(admission_path: Path) -> None:
     _require(all(waiver.evidence for waiver in admission.waivers), "waiver lacks user approval evidence")
 
     report_text = UPSTREAM_REPORT.read_text(encoding="utf-8")
-    unresolved_priority = re.search(r"\b(?:P1|P2)\b.*\b(?:open|unresolved)\b", report_text, re.IGNORECASE)
+    unresolved_priority = re.search(r"\bP[12]\b", report_text, re.IGNORECASE)
     _require(unresolved_priority is None, "unresolved upstream P1/P2 finding")
 
     residual_path = admission_path.with_name("residual-disposition.json")
     raw_residuals = _read_json(residual_path)
     if not isinstance(raw_residuals, list):
         raise ValueError("residual disposition must be a JSON array")
-    records = tuple(ResidualDispositionV1.model_validate(item) for item in raw_residuals)
+    try:
+        records = tuple(ResidualDispositionV1.model_validate(item) for item in raw_residuals)
+    except ValidationError as error:
+        raise ValueError("invalid residual disposition") from error
     actual_residuals = {
         (record.source_plan, record.source_task): (record.disposition, record.replacement_task)
         for record in records
