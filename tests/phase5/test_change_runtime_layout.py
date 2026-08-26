@@ -56,6 +56,9 @@ def _assert_no_tree_store(root: Path) -> None:
     assert names.isdisjoint(_FORBIDDEN_TREE_NAMES)
 
 
+_STAGED_MARKER = "not canonical\n"
+
+
 def _failing_engine_factory():
     class _FailingHost(_ScriptedTaskHost):
         def __init__(self) -> None:
@@ -67,9 +70,29 @@ def _failing_engine_factory():
                 review_decision="pass",
                 healing_decision="allowed",
             )
+            self._store: object | None = None
+
+        def bind_invocation_runtime(
+            self,
+            *,
+            handlers: object,
+            store: object,
+            receipts: object | None = None,
+            handler_import_roots: object | None = None,
+        ) -> None:
+            del handlers, receipts, handler_import_roots
+            self._store = store
 
         async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
-            del call
+            begin = getattr(self._store, "begin", None)
+            if begin is not None:
+                binding = begin(
+                    task_id=call.identity.task_id,
+                    attempt=call.identity.attempt,
+                    output_paths=call.attempt_root.workspace_identity.output_paths,
+                )
+                leaked = binding.write_root / "leaked.py"
+                leaked.write_text(_STAGED_MARKER, encoding="utf-8")
             return TaskHostCallResult(
                 operation="execute",
                 outcome=TaskOutcome.failed(
@@ -269,14 +292,45 @@ def test_failed_run_exposes_status_and_events_but_not_staged_files(
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line]
     assert events
 
-    staged = change / ".staging" / "intake" / "1" / "leaked.py"
-    staged.parent.mkdir(parents=True, exist_ok=True)
-    staged.write_text("not canonical\n", encoding="utf-8")
+    staged_files = [
+        path
+        for path in (change / ".staging").rglob("*")
+        if path.is_file() and path.read_text(encoding="utf-8") == _STAGED_MARKER
+    ]
+    assert staged_files
+    assert all(path.is_relative_to(change / ".staging") for path in staged_files)
     generated = change / "generated"
-    assert not generated.exists() or not any(generated.rglob("*"))
-    assert not (change / "leaked.py").exists()
-    assert "leaked.py" not in status_path.read_text(encoding="utf-8")
-    assert "leaked.py" not in events_path.read_text(encoding="utf-8")
+    assert not generated.exists() or not any(
+        path.is_file() and path.read_text(encoding="utf-8") == _STAGED_MARKER for path in generated.rglob("*")
+    )
+    canonical = [
+        path
+        for path in change.rglob("*")
+        if path.is_file()
+        and ".staging" not in path.parts
+        and ".runtime" not in path.parts
+        and path.read_text(encoding="utf-8") == _STAGED_MARKER
+    ]
+    assert canonical == []
+    assert _STAGED_MARKER.strip() not in status_path.read_text(encoding="utf-8")
+
+
+def test_loaded_canonical_workflow_binds_agent_execution_contracts() -> None:
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+    from assurance_product.models import alias_ids_for_prepare
+    from assurance_product.product import load_canonical_workflow
+
+    workflow = load_canonical_workflow()
+    graph_nodes = {
+        node.capability: node
+        for graph in workflow.graphs.values()
+        for node in graph.nodes.values()
+        if node.capability is not None
+    }
+    for prepare_id, contract in AGENT_EXECUTION_CONTRACTS.items():
+        _prepare_alias, execute_alias, _finalize_alias = alias_ids_for_prepare(prepare_id)
+        assert graph_nodes[execute_alias].resources == contract.resources
+        assert contract.resources.writes
 
 
 def test_start_does_not_create_tree_store_directories(

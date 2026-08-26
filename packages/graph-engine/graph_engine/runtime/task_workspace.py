@@ -176,10 +176,20 @@ def _claim_target(project_root: Path, claim: str) -> Path:
     raise AssertionError("validated claim path has at least one segment")
 
 
-_PRODUCT_RUNTIME_DIRS = frozenset({".runtime", ".staging"})
+def _directory_identity(path: Path) -> tuple[int, int]:
+    value = _require_directory(path, "claim-scan exclusion")
+    return (value.st_dev, value.st_ino)
 
 
-def _scan_directory(path: Path, prefix: str) -> dict[str, str]:
+def _is_excluded_directory(entry: os.stat_result, excluded: frozenset[tuple[int, int]]) -> bool:
+    return stat.S_ISDIR(entry.st_mode) and (entry.st_dev, entry.st_ino) in excluded
+
+
+def _scan_directory(
+    path: Path,
+    prefix: str,
+    excluded: frozenset[tuple[int, int]] = frozenset(),
+) -> dict[str, str]:
     _require_directory(path, "directory")
     files: dict[str, str] = {}
     try:
@@ -187,14 +197,14 @@ def _scan_directory(path: Path, prefix: str) -> dict[str, str]:
     except OSError as error:
         raise TaskWorkspaceViolation(f"cannot enumerate directory: {prefix}") from error
     for entry in entries:
-        if entry.name in _PRODUCT_RUNTIME_DIRS:
-            continue
         logical_path = f"{prefix}/{entry.name}" if prefix else entry.name
         value = _lstat(entry, "directory entry")
+        if _is_excluded_directory(value, excluded):
+            continue
         if stat.S_ISLNK(value.st_mode):
             raise TaskWorkspaceViolation(f"symlink is not allowed: {logical_path}")
         if stat.S_ISDIR(value.st_mode):
-            files.update(_scan_directory(entry, logical_path))
+            files.update(_scan_directory(entry, logical_path, excluded))
         elif stat.S_ISREG(value.st_mode):
             _contents, digest = _read_regular(entry, logical_path)
             files[logical_path] = digest
@@ -203,7 +213,11 @@ def _scan_directory(path: Path, prefix: str) -> dict[str, str]:
     return files
 
 
-def _manifest_for_claims(project_root: Path, claims: Sequence[str]) -> dict[str, str]:
+def _manifest_for_claims(
+    project_root: Path,
+    claims: Sequence[str],
+    excluded: frozenset[tuple[int, int]] = frozenset(),
+) -> dict[str, str]:
     _require_directory(project_root, "project root")
     manifest: dict[str, str] = {}
     for claim in claims:
@@ -214,8 +228,10 @@ def _manifest_for_claims(project_root: Path, claims: Sequence[str]) -> dict[str,
             continue
         if stat.S_ISLNK(entry.st_mode):
             raise TaskWorkspaceViolation(f"symlink is not allowed: {claim}")
+        if _is_excluded_directory(entry, excluded):
+            continue
         if stat.S_ISDIR(entry.st_mode):
-            scanned = _scan_directory(target, claim)
+            scanned = _scan_directory(target, claim, excluded)
         elif stat.S_ISREG(entry.st_mode):
             _contents, digest = _read_regular(target, claim)
             scanned = {claim: digest}
@@ -401,23 +417,27 @@ def _read_regular_at(parent_fd: int, name: str, logical_path: str) -> tuple[byte
         os.close(descriptor)
 
 
-def _scan_directory_fd(directory_fd: int, prefix: str) -> dict[str, tuple[str, int]]:
+def _scan_directory_fd(
+    directory_fd: int,
+    prefix: str,
+    excluded: frozenset[tuple[int, int]] = frozenset(),
+) -> dict[str, tuple[str, int]]:
     files: dict[str, tuple[str, int]] = {}
     try:
         names = sorted(os.listdir(directory_fd), key=os.fsencode)
     except OSError as error:
         raise TaskWorkspaceViolation(f"cannot enumerate directory: {prefix}") from error
     for name in names:
-        if name in _PRODUCT_RUNTIME_DIRS:
-            continue
         logical_path = f"{prefix}/{name}" if prefix else name
         entry = _stat_at(directory_fd, name, "directory entry")
+        if _is_excluded_directory(entry, excluded):
+            continue
         if stat.S_ISLNK(entry.st_mode):
             raise TaskWorkspaceViolation(f"symlink is not allowed: {logical_path}")
         if stat.S_ISDIR(entry.st_mode):
             child = _open_directory_at(directory_fd, name, "directory entry")
             try:
-                files.update(_scan_directory_fd(child, logical_path))
+                files.update(_scan_directory_fd(child, logical_path, excluded))
             finally:
                 os.close(child)
         elif stat.S_ISREG(entry.st_mode):
@@ -428,7 +448,11 @@ def _scan_directory_fd(directory_fd: int, prefix: str) -> dict[str, tuple[str, i
     return files
 
 
-def _manifest_for_claims_fd(root_fd: int, claims: Sequence[str]) -> dict[str, tuple[str, int]]:
+def _manifest_for_claims_fd(
+    root_fd: int,
+    claims: Sequence[str],
+    excluded: frozenset[tuple[int, int]] = frozenset(),
+) -> dict[str, tuple[str, int]]:
     manifest: dict[str, tuple[str, int]] = {}
     for claim in claims:
         try:
@@ -442,10 +466,12 @@ def _manifest_for_claims_fd(root_fd: int, claims: Sequence[str]) -> dict[str, tu
                 continue
             if stat.S_ISLNK(entry.st_mode):
                 raise TaskWorkspaceViolation(f"symlink is not allowed: {claim}")
+            if _is_excluded_directory(entry, excluded):
+                continue
             if stat.S_ISDIR(entry.st_mode):
                 child = _open_directory_at(parent, name, "claim target")
                 try:
-                    scanned = _scan_directory_fd(child, claim)
+                    scanned = _scan_directory_fd(child, claim, excluded)
                 finally:
                     os.close(child)
             elif stat.S_ISREG(entry.st_mode):
@@ -585,6 +611,12 @@ class TaskWorkspaceStore:
         self.receipts_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         _require_directory(self.attempts_root, "attempts root")
         _require_directory(self.receipts_root, "receipts root")
+        self._excluded_claim_identities = frozenset(
+            {
+                _directory_identity(self.attempts_root),
+                _directory_identity(self.receipts_root.parent),
+            }
+        )
         self._project_fd = _open_pinned_directory(self.project_root, "project root")
         self._attempts_fd = _open_pinned_directory(self.attempts_root, "attempts root")
         self._receipts_fd = _open_pinned_directory(self.receipts_root, "receipts root")
@@ -744,7 +776,11 @@ class TaskWorkspaceStore:
                 pass
             else:
                 raise TaskWorkspaceViolation("attempt write root exists without an authenticated identity")
-            baseline = _manifest_for_claims_fd(self._project_fd, claims)
+            baseline = _manifest_for_claims_fd(
+                self._project_fd,
+                claims,
+                self._excluded_claim_identities,
+            )
             baseline_files = tuple(
                 StagedFile(path=path, before_sha256=digest, before_mode=mode)
                 for path, (digest, mode) in sorted(baseline.items())
@@ -831,7 +867,11 @@ class TaskWorkspaceStore:
             raise TaskWorkspaceViolation("cannot authenticate promotion receipt") from error
 
     def _verify_target_baseline(self, identity: TaskWorkspaceIdentity) -> None:
-        current = _manifest_for_claims_fd(self._project_fd, identity.output_paths)
+        current = _manifest_for_claims_fd(
+            self._project_fd,
+            identity.output_paths,
+            self._excluded_claim_identities,
+        )
         expected = {file.path: (file.before_sha256, file.before_mode) for file in identity.baseline_files}
         if current != expected:
             raise TaskWorkspaceViolation("target drift since task workspace begin")

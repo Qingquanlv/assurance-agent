@@ -262,3 +262,28 @@ def test_ancestor_symlink_swap_cannot_redirect_baseline_or_staged_scan(
     with pytest.raises(TaskWorkspaceViolation):
         store.seal(binding.identity)
     assert staging_sentinel.read_bytes() == b"outside"
+
+
+def test_claim_scan_excludes_bound_roots_by_path_identity_not_directory_name(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    claimed = project / "claimed"
+    claimed.mkdir(parents=True)
+    (claimed / "visible.txt").write_bytes(b"keep")
+    decoy_runtime = claimed / ".runtime"
+    decoy_runtime.mkdir()
+    (decoy_runtime / "keep.txt").write_bytes(b"decoy")
+    attempts = claimed / "attempts-root"
+    attempts.mkdir()
+    (attempts / "skip.txt").write_bytes(b"attempts")
+    engine_root = claimed / "engine-root"
+    receipts = engine_root / "receipts"
+    receipts.mkdir(parents=True)
+    (engine_root / "skip.txt").write_bytes(b"runtime")
+
+    store = TaskWorkspaceStore(project, attempts, receipts)
+    binding = store.begin(task_id="claim-skip", attempt=1, output_paths=("claimed",))
+
+    assert {file.path for file in binding.identity.baseline_files} == {
+        "claimed/visible.txt",
+        "claimed/.runtime/keep.txt",
+    }
