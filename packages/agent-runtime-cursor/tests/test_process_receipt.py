@@ -37,6 +37,7 @@ def _agent_workspace() -> AgentWorkspaceV1:
     payload = {
         "schema_version": "1",
         "agent_profile": "assurance-v1-doc-author",
+        "scope_id": "CH-1",
         "write_root": _WRITE_ROOT,
         "allowed_outputs": _ALLOWED_OUTPUTS,
     }

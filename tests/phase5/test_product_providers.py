@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.plugin_api import ProviderSource
+from graph_engine.canonical import canonical_json_bytes
+from graph_engine.plugin_api import ProviderSource, ResourceClaimTemplate
 
 _SIX_CAPABILITY_DISTRIBUTIONS = frozenset(
     {
@@ -153,6 +156,48 @@ def test_providers_return_one_minimal_manifest_per_adapter():
     assert opencode.configuration == {}
     assert cursor.configuration == {}
     assert opencode.workflow == cursor.workflow
+
+
+def test_committed_product_declaration_bytes_match_canonical_documents() -> None:
+    import assurance_product.product as product
+    from assurance_product.product import product_declaration_document
+
+    package_root = Path(product.__file__).resolve().parent
+    expected_documents = (
+        ("product-declaration-opencode.json", product_declaration_document("opencode")),
+        ("product-declaration-cursor.json", product_declaration_document("cursor")),
+    )
+    for filename, document in expected_documents:
+        assert (package_root / filename).read_bytes() == canonical_json_bytes(document) + b"\n"
+
+
+def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> None:
+    from assurance_product.models import PREPARE_IDS, alias_ids_for_prepare
+    from assurance_product.output_routes import OutputRouteCatalog, execute_alias_for_prepare
+    from assurance_product.product import (
+        AssuranceCursorProductProvider,
+        AssuranceOpenCodeProductProvider,
+    )
+
+    change_id = "CH-CURRENT-001"
+    catalog = OutputRouteCatalog()
+    for provider in (AssuranceOpenCodeProductProvider, AssuranceCursorProductProvider):
+        manifest = provider.manifest()
+        assert manifest.workflow is not None
+        graph_nodes = {
+            node.capability: node
+            for graph in manifest.workflow.graphs.values()
+            for node in graph.nodes.values()
+            if node.capability is not None
+        }
+        for prepare_id in PREPARE_IDS:
+            _, execute_capability, _ = alias_ids_for_prepare(prepare_id)
+            resources = graph_nodes[execute_capability].resources
+            assert isinstance(resources, ResourceClaimTemplate)
+            assert resources.parameters == {"change_id": "/workspace/scope_id"}
+            assert resources.resolve({"workspace": {"scope_id": change_id}}).writes == catalog.outputs(
+                execute_alias_for_prepare(prepare_id), change_id
+            )
 
 
 def _runtime_source(adapter: str) -> ProviderSource:

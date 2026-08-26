@@ -156,6 +156,7 @@ def _workspace(*, agent_profile: str = _AGENT) -> AgentWorkspaceV1:
     payload = {
         "schema_version": "1",
         "agent_profile": agent_profile,
+        "scope_id": "CH-1",
         "write_root": _WRITE_ROOT,
         "allowed_outputs": [_ALLOWED],
     }

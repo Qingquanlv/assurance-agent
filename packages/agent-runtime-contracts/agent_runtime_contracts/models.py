@@ -21,6 +21,12 @@ from agent_runtime_contracts.schema import (
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _ROUTING_MARKERS = (",", ";", "|", "->", "fallback", "route:", "candidates")
+_NON_PORTABLE_SCOPE_CHARACTERS = frozenset('<>:"|?*')
+_NON_PORTABLE_SCOPE_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
 JSONValue = JsonValue
 
 
@@ -130,6 +136,23 @@ def _validate_project_relative_path(value: str) -> str:
     return value
 
 
+def _validate_scope_id(value: str) -> str:
+    basename = value.split(".", 1)[0].upper()
+    if (
+        not value
+        or value != value.strip()
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or value[-1] == "."
+        or basename in _NON_PORTABLE_SCOPE_NAMES
+        or any(character in _NON_PORTABLE_SCOPE_CHARACTERS for character in value)
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("scope_id must be one safe portable path component")
+    return value
+
+
 BoundedAgentProfile = Literal[
     "assurance-v1-archiver",
     "assurance-v1-doc-author",
@@ -144,6 +167,7 @@ BoundedAgentProfile = Literal[
 class AgentWorkspaceV1(FrozenModel):
     schema_version: Literal["1"] = "1"
     agent_profile: BoundedAgentProfile
+    scope_id: str
     write_root: str
     allowed_outputs: tuple[str, ...]
     identity_digest: str = Field(pattern=_SHA256_PATTERN)
@@ -152,6 +176,11 @@ class AgentWorkspaceV1(FrozenModel):
     @classmethod
     def _validate_write_root(cls, value: str) -> str:
         return _validate_project_relative_path(value)
+
+    @field_validator("scope_id")
+    @classmethod
+    def _scope_id(cls, value: str) -> str:
+        return _validate_scope_id(value)
 
     @field_validator("allowed_outputs")
     @classmethod

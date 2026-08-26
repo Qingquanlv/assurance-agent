@@ -105,11 +105,18 @@ def agent_workspace(
     *,
     allowed_outputs: tuple[str, ...],
     agent_profile: str,
+    scope_id: str,
 ) -> AgentWorkspaceV1:
-    write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
+    try:
+        write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
+    except ValueError:
+        write_root = "qa/changes/_attempt/.staging/write"
+    if write_root in {".", ""}:
+        write_root = ".staging/write"
     payload = {
         "schema_version": "1",
         "agent_profile": _BOUNDED_PROFILES.get(agent_profile, agent_profile),
+        "scope_id": scope_id,
         "write_root": write_root,
         "allowed_outputs": tuple(sorted(set(allowed_outputs))),
     }
@@ -376,6 +383,7 @@ def prepare_plan_outcome(
             context,
             allowed_outputs=allowed_outputs,
             agent_profile=binding.agent_profile,
+            scope_id=business.change_id,
         ),
         request_policy_digest=binding.request_policy_digest,
         request_config_digest=binding.request_config_digest,

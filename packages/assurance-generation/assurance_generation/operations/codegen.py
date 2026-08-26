@@ -331,6 +331,7 @@ def prepare_codegen_outcome(
             context,
             allowed_outputs=allowed_outputs,
             agent_profile=binding.agent_profile,
+            scope_id=plan.change_id,
         ),
         request_policy_digest=binding.request_policy_digest,
         request_config_digest=binding.request_config_digest,

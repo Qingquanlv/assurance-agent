@@ -77,6 +77,7 @@ def _workspace(
     payload = {
         "schema_version": "1",
         "agent_profile": agent_profile,
+        "scope_id": "CH-1",
         "write_root": write_root,
         "allowed_outputs": allowed_outputs,
     }
@@ -145,6 +146,31 @@ def test_agent_workspace_accepts_closed_bounded_agent_profiles(agent_profile: st
     assert workspace.agent_profile == agent_profile
     expected = canonical_digest(workspace.model_dump(mode="json", exclude={"identity_digest"}))
     assert workspace.identity_digest == expected
+
+
+def test_agent_workspace_authenticates_a_safe_opaque_scope_id() -> None:
+    payload = _workspace().model_dump(mode="json")
+    payload["scope_id"] = "CH-CURRENT-001"
+    payload.pop("identity_digest")
+    payload["identity_digest"] = canonical_digest(payload)
+
+    workspace = AgentWorkspaceV1.model_validate(payload)
+
+    assert workspace.scope_id == "CH-CURRENT-001"
+    assert workspace.identity_digest == canonical_digest(
+        workspace.model_dump(mode="json", exclude={"identity_digest"})
+    )
+
+
+@pytest.mark.parametrize("scope_id", ["", ".", "..", "scope/id", "scope\\id", "scope ", "scope.", "NUL"])
+def test_agent_workspace_rejects_unsafe_scope_ids(scope_id: str) -> None:
+    payload = _workspace().model_dump(mode="json")
+    payload["scope_id"] = scope_id
+    payload.pop("identity_digest")
+    payload["identity_digest"] = canonical_digest(payload)
+
+    with pytest.raises(ValidationError, match="scope"):
+        AgentWorkspaceV1.model_validate(payload)
 
 
 @pytest.mark.parametrize(

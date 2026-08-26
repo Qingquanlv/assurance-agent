@@ -184,6 +184,22 @@ class _CompletingScriptedHost(_ScriptedTaskHost):
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
         outcome = self._outcome(call.request.capability_id)
+        if call.request.capability_id.startswith(
+            "assurance.product.agent."
+        ) and call.request.capability_id.endswith(".prepare"):
+            input_value = call.request.input
+            if not isinstance(input_value, Mapping) or not isinstance(input_value.get("change_id"), str):
+                raise AssertionError("scripted agent prepare requires a change_id")
+            if not isinstance(outcome.output, Mapping):
+                raise AssertionError("scripted agent prepare requires an object output")
+            outcome = outcome.model_copy(
+                update={
+                    "output": {
+                        **outcome.output,
+                        "workspace": {"scope_id": input_value["change_id"]},
+                    }
+                }
+            )
         ledger = self._invocation_ledger(call.identity.invocation_id)
         if call.activity_rpc.activity_id is not None and ledger is not None:
             port = LedgerTaskActivityPort(ledger=ledger, identity=call.activity_rpc)

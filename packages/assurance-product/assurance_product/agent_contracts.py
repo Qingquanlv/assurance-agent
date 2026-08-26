@@ -34,7 +34,7 @@ def _contract(
         skill_id=skill_id,
         agent_profile=agent_profile,
         resources=ResourceClaimTemplate(
-            parameters={"change_id": "/change_id"},
+            parameters={"change_id": "/workspace/scope_id"},
             reads=("qa",),
             writes=writes,
         ),
