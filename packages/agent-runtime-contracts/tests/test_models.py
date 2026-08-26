@@ -14,6 +14,7 @@ from agent_runtime_contracts import (
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
+    rebind_agent_run_workspace,
 )
 from agent_runtime_contracts.schema import canonical_digest
 
@@ -270,6 +271,47 @@ def test_agent_workspace_identity_digest_is_stable_and_authenticated() -> None:
         AgentWorkspaceV1.model_validate(drifted)
     different = _workspace(write_root="qa/changes/CH-1/.staging/task-1/attempt-2")
     assert different.identity_digest != first.identity_digest
+
+
+def test_rebind_agent_run_workspace_uses_current_stage_and_preserves_authority(
+    tmp_path: Path,
+) -> None:
+    original = _request()
+    project_root = tmp_path / "project"
+    write_root = project_root / "qa/changes/CH-1/.staging/execute-task/attempt-1"
+    write_root.mkdir(parents=True)
+
+    effective = rebind_agent_run_workspace(
+        original,
+        project_root=project_root,
+        write_root=write_root,
+    )
+
+    assert original.workspace.write_root == "qa/changes/CH-1/.staging/task-1/attempt-1"
+    assert effective.workspace.write_root == "qa/changes/CH-1/.staging/execute-task/attempt-1"
+    assert effective.workspace.agent_profile == original.workspace.agent_profile
+    assert effective.workspace.scope_id == original.workspace.scope_id
+    assert effective.workspace.allowed_outputs == original.workspace.allowed_outputs
+    assert effective.workspace.identity_digest == canonical_digest(
+        effective.workspace.model_dump(mode="json", exclude={"identity_digest"})
+    )
+    assert effective.model_dump(mode="json", exclude={"workspace"}) == original.model_dump(
+        mode="json", exclude={"workspace"}
+    )
+
+
+def test_rebind_agent_run_workspace_rejects_stage_outside_project(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with pytest.raises(ValueError, match="inside project_root"):
+        rebind_agent_run_workspace(
+            _request(),
+            project_root=project_root,
+            write_root=outside,
+        )
 
 
 def test_instruction_part_permits_exactly_one_text_or_json_form() -> None:

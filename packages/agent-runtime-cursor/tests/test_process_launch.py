@@ -349,6 +349,33 @@ async def test_launch_identity_binds_project_and_stage_roots(tmp_path: Path) -> 
     )
 
 
+async def test_cursor_rebinds_prepare_workspace_to_current_execute_workspace(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    prepare_root = project / _WRITE_ROOT
+    execute_root = project / "qa/changes/CH-1/.staging/execute-task/attempt-1"
+    prepare_root.mkdir(parents=True)
+    execute_root.mkdir(parents=True)
+    config = _config(tmp_path)
+    host = FakeConfinedProcessHost()
+    original = _agent_run(workspace=_agent_workspace())
+    context = _context(project, write_root=execute_root)
+    request = _request(config=config, agent_run=original)
+    handler = CursorHandler(host)
+
+    await handler.execute(request, context)
+
+    dispatched = AgentRunRequest.model_validate_json(host.launches[0].stdin)
+    assert original.workspace.write_root == _WRITE_ROOT
+    assert dispatched.workspace.write_root == execute_root.relative_to(project).as_posix()
+    assert host.launches[0].request_digest == canonical_digest(dispatched.model_dump(mode="json"))
+    assert context.activity is not None
+    reconciled = await handler.reconcile(request, context, context.activity.snapshot)
+    assert reconciled.status == "terminal"
+    canceled = await handler.cancel(request, context, context.activity.snapshot)
+    assert canceled.status == "terminal"
+
+
 async def test_launch_rejects_digest_mismatch_before_spawn(tmp_path: Path) -> None:
     host = FakeConfinedProcessHost()
     config = _config(tmp_path, executable_digest="e" * 64)

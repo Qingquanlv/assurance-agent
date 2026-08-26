@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest
+from agent_runtime_contracts import AgentRunRequest, rebind_agent_run_workspace
 from agent_runtime_contracts.schema import canonical_digest, reject_credentials_in_digest_input, thaw_json
 from graph_engine import TaskActivityProtocolViolation
 from graph_engine.plugin_api import (
@@ -84,7 +84,16 @@ class CursorHandler:
         if activity.activity_id != port.snapshot.activity_id:
             return self._indeterminate("activity snapshot does not match the live port")
         try:
-            return await self._reconcile_process(request, context, config, activity, allow_spawn=False)
+            result = await self._reconcile_process(
+                request,
+                context,
+                config,
+                activity,
+                allow_spawn=False,
+            )
+            if isinstance(result, TaskOutcome):
+                return TaskActivityReconcileResult(status="terminal", outcome=result)
+            return result
         except (
             CursorProtocolError,
             TaskActivityProtocolViolation,
@@ -113,6 +122,7 @@ class CursorHandler:
                 reason="activity snapshot does not match the live port",
             )
         try:
+            agent_run = self._effective_agent_run(request, context)
             receipt = CursorProcessReceipt.model_validate(thaw_json(activity.reference))
             host.authenticate(receipt)
             if receipt.workspace_identity_digest != workspace_identity_digest_for(context):
@@ -146,7 +156,14 @@ class CursorHandler:
             return TaskActivityCancelResult(status="acknowledged")
         terminal = await host.wait(receipt)
         try:
-            outcome = self._outcome_from_terminal(request, context, config, receipt, terminal)
+            outcome = self._outcome_from_terminal(
+                request,
+                context,
+                config,
+                receipt,
+                terminal,
+                agent_run=agent_run,
+            )
         except (CursorProtocolError, ValidationError, ValueError):
             return TaskActivityCancelResult(
                 status="indeterminate",
@@ -167,7 +184,7 @@ class CursorHandler:
         if port is None:
             raise ValueError("activity port is required")
         snapshot = port.snapshot
-        agent_run = AgentRunRequest.model_validate(thaw_json(request.input))
+        agent_run = self._effective_agent_run(request, context)
         mismatch = self._identity_mismatch(request, context, snapshot, agent_run)
         if mismatch is not None:
             if allow_spawn:
@@ -225,7 +242,14 @@ class CursorHandler:
         port.bind(cast(JSONValue, receipt_payload))
         context.heartbeat()
         terminal = await host.wait(process.receipt)
-        outcome = self._outcome_from_terminal(request, context, config, process.receipt, terminal)
+        outcome = self._outcome_from_terminal(
+            request,
+            context,
+            config,
+            process.receipt,
+            terminal,
+            agent_run=agent_run,
+        )
         return TaskActivityReconcileResult(
             status="terminal",
             reference=cast(JSONValue, receipt_payload),
@@ -242,7 +266,6 @@ class CursorHandler:
         *,
         allow_spawn: bool,
     ) -> TaskActivityReconcileResult:
-        del agent_run
         host = self._require_host(context)
         try:
             receipt = CursorProcessReceipt.model_validate(thaw_json(snapshot.reference))
@@ -252,15 +275,22 @@ class CursorHandler:
                 self._redacted_reason(error, context, config) or "process receipt does not match this host",
                 allow_spawn,
             )
-        if receipt.request_digest != canonical_digest(
-            AgentRunRequest.model_validate(thaw_json(request.input)).model_dump(mode="json")
-        ):
+        if receipt.request_digest != canonical_digest(agent_run.model_dump(mode="json")):
             return self._blocked("request identity drifted", allow_spawn)
         if receipt.workspace_identity_digest != workspace_identity_digest_for(context):
             return self._blocked("workspace identity drifted", allow_spawn)
         durable = host.read_durable_terminal(receipt)
         if durable is not None:
-            return self._promote_or_block(request, context, config, receipt, durable, snapshot, allow_spawn)
+            return self._promote_or_block(
+                request,
+                context,
+                config,
+                receipt,
+                durable,
+                snapshot,
+                allow_spawn,
+                agent_run=agent_run,
+            )
         try:
             observation = await host.observe(receipt)
         except TaskActivityProtocolViolation as error:
@@ -273,7 +303,16 @@ class CursorHandler:
         if observation.status != "exited" or observation.exit_code is None:
             return self._blocked("unknown process state", allow_spawn)
         terminal = await host.wait(receipt)
-        return self._promote_or_block(request, context, config, receipt, terminal, snapshot, allow_spawn)
+        return self._promote_or_block(
+            request,
+            context,
+            config,
+            receipt,
+            terminal,
+            snapshot,
+            allow_spawn,
+            agent_run=agent_run,
+        )
 
     def _promote_or_block(
         self,
@@ -284,9 +323,18 @@ class CursorHandler:
         terminal: HostTerminalResult,
         snapshot: TaskActivitySnapshot,
         allow_spawn: bool,
+        *,
+        agent_run: AgentRunRequest,
     ) -> TaskActivityReconcileResult:
         try:
-            outcome = self._outcome_from_terminal(request, context, config, receipt, terminal)
+            outcome = self._outcome_from_terminal(
+                request,
+                context,
+                config,
+                receipt,
+                terminal,
+                agent_run=agent_run,
+            )
         except CursorProtocolError as error:
             return self._blocked(self._redacted_reason(error, context, config), allow_spawn)
         return TaskActivityReconcileResult(
@@ -302,8 +350,9 @@ class CursorHandler:
         config: CursorAdapterConfig,
         receipt: CursorProcessReceipt,
         terminal: HostTerminalResult,
+        *,
+        agent_run: AgentRunRequest,
     ) -> TaskOutcome:
-        agent_run = AgentRunRequest.model_validate(thaw_json(request.input))
         canaries = self._canaries(context, config)
         _ = stderr_projection(terminal.stderr, canaries=canaries)
         parsed = parse_stream(
@@ -401,6 +450,14 @@ class CursorHandler:
         if self._host is not None:
             return self._host
         return production_process_host(context.write_root.parent)
+
+    @staticmethod
+    def _effective_agent_run(request: TaskRequest, context: TaskContext) -> AgentRunRequest:
+        return rebind_agent_run_workspace(
+            AgentRunRequest.model_validate(thaw_json(request.input)),
+            project_root=context.project_root,
+            write_root=context.write_root,
+        )
 
     @staticmethod
     def _configuration_outcome(message: str) -> TaskOutcome:

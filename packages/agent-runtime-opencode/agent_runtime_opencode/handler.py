@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest
+from agent_runtime_contracts import AgentRunRequest, rebind_agent_run_workspace
 from agent_runtime_contracts.schema import canonical_digest, reject_credentials_in_digest_input, thaw_json
 from graph_engine.plugin_api import (
     SecretHandleUnauthorized,
@@ -142,7 +142,10 @@ class OpenCodeHandler:
                 status="indeterminate",
                 reason="activity snapshot does not match the live port",
             )
-        return await self._reconcile_session(request, context, config, allow_create=False)
+        result = await self._reconcile_session(request, context, config, allow_create=False)
+        if isinstance(result, TaskOutcome):
+            return TaskActivityReconcileResult(status="terminal", outcome=result)
+        return result
 
     async def cancel(
         self,
@@ -167,6 +170,7 @@ class OpenCodeHandler:
         mismatch = self._identity_mismatch(request, context, port.snapshot)
         if mismatch is not None:
             return TaskActivityCancelResult(status="indeterminate", reason=mismatch)
+        agent_run = self._effective_agent_run(request, context)
         secret = context.secrets.resolve(config.secret_handle)
         client = OpenCodeHttpClient(
             config,
@@ -176,7 +180,7 @@ class OpenCodeHandler:
         try:
             context.heartbeat()
             fingerprint = await self._observe_fingerprint(client, config, secret)
-            expected = self._expected_reference_fields(request, port.snapshot, fingerprint)
+            expected = self._expected_reference_fields(request, port.snapshot, fingerprint, agent_run)
             bound = await self._load_bound_session(client, port.snapshot, expected)
             if isinstance(bound, TaskActivityReconcileResult):
                 return TaskActivityCancelResult(
@@ -186,7 +190,13 @@ class OpenCodeHandler:
             reference, record = bound
             canaries = _secret_canaries(secret)
             observed = await self._observe_bound(
-                client, request, context, reference, record, canaries=canaries
+                client,
+                request,
+                context,
+                reference,
+                record,
+                agent_run=agent_run,
+                canaries=canaries,
             )
             if observed.status == "terminal":
                 if observed.outcome is None:
@@ -204,7 +214,13 @@ class OpenCodeHandler:
             deadline = time.monotonic() + config.cancel_timeout_seconds
             while True:
                 raced = await self._observe_bound(
-                    client, request, context, reference, record, canaries=canaries
+                    client,
+                    request,
+                    context,
+                    reference,
+                    record,
+                    agent_run=agent_run,
+                    canaries=canaries,
                 )
                 if raced.status == "terminal":
                     if raced.outcome is None:
@@ -248,6 +264,7 @@ class OpenCodeHandler:
             if allow_create:
                 raise ValueError(mismatch)
             return TaskActivityReconcileResult(status="indeterminate", reason=mismatch)
+        agent_run = self._effective_agent_run(request, context)
         secret = context.secrets.resolve(config.secret_handle)
         canaries = _secret_canaries(secret)
         client = OpenCodeHttpClient(
@@ -259,10 +276,16 @@ class OpenCodeHandler:
             context.heartbeat()
             fingerprint = await self._observe_fingerprint(client, config, secret)
             dispatch_fingerprint = _dispatch_fingerprint(fingerprint, context)
-            expected = self._expected_reference_fields(request, snapshot, fingerprint)
+            expected = self._expected_reference_fields(request, snapshot, fingerprint, agent_run)
             if snapshot.reference is not None:
                 return await self._reconcile_bound(
-                    client, request, context, snapshot, expected, canaries=canaries
+                    client,
+                    request,
+                    context,
+                    snapshot,
+                    expected,
+                    agent_run=agent_run,
+                    canaries=canaries,
                 )
             if snapshot.state == "prepared" and not allow_create:
                 return await self._reconcile_prepared(
@@ -270,7 +293,7 @@ class OpenCodeHandler:
                 )
             was_prepared = snapshot.state == "prepared"
             snapshot = port.mark_dispatch_started(dispatch_fingerprint)
-            expected = self._expected_reference_fields(request, snapshot, fingerprint)
+            expected = self._expected_reference_fields(request, snapshot, fingerprint, agent_run)
             return await self._discover_or_create(
                 client,
                 port,
@@ -278,6 +301,7 @@ class OpenCodeHandler:
                 context,
                 snapshot,
                 expected,
+                agent_run=agent_run,
                 allow_create=allow_create and was_prepared,
             )
         except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
@@ -325,6 +349,7 @@ class OpenCodeHandler:
         snapshot: TaskActivitySnapshot,
         expected: dict[str, str],
         *,
+        agent_run: AgentRunRequest,
         allow_create: bool,
     ) -> TaskActivityReconcileResult:
         sessions = await self._list_sessions(client)
@@ -342,7 +367,15 @@ class OpenCodeHandler:
         if len(matches) == 1:
             return self._bind_match(port, matches[0], expected)
         if allow_create:
-            return await self._create_and_bind(client, port, request, context, metadata, expected)
+            return await self._create_and_bind(
+                client,
+                port,
+                request,
+                context,
+                metadata,
+                expected,
+                agent_run=agent_run,
+            )
         return TaskActivityReconcileResult(
             status="indeterminate",
             reason="pending observation after ambiguous create",
@@ -356,11 +389,13 @@ class OpenCodeHandler:
         context: TaskContext,
         metadata: OpenCodeDiscoveryMetadata,
         expected: dict[str, str],
+        *,
+        agent_run: AgentRunRequest,
     ) -> TaskActivityReconcileResult:
         body = OpenCodeSessionCreateRequest(
             title=f"aa:{metadata.activity_id}",
             metadata=metadata,
-            agent=self._binding_agent_profile(request),
+            agent=agent_run.workspace.agent_profile,
         )
         payload = body.model_dump(mode="json")
         if "id" in payload or "parentID" in payload:
@@ -368,7 +403,7 @@ class OpenCodeHandler:
         record = await client.create_session(payload)
         session_id = record.get("id") if isinstance(record, dict) else None
         if isinstance(session_id, str) and session_id:
-            stamped = await self._stamp_workspace_binding(client, request, context, session_id)
+            stamped = await self._stamp_workspace_binding(client, agent_run, context, session_id)
             if stamped is not None:
                 self._bind_match(port, record, expected)
                 return stamped
@@ -382,6 +417,7 @@ class OpenCodeHandler:
         snapshot: TaskActivitySnapshot,
         expected: dict[str, str],
         *,
+        agent_run: AgentRunRequest,
         canaries: tuple[str, ...],
     ) -> TaskActivityReconcileResult:
         bound = await self._load_bound_session(client, snapshot, expected)
@@ -394,13 +430,21 @@ class OpenCodeHandler:
                 status="indeterminate",
                 reason="bound session identity is unknown",
             )
-        stamped = await self._stamp_workspace_binding(client, request, context, session_id)
+        stamped = await self._stamp_workspace_binding(client, agent_run, context, session_id)
         if stamped is not None:
             return stamped
-        admitted = await self._admit_prompt(client, request, reference)
+        admitted = await self._admit_prompt(client, agent_run, reference)
         if admitted is not None:
             return admitted
-        return await self._observe_bound(client, request, context, reference, record, canaries=canaries)
+        return await self._observe_bound(
+            client,
+            request,
+            context,
+            reference,
+            record,
+            agent_run=agent_run,
+            canaries=canaries,
+        )
 
     async def _load_bound_session(
         self,
@@ -459,27 +503,23 @@ class OpenCodeHandler:
             )
         return reference, record
 
-    def _binding_agent_profile(self, request: TaskRequest) -> str:
-        return agent_run_from_request(request).workspace.agent_profile
-
     async def _stamp_workspace_binding(
         self,
         client: OpenCodeHttpClient,
-        request: TaskRequest,
+        agent_run: AgentRunRequest,
         context: TaskContext,
         session_id: str,
     ) -> TaskActivityReconcileResult | None:
-        agent_run = agent_run_from_request(request)
         try:
             title = workspace_binding_title(
                 context,
                 agent_run.workspace,
                 session_id,
             )
-            agent = self._binding_agent_profile(request)
+            agent = agent_run.workspace.agent_profile
             record = await client.get_session(session_id)
-            if not isinstance(record, dict) or record.get("title") != title or record.get("agent") != agent:
-                await client.update_session(session_id, {"title": title, "agent": agent})
+            if not isinstance(record, dict) or record.get("title") != title:
+                await client.update_session(session_id, {"title": title})
                 record = await client.get_session(session_id)
             if not isinstance(record, dict) or record.get("title") != title or record.get("agent") != agent:
                 raise ValueError("workspace binding title is missing or invalid")
@@ -493,7 +533,7 @@ class OpenCodeHandler:
     async def _admit_prompt(
         self,
         client: OpenCodeHttpClient,
-        request: TaskRequest,
+        agent_run: AgentRunRequest,
         reference: OpenCodeActivityReference,
     ) -> TaskActivityReconcileResult | None:
         session_id = reference.session_id
@@ -502,7 +542,6 @@ class OpenCodeHandler:
                 status="indeterminate",
                 reason="bound session identity is unknown",
             )
-        agent_run = agent_run_from_request(request)
         expected_body = prompt_admission_body(agent_run, reference.expected_message_id)
         try:
             record = await client.get_message(session_id, reference.expected_message_id)
@@ -538,6 +577,7 @@ class OpenCodeHandler:
         reference: OpenCodeActivityReference,
         record: dict[str, Any],
         *,
+        agent_run: AgentRunRequest,
         canaries: tuple[str, ...],
     ) -> TaskActivityReconcileResult:
         session_id = reference.session_id
@@ -622,7 +662,6 @@ class OpenCodeHandler:
                 status="indeterminate",
                 reason=str(error) or "provider observation is indeterminate",
             )
-        agent_run = agent_run_from_request(request)
         return TaskActivityReconcileResult(
             status="terminal",
             reference=dumped,
@@ -671,13 +710,13 @@ class OpenCodeHandler:
         request: TaskRequest,
         snapshot: TaskActivitySnapshot,
         fingerprint: dict[str, Any],
+        agent_run: AgentRunRequest,
     ) -> dict[str, str]:
         metadata = discovery_metadata(
             request=request,
             snapshot=snapshot,
             adapter_source_digest=adapter_source_digest(),
         )
-        agent_run = agent_run_from_request(request)
         return {
             "profile_identity_digest": canonical_digest(fingerprint),
             "metadata_match_digest": metadata_match_digest(metadata),
@@ -719,6 +758,14 @@ class OpenCodeHandler:
         except ValidationError:
             return "frozen request is invalid"
         return None
+
+    @staticmethod
+    def _effective_agent_run(request: TaskRequest, context: TaskContext) -> AgentRunRequest:
+        return rebind_agent_run_workspace(
+            agent_run_from_request(request),
+            project_root=context.project_root,
+            write_root=context.write_root,
+        )
 
     async def _observe_fingerprint(
         self,

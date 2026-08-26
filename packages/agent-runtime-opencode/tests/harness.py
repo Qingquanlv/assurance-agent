@@ -433,7 +433,10 @@ def _bound_fixture(
     fixture.fake.terminal_mode = terminal_mode  # type: ignore[assignment]
     fixture.fake.sse_mode = sse_mode  # type: ignore[assignment]
     fixture.fake.omit_status = omit_status
-    session = fixture.fake.add_session(metadata=fixture.metadata)
+    session = fixture.fake.add_session(
+        metadata=fixture.metadata,
+        agent=agent_run_from_request(fixture.request).workspace.agent_profile,
+    )
     session_id = str(session["id"])
     fixture.bind_session(session_id)
     if existing_message_body is not None:
