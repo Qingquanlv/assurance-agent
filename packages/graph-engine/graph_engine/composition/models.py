@@ -848,8 +848,10 @@ def _schema_dialect_from_content(content: bytes) -> str | None:
     document = _schema_document_from_content(content)
     if not isinstance(document, dict):
         return None
-    dialect = document.get("$schema")
-    if dialect is not None and not isinstance(dialect, str):
+    if "$schema" not in document:
+        return None
+    dialect = document["$schema"]
+    if not isinstance(dialect, str):
         raise ValueError("schema entry dialect must be text")
     return dialect
 

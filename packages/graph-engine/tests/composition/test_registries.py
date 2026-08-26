@@ -828,6 +828,51 @@ def test_registry_rejects_unsupported_keyword_only_for_effect_schema() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        b'{"$defs":null}',
+        b'{"$ref":null}',
+        b'{"additionalProperties":null}',
+        b'{"anyOf":null}',
+        b'{"enum":null}',
+        b'{"items":null}',
+        b'{"minItems":null}',
+        b'{"minLength":null}',
+        b'{"minimum":null}',
+        b'{"pattern":null}',
+        b'{"properties":null}',
+        b'{"required":null}',
+        b'{"title":null}',
+        b'{"type":null}',
+        b'{"type":["string"]}',
+    ),
+)
+def test_registry_rejects_malformed_effect_schema_keyword_values(content: bytes) -> None:
+    contribution = PluginContribution(
+        schemas=(
+            SchemaContribution("toy.runtime.intent", "application/schema+json", content),
+            SchemaContribution("toy.runtime.receipt", "application/schema+json", b"{}"),
+        ),
+        effects=(
+            EffectRegistration(
+                "toy.runtime.audit",
+                "toy.runtime.intent",
+                "toy.runtime.receipt",
+                _EffectHandler(),
+                EffectPolicy(max_attempts=1, timeout_seconds=1, backoff_seconds=0),
+            ),
+        ),
+    )
+
+    with pytest.raises(RegistryConflict, match="closed runtime subset"):
+        build_registries(
+            (_source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),),
+            (contribution,),
+            ("toy.runtime",),
+        )
+
+
 def test_schema_entries_require_schema_media_and_valid_json() -> None:
     for schema in (
         SchemaContribution("toy.runtime.schema", "application/json", b"{}"),

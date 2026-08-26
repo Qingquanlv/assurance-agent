@@ -66,6 +66,16 @@ def test_product_schema_entry_accepts_standard_rich_keywords() -> None:
     assert entry.content == schema
 
 
+def test_schema_entry_rejects_present_null_dialect() -> None:
+    with pytest.raises(ValueError, match="schema entry dialect must be text"):
+        SchemaEntry.from_content(
+            schema_id="phase.six.null-dialect",
+            owner_id="phase.six",
+            media_type="application/schema+json",
+            content=b'{"$schema":null}',
+        )
+
+
 def test_closed_schema_accepts_declared_standard_dialects() -> None:
     schema = b'{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"string"}'
 

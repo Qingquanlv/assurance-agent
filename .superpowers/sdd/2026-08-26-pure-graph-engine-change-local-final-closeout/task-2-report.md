@@ -185,3 +185,42 @@ bash scripts/graph_engine_smoke_test.sh
 Result: `graph-engine smoke test: OK`. The emitted wheel inventory explicitly
 contains `graph_engine/json_schema.py`, and isolated Toy A/Toy B execution
 remains terminally successful.
+
+## Independent Review Fix Round 2 — Reject Malformed Closed-Schema Values
+
+Independent review found that closed-schema validation conflated an absent
+keyword with a present JSON `null`. It also performed closed-set membership on
+`type` before proving the value was text, so `{"type":["string"]}` leaked a
+`TypeError`; `{"enum":null}` could reach an `AssertionError` in matching.
+`SchemaEntry` had the same absence/null ambiguity for `$schema`.
+
+The validator now branches on keyword presence for every supported keyword and
+validates the exact value type/shape before matching. `const:null` and
+`default:null` remain legal JSON values. Schema keyword, `$defs`, and
+`properties` keys must be text; `const`, `default`, and `enum` members must be
+finite acyclic JSON values; direct cyclic schema objects fail closed. Large JSON
+integers remain valid without conversion to float. The matcher contains no
+assertions and keeps defensive `ValueError` guards behind the public validator.
+
+RED command:
+
+```console
+uv run pytest -q \
+  packages/graph-engine/tests/runtime/test_json_schema.py::test_closed_runtime_schema_rejects_present_malformed_keyword_values \
+  packages/graph-engine/tests/composition/test_registries.py::test_registry_rejects_malformed_effect_schema_keyword_values \
+  tests/phase6/test_phase2_invariant_reconciliation.py::test_schema_entry_rejects_present_null_dialect
+```
+
+Result: `32 failed`. The failures included silent acceptance, the reviewed
+`unhashable type: 'list'`, and an `AssertionError`. A separate arbitrary-
+precision `minimum` regression also reproduced an `OverflowError` before the
+finite-number check was restricted to floats.
+
+Targeted GREEN result: `42 passed, 1 warning` for malformed runtime values,
+effect-registry publication, null dialect, legal null const/default, direct
+object cycles, and arbitrary-precision integer minimum.
+
+Final focused verification (Phase 6 reconciliation, effects, runtime schema,
+all graph composition tests, and both installed Assurance composition nodes):
+`469 passed, 1 warning`. Ruff check, Ruff format check, and Pyright also passed
+for every fix-owned Python file.
