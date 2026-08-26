@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import cast
 
 import pytest
+import yaml
 
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import canonical_json_bytes
-from tests.phase4.conformance import execute_task
+from tests.phase5.test_change_local_output_routing import dual_roots, execute_task
 
 from assurance_generation.operations.codegen import (
     CodegenFinalizeHandler,
@@ -27,13 +29,26 @@ from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     fake_agent_result,
 )
 from planning_fixtures import BINDING as PLAN_BINDING  # pyright: ignore[reportMissingImports]
+from planning_fixtures import VALID_LEAFS, reviewed_cases  # pyright: ignore[reportMissingImports]
+
+CHANGE_ID = "CH-DEMO-001"
 
 
-def _write_generated(tmp_path: Path, relative: str, content: bytes = b"test\n") -> str:
-    path = tmp_path / relative
+def _staged_path(family: str, target: str, change_id: str = CHANGE_ID) -> str:
+    return f"qa/changes/{change_id}/generated/{family}/files/{target}"
+
+
+def _write_generated(root: Path, family: str, target: str, content: bytes = b"test\n") -> str:
+    path = root.joinpath(*_staged_path(family, target).split("/"))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     return f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+
+def _write_reviewed_cases(tmp_path: Path, family: str) -> None:
+    path = tmp_path / "qa/changes/CH-DEMO-001/cases/items/case.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(reviewed_cases(family), sort_keys=False), encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -58,6 +73,22 @@ async def test_codegen_prepare_is_deterministic_for_every_family(family: str, tm
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
+async def test_codegen_prepare_accepts_product_artifact_lock(family: str, tmp_path: Path) -> None:
+    payload = codegen_input(family)
+    payload["artifact_paths"] = ["qa/archive", "qa/cases", "qa/changes", "tests"]
+
+    prepared = await execute_task(
+        codegen_prepare_handler(family),
+        payload,
+        tmp_path,
+        binding_data=PLAN_BINDING,
+    )
+
+    assert prepared.status == "succeeded"
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
 async def test_codegen_prepare_uses_reviewed_plan_and_baseline(family: str, tmp_path: Path) -> None:
     prepared = await execute_task(
         codegen_prepare_handler(family),
@@ -70,6 +101,7 @@ async def test_codegen_prepare_uses_reviewed_plan_and_baseline(family: str, tmp_
     assert len(request.instructions) == 5
     skill, persona, plan, cases, context = request.instructions
     assert f"{family} codegen" in (skill.text_content or "").lower()
+    assert f"qa/changes/<change-id>/generated/{family}/files/" in (skill.text_content or "")
     assert "test-author persona" in (persona.text_content or "").lower()
     assert plan.media_type == "application/json"
     assert cases.media_type == "application/json"
@@ -78,19 +110,57 @@ async def test_codegen_prepare_uses_reviewed_plan_and_baseline(family: str, tmp_
     context_payload = cast(dict[str, object], context.json_content)
     assert plan_payload["family"] == family
     assert context_payload["baseline_tree_id"] == "0" * 64
+    assert context_payload["generated_files_root"] == (f"qa/changes/CH-DEMO-001/generated/{family}/files")
     encoded = request.canonical_bytes().decode("utf-8").lower()
     assert "opencode" not in encoded
     assert "cursor" not in encoded
     assert "assurance_agent" not in encoded
 
+    schema = request.result_contract.schema_document
+    assert schema is not None
+    properties = cast(dict[str, object], schema["properties"])
+    assert "needs_fix" not in properties
+    files_schema = cast(dict[str, object], properties["files"])
+    assert files_schema["minItems"] == 1
+    definitions = cast(dict[str, object], schema["$defs"])
+    file_definition = cast(dict[str, object], definitions["CodegenGeneratedFileAuthoring"])
+    file_properties = cast(dict[str, object], file_definition["properties"])
+    assert "content_sha256" not in file_properties
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_codegen_prepare_hydrates_missing_business_input_from_workspace(
+    family: str, tmp_path: Path
+) -> None:
+    _write_reviewed_cases(tmp_path, family)
+    prepared = await execute_task(
+        codegen_prepare_handler(family),
+        {
+            "change_id": "CH-DEMO-001",
+            "capability_leafs": list(VALID_LEAFS),
+        },
+        tmp_path,
+        binding_data=PLAN_BINDING,
+    )
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    plan = cast(dict[str, object], request.instructions[2].json_content)
+    context = cast(dict[str, object], request.instructions[4].json_content)
+    assert plan["family"] == family
+    assert plan["case_ids"] == (f"TC_{family.upper()}_001",)
+    assert "baseline_tree_id" not in context
+
 
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_empty_files_when_mapping_is_live(tmp_path: Path) -> None:
-    _write_generated(tmp_path, "tests/api/test_users.py")
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, "api", "tests/api/test_users.py")
     executed = await execute_task(
         codegen_finalize_handler("api"),
         fake_agent_result(codegen_result(files=[])),
-        tmp_path,
+        project,
+        write_root=write_root,
     )
     assert executed.status == "failed"
     assert executed.failure is not None
@@ -102,8 +172,9 @@ async def test_codegen_finalize_rejects_empty_files_when_mapping_is_live(tmp_pat
 async def test_codegen_finalize_rejects_partial_mapping_listing(tmp_path: Path) -> None:
     first = "tests/api/test_users.py"
     second = "tests/api/test_orders.py"
-    _write_generated(tmp_path, first)
-    _write_generated(tmp_path, second)
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, "api", first)
+    _write_generated(write_root, "api", second)
     payload = codegen_result(files=[first])
     payload["mapping"]["entries"] = [
         payload["mapping"]["entries"][0],
@@ -116,7 +187,8 @@ async def test_codegen_finalize_rejects_partial_mapping_listing(tmp_path: Path) 
     executed = await execute_task(
         codegen_finalize_handler("api"),
         fake_agent_result(payload),
-        tmp_path,
+        project,
+        write_root=write_root,
     )
     assert executed.status == "failed"
     assert executed.failure is not None
@@ -128,8 +200,9 @@ async def test_codegen_finalize_rejects_partial_mapping_listing(tmp_path: Path) 
 async def test_codegen_finalize_keeps_support_as_extra_hashed_entry(tmp_path: Path) -> None:
     mapped = family_test_file("api")
     support = "tests/api/conftest.py"
-    mapped_digest = _write_generated(tmp_path, mapped)
-    support_digest = _write_generated(tmp_path, support, b"fixture\n")
+    project, write_root = dual_roots(tmp_path)
+    mapped_digest = _write_generated(write_root, "api", mapped)
+    support_digest = _write_generated(write_root, "api", support, b"fixture\n")
     payload = codegen_result(files=[mapped])
     payload["files"].append(
         {
@@ -142,7 +215,8 @@ async def test_codegen_finalize_keeps_support_as_extra_hashed_entry(tmp_path: Pa
     executed = await execute_task(
         codegen_finalize_handler("api"),
         fake_agent_result(payload),
-        tmp_path,
+        project,
+        write_root=write_root,
     )
     assert executed.status == "succeeded"
     output = cast(dict[str, object], executed.output)
@@ -162,14 +236,17 @@ async def test_codegen_finalize_keeps_support_as_extra_hashed_entry(tmp_path: Pa
 @pytest.mark.asyncio
 async def test_codegen_finalize_authenticates_workspace_bytes(family: str, tmp_path: Path) -> None:
     relative = family_test_file(family)
-    digest = _write_generated(tmp_path, relative)
+    project, write_root = dual_roots(tmp_path)
+    digest = _write_generated(write_root, family, relative)
     executed = await execute_task(
         codegen_finalize_handler(family),
         fake_agent_result(codegen_result(files=[relative], family=family)),
-        tmp_path,
+        project,
+        write_root=write_root,
     )
     assert executed.status == "succeeded"
     output = cast(dict[str, object], executed.output)
+    assert output["needs_fix"] is False
     assert output["layer"] == family
     files = cast(list[dict[str, object]], output["files"])
     assert files[0]["repo_path"] == relative
@@ -177,17 +254,61 @@ async def test_codegen_finalize_authenticates_workspace_bytes(family: str, tmp_p
     assert files[0]["case_ids"] == [family_case_id(family)]
 
 
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_manifest_that_differs_from_result(tmp_path: Path) -> None:
+    relative = family_test_file("api")
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, "api", relative)
+    payload = codegen_result(files=[relative])
+    manifest = dict(payload)
+    manifest["required_capabilities"] = ["auth.session.create"]
+    manifest_path = write_root / "qa/changes/CH-DEMO-001/codegen/api-generated-files.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    executed = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(payload),
+        project,
+        write_root=write_root,
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "does not match" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_codegen_finalize_accepts_files_below_declared_artifact_roots(tmp_path: Path) -> None:
+    relative = family_test_file("api")
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, "api", relative)
+    executed = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(
+            codegen_result(files=[relative]),
+            artifact_paths=["qa/changes", "tests"],
+        ),
+        project,
+        write_root=write_root,
+    )
+    assert executed.status == "succeeded"
+
+
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_wrong_family(family: str, tmp_path: Path) -> None:
     other = "e2e" if family == "api" else "api"
     relative = family_test_file(other)
-    _write_generated(tmp_path, relative)
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, other, relative)
     payload = codegen_result(files=[relative], family=other)
     executed = await execute_task(
         codegen_finalize_handler(family),
         fake_agent_result(payload),
-        tmp_path,
+        project,
+        write_root=write_root,
     )
     assert executed.status == "failed"
     assert executed.failure is not None
@@ -199,12 +320,14 @@ async def test_codegen_finalize_rejects_wrong_family(family: str, tmp_path: Path
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_unknown_leaf(family: str, tmp_path: Path) -> None:
     relative = family_test_file(family)
-    _write_generated(tmp_path, relative)
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, family, relative)
     payload = codegen_result(files=[relative], family=family, required_capabilities=["auth.fake"])
     executed = await execute_task(
         codegen_finalize_handler(family),
         fake_agent_result(payload),
-        tmp_path,
+        project,
+        write_root=write_root,
     )
     assert executed.status == "failed"
     assert executed.failure is not None
@@ -216,13 +339,15 @@ async def test_codegen_finalize_rejects_unknown_leaf(family: str, tmp_path: Path
 async def test_codegen_finalize_rejects_undeclared_file(family: str, tmp_path: Path) -> None:
     relative = family_test_file(family)
     extra = "tests/unmapped_test.py"
-    _write_generated(tmp_path, relative)
-    _write_generated(tmp_path, extra)
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, family, relative)
+    _write_generated(write_root, family, extra)
     payload = codegen_result(files=[relative, extra], family=family)
     executed = await execute_task(
         codegen_finalize_handler(family),
         fake_agent_result(payload, artifact_paths=[relative]),
-        tmp_path,
+        project,
+        write_root=write_root,
     )
     assert executed.status == "failed"
     assert executed.failure is not None
@@ -253,8 +378,9 @@ async def test_codegen_fix_prepare_includes_allowed_paths(family: str, tmp_path:
 async def test_codegen_fix_finalize_rejects_file_outside_allowed_set(family: str, tmp_path: Path) -> None:
     allowed = family_test_file(family)
     extra = "tests/testdata/domain/users.py"
-    _write_generated(tmp_path, allowed)
-    _write_generated(tmp_path, extra)
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, family, allowed)
+    _write_generated(write_root, family, extra)
     payload = codegen_result(files=[allowed, extra], family=family)
     executed = await execute_task(
         codegen_fix_finalize_handler(family),
@@ -263,7 +389,8 @@ async def test_codegen_fix_finalize_rejects_file_outside_allowed_set(family: str
             allowed_paths=[allowed],
             baseline_tree_id="0" * 64,
         ),
-        tmp_path,
+        project,
+        write_root=write_root,
     )
     assert executed.status == "failed"
     assert executed.failure is not None
@@ -308,3 +435,52 @@ async def test_codegen_finalize_rejects_malformed_input(family: str, tmp_path: P
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_input"
     assert executed.failure.retryable is False
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_bytes_written_only_under_tests(family: str, tmp_path: Path) -> None:
+    relative = family_test_file(family)
+    project, write_root = dual_roots(tmp_path)
+    direct = write_root.joinpath(*relative.split("/"))
+    direct.parent.mkdir(parents=True, exist_ok=True)
+    direct.write_bytes(b"test\n")
+    executed = await execute_task(
+        codegen_finalize_handler(family),
+        fake_agent_result(codegen_result(files=[relative], family=family)),
+        project,
+        write_root=write_root,
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert not (project / relative).exists()
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_target_outside_family_policy(family: str, tmp_path: Path) -> None:
+    other = "e2e" if family == "api" else "api"
+    foreign = family_test_file(other)
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, family, foreign)
+    payload = codegen_result(files=[foreign], family=family)
+    payload["mapping"]["entries"][0]["target_file"] = foreign
+    executed = await execute_task(
+        codegen_finalize_handler(family),
+        fake_agent_result(payload),
+        project,
+        write_root=write_root,
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+
+
+@pytest.mark.asyncio
+async def test_e2e_codegen_skill_reads_family_prefixed_review() -> None:
+    from assurance_generation.resource_loader import resource_text
+
+    skill = resource_text("skills/aa-e2e-codegen/SKILL.md")
+    assert "qa/changes/<change-id>/review/e2e-plan-review.json" in skill
+    assert "review/plan-review.json" not in skill

@@ -14,18 +14,18 @@ cases.
 
 - reviewed fuzz plan (`PlanResultV1`) including endpoint/property strategy
 - frozen case references for the selected fuzz cases
-- baseline tree identity
 - `qa/changes/<change-id>/plans/fuzz-plan.md`
 - `qa/changes/<change-id>/plans/fuzz-codegen-plan.md`
 - `qa/changes/<change-id>/plans/fuzz-codegen-mapping.json`
 - `qa/changes/<change-id>/plans/fuzz-review-summary.md`
 - `qa/changes/<change-id>/review/fuzz-plan-review.json`
-- `qa/changes/<change-id>/review/fuzz-plan-checks.json`
 - `qa/changes/<change-id>/cases/**/case.yaml`
 - `.aa/data-knowledge.yaml`
 
 ### optional
 
+- baseline tree identity when the graph provides one
+- `qa/changes/<change-id>/review/fuzz-plan-checks.json`
 - `.aa/config.yaml`
 - product source under the project source root (read-only contract evidence)
 - `tests/fuzz/**`
@@ -37,16 +37,22 @@ cases.
 
 - `qa/changes/<change-id>/codegen/fuzz-codegen-summary.md`
 - `qa/changes/<change-id>/codegen/fuzz-generated-files.json`
-- generated or updated test files under `tests/fuzz/**`
+- generated or updated test files under `qa/changes/<change-id>/generated/fuzz/files/tests/fuzz/**`
 
 ### conditional
 
-- `tests/testdata/domain/**` when the reviewed plan authorizes a shared builder
+- `qa/changes/<change-id>/generated/fuzz/files/tests/testdata/domain/**` when the
+  reviewed plan authorizes a shared builder
+
+The generated-files manifest and mapping keep `target_path="tests/..."`. Do not
+write generated tests into the original `tests/**` tree.
 
 ## Boundaries
 
-Write only authorized `tests/fuzz/**` and `tests/testdata/**` paths plus the
-summary and generated-files manifest.
+Write only authorized staged files under
+`qa/changes/<change-id>/generated/fuzz/files/` plus the summary and
+generated-files manifest. Manifest `repo_path` / mapping `target_file` remain
+the logical `tests/fuzz/**` or `tests/testdata/**` target.
 
 Do not modify product source.
 
@@ -54,6 +60,16 @@ The graph owns phase state. Do not write an orchestration state file.
 
 Framework is schemathesis / Hypothesis. Keep Case ID → symbol → target file
 traceability exact. There is no fuzz codegen-fix handler in this phase.
+
+## Frozen Inputs and Completion Check
+
+Plan, case, and review inputs are immutable. Read them as approved evidence;
+never rewrite, repair, or supersede them during codegen.
+
+Every closed-mapping target must appear in `files` as a `test_entry` with the
+exact mapped Case IDs. Reopen every target before returning and verify that the
+mapped symbol exists in that file. Do not list plan, case, or review inputs in
+`files`.
 
 ## Local Module Closure
 
@@ -64,6 +80,10 @@ is not proof that its Python module exists. Generate the authorized support
 module or use an existing resolvable implementation.
 
 ## Generated-files Manifest Rules
+
+- Include exactly `schema_version`, `change_id`, `layer`, `files`, `mapping`,
+  and `required_capabilities`. The manifest `mapping` and
+  `required_capabilities` must exactly match the final structured result.
 
 Only `test_entry` manifest entries may claim mapped Case IDs, and their
 `case_ids` must exactly match the codegen mapping for that path. Support and

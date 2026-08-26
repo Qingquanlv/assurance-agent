@@ -13,7 +13,11 @@ from pydantic import ValidationError
 from graph_engine.plugin_api import CandidateWriteSet, ValidationContext, ValidationResult
 
 from assurance_generation.contracts.agent import under_write_root
-from assurance_generation.contracts.codegen import CodegenMapping, CodegenResultV1
+from assurance_generation.contracts.codegen import (
+    CodegenMapping,
+    CodegenResultV1,
+    family_allows_target,
+)
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.generated_files import GeneratedFilesV1
 from assurance_generation.contracts.plans import canonical_relative_path
@@ -61,6 +65,20 @@ def _canonical_relative(path: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def logical_generated_target(path: str) -> str:
+    parts = path.split("/")
+    if (
+        len(parts) > 6
+        and parts[0] == "qa"
+        and parts[1] == "changes"
+        and parts[3] == "generated"
+        and parts[4] in FAMILIES
+        and parts[5] == "files"
+    ):
+        return "/".join(parts[6:])
+    return path
 
 
 def _is_mapping_target_module(path: str) -> bool:
@@ -153,9 +171,14 @@ class GeneratedFilesValidator:
         for path in listed:
             if not _canonical_relative(path):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
-            if self._require_mapping and _is_mapping_target_module(path) and path not in mapped:
-                return ValidationResult(accepted=False, reason=_UNMAPPED_REASON.format(path=path))
-            if not under_write_root(path, self._write_roots):
+            target = logical_generated_target(path)
+            if self._require_mapping and _is_mapping_target_module(target) and target not in mapped:
+                return ValidationResult(accepted=False, reason=_UNMAPPED_REASON.format(path=target))
+            if not under_write_root(path, self._write_roots) and not under_write_root(
+                target, self._write_roots
+            ):
+                return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
+            if target != path and self._family is not None and not family_allows_target(self._family, target):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
         extra_bytes = sorted(set(self._file_bytes) - set(listed))
         if extra_bytes:
@@ -182,6 +205,7 @@ class GeneratedFilesValidator:
     ) -> ValidationResult | None:
         files = document.files
         writes = {item.path: item for item in candidate.files}
+        writes_by_target = {logical_generated_target(item.path): item for item in candidate.files}
         if mapping is not None:
             mapped = _mapping_targets(mapping)
             for entry in files:
@@ -204,7 +228,7 @@ class GeneratedFilesValidator:
             if unknown:
                 return ValidationResult(accepted=False, reason=f"unknown capability leaf: {unknown[0]}")
         for entry in files:
-            write = writes.get(entry.repo_path)
+            write = writes.get(entry.repo_path) or writes_by_target.get(entry.repo_path)
             if entry.disposition in {"generated", "updated"}:
                 if write is None:
                     return ValidationResult(
@@ -231,8 +255,11 @@ class GeneratedFilesValidator:
                         accepted=False,
                         reason=_DIGEST_REASON.format(path=entry.repo_path),
                     )
-            if entry.repo_path in self._file_bytes:
-                actual = _digest_bytes(self._file_bytes[entry.repo_path])
+            payload = self._file_bytes.get(entry.repo_path)
+            if payload is None and write is not None:
+                payload = self._file_bytes.get(write.path)
+            if payload is not None:
+                actual = _digest_bytes(payload)
                 if entry.content_sha256 != _prefixed(actual):
                     return ValidationResult(
                         accepted=False,
@@ -249,7 +276,7 @@ def _mapping_closure(
     ids = tuple(item.case_id for item in mapping.entries)
     if len(ids) != len(set(ids)):
         return ValidationResult(accepted=False, reason=_DUPLICATE_REASON)
-    writes = {item.path: item for item in candidate.files}
+    writes = {logical_generated_target(item.path): item for item in candidate.files}
     mapped = _mapping_targets(mapping)
     for path in mapped:
         if not _canonical_relative(path):
@@ -257,8 +284,11 @@ def _mapping_closure(
         if path not in writes:
             return ValidationResult(accepted=False, reason=_MISSING_REASON.format(path=path))
         write = writes.get(path)
-        if write is not None and path in file_bytes:
-            actual = _digest_bytes(file_bytes[path])
+        payload = file_bytes.get(path)
+        if payload is None and write is not None:
+            payload = file_bytes.get(write.path)
+        if write is not None and payload is not None:
+            actual = _digest_bytes(payload)
             if write.after_sha256 != actual:
                 return ValidationResult(accepted=False, reason=_STALE_REASON.format(path=path))
     for path, write in writes.items():
@@ -284,7 +314,11 @@ class CodegenMappingValidator:
         del context
         listed = tuple(item.path for item in candidate.files)
         for path in listed:
-            if not _canonical_relative(path) or not under_write_root(path, self._write_roots):
+            target = logical_generated_target(path)
+            if not _canonical_relative(path) or (
+                not under_write_root(path, self._write_roots)
+                and not under_write_root(target, self._write_roots)
+            ):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
         mapping = self._mapping or _load_mapping(self._file_bytes)
         if mapping is None:
@@ -323,9 +357,13 @@ class CodegenFixCandidateValidator:
         del context
         listed = tuple(item.path for item in candidate.files)
         for path in listed:
-            if not _canonical_relative(path) or not under_write_root(path, self._write_roots):
+            target = logical_generated_target(path)
+            if not _canonical_relative(path) or (
+                not under_write_root(path, self._write_roots)
+                and not under_write_root(target, self._write_roots)
+            ):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
-            if self._allowed_paths and path not in self._allowed_paths:
+            if self._allowed_paths and path not in self._allowed_paths and target not in self._allowed_paths:
                 return ValidationResult(accepted=False, reason=_ALLOWED_REASON.format(path=path))
         if self._approved_proposal and self._approved_proposal.get("status") != "approved":
             return ValidationResult(accepted=False, reason=_UNAPPROVED_REASON)

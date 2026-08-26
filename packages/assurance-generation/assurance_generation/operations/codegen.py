@@ -1,4 +1,4 @@
-"""Constructor-closed four-family codegen and API/E2E codegen-fix handlers."""
+"""Capability-closed four-family codegen and API/E2E codegen-fix handlers."""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ from assurance_generation.contracts.agent import (
     AgentFinalizeInputV1,
     CodegenFixInputV1,
     CodegenInputV1,
+    FamilyConstraintsV1,
+    under_write_root,
 )
 from assurance_generation.contracts.codegen import (
     CodegenAuthoringV1,
@@ -28,6 +30,8 @@ from assurance_generation.contracts.codegen import (
     CodegenGeneratedFileAuthoring,
     CodegenMapping,
     CodegenResultV1,
+    family_allows_target,
+    staged_generated_path,
 )
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
 from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
@@ -37,10 +41,14 @@ from assurance_generation.operations.planning import (
     Family,
     InputError,
     OutputError,
+    agent_workspace,
     closed_family,
     failed_input,
     failed_output,
     leafs_of,
+    constraints_for_cases,
+    load_family_cases,
+    resolve_family,
 )
 from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import CaseYamlAuthoring
@@ -62,6 +70,34 @@ _FIX_SKILL_FILES: Mapping[Family, str] = {
     "api": "skills/aa-api-codegen-fixer/SKILL.md",
     "e2e": "skills/aa-e2e-codegen-fixer/SKILL.md",
 }
+_PLAN_OUTPUT_NAMES: Mapping[Family, tuple[str, ...]] = {
+    "api": (
+        "api-plan.md",
+        "api-test-data-plan.md",
+        "api-codegen-plan.md",
+        "api-codegen-mapping.json",
+        "m3-review-summary.md",
+    ),
+    "e2e": (
+        "e2e-plan.md",
+        "e2e-test-data-plan.md",
+        "e2e-codegen-plan.md",
+        "e2e-codegen-mapping.json",
+        "m4-review-summary.md",
+    ),
+    "fuzz": (
+        "fuzz-plan.md",
+        "fuzz-codegen-plan.md",
+        "fuzz-codegen-mapping.json",
+        "fuzz-review-summary.md",
+    ),
+    "performance": (
+        "performance-plan.md",
+        "performance-codegen-plan.md",
+        "performance-codegen-mapping.json",
+        "performance-review-summary.md",
+    ),
+}
 
 
 def closed_fix_family(family: str) -> Family:
@@ -81,18 +117,135 @@ def codegen_result_contract(schema_id: str) -> ResultContract:
     )
 
 
+def _case_capability_keys(case: object) -> tuple[str, ...]:
+    trace = getattr(case, "trace", None)
+    if not isinstance(trace, Mapping):
+        return ()
+    return tuple(sorted(key for key in trace if isinstance(key, str)))
+
+
+def _first_fuzz_endpoint(cases: CaseYamlAuthoring) -> tuple[str, str]:
+    for case in (*cases.added, *cases.modified):
+        fuzz = case.automation.fuzz
+        if fuzz is None:
+            continue
+        first = fuzz.endpoints[0]
+        return f"{first.method} {first.path}", fuzz.property
+    raise InputError("fuzz cases do not declare an endpoint/property strategy")
+
+
+def plan_from_cases(
+    *,
+    family: Family,
+    change_id: str,
+    cases: CaseYamlAuthoring,
+    capability_leafs: tuple[str, ...],
+) -> PlanResultV1:
+    entries = tuple(sorted((*cases.added, *cases.modified), key=lambda item: item.case_id))
+    required = tuple(sorted({key for case in entries for key in _case_capability_keys(case)}))
+    document: dict[str, object] = {
+        "schema_version": "1",
+        "family": family,
+        "change_id": change_id,
+        "case_ids": [case.case_id for case in entries],
+        "required_capabilities": list(required),
+        "coverage": [
+            {
+                "case_id": case.case_id,
+                "operation": case.test_condition_id,
+                "risk": case.risk.level,
+                "required_capabilities": list(_case_capability_keys(case)),
+            }
+            for case in entries
+        ],
+        "output_files": [f"qa/changes/{change_id}/plans/{name}" for name in _PLAN_OUTPUT_NAMES[family]],
+    }
+    if family == "fuzz":
+        endpoint, property_name = _first_fuzz_endpoint(cases)
+        document["fuzz_strategy"] = {
+            "endpoint": endpoint,
+            "property_name": property_name,
+        }
+    if family == "performance":
+        scenarios: list[dict[str, object]] = []
+        for case in entries:
+            performance = case.automation.performance
+            if performance is None:
+                raise InputError(f"performance case {case.case_id} has no typed scenario")
+            scenario = performance.scenario
+            scenarios.append(
+                {
+                    "scenario_id": case.case_id.lower(),
+                    "capability": scenario.capability,
+                    "endpoint": scenario.endpoint,
+                    "p95_ms": scenario.thresholds.p95_ms,
+                    "error_rate_max": scenario.thresholds.error_rate_max,
+                }
+            )
+        document["performance_scenarios"] = scenarios
+    try:
+        return PlanResultV1.model_validate(
+            document,
+            context={"capability_leafs": leafs_of(capability_leafs)},
+        )
+    except ValidationError as error:
+        raise InputError(str(error)) from error
+
+
 def validate_codegen_input(
-    data: object, family: Family
+    data: object,
+    family: Family,
+    workspace: Path,
 ) -> tuple[CodegenInputV1, PlanResultV1, CaseYamlAuthoring]:
     try:
         business = CodegenInputV1.model_validate(data)
         leafs = leafs_of(business.capability_leafs)
-        plan = PlanResultV1.model_validate(business.reviewed_plan, context={"capability_leafs": leafs})
-        cases = CaseYamlAuthoring.model_validate(business.reviewed_cases, context={"capability_leafs": leafs})
     except ValidationError as error:
         raise InputError(str(error)) from error
+    if business.reviewed_cases is None:
+        cases = load_family_cases(
+            workspace,
+            change_id=business.change_id,
+            family=family,
+            capability_leafs=business.capability_leafs,
+        )
+    else:
+        try:
+            cases = CaseYamlAuthoring.model_validate(
+                business.reviewed_cases,
+                context={"capability_leafs": leafs},
+            )
+        except ValidationError as error:
+            raise InputError(str(error)) from error
+    if business.reviewed_plan is None:
+        plan = plan_from_cases(
+            family=family,
+            change_id=business.change_id,
+            cases=cases,
+            capability_leafs=business.capability_leafs,
+        )
+    else:
+        try:
+            plan = PlanResultV1.model_validate(
+                business.reviewed_plan,
+                context={"capability_leafs": leafs},
+            )
+        except ValidationError as error:
+            raise InputError(str(error)) from error
     if plan.family != family:
         raise InputError(f"reviewed plan family {plan.family!r} does not match {family}")
+    constraints: FamilyConstraintsV1 = business.family_constraints or constraints_for_cases(
+        family=family,
+        change_id=business.change_id,
+        cases=cases,
+    )
+    business = business.model_copy(
+        update={
+            "reviewed_plan": plan.model_dump(mode="json"),
+            "reviewed_cases": cases.model_dump(mode="json"),
+            "family_constraints": constraints,
+        }
+    )
     return business, plan, cases
 
 
@@ -106,9 +259,23 @@ def validate_codegen_fix_input(
         cases = CaseYamlAuthoring.model_validate(business.reviewed_cases, context={"capability_leafs": leafs})
     except ValidationError as error:
         raise InputError(str(error)) from error
+    if business.family_constraints is None or business.baseline_tree_id is None:
+        raise InputError("codegen-fix requires family_constraints and baseline_tree_id")
     if plan.family != family:
         raise InputError(f"reviewed plan family {plan.family!r} does not match {family}")
     return business, plan, cases
+
+
+def codegen_outputs(change_id: str, family: Family, *, fix: bool = False) -> tuple[str, ...]:
+    suffix = "-fix" if fix else ""
+    return tuple(
+        sorted(
+            (
+                f"qa/changes/{change_id}/codegen/{family}-codegen{suffix}-summary.md",
+                f"qa/changes/{change_id}/codegen/{family}-generated-files.json",
+            )
+        )
+    )
 
 
 def prepare_codegen_outcome(
@@ -120,6 +287,8 @@ def prepare_codegen_outcome(
     context_payload: Mapping[str, object],
     binding: AgentBindingDataV1,
     result_schema_id: str,
+    context: TaskContext,
+    allowed_outputs: tuple[str, ...],
 ) -> TaskOutcome:
     agent_request = AgentRunRequest(
         instructions=(
@@ -131,6 +300,11 @@ def prepare_codegen_outcome(
         ),
         result_contract=codegen_result_contract(result_schema_id),
         execution=binding.execution,
+        workspace=agent_workspace(
+            context,
+            allowed_outputs=allowed_outputs,
+            agent_profile=binding.agent_profile,
+        ),
         request_policy_digest=binding.request_policy_digest,
         request_config_digest=binding.request_config_digest,
     )
@@ -169,30 +343,38 @@ def _complete_files(
     files: tuple[CodegenGeneratedFileAuthoring, ...],
     mapping: CodegenMapping,
     *,
+    change_id: str,
+    family: Family,
     allowed_paths: tuple[str, ...],
 ) -> tuple[GeneratedFileEntryV1, ...]:
-    locked = set(allowed_paths)
     mapped_targets = {item.target_file for item in mapping.entries}
     if not files and mapped_targets:
         raise OutputError("empty files array is invalid when mapping targets exist")
     completed: list[GeneratedFileEntryV1] = []
     listed_test_entries: set[str] = set()
     for entry in files:
-        if locked and entry.repo_path not in locked:
-            raise OutputError(f"undeclared generated/modified test file: {entry.repo_path}")
-        if entry.role == "test_entry" and entry.repo_path not in mapped_targets:
-            raise OutputError(f"generated test file is absent from the closed mapping: {entry.repo_path}")
-        payload = _workspace_regular_file(workspace, entry.repo_path).read_bytes()
+        target = entry.repo_path
+        if not family_allows_target(family, target):
+            raise OutputError(f"generated target is outside family policy: {target}")
+        if allowed_paths and not under_write_root(target, allowed_paths):
+            raise OutputError(f"undeclared generated/modified test file: {target}")
+        if entry.role == "test_entry" and target not in mapped_targets:
+            raise OutputError(f"generated test file is absent from the closed mapping: {target}")
+        try:
+            staged = staged_generated_path(change_id, family, target)
+        except ValueError as error:
+            raise OutputError(str(error)) from error
+        payload = _workspace_regular_file(workspace, staged).read_bytes()
         case_ids = tuple(sorted(entry.case_ids))
-        if entry.role == "test_entry" and case_ids != _mapped_case_ids(mapping, entry.repo_path):
-            raise OutputError(f"generated test file is absent from the closed mapping: {entry.repo_path}")
+        if entry.role == "test_entry" and case_ids != _mapped_case_ids(mapping, target):
+            raise OutputError(f"generated test file is absent from the closed mapping: {target}")
         if entry.role != "test_entry" and entry.case_ids:
-            raise OutputError(f"{entry.role} entry cannot claim case_ids: {entry.repo_path}")
+            raise OutputError(f"{entry.role} entry cannot claim case_ids: {target}")
         if entry.role == "test_entry":
-            listed_test_entries.add(entry.repo_path)
+            listed_test_entries.add(target)
         completed.append(
             GeneratedFileEntryV1(
-                repo_path=entry.repo_path,
+                repo_path=target,
                 disposition=entry.disposition,
                 role=entry.role,
                 case_ids=list(case_ids),
@@ -200,6 +382,8 @@ def _complete_files(
             )
         )
     for target in sorted(mapped_targets):
+        if not family_allows_target(family, target):
+            raise OutputError(f"generated target is outside family policy: {target}")
         if target not in listed_test_entries:
             raise OutputError(f"codegen mapping is missing: {target}")
     return tuple(sorted(completed, key=lambda item: item.repo_path))
@@ -222,45 +406,89 @@ def _finalize_authoring(payload: AgentFinalizeInputV1, family: Family) -> Codege
     return document
 
 
+def _authenticate_manifest(
+    workspace: Path,
+    *,
+    document: CodegenAuthoringV1,
+    capability_leafs: tuple[str, ...],
+) -> None:
+    relative = f"qa/changes/{document.change_id}/codegen/{document.layer}-generated-files.json"
+    try:
+        canonical_relative_path(relative)
+    except ValueError as error:
+        raise OutputError(str(error)) from error
+    path = workspace.joinpath(*PurePosixPath(relative).parts)
+    try:
+        path.resolve().relative_to(workspace.resolve())
+    except ValueError as error:
+        raise OutputError("generated-files manifest escapes the attempt workspace") from error
+    if not path.exists():
+        return
+    path = _workspace_regular_file(workspace, relative)
+    try:
+        manifest = CodegenAuthoringV1.model_validate(
+            json.loads(path.read_text(encoding="utf-8")),
+            context={"capability_leafs": leafs_of(capability_leafs)},
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError) as error:
+        raise OutputError(f"generated-files manifest is invalid: {relative}: {error}") from error
+    if manifest != document:
+        raise OutputError("generated-files manifest does not match the structured codegen result")
+
+
 class CodegenPrepareHandler:
-    def __init__(self, family: Family) -> None:
-        self._family: Family = closed_family(family)
+    def __init__(self, family: Family | None = None) -> None:
+        self._family: Family | None = None if family is None else closed_family(family)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            business, plan, cases = validate_codegen_input(request.input, self._family)
+            family = resolve_family(self._family, request)
+            business, plan, cases = validate_codegen_input(
+                request.input,
+                family,
+                context.project_root,
+            )
             binding = AgentBindingDataV1.model_validate(request.binding_data)
+            if business.family_constraints is None:
+                raise InputError("family_constraints were not materialized")
+            context_payload: dict[str, object] = {
+                "change_id": business.change_id,
+                "family_constraints": business.family_constraints.model_dump(mode="json"),
+                "generated_files_root": f"qa/changes/{business.change_id}/generated/{family}/files",
+            }
+            if business.baseline_tree_id is not None:
+                context_payload["baseline_tree_id"] = business.baseline_tree_id
             return prepare_codegen_outcome(
-                skill_path=_SKILL_FILES[self._family],
+                skill_path=_SKILL_FILES[family],
                 persona_path=PLAN_PERSONA,
                 plan=plan,
                 cases=cases,
-                context_payload={
-                    "change_id": business.change_id,
-                    "baseline_tree_id": business.baseline_tree_id,
-                    "family_constraints": business.family_constraints.model_dump(mode="json"),
-                },
+                context_payload=context_payload,
                 binding=binding,
                 result_schema_id=CODEGEN_RESULT_ID,
+                context=context,
+                allowed_outputs=codegen_outputs(business.change_id, family),
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)
 
 
 class CodegenFinalizeHandler:
-    def __init__(self, family: Family) -> None:
-        self._family: Family = closed_family(family)
+    def __init__(self, family: Family | None = None) -> None:
+        self._family: Family | None = None if family is None else closed_family(family)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
+            family = resolve_family(self._family, request)
             payload = AgentFinalizeInputV1.model_validate(request.input)
-            document = _finalize_authoring(payload, self._family)
+            document = _finalize_authoring(payload, family)
             allowed = payload.allowed_paths or payload.artifact_paths
             files = _complete_files(
-                context.workspace_root,
+                context.write_root,
                 document.files,
                 document.mapping,
+                change_id=document.change_id,
+                family=family,
                 allowed_paths=allowed,
             )
             result = CodegenResultV1.model_validate(
@@ -274,24 +502,31 @@ class CodegenFinalizeHandler:
                 },
                 context={"capability_leafs": leafs_of(payload.capability_leafs)},
             )
+            _authenticate_manifest(
+                context.write_root,
+                document=document,
+                capability_leafs=payload.capability_leafs,
+            )
             return TaskOutcome.succeeded(cast(JSONValue, result.model_dump(mode="json")))
-        except ValidationError as error:
+        except (InputError, ValidationError) as error:
             return failed_input(error)
         except OutputError as error:
             return failed_output(str(error))
 
 
 class CodegenFixPrepareHandler:
-    def __init__(self, family: Family) -> None:
-        self._family: Family = closed_fix_family(family)
+    def __init__(self, family: Family | None = None) -> None:
+        self._family: Family | None = None if family is None else closed_fix_family(family)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            business, plan, cases = validate_codegen_fix_input(request.input, self._family)
+            family = closed_fix_family(resolve_family(self._family, request))
+            business, plan, cases = validate_codegen_fix_input(request.input, family)
             binding = AgentBindingDataV1.model_validate(request.binding_data)
+            if business.family_constraints is None or business.baseline_tree_id is None:
+                raise InputError("codegen-fix inputs were not materialized")
             return prepare_codegen_outcome(
-                skill_path=_FIX_SKILL_FILES[self._family],
+                skill_path=_FIX_SKILL_FILES[family],
                 persona_path=PLAN_PERSONA,
                 plan=plan,
                 cases=cases,
@@ -301,38 +536,44 @@ class CodegenFixPrepareHandler:
                     "family_constraints": business.family_constraints.model_dump(mode="json"),
                     "allowed_paths": list(business.allowed_paths),
                     "approved_proposal": business.approved_proposal,
+                    "generated_files_root": f"qa/changes/{business.change_id}/generated/{family}/files",
                 },
                 binding=binding,
                 result_schema_id=CODEGEN_FIX_RESULT_ID,
+                context=context,
+                allowed_outputs=codegen_outputs(business.change_id, family, fix=True),
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)
 
 
 class CodegenFixFinalizeHandler:
-    def __init__(self, family: Family) -> None:
-        self._family: Family = closed_fix_family(family)
+    def __init__(self, family: Family | None = None) -> None:
+        self._family: Family | None = None if family is None else closed_fix_family(family)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
+            family = closed_fix_family(resolve_family(self._family, request))
             payload = AgentFinalizeInputV1.model_validate(request.input)
-            document = _finalize_authoring(payload, self._family)
+            document = _finalize_authoring(payload, family)
             allowed = payload.allowed_paths or payload.artifact_paths
             if not allowed:
                 raise OutputError("codegen-fix requires an allowed file set")
             if payload.baseline_tree_id is None:
                 raise OutputError("codegen-fix requires a baseline tree identity")
             files = _complete_files(
-                context.workspace_root,
+                context.write_root,
                 document.files,
                 document.mapping,
+                change_id=document.change_id,
+                family=family,
                 allowed_paths=allowed,
             )
             result = CodegenFixCandidateV1.model_validate(
                 {
                     "schema_version": "1",
                     "change_id": document.change_id,
-                    "family": self._family,
+                    "family": family,
                     "baseline_tree_id": payload.baseline_tree_id,
                     "allowed_paths": list(allowed),
                     "files": [item.model_dump(mode="json") for item in files],
@@ -341,8 +582,13 @@ class CodegenFixFinalizeHandler:
                 },
                 context={"capability_leafs": leafs_of(payload.capability_leafs)},
             )
+            _authenticate_manifest(
+                context.write_root,
+                document=document,
+                capability_leafs=payload.capability_leafs,
+            )
             return TaskOutcome.succeeded(cast(JSONValue, result.model_dump(mode="json")))
-        except ValidationError as error:
+        except (InputError, ValidationError) as error:
             return failed_input(error)
         except OutputError as error:
             return failed_output(str(error))

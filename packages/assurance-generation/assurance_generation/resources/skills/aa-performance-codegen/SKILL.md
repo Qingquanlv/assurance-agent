@@ -15,18 +15,18 @@ cases.
 - reviewed performance plan (`PlanResultV1`) including scenario identity and
   numeric thresholds
 - frozen case references for the selected performance cases
-- baseline tree identity
 - `qa/changes/<change-id>/plans/performance-plan.md`
 - `qa/changes/<change-id>/plans/performance-codegen-plan.md`
 - `qa/changes/<change-id>/plans/performance-codegen-mapping.json`
 - `qa/changes/<change-id>/plans/performance-review-summary.md`
 - `qa/changes/<change-id>/review/performance-plan-review.json`
-- `qa/changes/<change-id>/review/performance-plan-checks.json`
 - `qa/changes/<change-id>/cases/**/case.yaml`
 - `.aa/data-knowledge.yaml`
 
 ### optional
 
+- baseline tree identity when the graph provides one
+- `qa/changes/<change-id>/review/performance-plan-checks.json`
 - `.aa/config.yaml`
 - product source under the project source root (read-only contract evidence)
 - `tests/perf/**`
@@ -38,25 +38,46 @@ cases.
 
 - `qa/changes/<change-id>/codegen/performance-codegen-summary.md`
 - `qa/changes/<change-id>/codegen/performance-generated-files.json`
-- generated or updated test files under `tests/perf/**`
+- generated or updated test files under `qa/changes/<change-id>/generated/performance/files/tests/perf/**`
 
 ### conditional
 
-- `tests/testdata/domain/**` when the reviewed plan authorizes a shared builder
+- `qa/changes/<change-id>/generated/performance/files/tests/testdata/domain/**`
+  when the reviewed plan authorizes a shared builder
+
+The generated-files manifest and mapping keep `target_path="tests/..."`. Do not
+write generated tests into the original `tests/**` tree.
 
 ## Boundaries
 
-Write only authorized `tests/perf/**` and `tests/testdata/**` paths plus the
-summary and generated-files manifest.
+Write only authorized staged files under
+`qa/changes/<change-id>/generated/performance/files/` plus the summary and
+generated-files manifest. Manifest `repo_path` / mapping `target_file` remain
+the logical `tests/perf/**` or `tests/testdata/**` target.
 
 Do not modify product source.
 
 The graph owns phase state. Do not write an orchestration state file.
 
 Framework is Locust. Keep Case ID → symbol → target file traceability exact.
+
+## Frozen Inputs and Completion Check
+
+Plan, case, and review inputs are immutable. Read them as approved evidence;
+never rewrite, repair, or supersede them during codegen.
+
+Every closed-mapping target must appear in `files` as a `test_entry` with the
+exact mapped Case IDs. Reopen every target before returning and verify that the
+mapped symbol exists in that file. Do not list plan, case, or review inputs in
+`files`.
 There is no performance codegen-fix handler in this phase.
 
 ## Mapping Rules
+
+- Include exactly `schema_version`, `change_id`, `layer`, `files`, `mapping`,
+  and `required_capabilities` in the generated-files manifest. The manifest
+  `mapping` and `required_capabilities` must exactly match the final structured
+  result.
 
 - Consume Task Mapping as a strict one-row-per-Case-ID relation. Do not
   reinterpret setup, cleanup, seed helpers, factories, or adapters as additional

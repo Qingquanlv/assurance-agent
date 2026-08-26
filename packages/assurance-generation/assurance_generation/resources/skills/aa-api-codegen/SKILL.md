@@ -13,7 +13,6 @@ files and mapping, and `assurance_intake.contracts` for reviewed cases.
 
 - reviewed API plan (`PlanResultV1`)
 - frozen case references for the selected API cases
-- baseline tree identity
 - `qa/changes/<change-id>/plans/api-plan.md`
 - `qa/changes/<change-id>/plans/api-test-data-plan.md`
 - `qa/changes/<change-id>/plans/api-codegen-plan.md`
@@ -25,6 +24,7 @@ files and mapping, and `assurance_intake.contracts` for reviewed cases.
 
 ### optional
 
+- baseline tree identity when the graph provides one
 - `.aa/config.yaml`
 - product source under the project source root (read-only contract evidence)
 - `tests/api/**`
@@ -37,16 +37,22 @@ files and mapping, and `assurance_intake.contracts` for reviewed cases.
 
 - `qa/changes/<change-id>/codegen/api-codegen-summary.md`
 - `qa/changes/<change-id>/codegen/api-generated-files.json`
-- generated or updated test files under `tests/api/**`
+- generated or updated test files under `qa/changes/<change-id>/generated/api/files/tests/api/**`
 
 ### conditional
 
-- `tests/testdata/domain/**` when the reviewed plan authorizes a shared builder
+- `qa/changes/<change-id>/generated/api/files/tests/testdata/domain/**` when the
+  reviewed plan authorizes a shared builder
+
+The generated-files manifest and mapping keep `target_path="tests/..."`. Do not
+write generated tests into the original `tests/**` tree.
 
 ## Boundaries
 
-Write only authorized `tests/api/**` and `tests/testdata/**` paths plus the
-summary and generated-files manifest.
+Write only authorized staged files under
+`qa/changes/<change-id>/generated/api/files/` plus the summary and
+generated-files manifest. Manifest `repo_path` / mapping `target_file` remain
+the logical `tests/api/**` or `tests/testdata/**` target.
 
 Do not modify product source.
 
@@ -55,6 +61,16 @@ Do not run the product test runner or invent collection evidence.
 The graph owns phase state. Do not write an orchestration state file.
 
 Framework is pytest. Keep Case ID → symbol → target file traceability exact.
+
+## Frozen Inputs and Completion Check
+
+Plan, case, and review inputs are immutable. Read them as approved evidence;
+never rewrite, repair, or supersede them during codegen.
+
+Every closed-mapping target must appear in `files` as a `test_entry` with the
+exact mapped Case IDs. Reopen every target before returning and verify that the
+mapped symbol exists in that file. Do not list plan, case, or review inputs in
+`files`.
 
 ## Fixture Closure
 
@@ -65,7 +81,8 @@ Before writing the manifest:
 2. Resolve each parameter to a fixture defined or imported by the test module,
    an ancestor `conftest.py`, or an installed pytest plugin.
 3. For every unresolved project fixture, generate or update an authorized
-   `tests/api/**/conftest.py` or support module and list that changed file in the
+   `qa/changes/<change-id>/generated/api/files/tests/api/**/conftest.py` or
+   support module and list that changed file in the
    manifest with `role: support` and `case_ids: []`.
 4. Finish only when the unresolved fixture set is empty.
 
@@ -93,6 +110,9 @@ This verification is read-only and is not test execution.
 
 ## Generated-files Manifest Rules
 
+- Include exactly `schema_version`, `change_id`, `layer`, `files`, `mapping`,
+  and `required_capabilities`. The manifest `mapping` and
+  `required_capabilities` must exactly match the final structured result.
 - Only `test_entry` entries may claim mapped Case IDs, and their `case_ids` must
   exactly match the codegen mapping for that path.
 - Every `support` and `shared_builder` entry must use `case_ids: []`.

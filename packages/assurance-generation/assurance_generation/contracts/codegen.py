@@ -6,8 +6,10 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-from assurance_generation.contracts.families import LayerName
+from assurance_generation.contracts.agent import under_write_root
+from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
+from assurance_generation.contracts.plans import canonical_relative_path
 from assurance_intake.contracts import NonEmptyStr
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
@@ -15,6 +17,32 @@ _FROZEN = ConfigDict(frozen=True, extra="forbid")
 CodegenLayer = LayerName
 CodegenDisposition = Literal["generated", "updated", "reused"]
 CodegenFileRole = Literal["test_entry", "support", "shared_builder"]
+
+FAMILY_TARGET_ROOTS: dict[LayerName, tuple[str, ...]] = {
+    "api": ("tests/api/", "tests/testdata/"),
+    "e2e": ("tests/e2e/", "tests/testdata/"),
+    "fuzz": ("tests/fuzz/", "tests/testdata/"),
+    "performance": ("tests/perf/", "tests/testdata/"),
+}
+
+
+def staged_generated_path(change_id: str, family: str, target_path: str) -> str:
+    if (
+        not change_id
+        or change_id in {".", ".."}
+        or "/" in change_id
+        or "\\" in change_id
+        or "\x00" in change_id
+    ):
+        raise ValueError("change_id must be one canonical path component")
+    if family not in LAYER_NAMES:
+        raise ValueError(f"unknown generation family: {family}")
+    target = canonical_relative_path(target_path)
+    return f"qa/changes/{change_id}/generated/{family}/files/{target}"
+
+
+def family_allows_target(family: LayerName, target_path: str) -> bool:
+    return under_write_root(target_path, FAMILY_TARGET_ROOTS[family])
 
 
 def _safe_project_relative_path(value: str) -> str:
@@ -38,7 +66,12 @@ class CodegenGeneratedFileAuthoring(BaseModel):
 
     model_config = _FROZEN
 
-    repo_path: NonEmptyStr
+    repo_path: NonEmptyStr = Field(
+        description=(
+            "Logical target_path under tests/; physical bytes are staged at "
+            "qa/changes/<change-id>/generated/<layer>/files/<repo_path>"
+        )
+    )
     disposition: CodegenDisposition
     role: CodegenFileRole
     case_ids: tuple[NonEmptyStr, ...]
@@ -57,7 +90,7 @@ class CodegenGeneratedFilesAuthoring(BaseModel):
     schema_version: Literal["1"]
     change_id: NonEmptyStr
     layer: CodegenLayer
-    files: tuple[CodegenGeneratedFileAuthoring, ...]
+    files: tuple[CodegenGeneratedFileAuthoring, ...] = Field(min_length=1)
 
 
 class CodegenMappingEntry(BaseModel):
@@ -114,6 +147,12 @@ class CodegenAuthoringV1(CodegenGeneratedFilesAuthoring):
         _require_exact_leafs(self.required_capabilities, info)
         if self.mapping.layer != self.layer:
             raise ValueError(f"mapping layer {self.mapping.layer!r} does not match {self.layer}")
+        for entry in self.files:
+            if not family_allows_target(self.layer, entry.repo_path):
+                raise ValueError(f"generated target is outside family policy: {entry.repo_path}")
+        for item in self.mapping.entries:
+            if not family_allows_target(self.layer, item.target_file):
+                raise ValueError(f"generated target is outside family policy: {item.target_file}")
         return self
 
 
@@ -123,6 +162,7 @@ class CodegenResultV1(BaseModel):
     model_config = _FROZEN
 
     schema_version: Literal["1"]
+    needs_fix: Literal[False] = False
     change_id: NonEmptyStr
     layer: CodegenLayer
     files: tuple[GeneratedFileEntryV1, ...]
