@@ -92,3 +92,7 @@
   dirty-tree closeout to Tasks 4/14, and stale acceptance refresh to Task 14.
   OpenChamber direct discovery plus graph inventory, unused CLI flag, and skill
   wording are `deferred_out_of_scope`.
+- Task 1: fix round 1/5 (3 addressed, 0 open — duplicate-waiver cardinality,
+  fail-closed P1/P2 recognition, and negative admission coverage; commits
+  `6d32686..6c4a6d7`).
+- Task 1: complete (commits `e712943..6c4a6d7`, review clean).
