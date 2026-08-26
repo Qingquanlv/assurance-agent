@@ -5,6 +5,8 @@ import time
 from agent_runtime_contracts import InstructionPart
 from agent_runtime_opencode.observation import (
     classify_provider_state,
+    provider_error_is_transient,
+    provider_error_message,
     structured_result_from_messages,
 )
 from harness import _bound_fixture, agent_run_request  # pyright: ignore[reportMissingImports]
@@ -16,6 +18,70 @@ def _message_gets(fixture: object, session_id: str) -> int:
         1
         for item in fake.records
         if item.method == "GET" and item.path.startswith(f"/session/{session_id}/message")
+    )
+
+
+def test_nested_opencode_provider_error_message_is_transient() -> None:
+    messages = [
+        {
+            "info": {
+                "role": "assistant",
+                "error": {
+                    "name": "UnknownError",
+                    "data": {"message": "unknown certificate verification error"},
+                },
+            },
+            "parts": [],
+        }
+    ]
+
+    assert provider_error_message({}, messages) == "unknown certificate verification error"
+    assert provider_error_is_transient({}, messages) is True
+
+
+def test_complete_result_wins_message_aborted_race() -> None:
+    messages = [
+        {
+            "info": {
+                "role": "assistant",
+                "error": {"name": "MessageAbortedError", "data": {"message": "Aborted"}},
+            },
+            "parts": [{"type": "text", "text": '{"output_files":["result.json"]}'}],
+        }
+    ]
+
+    assert structured_result_from_messages(messages) == {"output_files": ["result.json"]}
+    assert (
+        classify_provider_state(
+            session_id="ses_1",
+            status_map={},
+            session={},
+            messages=messages,
+        )
+        == "succeeded"
+    )
+
+
+def test_incomplete_result_with_message_aborted_stays_canceled() -> None:
+    messages = [
+        {
+            "info": {
+                "role": "assistant",
+                "error": {"name": "MessageAbortedError", "data": {"message": "Aborted"}},
+            },
+            "parts": [{"type": "text", "text": '{"output_files":'}],
+        }
+    ]
+
+    assert structured_result_from_messages(messages) is None
+    assert (
+        classify_provider_state(
+            session_id="ses_1",
+            status_map={},
+            session={},
+            messages=messages,
+        )
+        == "canceled"
     )
 
 
@@ -32,6 +98,22 @@ async def test_continuous_sse_does_not_block_observation() -> None:
         assert result.status == "terminal"
         assert result.outcome is not None
         assert result.outcome.status == "succeeded"
+    finally:
+        fixture.close()
+
+
+async def test_sse_observation_is_bounded_by_poll_interval() -> None:
+    fixture = _bound_fixture(
+        terminal_mode="success",
+        sse_mode="drip",
+        request_timeout_seconds=1.0,
+        config_overrides={"poll_interval_seconds": 0.05},
+    )
+    try:
+        started = time.monotonic()
+        result = await fixture.reconcile()
+        assert time.monotonic() - started < 0.5
+        assert result.status == "terminal"
     finally:
         fixture.close()
 
@@ -158,6 +240,19 @@ async def test_open_tool_work_is_not_terminal() -> None:
         assert session_id is not None
         assert result.status == "running"
         assert _message_gets(fixture, session_id) >= 1
+    finally:
+        fixture.close()
+
+
+async def test_busy_session_is_aborted_after_complete_structured_result_is_captured() -> None:
+    fixture = _bound_fixture(terminal_mode="success_busy")
+    try:
+        result = await fixture.reconcile()
+
+        assert result.status == "terminal"
+        assert result.outcome is not None
+        assert result.outcome.status == "succeeded"
+        assert fixture.fake.abort_calls == 1
     finally:
         fixture.close()
 

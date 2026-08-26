@@ -42,6 +42,7 @@ class OpenCodePromptAdmissionBody(FrozenModel):
     parts: tuple[OpenCodeTextPart, ...] = Field(min_length=1)
     agent: str | None = None
     model: OpenCodeModelSelection | None = None
+    tools: Mapping[str, bool] | None = None
 
 
 class OpenCodeSseProperties(BaseModel):
@@ -77,6 +78,29 @@ def prompt_admission_body(agent_run: AgentRunRequest, message_id: str) -> dict[s
             parts.append(OpenCodeTextPart(text=instruction.text_content))
         else:
             parts.append(OpenCodeTextPart(text=canonical_json_text(thaw_json(instruction.json_content))))
+    schema_document = agent_run.result_contract.schema_document
+    schema_text = (
+        "not embedded; obey the named locked result contract"
+        if schema_document is None
+        else canonical_json_text(thaw_json(schema_document))
+    )
+    parts.append(
+        OpenCodeTextPart(
+            text=(
+                "# Runtime result contract\n\n"
+                "Your final assistant response MUST be exactly one JSON object with no "
+                "Markdown fence, commentary, completion summary, or trailing text. The object "
+                "must validate against the following locked JSON Schema. This runtime contract "
+                "overrides any user-facing final-output wording in the supplied skill. It governs "
+                "only the final assistant text and does not replace required tool calls or file "
+                "writes. Complete and verify every required side effect before returning the final "
+                "JSON object.\n\n"
+                f"schema_id: {agent_run.result_contract.schema_id}\n"
+                f"schema_digest: {agent_run.result_contract.schema_digest}\n"
+                f"schema: {schema_text}"
+            )
+        )
+    )
     model: OpenCodeModelSelection | None = None
     selected = agent_run.execution.provider_model
     if selected != "provider_default":
@@ -88,6 +112,7 @@ def prompt_admission_body(agent_run: AgentRunRequest, message_id: str) -> dict[s
     typed = OpenCodePromptAdmissionBody(
         messageID=message_id,
         parts=tuple(parts),
+        agent=agent_run.workspace.agent_profile,
         model=model,
     )
     return typed.model_dump(mode="json", exclude_none=True)
@@ -194,7 +219,9 @@ def reduce_sse_frames(
     return SseReduction(cursor=cursor, malformed=False, heartbeat_count=heartbeat_count)
 
 
-def classify_admission(record: object, expected: Mapping[str, object]) -> Literal["exact", "conflict"]:
+def classify_admission(
+    record: object, expected: Mapping[str, object]
+) -> Literal["exact", "pending", "conflict"]:
     if not isinstance(record, dict):
         return "conflict"
     candidate: object = record.get("admission") if isinstance(record.get("admission"), dict) else record
@@ -206,7 +233,18 @@ def classify_admission(record: object, expected: Mapping[str, object]) -> Litera
     if candidate_id != expected_id and isinstance(info, dict):
         candidate_id = info.get("id")
     if candidate_id == expected_id:
-        return "exact" if _admission_identity_matches(candidate, expected) else "conflict"
+        if _admission_identity_matches(candidate, expected):
+            return "exact"
+        role = info.get("role") if isinstance(info, dict) else candidate.get("role")
+        expected_texts = _text_parts(expected.get("parts"))
+        observed_texts = _text_parts(candidate.get("parts"))
+        if (
+            role == "user"
+            and not _admission_model_conflicts(candidate, expected)
+            and _texts_partially_admitted(expected_texts, observed_texts)
+        ):
+            return "pending"
+        return "conflict"
     role = info.get("role") if isinstance(info, dict) else candidate.get("role")
     if role != "user":
         return "conflict"
@@ -220,17 +258,21 @@ def _admission_identity_matches(candidate: Mapping[str, object], expected: Mappi
     expected_texts = _text_parts(expected.get("parts"))
     if not expected_texts or not _texts_admitted(expected_texts, _text_parts(candidate.get("parts"))):
         return False
+    return not _admission_model_conflicts(candidate, expected)
+
+
+def _admission_model_conflicts(
+    candidate: Mapping[str, object], expected: Mapping[str, object]
+) -> bool:
     expected_model = _model_identity(expected.get("model"))
     if expected_model is None:
-        return True
+        return False
     observed_model = _model_identity(candidate.get("model"))
     if observed_model is None:
         info = candidate.get("info")
         if isinstance(info, dict):
             observed_model = _model_identity(info.get("model"))
-    if observed_model is None:
-        return True
-    return observed_model == expected_model
+    return observed_model is not None and observed_model != expected_model
 
 
 def _texts_admitted(expected: tuple[str, ...], observed: tuple[str, ...]) -> bool:
@@ -243,6 +285,19 @@ def _texts_admitted(expected: tuple[str, ...], observed: tuple[str, ...]) -> boo
         if found < 0:
             return False
         cursor = found + len(piece)
+    return True
+
+
+def _texts_partially_admitted(expected: tuple[str, ...], observed: tuple[str, ...]) -> bool:
+    if not expected:
+        return False
+    if not observed:
+        return True
+    if len(observed) >= len(expected):
+        return False
+    for expected_piece, observed_piece in zip(expected, observed, strict=False):
+        if expected_piece not in observed_piece and not expected_piece.startswith(observed_piece):
+            return False
     return True
 
 
@@ -273,11 +328,7 @@ def user_prompt_already_admitted(messages: Sequence[object], expected: Mapping[s
     for message in messages:
         if not isinstance(message, dict):
             continue
-        info = message.get("info")
-        role = info.get("role") if isinstance(info, dict) else message.get("role")
-        if role != "user":
-            continue
-        if _text_parts(message.get("parts")) == expected_texts:
+        if classify_admission(message, expected) in {"exact", "pending"}:
             return True
     return False
 
@@ -293,12 +344,12 @@ def classify_provider_state(
     _idle_from_status_map(status_map, session_id)
     has_result = structured_result_from_messages(messages) is not None
     open_tools = _has_open_tool_work(messages)
+    if has_result and not open_tools and error_kind != "failed":
+        return "succeeded"
     if error_kind == "canceled":
         return "canceled"
     if error_kind == "failed":
         return "failed"
-    if has_result and not open_tools:
-        return "succeeded"
     return "running"
 
 
@@ -312,7 +363,8 @@ def structured_result_from_messages(messages: Sequence[object]) -> dict[str, Any
             continue
         if info.get("role") != "assistant":
             continue
-        if isinstance(info.get("error"), dict):
+        error = info.get("error")
+        if isinstance(error, dict) and not _is_abort_error(error):
             continue
         parts = message.get("parts")
         if not isinstance(parts, list):
@@ -377,24 +429,62 @@ def provider_error_message(
     session: Mapping[str, object],
     messages: Sequence[object],
 ) -> str:
-    error = session.get("error")
-    if isinstance(error, dict):
-        message = error.get("message")
-        if isinstance(message, str) and message:
-            return message
+    message = _provider_error_message(session.get("error"))
+    if message is not None:
+        return message
     for record in messages:
         if not isinstance(record, dict):
             continue
         info = record.get("info")
         if not isinstance(info, dict):
             continue
-        payload = info.get("error")
-        if not isinstance(payload, dict):
-            continue
-        message = payload.get("message")
-        if isinstance(message, str) and message:
+        message = _provider_error_message(info.get("error"))
+        if message is not None:
             return message
     return "provider error"
+
+
+def _provider_error_message(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    message = payload.get("message")
+    if isinstance(message, str) and message:
+        return message
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    message = data.get("message")
+    if isinstance(message, str) and message:
+        return message
+    return None
+
+
+_TRANSIENT_PROVIDER_ERROR_MARKERS = (
+    "certificate verification",
+    "certificate verify failed",
+    "connection closed",
+    "connection refused",
+    "connection reset",
+    "econnrefused",
+    "econnreset",
+    "enotfound",
+    "gateway timeout",
+    "network error",
+    "request timeout",
+    "service unavailable",
+    "temporarily unavailable",
+    "temporary failure",
+    "timed out",
+    "tls handshake",
+)
+
+
+def provider_error_is_transient(
+    session: Mapping[str, object],
+    messages: Sequence[object],
+) -> bool:
+    message = provider_error_message(session, messages).casefold()
+    return any(marker in message for marker in _TRANSIENT_PROVIDER_ERROR_MARKERS)
 
 
 def _is_identity_bearing_name(name: str | None) -> bool:
@@ -434,7 +524,7 @@ def _terminal_error_kind(
         return "canceled"
     error = session.get("error")
     if isinstance(error, dict):
-        if error.get("name") == "Aborted":
+        if _is_abort_error(error):
             return "canceled"
         return "failed"
     for message in messages:
@@ -446,7 +536,11 @@ def _terminal_error_kind(
         payload = info.get("error")
         if not isinstance(payload, dict):
             continue
-        if payload.get("name") == "Aborted":
+        if _is_abort_error(payload):
             return "canceled"
         return "failed"
     return None
+
+
+def _is_abort_error(payload: Mapping[str, object]) -> bool:
+    return payload.get("name") in {"Aborted", "MessageAbortedError"}

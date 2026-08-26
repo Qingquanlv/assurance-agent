@@ -39,6 +39,7 @@ class OpenCodeAdapterConfig(FrozenModel):
     project_scope: str = Field(min_length=1)
     request_timeout_seconds: float = Field(gt=0, le=300)
     observation_horizon_seconds: float = Field(gt=0, le=3600)
+    progress_timeout_seconds: float = Field(default=300, gt=0, le=3600)
     poll_interval_seconds: float = Field(gt=0, le=60)
     cancel_timeout_seconds: float = Field(gt=0, le=300)
     max_response_bytes: int = Field(gt=0, le=4_000_000)

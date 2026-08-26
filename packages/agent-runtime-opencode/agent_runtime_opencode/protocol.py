@@ -163,12 +163,16 @@ class OpenCodeHttpClient:
 
     async def open_sse(self, *, cursor: str | None = None) -> bytes:
         extra = {"cursor": cursor} if cursor else None
+        observation_slice = min(
+            self._config.request_timeout_seconds,
+            self._config.poll_interval_seconds,
+        )
         return await self._read(
             "GET",
             "/event",
             accept="text/event-stream",
             extra_params=extra,
-            stream_deadline_seconds=self._config.request_timeout_seconds,
+            stream_deadline_seconds=observation_slice,
         )
 
     async def abort(self, session_id: str) -> dict[str, Any]:
