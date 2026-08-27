@@ -254,7 +254,6 @@ def _install_wheels(wheelhouse: Path, python: Path, distributions: Sequence[str]
             _uv(),
             "pip",
             "install",
-            "--offline",
             "--python",
             str(python),
             "--find-links",

@@ -95,9 +95,11 @@ PY
 # source trees so imports cannot succeed through the current working directory.
 cd "$smoke_root"
 
+# Local wheels stay on --find-links. Third-party registry deps cannot use
+# --offline: uv's offline resolver treats yanked pydantic==2.12.1 as the only
+# cached match and refuses 2.13.x even after `uv sync` populated the cache.
 uv venv --offline --python 3.11 "$smoke_root/venv-a"
 uv pip install \
-  --offline \
   --python "$smoke_root/venv-a/bin/python" \
   --find-links "$dist_root" \
   "$engine_wheel"
@@ -119,7 +121,6 @@ grep -q "product distribution is required" "$smoke_root/missing-product.out"
 
 uv venv --offline --python 3.11 "$smoke_root/venv-b"
 uv pip install \
-  --offline \
   --python "$smoke_root/venv-b/bin/python" \
   --find-links "$dist_root" \
   "$engine_wheel" \
@@ -181,7 +182,6 @@ PY
 
 uv venv --offline --python 3.11 "$smoke_root/venv-c"
 uv pip install \
-  --offline \
   --python "$smoke_root/venv-c/bin/python" \
   --find-links "$dist_root" \
   "$engine_wheel" \

@@ -83,8 +83,9 @@ install_env() {
   local name="$1"
   shift
   uv venv --offline --python 3.11 "$smoke_root/$name"
+  # Local wheels stay on --find-links. Do not pass --offline: yanked
+  # pydantic==2.12.1 poisons uv's offline resolver on CI caches.
   uv pip install \
-    --offline \
     --python "$smoke_root/$name/bin/python" \
     --find-links "$dist_root" \
     "$@"
