@@ -3,10 +3,11 @@
 ## Cursor Cloud specific instructions
 
 This repo is a uv workspace that ships the graph runtime, six capability
-wheels, adapter wheels, and `assurance-product` (the `aa` CLI). There is no
-long-running service, database, web server, or frontend to start. Standard
-dev/lint/test/build commands live in `README.md` and `.github/workflows/ci.yml`.
-`uv sync` at the repo root installs workspace members into one env.
+wheels, adapter wheels, and `assurance-product`. `aa` is owned by
+`assurance-product`. There is no long-running service, database, web server,
+or frontend to start. Standard dev/lint/test/build commands live in
+`README.md` and `.github/workflows/ci.yml`. `uv sync` at the repo root
+installs workspace members into one env.
 
 Non-obvious notes:
 
@@ -21,6 +22,10 @@ Non-obvious notes:
 - The full CI gate is: `ruff check .`, `ruff format --check .`, `pyright`, `lint-imports`,
   `pytest`, `uv run python scripts/check_no_legacy.py --scope repository`, and
   `bash scripts/assurance_product_wheel_smoke_test.sh`.
+- Installed commands are `aa compile`, `aa start`, `aa run`, `aa status`,
+  `aa resume`, `aa export`, `aa archive`, `aa bindings build`, and
+  `aa lock show`. Delivery is `aa run` to achieved, then `aa export`, then
+  optional `aa archive`.
 - Full workflow driving (`aa run`) needs an external OpenCode agent server
   (default `http://127.0.0.1:4096`); it is not required for building, testing,
   or the deterministic scheduler.

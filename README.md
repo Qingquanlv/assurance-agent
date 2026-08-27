@@ -2,7 +2,7 @@
 
 Private uv workspace for the installed Assurance graph product. The publishable
 wheels are `graph-engine`, six capability packages, `assurance-product`, and the
-OpenCode/Cursor adapter wheels. The product console script is `aa`.
+OpenCode/Cursor adapter wheels. `aa` is owned by `assurance-product`.
 
 There is no long-running service. Develop and test through `uv run`.
 
@@ -20,9 +20,14 @@ uv run python scripts/check_no_legacy.py --scope repository
 bash scripts/assurance_product_wheel_smoke_test.sh
 ```
 
-`aa compile`, `aa start`, `aa run`, `aa status`, `aa export`, and
-`aa bindings build` operate on an installed product plus an explicit binding
-wheel and project configuration tree.
+`aa compile`, `aa start`, `aa run`, `aa status`, `aa resume`, `aa export`,
+`aa archive`, `aa bindings build`, and `aa lock show` operate on an installed
+product plus an explicit binding wheel and project configuration tree.
+
+Delivery is `aa run` to achieved, then `aa export`, then optional `aa archive`.
+
+Product tests live in `tests/product/`. The live OpenCode benchmark lives in
+`benchmark/assurance-product/`.
 
 ## Installed product, not a SUT plugin loader
 
