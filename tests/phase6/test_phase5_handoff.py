@@ -163,11 +163,12 @@ def test_residual_ledger_advances_task26_and_task27_without_closing_task24() -> 
     }
 
     assert actual == EXPECTED_RESIDUAL_MAPPINGS
-    assert actual[("phase-5", "Task 24")] == ("carried_forward", 3)
-    assert actual[("phase-3", "OpenCode live")] == ("carried_forward", 3)
+    assert actual[("phase-5", "Task 24")] == ("deferred_out_of_scope", None)
+    assert actual[("phase-3", "OpenCode live")] == ("deferred_out_of_scope", None)
     assert actual[("phase-5", "Task 25")] == ("deferred_out_of_scope", None)
     assert actual[("phase-5", "Task 26")] == ("verified_complete", None)
     assert actual[("phase-5", "Task 27")] == ("verified_complete", None)
+    assert "carried_forward" not in {disposition for disposition, _ in actual.values()}
 
 
 def test_phase5_progress_does_not_mark_task24_complete() -> None:

@@ -409,3 +409,198 @@
   redirected to a sibling change. Regressions cover that escape and the graph's
   exact `/case_delta_paths` projection; 8 focused tests passed. No OpenCode live
   validation was resumed.
+- Task 3 resumed 2026-08-27: user asked to continue this closeout plan.
+  First incomplete task remains Task 3 live admission. Baseline HEAD
+  `c5c451c`. OpenCode HTTP `http://127.0.0.1:4096` returned 200. The 144256
+  diagnostic stays non-admissible. Dispatching a fresh implementer for the
+  remaining live/validator/admission/commit steps only.
+- 2026-08-27 user redirect: start at Task 4. Task 3 live implementer interrupted
+  (no admission commit). Task 3 remains incomplete; live evidence is not
+  fabricated. Task 4 may close local security/fault/repository gates and must
+  keep any Task-3-dependent release disposition honestly blocked.
+- Task 4 implementer: DONE_WITH_CONCERNS (commit `c5c451c..a1c0c80`).
+  Local gates committed; Task 3 admission not fabricated. Recorded and not
+  patched: 6 combined-suite cursor isolation failures, committed-HEAD smoke
+  `MinimumCoverageMatrixAuthoring` import miss, 2 OpenCode fault gaps, and
+  gate nodes that exist only in dirty Change-local files. Dispatching task
+  review; do not mark Task 4 complete until review is clean.
+- Task 4 review: spec ❌, quality Needs fixes (1 Important, 0 Critical).
+  Important: `generated-declaration-contribution-mismatch` is `direct` via
+  happy-path `test_generated_provider_contributes_exactly_99_aliases`.
+  Controller ⚠️ resolutions: Step 4/5 results live in the report (not a code
+  gap); new smoke scenarios did not execute because committed-HEAD smoke died
+  on Change-local intake import (recorded return, not a Task 4 patch);
+  referenced gate source files are all tracked at HEAD (dirty *content* of
+  those tests was left unstaged per ruling); TDD evidence is in the report.
+  Minors for whole-branch triage: JUnit name equality, `effect-after-intent`
+  success-path mapping, `missing-binding` smoke wrap, replay fixture import,
+  Step 4 warning/skip without node IDs.
+- Task 4: fix round 1/5 open for the Important mismatch-evidence row.
+- Task 4 fix round 1 result: `e884bb8` maps the row to
+  `test_generated_provider_rejects_declaration_contribution_mismatch`.
+  Covering gates: 13 passed. Re-reviewing `a1c0c80..e884bb8`.
+- Task 4: complete (commits `c5c451c..e884bb8`, review clean).
+  Minors for whole-branch triage: JUnit name equality; `effect-after-intent`
+  success-path mapping; `missing-binding` smoke wrap; replay fixture import;
+  Step 4 warning/skip without node IDs; mismatch test leaves
+  `assurance_product_bindings_*` in `sys.modules`.
+- Task 5 ruling: do not mark Phase 5 Task 24 complete; Task 3 live stays
+  incomplete; handoff must reject fabricated provider admission.
+- Task 5 in progress: parser, `acceptance.json`, and `phase6-handoff.json`
+  exist uncommitted. SDD `*` gitignore requires `git add -f` for the new
+  JSON/report. Implementer nudged to force-add, test, commit, and report.
+- Task 5 implementer: DONE_WITH_CONCERNS (commit `e884bb8..8db0fbc`).
+  Task 24 not marked complete. Parser digest stable. Concerns: empty
+  `project_roots`, thin acceptance reuse of Task 4 evidence, release
+  still blocked. Dispatching task review.
+- Task 5: complete (commits `e884bb8..8db0fbc`, review clean).
+  Minors for whole-branch triage: `project_roots` not treated as a path
+  field; handoff builders not byte-equal to committed JSON; acceptance
+  `passed` rows reuse Task 4 evidence.
+- Task 6 ruling: consume frozen empty `project_roots`; do not invent SUT
+  roots; never select Change-local `events.jsonl`/`status.json`/`.runtime/`/`.staging/`.
+- Task 6 implementer: DONE (commit `8db0fbc..3bd375d`). Empty-root
+  audit/cleanup/re-audit digest
+  `3313d0ee661ae9013f4bd0674ed0e2d7c1871f78d9c5cbd4a952e2f67fab2bf4`.
+  Dispatching task review.
+- Task 6: complete (commits `8db0fbc..3bd375d`, review clean).
+  Minors for whole-branch triage: cleanup fixture path typo
+  `qa/archive/CH-1` vs `CH-OLD`; audit omits closed-name symlink/FIFO
+  (`ready_for_cutover` means no live PIDs).
+- Task 7 started: transfer `aa` to assurance-product; keep legacy
+  workspace members until Tasks 8–9.
+- Task 7 implementer: DONE_WITH_CONCERNS (commit `3bd375d..bcfbdcd`).
+  `aa` owned by assurance-product; root virtual. Extra staged file:
+  `tests/conftest.py` collection guard. Dispatching task review.
+- Task 7 review: spec ✅, quality Approved, 1 Important (blanket
+  `suppress(ProductError)`). Fix round 1/5: narrow to exact
+  `unknown product: assurance` and re-raise other ProductErrors.
+- Task 7 fix round 1: `a673464` narrows the guard. Covering tests 8
+  passed. Focused guard test left unstaged. Re-reviewing
+  `bcfbdcd..a673464`.
+- Task 7: complete (commits `3bd375d..a673464`, review clean).
+  Minors for whole-branch triage: redundant startswith/exact check;
+  unstaged `test_conftest_product_guard.py`; help test injects
+  `prog_name="aa"`; duplicated `built_product_wheel`.
+- Task 8 started: delete `assurance_agent/` without fabricating Task 3
+  live admission. Update `tests/conftest.py` so it no longer imports
+  the deleted package.
+- Task 8 implementer: DONE_WITH_CONCERNS (commit `a673464..47941b1`).
+  `assurance_agent/` deleted. Phase 4 353 passed; Phase 5 7 combined-suite
+  cursor isolation failures (pass isolated). Leftover `tests/unit` and
+  `tests/integration` imports recorded, not patched. Dispatching review.
+- Task 8: complete (commits `a673464..47941b1`, review clean).
+  Minors for whole-branch triage: tautological Phase 4 collector test;
+  dead `_compare_hook`; inventory extras vs `phase6-deletion.txt`;
+  comment-only quality substring edit; leftover unit/integration imports.
+- Task 9 started: delete `packages/assurance-kernel/` without
+  compatibility modules.
+- Task 9 implementer: DONE_WITH_CONCERNS (commit `47941b1..6d098f3`).
+  Kernel deleted. Same Phase 5 isolation family. Leftover unit/sample
+  imports recorded. Dispatching review.
+- Task 9 review: spec ✅, quality Needs fixes (3 Important tautologies).
+  Fix round 1/5 open.
+- Task 9 fix round 1: `f170541` replaces tautologies. Covering 23 passed.
+  Re-reviewing `6d098f3..f170541`.
+- Task 9: complete (commits `47941b1..f170541`, review clean).
+- Task 10 started: no-legacy gate and final 11-wheel isolation. Live
+  leftover unit/integration imports of deleted packages are not
+  allowlist-valid.
+- Task 10 implementer: DONE_WITH_CONCERNS (commits `f170541..3914360`).
+  Repository no-legacy exits 0. Smoke from `f0b0e5a` built 11 wheels then
+  failed on recorded intake import. Docs scrubbed for the gate. Dispatching
+  review.
+- Task 10: complete (commits `f170541..3914360`, review clean).
+  Minors for whole-branch triage: allowlist does not require frozen
+  spec/evidence prefixes; product-wheel unit test builds from the
+  worktree not `git archive HEAD`; CI job still named `packaging-smoke`.
+- Task 11 started: rename `tests/phase5/` → `tests/product/` and
+  `benchmark/assurance-product-phase5/` → `benchmark/assurance-product/`;
+  map then delete comparison fixtures/executables. Dirty leftover hunks
+  in those trees stay unstaged except mechanical path updates.
+- Task 11 implementer: DONE_WITH_CONCERNS (commit `3914360..267ecba`).
+  Combined dirty-tree suite `11 failed, 548 passed`; 3 were runner
+  fixture-path, then 8 leftover Cursor/composition/Task 10 smoke.
+- Task 11 review: spec ✅, quality Approved, 0 Critical/Important.
+  Controller ⚠️: leftover 8 failures match Tasks 4/8/9/10 recorded
+  families, not a Task 11 code gap. Mapping/manifest 5 passed; layout
+  8 passed after the path fix.
+- Task 11: complete (commits `3914360..267ecba`, review clean).
+  Minors for whole-branch triage: mapping test is AST name check;
+  one-OpenCode-item contract duplicated; harness isolation skip of
+  `run_item.py` unexplained.
+- Task 12 started: docs + black-box export acceptance. Consume
+  existing `assurance_product.export` / `archive_published`. Do not
+  invent `aa workflow run`; document actual `aa run -> achieved ->
+  aa export -> optional aa archive`.
+- Task 12 implementer: DONE_WITH_CONCERNS (commit `267ecba..0444ab3`).
+  Docs + export acceptance 12 passed. No-legacy gate still fails on
+  pre-existing `task-10-review.md`.
+- Task 12 review: spec ✅, quality Approved, 0 Critical/Important.
+  Controller ⚠️: no-legacy hits are Task 10 review-file residue, not
+  a Task 12 docs/export defect; carry to Task 14.
+- Task 12: complete (commits `267ecba..0444ab3`, review clean).
+  Minors for whole-branch triage: export acceptance copies product
+  tests; interruption recovery patches `_journal_cut`; receipt digest
+  bindings not asserted; archive-before-receipt not locked here.
+- Task 13 started: final OpenCode live. Must not reuse Phase 5 /
+  Task 3 diagnostic sessions. Must not fabricate admission.
+- Task 13 implementer: BLOCKED (commit `0444ab3..f43cc40`). Fresh
+  `run-opencode.sh` authenticated OpenCode change
+  `BENCH-opencode-ret-dept-management-20260827-054218-9a2df6f6`,
+  completed intake through case-review, then exit 30 at designed
+  `human-review` / `needs_human_review`. No achieved/publish claimed.
+- Task 13 ruling: this is a context gap, not a product defect. The
+  committed harness stops when interrupt actions are offered
+  (`resume was not invoked`). Task 13 "follow to terminal" means the
+  operator resumes this same change with `aa resume --action approve`
+  and continues `aa run` until `achieved` or a new blocker. Do not
+  start a new `run-opencode.sh`. Do not rewrite the harness to
+  auto-resume. Do not fabricate achieved. Re-dispatching resume.
+- Task 13 implementer continuation: BLOCKED (commit `f43cc40..3492913`).
+  Same change approved; generation prepared execute activity
+  `81976040…` in state `prepared` with null dispatch fingerprint;
+  twelve isolated `aa run`s returned `activity_recovery` and events
+  stayed at 291. No new OpenCode session.
+- Task 13 ruling: deterministic scheduler gap, not quota/network.
+  `resume_running` skips any running attempt with a live activity
+  unless `_same_attempt_execute` is set. A `prepared` activity with
+  no dispatch fingerprint is not live provider work; skipping it
+  makes `run_until_blocked` yield `activity_recovery` forever.
+  Fix that seam with a focused regression; do not stage leftover
+  dirty production_host hunks. After the fix commits, a new live
+  invocation is required because isolated wheels/source digest
+  change. Do not fabricate achieved from `054218-9a2df6f6`.
+- Task 13 recovery fix: `c0b6393` + `0f034de` (cancel-requested skip).
+  Review clean after round 2. Minors for whole-branch triage: large
+  `_PreparedDispatchHost`; post-reopen ledger split; predicate
+  duplication. Dispatching a fresh live invocation; do not resume
+  `054218-9a2df6f6`.
+- Task 13 rerun `063450-3e30e331` (commit `9c86bae`): recovery fix
+  held (prepare+dispatch); operator approve then
+  `generation-api-plan` `invalid_output`. Still not `achieved`.
+- 2026-08-27 user: complete Task 14 first. Task 13 live stays
+  incomplete and must not be fabricated. OpenCode live residuals
+  become `deferred_out_of_scope` for this evidence pack.
+- Task 14 started from HEAD `9c86bae`.
+- Task 14 residuals: no `carried_forward` remains. Closeout tasks
+  1–2 and 4–12 plus Task 13 recovery map to `verified_complete` or
+  `superseded`. Cursor live stays `deferred_out_of_scope`. OpenCode
+  live rows (Phase 3 live, Phase 5 Task 24, Phase 6 Task 15) are
+  `deferred_out_of_scope` with evidence `先完成task14` and blocked
+  live `063450-3e30e331` (`generation_execute_invalid_output`).
+- Task 14 Step 2 gates from worktree at committed HEAD `9c86bae`
+  (dirty tree left in place): lint-imports 0, graph-engine smoke 0,
+  remaining-phase admission 0; ruff check 1, ruff format 1, pyright 1,
+  pytest 2, product-wheel smoke 1, first no-legacy 1. After exact
+  allowlist of gitignored SDD review/report/brief paths, no-legacy is
+  rerun and recorded in `final-evidence.json`.
+- Task 14 Step 4 whole-branch review and Step 5 rerun-after-review
+  are left to the controller. Evidence pack verdict is
+  `accepted_with_waivers`, not fully accepted.
+- Task 14: evidence pack published; live not fabricated.
+- Task 14 no-legacy rerun after exact SDD allowlist: exit 0,
+  log SHA-256
+  `2da8be6fcef256a1e45c418c7478b06add7abdf05867432c8fadae7b3bd601b6`.
+  Focused admission/handoff/no-legacy tests: `41 passed`. Full
+  `uv run pytest` remains exit 2 at collection.

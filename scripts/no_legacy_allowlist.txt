@@ -199,10 +199,17 @@
 .superpowers/sdd/2026-08-26-change-local-assurance-workspace/task-7-fix-round-1.md
 .superpowers/sdd/2026-08-26-change-local-assurance-workspace/task-8-fix-round-1.md
 .superpowers/sdd/2026-08-26-change-local-assurance-workspace/task-9-fix-round-1.md
+.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/acceptance.md
+.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/final-evidence.json
 .superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/progress.md
 .superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/residual-disposition.json
 .superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/task-10-brief.md
 .superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/task-10-report.md
+.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/task-10-review.md
+.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/task-12-review.md
+.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/task-13-report.md
+.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/task-14-brief.md
+.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/task-14-report.md
 .superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/task-3-brief.md
 .superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/task-3-report.md
 .superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/task-4-report.md
