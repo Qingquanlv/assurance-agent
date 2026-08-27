@@ -97,7 +97,7 @@ def test_checked_in_declarations_bind_distinct_entrypoints() -> None:
 def test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entrypoints() -> None:
     root_project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     members = tuple(root_project["tool"]["uv"]["workspace"]["members"])
-    dependencies = tuple(root_project["project"]["dependencies"])
+    dependencies = tuple(root_project.get("project", {}).get("dependencies", ()))
     dev = tuple(root_project["dependency-groups"]["dev"])
     sources = root_project["tool"]["uv"]["sources"]
     fixture_rel = "tests/phase4/fixtures/six-wheel-product"
@@ -110,7 +110,8 @@ def test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entr
     assert "phase4-opencode" not in production_aa_products()
     assert "phase4-cursor" not in production_aa_products()
     lock_text = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
-    hatch_packages = tuple(root_project["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"])
+    hatch = root_project.get("tool", {}).get("hatch", {})
+    hatch_packages = tuple(hatch.get("build", {}).get("targets", {}).get("wheel", {}).get("packages", ()))
     assert PRODUCT_DISTRIBUTION not in lock_text
     assert "test_assurance_phase4_product" not in lock_text
     assert "test_assurance_phase4_product" not in hatch_packages

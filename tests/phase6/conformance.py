@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 import subprocess
 from typing import Literal, cast
@@ -665,3 +666,96 @@ def build_phase5_acceptance_document(repo_root: Path) -> dict[str, JSONValue]:
         ),
     )
     return document.model_dump(mode="json")
+
+
+PRODUCTION_METADATA_FILES = (
+    "pyproject.toml",
+    ".importlinter",
+    "uv.lock",
+    "packages/assurance-product/pyproject.toml",
+    "packages/assurance-intake/pyproject.toml",
+    "packages/assurance-generation/pyproject.toml",
+    "packages/assurance-execution/pyproject.toml",
+    "packages/assurance-healing/pyproject.toml",
+    "packages/assurance-quality/pyproject.toml",
+    "packages/assurance-improvement/pyproject.toml",
+    "packages/graph-engine/pyproject.toml",
+    "packages/agent-runtime-contracts/pyproject.toml",
+    "packages/agent-runtime-opencode/pyproject.toml",
+    "packages/agent-runtime-cursor/pyproject.toml",
+)
+
+PRODUCTION_PACKAGE_ROOTS = (
+    "packages/assurance-product/assurance_product",
+    "packages/assurance-intake/assurance_intake",
+    "packages/assurance-generation/assurance_generation",
+    "packages/assurance-execution/assurance_execution",
+    "packages/assurance-healing/assurance_healing",
+    "packages/assurance-quality/assurance_quality",
+    "packages/assurance-improvement/assurance_improvement",
+    "packages/graph-engine/graph_engine",
+    "packages/agent-runtime-contracts/agent_runtime_contracts",
+    "packages/agent-runtime-opencode/agent_runtime_opencode",
+    "packages/agent-runtime-cursor/agent_runtime_cursor",
+)
+
+OWNER_REPLACEMENT_TESTS = {
+    "assurance.intake": "packages/assurance-intake/tests/test_plugin.py",
+    "assurance.generation": "packages/assurance-generation/tests/test_contracts.py",
+    "assurance.execution": "packages/assurance-execution/tests/test_contracts.py",
+    "assurance.healing": "packages/assurance-healing/tests/test_contracts.py",
+    "assurance.quality": "packages/assurance-quality/tests/test_contracts.py",
+    "assurance.improvement": "packages/assurance-improvement/tests/test_plugin.py",
+}
+
+PHASE5_REPLACEMENT_TEST = "tests/phase5/test_full_graph_audit.py"
+
+
+def production_runtime_files(repo_root: Path) -> tuple[Path, ...]:
+    files: list[Path] = []
+    for relative in PRODUCTION_METADATA_FILES:
+        path = repo_root / relative
+        if path.is_file():
+            files.append(path)
+    for relative in PRODUCTION_PACKAGE_ROOTS:
+        root = repo_root / relative
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*"):
+            if path.is_file() and "__pycache__" not in path.parts:
+                files.append(path)
+    return tuple(sorted(files))
+
+
+def agent_deletion_paths(repo_root: Path) -> tuple[str, ...]:
+    text = (repo_root / PHASE4_INVENTORY_RELATIVE_PATH).read_text(encoding="utf-8")
+    return tuple(line.strip() for line in text.splitlines() if line.startswith("assurance_agent/"))
+
+
+def ownership_legacy_id_for_path(path: str) -> str:
+    skill_prefix = "assurance_agent/_resources/skills/"
+    persona_prefix = "assurance_agent/_resources/opencode/agents/"
+    if path.startswith(skill_prefix) and path.endswith("/SKILL.md"):
+        return path[len(skill_prefix) :].split("/", 1)[0]
+    if path.startswith(persona_prefix) and path.endswith(".md"):
+        return Path(path).stem
+    if path == "assurance_agent/workflow/driver/operations_catalog.py":
+        return "operation:run-tests"
+    return path
+
+
+def deletion_proof(item: Mapping[str, object]) -> str:
+    verification = item.get("verification")
+    if isinstance(verification, str) and (
+        verification.startswith("tests/") or verification.startswith("packages/")
+    ):
+        return verification.split("::", 1)[0]
+    disposition = item.get("disposition")
+    if disposition in {"delete_phase6", "retain_harness"}:
+        return "obsolete"
+    if disposition == "replace_phase5":
+        return PHASE5_REPLACEMENT_TEST
+    owner = item.get("owner")
+    if isinstance(owner, str) and owner in OWNER_REPLACEMENT_TESTS:
+        return OWNER_REPLACEMENT_TESTS[owner]
+    raise ValueError(f"unmapped deletion record: {item.get('legacy_id')}")

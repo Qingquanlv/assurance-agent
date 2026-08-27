@@ -1,6 +1,5 @@
 [importlinter]
 root_packages =
-    assurance_agent
     assurance_kernel
     assurance_intake
     assurance_generation
@@ -22,7 +21,6 @@ type = forbidden
 source_modules =
     assurance_intake
 forbidden_modules =
-    assurance_agent
     assurance_kernel
 
 [importlinter:contract:generation-no-legacy]
@@ -31,7 +29,6 @@ type = forbidden
 source_modules =
     assurance_generation
 forbidden_modules =
-    assurance_agent
     assurance_kernel
 
 [importlinter:contract:generation-intake-contracts-only]
@@ -51,7 +48,6 @@ type = forbidden
 source_modules =
     assurance_execution
 forbidden_modules =
-    assurance_agent
     assurance_kernel
 
 [importlinter:contract:execution-assurance-contracts-only]
@@ -75,7 +71,6 @@ type = forbidden
 source_modules =
     assurance_healing
 forbidden_modules =
-    assurance_agent
     assurance_kernel
 
 [importlinter:contract:healing-assurance-contracts-only]
@@ -111,7 +106,6 @@ type = forbidden
 source_modules =
     assurance_quality
 forbidden_modules =
-    assurance_agent
     assurance_kernel
 
 [importlinter:contract:quality-assurance-contracts-only]
@@ -144,7 +138,6 @@ type = forbidden
 source_modules =
     assurance_improvement
 forbidden_modules =
-    assurance_agent
     assurance_kernel
 
 [importlinter:contract:improvement-assurance-contracts-only]
@@ -181,100 +174,10 @@ type = forbidden
 source_modules =
     graph_engine
 forbidden_modules =
-    assurance_agent
     assurance_kernel
     graph_engine_toy_a
     graph_engine_toy_b
     agent_runtime_fixture
-
-[importlinter:contract:layers]
-name = commands depend on eval domain, never the reverse
-type = layers
-layers =
-    assurance_agent.cli
-    # Installed-product selection lives with commands: workflow.driver must not
-    # import assurance_agent.product (CLI calls select_product; driver reads id).
-    assurance_agent.commands : assurance_agent.product
-    assurance_agent.eval
-    assurance_agent.risk
-    assurance_agent.workflow
-    assurance_agent.verification
-    assurance_agent.evidence
-    assurance_agent.artifacts
-    assurance_agent.config
-    assurance_agent.resources
-# Memory evaluate builds a host Eval runner (callables cannot be CLI JSON params).
-ignore_imports =
-    assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.eval.host_runner
-
-[importlinter:contract:retro-layers]
-name = commands depend on retro domain, never the reverse
-type = layers
-layers =
-    assurance_agent.commands
-    assurance_agent.retro
-    assurance_agent.workflow
-# Graph entrypoints invoke Retro through one narrow stage facade. Keep that
-# intentional seam explicit so every new workflow→retro edge remains fail-closed.
-ignore_imports =
-    assurance_agent.workflow.retro_ops -> assurance_agent.retro.stages
-    # Improvement reconciler validates Candidates against RetroContext (Task 8/9 seam).
-    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
-    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
-    # Knowledge delivery loads pinned RetroContext for Problem eligibility (Task 11).
-    assurance_agent.workflow.improvements.knowledge_delivery -> assurance_agent.retro.types
-
-[importlinter:contract:eval-retro-independence]
-name = eval and retro must not import each other
-type = independence
-modules =
-    assurance_agent.eval
-    assurance_agent.retro
-# Transitive eval → workflow → retro_ops → the same intentional facade seam.
-ignore_imports =
-    assurance_agent.workflow.retro_ops -> assurance_agent.retro.stages
-    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
-    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
-    assurance_agent.workflow.improvements.knowledge_delivery -> assurance_agent.retro.types
-
-[importlinter:contract:core-below-orchestration]
-name = workflow.core must not import workflow.orchestration
-type = forbidden
-source_modules =
-    assurance_agent.workflow.core
-forbidden_modules =
-    assurance_agent.workflow.orchestration
-
-[importlinter:contract:artifacts-below-workflow]
-name = artifacts must not import workflow
-type = forbidden
-source_modules =
-    assurance_agent.artifacts
-forbidden_modules =
-    assurance_agent.workflow
-
-[importlinter:contract:graph-runtime-layer]
-name = driver depends on domains, domains depend on graph, graph depends on orchestration and core
-type = layers
-layers =
-    assurance_agent.workflow.driver
-    assurance_agent.workflow.metrics : assurance_agent.workflow.issues : assurance_agent.workflow.improvements : assurance_agent.workflow.execution : assurance_agent.workflow.report : assurance_agent.workflow.healing : assurance_agent.workflow.discovery : assurance_agent.workflow.retro_ops
-    assurance_agent.workflow.graph
-    assurance_agent.workflow.orchestration
-    assurance_agent.workflow.core
-# Graph delivery ops build a host Eval runner (callables cannot be CLI params).
-# That pulls eval → driver transitively; keep the seam explicit and fail-closed
-# for any new graph → driver edges.
-ignore_imports =
-    assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.eval.host_runner
-
-[importlinter:contract:kernel-not-assurance]
-name = kernel must not import assurance_agent
-type = forbidden
-source_modules =
-    assurance_kernel
-forbidden_modules =
-    assurance_agent
 
 [importlinter:contract:kernel-artifacts-below-workflow]
 name = kernel artifacts must not import workflow
@@ -336,7 +239,6 @@ source_modules =
     agent_runtime_opencode
     agent_runtime_cursor
 forbidden_modules =
-    assurance_agent
     assurance_kernel
 
 [importlinter:contract:contracts-wheel-independence]
@@ -348,7 +250,6 @@ forbidden_modules =
     agent_runtime_opencode
     agent_runtime_cursor
     agent_runtime_fixture
-    assurance_agent
     assurance_kernel
 
 [importlinter:contract:fixture-downward-only]
@@ -359,5 +260,4 @@ source_modules =
 forbidden_modules =
     agent_runtime_opencode
     agent_runtime_cursor
-    assurance_agent
     assurance_kernel

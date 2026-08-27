@@ -197,7 +197,7 @@ Two obligations are enforced by the model rather than left to the gate:
   a document may not also claim `sufficient`, or a gate reading `sufficient`
   alone would pass on it.
 
-The module deliberately does not import `assurance_agent.evidence`: the artifact
+The module deliberately does not import a legacy evidence evaluator: the artifact
 layer is the wire contract and must stay loadable by a consumer that has no
 evaluator. The two vocabularies that *originate* in the evidence layer
 (`SufficiencyReasonCode`, `EvidenceCoverageErrorCode`) are therefore spelled out

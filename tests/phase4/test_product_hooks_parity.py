@@ -222,12 +222,6 @@ def test_no_hidden_catchall_hook_registry() -> None:
     assert _catchall_scan(NEW_WHEEL_ROOTS) == set()
 
 
-async def test_legacy_and_new_hook_paths_match_on_fixture(tmp_path: Path) -> None:
-    for row in load_hook_cases():
-        hook = str(row["hook"])
-        await _compare_hook(hook, tmp_path / hook)
-
-
 async def _compare_hook(hook: str, tmp_path: Path) -> None:
     tmp_path.mkdir(parents=True, exist_ok=True)
     comparers = {

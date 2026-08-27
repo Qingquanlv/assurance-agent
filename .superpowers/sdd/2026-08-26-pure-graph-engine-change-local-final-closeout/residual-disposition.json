@@ -14,7 +14,7 @@
   {"source_plan": "phase-6", "source_task": "Tasks 2-5", "disposition": "superseded", "replacement_task": 6, "evidence": ["Task 6 replaces old Phase 6 Tasks 2-5"]},
   {"source_plan": "phase-6", "source_task": "Task 6", "disposition": "carried_forward", "replacement_task": 7, "evidence": ["Remaining Work Disposition"]},
   {"source_plan": "phase-6", "source_task": "Task 7", "disposition": "carried_forward", "replacement_task": 10, "evidence": ["Final wheel isolation"]},
-  {"source_plan": "phase-6", "source_task": "Task 8", "disposition": "carried_forward", "replacement_task": 8, "evidence": ["Remaining Work Disposition"]},
+  {"source_plan": "phase-6", "source_task": "Task 8", "disposition": "carried_forward", "replacement_task": 8, "evidence": ["Task 8 deleted assurance_agent/; replacement tests or obsolete for every Phase 4 inventory path"]},
   {"source_plan": "phase-6", "source_task": "Task 9", "disposition": "carried_forward", "replacement_task": 9, "evidence": ["Remaining Work Disposition"]},
   {"source_plan": "phase-6", "source_task": "Task 10", "disposition": "carried_forward", "replacement_task": 10, "evidence": ["Remaining Work Disposition"]},
   {"source_plan": "phase-6", "source_task": "Tasks 11-12", "disposition": "carried_forward", "replacement_task": 11, "evidence": ["Final product tests and benchmark"]},

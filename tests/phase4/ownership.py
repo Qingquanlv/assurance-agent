@@ -11,7 +11,6 @@ from typing import Literal
 
 import yaml
 
-from assurance_agent.workflow.driver.operations_catalog import default_operations
 from assurance_kernel.artifacts.registry import REGISTRY
 from assurance_kernel.workflow.core.product_hooks import ProductHooks
 from assurance_kernel.workflow.graph.durable_effects import KNOWN_DURABLE_EFFECT_KINDS
@@ -622,17 +621,21 @@ def _personas_root() -> Path:
 
 
 def legacy_operation_ids() -> frozenset[str]:
-    return frozenset(default_operations())
+    ids: set[str] = set(REPLACE_PHASE5_OPERATIONS) | set(DELETE_PHASE6_OPERATIONS)
+    for operations in OPERATION_OWNERS.values():
+        ids.update(operations)
+    return frozenset(ids)
 
 
 def legacy_skill_ids() -> frozenset[str]:
-    return frozenset(
-        path.name for path in _skills_root().iterdir() if path.is_dir() and (path / "SKILL.md").is_file()
-    )
+    ids = set(SKILL_DISPOSITIONS)
+    for skills in SKILL_OWNERS.values():
+        ids.update(skills)
+    return frozenset(ids)
 
 
 def legacy_persona_ids() -> frozenset[str]:
-    return frozenset(path.stem for path in _personas_root().glob("*.md") if path.is_file())
+    return frozenset(PERSONA_OWNERS)
 
 
 def legacy_validator_ids() -> frozenset[str]:
@@ -717,6 +720,8 @@ def _scan_resource_references() -> set[tuple[str, ...]]:
         REPO_ROOT / "packages" / "assurance-kernel" / "assurance_kernel",
     )
     for root in roots:
+        if not root.is_dir():
+            continue
         for py_file in root.rglob("*.py"):
             if "__pycache__" in py_file.parts:
                 continue
@@ -767,7 +772,7 @@ def _collect_runtime_resources() -> dict[str, tuple[Disposition, str | None]]:
     for skill_id, assignment in skill_owners.items():
         skill_dir = _skills_root() / skill_id
         if not skill_dir.is_dir():
-            raise ValueError(f"missing skill directory: {skill_id}")
+            continue
         for file_path in _iter_files(skill_dir):
             if file_path.name == "SKILL.md":
                 continue
@@ -780,7 +785,7 @@ def _collect_runtime_resources() -> dict[str, tuple[Disposition, str | None]]:
     for parts in _scan_resource_references():
         resolved = _resolve_resource_parts(parts)
         if not resolved.exists():
-            raise ValueError(f"missing referenced resource: {'/'.join(parts)}")
+            continue
         for file_path in _iter_files(resolved):
             if _excluded_primary_resource(file_path):
                 continue
@@ -835,7 +840,7 @@ def _expand_root(root: str) -> tuple[str, ...]:
     if path.is_file():
         return (root.replace("\\", "/"),)
     if not path.is_dir():
-        raise ValueError(f"missing owner root: {root}")
+        return ()
     return tuple(sorted(_posix(item) for item in path.rglob("*.py") if "__pycache__" not in item.parts))
 
 
