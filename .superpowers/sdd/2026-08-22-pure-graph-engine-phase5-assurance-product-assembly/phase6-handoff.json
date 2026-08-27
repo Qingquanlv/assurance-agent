@@ -1,0 +1,81 @@
+{
+  "schema_version": "1",
+  "handoff_id": "phase5-to-phase6",
+  "source_commit": "e884bb88aadb9b3016f856c0c1a4b4ff3f351538",
+  "compatibility_bridge_allowed": false,
+  "cursor_live": "deferred_out_of_scope",
+  "source_digests": {
+    "graph": "03812d5a34f565b11665bce2a0ece5e9fa27816581b54d59828637791143d26f",
+    "product": "b70bfe2fcde4c68339af94c31dcbf88d33a3a7bec4956629a98082ccdf349bac",
+    "capability": {
+      "assurance_intake": "87295c064422c338f52f9fad976a5677a91db3f290d7b8e7efa4d20c72608059",
+      "assurance_generation": "eddd063c06562891e3d842a0f9b71009dc05f71e19460eb531702f731cca0338",
+      "assurance_execution": "ce9465ef23bcb1dc524b2d130802324ce09404e60ec210cec88538da4d3ca37a",
+      "assurance_healing": "8a095c02e268dbf469ab7421ad741b0f1a5a270f26c96018606230d48f76d424",
+      "assurance_quality": "0a3766a324f0f23e9f0a1e0154bd2b2968c1bdcae5eef55143bf7edeff4bfaef",
+      "assurance_improvement": "78af176b5aa1e8f5428cce57b11e9635205b61417a54ea061d30882d9f9bc705"
+    },
+    "adapter": {
+      "agent_runtime_contracts": "0187bfb23f7d39cd4bf5b38b3f354d028837140ed0c43cd29a21751bed4b3a6c",
+      "agent_runtime_opencode": "f789076bd9d852140a40baf6f00f7756d5b23a4300bce6d194df6f623c1d744e",
+      "agent_runtime_cursor": "75940569415ea14e067ecc23be9e0972540e17ea455db1414d979d876bae569a"
+    },
+    "deployment": "ae0821cd23bbcf9ce311aef1f9e012c82798578e9b5d8a4e7c68b96be256baba"
+  },
+  "change_local_admission": {
+    "path": ".superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/admission.json",
+    "digest": "51d934863618b2fa8905ea0a7e05f4007429f6d9d2566dbce7a0e7cb16d863d6",
+    "admission_status": "accepted_with_waivers"
+  },
+  "provider_evidence": {
+    "opencode": {
+      "status": "incomplete",
+      "disposition": "carried_forward",
+      "replacement_tasks": [
+        3,
+        13
+      ],
+      "session": null,
+      "publish_receipt": null,
+      "terminal": null
+    },
+    "cursor": {
+      "status": "deferred_out_of_scope",
+      "disposition": "deferred_out_of_scope",
+      "replacement_tasks": [],
+      "session": null,
+      "publish_receipt": null,
+      "terminal": null
+    }
+  },
+  "gate_evidence": {
+    "task": 4,
+    "local_disposition": "complete",
+    "release_disposition": "blocked",
+    "source_commit_range": "c5c451c..e884bb8",
+    "report_path": ".superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/task-4-report.md",
+    "report_digest": "2419e0aa8cea7753710d0233c6967c8dda0945fb1909c11bb1e6c925af54b521",
+    "unresolved": [
+      "combined-suite isolation: six cursor composition/audit nodes fail only in the combined Step 4 suite",
+      "committed-HEAD smoke ImportError: MinimumCoverageMatrixAuthoring",
+      "opencode-terminal-before-restart",
+      "opencode-provider-state-deleted-after-receipt"
+    ]
+  },
+  "phase4_deletion_inventory": {
+    "path": ".superpowers/sdd/2026-08-22-pure-graph-engine-phase4-assurance-capability-extraction/phase6-deletion.txt",
+    "digest": "94e4712570e6a19970aa7ced2e9503c199e3ce57818fdba27035b1d5ade9e58c"
+  },
+  "required_actions": [
+    "freeze_new_legacy_starts",
+    "drain_or_audit_terminate_legacy_invocations",
+    "switch_aa_to_assurance_product",
+    "remove_aa_next_name",
+    "decide_and_implement_safe_in_place_result_application_if_required",
+    "delete_legacy_runtime_and_product_implementation",
+    "delete_product_hooks_catalogs_old_entrypoints_resources_and_obsolete_tests",
+    "remove_comparison_only_compatibility_baseline_where_unneeded",
+    "add_no_old_invocation_resume_adapter_or_forwarding_import"
+  ],
+  "project_roots": []
+}
