@@ -16,7 +16,6 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pyright
 uv run lint-imports
-uv run python scripts/check_no_legacy.py --scope repository
 bash scripts/assurance_product_wheel_smoke_test.sh
 ```
 

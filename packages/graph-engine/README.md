@@ -10,9 +10,6 @@ YAML replaces graph and contract text. Python wheels add installed capability.
 Project `.aa/` holds organization configuration only. The engine does not load
 executable plugins from the system under test.
 
-The Phase 1 architecture and trust boundaries are defined in the
-[pure graph-engine plugin architecture](../../docs/superpowers/specs/2026-08-20-pure-graph-engine-plugin-architecture-design.md).
-
 ## Public composition interfaces
 
 `Engine(root, *, clock=None, host=None)` owns invocation ledgers, checkpoints,
