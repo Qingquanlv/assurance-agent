@@ -53,11 +53,7 @@ def test_recovery_consumes_durable_promotion_without_reexecuting_handler(
 
     assert executions == 1
     assert result.outcome.status == "succeeded"
-    terminal = next(
-        item.event
-        for item in ledger.read_all()
-        if item.event.kind == "task_promotion_completed"
-    )
+    terminal = next(item.event for item in ledger.read_all() if item.event.kind == "task_promotion_completed")
     payload = terminal.model_dump(mode="json")
     assert payload["staged_write_set_digest"]
     assert payload["promotion_receipt_digest"]

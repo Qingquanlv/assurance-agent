@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from graph_engine.plugin_api import CandidateWriteSet, ValidationContext, ValidationResult
+from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationResult
 
 from assurance_improvement.validators.documents import bytes_match_digest, load_json, rejected
 from assurance_improvement.validators.paths import canonical_relative, under_root
@@ -36,14 +36,14 @@ class ArchiveIntegrityValidator:
         self._path_only = path_only
         self._file_bytes = dict(file_bytes or {})
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        for item in candidate.files:
+        for item in staged.files:
             if not canonical_relative(item.path) or not under_root(item.path, _ROOTS):
                 return ValidationResult(accepted=False, reason=_OUTSIDE)
         if self._path_only:
             return ValidationResult(accepted=True)
-        listed = {item.path: item.after_sha256 for item in candidate.files}
+        listed = {item.path: item.after_sha256 for item in staged.files}
         for key, path in _REQUIRED.items():
             if path not in listed:
                 return ValidationResult(accepted=False, reason=_MISSING[key])

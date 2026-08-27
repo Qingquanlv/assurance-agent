@@ -17,7 +17,7 @@ _REPO = Path(__file__).resolve().parents[2]
 _BENCH = _REPO / "benchmark" / "agent-runtime-phase3"
 _MANIFEST = _BENCH / "manifest.json"
 _RUN_ITEM = _BENCH / "run_item.py"
-_PACKAGING_SMOKE = _REPO / "scripts" / "packaging_smoke_test.sh"
+_PACKAGING_SMOKE = _REPO / "scripts" / "assurance_capability_wheel_smoke_test.sh"
 _REQUIRED = (
     "fixture",
     "graph",
@@ -121,9 +121,7 @@ def test_run_item_fails_closed_when_manifest_is_missing(tmp_path: Path) -> None:
     output = tmp_path / "output"
     output.mkdir()
     _assert_driver_fail_closed(
-        lambda: driver.main(
-            ["--adapter", "opencode", "--manifest", str(missing), "--output", str(output)]
-        )
+        lambda: driver.main(["--adapter", "opencode", "--manifest", str(missing), "--output", str(output)])
     )
 
 
@@ -136,9 +134,7 @@ def test_run_item_fails_closed_when_source_digest_drifted(tmp_path: Path) -> Non
     output = tmp_path / "output"
     output.mkdir()
     _assert_driver_fail_closed(
-        lambda: driver.main(
-            ["--adapter", "cursor", "--manifest", str(drifted), "--output", str(output)]
-        )
+        lambda: driver.main(["--adapter", "cursor", "--manifest", str(drifted), "--output", str(output)])
     )
 
 

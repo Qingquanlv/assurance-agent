@@ -115,7 +115,13 @@ def test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entr
     assert PRODUCT_DISTRIBUTION not in lock_text
     assert "test_assurance_phase4_product" not in lock_text
     assert "test_assurance_phase4_product" not in hatch_packages
-    assert fixture_rel not in (REPO_ROOT / "scripts" / "packaging_smoke_test.sh").read_text(encoding="utf-8")
+    smoke_scripts = (
+        REPO_ROOT / "scripts" / "graph_engine_smoke_test.sh",
+        REPO_ROOT / "scripts" / "assurance_capability_wheel_smoke_test.sh",
+        REPO_ROOT / "scripts" / "assurance_product_wheel_smoke_test.sh",
+    )
+    for script in smoke_scripts:
+        assert fixture_rel not in script.read_text(encoding="utf-8")
     installed_names = {
         str(dist.metadata["Name"])
         for dist in metadata.distributions()

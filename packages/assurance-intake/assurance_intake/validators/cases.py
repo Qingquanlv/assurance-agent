@@ -9,7 +9,7 @@ import yaml
 from pydantic import ValidationError
 
 from graph_engine.plugin_api import (
-    CandidateWriteSet,
+    PathWriteSet,
     ValidationContext,
     ValidationResult,
 )
@@ -48,9 +48,9 @@ class CaseCandidateValidator:
         self._capability_leafs = capability_leafs
         self._file_bytes = dict(file_bytes or {})
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        listed = tuple(file.path for file in candidate.files)
+        listed = tuple(file.path for file in staged.files)
         for path in listed:
             if not _allowed_owner_path(path):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
@@ -77,9 +77,9 @@ class CaseReferenceValidator:
     def __init__(self, *, file_bytes: Mapping[str, bytes] | None = None) -> None:
         self._file_bytes = dict(file_bytes or {})
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        listed = {file.path for file in candidate.files}
+        listed = {file.path for file in staged.files}
         for path in listed:
             if not _allowed_owner_path(path):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)

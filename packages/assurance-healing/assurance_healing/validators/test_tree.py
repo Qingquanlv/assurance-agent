@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from graph_engine.plugin_api import CandidateWriteSet, ValidationContext, ValidationResult
+from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationResult
 
 from assurance_healing.validators.paths import canonical_relative, under_root
 
@@ -30,9 +30,9 @@ class TestTreeValidator:
         self._approved = approved
         self._path_only = path_only
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        for item in candidate.files:
+        for item in staged.files:
             path = item.path
             if not canonical_relative(path):
                 return ValidationResult(accepted=False, reason=_OUTSIDE)

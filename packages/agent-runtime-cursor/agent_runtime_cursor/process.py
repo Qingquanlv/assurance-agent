@@ -343,12 +343,24 @@ def _terminal_mac(mac_key: bytes, receipt: CursorProcessReceipt, terminal: HostT
     return hmac.new(mac_key, canonical_json_bytes(payload), hashlib.sha256).hexdigest()
 
 
+def _as_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an int")
+    return value
+
+
+def _as_float(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a number")
+    return float(value)
+
+
 def _terminal_from_payload(payload: Mapping[str, object]) -> HostTerminalResult:
     return HostTerminalResult(
-        exit_code=int(payload["exit_code"]),
+        exit_code=_as_int(payload["exit_code"], "exit_code"),
         stdout=bytes.fromhex(str(payload["stdout"])),
         stderr=bytes.fromhex(str(payload["stderr"])),
-        elapsed_seconds=float(payload["elapsed_seconds"]),
+        elapsed_seconds=_as_float(payload["elapsed_seconds"], "elapsed_seconds"),
     )
 
 
@@ -496,6 +508,7 @@ class _BaseProductionConfinedProcessHost:
         "_host_dir",
         "_host_instance_id",
         "_mac_key",
+        "_processes",
         "_root",
         "_spawn_count",
     )
@@ -702,8 +715,8 @@ class _BaseProductionConfinedProcessHost:
         record = self._load_spawn_record(receipt.process_start_token)
         if record is None:
             raise TaskActivityProtocolViolation("process receipt does not match this host")
-        root_pid = int(record["pid"])
-        process_group = int(record["process_group"])
+        root_pid = _as_int(record["pid"], "pid")
+        process_group = _as_int(record["process_group"], "process_group")
         await self._signal_targets(_collect_process_tree(root_pid), signal.SIGTERM, policy.graceful_seconds)
         await self._signal_targets(_collect_process_tree(root_pid), signal.SIGKILL, policy.forced_seconds)
         for sig in (signal.SIGTERM, signal.SIGKILL):

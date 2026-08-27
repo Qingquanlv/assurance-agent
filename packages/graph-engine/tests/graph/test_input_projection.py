@@ -41,7 +41,11 @@ def _registry():
         SourceRole,
         SourceSnapshot,
     )
-    from graph_engine.composition.models import AuthenticatedContribution, ContributionAuthority, ExecutableAuthority
+    from graph_engine.composition.models import (
+        AuthenticatedContribution,
+        ContributionAuthority,
+        ExecutableAuthority,
+    )
     from graph_engine.composition.provenance import StandardLoader
     from graph_engine.composition.registries import _build_registries
     from graph_engine.plugin_api import PluginContribution, PluginDescriptor
@@ -122,11 +126,13 @@ def _registry():
 
 
 def test_object_projection_combines_only_declared_sources():
-    projection = ObjectProjection(fields={
-        "change_id": RootPointerProjection(pointer="/change_id"),
-        "policy": ConfigPointerProjection(pointer="/policy"),
-        "inputs": AllPredecessorTokensProjection(),
-    })
+    projection = ObjectProjection(
+        fields={
+            "change_id": RootPointerProjection(pointer="/change_id"),
+            "policy": ConfigPointerProjection(pointer="/policy"),
+            "inputs": AllPredecessorTokensProjection(),
+        }
+    )
     assert project_task_input(
         projection,
         root_input={"change_id": "CH-1", "ignored": "x"},
@@ -137,7 +143,9 @@ def test_object_projection_combines_only_declared_sources():
 
 def test_projection_rejects_unknown_operator():
     with pytest.raises(ValidationError):
-        NodeDef.model_validate({"id": "n", "kind": "task", "input_projection": {"type": "python", "callable": "x:y"}})
+        NodeDef.model_validate(
+            {"id": "n", "kind": "task", "input_projection": {"type": "python", "callable": "x:y"}}
+        )
 
 
 def test_literal_projection_returns_exact_value():
@@ -152,32 +160,41 @@ def test_literal_projection_returns_exact_value():
 
 def test_root_pointer_projection_reads_root_input():
     projection = RootPointerProjection(pointer="/change_id")
-    assert project_task_input(
-        projection,
-        root_input={"change_id": "CH-9"},
-        node_config={},
-        predecessor_tokens={},
-    ) == "CH-9"
+    assert (
+        project_task_input(
+            projection,
+            root_input={"change_id": "CH-9"},
+            node_config={},
+            predecessor_tokens={},
+        )
+        == "CH-9"
+    )
 
 
 def test_config_pointer_projection_reads_node_config():
     projection = ConfigPointerProjection(pointer="/policy/mode")
-    assert project_task_input(
-        projection,
-        root_input={},
-        node_config={"policy": {"mode": "strict"}},
-        predecessor_tokens={},
-    ) == "strict"
+    assert (
+        project_task_input(
+            projection,
+            root_input={},
+            node_config={"policy": {"mode": "strict"}},
+            predecessor_tokens={},
+        )
+        == "strict"
+    )
 
 
 def test_predecessor_pointer_projection_reads_named_token():
     projection = PredecessorPointerProjection(predecessor="left", pointer="/value")
-    assert project_task_input(
-        projection,
-        root_input={},
-        node_config={},
-        predecessor_tokens={"left": {"value": 42}},
-    ) == 42
+    assert (
+        project_task_input(
+            projection,
+            root_input={},
+            node_config={},
+            predecessor_tokens={"left": {"value": 42}},
+        )
+        == 42
+    )
 
 
 def test_predecessor_value_projection_returns_whole_token():
@@ -191,10 +208,12 @@ def test_predecessor_value_projection_returns_whole_token():
 
 
 def test_tuple_projection_builds_ordered_values():
-    projection = TupleProjection(items=(
-        RootPointerProjection(pointer="/id"),
-        ConfigPointerProjection(pointer="/mode"),
-    ))
+    projection = TupleProjection(
+        items=(
+            RootPointerProjection(pointer="/id"),
+            ConfigPointerProjection(pointer="/mode"),
+        )
+    )
     assert project_task_input(
         projection,
         root_input={"id": "CH-1"},
@@ -246,16 +265,20 @@ def test_object_projection_rejects_duplicate_normalized_field_names():
     assert unicodedata.normalize("NFC", key_a) == unicodedata.normalize("NFC", key_b)
     assert key_a != key_b
     with pytest.raises(ValidationError, match="duplicate object projection field"):
-        ObjectProjection.model_validate({
-            "type": "object",
-            "fields": {key_a: {"type": "literal", "value": 1}, key_b: {"type": "literal", "value": 2}},
-        })
+        ObjectProjection.model_validate(
+            {
+                "type": "object",
+                "fields": {key_a: {"type": "literal", "value": 1}, key_b: {"type": "literal", "value": 2}},
+            }
+        )
 
 
 def test_compile_rejects_non_direct_predecessor():
-    projection = ObjectProjection(fields={
-        "value": PredecessorValueProjection(predecessor="missing"),
-    })
+    projection = ObjectProjection(
+        fields={
+            "value": PredecessorValueProjection(predecessor="missing"),
+        }
+    )
     with pytest.raises(CompileError, match="non-direct predecessor"):
         validate_input_projection_compile(
             projection,

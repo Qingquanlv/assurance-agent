@@ -4,7 +4,10 @@ import sys
 from importlib.resources import files
 from pathlib import PurePosixPath
 
-_PACKAGE_FILES = files(sys.modules[__package__])
+_package = __package__
+if _package is None:
+    raise RuntimeError("resource loader must be imported as a package module")
+_PACKAGE_FILES = files(sys.modules[_package])
 
 
 def resource_bytes(relative_path: str) -> bytes:

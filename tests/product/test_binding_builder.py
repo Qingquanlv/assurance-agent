@@ -9,6 +9,7 @@ import zipfile
 import pytest
 import yaml
 
+from tests.product.composition_harness import evict_generated_binding_modules
 from tests.product.conformance import ALL_BINDING_IDS, PREPARE_IDS, load_yaml
 
 _FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "deployment"
@@ -382,6 +383,7 @@ def test_generated_provider_contributes_exactly_99_aliases(tmp_path, opencode_ma
         descriptor = provider.descriptor()
         contribution = provider.contribute(RegistryPorts("2.0"))
     finally:
+        evict_generated_binding_modules()
         sys.path.remove(str(installed))
     assert built.plugin_id == "assurance.product.agent"
     assert built.plugin_version == "1.0.0"
@@ -415,6 +417,7 @@ def test_alias_targets_and_binding_data_follow_section_14(tmp_path, opencode_man
         module = __import__(f"{built.import_package}.provider", fromlist=["DeploymentPlugin"])
         contribution = module.DeploymentPlugin.contribute(RegistryPorts("2.0"))
     finally:
+        evict_generated_binding_modules()
         sys.path.remove(str(installed))
     bindings = {item.capability_id: item for item in contribution.bindings}
     for prepare_id in PREPARE_IDS:
@@ -450,6 +453,7 @@ def test_cursor_wheel_keeps_confined_secret_handle(tmp_path, cursor_manifest):
         module = __import__(f"{built.import_package}.provider", fromlist=["DeploymentPlugin"])
         contribution = module.DeploymentPlugin.contribute(RegistryPorts("2.0"))
     finally:
+        evict_generated_binding_modules()
         sys.path.remove(str(installed))
     execute = next(item for item in contribution.bindings if item.capability_id.endswith(".execute"))
     config = CursorAdapterConfig.model_validate(execute.data)

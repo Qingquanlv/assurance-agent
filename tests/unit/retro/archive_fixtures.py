@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tests.helpers_aa import write_aa_config
+
+def write_aa_config(project_root: Path) -> None:
+    config = project_root / ".aa" / "config.yaml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    if not config.exists():
+        config.write_text("schema_version: 1\n", encoding="utf-8")
 
 
 def make_archived_change(

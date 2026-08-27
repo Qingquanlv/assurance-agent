@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 
 from pydantic import ValidationError
 
-from graph_engine.plugin_api import CandidateWriteSet, ValidationContext, ValidationResult
+from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationResult
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.selection import ClosedMappingV1
@@ -88,9 +88,9 @@ class ExecutionEvidenceValidator:
         self._case_ids = case_ids
         self._require_mapping = require_mapping
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        listed = tuple(file.path for file in candidate.files)
+        listed = tuple(file.path for file in staged.files)
         for path in listed:
             if not _allowed_path(path):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)

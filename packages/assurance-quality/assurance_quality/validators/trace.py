@@ -7,7 +7,7 @@ from collections.abc import Mapping
 
 from pydantic import ValidationError
 
-from graph_engine.plugin_api import CandidateWriteSet, ValidationContext, ValidationResult
+from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationResult
 
 from assurance_quality.contracts.trace import TraceProjectionV2
 from assurance_quality.validators.paths import canonical_relative, under_root
@@ -35,16 +35,16 @@ class TraceValidator:
         self._file_bytes = dict(file_bytes or {})
         self._path_only = path_only
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        for item in candidate.files:
+        for item in staged.files:
             if not canonical_relative(item.path) or not under_root(item.path, _ALLOWED):
                 return ValidationResult(accepted=False, reason=_OUTSIDE)
         if self._path_only:
             return ValidationResult(accepted=True)
         if self._capability_leafs is None:
             return ValidationResult(accepted=False, reason=_CLOSED)
-        listed = {item.path for item in candidate.files}
+        listed = {item.path for item in staged.files}
         for path, payload in self._file_bytes.items():
             if path not in listed:
                 return ValidationResult(accepted=False, reason="quality candidate contains an unlisted file")

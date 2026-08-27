@@ -17,7 +17,7 @@ This review covers the session after Task 10: product/benchmark rename, current 
 | 13 OpenCode live | Blocked, not fabricated | `final-opencode.json` is `admission_status=blocked`, `achieved` absent, `external_blocked=false`, `generation_execute_invalid_output` |
 | 13 scheduler recovery | Present | Prepared-undispatched same-attempt dispatch; already-dispatched and cancel-requested stay on `activity_recovery` |
 | 14 residual + evidence | Present as waiver pack | Zero `carried_forward`; OpenCode/Cursor rows deferred; verdict `accepted_with_waivers`; Step 4/5 left `pending_controller` |
-| Global: no whole-tree / `aa-next` aliases / fabricated live / Change-local rewrite | Mostly held | Live not rewritten as achieved; frozen Phase 5 handoff and Change-local admission untouched. Final live runner still writes `aa-next` into evidence notes (Important 1) |
+| Global: no whole-tree / `deleted CLI alias` aliases / fabricated live / Change-local rewrite | Mostly held | Live not rewritten as achieved; frozen Phase 5 handoff and Change-local admission untouched. Final live runner still writes `deleted CLI alias` into evidence notes (Important 1) |
 
 Original Completion Definition items 3, 7, and 8 (OpenCode live closed and `achieved`; all repository/type/import/security/packaging/wheel/no-legacy gates green) are **not** met. The pack states that. Controller rulings dated 2026-08-27 (`先完成task14`, do not wait for `achieved`, do not start or rewrite live) amend those sentences for this session; they do not convert the product `invalid_output` into an out-of-scope item.
 
@@ -29,7 +29,7 @@ Original Completion Definition items 3, 7, and 8 (OpenCode live closed and `achi
 - Cancel-requested prepared activities are held on the skip (`scheduler.py:606-608`). Recover remains the only cancel/reconcile driver (`scheduler.py:410-417`). `test_cancel_requested_prepared_stays_activity_recovery` locks no `execute`, unchanged ledger, `terminal_reason == "activity_recovery"` (`test_activity_recovery.py:1083-1114`). The earlier Important from `c0b6393` is closed at `0f034de`.
 - Recovery tests go through `Engine.run_until_blocked` after a real `start_recoverable` and reopen, not a mocked scheduler method. The happy path asserts the same `activity_id`, workspace identity, attempt `1`, one `task_attempt_started` / `task_activity_prepared`, and one host `execute` (`test_activity_recovery.py:1048-1080`). The already-dispatched counterpart only injects `TaskActivityDispatchStarted`.
 - Task 11 rename is mechanical and complete for tracked consumers: smoke fixture paths, capability-package imports, `PHASE5_REPLACEMENT_TEST`, CI (no hardcoded `tests/phase5` / `assurance-product-phase5`). Comparison-only surface is actually deleted, not aliased.
-- Task 12 docs tests read the real current-doc files and lock ownership, plugin rules, the installed command list, and a closed forbidden-fragment list including `aa-next`, `workspace/trees`, `HEAD.json`, and `aa workflow` (`test_current_documentation.py:22-35,82-108`). graph-engine README is asserted *not* to claim `aa` ownership or the product delivery sentence.
+- Task 12 docs tests read the real current-doc files and lock ownership, plugin rules, the installed command list, and a closed forbidden-fragment list including `deleted CLI alias`, `workspace/trees`, `HEAD.json`, and `aa workflow` (`test_current_documentation.py:22-35,82-108`). graph-engine README is asserted *not* to claim `aa` ownership or the product delivery sentence.
 - Export acceptance calls the shipped product APIs with the existing `write_achieved` fixture and covers the six named cases: non-achieved, target drift, declared file set, crash-then-retry, idempotency, archive-after-receipt (`test_export_delivery_acceptance.py:25-158`). Production export/archive code was not rewritten.
 - Task 13/14 evidence is honest. `final-opencode.json` does not invent `achieved` or a publish receipt. `acceptance.md` leads with **not fully accepted**. `final-evidence.json` records non-zero gate exits, `opencode_live.achieved=false`, `step4_whole_branch_review=pending_controller`, and the return-to-owner list. Frozen `phase6-handoff.json` still says OpenCode `carried_forward` and was not edited. Dirty `production_host` / `production_worker` hunks were not staged.
 - No-legacy allowlist additions are exact paths, no wildcards (`scripts/no_legacy_allowlist.txt`).
@@ -44,10 +44,10 @@ None.
 
 #### Important (Should Fix)
 
-1. **Final live runner still writes `aa-next` into evidence notes after the console binary was switched to `aa`.**
+1. **Final live runner still writes `deleted CLI alias` into evidence notes after the console binary was switched to `aa`.**
    - File: `benchmark/assurance-product/run_item.py:1`, `:266-281`, `:340-359`, `:1084`, `:1107`, `:1141`, `:1163`
-   - Task 11 correctly points the isolated venv at `venv/bin/aa` and fails closed if that file is missing. The module docstring is still “driver through aa-next.” `_aa_next` / `aa_next` remain the helper and binding names. Operator-visible `finish(..., notes=...)` strings still say “terminal aa-next status,” “aa-next run exited non-zero,” “aa-next run returned a pending interrupt,” and “last aa-next run returned ….” Those notes land in live `evidence.json`.
-   - Why it matters: the global constraint is “do not retain `aa-next`.” This is the post-cutover product benchmark path this session was asked to finish. `scripts/check_no_legacy.py` does not scan `benchmark/`, so the repository gate stays green while the live harness still emits the deleted CLI name. A later reader of a blocked run will think the isolated env still invoked `aa-next`.
+   - Task 11 correctly points the isolated venv at `venv/bin/aa` and fails closed if that file is missing. The module docstring is still “driver through deleted CLI alias.” `_aa_next` / `aa_next` remain the helper and binding names. Operator-visible `finish(..., notes=...)` strings still say “terminal deleted CLI alias status,” “deleted CLI alias run exited non-zero,” “deleted CLI alias run returned a pending interrupt,” and “last deleted CLI alias run returned ….” Those notes land in live `evidence.json`.
+   - Why it matters: the global constraint is “do not retain `deleted CLI alias`.” This is the post-cutover product benchmark path this session was asked to finish. `scripts/check_no_legacy.py` does not scan `benchmark/`, so the repository gate stays green while the live harness still emits the deleted CLI name. A later reader of a blocked run will think the isolated env still invoked `deleted CLI alias`.
    - Fix: rename the helper/variable to `aa`, rewrite the docstring and every `notes=` / detail string to `aa`, and keep the `venv/bin/aa` existence check.
 
 2. **OpenCode live residuals are `deferred_out_of_scope` after an in-scope product fail-closed, not a quota/network external blocker.**
@@ -86,7 +86,7 @@ None.
 
 ### Recommendations
 
-- Rename the live-runner `aa-next` identifiers and notes before the next isolated OpenCode invocation. That is the only in-range production/harness alias leak.
+- Rename the live-runner `deleted CLI alias` identifiers and notes before the next isolated OpenCode invocation. That is the only in-range production/harness alias leak.
 - Treat `063450-3e30e331` as a blocked product run. A new live invocation is required if OpenCode live is ever closed. Do not resume that change as `achieved`, and do not edit frozen `phase6-handoff.json` or Change-local `admission.json`.
 - Controller Step 4 should review the whole branch, not only `9c86bae..6740dce`. Controller Step 5 should rerun affected plus full gates from a clean committed HEAD. Do not treat the dirty-tree red suite as a new defect in this range; `tests/product/conftest.py` `pytest_plugins` is a rename of the pre-existing `tests/phase5/conftest.py` shape.
 - Leave leftover `production_host` / `production_worker` hunks unstaged. They are out of this session’s file set.
@@ -98,4 +98,4 @@ None.
 
 **Ready to merge?** No
 
-**Reasoning:** The range delivers a correct `resume_running` seam, a complete product/benchmark rename, current-doc and export locks, and an honest `accepted_with_waivers` evidence pack — not a completed hard cutover. OpenCode live failed closed on an in-scope `invalid_output` and is mislabeled `deferred_out_of_scope`; the final live runner still emits `aa-next` in evidence notes; Completion Definition items 3, 7, and 8 remain unmet. Merge this only as a waiver snapshot after fixing the two Important items, not as “remaining phases closed.”
+**Reasoning:** The range delivers a correct `resume_running` seam, a complete product/benchmark rename, current-doc and export locks, and an honest `accepted_with_waivers` evidence pack — not a completed hard cutover. OpenCode live failed closed on an in-scope `invalid_output` and is mislabeled `deferred_out_of_scope`; the final live runner still emits `deleted CLI alias` in evidence notes; Completion Definition items 3, 7, and 8 remain unmet. Merge this only as a waiver snapshot after fixing the two Important items, not as “remaining phases closed.”

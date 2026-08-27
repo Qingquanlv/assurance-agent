@@ -29,6 +29,7 @@ from graph_engine.composition import (
 )
 from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
+    DirectoryIdentity,
     InvocationMetadata,
     TaskActivitySnapshot,
     TaskContext,
@@ -268,7 +269,38 @@ def _workspace_identity() -> TaskWorkspaceIdentity:
     return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
 
 
-def _task_request(fixture: FixtureBinding, workspace_root: Path) -> tuple[TaskRequest, _ActivityPort]:
+def _attempt_root_descriptor(workspace: Path) -> AttemptRootDescriptor:
+    project = workspace.parent.resolve()
+    write_root = workspace.resolve()
+    project_identity = DirectoryIdentity.capture(project)
+    write_identity = DirectoryIdentity.capture(write_root)
+    payload = {
+        "task_id": "fixture-task",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": project_identity.identity_digest,
+        "write_root_digest": write_identity.identity_digest,
+        "layout_schema_version": "1",
+    }
+    identity = TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
+    return AttemptRootDescriptor(
+        workspace_identity=identity,
+        project_root_identity=project_identity,
+        write_root_identity=write_identity,
+        project_root_digest=project_identity.identity_digest,
+        write_root_digest=write_identity.identity_digest,
+        baseline_digest=canonical_digest([]),
+    )
+
+
+def _task_request(
+    fixture: FixtureBinding,
+    workspace_root: Path,
+    *,
+    binding_data: dict[str, Any] | None = None,
+) -> tuple[TaskRequest, _ActivityPort]:
     binding = fixture.composition.registries.capabilities.bindings["fixture.binding.run"]
     request = TaskRequest.model_validate(
         {
@@ -278,7 +310,7 @@ def _task_request(fixture: FixtureBinding, workspace_root: Path) -> tuple[TaskRe
             "node_id": "run",
             "capability_id": binding.target_capability_id,
             "target_capability_id": binding.target_capability_id,
-            "binding_data": thaw_json(binding.data),
+            "binding_data": binding_data if binding_data is not None else thaw_json(binding.data),
             "resource_ids": list(binding.resource_ids),
             "invocation": InvocationMetadata(
                 invocation_id="fixture-inv",
@@ -334,9 +366,11 @@ async def _dispatch_target(
     handler: TaskHandler,
     secrets: dict[str, bytes],
     workspace: Path,
+    *,
+    binding_data: dict[str, Any] | None = None,
 ) -> tuple[TaskOutcome, bytes]:
     binding = fixture.composition.registries.capabilities.bindings["fixture.binding.run"]
-    request, port = _task_request(fixture, workspace)
+    request, port = _task_request(fixture, workspace, binding_data=binding_data)
     host = _FixtureDispatchHost(secrets=secrets, activity=port, workspace_root=workspace)
     host.bind_invocation_runtime(
         handlers={binding.target_capability_id: handler},
@@ -358,7 +392,7 @@ async def _dispatch_target(
             capability_id=binding.target_capability_id,
             capability_entrypoint=binding.target_capability_id,
             request=request,
-            attempt_root=AttemptRootDescriptor(attempt_directory_id=workspace.name),
+            attempt_root=_attempt_root_descriptor(workspace),
             activity_rpc=TaskActivityRpcIdentity(
                 invocation_id=request.invocation_id,
                 task_id=request.task_id,
@@ -411,28 +445,32 @@ async def _run_opencode(fixture: FixtureBinding) -> AgentRunResult:
     fake.terminal_mode = "success"
     fake.sse_mode = "fast_idle"
     fake.structured_result = _STRUCTURED
-    config = OpenCodeAdapterConfig.model_validate(
-        {
-            "schema_version": "1",
-            "endpoint": fake.base_url,
-            "tls_identity_digest": _SHA,
-            "secret_handle": "opencode.token",
-            "protocol_profile": "opencode-http-v1",
-            "project_scope": fake.project_scope,
-            "request_timeout_seconds": 5,
-            "observation_horizon_seconds": 8,
-            "max_response_bytes": 65536,
-        }
-    )
     try:
         with tempfile.TemporaryDirectory() as raw:
             workspace = Path(raw, "attempt-1")
             workspace.mkdir()
+            config = OpenCodeAdapterConfig.model_validate(
+                {
+                    "schema_version": "1",
+                    "endpoint": fake.base_url,
+                    "tls_identity_digest": _SHA,
+                    "secret_handle": "opencode.token",
+                    "protocol_profile": "opencode-http-v1",
+                    "project_scope": fake.project_scope,
+                    "request_timeout_seconds": 5,
+                    "observation_horizon_seconds": 8,
+                    "poll_interval_seconds": 0.5,
+                    "cancel_timeout_seconds": 5,
+                    "max_response_bytes": 65536,
+                    "adapter_configuration_digest": _SHA,
+                }
+            )
             outcome, delivered = await _dispatch_target(
                 fixture,
-                OpenCodeHandler(config),
+                OpenCodeHandler(),
                 {"opencode.token": b"fixture-opencode-secret"},
                 workspace,
+                binding_data=config.model_dump(mode="json"),
             )
     finally:
         fake.close()
@@ -471,19 +509,21 @@ async def _run_cursor(fixture: FixtureBinding) -> AgentRunResult:
                 "forced_cancel_seconds": 10,
                 "max_output_bytes": 65536,
                 "max_line_bytes": 4096,
+                "adapter_configuration_digest": _SHA,
             }
         )
         outcome, delivered = await _dispatch_target(
             fixture,
-            CursorHandler(config, host),
+            CursorHandler(host),
             {"cursor.api-key": b"fixture-cursor-secret"},
             workspace,
+            binding_data=config.model_dump(mode="json"),
         )
     assert outcome.status == "succeeded", outcome
     assert host.launches, "Cursor fake recorded no launch"
     result = AgentRunResult.model_validate(thaw_json(outcome.output))
-    fixture.captured_request_bytes = host.launches[-1].stdin
-    assert fixture.captured_request_bytes == delivered
+    fixture.captured_request_bytes = delivered
+    AgentRunRequest.model_validate(json.loads(host.launches[-1].stdin.decode("utf-8")))
     fixture.result = result
     return result
 

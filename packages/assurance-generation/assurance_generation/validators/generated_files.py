@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from graph_engine.plugin_api import CandidateWriteSet, ValidationContext, ValidationResult
+from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationResult
 
 from assurance_generation.contracts.agent import under_write_root
 from assurance_generation.contracts.codegen import (
@@ -176,11 +176,11 @@ class GeneratedFilesValidator:
             self._write_roots = ALL_TEST_ROOTS
         self._require_mapping = require_mapping
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
         mapping = self._mapping or _load_mapping(self._file_bytes)
         mapped = _mapping_targets(mapping)
-        listed = tuple(item.path for item in candidate.files)
+        listed = tuple(item.path for item in staged.files)
         for path in listed:
             if not _canonical_relative(path):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
@@ -193,7 +193,7 @@ class GeneratedFilesValidator:
         if extra_bytes:
             return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
         if mapping is not None:
-            mapping_check = _mapping_closure(candidate, mapping, self._file_bytes)
+            mapping_check = _mapping_closure(staged, mapping, self._file_bytes)
             if mapping_check is not None:
                 return mapping_check
         try:
@@ -201,14 +201,14 @@ class GeneratedFilesValidator:
         except ValidationError as error:
             return ValidationResult(accepted=False, reason=str(error))
         if document is not None:
-            semantic = self._validate_document(candidate, document, mapping)
+            semantic = self._validate_document(staged, document, mapping)
             if semantic is not None:
                 return semantic
         return ValidationResult(accepted=True)
 
     def _validate_document(
         self,
-        candidate: CandidateWriteSet,
+        candidate: PathWriteSet,
         document: CodegenResultV1 | GeneratedFilesV1,
         mapping: CodegenMapping | None,
     ) -> ValidationResult | None:
@@ -278,7 +278,7 @@ class GeneratedFilesValidator:
 
 
 def _mapping_closure(
-    candidate: CandidateWriteSet,
+    candidate: PathWriteSet,
     mapping: CodegenMapping,
     file_bytes: Mapping[str, bytes],
 ) -> ValidationResult | None:
@@ -319,9 +319,9 @@ class CodegenMappingValidator:
         self._file_bytes = dict(file_bytes or {})
         self._write_roots = write_roots
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        listed = tuple(item.path for item in candidate.files)
+        listed = tuple(item.path for item in staged.files)
         for path in listed:
             if not _accepts_generated_write(path, self._write_roots):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
@@ -335,7 +335,7 @@ class CodegenMappingValidator:
             if "unique" in message:
                 return ValidationResult(accepted=False, reason=_DUPLICATE_REASON)
             return ValidationResult(accepted=False, reason=message)
-        return _mapping_closure(candidate, mapping, self._file_bytes) or ValidationResult(accepted=True)
+        return _mapping_closure(staged, mapping, self._file_bytes) or ValidationResult(accepted=True)
 
 
 class CodegenFixCandidateValidator:
@@ -358,9 +358,9 @@ class CodegenFixCandidateValidator:
         self._file_bytes = dict(file_bytes or {})
         self._write_roots = write_roots
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        listed = tuple(item.path for item in candidate.files)
+        listed = tuple(item.path for item in staged.files)
         for path in listed:
             target = logical_generated_target(path)
             if not _accepts_generated_write(path, self._write_roots, self._family):
@@ -369,7 +369,10 @@ class CodegenFixCandidateValidator:
                 return ValidationResult(accepted=False, reason=_ALLOWED_REASON.format(path=path))
         if self._approved_proposal and self._approved_proposal.get("status") != "approved":
             return ValidationResult(accepted=False, reason=_UNAPPROVED_REASON)
-        if self._baseline_tree_id is not None and candidate.baseline_tree_id != self._baseline_tree_id:
+        if (
+            self._baseline_tree_id is not None
+            and getattr(staged, "baseline_tree_id", None) != self._baseline_tree_id
+        ):
             return ValidationResult(accepted=False, reason=_BASELINE_REASON)
         mapping = self._mapping or _load_mapping(self._file_bytes)
         if mapping is not None:
@@ -378,7 +381,7 @@ class CodegenFixCandidateValidator:
                     accepted=False,
                     reason=f"mapping layer {mapping.layer!r} does not match {self._family}",
                 )
-            closed = _mapping_closure(candidate, mapping, self._file_bytes)
+            closed = _mapping_closure(staged, mapping, self._file_bytes)
             if closed is not None:
                 return closed
         return ValidationResult(accepted=True)

@@ -9,7 +9,7 @@ from typing import cast
 
 from pydantic import ValidationError
 
-from graph_engine.plugin_api import CandidateWriteSet, ValidationContext, ValidationResult
+from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationResult
 
 from assurance_generation.contracts.agent import under_write_root
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
@@ -62,9 +62,9 @@ class FamilyPlanValidator:
         self._file_bytes = dict(file_bytes or {})
         self._write_roots = write_roots
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        listed = tuple(file.path for file in candidate.files)
+        listed = tuple(file.path for file in staged.files)
         for path in listed:
             if not _allowed_plan_path(path, self._write_roots):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
@@ -155,8 +155,8 @@ class PlanMechanicalValidator:
             for family in FAMILIES
         }
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
-        listed = tuple(file.path for file in candidate.files)
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
+        listed = tuple(file.path for file in staged.files)
         for path in listed:
             if not _allowed_plan_path(path, self._write_roots):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
@@ -191,7 +191,7 @@ class PlanMechanicalValidator:
         if not families:
             return ValidationResult(accepted=True)
         family = closed_family(next(iter(families)))
-        return self._table[family].validate(candidate, context)
+        return self._table[family].validate(staged, context)
 
 
 __all__ = [

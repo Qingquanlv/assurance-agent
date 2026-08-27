@@ -75,7 +75,7 @@ def live_schema_ids(owner: str) -> frozenset[str]:
 @lru_cache(maxsize=None)
 def live_export_names(owner: str) -> frozenset[str]:
     module = importlib.import_module(_CONTRACT_MODULES[owner])
-    names = set(getattr(module, "__all__", ()))
+    names: set[str] = set(getattr(module, "__all__", ()))
     names.update(name for name in dir(module) if name[:1].isupper() and not name.startswith("_"))
     return frozenset(names)
 

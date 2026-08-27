@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -155,14 +156,19 @@ async def test_codegen_prepare_uses_reviewed_plan_and_baseline(family: str, tmp_
     assert "assurance_agent" not in encoded
 
     schema = request.result_contract.schema_document
-    assert schema is not None
-    properties = cast(dict[str, object], schema["properties"])
+    assert isinstance(schema, Mapping)
+    properties = schema["properties"]
+    assert isinstance(properties, Mapping)
     assert "needs_fix" not in properties
-    files_schema = cast(dict[str, object], properties["files"])
+    files_schema = properties["files"]
+    assert isinstance(files_schema, Mapping)
     assert files_schema["minItems"] == 1
-    definitions = cast(dict[str, object], schema["$defs"])
-    file_definition = cast(dict[str, object], definitions["CodegenGeneratedFileAuthoring"])
-    file_properties = cast(dict[str, object], file_definition["properties"])
+    definitions = schema["$defs"]
+    assert isinstance(definitions, Mapping)
+    file_definition = definitions["CodegenGeneratedFileAuthoring"]
+    assert isinstance(file_definition, Mapping)
+    file_properties = file_definition["properties"]
+    assert isinstance(file_properties, Mapping)
     assert "content_sha256" not in file_properties
 
 

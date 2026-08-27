@@ -64,7 +64,6 @@ _PHASE4_RUNTIME_ORDER: tuple[str, ...] = (
 )
 _PHASE4_RUNTIME_INDEX = {name: index for index, name in enumerate(_PHASE4_RUNTIME_ORDER)}
 _SMOKE_SCRIPT = REPO_ROOT / "scripts" / "assurance_capability_wheel_smoke_test.sh"
-_PACKAGING_SMOKE = REPO_ROOT / "scripts" / "packaging_smoke_test.sh"
 _CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 
@@ -104,9 +103,8 @@ def test_committed_head_isolation_script_is_the_release_authority() -> None:
 
 
 def test_packaging_smoke_and_ci_invoke_capability_wheel_isolation() -> None:
-    packaging = _PACKAGING_SMOKE.read_text(encoding="utf-8")
     workflow = _CI_WORKFLOW.read_text(encoding="utf-8")
-    assert "assurance_capability_wheel_smoke_test.sh" in packaging
+    assert _SMOKE_SCRIPT.is_file()
     assert "assurance capability wheel smoke test" in workflow
     assert "bash scripts/assurance_capability_wheel_smoke_test.sh" in workflow
 

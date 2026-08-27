@@ -83,9 +83,7 @@ def test_validate_structured_result_rejects_unsupported_remote_reference() -> No
         validate_structured_result(
             {"status": "ok"},
             schema={"$ref": "https://example.invalid/result.schema.json"},
-            schema_digest=canonical_digest(
-                {"$ref": "https://example.invalid/result.schema.json"}
-            ),
+            schema_digest=canonical_digest({"$ref": "https://example.invalid/result.schema.json"}),
         )
 
 

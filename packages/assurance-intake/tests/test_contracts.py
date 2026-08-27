@@ -226,9 +226,7 @@ def test_intake_schema_bytes_equal_model_schema() -> None:
 def test_case_review_result_schema_exposes_typed_finding_locators() -> None:
     schema = CaseReviewResultV1.model_json_schema()
 
-    assert schema["properties"]["findings"]["items"] == {
-        "$ref": "#/$defs/CaseReviewFindingV1"
-    }
+    assert schema["properties"]["findings"]["items"] == {"$ref": "#/$defs/CaseReviewFindingV1"}
 
 
 def test_intake_imports_no_legacy_package() -> None:

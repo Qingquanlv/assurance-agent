@@ -175,10 +175,7 @@ def _evaluate_projection(
     if isinstance(projection, PredecessorValueProjection):
         return thaw_json(_require_predecessor_token(predecessor_tokens, projection.predecessor))
     if isinstance(projection, AllPredecessorTokensProjection):
-        return tuple(
-            thaw_json(predecessor_tokens[predecessor])
-            for predecessor in sorted(predecessor_tokens)
-        )
+        return tuple(thaw_json(predecessor_tokens[predecessor]) for predecessor in sorted(predecessor_tokens))
     if isinstance(projection, ObjectProjection):
         return {
             key: _evaluate_projection(item, root_input, node_config, predecessor_tokens)
@@ -262,9 +259,7 @@ def _validate_projection_tree(
             )
     elif isinstance(projection, AllPredecessorTokensProjection):
         if node_kind != "join" or join_kind != "all":
-            raise CompileError(
-                f"all_predecessor_tokens is allowed only on all joins at {location}"
-            )
+            raise CompileError(f"all_predecessor_tokens is allowed only on all joins at {location}")
         if len(direct_predecessors) < 2:
             raise CompileError(
                 f"all_predecessor_tokens requires at least two direct predecessors at {location}"

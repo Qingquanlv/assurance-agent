@@ -399,7 +399,9 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
         ),
         "alias-missing": ("tests/product/test_composition_authority.py::test_missing_binding_fails_closed"),
         "alias-extra": ("tests/product/test_composition_authority.py::test_extra_owned_binding_fails_closed"),
-        "alias-forged": ("tests/product/test_composition_authority.py::test_forged_alias_target_fails_closed"),
+        "alias-forged": (
+            "tests/product/test_composition_authority.py::test_forged_alias_target_fails_closed"
+        ),
         "start-intent-publication-cut": (
             "packages/graph-engine/tests/runtime/test_invocation_lock.py::test_start_intent_fault_cuts_are_exactly_recoverable[after_rename-True]"
         ),

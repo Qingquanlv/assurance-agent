@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field as dataclass_field
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -958,8 +958,24 @@ class ValidationResult(FrozenModel):
         return self
 
 
+class PathBearingFile(Protocol):
+    @property
+    def path(self) -> str: ...
+
+    @property
+    def before_sha256(self) -> str | None: ...
+
+    @property
+    def after_sha256(self) -> str | None: ...
+
+
+class PathWriteSet(Protocol):
+    @property
+    def files(self) -> Sequence[PathBearingFile]: ...
+
+
 class CommitValidator(Protocol):
-    def validate(self, staged: StagedWriteSet, context: ValidationContext) -> ValidationResult: ...
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1323,6 +1339,8 @@ __all__ = [
     "PluginContractError",
     "PluginDependency",
     "PluginDescriptor",
+    "PathBearingFile",
+    "PathWriteSet",
     "PluginProvider",
     "ProviderSource",
     "RecoverableTaskHandler",

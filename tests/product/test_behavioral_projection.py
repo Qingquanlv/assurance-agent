@@ -287,7 +287,10 @@ def test_enumerated_observational_noise_normalizes_away(legacy_export: Path, new
         "new runtime debug prose",
     ):
         assert noise not in dumped
-    assert project_legacy_export(legacy_export).runtime_identity != project_new_export(new_export).runtime_identity
+    assert (
+        project_legacy_export(legacy_export).runtime_identity
+        != project_new_export(new_export).runtime_identity
+    )
 
 
 def test_harness_modules_do_not_import_runtime_packages() -> None:

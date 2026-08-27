@@ -38,9 +38,7 @@ async def test_cursor_rejects_missing_locked_executable(
     cursor_task_request: TaskRequest, cursor_context: tuple[TaskContext, object]
 ) -> None:
     task_context, _ = cursor_context
-    configured = cursor_task_request.model_copy(
-        update={"binding_data": {"expected_version": "1.0.0"}}
-    )
+    configured = cursor_task_request.model_copy(update={"binding_data": {"expected_version": "1.0.0"}})
     outcome = await CursorHandler(FakeConfinedProcessHost()).execute(configured, task_context)
     assert outcome.status == "failed"
     assert outcome.failure is not None

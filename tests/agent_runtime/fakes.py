@@ -142,6 +142,7 @@ class SimpleBinding:
     target_capability_id: str
     data: object
     resource_ids: tuple[str, ...] = ()
+    secret_handles: tuple[str, ...] = ()
 
 
 class DirectRegistry:
@@ -395,7 +396,9 @@ class ConfinedTestHost:
         handlers: Mapping[str, TaskHandler],
         store: TaskWorkspaceStore,
         receipts: TerminalReceiptStore | None = None,
+        handler_import_roots: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
+        del handler_import_roots
         self._handlers = handlers
         self._store = store
         if receipts is not None:
@@ -564,13 +567,17 @@ class _AdapterHarness:
             payload = payload["config"]
         return task.model_copy(update={"input": payload})
 
+    def _adapter_binding_data(self) -> dict[str, Any]:
+        raise NotImplementedError
+
     def _registry(self, composition: FrozenComposition) -> DirectRegistry:
         return DirectRegistry(
             composition.registries.capabilities.task_handlers,
             bindings={
                 self.capability_id: SimpleBinding(
                     target_capability_id=self.capability_id,
-                    data={"result_schema": RESULT_SCHEMA},
+                    data=self._adapter_binding_data(),
+                    secret_handles=(),
                 )
             },
         )
@@ -613,10 +620,12 @@ class _AdapterHarness:
         host.cut = host_cut
         engine = Engine(engine_root, clock=SystemClock(), host=host)
         project_root = engine_root.parent / f".{engine_root.name}-project"
-        attempts_root = engine_root.parent / f".{engine_root.name}-attempts"
-        receipts_root = engine_root.parent / f".{engine_root.name}-receipts"
+        attempts_root = project_root / "attempts"
+        receipts_root = project_root / "receipts"
         for path in (project_root, attempts_root, receipts_root):
-            path.mkdir(exist_ok=True)
+            path.mkdir(parents=True, exist_ok=True)
+        if hasattr(provider, "project_scope"):
+            provider.project_scope = str(project_root.resolve())
         workspace_binding = InvocationWorkspaceBinding(
             project_root=project_root,
             attempts_root=attempts_root,
@@ -933,6 +942,12 @@ class OpenCodeRuntimeHarness(_AdapterHarness):
         )
         fake.terminal_mode = terminal_mode
         fake.sse_mode = sse_mode
+        self._last_opencode = fake
+        self._last_observation_horizon = observation_horizon
+        return fake, OpenCodeHandler()
+
+    def _adapter_binding_data(self) -> dict[str, Any]:
+        fake = getattr(self, "_last_opencode")
         config = OpenCodeAdapterConfig.model_validate(
             {
                 "schema_version": "1",
@@ -942,11 +957,14 @@ class OpenCodeRuntimeHarness(_AdapterHarness):
                 "protocol_profile": "opencode-http-v1",
                 "project_scope": fake.project_scope,
                 "request_timeout_seconds": 5,
-                "observation_horizon_seconds": observation_horizon,
+                "observation_horizon_seconds": getattr(self, "_last_observation_horizon", 8.0),
+                "poll_interval_seconds": 0.5,
+                "cancel_timeout_seconds": 5,
                 "max_response_bytes": 65536,
+                "adapter_configuration_digest": _SHA,
             }
         )
-        return fake, OpenCodeHandler(config)
+        return config.model_dump(mode="json")
 
     async def _fresh_prepared(self) -> _Scenario:
         fake, handler = self._fake_and_handler()
@@ -1029,6 +1047,11 @@ class CursorRuntimeHarness(_AdapterHarness):
             status=status,
             exit_code=None if status == "running" else 0,
         )
+        self._last_cursor = (executable, digest, host)
+        return host, CursorHandler(host)
+
+    def _adapter_binding_data(self) -> dict[str, Any]:
+        executable, digest, _host = getattr(self, "_last_cursor")
         config = CursorAdapterConfig.model_validate(
             {
                 "schema_version": "1",
@@ -1041,9 +1064,10 @@ class CursorRuntimeHarness(_AdapterHarness):
                 "forced_cancel_seconds": 10,
                 "max_output_bytes": 65536,
                 "max_line_bytes": 4096,
+                "adapter_configuration_digest": _SHA,
             }
         )
-        return host, CursorHandler(config, host)
+        return config.model_dump(mode="json")
 
     async def _fresh_prepared(self) -> _Scenario:
         fake, handler = self._fake_and_handler()

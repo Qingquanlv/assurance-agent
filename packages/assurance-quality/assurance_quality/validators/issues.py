@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from graph_engine.plugin_api import CandidateWriteSet, ValidationContext, ValidationResult
+from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationResult
 
 from assurance_quality.contracts.issue_events import CHANGE_ISSUE_EVENT_ADAPTER, PROBLEM_EVENT_ADAPTER
 from assurance_quality.contracts.issues import IssueCandidateDocument, Problem
@@ -50,16 +50,16 @@ class IssueValidator:
         self._event_history = event_history
         self._path_only = path_only
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        for item in candidate.files:
+        for item in staged.files:
             if not canonical_relative(item.path) or not under_root(item.path, _ISSUE_ROOTS):
                 return ValidationResult(accepted=False, reason=_OUTSIDE)
         if self._path_only:
             return ValidationResult(accepted=True)
         if not self._file_bytes:
             return ValidationResult(accepted=False, reason=_EVIDENCE)
-        listed = {item.path for item in candidate.files}
+        listed = {item.path for item in staged.files}
         for path, payload in self._file_bytes.items():
             if path not in listed:
                 return ValidationResult(accepted=False, reason="quality candidate contains an unlisted file")
@@ -156,10 +156,10 @@ class ProblemApplyValidator:
         self._file_bytes = dict(file_bytes or {})
         self._path_only = path_only
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        receipts = [item.path for item in candidate.files if item.path.endswith("/apply-receipt.json")]
-        for item in candidate.files:
+        receipts = [item.path for item in staged.files if item.path.endswith("/apply-receipt.json")]
+        for item in staged.files:
             if not canonical_relative(item.path) or not under_root(item.path, _APPLY_ROOTS):
                 return ValidationResult(accepted=False, reason=_APPLY_OUTSIDE)
             if not item.path.endswith("/apply-receipt.json") and "context.json" not in item.path:

@@ -10,4 +10,6 @@ def test_phase5_ledgers_are_closed_and_exact(evidence_root):
     assert len(ALL_BINDING_IDS) == 99
     assert set(bindings) == set(ALL_BINDING_IDS)
     assert all(bindings[item]["data"] is None for item in ALL_BINDING_IDS if item.endswith(".finalize"))
-    assert len(comparisons["cases"]) == 25
+    cases = comparisons["cases"]
+    assert isinstance(cases, list)
+    assert len(cases) == 25

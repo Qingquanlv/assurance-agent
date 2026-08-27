@@ -821,13 +821,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     change_id = derive_change_id(item_id=arguments.item, stamp=stamp, nonce=nonce)
     output = arguments.output
     if output is None:
-        output = (
-            repo
-            / "benchmark"
-            / "assurance-product"
-            / "results"
-            / f"{arguments.adapter}-{stamp}-{nonce}"
-        )
+        output = repo / "benchmark" / "assurance-product" / "results" / f"{arguments.adapter}-{stamp}-{nonce}"
     output = output.resolve()
     if output.exists() and any(output.iterdir()):
         return _fail(f"result directory must be fresh and empty: {output}")

@@ -29,7 +29,9 @@ def test_phase3_live_manifest_has_one_locked_fixture_per_adapter(repo_root: Path
 
 
 def test_fixture_run_node_projects_the_frozen_agent_run_request() -> None:
-    node = FixtureProduct.manifest().workflow.graphs["root"].nodes["run"]
+    workflow = FixtureProduct.manifest().workflow
+    assert workflow is not None
+    node = workflow.graphs["root"].nodes["run"]
     assert node.input_projection is not None
     projected = project_task_input(
         node.input_projection,

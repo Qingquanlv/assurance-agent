@@ -1011,8 +1011,12 @@ async def test_case_review_finalize_accepts_typed_review(tmp_path: Path) -> None
         [],
     )
     assert executed.status == "succeeded"
-    assert executed.output["decision"] == "pass"
-    assert executed.output["minimum_coverage"]["missing"] == []
+    output = executed.output
+    assert isinstance(output, dict)
+    assert output["decision"] == "pass"
+    coverage = output["minimum_coverage"]
+    assert isinstance(coverage, dict)
+    assert coverage["missing"] == []
 
 
 @pytest.mark.asyncio
@@ -1023,7 +1027,9 @@ async def test_case_review_finalize_replaces_projection_drift_from_authenticated
     result = fake_agent_result(_case_review_document(missing=["entities.item"]))
     outcome = await run_finalize(CaseReviewFinalizeHandler(), result, tmp_path)
     assert outcome.status == "succeeded"
-    assert outcome.output["minimum_coverage"] == {
+    output = outcome.output
+    assert isinstance(output, dict)
+    assert output["minimum_coverage"] == {
         "total_required": 2,
         "covered": 1,
         "skipped_by_scope": 1,

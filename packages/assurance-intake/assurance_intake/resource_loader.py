@@ -7,7 +7,10 @@ from pathlib import PurePosixPath
 # Bind the package module object at import time. A later name-based
 # files("assurance_intake") re-import can re-parameterize RootModel and
 # raise KeyError('pydantic.root_model') after test harnesses pop sys.modules.
-_PACKAGE_FILES = files(sys.modules[__package__])
+_package = __package__
+if _package is None:
+    raise RuntimeError("resource loader must be imported as a package module")
+_PACKAGE_FILES = files(sys.modules[_package])
 
 
 def resource_bytes(relative_path: str) -> bytes:

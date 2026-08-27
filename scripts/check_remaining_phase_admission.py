@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tests.phase6.conformance import (
+from tests.phase6.conformance import (  # noqa: E402
     ChangeLocalAdmissionV1,
     EXPECTED_RESIDUAL_MAPPINGS,
     REQUIRED_WAIVERS,

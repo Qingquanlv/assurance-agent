@@ -19,7 +19,11 @@ from graph_engine.composition import (
     SourceRole,
     SourceSnapshot,
 )
-from graph_engine.composition.models import AuthenticatedContribution, ContributionAuthority, ExecutableAuthority
+from graph_engine.composition.models import (
+    AuthenticatedContribution,
+    ContributionAuthority,
+    ExecutableAuthority,
+)
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
@@ -150,7 +154,9 @@ def _canonical_start_token(compiled: CompiledWorkflow, *, payload: object = None
     )
 
 
-def _bootstrapped_projection(compiled: CompiledWorkflow, *, root_input: object = None) -> InvocationProjection:
+def _bootstrapped_projection(
+    compiled: CompiledWorkflow, *, root_input: object = None
+) -> InvocationProjection:
     return _projection(
         _invocation(),
         _root(input_payload=root_input),

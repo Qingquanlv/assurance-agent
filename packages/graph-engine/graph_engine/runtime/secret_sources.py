@@ -39,8 +39,8 @@ def _validate_secret_handle(value: str) -> str:
 
 def _canonical_secret_sources(
     secret_sources: tuple[SecretSourceBinding, ...],
-) -> tuple[tuple[str, str, str], ...]:
-    canonical: list[tuple[str, str, str]] = []
+) -> tuple[tuple[str, Literal["environment", "file"], str], ...]:
+    canonical: list[tuple[str, Literal["environment", "file"], str]] = []
     handles: list[str] = []
     for item in secret_sources:
         handle = _validate_secret_handle(item.handle)
@@ -129,9 +129,7 @@ def resolve_secret_source(binding: SecretSourceBinding) -> bytes:
     if binding.source_kind == "environment":
         value = os.environ.get(binding.source_locator)
         if value is None:
-            raise RuntimeAuthorizationError(
-                f"environment secret source is unset: {binding.source_locator}"
-            )
+            raise RuntimeAuthorizationError(f"environment secret source is unset: {binding.source_locator}")
         return value.encode()
     if binding.source_kind == "file":
         return Path(binding.source_locator).read_bytes()

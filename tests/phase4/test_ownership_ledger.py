@@ -368,9 +368,7 @@ def test_collectors_scan_live_catalogs_not_the_ledger() -> None:
     assert legacy_hook_fields() == frozenset(
         item["legacy_id"] for item in payload["items"] if item["kind"] == "hook"
     )
-    artifact_ids = frozenset(
-        item["legacy_id"] for item in payload["items"] if item["kind"] == "artifact"
-    )
+    artifact_ids = frozenset(item["legacy_id"] for item in payload["items"] if item["kind"] == "artifact")
     assert legacy_artifact_types() is ARTIFACT_NEW_IDS
     assert legacy_artifact_types() == artifact_ids
     assert legacy_artifact_types() is not artifact_ids

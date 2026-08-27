@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
 from pydantic import ValidationError
@@ -22,7 +23,7 @@ from assurance_generation.contracts import CodegenMapping
 from assurance_intake.contracts import CaseYamlAuthoring
 
 
-def _capability_for_case(trace: dict[str, object], leafs: frozenset[str]) -> str:
+def _capability_for_case(trace: Mapping[str, object], leafs: frozenset[str]) -> str:
     matches = tuple(sorted(key for key in trace if key in leafs))
     if not matches:
         raise InputError("unknown capability leaf: mapping case has no declared typed leaf")

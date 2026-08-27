@@ -7,6 +7,8 @@ import zipfile
 
 import pytest
 
+from tests.product.composition_harness import evict_generated_binding_modules
+
 _FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "deployment"
 _OPENCODE_MANIFEST = _FIXTURE_DIR / "opencode.yaml"
 
@@ -39,10 +41,12 @@ def test_generated_provider_rejects_declaration_contribution_mismatch(
     bindings.pop()
     declaration_path.write_text(json.dumps(document), encoding="utf-8")
 
+    evict_generated_binding_modules()
     sys.path.insert(0, str(installed))
     try:
         module = __import__(f"{built.import_package}.provider", fromlist=["DeploymentPlugin"])
         with pytest.raises(PluginContractError, match="binding declarations disagree"):
             module.DeploymentPlugin.contribute(RegistryPorts("2.0"))
     finally:
+        evict_generated_binding_modules()
         sys.path.remove(str(installed))

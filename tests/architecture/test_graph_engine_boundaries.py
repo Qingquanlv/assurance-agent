@@ -5,7 +5,13 @@ import sys
 from pathlib import Path
 
 
-ALLOWED_ROOTS = set(sys.stdlib_module_names) | {"graph_engine", "pydantic", "yaml"}
+ALLOWED_ROOTS = set(sys.stdlib_module_names) | {
+    "graph_engine",
+    "packaging",
+    "pydantic",
+    "pydantic_core",
+    "yaml",
+}
 
 
 def test_graph_engine_imports_no_product_packages() -> None:

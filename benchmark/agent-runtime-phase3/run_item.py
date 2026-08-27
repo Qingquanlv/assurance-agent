@@ -31,6 +31,7 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
+from graph_engine.plugin_api import InvocationWorkspaceBinding
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.models import attempt_directory_id
 from graph_engine.runtime.planner import _start_token_id, activation_id, task_id
@@ -439,6 +440,19 @@ def _collect_expected_artifacts(output: Path, item: ManifestItem) -> dict[str, s
     return collected
 
 
+def _workspace_binding(engine_root: Path) -> InvocationWorkspaceBinding:
+    project_root = engine_root.parent / f".{engine_root.name}-project"
+    attempts_root = engine_root.parent / f".{engine_root.name}-attempts"
+    receipts_root = engine_root.parent / f".{engine_root.name}-receipts"
+    for path in (project_root, attempts_root, receipts_root):
+        path.mkdir(exist_ok=True)
+    return InvocationWorkspaceBinding(
+        project_root=project_root,
+        attempts_root=attempts_root,
+        receipts_root=receipts_root,
+    )
+
+
 def _run_engine(
     *,
     composition: FrozenComposition,
@@ -454,6 +468,7 @@ def _run_engine(
             invocation_id=invocation_id,
             seed=empty_invocation_seed(),
             authorization=authorization,
+            workspace_binding=_workspace_binding(engine_root),
         )
         try:
             return engine.run_until_blocked(handle)

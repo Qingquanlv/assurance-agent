@@ -143,9 +143,7 @@ def _validate_schema_document(
 
     definitions = schema.get("$defs")
     if definitions is not None:
-        if not isinstance(definitions, dict) or any(
-            not isinstance(name, str) for name in definitions
-        ):
+        if not isinstance(definitions, dict) or any(not isinstance(name, str) for name in definitions):
             raise ValueError(f"{path}.$defs: definitions must be an object")
         for name, subschema in definitions.items():
             _validate_schema_document(
@@ -172,8 +170,7 @@ def _validate_schema_document(
 
     prompt_notes = schema.get("prompt_notes")
     if prompt_notes is not None and (
-        not isinstance(prompt_notes, list)
-        or any(not isinstance(note, str) for note in prompt_notes)
+        not isinstance(prompt_notes, list) or any(not isinstance(note, str) for note in prompt_notes)
     ):
         raise ValueError(f"{path}.prompt_notes: must be a list of strings")
 
@@ -223,18 +220,13 @@ def _validate_schema_document(
             )
         min_properties = schema.get("minProperties")
         if min_properties is not None and (
-            not isinstance(min_properties, int)
-            or isinstance(min_properties, bool)
-            or min_properties < 0
+            not isinstance(min_properties, int) or isinstance(min_properties, bool) or min_properties < 0
         ):
             raise ValueError(f"{path}: minProperties must be a non-negative integer")
         if "items" in schema:
             raise ValueError(f"{path}: object schemas do not accept items")
     elif type_name == "array":
-        if any(
-            key in schema
-            for key in ("additionalProperties", "properties", "required", "minProperties")
-        ):
+        if any(key in schema for key in ("additionalProperties", "properties", "required", "minProperties")):
             raise ValueError(f"{path}: array schemas do not accept object keywords")
         if "items" not in schema:
             raise ValueError(f"{path}: array schemas require items")
@@ -332,9 +324,7 @@ def _validate_value(
             raise ValueError(f"{path}: value must equal const")
         if "enum" in schema:
             options = schema["enum"]
-            if not isinstance(options, list) or not any(
-                _json_equal(value, option) for option in options
-            ):
+            if not isinstance(options, list) or not any(_json_equal(value, option) for option in options):
                 raise ValueError(f"{path}: value must be one of enum")
         return
     actual = _json_type(value)

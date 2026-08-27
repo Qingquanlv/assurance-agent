@@ -122,9 +122,7 @@ async def test_preflight_rejects_shell(tmp_path: Path) -> None:
         host.preflight(request)
 
 
-def test_production_process_host_rejects_windows(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_production_process_host_rejects_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(UnsupportedCursorPlatform, match="Linux and macOS"):
         production_process_host(tmp_path)
@@ -177,7 +175,7 @@ async def test_progress_heartbeat_advances_during_long_wait(tmp_path: Path) -> N
 async def test_spawn_home_using_wrapper_succeeds_with_cwd_injection(tmp_path: Path) -> None:
     wrapper = tmp_path / "home-wrapper.sh"
     wrapper.write_text(
-        "#!/usr/bin/env bash\nset -u\n: \"${HOME:?HOME required}\"\nexec \"$1\" \"${@:2}\"\n",
+        '#!/usr/bin/env bash\nset -u\n: "${HOME:?HOME required}"\nexec "$1" "${@:2}"\n',
         encoding="utf-8",
     )
     wrapper.chmod(0o755)

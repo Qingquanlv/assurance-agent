@@ -20,7 +20,9 @@ from harness import (  # pyright: ignore[reportMissingImports]
 )
 
 
-def _provider_parts(expected: dict[str, object], *, session_id: str, message_id: str) -> list[dict[str, object]]:
+def _provider_parts(
+    expected: dict[str, object], *, session_id: str, message_id: str
+) -> list[dict[str, object]]:
     parts = expected["parts"]
     if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict):
         raise AssertionError("expected admission body must include a text part")

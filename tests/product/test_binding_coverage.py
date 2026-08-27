@@ -3,6 +3,7 @@ from __future__ import annotations
 from tests.product.composition_harness import (
     COVERAGE_PATH,
     coverage_bytes,
+    evict_generated_binding_modules,
     project_binding_coverage,
     request_for,
 )
@@ -10,6 +11,7 @@ from tests.product.conformance import ALL_BINDING_IDS, load_json
 
 
 def test_repeated_resolution_is_byte_identical(installed_sources):
+    evict_generated_binding_modules()
     from assurance_product.product import resolve_assurance_composition
 
     first = resolve_assurance_composition(request_for("opencode", installed_sources))
@@ -22,6 +24,7 @@ def test_repeated_resolution_is_byte_identical(installed_sources):
 
 
 def test_binding_coverage_matches_authenticated_opencode_projection(installed_sources):
+    evict_generated_binding_modules()
     from assurance_product.product import resolve_assurance_composition
 
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
@@ -34,6 +37,7 @@ def test_binding_coverage_matches_authenticated_opencode_projection(installed_so
 
 
 def test_cursor_resolution_repeats_and_keeps_finalize_null(installed_sources):
+    evict_generated_binding_modules()
     from assurance_product.product import resolve_assurance_composition
 
     first = project_binding_coverage(resolve_assurance_composition(request_for("cursor", installed_sources)))

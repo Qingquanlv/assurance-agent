@@ -12,8 +12,8 @@ from graph_engine.composition import ProductFileSource, load_product_file
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import (
     CandidateFile,
-    CandidateWriteSet,
     EffectApplyResult,
+    PathWriteSet,
     EffectIntent,
     EffectReconcileResult,
     PluginContribution,
@@ -191,14 +191,14 @@ class _FinalizeHandler:
 
 
 class _RejectingValidator:
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
-        del candidate, context
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
+        del staged, context
         return ValidationResult(accepted=False, reason="test.bad.reason")
 
 
 class _AcceptingValidator:
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
-        del candidate, context
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
+        del staged, context
         return ValidationResult(accepted=True)
 
 

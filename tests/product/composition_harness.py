@@ -57,6 +57,12 @@ class CompiledProduct:
     composition: FrozenComposition
 
 
+def evict_generated_binding_modules() -> None:
+    for name in tuple(sys.modules):
+        if name == "assurance_product_bindings" or name.startswith("assurance_product_bindings_"):
+            sys.modules.pop(name, None)
+
+
 def request_for(adapter: str, installed_sources: InstalledSources):
     from assurance_product.product import AssuranceCompositionRequest
 

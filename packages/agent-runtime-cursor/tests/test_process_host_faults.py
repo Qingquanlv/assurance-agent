@@ -39,7 +39,9 @@ async def test_foreign_receipt_mac_is_rejected(tmp_path: Path) -> None:
         host.authenticate(forged)
 
 
-async def test_wait_before_durable_write_is_not_visible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_wait_before_durable_write_is_not_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     host = production_process_host(tmp_path)
     process = await host.spawn(launch_request(tmp_path))
     original_write = host._write_durable_terminal  # type: ignore[attr-defined]
@@ -94,7 +96,9 @@ def test_linux_host_uses_proc_start_identity(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setattr(
         host,
         "_read_proc_stat",
-        lambda pid: f"{pid} (sleep) S 1 {pid} {pid} 0 0 1 0 0 0 0 0 20 0 1 0 424242 4096 64 999999 0 0 0 0 0 0 0 0 0 0 0",
+        lambda pid: (
+            f"{pid} (sleep) S 1 {pid} {pid} 0 0 1 0 0 0 0 0 20 0 1 0 424242 4096 64 999999 0 0 0 0 0 0 0 0 0 0 0"
+        ),
     )
     identity = host._read_start_identity(4242)  # type: ignore[attr-defined]
     assert identity == "proc:4242:999999:1"
@@ -129,7 +133,9 @@ async def test_terminal_receipt_is_canonical_json(tmp_path: Path) -> None:
     host = production_process_host(tmp_path)
     process = await host.spawn(launch_request(tmp_path))
     await host.wait(process.receipt)
-    terminal_path = tmp_path / ".cursor-process-host" / "terminals" / f"{process.receipt.process_start_token}.json"
+    terminal_path = (
+        tmp_path / ".cursor-process-host" / "terminals" / f"{process.receipt.process_start_token}.json"
+    )
     payload = json.loads(terminal_path.read_text(encoding="utf-8"))
     assert set(payload) >= {"terminal", "receipt_mac"}
     assert set(payload["terminal"]) >= {"exit_code", "stdout", "stderr", "elapsed_seconds"}

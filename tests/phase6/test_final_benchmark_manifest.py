@@ -107,9 +107,7 @@ def test_retained_comparison_assertions_map_to_product_tests(repo_root: Path) ->
 
 
 def test_comparison_only_surface_is_removed(repo_root: Path) -> None:
-    remaining = tuple(
-        relative for relative in DELETED_COMPARISON_PATHS if (repo_root / relative).exists()
-    )
+    remaining = tuple(relative for relative in DELETED_COMPARISON_PATHS if (repo_root / relative).exists())
     assert remaining == ()
     assert not (repo_root / "tests/product/fixtures/comparison").exists()
     assert not (repo_root / "tests/phase5").exists()

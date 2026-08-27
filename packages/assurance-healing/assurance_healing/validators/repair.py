@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from graph_engine.plugin_api import CandidateWriteSet, ValidationContext, ValidationResult
+from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationResult
 
 from assurance_healing.contracts.coverage_repair import CoverageRepairApplySummary
 from assurance_healing.contracts.safety import CodegenFixApplySummaryV1
@@ -40,11 +40,11 @@ class RepairCandidateValidator:
         self._apply_summary = dict(apply_summary) if apply_summary else None
         self._file_bytes = dict(file_bytes or {})
 
-    def validate(self, candidate: CandidateWriteSet, context: ValidationContext) -> ValidationResult:
+    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
         named = _named_files(self._proposal or {})
         approved = self._proposal is not None and self._proposal.get("status") == "approved"
-        for item in candidate.files:
+        for item in staged.files:
             path = item.path
             if not canonical_relative(path):
                 return ValidationResult(accepted=False, reason=_OUTSIDE)
@@ -69,7 +69,7 @@ class RepairCandidateValidator:
             return ValidationResult(accepted=False, reason=str(error))
         if summary is None:
             return ValidationResult(accepted=True)
-        return _authenticate_apply_summary(summary, tuple(item.path for item in candidate.files))
+        return _authenticate_apply_summary(summary, tuple(item.path for item in staged.files))
 
 
 class _SummaryLoadError(ValueError):

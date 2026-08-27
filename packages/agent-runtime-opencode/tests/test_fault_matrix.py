@@ -131,7 +131,9 @@ async def test_bound_cancel_reconcile_rejects_live_root_drift_with_same_identity
     fixture = _terminal_success_fixture()
     try:
         other_project = fixture.context.project_root.parent / "other-project"
-        other_write = other_project / Path(fixture.context.write_root).relative_to(fixture.context.project_root)
+        other_write = other_project / Path(fixture.context.write_root).relative_to(
+            fixture.context.project_root
+        )
         other_write.mkdir(parents=True)
         drifted = replace(
             fixture.context,
@@ -140,7 +142,9 @@ async def test_bound_cancel_reconcile_rejects_live_root_drift_with_same_identity
             workspace_identity=fixture.context.workspace_identity,
         )
         assert drifted.workspace_identity is fixture.context.workspace_identity
-        assert drifted.workspace_identity.identity_digest == fixture.context.workspace_identity.identity_digest
+        assert (
+            drifted.workspace_identity.identity_digest == fixture.context.workspace_identity.identity_digest
+        )
         result = _reconcile(await fixture.handler.reconcile(fixture.request, drifted, fixture.activity))
         assert result.status == "indeterminate"
         assert result.reason is not None
