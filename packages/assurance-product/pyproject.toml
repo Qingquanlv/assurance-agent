@@ -22,7 +22,7 @@ assurance-opencode = "assurance_product.product:AssuranceOpenCodeProductProvider
 assurance-cursor = "assurance_product.product:AssuranceCursorProductProvider"
 
 [project.scripts]
-aa-next = "assurance_product.cli:main"
+aa = "assurance_product.cli:main"
 
 [build-system]
 requires = ["hatchling"]

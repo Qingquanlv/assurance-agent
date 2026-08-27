@@ -1,25 +1,10 @@
 # pyproject.toml
 [project]
-name = "assurance-agent"
-description = "Assurance Agent - AI-driven QA workflow orchestrator (deterministic CLI + skill suite)"
+name = "assurance-workspace"
+description = "Private development workspace for the Assurance graph product"
 version = "0.1.0"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
-dependencies = [
-    "click>=8.1",
-    "httpx>=0.27",
-    "packaging>=24",
-    "pydantic>=2.7",
-    "pyyaml>=6.0",
-    "ruamel.yaml>=0.18",
-    "assurance-kernel",
-]
-
-[project.scripts]
-aa = "assurance_agent.cli:main"
-
-[project.entry-points."assurance_agent.products"]
-assurance = "assurance_agent.assurance_product:AssuranceProduct"
 
 [dependency-groups]
 dev = [
@@ -28,6 +13,12 @@ dev = [
     "pyright>=1.1.380",
     "import-linter>=2.0",
     "mutmut>=3.7.0",
+    "click>=8.1",
+    "httpx>=0.27",
+    "packaging>=24",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "ruamel.yaml>=0.18",
     "aa-sample-product",
     "graph-engine",
     "graph-engine-toy-a",
@@ -36,6 +27,7 @@ dev = [
     "agent-runtime-opencode",
     "agent-runtime-cursor",
     "agent-runtime-fixture",
+    "assurance-kernel",
     "assurance-intake",
     "assurance-generation",
     "assurance-execution",
@@ -45,22 +37,12 @@ dev = [
     "assurance-product",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["assurance_agent"]
-# _resources 含非 .py 文件（schemas/skills/opencode），hatchling 默认包含包内数据文件；
-# artifacts 声明确保被 .gitignore 模式覆盖的资源也入包。
-artifacts = ["assurance_agent/_resources/**"]
-# scripts/ 是 dev 工具（migrate_skills.py 等），显式排除以防误入包。
-exclude = ["scripts", "/scripts/**"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/graph-engine/tests", "packages/agent-runtime-contracts/tests", "packages/agent-runtime-opencode/tests", "packages/agent-runtime-cursor/tests", "packages/assurance-intake/tests", "packages/assurance-generation/tests", "packages/assurance-execution/tests", "packages/assurance-healing/tests", "packages/assurance-quality/tests", "packages/assurance-improvement/tests"]
 # Sibling packages under tests/unit/workflow/{issues,improvements}/ share basenames
 # (test_review.py, …); importlib avoids prepend-mode module collisions.
+# Source-tree import of still-present legacy packages until Tasks 8–9 delete them.
+pythonpath = ["."]
 addopts = ["--import-mode=importlib"]
 markers = [
     "asyncio: async test executed by the local tests/agent_runtime hook",
@@ -83,6 +65,9 @@ include = ["assurance_agent", "packages/assurance-kernel/assurance_kernel", "pac
 extraPaths = [".", "packages/assurance-kernel"]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
+
+[tool.uv]
+package = false
 
 [tool.uv.workspace]
 members = [

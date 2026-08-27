@@ -67,6 +67,8 @@ def test_product_metadata_exposes_only_two_product_entry_points(built_product_wh
         "assurance-opencode": "assurance_product.product:AssuranceOpenCodeProductProvider",
         "assurance-cursor": "assurance_product.product:AssuranceCursorProductProvider",
     }
+    assert metadata.entry_points["console_scripts"] == {"aa": "assurance_product.cli:main"}
+    assert "aa-next" not in metadata.entry_points["console_scripts"]
     assert "assurance-agent" not in metadata.requires_dist
 
 

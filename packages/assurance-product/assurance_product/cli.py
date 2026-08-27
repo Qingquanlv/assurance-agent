@@ -79,12 +79,12 @@ def create_engine(root: Path, authorization: InvocationRuntimeAuthorization) -> 
 
 
 def main() -> None:
-    app.main(prog_name="aa-next")
+    app.main(prog_name="aa")
 
 
 @click.group(context_settings={"help_option_names": ["--help"]})
 def app() -> None:
-    """aa-next — Phase 5 product composition command."""
+    """aa — authenticated Assurance graph product."""
 
 
 @app.command("compile")

@@ -14,7 +14,6 @@ members = [
     "agent-runtime-cursor",
     "agent-runtime-fixture",
     "agent-runtime-opencode",
-    "assurance-agent",
     "assurance-execution",
     "assurance-generation",
     "assurance-healing",
@@ -23,6 +22,7 @@ members = [
     "assurance-kernel",
     "assurance-product",
     "assurance-quality",
+    "assurance-workspace",
     "graph-engine",
     "graph-engine-toy-a",
     "graph-engine-toy-b",
@@ -128,79 +128,6 @@ wheels = [
 ]
 
 [[package]]
-name = "assurance-agent"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "assurance-kernel" },
-    { name = "click" },
-    { name = "httpx" },
-    { name = "packaging" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "ruamel-yaml" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "aa-sample-product" },
-    { name = "agent-runtime-contracts" },
-    { name = "agent-runtime-cursor" },
-    { name = "agent-runtime-fixture" },
-    { name = "agent-runtime-opencode" },
-    { name = "assurance-execution" },
-    { name = "assurance-generation" },
-    { name = "assurance-healing" },
-    { name = "assurance-improvement" },
-    { name = "assurance-intake" },
-    { name = "assurance-product" },
-    { name = "assurance-quality" },
-    { name = "graph-engine" },
-    { name = "graph-engine-toy-a" },
-    { name = "graph-engine-toy-b" },
-    { name = "import-linter" },
-    { name = "mutmut" },
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "assurance-kernel", editable = "packages/assurance-kernel" },
-    { name = "click", specifier = ">=8.1" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "packaging", specifier = ">=24" },
-    { name = "pydantic", specifier = ">=2.7" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruamel-yaml", specifier = ">=0.18" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "aa-sample-product", editable = "examples/minimal-product" },
-    { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
-    { name = "agent-runtime-cursor", editable = "packages/agent-runtime-cursor" },
-    { name = "agent-runtime-fixture", editable = "examples/agent-runtime-fixture" },
-    { name = "agent-runtime-opencode", editable = "packages/agent-runtime-opencode" },
-    { name = "assurance-execution", editable = "packages/assurance-execution" },
-    { name = "assurance-generation", editable = "packages/assurance-generation" },
-    { name = "assurance-healing", editable = "packages/assurance-healing" },
-    { name = "assurance-improvement", editable = "packages/assurance-improvement" },
-    { name = "assurance-intake", editable = "packages/assurance-intake" },
-    { name = "assurance-product", editable = "packages/assurance-product" },
-    { name = "assurance-quality", editable = "packages/assurance-quality" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
-    { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },
-    { name = "graph-engine-toy-b", editable = "examples/graph-engine-toy-b" },
-    { name = "import-linter", specifier = ">=2.0" },
-    { name = "mutmut", specifier = ">=3.7.0" },
-    { name = "pyright", specifier = ">=1.1.380" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "ruff", specifier = ">=0.5" },
-]
-
-[[package]]
 name = "assurance-execution"
 version = "0.1.0"
 source = { editable = "packages/assurance-execution" }
@@ -210,6 +137,7 @@ dependencies = [
     { name = "assurance-intake" },
     { name = "graph-engine" },
     { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -219,6 +147,7 @@ requires-dist = [
     { name = "assurance-intake", editable = "packages/assurance-intake" },
     { name = "graph-engine", editable = "packages/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]
@@ -230,6 +159,7 @@ dependencies = [
     { name = "assurance-intake" },
     { name = "graph-engine" },
     { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -238,6 +168,7 @@ requires-dist = [
     { name = "assurance-intake", editable = "packages/assurance-intake" },
     { name = "graph-engine", editable = "packages/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]
@@ -389,6 +320,75 @@ requires-dist = [
     { name = "assurance-intake", editable = "packages/assurance-intake" },
     { name = "graph-engine", editable = "packages/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
+]
+
+[[package]]
+name = "assurance-workspace"
+version = "0.1.0"
+source = { virtual = "." }
+
+[package.dev-dependencies]
+dev = [
+    { name = "aa-sample-product" },
+    { name = "agent-runtime-contracts" },
+    { name = "agent-runtime-cursor" },
+    { name = "agent-runtime-fixture" },
+    { name = "agent-runtime-opencode" },
+    { name = "assurance-execution" },
+    { name = "assurance-generation" },
+    { name = "assurance-healing" },
+    { name = "assurance-improvement" },
+    { name = "assurance-intake" },
+    { name = "assurance-kernel" },
+    { name = "assurance-product" },
+    { name = "assurance-quality" },
+    { name = "click" },
+    { name = "graph-engine" },
+    { name = "graph-engine-toy-a" },
+    { name = "graph-engine-toy-b" },
+    { name = "httpx" },
+    { name = "import-linter" },
+    { name = "mutmut" },
+    { name = "packaging" },
+    { name = "pydantic" },
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pyyaml" },
+    { name = "ruamel-yaml" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "aa-sample-product", editable = "examples/minimal-product" },
+    { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
+    { name = "agent-runtime-cursor", editable = "packages/agent-runtime-cursor" },
+    { name = "agent-runtime-fixture", editable = "examples/agent-runtime-fixture" },
+    { name = "agent-runtime-opencode", editable = "packages/agent-runtime-opencode" },
+    { name = "assurance-execution", editable = "packages/assurance-execution" },
+    { name = "assurance-generation", editable = "packages/assurance-generation" },
+    { name = "assurance-healing", editable = "packages/assurance-healing" },
+    { name = "assurance-improvement", editable = "packages/assurance-improvement" },
+    { name = "assurance-intake", editable = "packages/assurance-intake" },
+    { name = "assurance-kernel", editable = "packages/assurance-kernel" },
+    { name = "assurance-product", editable = "packages/assurance-product" },
+    { name = "assurance-quality", editable = "packages/assurance-quality" },
+    { name = "click", specifier = ">=8.1" },
+    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },
+    { name = "graph-engine-toy-b", editable = "examples/graph-engine-toy-b" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "import-linter", specifier = ">=2.0" },
+    { name = "mutmut", specifier = ">=3.7.0" },
+    { name = "packaging", specifier = ">=24" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pyright", specifier = ">=1.1.380" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruamel-yaml", specifier = ">=0.18" },
+    { name = "ruff", specifier = ">=0.5" },
 ]
 
 [[package]]
