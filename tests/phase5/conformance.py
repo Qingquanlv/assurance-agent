@@ -278,7 +278,7 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "tests/phase5/test_binding_builder.py::test_interrupted_publication_is_retryable[builder-after-file-publication]",
             "tests/phase5/test_binding_builder.py::test_interrupted_publication_is_retryable[builder-before-wheel-publication]",
             "tests/phase5/test_binding_builder.py::test_interrupted_publication_is_retryable[builder-after-wheel-publication]",
-            "tests/phase5/test_binding_builder.py::test_generated_provider_contributes_exactly_99_aliases",
+            "tests/phase5/test_generated_declaration_mismatch.py::test_generated_provider_rejects_declaration_contribution_mismatch",
             "tests/phase5/test_product_composition.py::test_wrong_runtime_deployment_fails_closed",
             "tests/phase5/test_binding_builder_security.py::test_builder_rejects_capability_source_drift",
             "tests/phase5/test_project_configuration_security.py::test_bindings_are_rejected_even_when_phase2_would_accept_them",
@@ -379,7 +379,7 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "tests/phase5/test_binding_builder.py::test_interrupted_publication_is_retryable[builder-after-wheel-publication]"
         ),
         "generated-declaration-contribution-mismatch": (
-            "tests/phase5/test_binding_builder.py::test_generated_provider_contributes_exactly_99_aliases"
+            "tests/phase5/test_generated_declaration_mismatch.py::test_generated_provider_rejects_declaration_contribution_mismatch"
         ),
         "wrong-adapter-dependency": (
             "tests/phase5/test_product_composition.py::test_wrong_runtime_deployment_fails_closed"
