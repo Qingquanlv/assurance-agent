@@ -56,15 +56,25 @@ def test_observation_id_is_stable_for_closed_inputs() -> None:
         source_json_pointer="/results/0/message",
         signature="boom",
     )
-    assert observation_id(payload) == observation_id(payload)
+    assert observation_id(payload) == "OBS-f690592fc607219e"
 
 
 def test_problem_fingerprint_ignores_document_title() -> None:
     surface = AffectedSurface(kind="module", value="Menus Service")
-    inputs = FingerprintInputs(surface="menus", symptom="boom")
-    first = problem_fingerprint(affected_surface=surface, fingerprint_inputs=inputs)
-    second = problem_fingerprint(affected_surface=surface, fingerprint_inputs=inputs)
-    assert first.digest == second.digest
+    first = problem_fingerprint(
+        affected_surface=surface,
+        fingerprint_inputs=FingerprintInputs(surface="menus", symptom="boom"),
+    )
+    rewritten_title = problem_fingerprint(
+        affected_surface=surface,
+        fingerprint_inputs=FingerprintInputs(surface="rewritten-title", symptom="boom"),
+    )
+    changed_symptom = problem_fingerprint(
+        affected_surface=surface,
+        fingerprint_inputs=FingerprintInputs(surface="menus", symptom="crash"),
+    )
+    assert first.digest == rewritten_title.digest
+    assert first.digest != changed_symptom.digest
 
 
 async def test_issue_handler_digest_matches_observation_id() -> None:

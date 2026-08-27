@@ -182,3 +182,53 @@ Not deleted: `packages/graph-engine/`, adapters, six capability wheels,
   Task 10/11 can retire the sample.
 - Unit/integration tests under `tests/unit` still import the deleted package.
   They were not in the listed suites and were left unstaged.
+
+## Fix round 1 — Important tautologies
+
+Fixed only the three Important review items. Did not restore
+`assurance_kernel`. Did not expand into Minors.
+
+1. `test_observation_id_is_stable_for_closed_inputs` now asserts the frozen
+   digest `OBS-f690592fc607219e` for the closed payload.
+2. `test_problem_fingerprint_ignores_document_title` varies
+   `FingerprintInputs.surface` (the unused document/title field) and keeps a
+   symptom-change negative control.
+3. `legacy_artifact_types()` returns frozen `ARTIFACT_NEW_IDS` instead of
+   reading the ledger. `test_collectors_scan_live_catalogs_not_the_ledger`
+   compares that constant to the YAML so ledger drift fails.
+
+**RED** — wrong frozen digest, inverted symptom control, incomplete
+`ARTIFACT_NEW_IDS`:
+
+```bash
+uv run pytest \
+  packages/assurance-quality/tests/test_quality_characterization.py \
+  tests/phase4/test_ownership_ledger.py \
+  tests/phase6/test_assurance_kernel_deleted.py -q
+```
+
+```text
+FAILED packages/assurance-quality/tests/test_quality_characterization.py::test_observation_id_is_stable_for_closed_inputs
+FAILED packages/assurance-quality/tests/test_quality_characterization.py::test_problem_fingerprint_ignores_document_title
+FAILED tests/phase4/test_ownership_ledger.py::test_ledger_covers_every_legacy_operation_and_skill_exactly_once
+FAILED tests/phase4/test_ownership_ledger.py::test_collectors_scan_live_catalogs_not_the_ledger
+4 failed, 19 passed in 1.92s
+```
+
+Expected RED causes: placeholder `OBS-deadbeefdeadbeef` vs
+`OBS-f690592fc607219e`; symptom-change digest compared with `==`;
+`ARTIFACT_NEW_IDS` was `{advisory}` while the ledger has 77 artifact ids.
+
+**GREEN** — after the frozen digest, title-vary plus `!=` symptom control,
+and the complete `ARTIFACT_NEW_IDS` set:
+
+```bash
+uv run pytest \
+  packages/assurance-quality/tests/test_quality_characterization.py \
+  tests/phase4/test_ownership_ledger.py \
+  tests/phase6/test_assurance_kernel_deleted.py -q
+```
+
+```text
+23 passed in 2.20s
+```

@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from tests.phase4.ownership import (
+    ARTIFACT_NEW_IDS,
     ASSURANCE_OWNERS,
     CALLABLE_OWNER_OVERRIDES,
     GENERATION_VERIFICATION_FILES,
@@ -367,9 +368,12 @@ def test_collectors_scan_live_catalogs_not_the_ledger() -> None:
     assert legacy_hook_fields() == frozenset(
         item["legacy_id"] for item in payload["items"] if item["kind"] == "hook"
     )
-    assert legacy_artifact_types() == frozenset(
+    artifact_ids = frozenset(
         item["legacy_id"] for item in payload["items"] if item["kind"] == "artifact"
     )
+    assert legacy_artifact_types() is ARTIFACT_NEW_IDS
+    assert legacy_artifact_types() == artifact_ids
+    assert legacy_artifact_types() is not artifact_ids
     yaml_ids = frozenset(
         item["legacy_id"]
         for item in yaml.safe_load(OWNERSHIP_PATH.read_text(encoding="utf-8"))["items"]
