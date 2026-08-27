@@ -115,12 +115,62 @@ Not deleted: `assurance_agent/`, `packages/assurance-kernel/`.
 
 - `tests/conftest.py` is outside the task file list. After
   `[tool.uv] package = false`, ancestor collection still called
-  `select_product("assurance")` and failed closed. A `ProductError`
-  suppress is the smallest collection fix; it was staged so the required
-  pytest command remains green on the committed tree.
+  `select_product("assurance")` and failed closed. Fix round 1 now
+  ignores only `unknown product: assurance` and re-raises other
+  `ProductError` kinds.
 - Tests that still require the installed `assurance` product entry point
   will no longer auto-select it. That is expected until Task 8 deletes
   `assurance_agent`.
 - Extra libraries (`click`, `httpx`, `packaging`, `pydantic`, `pyyaml`,
   `ruamel.yaml`) moved into the root `dev` group so the still-present
   legacy source tree stays importable until Tasks 8–9.
+
+## Fix round 1 — narrow collection ProductError
+
+Independent review of `3bd375d..bcfbdcd` approved the cutover but flagged
+`suppress(ProductError)` as too broad. The guard now ignores only
+`unknown product: assurance` (exact or prefix) and re-raises every other
+`ProductError`. The `aa` transfer and missing root entry points were left
+alone.
+
+**RED** — swallow-all helper still in place:
+
+```bash
+uv run pytest tests/phase6/test_conftest_product_guard.py -q
+```
+
+```text
+FAILED tests/phase6/test_conftest_product_guard.py::test_other_product_errors_are_reraised[duplicate product id 'assurance' declared by: a, b]
+FAILED tests/phase6/test_conftest_product_guard.py::test_other_product_errors_are_reraised[product id mismatch: entry 'assurance' != 'other']
+FAILED tests/phase6/test_conftest_product_guard.py::test_other_product_errors_are_reraised[invalid product id: assurance]
+FAILED tests/phase6/test_conftest_product_guard.py::test_other_product_errors_are_reraised[unknown product: other]
+4 failed, 2 passed, 1 warning in 0.12s
+```
+
+Expected RED: unknown-assurance cases still pass; duplicate / mismatch /
+invalid / other-product messages were swallowed.
+
+**GREEN** — after narrowing `_select_default_product`:
+
+```bash
+uv run pytest tests/phase6/test_conftest_product_guard.py -q
+uv run pytest tests/phase6/test_cli_cutover.py tests/phase6/test_workspace_manifest.py tests/phase5/test_product_packaging.py -q
+```
+
+```text
+......                                                                   [100%]
+6 passed, 1 warning in 0.13s
+```
+
+```text
+........                                                                 [100%]
+8 passed, 1 warning in 2.17s
+```
+
+Combined focused + covering run: `14 passed, 1 warning in 2.31s`. The
+warning is still `CompiledWorkflow.schema` field-name shadow.
+
+The focused regression lives at
+`tests/phase6/test_conftest_product_guard.py`. It was run for RED/GREEN
+but left unstaged because this round commits only `tests/conftest.py`
+and this report.
