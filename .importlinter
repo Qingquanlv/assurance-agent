@@ -1,129 +1,166 @@
 [importlinter]
 root_packages =
-    assurance_agent
-    assurance_kernel
+    assurance_intake
+    assurance_generation
+    assurance_execution
+    assurance_healing
+    assurance_quality
+    assurance_improvement
+    graph_engine
+    graph_engine_toy_a
+    graph_engine_toy_b
+    agent_runtime_contracts
+    agent_runtime_opencode
+    agent_runtime_cursor
+    agent_runtime_fixture
 
-[importlinter:contract:layers]
-name = commands depend on eval domain, never the reverse
-type = layers
-layers =
-    assurance_agent.cli
-    # Installed-product selection lives with commands: workflow.driver must not
-    # import assurance_agent.product (CLI calls select_product; driver reads id).
-    assurance_agent.commands : assurance_agent.product
-    assurance_agent.eval
-    assurance_agent.risk
-    assurance_agent.workflow
-    assurance_agent.verification
-    assurance_agent.evidence
-    assurance_agent.artifacts
-    assurance_agent.config
-    assurance_agent.resources
-# Memory evaluate builds a host Eval runner (callables cannot be CLI JSON params).
-ignore_imports =
-    assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.eval.host_runner
+[importlinter:contract:generation-intake-contracts-only]
+name = generation may import only intake contracts
+type = forbidden
+source_modules =
+    assurance_generation
+forbidden_modules =
+    assurance_intake.plugin
+    assurance_intake.operations
+    assurance_intake.validators
+    assurance_intake.resource_loader
 
-[importlinter:contract:retro-layers]
-name = commands depend on retro domain, never the reverse
-type = layers
-layers =
-    assurance_agent.commands
-    assurance_agent.retro
-    assurance_agent.workflow
-# Graph entrypoints invoke Retro through one narrow stage facade. Keep that
-# intentional seam explicit so every new workflow→retro edge remains fail-closed.
-ignore_imports =
-    assurance_agent.workflow.retro_ops -> assurance_agent.retro.stages
-    # Improvement reconciler validates Candidates against RetroContext (Task 8/9 seam).
-    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
-    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
-    # Knowledge delivery loads pinned RetroContext for Problem eligibility (Task 11).
-    assurance_agent.workflow.improvements.knowledge_delivery -> assurance_agent.retro.types
+[importlinter:contract:execution-assurance-contracts-only]
+name = execution may import only intake and generation contracts
+type = forbidden
+source_modules =
+    assurance_execution
+forbidden_modules =
+    assurance_intake.plugin
+    assurance_intake.operations
+    assurance_intake.validators
+    assurance_intake.resource_loader
+    assurance_generation.plugin
+    assurance_generation.operations
+    assurance_generation.validators
+    assurance_generation.resource_loader
 
-[importlinter:contract:eval-retro-independence]
-name = eval and retro must not import each other
+[importlinter:contract:healing-assurance-contracts-only]
+name = healing may import only intake, generation, and execution contracts
+type = forbidden
+source_modules =
+    assurance_healing
+forbidden_modules =
+    assurance_intake.plugin
+    assurance_intake.operations
+    assurance_intake.validators
+    assurance_intake.resource_loader
+    assurance_generation.plugin
+    assurance_generation.operations
+    assurance_generation.validators
+    assurance_generation.resource_loader
+    assurance_execution.plugin
+    assurance_execution.operations
+    assurance_execution.validators
+    assurance_execution.resource_loader
+
+[importlinter:contract:healing-no-quality]
+name = healing must not import quality
+type = forbidden
+source_modules =
+    assurance_healing
+forbidden_modules =
+    assurance_quality
+
+[importlinter:contract:quality-assurance-contracts-only]
+name = quality may import only intake, generation, execution, and healing contracts
+type = forbidden
+source_modules =
+    assurance_quality
+forbidden_modules =
+    assurance_intake.plugin
+    assurance_intake.operations
+    assurance_intake.validators
+    assurance_intake.resource_loader
+    assurance_generation.plugin
+    assurance_generation.operations
+    assurance_generation.validators
+    assurance_generation.resource_loader
+    assurance_execution.plugin
+    assurance_execution.operations
+    assurance_execution.validators
+    assurance_execution.resource_loader
+    assurance_healing.plugin
+    assurance_healing.operations
+    assurance_healing.validators
+    assurance_healing.resource_loader
+    assurance_healing.effects
+
+[importlinter:contract:improvement-assurance-contracts-only]
+name = improvement may import only intake, generation, execution, healing, and quality contracts
+type = forbidden
+source_modules =
+    assurance_improvement
+forbidden_modules =
+    assurance_intake.plugin
+    assurance_intake.operations
+    assurance_intake.validators
+    assurance_intake.resource_loader
+    assurance_generation.plugin
+    assurance_generation.operations
+    assurance_generation.validators
+    assurance_generation.resource_loader
+    assurance_execution.plugin
+    assurance_execution.operations
+    assurance_execution.validators
+    assurance_execution.resource_loader
+    assurance_healing.plugin
+    assurance_healing.operations
+    assurance_healing.validators
+    assurance_healing.resource_loader
+    assurance_healing.effects
+    assurance_quality.plugin
+    assurance_quality.operations
+    assurance_quality.validators
+    assurance_quality.resource_loader
+
+[importlinter:contract:graph-engine-independent]
+name = graph engine must not import products or the old runtime
+type = forbidden
+source_modules =
+    graph_engine
+forbidden_modules =
+    graph_engine_toy_a
+    graph_engine_toy_b
+    agent_runtime_fixture
+
+[importlinter:contract:graph-engine-provider-neutral]
+name = graph engine must not import agent contracts or runtime adapters
+type = forbidden
+source_modules =
+    graph_engine
+forbidden_modules =
+    agent_runtime_contracts
+    agent_runtime_opencode
+    agent_runtime_cursor
+
+[importlinter:contract:adapter-independence]
+name = runtime adapters are independent
 type = independence
 modules =
-    assurance_agent.eval
-    assurance_agent.retro
-# Transitive eval → workflow → retro_ops → the same intentional facade seam.
-ignore_imports =
-    assurance_agent.workflow.retro_ops -> assurance_agent.retro.stages
-    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.types
-    assurance_agent.workflow.improvements.reconciler -> assurance_agent.retro.candidates
-    assurance_agent.workflow.improvements.knowledge_delivery -> assurance_agent.retro.types
+    agent_runtime_opencode
+    agent_runtime_cursor
 
-[importlinter:contract:core-below-orchestration]
-name = workflow.core must not import workflow.orchestration
+[importlinter:contract:contracts-wheel-independence]
+name = contracts must not import adapters or fixture
 type = forbidden
 source_modules =
-    assurance_agent.workflow.core
+    agent_runtime_contracts
 forbidden_modules =
-    assurance_agent.workflow.orchestration
+    agent_runtime_opencode
+    agent_runtime_cursor
+    agent_runtime_fixture
 
-[importlinter:contract:artifacts-below-workflow]
-name = artifacts must not import workflow
+[importlinter:contract:fixture-downward-only]
+name = fixture may import graph engine and contracts only
 type = forbidden
 source_modules =
-    assurance_agent.artifacts
+    agent_runtime_fixture
 forbidden_modules =
-    assurance_agent.workflow
-
-[importlinter:contract:graph-runtime-layer]
-name = driver depends on domains, domains depend on graph, graph depends on orchestration and core
-type = layers
-layers =
-    assurance_agent.workflow.driver
-    assurance_agent.workflow.metrics : assurance_agent.workflow.issues : assurance_agent.workflow.improvements : assurance_agent.workflow.execution : assurance_agent.workflow.report : assurance_agent.workflow.healing : assurance_agent.workflow.discovery : assurance_agent.workflow.retro_ops
-    assurance_agent.workflow.graph
-    assurance_agent.workflow.orchestration
-    assurance_agent.workflow.core
-# Graph delivery ops build a host Eval runner (callables cannot be CLI params).
-# That pulls eval → driver transitively; keep the seam explicit and fail-closed
-# for any new graph → driver edges.
-ignore_imports =
-    assurance_agent.workflow.improvements.memory_delivery -> assurance_agent.eval.host_runner
-
-[importlinter:contract:kernel-not-assurance]
-name = kernel must not import assurance_agent
-type = forbidden
-source_modules =
-    assurance_kernel
-forbidden_modules =
-    assurance_agent
-
-[importlinter:contract:kernel-artifacts-below-workflow]
-name = kernel artifacts must not import workflow
-type = forbidden
-source_modules =
-    assurance_kernel.artifacts
-forbidden_modules =
-    assurance_kernel.workflow
-
-[importlinter:contract:kernel-core-below-orchestration]
-name = kernel workflow.core must not import workflow.orchestration
-type = forbidden
-source_modules =
-    assurance_kernel.workflow.core
-forbidden_modules =
-    assurance_kernel.workflow.orchestration
-
-[importlinter:contract:kernel-graph-runtime-layer]
-name = kernel driver / graph / orchestration / core layers
-type = layers
-layers =
-    assurance_kernel.workflow.driver
-    assurance_kernel.workflow.graph
-    assurance_kernel.workflow.orchestration
-    assurance_kernel.workflow.core
-
-[importlinter:contract:kernel-domain-layers]
-name = kernel workflow / verification / knowledge+evidence / artifacts / config / resources
-type = layers
-layers =
-    assurance_kernel.workflow
-    assurance_kernel.verification
-    assurance_kernel.knowledge : assurance_kernel.evidence
-    assurance_kernel.artifacts
-    assurance_kernel.config
-    assurance_kernel.resources
+    agent_runtime_opencode
+    agent_runtime_cursor

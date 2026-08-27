@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "artifact": {
+      "type": "string"
+    },
+    "status": {
+      "const": "ok",
+      "type": "string"
+    }
+  },
+  "required": [
+    "artifact",
+    "status"
+  ],
+  "type": "object"
+}

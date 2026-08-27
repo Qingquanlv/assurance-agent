@@ -1,0 +1,35 @@
+{
+  "descriptor": {
+    "bindings": [],
+    "commit_validators": [],
+    "dependencies": [],
+    "effects": [],
+    "engine_api": "2.0",
+    "plugin_id": "runtime.cursor",
+    "plugin_version": "0.1.0",
+    "resources": [],
+    "schema_version": "1",
+    "schemas": ["runtime.cursor.request", "runtime.cursor.result"],
+    "source": {
+      "declaration_path": "agent_runtime_cursor/plugin-declaration.json",
+      "distribution": "agent-runtime-cursor",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "cursor",
+      "entrypoint_value": "agent_runtime_cursor.plugin:CursorPlugin",
+      "import_roots": [""],
+      "version": "0.1.0"
+    },
+    "task_handlers": ["runtime.cursor.execute"]
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "agent_runtime_cursor/plugin-declaration.json",
+    "distribution": "agent-runtime-cursor",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "cursor",
+    "entrypoint_value": "agent_runtime_cursor.plugin:CursorPlugin",
+    "import_roots": [""],
+    "version": "0.1.0"
+  }
+}

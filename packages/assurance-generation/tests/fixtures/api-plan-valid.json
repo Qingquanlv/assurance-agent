@@ -1,0 +1,22 @@
+{
+  "schema_version": "1",
+  "family": "api",
+  "change_id": "CH-DEMO-001",
+  "case_ids": ["TC_API_001"],
+  "required_capabilities": ["entities.item.create"],
+  "coverage": [
+    {
+      "case_id": "TC_API_001",
+      "operation": "create",
+      "risk": "high",
+      "required_capabilities": ["entities.item.create"]
+    }
+  ],
+  "output_files": [
+    "qa/changes/CH-DEMO-001/plans/api-plan.md",
+    "qa/changes/CH-DEMO-001/plans/api-test-data-plan.md",
+    "qa/changes/CH-DEMO-001/plans/api-codegen-plan.md",
+    "qa/changes/CH-DEMO-001/plans/api-codegen-mapping.json",
+    "qa/changes/CH-DEMO-001/plans/m3-review-summary.md"
+  ]
+}

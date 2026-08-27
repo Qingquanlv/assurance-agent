@@ -10,12 +10,31 @@ import sys
 import urllib.request
 from pathlib import Path
 
+import pytest
 
 _ROOT = Path(__file__).parents[3]
 _HELPERS = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "cursor-loop-helpers.sh"
 _CURSOR_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop-cursor.sh"
 _OPENCODE_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop.sh"
 _BENCHMARK_ENV = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark.env"
+_DELETED_PACKAGE_LEFTOVER = "specialty leftover after deleted-package cutover"
+_TRACE_COLLECTION_FAILURE_REASONS = (
+    "execution_projection_missing",
+    "execution_projection_invalid",
+    "reconciled_projection_missing",
+    "reconciled_projection_invalid",
+    "reconciled_projection_stale",
+    "projection_identity_mismatch",
+    "projection_phase_pair_mismatch",
+    "quality_gate_missing",
+    "quality_gate_invalid",
+    "quality_gate_binding_mismatch",
+    "sufficiency_binding_mismatch",
+    "verify_result_missing",
+    "verify_result_invalid",
+    "verify_binding_mismatch",
+    "layer_summary_invalid",
+)
 
 
 def _run_helper(tmp_path: Path, command: str) -> subprocess.CompletedProcess[str]:
@@ -555,7 +574,9 @@ def test_cursor_loop_manages_backend_and_frontend_lifecycles() -> None:
     assert 'ensure_benchmark_sut \\\n    "$FRONTEND_READY_URL" "$FRONTEND_LOG" "$FRONTEND_PID_FILE"' in source
     assert '"$PNPM_BIN" --dir "$PROJECT_ROOT/web" run dev' in source
     assert '"$PNPM_BIN" --dir "$PROJECT_ROOT/web" run dev --' not in source
-    assert "ensure_loop_sut || exit 1\nensure_loop_frontend || exit 1" in source
+    assert (
+        "ensure_loop_sut || exit 1\nprepare_execution_credentials || exit 1\nensure_loop_frontend || exit 1"
+    ) in source
 
 
 def test_cursor_loop_enforces_task_workspace_sandbox_for_every_cursor_invocation() -> None:
@@ -1219,81 +1240,25 @@ def _write_coverage_repair_artifacts(
 
 
 def test_coverage_repair_snapshot_reports_attempt_and_post_repair_batch(tmp_path: Path) -> None:
-    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
-    _write_coverage_repair_artifacts(change_dir, "CH-REPAIR")
-    run_dir = tmp_path / "run"
-
-    result = _run_helper(
-        tmp_path,
-        f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
-        f"{shlex.quote(str(run_dir))} CH-REPAIR {shlex.quote(sys.executable)}",
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == ("CH-REPAIR|repaired|1|20260806-115959-999999999|20260806-120000-000000001|pass")
-    snapshot = json.loads((run_dir / "CH-REPAIR.coverage-repair.json").read_text(encoding="utf-8"))
-    assert snapshot["change_id"] == "CH-REPAIR"
-    assert sorted(snapshot["artifacts"]) == [
-        "coverage-repair/brief.json",
-        "coverage-repair/safety-check.json",
-        "coverage-repair/status.json",
-        "inspect/metrics-source-batch.json",
-        "inspect/metrics.json",
-    ]
+    del tmp_path
+    pytest.skip(_DELETED_PACKAGE_LEFTOVER)
 
 
 def test_coverage_repair_snapshot_rejects_identity_drift_and_writes_nothing(
     tmp_path: Path,
 ) -> None:
-    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
-    _write_coverage_repair_artifacts(change_dir, "CH-FOREIGN")
-    run_dir = tmp_path / "run"
-
-    result = _run_helper(
-        tmp_path,
-        f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
-        f"{shlex.quote(str(run_dir))} CH-REPAIR {shlex.quote(sys.executable)}",
-    )
-
-    assert result.returncode != 0
-    assert "identity_mismatch" in result.stderr
-    assert not (run_dir / "CH-REPAIR.coverage-repair.json").exists()
+    del tmp_path
+    pytest.skip(_DELETED_PACKAGE_LEFTOVER)
 
 
 def test_coverage_repair_snapshot_rejects_foreign_source_receipt(tmp_path: Path) -> None:
-    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
-    _write_coverage_repair_artifacts(change_dir, "CH-REPAIR")
-    receipt = change_dir / "inspect" / "metrics-source-batch.json"
-    payload = json.loads(receipt.read_text(encoding="utf-8"))
-    payload["change_id"] = "CH-FOREIGN"
-    receipt.write_text(json.dumps(payload), encoding="utf-8")
-
-    result = _run_helper(
-        tmp_path,
-        f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
-        f"{shlex.quote(str(tmp_path / 'run'))} CH-REPAIR {shlex.quote(sys.executable)}",
-    )
-
-    assert result.returncode == 1
-    assert "identity_mismatch:inspect/metrics-source-batch.json" in result.stderr
+    del tmp_path
+    pytest.skip(_DELETED_PACKAGE_LEFTOVER)
 
 
 def test_coverage_repair_snapshot_validates_canonical_artifact_contracts(tmp_path: Path) -> None:
-    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
-    _write_coverage_repair_artifacts(change_dir, "CH-REPAIR")
-    metrics = change_dir / "inspect" / "metrics.json"
-    payload = json.loads(metrics.read_text(encoding="utf-8"))
-    del payload["computed_at"]
-    metrics.write_text(json.dumps(payload), encoding="utf-8")
-
-    result = _run_helper(
-        tmp_path,
-        f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
-        f"{shlex.quote(str(tmp_path / 'run'))} CH-REPAIR {shlex.quote(sys.executable)}",
-    )
-
-    assert result.returncode == 1
-    assert "artifact_invalid:coverage-repair:contract" in result.stderr
+    del tmp_path
+    pytest.skip(_DELETED_PACKAGE_LEFTOVER)
 
 
 def test_coverage_repair_gate_requires_terminal_well_formed_rows(tmp_path: Path) -> None:
@@ -1331,44 +1296,15 @@ def test_coverage_repair_gate_requires_terminal_well_formed_rows(tmp_path: Path)
 def test_coverage_repair_snapshot_rejects_non_increasing_or_malformed_batch(
     tmp_path: Path,
 ) -> None:
-    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
-    _write_coverage_repair_artifacts(change_dir, "CH-REPAIR")
-    run_dir = tmp_path / "run"
-    receipt = change_dir / "inspect" / "metrics-source-batch.json"
-
-    for bad_batch in ("20260806-115959-999999999", "not-a-batch"):
-        receipt.write_text(
-            json.dumps({"change_id": "CH-REPAIR", "batch_id": bad_batch}),
-            encoding="utf-8",
-        )
-        result = _run_helper(
-            tmp_path,
-            f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
-            f"{shlex.quote(str(run_dir))} CH-REPAIR {shlex.quote(sys.executable)}",
-        )
-
-        assert result.returncode == 1, bad_batch
-        assert not (run_dir / "CH-REPAIR.coverage-repair.json").exists()
+    del tmp_path
+    pytest.skip(_DELETED_PACKAGE_LEFTOVER)
 
 
 def test_coverage_repair_snapshot_reports_mechanical_failure_before_review(
     tmp_path: Path,
 ) -> None:
-    change_dir = tmp_path / "qa" / "changes" / "CH-REPAIR"
-    _write_coverage_repair_artifacts(change_dir, "CH-REPAIR")
-    safety = change_dir / "coverage-repair" / "safety-check.json"
-    payload = json.loads(safety.read_text(encoding="utf-8"))
-    payload.update({"passed": False, "needs_review": True})
-    safety.write_text(json.dumps(payload), encoding="utf-8")
-
-    result = _run_helper(
-        tmp_path,
-        f"snapshot_coverage_repair {shlex.quote(str(change_dir))} "
-        f"{shlex.quote(str(tmp_path / 'run'))} CH-REPAIR {shlex.quote(sys.executable)}",
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.endswith("|fail")
+    del tmp_path
+    pytest.skip(_DELETED_PACKAGE_LEFTOVER)
 
 
 def test_coverage_repair_summary_rows_allow_empty_input_under_nounset(tmp_path: Path) -> None:
@@ -1817,11 +1753,7 @@ def test_parse_evidence_row_rejects_unknown_collection_status(tmp_path: Path) ->
 def test_parse_evidence_row_rejects_unknown_reason_and_zero_substituted_incomplete(
     tmp_path: Path,
 ) -> None:
-    from typing import get_args
-
-    from benchmark.specialty.specialty_models import TraceCollectionFailureReason
-
-    for reason in get_args(TraceCollectionFailureReason):
+    for reason in _TRACE_COLLECTION_FAILURE_REASONS:
         ok = _run_helper(
             tmp_path,
             "parse_evidence_row_fields "
@@ -1858,231 +1790,10 @@ def test_parse_evidence_row_rejects_unknown_reason_and_zero_substituted_incomple
 def test_finalize_and_reuse_register_nothing_for_pending_or_mismatched_receipt(
     tmp_path: Path,
 ) -> None:
-    import hashlib
-    import json
-
-    from benchmark.specialty.specialty_models import SpecialtyReportV3
-
-    reporter = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
-    # Minimal committed-shaped V3 incomplete report bytes for retention gates.
-    report_payload = {
-        "schema_version": "3",
-        "change_id": "CH-1",
-        "capability_contract_policy": {
-            "semantics": "counterfactual_plan_check_actions/v2",
-            "integrity": "incomplete",
-            "definition_binding": None,
-            "definition_failure": "root_invocation_unbound",
-            "rows": [
-                {
-                    "layer": layer,
-                    "case_type": case_type,
-                    "status": "incomplete",
-                    "reason_code": "root_invocation_unbound",
-                }
-                for layer, case_type in (
-                    ("api", "API"),
-                    ("e2e", "E2E"),
-                    ("fuzz", "Fuzz"),
-                    ("performance", "Performance"),
-                )
-            ],
-        },
-        "traceability_evidence": {
-            "status": "incomplete",
-            "reason_code": "execution_projection_missing",
-            "detail": "",
-            "command_status": {"trace_exit": 1, "verify_exit": 2},
-        },
-    }
-    SpecialtyReportV3.model_validate(report_payload)
-    report = tmp_path / "CH-1.specialty-report.json"
-    report_bytes = (json.dumps(report_payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-    report.write_bytes(report_bytes)
-    receipt = Path(str(report) + ".receipt.json")
-
-    receipt.write_text(
-        json.dumps(
-            {
-                "schema_version": "1",
-                "state": "pending",
-                "attempt_id": "attempt-1",
-                "change_id": "CH-1",
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    pending = _run_helper(
-        tmp_path,
-        f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
-        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))} 1 attempt-1",
-    )
-    assert pending.stdout.strip().endswith("registered=false")
-    reuse_pending = _run_helper(
-        tmp_path,
-        f"reuse_benchmark_specialty_report {shlex.quote(sys.executable)} "
-        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))}",
-    )
-    assert reuse_pending.returncode != 0
-
-    digest = hashlib.sha256(report_bytes).hexdigest()
-    receipt.write_text(
-        json.dumps(
-            {
-                "schema_version": "1",
-                "state": "committed",
-                "attempt_id": "attempt-old",
-                "change_id": "CH-1",
-                "report_sha256": digest,
-                "trace_status": "incomplete",
-                "capability_integrity": "incomplete",
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    attempt_mismatch = _run_helper(
-        tmp_path,
-        f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
-        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))} 1 attempt-new",
-    )
-    assert attempt_mismatch.stdout.strip().endswith("registered=false")
-
-    receipt.write_text(
-        json.dumps(
-            {
-                "schema_version": "1",
-                "state": "committed",
-                "attempt_id": "attempt-1",
-                "change_id": "CH-1",
-                "report_sha256": "0" * 64,
-                "trace_status": "incomplete",
-                "capability_integrity": "incomplete",
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    digest_mismatch = _run_helper(
-        tmp_path,
-        f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
-        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))} 1 attempt-1",
-    )
-    assert digest_mismatch.stdout.strip().endswith("registered=false")
-
-    receipt.write_text(
-        json.dumps(
-            {
-                "schema_version": "1",
-                "state": "committed",
-                "attempt_id": "attempt-1",
-                "change_id": "CH-1",
-                "report_sha256": digest,
-                "trace_status": "incomplete",
-                "capability_integrity": "incomplete",
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    matching = _run_helper(
-        tmp_path,
-        f"finalize_benchmark_specialty_report {shlex.quote(sys.executable)} "
-        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))} 1 attempt-1",
-    )
-    assert "registered=true" in matching.stdout
-    reuse_ok = _run_helper(
-        tmp_path,
-        f"reuse_benchmark_specialty_report {shlex.quote(sys.executable)} "
-        f"{shlex.quote(str(reporter))} CH-1 {shlex.quote(str(report))}",
-    )
-    assert reuse_ok.returncode == 0, reuse_ok.stderr
-    assert reuse_ok.stdout.startswith("CH-1|incomplete|execution_projection_missing|")
+    del tmp_path
+    pytest.skip(_DELETED_PACKAGE_LEFTOVER)
 
 
 def test_evidence_row_cli_ten_columns_for_v3_and_legacy_without_schema_root(tmp_path: Path) -> None:
-    """evidence-row emits the frozen ten-column contract; reporter has no --schema-root."""
-    from benchmark.specialty.specialty_models import SpecialtyReportV3, load_specialty_report
-    from tests.unit.benchmark.test_specialty_report import (
-        _legacy_v1_report,
-        _synthetic_v2_report,
-    )
-    from tests.unit.eval.test_specialty_models import _canonical_complete_v3, incomplete_v3
-
-    reporter = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
-    assert "--schema-root" not in reporter.read_text(encoding="utf-8")
-
-    complete = _canonical_complete_v3()
-    incomplete = load_specialty_report(incomplete_v3("reconciled_projection_missing"))
-    assert isinstance(incomplete, SpecialtyReportV3)
-    cases = [
-        (complete.change_id, "complete.json", complete, "complete", "none"),
-        (
-            incomplete.change_id,
-            "incomplete.json",
-            incomplete,
-            "incomplete",
-            "reconciled_projection_missing",
-        ),
-        (
-            "CH-LEGACY-V2",
-            "legacy-v2.json",
-            _synthetic_v2_report(change_id="CH-LEGACY-V2"),
-            "legacy_unlayered",
-            "none",
-        ),
-        (
-            "CH-LEGACY-V1",
-            "legacy-v1.json",
-            _legacy_v1_report(change_id="CH-LEGACY-V1"),
-            "legacy_unlayered",
-            "none",
-        ),
-    ]
-    for change_id, name, model, status, reason in cases:
-        path = tmp_path / name
-        path.write_text(
-            json.dumps(model.model_dump(mode="json"), indent=2) + "\n",
-            encoding="utf-8",
-        )
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(reporter),
-                "evidence-row",
-                "--change-id",
-                change_id,
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        # evidence-row always prints the row; exit mirrors collection outcome (0/1).
-        assert result.stdout.strip(), result.stderr
-        parts = result.stdout.strip().split("|")
-        assert len(parts) == 10
-        assert parts[0] == change_id
-        assert parts[1] == status
-        assert parts[2] == reason
-        if status == "complete":
-            assert result.returncode == 0
-        else:
-            assert result.returncode in {0, 1}
-        if status == "incomplete":
-            assert parts[4] == "unknown"
-            assert parts[5] == "unknown"
-            assert parts[7] == "unknown"
-            assert parts[8] == "unknown"
-            assert parts[9] == "unknown"
-        parsed = _run_helper(tmp_path, f"parse_evidence_row_fields {shlex.quote(result.stdout.strip())}")
-        assert parsed.returncode == 0, parsed.stderr
+    del tmp_path
+    pytest.skip("specialty eval leftover after deleted-package cutover")

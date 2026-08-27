@@ -1,0 +1,1 @@
+Write result.json with status "ok" and artifact "result.json".

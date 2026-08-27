@@ -1,0 +1,103 @@
+{
+  "kind": "product",
+  "manifest": {
+    "configuration": {},
+    "engine_api": "2.0",
+    "entrypoints": {"review": "root"},
+    "plugins": [{"plugin_id": "toy.b", "version_specifier": "==1.0.0"}],
+    "product_id": "toy.b",
+    "product_version": "1.0.0",
+    "schema_version": "1",
+    "source": {
+      "declaration_path": "graph_engine_toy_b/product-declaration.json",
+      "distribution": "graph-engine-toy-b",
+      "entrypoint_group": "graph_engine.products",
+      "entrypoint_name": "toy-b",
+      "entrypoint_value": "graph_engine_toy_b.product:ToyBProduct",
+      "import_roots": [""],
+      "version": "1.0.0"
+    },
+    "workflow": {
+      "entrypoints": {"review": "root"},
+      "graphs": {
+        "child": {
+          "edges": [{"from": "child", "to": "done"}],
+          "max_activations": 2,
+          "nodes": {
+            "child": {
+              "capability": "toy.b.child",
+              "kind": "task",
+              "resources": {"writes": ["child.txt"]},
+              "retry": "once",
+              "timeout": "short"
+            },
+            "done": {"kind": "end"}
+          },
+          "start": "child"
+        },
+        "root": {
+          "edges": [
+            {"from": "seed", "to": "left"},
+            {"from": "seed", "to": "child-subgraph"},
+            {"from": "left", "to": "joined"},
+            {"from": "child-subgraph", "to": "joined"},
+            {"from": "joined", "to": "combine"},
+            {"from": "combine", "to": "review"},
+            {"from": "review", "to": "done"}
+          ],
+          "max_activations": 7,
+          "nodes": {
+            "child-subgraph": {
+              "graph": "child",
+              "kind": "subgraph",
+              "resources": {"writes": ["child.txt"]}
+            },
+            "combine": {
+              "capability": "toy.b.combine",
+              "kind": "task",
+              "retry": "once",
+              "timeout": "short"
+            },
+            "done": {"kind": "end"},
+            "joined": {"join": "all", "kind": "join"},
+            "left": {
+              "capability": "toy.b.left",
+              "kind": "task",
+              "resources": {"writes": ["left.txt"]},
+              "retry": "twice",
+              "timeout": "short"
+            },
+            "review": {
+              "actions": ["approve", "reject"],
+              "kind": "interrupt",
+              "reason": "review combined result"
+            },
+            "seed": {
+              "capability": "toy.b.seed",
+              "kind": "task",
+              "retry": "once",
+              "timeout": "short"
+            }
+          },
+          "start": "seed"
+        }
+      },
+      "name": "toy-b",
+      "retry": {
+        "once": {"max_attempts": 1},
+        "twice": {"max_attempts": 2, "retry_on": ["transient"]}
+      },
+      "timeout": {"short": {"run_seconds": 5}}
+    }
+  },
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "graph_engine_toy_b/product-declaration.json",
+    "distribution": "graph-engine-toy-b",
+    "entrypoint_group": "graph_engine.products",
+    "entrypoint_name": "toy-b",
+    "entrypoint_value": "graph_engine_toy_b.product:ToyBProduct",
+    "import_roots": [""],
+    "version": "1.0.0"
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assurance.product/schemas/deployment-bindings-v1.json",
+  "title": "DeploymentBindingsV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "runtime_plugin_id",
+    "adapter_binding",
+    "routes",
+    "permission_profiles",
+    "request_policies",
+    "secret_handles"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "runtime_plugin_id": {
+      "type": "string",
+      "enum": ["runtime.opencode", "runtime.cursor"]
+    },
+    "adapter_binding": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 33,
+      "maxProperties": 33
+    },
+    "permission_profiles": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "request_policies": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "secret_handles": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  },
+  "not": {
+    "anyOf": [
+      { "required": ["python"] },
+      { "required": ["secret_value"] },
+      { "required": ["default_model"] },
+      { "required": ["fallback_endpoint"] }
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": "1",
+  "family": "fuzz",
+  "change_id": "CH-DEMO-001",
+  "case_ids": [
+    "TC_FUZZ_001"
+  ],
+  "required_capabilities": [
+    "entities.item.create"
+  ],
+  "coverage": [
+    {
+      "case_id": "TC_FUZZ_001",
+      "operation": "create",
+      "risk": "high",
+      "required_capabilities": [
+        "entities.item.create"
+      ]
+    }
+  ],
+  "output_files": [
+    "qa/changes/CH-DEMO-001/plans/fuzz-plan.md",
+    "qa/changes/CH-DEMO-001/plans/fuzz-codegen-plan.md",
+    "qa/changes/CH-DEMO-001/plans/fuzz-codegen-mapping.json",
+    "qa/changes/CH-DEMO-001/plans/fuzz-review-summary.md"
+  ],
+  "fuzz_strategy": {
+    "endpoint": "POST /items",
+    "property_name": "item.create.payload"
+  }
+}

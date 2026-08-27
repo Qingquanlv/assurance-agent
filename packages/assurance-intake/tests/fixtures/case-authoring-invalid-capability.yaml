@@ -1,0 +1,45 @@
+schema_version: "1.0"
+added:
+  - case_id: TC_MENU_001
+    title: create menu happy path
+    status: active
+    priority: P1
+    severity: major
+    type: API
+    module: menus
+    requirement_id: REQ-1
+    feature_name: menu-management
+    test_condition_id: COND-1
+    design_technique: use_case
+    objective: verify the menu behavior
+    summary: exercise and assert the menu behavior
+    preconditions: []
+    test_data: []
+    steps:
+      - perform the operation
+    assertions:
+      - the operation succeeds
+    postconditions: []
+    edge_cases: []
+    related_cases: []
+    risk:
+      level: high
+      likelihood: 3
+      impact: 4
+      rationale: important administration path
+    automation:
+      required: true
+      framework: pytest
+      status: planned
+    regression:
+      candidate: true
+      tier: smoke
+      rationale: protect the administration path
+      selection_reason:
+        - critical_user_journey
+      maintenance_rule: keep_until_feature_deprecated
+    trace:
+      entities.fake:
+        covered: true
+modified: []
+removed: []

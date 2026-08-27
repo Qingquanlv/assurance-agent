@@ -1,0 +1,35 @@
+schema_version: "1"
+plugin_id: assurance.product.configuration
+plugin_version: "1.0.0"
+engine_api: "2.0"
+dependencies:
+  - plugin_id: assurance.intake
+    version_specifier: "==0.1.0"
+  - plugin_id: assurance.generation
+    version_specifier: "==0.1.0"
+  - plugin_id: assurance.execution
+    version_specifier: "==0.1.0"
+  - plugin_id: assurance.healing
+    version_specifier: "==0.1.0"
+  - plugin_id: assurance.quality
+    version_specifier: "==0.1.0"
+  - plugin_id: assurance.improvement
+    version_specifier: "==0.1.0"
+files:
+  - kind: resource
+    resource_id: assurance.product.configuration.product-policy
+    path: .aa/policy.yaml
+    media_type: application/yaml
+  - kind: resource
+    resource_id: assurance.product.configuration.data-knowledge
+    path: .aa/data-knowledge.yaml
+    media_type: application/yaml
+  - kind: resource
+    resource_id: assurance.product.configuration.project-config
+    path: .aa/config.yaml
+    media_type: application/yaml
+  - kind: resource
+    resource_id: assurance.product.configuration.capability-catalog
+    path: .aa/capability-catalog.json
+    media_type: application/json
+bindings: []

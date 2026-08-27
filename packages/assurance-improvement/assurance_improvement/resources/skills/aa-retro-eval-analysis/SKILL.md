@@ -1,0 +1,36 @@
+# Retro Eval Analysis
+
+Capability-owned retro-eval-analysis skill. Do not select a provider, model, or adapter.
+Do not look up a global skill catalog.
+
+Analyze a frozen eval evidence slice. Schema truth is `assurance_improvement.contracts`
+for `RetroAnalysisResultV3` with `domain=eval`.
+
+## Inputs
+
+### required
+
+- locked retro identity
+- authenticated eval slice digest
+- source evidence ids from the eval manifest
+
+## Outputs
+
+### required
+
+- structured `RetroAnalysisResultV3` with `domain` `eval`
+- `analysis_status` `ok` or `failed`
+- signals cite only `eval_run_ids` present in the authenticated sources
+
+## Rules
+
+- Treat deterministic slice signals as already included. Analyze entries for additional
+  `eval_trend` patterns. Do not copy or re-emit a deterministic signal.
+- Aggregate runs by `suite + verdict + failure_signature`. Never emit one signal per run.
+- Each `signal_id` may occur only once.
+- On failure write `analysis_status: failed`, a non-empty `failure_reason`, and no signals.
+- Never write `slice_sha256` or calculate a digest.
+- Do not emit provider session transcripts or secret-bearing diagnostics.
+- Use the locked execution binding from the prepare request.
+- Write the typed result to `qa/changes/<change-id>/retro/retro-eval-analysis.json`.
+- Return the typed result and stop.

@@ -1,0 +1,43 @@
+[project]
+name = "assurance-product"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "graph-engine==0.1.0",
+  "assurance-intake==0.1.0",
+  "assurance-generation==0.1.0",
+  "assurance-execution==0.1.0",
+  "assurance-healing==0.1.0",
+  "assurance-quality==0.1.0",
+  "assurance-improvement==0.1.0",
+  "click>=8.1",
+]
+
+[project.optional-dependencies]
+opencode = ["agent-runtime-opencode==0.1.0"]
+cursor = ["agent-runtime-cursor==0.1.0"]
+
+[project.entry-points."graph_engine.products"]
+assurance-opencode = "assurance_product.product:AssuranceOpenCodeProductProvider"
+assurance-cursor = "assurance_product.product:AssuranceCursorProductProvider"
+
+[project.scripts]
+aa = "assurance_product.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["assurance_product"]
+
+[tool.uv.sources]
+graph-engine = { workspace = true }
+assurance-intake = { workspace = true }
+assurance-generation = { workspace = true }
+assurance-execution = { workspace = true }
+assurance-healing = { workspace = true }
+assurance-quality = { workspace = true }
+assurance-improvement = { workspace = true }
+agent-runtime-opencode = { workspace = true }
+agent-runtime-cursor = { workspace = true }

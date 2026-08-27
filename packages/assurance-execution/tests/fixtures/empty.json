@@ -1,0 +1,9 @@
+{
+  "selected": [],
+  "exit_code": 5,
+  "report": {
+    "exitcode": 5,
+    "summary": {"collected": 0, "passed": 0, "failed": 0, "skipped": 0},
+    "tests": []
+  }
+}

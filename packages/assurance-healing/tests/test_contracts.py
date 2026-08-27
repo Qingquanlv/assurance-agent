@@ -1,0 +1,319 @@
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+from typing import cast
+
+import pytest
+from pydantic import ValidationError
+
+from graph_engine import ENGINE_API_VERSION, RegistryPorts
+from graph_engine.canonical import JSONValue, canonical_json_bytes
+
+from assurance_healing.contracts import (
+    CoverageRepairBrief,
+    FixProposal,
+    HealApplyReceiptV2,
+    HealingAllocationIntentV2,
+    HealingOverrideTokenV1,
+    HealingStatusV1,
+    ProposalApprovedReceiptV1,
+    SafetyCheck,
+    TestChangePolicyV1,
+)
+from assurance_healing.plugin import HealingPlugin
+
+_TESTS_ROOT = Path(__file__).resolve().parent
+_WHEEL_ROOT = _TESTS_ROOT.parent
+_LEGACY_ROOTS = ("assurance_agent", "assurance_kernel")
+_ALLOWED_ASSURANCE = (
+    "assurance_intake.contracts",
+    "assurance_generation.contracts",
+    "assurance_execution.contracts",
+)
+_HEX_A = "a" * 64
+_HEX_B = "b" * 64
+_HEX_C = "c" * 64
+_HEX_D = "d" * 64
+_HEX_E = "e" * 64
+
+
+def forged_override_token(*, policy_digest: str, candidate_digest: str) -> dict[str, object]:
+    return {
+        "schema_version": "1",
+        "change_id": "CH-DEMO-001",
+        "action": "allow_test_changes",
+        "reason": "forged",
+        "policy_digest": policy_digest,
+        "candidate_digest": candidate_digest,
+        "token_digest": "f" * 64,
+    }
+
+
+def valid_override_token(
+    *,
+    policy_digest: str = _HEX_A,
+    candidate_digest: str = _HEX_B,
+) -> dict[str, object]:
+    from assurance_healing.contracts.safety import override_token_digest
+
+    return {
+        "schema_version": "1",
+        "change_id": "CH-DEMO-001",
+        "action": "allow_test_changes",
+        "reason": "approved test change",
+        "policy_digest": policy_digest,
+        "candidate_digest": candidate_digest,
+        "token_digest": override_token_digest(
+            change_id="CH-DEMO-001",
+            policy_digest=policy_digest,
+            candidate_digest=candidate_digest,
+        ),
+    }
+
+
+def valid_heal_apply_receipt(*, idempotency_key: str | None = None) -> dict[str, object]:
+    from assurance_healing.contracts.wire import heal_apply_intent_digest
+
+    record_key = "heal-apply-CH-DEMO-001-api"
+    payload: dict[str, object] = {
+        "schema_version": "2",
+        "record_key": record_key,
+        "change_id": "CH-DEMO-001",
+        "owner_id": "assurance.healing",
+        "target": "api",
+        "entry_batch_id": "20260822T000000Z",
+        "outcome": "applied",
+        "candidate_digest": _HEX_A,
+        "baseline_digest": _HEX_B,
+        "policy_digest": _HEX_C,
+        "write_set_id": "ws-1",
+        "proposal_ids": ["P1"],
+        "claimed_modified_paths": ["tests/api/test_users.py"],
+        "safety_payload_digest": _HEX_E,
+    }
+    payload["intent_digest"] = heal_apply_intent_digest(payload)
+    payload["idempotency_key"] = record_key if idempotency_key is None else idempotency_key
+    return payload
+
+
+def forged_receipt() -> dict[str, object]:
+    return valid_heal_apply_receipt(idempotency_key="forged-record-key")
+
+
+def valid_policy() -> dict[str, object]:
+    return {
+        "allowed_test_roots": ["tests"],
+        "forbidden_product_roots": ["app", "src", "web/src"],
+        "max_files": 16,
+        "require_approval": True,
+    }
+
+
+def schema_bytes(schema_id: str) -> bytes:
+    contribution = HealingPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
+    for schema in contribution.schemas:
+        if schema.schema_id == schema_id:
+            return bytes(schema.content)
+    raise KeyError(schema_id)
+
+
+def resource_bytes_for(resource_id: str) -> bytes:
+    contribution = HealingPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
+    for resource in contribution.resources:
+        if resource.resource_id == resource_id:
+            return bytes(resource.content)
+    raise KeyError(resource_id)
+
+
+def forbidden_healing_imports() -> set[str]:
+    root = _WHEEL_ROOT / "assurance_healing"
+    if not root.is_dir():
+        raise FileNotFoundError(f"package source is missing: {root}")
+    found: set[str] = set()
+    for path in sorted(root.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        for module_name in _imported_modules(ast.parse(path.read_text(encoding="utf-8"))):
+            if any(module_name == item or module_name.startswith(f"{item}.") for item in _LEGACY_ROOTS):
+                found.add(module_name)
+            if (
+                module_name.startswith("assurance_intake.")
+                or module_name.startswith("assurance_generation.")
+                or module_name.startswith("assurance_execution.")
+            ):
+                if not any(
+                    module_name == allowed or module_name.startswith(f"{allowed}.")
+                    for allowed in _ALLOWED_ASSURANCE
+                ):
+                    found.add(module_name)
+            if module_name in {"assurance_intake", "assurance_generation", "assurance_execution"}:
+                found.add(module_name)
+    return found
+
+
+def _imported_modules(tree: ast.AST) -> tuple[str, ...]:
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            names.append(node.module)
+    return tuple(names)
+
+
+def test_override_token_is_bound_to_policy_and_candidate() -> None:
+    with pytest.raises(ValidationError, match="override token digest"):
+        HealingOverrideTokenV1.model_validate(
+            forged_override_token(policy_digest="0" * 64, candidate_digest="1" * 64)
+        )
+
+
+def test_override_token_accepts_matching_policy_and_candidate_digest() -> None:
+    token = HealingOverrideTokenV1.model_validate(valid_override_token())
+    assert token.policy_digest == _HEX_A
+    assert token.candidate_digest == _HEX_B
+
+
+def test_override_token_rejects_rewritten_change_id() -> None:
+    token = valid_override_token()
+    token["change_id"] = "CH-OTHER"
+    with pytest.raises(ValidationError, match="override token digest"):
+        HealingOverrideTokenV1.model_validate(token)
+
+
+def test_effect_receipt_rejects_wrong_idempotency_key() -> None:
+    with pytest.raises(ValidationError, match="idempotency key"):
+        HealApplyReceiptV2.model_validate(forged_receipt())
+
+
+def test_effect_receipt_accepts_matching_idempotency_key() -> None:
+    receipt = HealApplyReceiptV2.model_validate(valid_heal_apply_receipt())
+    assert receipt.idempotency_key == receipt.record_key
+
+
+def test_effect_receipt_rejects_unbound_intent_digest() -> None:
+    payload = valid_heal_apply_receipt()
+    payload["intent_digest"] = _HEX_D
+    with pytest.raises(ValidationError, match="intent digest"):
+        HealApplyReceiptV2.model_validate(payload)
+
+
+def test_test_change_policy_rejects_extra_keys() -> None:
+    with pytest.raises(ValidationError):
+        TestChangePolicyV1.model_validate({**valid_policy(), "extra": True})
+
+
+def test_test_change_policy_rejects_absolute_traversal_and_empty_roots() -> None:
+    with pytest.raises(ValidationError):
+        TestChangePolicyV1.model_validate({**valid_policy(), "allowed_test_roots": ["/tmp"]})
+    with pytest.raises(ValidationError):
+        TestChangePolicyV1.model_validate({**valid_policy(), "allowed_test_roots": ["tests/../secret"]})
+    with pytest.raises(ValidationError):
+        TestChangePolicyV1.model_validate({**valid_policy(), "allowed_test_roots": []})
+    with pytest.raises(ValidationError):
+        TestChangePolicyV1.model_validate({**valid_policy(), "forbidden_product_roots": ["../app"]})
+
+
+def test_test_change_policy_accepts_closed_roots() -> None:
+    policy = TestChangePolicyV1.model_validate(valid_policy())
+    assert policy.allowed_test_roots == ("tests",)
+    assert policy.require_approval is True
+
+
+def test_allocation_intent_requires_binding_digests() -> None:
+    with pytest.raises(ValidationError):
+        HealingAllocationIntentV2.model_validate(
+            {
+                "schema_version": "2",
+                "episode_id": "ep-1",
+                "attempt_id": "at-1",
+                "attempt_number": 1,
+                "operation_id": "op-1",
+                "change_id": "CH-DEMO-001",
+                "owner_id": "assurance.healing",
+                "source_batch_id": "batch-src",
+                "entry_batch_id": "batch-entry",
+                "candidate_digest": "not-a-digest",
+                "baseline_digest": _HEX_B,
+                "policy_digest": _HEX_C,
+                "execution_evidence_digest": _HEX_D,
+                "baseline_embedded": True,
+            }
+        )
+
+
+def test_proposal_approved_receipt_rejects_wrong_idempotency_key() -> None:
+    with pytest.raises(ValidationError, match="idempotency key"):
+        ProposalApprovedReceiptV1.model_validate(
+            {
+                "schema_version": "1",
+                "approval_id": "apr-1",
+                "idempotency_key": "forged-approval",
+                "change_id": "CH-DEMO-001",
+                "owner_id": "assurance.healing",
+                "root_invocation_id": "inv-1",
+                "interrupt_task_id": "task-1",
+                "source_gate_attempt_id": "gate-1",
+                "source_tree_id": "tree-src",
+                "target_tree_id": "tree-dst",
+                "proposal_digest": _HEX_A,
+                "fixer_authority_digest": _HEX_B,
+                "candidate_digest": _HEX_C,
+                "baseline_digest": _HEX_D,
+                "policy_digest": _HEX_E,
+                "targets": ["api"],
+                "paths": ["tests/api/test_users.py"],
+                "action": "approve_and_apply",
+            }
+        )
+
+
+def test_healing_schema_bytes_equal_model_schema() -> None:
+    from assurance_healing.contracts import (
+        HealApplyIntentV2,
+        HealingAllocationReceiptV2,
+        ProposalApprovedIntentV1,
+    )
+
+    assert schema_bytes("assurance.healing.schema.fix-proposal.v1") == canonical_json_bytes(
+        cast(JSONValue, FixProposal.model_json_schema())
+    )
+    assert schema_bytes("assurance.healing.schema.healing-safety.v1") == canonical_json_bytes(
+        cast(JSONValue, SafetyCheck.model_json_schema())
+    )
+    assert schema_bytes("assurance.healing.schema.coverage-repair.v1") == canonical_json_bytes(
+        cast(JSONValue, CoverageRepairBrief.model_json_schema())
+    )
+    assert schema_bytes("assurance.healing.schema.healing-status.v1") == canonical_json_bytes(
+        cast(JSONValue, HealingStatusV1.model_json_schema())
+    )
+    assert schema_bytes("assurance.healing.schema.allocation-intent.v2") == canonical_json_bytes(
+        cast(JSONValue, HealingAllocationIntentV2.model_json_schema())
+    )
+    assert schema_bytes("assurance.healing.schema.allocation-receipt.v2") == canonical_json_bytes(
+        cast(JSONValue, HealingAllocationReceiptV2.model_json_schema())
+    )
+    assert schema_bytes("assurance.healing.schema.proposal-approved-intent.v1") == canonical_json_bytes(
+        cast(JSONValue, ProposalApprovedIntentV1.model_json_schema())
+    )
+    assert schema_bytes("assurance.healing.schema.proposal-approved-receipt.v1") == canonical_json_bytes(
+        cast(JSONValue, ProposalApprovedReceiptV1.model_json_schema())
+    )
+    assert schema_bytes("assurance.healing.schema.heal-apply-intent.v2") == canonical_json_bytes(
+        cast(JSONValue, HealApplyIntentV2.model_json_schema())
+    )
+    assert schema_bytes("assurance.healing.schema.heal-apply-receipt.v2") == canonical_json_bytes(
+        cast(JSONValue, HealApplyReceiptV2.model_json_schema())
+    )
+
+
+def test_policy_resource_is_closed_and_canonical() -> None:
+    raw = resource_bytes_for("assurance.healing.policy.test-change-policy.v1")
+    assert raw == canonical_json_bytes(cast(JSONValue, valid_policy()))
+    policy = TestChangePolicyV1.model_validate_json(raw)
+    assert policy.allowed_test_roots == ("tests",)
+
+
+def test_healing_contracts_import_only_upstream_public_contracts() -> None:
+    assert forbidden_healing_imports() == set()

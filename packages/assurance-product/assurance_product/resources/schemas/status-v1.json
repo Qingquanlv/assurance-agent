@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assurance.product/schemas/status-v1.json",
+  "title": "StatusV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "invocation_id",
+    "lock_digest",
+    "root_input_digest",
+    "status",
+    "entrypoint",
+    "graph_hierarchy",
+    "node_states",
+    "selected_test_families",
+    "coverage_progress",
+    "durable_effects",
+    "adapter_evidence",
+    "pending_interrupt",
+    "terminal_reason",
+    "change",
+    "apply",
+    "publication"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "invocation_id": { "type": "string", "minLength": 1 },
+    "lock_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "root_input_digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "status": {
+      "enum": ["running", "blocked", "interrupted", "stopped", "failed", "completed"]
+    },
+    "entrypoint": { "type": "string", "minLength": 1 },
+    "graph_hierarchy": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/graphStatus" }
+    },
+    "node_states": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nodeStatus" }
+    },
+    "selected_test_families": {
+      "type": "array",
+      "items": { "enum": ["api", "e2e", "fuzz", "performance"] }
+    },
+    "coverage_progress": {
+      "anyOf": [{ "$ref": "#/$defs/coverageProgress" }, { "type": "null" }]
+    },
+    "durable_effects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/effectStatus" }
+    },
+    "adapter_evidence": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/adapterEvidence" }
+    },
+    "pending_interrupt": {
+      "anyOf": [{ "$ref": "#/$defs/pendingInterrupt" }, { "type": "null" }]
+    },
+    "terminal_reason": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+    "change": { "$ref": "#/$defs/changeProjection" },
+    "apply": { "$ref": "#/$defs/applyProjection" },
+    "publication": { "$ref": "#/$defs/publicationProjection" }
+  },
+  "not": {
+    "anyOf": [
+      { "required": ["secret"] },
+      { "required": ["transcript"] },
+      { "required": ["chain_of_thought"] }
+    ]
+  },
+  "$defs": {
+    "graphStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["graph_instance_id", "graph_id", "parent_graph_instance_id", "state"],
+      "properties": {
+        "graph_instance_id": { "type": "string", "minLength": 1 },
+        "graph_id": { "type": "string", "minLength": 1 },
+        "parent_graph_instance_id": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "state": {
+          "enum": ["inactive", "running", "failed", "stopped", "interrupted", "completed"]
+        }
+      }
+    },
+    "nodeStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "graph_instance_id",
+        "node_id",
+        "state",
+        "attempt",
+        "lease_state",
+        "failure_category",
+        "activity_reference_digest"
+      ],
+      "properties": {
+        "graph_instance_id": { "type": "string", "minLength": 1 },
+        "node_id": { "type": "string", "minLength": 1 },
+        "state": {
+          "enum": [
+            "inactive",
+            "ready",
+            "running",
+            "retrying",
+            "succeeded",
+            "failed",
+            "stopped",
+            "interrupted",
+            "skipped"
+          ]
+        },
+        "attempt": { "anyOf": [{ "type": "integer", "minimum": 1 }, { "type": "null" }] },
+        "lease_state": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "failure_category": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "activity_reference_digest": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+    "coverageProgress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["round", "maximum_rounds", "measured", "decision"],
+      "properties": {
+        "round": { "type": "integer", "minimum": 0 },
+        "maximum_rounds": { "type": "integer", "minimum": 0 },
+        "measured": true,
+        "decision": { "type": "string", "minLength": 1 }
+      }
+    },
+    "effectStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["effect_id", "kind", "state", "receipt_digest"],
+      "properties": {
+        "effect_id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "state": { "type": "string", "minLength": 1 },
+        "receipt_digest": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+    "adapterEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["activation_id", "activity_id", "reference_digest", "terminal_receipt_digest"],
+      "properties": {
+        "activation_id": { "type": "string", "minLength": 1 },
+        "activity_id": { "type": "string", "minLength": 1 },
+        "reference_digest": { "type": "string", "minLength": 1 },
+        "terminal_receipt_digest": { "anyOf": [{ "type": "string" }, { "type": "null" }] }
+      }
+    },
+    "changeProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["change_id", "state"],
+      "properties": {
+        "change_id": { "type": "string", "minLength": 1, "pattern": "^\\S+$" },
+        "state": {
+          "enum": ["running", "blocked", "interrupted", "stopped", "failed", "achieved"]
+        }
+      }
+    },
+    "applyProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_digest", "file_count"],
+      "properties": {
+        "manifest_digest": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+        "file_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "publicationProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["not_ready", "ready", "published", "drifted"] }
+      }
+    },
+    "pendingInterrupt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node_id", "actions", "reason_category"],
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1 },
+        "actions": { "type": "array", "items": { "type": "string" } },
+        "reason_category": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

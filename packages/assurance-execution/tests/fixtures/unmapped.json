@@ -1,0 +1,20 @@
+{
+  "selected": ["tests/generated_test.py"],
+  "exit_code": 0,
+  "report": {
+    "exitcode": 0,
+    "summary": {"collected": 2, "passed": 2, "failed": 0, "skipped": 0},
+    "tests": [
+      {
+        "nodeid": "tests/generated_test.py::test_tc_a_001__ok",
+        "outcome": "passed",
+        "call": {"outcome": "passed", "duration": 0.01}
+      },
+      {
+        "nodeid": "tests/legacy_test.py::test_old",
+        "outcome": "passed",
+        "call": {"outcome": "passed", "duration": 0.01}
+      }
+    ]
+  }
+}

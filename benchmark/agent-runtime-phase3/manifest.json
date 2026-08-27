@@ -1,0 +1,134 @@
+{
+  "schema_version": "1",
+  "items": [
+    {
+      "id": "phase3-opencode-live",
+      "adapter": "opencode",
+      "adapter_version": "0.1.0",
+      "binding_manifest": {
+        "schema_version": "1",
+        "endpoint": "http://127.0.0.1:4096",
+        "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003",
+        "secret_handle": "opencode.token",
+        "protocol_profile": "opencode-http-v1",
+        "request_timeout_seconds": 30,
+        "observation_horizon_seconds": 120,
+        "poll_interval_seconds": 1,
+        "cancel_timeout_seconds": 30,
+        "max_response_bytes": 1048576,
+        "adapter_configuration_digest": "7cd4626d1a9d26c705f3c0578c1f19b19c1f7f364daf15e175740e0541aa7c8d"
+      },
+      "expected_artifacts": [
+        "engine/invocations/phase3-opencode-live/invocation.lock.json",
+        "engine/invocations/phase3-opencode-live/checkpoint.json",
+        "engine/invocations/phase3-opencode-live/workspace/HEAD.json"
+      ]
+    },
+    {
+      "id": "phase3-cursor-live",
+      "adapter": "cursor",
+      "adapter_version": "0.1.0",
+      "binding_manifest": {
+        "schema_version": "1",
+        "executable": "/Users/lvqingquan/.local/share/cursor-agent/versions/2026.08.11-e8db854/cursor-agent",
+        "executable_digest": "eed61c5224668c9236334c4c68936a16aecc37374b592f59e31eb50433817831",
+        "expected_version": "2026.08.11-e8db854",
+        "protocol_profile": "confined_process",
+        "secret_handle": "cursor.api-key",
+        "environment_names": [
+          "PATH",
+          "CURSOR_API_KEY"
+        ],
+        "graceful_cancel_seconds": 5,
+        "forced_cancel_seconds": 10,
+        "max_output_bytes": 65536,
+        "max_line_bytes": 4096,
+        "adapter_configuration_digest": "2dc92bee6649105e02d8259a951f5c701b0ead2d62a23393541be31e1c492561"
+      },
+      "expected_artifacts": [
+        "engine/invocations/phase3-cursor-live/invocation.lock.json",
+        "engine/invocations/phase3-cursor-live/checkpoint.json",
+        "engine/invocations/phase3-cursor-live/workspace/HEAD.json"
+      ]
+    }
+  ],
+  "fixture": {
+    "distribution": "agent-runtime-fixture",
+    "version": "1.0.0",
+    "source_root": "examples/agent-runtime-fixture",
+    "source_digest": "24d56a00c5a1ba2b2083e11bd236d297ede9326724b8c3a2d765456982110542",
+    "wheel_name": "agent_runtime_fixture-1.0.0-py3-none-any.whl",
+    "wheel_sha256": "820c1059f0ca50780949900d36a15e9966d1da42ab5879177e0b99fdb1562d67"
+  },
+  "graph": {
+    "entrypoint": "run",
+    "graph_id": "root",
+    "node_id": "run",
+    "capability": "fixture.binding.run",
+    "composition_manifests": {
+      "opencode": "examples/agent-runtime-fixture/manifests/opencode.json",
+      "cursor": "examples/agent-runtime-fixture/manifests/cursor.json"
+    }
+  },
+  "canonical_request": {
+    "digest": "291eaf55be4fdf23332d9551e808a52e00dfcdcfd92e83e1ca64e6954d5acf71",
+    "canonical_bytes": "{\"execution\":{\"limits\":{\"max_seconds\":120},\"permission_profile_digest\":\"70751fb8b22ad8d5b91adf52d61748e1c165ecac1a30775d57a3266c456be893\",\"provider_model\":\"provider_default\",\"worker_profile\":\"fixture-v1\"},\"instructions\":[{\"digest\":\"69fd61870ef2d182ac40e1ab96826984ad6966489511a7cc8a66a323b59677ef\",\"json_content\":null,\"media_type\":\"text/plain\",\"text_content\":\"Write result.json with status \\\"ok\\\" and artifact \\\"result.json\\\".\\n\"}],\"request_config_digest\":\"65d4e5652b580f524b734bb1441bc5bdb1ca3e9bd797b691ac5f3e048cc66d03\",\"request_policy_digest\":\"9296f9d1f826b868095d7afe9bad0ec93c48694650f793552febb4a1b7781652\",\"result_contract\":{\"extraction_mode\":\"structured\",\"schema_digest\":\"56e341c9d4dd6ccaac2bc2038dad7539ff03d3895c3d66d02b24172d4ba9141e\",\"schema_document\":{\"additionalProperties\":false,\"properties\":{\"artifact\":{\"type\":\"string\"},\"status\":{\"const\":\"ok\",\"type\":\"string\"}},\"required\":[\"artifact\",\"status\"],\"type\":\"object\"},\"schema_id\":\"fixture.result.v1\"},\"schema_version\":\"1\",\"workspace\":{\"agent_profile\":\"assurance-v1-doc-author\",\"allowed_outputs\":[\"result.json\"],\"identity_digest\":\"3b566b91efb386db0f76e89e31425403f338c0c18bd3d416cf3d7d1c278e1668\",\"schema_version\":\"1\",\"scope_id\":\"CH-1\",\"write_root\":\"qa/changes/CH-1/.staging/attempt-1\"}}"
+  },
+  "workspace": {
+    "initial_tree_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "write_set": [
+      "result.json"
+    ]
+  },
+  "result_schema": {
+    "schema_id": "fixture.result.v1",
+    "digest": "56e341c9d4dd6ccaac2bc2038dad7539ff03d3895c3d66d02b24172d4ba9141e"
+  },
+  "expected_output": {
+    "path": "result.json",
+    "content": {
+      "artifact": "result.json",
+      "status": "ok"
+    },
+    "digest": "86f85b3898c11dad47aba8ee2bf20e913ed08dccde985a1c6c5b3fefc66d6c79"
+  },
+  "adapters": {
+    "opencode": {
+      "adapter_id": "runtime.opencode.execute",
+      "source_root": "packages/agent-runtime-opencode/agent_runtime_opencode",
+      "source_digest": "0c4415d2a03da21d4bd0e4ffb700bb883582f107e1b7dd7a030ac87d1bc37d4b",
+      "adapter_version": "0.1.0",
+      "protocol_profile": "opencode-http-v1",
+      "prompt_admission": "caller-message-id-v1",
+      "prompt_idempotency": "conflict-on-body-drift",
+      "endpoint": "http://127.0.0.1:4096",
+      "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003",
+      "external_tool_version": "1.18.4",
+      "secret_handle": "opencode.token",
+      "secret_env": "OPENCODE_PHASE3_TOKEN"
+    },
+    "cursor": {
+      "adapter_id": "runtime.cursor.execute",
+      "source_root": "packages/agent-runtime-cursor/agent_runtime_cursor",
+      "source_digest": "fd72c4b6689131a365bd7e8b6060eb1900b72128bd75f1681e53bc0f64b650bd",
+      "adapter_version": "0.1.0",
+      "protocol_profile": "confined_process",
+      "executable": "/Users/lvqingquan/.local/share/cursor-agent/versions/2026.08.11-e8db854/cursor-agent",
+      "executable_digest": "eed61c5224668c9236334c4c68936a16aecc37374b592f59e31eb50433817831",
+      "external_tool_version": "2026.08.11-e8db854",
+      "environment_names": [
+        "PATH",
+        "CURSOR_API_KEY"
+      ],
+      "secret_handle": "cursor.api-key",
+      "secret_env": "CURSOR_API_KEY"
+    }
+  },
+  "success": {
+    "status": "succeeded",
+    "terminal_event": "task_activity_terminal_observed",
+    "no_duplicate_create": true,
+    "no_duplicate_prompt": true,
+    "replay_without_provider": true
+  }
+}

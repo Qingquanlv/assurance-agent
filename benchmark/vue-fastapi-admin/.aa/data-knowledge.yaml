@@ -102,7 +102,7 @@ entities:
       - method
       - tags
     constraints: {}
-    notes: Proposed entity leaf for API metadata MRC closed keys; promote after
+    notes: Proposed entity leaf for API metadata MRC closed keys; promote after 
       review.
 capabilities:
   domain_factories:
@@ -200,16 +200,6 @@ capabilities:
         list_auth_routes:
           kind: isolated_worker
           symbol: tests.api.adapters.api.factory_list_auth_routes
-      dept:
-        make_dept:
-          kind: isolated_worker
-          symbol: tests.api.adapters.dept.factory_make_dept
-        cleanup_dept:
-          kind: isolated_worker
-          symbol: tests.api.adapters.dept.factory_cleanup_dept
-        get_dept_closure_rows:
-          kind: isolated_worker
-          symbol: tests.api.adapters.dept.factory_get_dept_closure_rows
       menu:
         make_menu:
           kind: isolated_worker
@@ -264,8 +254,8 @@ capabilities:
             operation: login_token
           transport: httpx
           cleanup_ref: cleanup.menu_delete
-          notes: On-disk E2E helper resolves menu id via GET /api/v1/menu/list
-            then DELETE; needed for UI-created menus in TC_MENU_E2E_002 where
+          notes: On-disk E2E helper resolves menu id via GET /api/v1/menu/list 
+            then DELETE; needed for UI-created menus in TC_MENU_E2E_002 where 
             factory id is unavailable.
       user:
         make_user:
@@ -277,6 +267,15 @@ capabilities:
           symbol: tests.e2e.adapters.user.cleanup_user
           entity: user
           retry_safe: true
+        cleanup_by_username:
+          kind: http
+          symbol: tests.e2e.adapters.user.e2e_cleanup_user_by_username
+          entity: user
+          create-if-missing: true
+          acquire:
+            operation: login_token
+          transport: httpx
+          cleanup_ref: cleanup.user_delete
       dept:
         make_dept:
           kind: isolated_worker
@@ -403,6 +402,14 @@ capabilities:
           create-if-missing: true
           notes: Fuzz adapter bridge to domain cleanup_user; tracks manifest for
             create fuzz
+        cleanup_by_prefix:
+          kind: http
+          symbol: tests.fuzz.adapters.user.fuzz_cleanup_users_by_prefix
+          create-if-missing: false
+          retry_safe: true
+          notes: Prefix-scoped cleanup for generated user fuzz data via the live
+            HTTP API, with a run-scoped SQLite fallback when corrupt references
+            make list-based cleanup unavailable.
     performance:
       dept:
         setup:
@@ -451,7 +458,7 @@ capabilities:
           kind: helper
           symbol: tests.perf.adapters.api_seed.setup
           create-if-missing: true
-          notes: Pre-run API metadata seed for TC_APIS_PERF_001; proposed
+          notes: Pre-run API metadata seed for TC_APIS_PERF_001; proposed 
             because L1 has no capabilities.performance.api
   cleanup:
     dept_delete:

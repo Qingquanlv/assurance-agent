@@ -1,0 +1,51 @@
+schema_version: "1"
+plugin_id: test.assurance.bindings
+plugin_version: 1.0.0
+engine_api: "2.0"
+dependencies:
+  - plugin_id: assurance.intake
+    version_specifier: ==0.1.0
+  - plugin_id: runtime.cursor
+    version_specifier: ==0.1.0
+files:
+  - kind: resource
+    resource_id: test.assurance.bindings.model-policy
+    path: model-policy.json
+    media_type: application/json
+bindings:
+  - capability_id: test.assurance.bindings.prepare
+    target_capability_id: assurance.intake.case-review.prepare
+    data:
+      agent_profile: aa-doc-author
+      execution:
+        provider_model: fixture/model-v1
+        worker_profile: fixture-profile
+        permission_profile_digest: "3194dadc3ff9c0aab048f1134a4a96f6f224ad79b61a7e72991597f1359e32c8"
+        limits:
+          max_seconds: 30
+      request_policy_digest: "dae6306f35a9520074c1432e73383c30847934a70e973d92f4e86b38f49c5599"
+      request_config_digest: "b707f8f476bee6f45fd646aba8a0877896bb5f88ff89213d4c7ae3f5d1004f11"
+  - capability_id: test.assurance.bindings.execute
+    target_capability_id: runtime.cursor.execute
+    data:
+      agent_profile: aa-doc-author
+      execution:
+        provider_model: fixture/model-v1
+        worker_profile: fixture-profile
+        permission_profile_digest: "3194dadc3ff9c0aab048f1134a4a96f6f224ad79b61a7e72991597f1359e32c8"
+        limits:
+          max_seconds: 30
+      request_policy_digest: "dae6306f35a9520074c1432e73383c30847934a70e973d92f4e86b38f49c5599"
+      request_config_digest: "b707f8f476bee6f45fd646aba8a0877896bb5f88ff89213d4c7ae3f5d1004f11"
+  - capability_id: test.assurance.bindings.finalize
+    target_capability_id: assurance.intake.case-review.finalize
+    data:
+      agent_profile: aa-doc-author
+      execution:
+        provider_model: fixture/model-v1
+        worker_profile: fixture-profile
+        permission_profile_digest: "3194dadc3ff9c0aab048f1134a4a96f6f224ad79b61a7e72991597f1359e32c8"
+        limits:
+          max_seconds: 30
+      request_policy_digest: "dae6306f35a9520074c1432e73383c30847934a70e973d92f4e86b38f49c5599"
+      request_config_digest: "b707f8f476bee6f45fd646aba8a0877896bb5f88ff89213d4c7ae3f5d1004f11"

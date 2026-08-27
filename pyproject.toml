@@ -1,24 +1,10 @@
 # pyproject.toml
 [project]
-name = "assurance-agent"
-description = "Assurance Agent - AI-driven QA workflow orchestrator (deterministic CLI + skill suite)"
+name = "assurance-workspace"
+description = "Private development workspace for the Assurance graph product"
 version = "0.1.0"
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
-dependencies = [
-    "click>=8.1",
-    "httpx>=0.27",
-    "pydantic>=2.7",
-    "pyyaml>=6.0",
-    "ruamel.yaml>=0.18",
-    "assurance-kernel",
-]
-
-[project.scripts]
-aa = "assurance_agent.cli:main"
-
-[project.entry-points."assurance_agent.products"]
-assurance = "assurance_agent.assurance_product:AssuranceProduct"
 
 [dependency-groups]
 dev = [
@@ -27,41 +13,92 @@ dev = [
     "pyright>=1.1.380",
     "import-linter>=2.0",
     "mutmut>=3.7.0",
+    "click>=8.1",
+    "httpx>=0.27",
+    "packaging>=24",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "ruamel.yaml>=0.18",
     "aa-sample-product",
+    "graph-engine",
+    "graph-engine-toy-a",
+    "graph-engine-toy-b",
+    "agent-runtime-contracts",
+    "agent-runtime-opencode",
+    "agent-runtime-cursor",
+    "agent-runtime-fixture",
+    "assurance-intake",
+    "assurance-generation",
+    "assurance-execution",
+    "assurance-healing",
+    "assurance-quality",
+    "assurance-improvement",
+    "assurance-product",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["assurance_agent"]
-# _resources 含非 .py 文件（schemas/skills/opencode），hatchling 默认包含包内数据文件；
-# artifacts 声明确保被 .gitignore 模式覆盖的资源也入包。
-artifacts = ["assurance_agent/_resources/**"]
-# scripts/ 是 dev 工具（migrate_skills.py 等），显式排除以防误入包。
-exclude = ["scripts", "/scripts/**"]
-
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/graph-engine/tests", "packages/agent-runtime-contracts/tests", "packages/agent-runtime-opencode/tests", "packages/agent-runtime-cursor/tests", "packages/assurance-intake/tests", "packages/assurance-generation/tests", "packages/assurance-execution/tests", "packages/assurance-healing/tests", "packages/assurance-quality/tests", "packages/assurance-improvement/tests"]
 # Sibling packages under tests/unit/workflow/{issues,improvements}/ share basenames
 # (test_review.py, …); importlib avoids prepend-mode module collisions.
+pythonpath = ["."]
 addopts = ["--import-mode=importlib"]
+markers = [
+    "asyncio: async test executed by the local tests/agent_runtime hook",
+    "phase4: Phase 4 capability-extraction ownership and composition tests",
+]
 
 [tool.ruff]
 line-length = 110
 target-version = "py311"
-extend-exclude = ["benchmark/vue-fastapi-admin", ".worktrees", ".history"]
+extend-exclude = [
+    "benchmark/vue-fastapi-admin",
+    "benchmark/**/results",
+    "tmp",
+    ".worktrees",
+    ".history",
+]
 
 [tool.pyright]
-include = ["assurance_agent", "packages/assurance-kernel/assurance_kernel", "tests", "benchmark/specialty"]
-extraPaths = [".", "packages/assurance-kernel"]
+include = ["packages/graph-engine/graph_engine", "packages/agent-runtime-contracts/agent_runtime_contracts", "packages/agent-runtime-opencode/agent_runtime_opencode", "packages/agent-runtime-cursor/agent_runtime_cursor", "examples/agent-runtime-fixture/agent_runtime_fixture", "packages/assurance-intake", "packages/assurance-generation", "packages/assurance-execution", "packages/assurance-healing", "packages/assurance-quality", "packages/assurance-improvement", "packages/assurance-product", "tests", "benchmark/agent-runtime-phase3"]
+extraPaths = ["."]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
 
+[tool.uv]
+package = false
+
 [tool.uv.workspace]
-members = ["packages/assurance-kernel", "examples/minimal-product"]
+members = [
+    "packages/assurance-intake",
+    "packages/assurance-generation",
+    "packages/assurance-execution",
+    "packages/assurance-healing",
+    "packages/assurance-quality",
+    "packages/assurance-improvement",
+    "packages/assurance-product",
+    "packages/graph-engine",
+    "packages/agent-runtime-contracts",
+    "packages/agent-runtime-opencode",
+    "packages/agent-runtime-cursor",
+    "examples/minimal-product",
+    "examples/graph-engine-toy-a",
+    "examples/graph-engine-toy-b",
+    "examples/agent-runtime-fixture",
+]
 
 [tool.uv.sources]
 aa-sample-product = { workspace = true }
-assurance-kernel = { workspace = true }
+assurance-intake = { workspace = true }
+assurance-generation = { workspace = true }
+assurance-execution = { workspace = true }
+assurance-healing = { workspace = true }
+assurance-quality = { workspace = true }
+assurance-improvement = { workspace = true }
+assurance-product = { workspace = true }
+graph-engine = { workspace = true }
+graph-engine-toy-a = { workspace = true }
+graph-engine-toy-b = { workspace = true }
+agent-runtime-contracts = { workspace = true }
+agent-runtime-opencode = { workspace = true }
+agent-runtime-cursor = { workspace = true }
+agent-runtime-fixture = { workspace = true }

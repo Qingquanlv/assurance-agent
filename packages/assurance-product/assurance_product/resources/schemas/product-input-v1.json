@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://assurance.product/schemas/product-input-v1.json",
+  "title": "ProductInputV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "change_id",
+    "requirement",
+    "run_mode",
+    "selected_test_families",
+    "capability_leafs",
+    "capability_catalog",
+    "product_policy",
+    "data_knowledge",
+    "allowed_artifact_paths",
+    "budgets"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "change_id": { "type": "string", "minLength": 1, "pattern": "^\\S+$" },
+    "requirement": { "type": "string", "minLength": 1 },
+    "run_mode": { "enum": ["case", "implement", "verify"] },
+    "selected_test_families": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "enum": ["api", "e2e", "fuzz", "performance"] }
+    },
+    "case_delta_paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))qa/changes/[A-Za-z0-9._-]+/cases/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/case\\.yaml$"
+      }
+    },
+    "capability_leafs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^\\S+\\.\\S+$"
+      }
+    },
+    "capability_catalog": { "$ref": "#/$defs/resourceRef" },
+    "product_policy": { "$ref": "#/$defs/resourceRef" },
+    "data_knowledge": { "$ref": "#/$defs/resourceRef" },
+    "allowed_artifact_paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["review_rounds", "coverage_rounds", "healing_rounds", "execution_retries"],
+      "properties": {
+        "review_rounds": { "type": "integer", "minimum": 0 },
+        "coverage_rounds": { "type": "integer", "minimum": 0 },
+        "healing_rounds": { "type": "integer", "minimum": 0 },
+        "execution_retries": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "not": {
+    "anyOf": [
+      { "required": ["model"] },
+      { "required": ["endpoint"] },
+      { "required": ["executable"] },
+      { "required": ["host"] },
+      { "required": ["secret"] },
+      { "required": ["auto_archive"] }
+    ]
+  },
+  "$defs": {
+    "resourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource_id", "sha256"],
+      "properties": {
+        "resource_id": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

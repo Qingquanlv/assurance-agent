@@ -1,0 +1,30 @@
+{
+  "change_id": "CH-DEMO-001",
+  "files": [
+    {
+      "case_ids": [
+        "TC_API_001"
+      ],
+      "content_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "disposition": "generated",
+      "repo_path": "tests/api/test_users.py",
+      "role": "test_entry"
+    }
+  ],
+  "layer": "api",
+  "mapping": {
+    "entries": [
+      {
+        "case_id": "TC_API_001",
+        "symbol": "test_tc_api_001__happy_path",
+        "target_file": "tests/api/test_users.py"
+      }
+    ],
+    "layer": "api",
+    "schema_version": "1"
+  },
+  "required_capabilities": [
+    "entities.item.create"
+  ],
+  "schema_version": "1"
+}

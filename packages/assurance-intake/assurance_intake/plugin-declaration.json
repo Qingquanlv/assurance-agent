@@ -1,0 +1,75 @@
+{
+  "descriptor": {
+    "bindings": [],
+    "commit_validators": [
+      "assurance.intake.validator.case-candidate.v1",
+      "assurance.intake.validator.case-references.v1"
+    ],
+    "dependencies": [],
+    "effects": [],
+    "engine_api": "2.0",
+    "plugin_id": "assurance.intake",
+    "plugin_version": "0.1.0",
+    "resources": [
+      "assurance.intake.persona.doc-author.v1",
+      "assurance.intake.persona.explorer.v1",
+      "assurance.intake.persona.intake-host.v1",
+      "assurance.intake.persona.reviewer.v1",
+      "assurance.intake.prompt.case-design.v1",
+      "assurance.intake.prompt.case-review.v1",
+      "assurance.intake.prompt.explore.v1",
+      "assurance.intake.prompt.intake.v1",
+      "assurance.intake.result.case-design.v1",
+      "assurance.intake.result.case-review.v1",
+      "assurance.intake.result.explore.v1",
+      "assurance.intake.result.intake.v1",
+      "assurance.intake.skill.aa-case-design.case-delta-reviewer-prompt.v1",
+      "assurance.intake.skill.aa-case-design.v1",
+      "assurance.intake.skill.aa-case-design.visual-companion.v1",
+      "assurance.intake.skill.aa-case-reviewer.v1",
+      "assurance.intake.skill.aa-explore.v1",
+      "assurance.intake.skill.aa-intake.v1"
+    ],
+    "schema_version": "1",
+    "schemas": [
+      "assurance.intake.schema.case-authoring.v1",
+      "assurance.intake.schema.case-review.v1",
+      "assurance.intake.schema.case.v1",
+      "assurance.intake.schema.qa-change.v1"
+    ],
+    "source": {
+      "declaration_path": "assurance_intake/plugin-declaration.json",
+      "distribution": "assurance-intake",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "intake",
+      "entrypoint_value": "assurance_intake.plugin:IntakePlugin",
+      "import_roots": [
+        ""
+      ],
+      "version": "0.1.0"
+    },
+    "task_handlers": [
+      "assurance.intake.case-design.finalize",
+      "assurance.intake.case-design.prepare",
+      "assurance.intake.case-review.finalize",
+      "assurance.intake.case-review.prepare",
+      "assurance.intake.explore.finalize",
+      "assurance.intake.explore.prepare",
+      "assurance.intake.intake.finalize",
+      "assurance.intake.intake.prepare"
+    ]
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "assurance_intake/plugin-declaration.json",
+    "distribution": "assurance-intake",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "intake",
+    "entrypoint_value": "assurance_intake.plugin:IntakePlugin",
+    "import_roots": [
+      ""
+    ],
+    "version": "0.1.0"
+  }
+}

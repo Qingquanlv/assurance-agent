@@ -1,0 +1,55 @@
+{
+  "kind": "product",
+  "manifest": {
+    "configuration": {},
+    "engine_api": "2.0",
+    "entrypoints": {"hello": "root"},
+    "plugins": [{"plugin_id": "toy.a", "version_specifier": "==1.0.0"}],
+    "product_id": "toy.a",
+    "product_version": "1.0.0",
+    "schema_version": "1",
+    "source": {
+      "declaration_path": "graph_engine_toy_a/product-declaration.json",
+      "distribution": "graph-engine-toy-a",
+      "entrypoint_group": "graph_engine.products",
+      "entrypoint_name": "toy-a",
+      "entrypoint_value": "graph_engine_toy_a.product:ToyAProduct",
+      "import_roots": [""],
+      "version": "1.0.0"
+    },
+    "workflow": {
+      "entrypoints": {"hello": "root"},
+      "graphs": {
+        "root": {
+          "edges": [{"from": "greet", "to": "done"}],
+          "max_activations": 2,
+          "nodes": {
+            "done": {"kind": "end"},
+            "greet": {
+              "capability": "toy.a.greet",
+              "input": {"name": "Ada"},
+              "kind": "task",
+              "resources": {"writes": ["greeting.txt"]},
+              "retry": "once",
+              "timeout": "short"
+            }
+          },
+          "start": "greet"
+        }
+      },
+      "name": "toy-a",
+      "retry": {"once": {"max_attempts": 2, "retry_on": ["transient"]}},
+      "timeout": {"short": {"run_seconds": 5}}
+    }
+  },
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "graph_engine_toy_a/product-declaration.json",
+    "distribution": "graph-engine-toy-a",
+    "entrypoint_group": "graph_engine.products",
+    "entrypoint_name": "toy-a",
+    "entrypoint_value": "graph_engine_toy_a.product:ToyAProduct",
+    "import_roots": [""],
+    "version": "1.0.0"
+  }
+}

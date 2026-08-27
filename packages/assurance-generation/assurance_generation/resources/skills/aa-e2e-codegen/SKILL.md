@@ -1,0 +1,125 @@
+# E2E codegen
+
+Capability-owned E2E codegen skill. Do not select a provider, model, or adapter.
+Do not look up a global skill catalog.
+
+Turn a reviewed E2E plan and frozen case references into generated browser tests
+plus a closed mapping. Schema truth is `assurance_generation.contracts` for
+generated files and mapping, and `assurance_intake.contracts` for reviewed cases.
+
+## Inputs
+
+### required
+
+- reviewed E2E plan (`PlanResultV1`)
+- frozen case references for the selected E2E cases
+- `qa/changes/<change-id>/plans/e2e-plan.md`
+- `qa/changes/<change-id>/plans/e2e-test-data-plan.md`
+- `qa/changes/<change-id>/plans/e2e-codegen-plan.md`
+- `qa/changes/<change-id>/plans/e2e-codegen-mapping.json`
+- `qa/changes/<change-id>/plans/m4-review-summary.md`
+- `qa/changes/<change-id>/review/e2e-plan-review.json`
+- `qa/changes/<change-id>/cases/**/case.yaml`
+- `.aa/data-knowledge.yaml`
+
+### optional
+
+- baseline tree identity when the graph provides one
+- `.aa/config.yaml`
+- backend and frontend product source (read-only)
+- `tests/e2e/**`
+- `tests/testdata/domain/**`
+
+## Outputs
+
+### required
+
+- `qa/changes/<change-id>/codegen/e2e-codegen-summary.md`
+- `qa/changes/<change-id>/codegen/e2e-generated-files.json`
+- generated or updated test files under `qa/changes/<change-id>/generated/e2e/files/tests/e2e/**`
+
+### conditional
+
+- `qa/changes/<change-id>/generated/e2e/files/tests/testdata/domain/**` when the
+  reviewed plan authorizes a shared builder
+
+The generated-files manifest and mapping keep `target_path="tests/..."`. Do not
+write generated tests into the original `tests/**` tree.
+
+## Boundaries
+
+Write only authorized staged files under
+`qa/changes/<change-id>/generated/e2e/files/` plus the summary and
+generated-files manifest. Manifest `repo_path` / mapping `target_file` remain
+the logical `tests/e2e/**` or `tests/testdata/**` target.
+
+Do not modify product source.
+
+Do not run the product test runner.
+
+The graph owns phase state. Do not write an orchestration state file.
+
+Framework is pytest-playwright. Keep Case ID → symbol → target file
+traceability exact.
+
+## Frozen Inputs and Completion Check
+
+Plan, case, and review inputs are immutable. Read them as approved evidence;
+never rewrite, repair, or supersede them during codegen.
+
+Every closed-mapping target must appear in `files` as a `test_entry` with the
+exact mapped Case IDs. Reopen every target before returning and verify that the
+mapped symbol exists in that file. Do not list plan, case, or review inputs in
+`files`.
+
+## Fixture Closure
+
+Before writing the manifest, resolve every mapped test parameter to a fixture
+defined or imported by the test module, an ancestor `conftest.py`, or the
+installed Playwright pytest plugin. Generate any missing project fixture under
+authorized `qa/changes/<change-id>/generated/e2e/files/tests/e2e/**`, record
+changed fixture files as `support` with
+`case_ids: []`, and finish only when the unresolved fixture set is empty.
+
+`conftest.py` is pytest discovery configuration, not an importable support
+module. Never generate `from conftest import ...` or otherwise import a
+`conftest.py` helper from a test. Keep fixture-only code in `conftest.py`; move
+helpers that a test imports into a regular module under `tests/e2e/**`, import
+that module by its package path, and record a newly changed helper as `support`
+with `case_ids: []`.
+
+For every generated or reused browser test and shared login fixture, inspect the
+actual login DOM and feature-component DOM before accepting its locators. Do not
+assume an accessible name or control role from visible design intent. Prefer a
+stable observed placeholder, label, role, or test id. Update an existing mapped
+test instead of marking it `reused` when any locator disagrees with the current
+product markup.
+
+For synchronous pytest-playwright tests, do not call `asyncio.run()` in a test,
+fixture, setup, cleanup, or adapter bridge. Playwright owns an event loop in the
+test thread. Use a synchronous HTTP adapter, or an existing project helper that
+runs the coroutine in a separate thread when a loop is already active.
+
+Inspect the real handler response for every fixture create operation. If success
+contains no identifier, perform an exact supported list/get lookup and verify
+the created record before returning it; never require `data.id`.
+
+Resolve every fixture setup and cleanup operation by exact HTTP method/path from
+the live OpenAPI document when available, otherwise from the declared router and
+schema source. Route naming convention is not evidence.
+
+## Generated-files Manifest Rules
+
+- Include exactly `schema_version`, `change_id`, `layer`, `files`, `mapping`,
+  and `required_capabilities`. The manifest `mapping` and
+  `required_capabilities` must exactly match the final structured result.
+- Only `test_entry` entries may claim mapped Case IDs, and their `case_ids` must
+  exactly match the codegen mapping for that path.
+- Every `support` and `shared_builder` entry must use `case_ids: []`.
+- Use `generated` only for a newly added file and `updated` only for a file
+  whose content this invocation changed.
+- `reused` is legal only for an unchanged, selected private-root `test_entry`
+  that is itself a codegen-mapping target.
+
+Capability keys must be exact typed leaves. Every mapped function is named
+`test_<case_id_lowercase>__<desc>`.

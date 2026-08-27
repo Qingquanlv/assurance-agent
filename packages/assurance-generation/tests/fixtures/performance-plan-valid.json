@@ -1,0 +1,36 @@
+{
+  "schema_version": "1",
+  "family": "performance",
+  "change_id": "CH-DEMO-001",
+  "case_ids": [
+    "TC_PERFORMANCE_001"
+  ],
+  "required_capabilities": [
+    "entities.item.create"
+  ],
+  "coverage": [
+    {
+      "case_id": "TC_PERFORMANCE_001",
+      "operation": "create",
+      "risk": "high",
+      "required_capabilities": [
+        "entities.item.create"
+      ]
+    }
+  ],
+  "output_files": [
+    "qa/changes/CH-DEMO-001/plans/performance-plan.md",
+    "qa/changes/CH-DEMO-001/plans/performance-codegen-plan.md",
+    "qa/changes/CH-DEMO-001/plans/performance-codegen-mapping.json",
+    "qa/changes/CH-DEMO-001/plans/performance-review-summary.md"
+  ],
+  "performance_scenarios": [
+    {
+      "scenario_id": "item-create-load",
+      "capability": "entities.item.create",
+      "endpoint": "POST /items",
+      "p95_ms": 200,
+      "error_rate_max": 0.01
+    }
+  ]
+}

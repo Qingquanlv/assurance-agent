@@ -89,3 +89,50 @@ uv run pyright → 0 errors, 0 warnings, 0 informations
 - Do not stage `benchmark/.../cursor-loop-helpers.sh` or its test.
 - Suggested commit message: `fix(graph): fail-closed precommit snapshot, receipt fold, and interrupt success`
 - Task 8 should flip `codegen_fix_candidate/v1` from load-reject to implemented without renaming the ID.
+
+---
+
+## Fix round 3 — close executor bash grammar
+
+Executor bash was still a “contains the execution view” token filter. Four reviewer cwd/root mutations were ALLOW against the installed plugin.
+
+### RED
+
+```
+uv run pytest tests/phase5/test_opencode_staging_boundary.py::test_executor_cwd_root_mutation_bypasses_are_denied_by_installed_plugin -q
+```
+
+Result: **4 failed** (exit 1). Each case returned plugin ALLOW (`returncode == 0`) instead of DENY (`23`):
+
+- `python -c "…os.rename(getcwd()…)" qa/changes/CH-1/.staging/execution/api`
+- `PYTHONDONTWRITEBYTECODE=1 uv run --isolated python -c "…os.rename(getcwd()…)" qa/changes/CH-1/.staging/execution/api`
+- allowlisted pytest `--rootdir` view + `<(python -c "…os.rename(getcwd()…)")`
+- allowlisted pytest `--rootdir` view + `>hijack`
+
+Failure was the missing grammar, not a typo.
+
+### GREEN
+
+Plugin `assertExecutorShell` now matches only the live executor `_BASH_RULES` invocations (`uv run pytest…`, `npx playwright…`, npm/pnpm/locust forms). It rejects `python -c`, process substitution, redirects, backticks, `$()`, `;`/`&&`, and cwd-relative output files. Author/reviewer bash stays denied.
+
+```
+uv run pytest tests/phase5/test_opencode_staging_boundary.py::test_executor_cwd_root_mutation_bypasses_are_denied_by_installed_plugin tests/phase5/test_opencode_staging_boundary.py::test_executor_execution_view_shell_is_allowed -q
+```
+
+Result: **5 passed** (exit 0)
+
+Covering set (round 2 + staging boundary):
+
+```
+uv run pytest \
+  tests/phase5/test_opencode_staging_boundary.py \
+  tests/phase5/test_agent_execution_contracts.py \
+  packages/agent-runtime-cursor/tests/test_filesystem_sandbox.py \
+  packages/agent-runtime-opencode/tests/test_binding_authority.py \
+  packages/agent-runtime-contracts/tests/test_models.py \
+  -q --deselect tests/phase5/test_agent_execution_contracts.py::test_transient_agent_provider_failure_retries_the_skill_node
+```
+
+Result: **113 passed, 1 skipped, 1 deselected** (exit 0)
+
+Kept: binding stamp, `artifact_write` mediation, Cursor sandbox, `;`/`&&` denials, `_BASH_RULES` strings.
