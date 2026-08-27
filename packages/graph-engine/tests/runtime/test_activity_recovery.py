@@ -23,7 +23,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 from graph_engine.runtime.activity import LedgerTaskActivityPort
-from graph_engine.runtime.events import TaskActivityDispatchStarted
+from graph_engine.runtime.events import TaskActivityCancelRequested, TaskActivityDispatchStarted
 from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine, EngineConflictError
@@ -951,6 +951,7 @@ def _persist_prepared_attempt(
     host: _PreparedDispatchHost,
     *,
     dispatched: bool = False,
+    cancel_requested: bool = False,
 ) -> _RecoveryFixture:
     product = _recoverable_product()
     start_clock = FakeClock(10.0)
@@ -1002,6 +1003,19 @@ def _persist_prepared_attempt(
                         activity_id=attempt.activity.activity_id,
                         dispatch_fingerprint=fingerprint,
                         dispatch_fingerprint_digest=canonical_digest(fingerprint),
+                    ),
+                ),
+                expected_next_seq=ledger.read_all()[-1].seq + 1,
+            )
+        if cancel_requested:
+            attempt = fold_events(ledger.read_all()).activations[-1].attempts[-1]
+            assert attempt.activity is not None
+            ledger.append_batch(
+                (
+                    TaskActivityCancelRequested(
+                        activity_id=attempt.activity.activity_id,
+                        reason="operator-stop",
+                        requested_at=start_clock.now(),
                     ),
                 ),
                 expected_next_seq=ledger.read_all()[-1].seq + 1,
@@ -1060,6 +1074,34 @@ def test_prepared_undispatched_resume_dispatches_same_attempt(tmp_path: Path) ->
         assert len(prepared) == 1
         assert prepared[0].event.activity_id == activity_id
         assert prepared[0].event.workspace_identity == workspace_identity
+    finally:
+        fixture.handle.close()
+        fixture.engine.close()
+
+
+def test_cancel_requested_prepared_stays_activity_recovery(tmp_path: Path) -> None:
+    host = _PreparedDispatchHost()
+    fixture = _persist_prepared_attempt(tmp_path, host, cancel_requested=True)
+    try:
+        before = fixture.ledger.read_all()
+        attempt = fold_events(before).activations[-1].attempts[-1]
+        assert attempt.status == "running"
+        assert attempt.activity is not None
+        assert attempt.activity.state == "prepared"
+        assert attempt.activity.dispatch_fingerprint_digest is None
+        assert attempt.activity.cancel_requested is True
+        result = fixture.engine.run_until_blocked(fixture.handle)
+        after = fixture.ledger.read_all()
+        assert result.status == "interrupted"
+        assert result.terminal_reason == "activity_recovery"
+        assert host.execute_calls == []
+        assert [item.event.kind for item in after] == [item.event.kind for item in before]
+        refreshed = fold_events(after).activations[-1].attempts[-1]
+        assert refreshed.attempt == fixture.attempt_before == 1
+        assert refreshed.status == "running"
+        assert refreshed.activity is not None
+        assert refreshed.activity.state == "prepared"
+        assert refreshed.activity.cancel_requested is True
     finally:
         fixture.handle.close()
         fixture.engine.close()

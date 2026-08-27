@@ -283,3 +283,35 @@ clean on the two Python files.
 No OpenCode live rerun. No `run-opencode.sh`. Export/CLI/product
 capabilities unchanged. Dirty `production_host.py` /
 `production_worker.py` hunks were not staged.
+
+### RED (cancel-requested prepared)
+
+Independent review of `c0b6393`: a `cancel_requested` prepared-undispatched
+activity with a valid lease was dispatched by `resume_running` instead of
+staying at `activity_recovery`.
+
+Added `test_cancel_requested_prepared_stays_activity_recovery`. Command:
+
+```bash
+uv run pytest packages/graph-engine/tests/runtime/test_activity_recovery.py::test_cancel_requested_prepared_stays_activity_recovery -q
+```
+
+Result: 1 failed. `run_until_blocked` returned `succeeded` and host
+`execute` ran.
+
+### GREEN (cancel-requested prepared)
+
+`resume_running` now also `continue`s when `activity.cancel_requested`,
+so recover remains the only cancel/reconcile driver. No provider
+dispatch for a cancel-requested prepared activity.
+
+Command:
+
+```bash
+uv run pytest packages/graph-engine/tests/runtime/test_activity_recovery.py -q
+```
+
+Result: 21 passed, including unchanged
+`test_expired_non_adopted_recovery_does_not_conflict_on_resume`.
+Ruff check/format clean. Status remains `BLOCKED`; not rewritten as
+`achieved`. No live rerun. Dirty `production_host.py` hunks not staged.

@@ -598,8 +598,13 @@ class Scheduler:
                 continue
             same_attempt = (task.task_id, task.attempt) in self._same_attempt_execute
             prepared_undispatched = self._activity_is_prepared_undispatched(task)
+            activity = self._live_activity(task) if self._task_has_live_activity(task) else None
             if self._task_has_live_activity(task) and not same_attempt:
-                if not prepared_undispatched or lease.expires_at < self._now():
+                if (
+                    not prepared_undispatched
+                    or lease.expires_at < self._now()
+                    or (activity is not None and activity.cancel_requested)
+                ):
                     continue
             if lease.expires_at < self._now():
                 raise LeaseUnavailableError("persisted running task lease expired")
