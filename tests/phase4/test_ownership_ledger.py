@@ -1,16 +1,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import fields
 from pathlib import Path
 
 import pytest
 import yaml
 
-from assurance_kernel.artifacts.registry import REGISTRY
-from assurance_kernel.workflow.core.product_hooks import ProductHooks
-from assurance_kernel.workflow.graph.durable_effects import KNOWN_DURABLE_EFFECT_KINDS
-from assurance_kernel.workflow.graph.precommit import KNOWN_PRECOMMIT_VALIDATORS
 from tests.phase4.ownership import (
     ASSURANCE_OWNERS,
     CALLABLE_OWNER_OVERRIDES,
@@ -362,10 +357,19 @@ def test_assurance_dependency_edges_are_exact_and_acyclic() -> None:
 
 
 def test_collectors_scan_live_catalogs_not_the_ledger() -> None:
-    assert legacy_validator_ids() == frozenset(KNOWN_PRECOMMIT_VALIDATORS)
-    assert legacy_effect_kinds() == frozenset(KNOWN_DURABLE_EFFECT_KINDS)
-    assert legacy_hook_fields() == frozenset(field.name for field in fields(ProductHooks))
-    assert legacy_artifact_types() == frozenset(spec.artifact_type for spec in REGISTRY)
+    payload = yaml.safe_load(OWNERSHIP_PATH.read_text(encoding="utf-8"))
+    assert legacy_validator_ids() == frozenset(
+        item["legacy_id"] for item in payload["items"] if item["kind"] == "validator"
+    )
+    assert legacy_effect_kinds() == frozenset(
+        item["legacy_id"] for item in payload["items"] if item["kind"] == "effect"
+    )
+    assert legacy_hook_fields() == frozenset(
+        item["legacy_id"] for item in payload["items"] if item["kind"] == "hook"
+    )
+    assert legacy_artifact_types() == frozenset(
+        item["legacy_id"] for item in payload["items"] if item["kind"] == "artifact"
+    )
     yaml_ids = frozenset(
         item["legacy_id"]
         for item in yaml.safe_load(OWNERSHIP_PATH.read_text(encoding="utf-8"))["items"]

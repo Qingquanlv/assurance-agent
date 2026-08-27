@@ -19,7 +19,6 @@ members = [
     "assurance-healing",
     "assurance-improvement",
     "assurance-intake",
-    "assurance-kernel",
     "assurance-product",
     "assurance-quality",
     "assurance-workspace",
@@ -32,12 +31,6 @@ members = [
 name = "aa-sample-product"
 version = "0.1.0"
 source = { editable = "examples/minimal-product" }
-dependencies = [
-    { name = "assurance-kernel" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "assurance-kernel", editable = "packages/assurance-kernel" }]
 
 [[package]]
 name = "agent-runtime-contracts"
@@ -241,25 +234,6 @@ requires-dist = [
 ]
 
 [[package]]
-name = "assurance-kernel"
-version = "0.1.0"
-source = { editable = "packages/assurance-kernel" }
-dependencies = [
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "ruamel-yaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "pydantic", specifier = ">=2.7" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruamel-yaml", specifier = ">=0.18" },
-]
-
-[[package]]
 name = "assurance-product"
 version = "0.1.0"
 source = { editable = "packages/assurance-product" }
@@ -339,7 +313,6 @@ dev = [
     { name = "assurance-healing" },
     { name = "assurance-improvement" },
     { name = "assurance-intake" },
-    { name = "assurance-kernel" },
     { name = "assurance-product" },
     { name = "assurance-quality" },
     { name = "click" },
@@ -372,7 +345,6 @@ dev = [
     { name = "assurance-healing", editable = "packages/assurance-healing" },
     { name = "assurance-improvement", editable = "packages/assurance-improvement" },
     { name = "assurance-intake", editable = "packages/assurance-intake" },
-    { name = "assurance-kernel", editable = "packages/assurance-kernel" },
     { name = "assurance-product", editable = "packages/assurance-product" },
     { name = "assurance-quality", editable = "packages/assurance-quality" },
     { name = "click", specifier = ">=8.1" },

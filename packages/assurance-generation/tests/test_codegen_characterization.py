@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from graph_engine.canonical import JSONValue, canonical_json_bytes
-
 from assurance_generation.contracts import CodegenMapping, CodegenResultV1, GeneratedFilesV1
 from assurance_generation.validators.generated_files import GeneratedFilesValidator
-from assurance_kernel.artifacts.models.codegen import CodegenMapping as LegacyCodegenMapping
-from assurance_kernel.artifacts.models.generated_files import GeneratedFilesV1 as LegacyGeneratedFilesV1
 from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     FAMILIES,
     VALID_LEAFS,
@@ -51,24 +47,15 @@ def _valid_files(family: str) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("family", FAMILIES)
-def test_legacy_and_generation_accept_the_same_valid_mapping(family: str) -> None:
-    raw = mapping_document(family)
-    legacy = LegacyCodegenMapping.model_validate(raw)
-    current = CodegenMapping.model_validate(raw)
-    assert canonical_json_bytes(cast(JSONValue, legacy.model_dump(mode="json"))) == canonical_json_bytes(
-        cast(JSONValue, current.model_dump(mode="json"))
-    )
-    assert legacy.layer == current.layer == family
+def test_generation_accepts_valid_mapping(family: str) -> None:
+    current = CodegenMapping.model_validate(mapping_document(family))
+    assert current.layer == family
 
 
 @pytest.mark.parametrize("family", FAMILIES)
-def test_legacy_and_generation_accept_the_same_valid_generated_files(family: str) -> None:
-    raw = _valid_files(family)
-    legacy = LegacyGeneratedFilesV1.model_validate(raw)
-    current = GeneratedFilesV1.model_validate(raw)
-    assert canonical_json_bytes(cast(JSONValue, legacy.model_dump(mode="json"))) == canonical_json_bytes(
-        cast(JSONValue, current.model_dump(mode="json"))
-    )
+def test_generation_accepts_valid_generated_files(family: str) -> None:
+    current = GeneratedFilesV1.model_validate(_valid_files(family))
+    assert current.change_id == "CH-DEMO-001"
 
 
 @pytest.mark.parametrize("family", FAMILIES)

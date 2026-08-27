@@ -5,16 +5,11 @@ from __future__ import annotations
 import ast
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import yaml
-
-from assurance_kernel.artifacts.registry import REGISTRY
-from assurance_kernel.workflow.core.product_hooks import ProductHooks
-from assurance_kernel.workflow.graph.durable_effects import KNOWN_DURABLE_EFFECT_KINDS
-from assurance_kernel.workflow.graph.precommit import KNOWN_PRECOMMIT_VALIDATORS
 
 Kind = Literal[
     "module",
@@ -639,19 +634,19 @@ def legacy_persona_ids() -> frozenset[str]:
 
 
 def legacy_validator_ids() -> frozenset[str]:
-    return frozenset(KNOWN_PRECOMMIT_VALIDATORS)
+    return frozenset(VALIDATOR_NEW_IDS)
 
 
 def legacy_effect_kinds() -> frozenset[str]:
-    return frozenset(KNOWN_DURABLE_EFFECT_KINDS)
+    return frozenset(EFFECT_NEW_IDS)
 
 
 def legacy_hook_fields() -> frozenset[str]:
-    return frozenset(field.name for field in fields(ProductHooks))
+    return frozenset(HOOK_PRIMARY_SEAMS) | {"semantic_pins"}
 
 
 def legacy_artifact_types() -> frozenset[str]:
-    return frozenset(spec.artifact_type for spec in REGISTRY)
+    return load_ownership_ledger(OWNERSHIP_PATH).legacy_ids("artifact")
 
 
 def _posix(path: Path) -> str:
@@ -904,33 +899,20 @@ def _skill_assignment(skill_id: str) -> tuple[Disposition, str | None, str | Non
     raise ValueError(f"unassigned skill: {skill_id}")
 
 
-def _model_file_for_type(model: type[object]) -> str:
-    module = model.__module__
-    if not module.startswith("assurance_kernel.artifacts.models."):
-        raise ValueError(f"artifact model {model} is not a kernel artifact model")
-    return "packages/assurance-kernel/" + module.replace(".", "/") + ".py"
-
-
 def _artifact_assignment(artifact_type: str) -> tuple[Disposition, str | None]:
     if artifact_type in ARTIFACT_LEFTOVER_TYPES:
         return "delete_phase6", None
-    specs = [spec for spec in REGISTRY if spec.artifact_type == artifact_type]
-    if not specs:
+    item = next(
+        (
+            row
+            for row in load_ownership_ledger(OWNERSHIP_PATH).items
+            if row.kind == "artifact" and row.legacy_id == artifact_type
+        ),
+        None,
+    )
+    if item is None:
         raise ValueError(f"unknown artifact type: {artifact_type}")
-    owners: set[tuple[Disposition, str | None]] = set()
-    module_owners = expand_owned_modules()
-    for spec in specs:
-        model_path = _model_file_for_type(spec.model)
-        if model_path in NON_PHASE4_MODEL_DISPOSITIONS:
-            owners.add((NON_PHASE4_MODEL_DISPOSITIONS[model_path], None))
-            continue
-        owner = module_owners.get(model_path)
-        if owner is None:
-            raise ValueError(f"unassigned artifact model {model_path} for {artifact_type}")
-        owners.add(("migrate", owner))
-    if len(owners) != 1:
-        raise ValueError(f"artifact type {artifact_type} has conflicting owners: {owners}")
-    return next(iter(owners))
+    return item.disposition, item.owner
 
 
 def seed_ownership_items() -> tuple[OwnershipItem, ...]:

@@ -25,9 +25,10 @@ def test_lock_has_no_root_assurance_agent_package(repo_root: Path) -> None:
     assert not any(package["name"] == "assurance-agent" for package in lock["package"])
 
 
-def test_workspace_retains_kernel_until_later_tasks(repo_root: Path) -> None:
+def test_workspace_has_no_legacy_kernel(repo_root: Path) -> None:
     config = tomllib.loads((repo_root / "pyproject.toml").read_text())
     members = config["tool"]["uv"]["workspace"]["members"]
-    assert "packages/assurance-kernel" in members
+    assert "packages/assurance-kernel" not in members
+    assert "assurance-kernel" not in config.get("tool", {}).get("uv", {}).get("sources", {})
     assert not (repo_root / "assurance_agent").exists()
-    assert (repo_root / "packages/assurance-kernel").is_dir()
+    assert not (repo_root / "packages/assurance-kernel").exists()

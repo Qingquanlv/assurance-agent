@@ -12,6 +12,10 @@ import sys
 
 from pydantic import ValidationError
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from tests.phase6.conformance import (
     ChangeLocalAdmissionV1,
     EXPECTED_RESIDUAL_MAPPINGS,
@@ -20,7 +24,6 @@ from tests.phase6.conformance import (
 )
 
 
-ROOT = Path(__file__).resolve().parents[1]
 UPSTREAM_ROOT = ROOT / ".superpowers/sdd/2026-08-26-change-local-assurance-workspace"
 UPSTREAM_PLAN = ROOT / "docs/superpowers/plans/2026-08-26-change-local-assurance-workspace.md"
 UPSTREAM_SPEC = ROOT / "docs/superpowers/specs/2026-08-25-change-local-assurance-workspace-design.md"

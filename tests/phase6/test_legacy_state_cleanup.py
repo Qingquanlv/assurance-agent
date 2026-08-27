@@ -352,5 +352,7 @@ def test_cleanup_script_is_not_called_by_aa_start_or_run() -> None:
         text = path.read_text(encoding="utf-8")
         for needle in needles:
             assert needle not in text, f"{path} calls {needle}"
-    cli_text = (ROOT / "assurance_agent" / "cli.py").read_text(encoding="utf-8")
+    cli_text = (ROOT / "packages" / "assurance-product" / "assurance_product" / "cli.py").read_text(
+        encoding="utf-8"
+    )
     assert "phase6_legacy_state_cleanup" not in cli_text

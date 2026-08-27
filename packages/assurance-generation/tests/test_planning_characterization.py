@@ -2,17 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import CandidateFile, CandidateWriteSet, ResourceClaims, ValidationContext
 
 from assurance_generation.contracts import PlanReviewAuthoring
 from assurance_generation.validators.plans import family_validator
-from assurance_kernel.artifacts.models.review import PlanReviewAuthoring as LegacyPlanReviewAuthoring
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     FAMILIES,
     VALID_LEAFS,
@@ -48,32 +46,16 @@ def _context() -> ValidationContext:
 
 
 @pytest.mark.parametrize("family", FAMILIES)
-def test_legacy_and_generation_accept_the_same_valid_review(family: str) -> None:
-    raw = review_result(family)
-    legacy = LegacyPlanReviewAuthoring.model_validate(raw)
-    current = PlanReviewAuthoring.model_validate(raw, context={"capability_leafs": frozenset(VALID_LEAFS)})
-    assert canonical_json_bytes(cast(JSONValue, legacy.model_dump(mode="json"))) == canonical_json_bytes(
-        cast(JSONValue, current.model_dump(mode="json"))
-    )
-    assert legacy.decision == current.decision == "pass"
-    assert legacy.review_type == current.review_type == f"{family}-plan"
-
-
-@pytest.mark.parametrize("family", FAMILIES)
-def test_generation_rejects_unknown_leaf_that_legacy_shape_allows(family: str) -> None:
+def test_generation_rejects_unknown_leaf(family: str) -> None:
     raw = review_result(family, leaf="auth.fake")
-    legacy = LegacyPlanReviewAuthoring.model_validate(raw)
-    assert legacy.required_capabilities == ["auth.fake"]
     with pytest.raises(ValidationError, match="unknown capability leaf"):
         PlanReviewAuthoring.model_validate(raw, context={"capability_leafs": frozenset(VALID_LEAFS)})
 
 
 @pytest.mark.parametrize("family", FAMILIES)
-def test_legacy_and_generation_reject_the_same_invalid_review_decision(family: str) -> None:
+def test_generation_rejects_invalid_review_decision(family: str) -> None:
     raw = review_result(family)
     raw["decision"] = "approved"
-    with pytest.raises(ValidationError, match="decision 'pass'"):
-        LegacyPlanReviewAuthoring.model_validate(raw)
     with pytest.raises(ValidationError, match="decision 'pass'"):
         PlanReviewAuthoring.model_validate(raw, context={"capability_leafs": frozenset(VALID_LEAFS)})
 

@@ -1,6 +1,5 @@
 [importlinter]
 root_packages =
-    assurance_kernel
     assurance_intake
     assurance_generation
     assurance_execution
@@ -15,22 +14,6 @@ root_packages =
     agent_runtime_cursor
     agent_runtime_fixture
 
-[importlinter:contract:intake-no-legacy]
-name = intake must not import legacy Assurance packages
-type = forbidden
-source_modules =
-    assurance_intake
-forbidden_modules =
-    assurance_kernel
-
-[importlinter:contract:generation-no-legacy]
-name = generation must not import legacy Assurance packages
-type = forbidden
-source_modules =
-    assurance_generation
-forbidden_modules =
-    assurance_kernel
-
 [importlinter:contract:generation-intake-contracts-only]
 name = generation may import only intake contracts
 type = forbidden
@@ -41,14 +24,6 @@ forbidden_modules =
     assurance_intake.operations
     assurance_intake.validators
     assurance_intake.resource_loader
-
-[importlinter:contract:execution-no-legacy]
-name = execution must not import legacy Assurance packages
-type = forbidden
-source_modules =
-    assurance_execution
-forbidden_modules =
-    assurance_kernel
 
 [importlinter:contract:execution-assurance-contracts-only]
 name = execution may import only intake and generation contracts
@@ -64,14 +39,6 @@ forbidden_modules =
     assurance_generation.operations
     assurance_generation.validators
     assurance_generation.resource_loader
-
-[importlinter:contract:healing-no-legacy]
-name = healing must not import legacy Assurance packages
-type = forbidden
-source_modules =
-    assurance_healing
-forbidden_modules =
-    assurance_kernel
 
 [importlinter:contract:healing-assurance-contracts-only]
 name = healing may import only intake, generation, and execution contracts
@@ -100,14 +67,6 @@ source_modules =
 forbidden_modules =
     assurance_quality
 
-[importlinter:contract:quality-no-legacy]
-name = quality must not import legacy Assurance packages
-type = forbidden
-source_modules =
-    assurance_quality
-forbidden_modules =
-    assurance_kernel
-
 [importlinter:contract:quality-assurance-contracts-only]
 name = quality may import only intake, generation, execution, and healing contracts
 type = forbidden
@@ -131,14 +90,6 @@ forbidden_modules =
     assurance_healing.validators
     assurance_healing.resource_loader
     assurance_healing.effects
-
-[importlinter:contract:improvement-no-legacy]
-name = improvement must not import legacy Assurance packages
-type = forbidden
-source_modules =
-    assurance_improvement
-forbidden_modules =
-    assurance_kernel
 
 [importlinter:contract:improvement-assurance-contracts-only]
 name = improvement may import only intake, generation, execution, healing, and quality contracts
@@ -174,46 +125,9 @@ type = forbidden
 source_modules =
     graph_engine
 forbidden_modules =
-    assurance_kernel
     graph_engine_toy_a
     graph_engine_toy_b
     agent_runtime_fixture
-
-[importlinter:contract:kernel-artifacts-below-workflow]
-name = kernel artifacts must not import workflow
-type = forbidden
-source_modules =
-    assurance_kernel.artifacts
-forbidden_modules =
-    assurance_kernel.workflow
-
-[importlinter:contract:kernel-core-below-orchestration]
-name = kernel workflow.core must not import workflow.orchestration
-type = forbidden
-source_modules =
-    assurance_kernel.workflow.core
-forbidden_modules =
-    assurance_kernel.workflow.orchestration
-
-[importlinter:contract:kernel-graph-runtime-layer]
-name = kernel driver / graph / orchestration / core layers
-type = layers
-layers =
-    assurance_kernel.workflow.driver
-    assurance_kernel.workflow.graph
-    assurance_kernel.workflow.orchestration
-    assurance_kernel.workflow.core
-
-[importlinter:contract:kernel-domain-layers]
-name = kernel workflow / verification / knowledge+evidence / artifacts / config / resources
-type = layers
-layers =
-    assurance_kernel.workflow
-    assurance_kernel.verification
-    assurance_kernel.knowledge : assurance_kernel.evidence
-    assurance_kernel.artifacts
-    assurance_kernel.config
-    assurance_kernel.resources
 
 [importlinter:contract:graph-engine-provider-neutral]
 name = graph engine must not import agent contracts or runtime adapters
@@ -232,17 +146,8 @@ modules =
     agent_runtime_opencode
     agent_runtime_cursor
 
-[importlinter:contract:runtime-adapters-no-old-runtime]
-name = new adapters must not import Assurance runtimes
-type = forbidden
-source_modules =
-    agent_runtime_opencode
-    agent_runtime_cursor
-forbidden_modules =
-    assurance_kernel
-
 [importlinter:contract:contracts-wheel-independence]
-name = contracts must not import adapters, fixture, or Assurance
+name = contracts must not import adapters or fixture
 type = forbidden
 source_modules =
     agent_runtime_contracts
@@ -250,7 +155,6 @@ forbidden_modules =
     agent_runtime_opencode
     agent_runtime_cursor
     agent_runtime_fixture
-    assurance_kernel
 
 [importlinter:contract:fixture-downward-only]
 name = fixture may import graph engine and contracts only
@@ -260,4 +164,3 @@ source_modules =
 forbidden_modules =
     agent_runtime_opencode
     agent_runtime_cursor
-    assurance_kernel

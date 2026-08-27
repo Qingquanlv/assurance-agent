@@ -73,23 +73,11 @@ from assurance_healing.validators.test_tree import TestTreeValidator
 from assurance_improvement.contracts.delivery import artifact_digest, digest_hex
 from assurance_improvement.contracts.review import ImprovementReviewSubject
 from assurance_improvement.operations.agent import ImprovementReviewFinalizeHandler, RetroFinalizeHandler
-from assurance_kernel.workflow.core.product_hooks import ProductHooks
-from assurance_kernel.workflow.graph.durable_effects import (
-    FIXER_PROPOSAL_APPROVED_V1,
-    HEAL_RECORD_APPLY_V2,
-    HEALING_ALLOCATION_V2,
-    DurableEffectContext,
-    DurableEffectIntentV1,
-    DurableEffectRuntime,
-    EffectRegistry,
-    payload_sha256,
-)
-from assurance_kernel.workflow.graph.effect_retry import EffectRetryStore, RootEffectFenceStore
 from assurance_quality.contracts.issues import IssueCandidateDocument
 from assurance_quality.operations.agent_skills import IssueAnalysisFinalizeHandler
 from assurance_quality.operations.identity import candidate_document_digest as quality_candidate_digest
 from tests.phase4.conformance import execute_task
-from tests.phase4.ownership import OWNERSHIP_PATH, load_ownership_ledger
+from tests.phase4.ownership import OWNERSHIP_PATH, legacy_hook_fields, load_ownership_ledger
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NEW_WHEEL_ROOTS: tuple[Path, ...] = (
@@ -132,6 +120,9 @@ _REGISTRY_KINDS = frozenset(
         "EffectRegistration",
     }
 )
+HEALING_ALLOCATION_V2 = "healing_allocation/v2"
+FIXER_PROPOSAL_APPROVED_V1 = "fixer_proposal_approved/v1"
+HEAL_RECORD_APPLY_V2 = "heal_record_apply/v2"
 _EFFECT_KIND_MAP = {
     HEALING_ALLOCATION_V2: "assurance.healing.effect.allocation.v2",
     FIXER_PROPOSAL_APPROVED_V1: "assurance.healing.effect.proposal-approved.v1",
@@ -174,7 +165,7 @@ def load_hook_cases() -> tuple[dict[str, object], ...]:
 
 
 def test_every_product_hook_has_one_verified_replacement() -> None:
-    legacy_fields = {field.name for field in dataclasses.fields(ProductHooks)}
+    legacy_fields = set(legacy_hook_fields())
     ledger = load_ownership_ledger(OWNERSHIP_PATH)
     migrate = {
         item.legacy_id for item in ledger.items if item.kind == "hook" and item.disposition == "migrate"
@@ -203,7 +194,7 @@ def test_no_new_wheel_imports_or_recreates_product_hooks() -> None:
 def test_fixture_covers_every_legacy_hook_field() -> None:
     rows = load_hook_cases()
     names = [str(row["hook"]) for row in rows]
-    expected = [field.name for field in dataclasses.fields(ProductHooks)]
+    expected = sorted(legacy_hook_fields())
     assert names == expected or set(names) == set(expected)
     assert len(names) == len(set(names)) == 18
     ledger = load_ownership_ledger(OWNERSHIP_PATH)
