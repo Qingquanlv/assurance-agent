@@ -337,7 +337,7 @@ def _prepare_installed_product_env(
         label="uv venv",
     )
     python = venv / "bin" / "python"
-    aa_next = venv / "bin" / "aa-next"
+    aa_next = venv / "bin" / "aa"
     _run_checked(
         [
             "uv",
@@ -355,7 +355,7 @@ def _prepare_installed_product_env(
         label=f"install assurance-product[{adapter}]",
     )
     if not aa_next.is_file():
-        raise SystemExit("isolated env is missing aa-next")
+        raise SystemExit("isolated env is missing aa")
     return python, aa_next
 
 

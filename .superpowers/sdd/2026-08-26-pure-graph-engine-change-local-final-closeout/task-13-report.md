@@ -1,0 +1,181 @@
+# Task 13 Report — Run the Final OpenCode Provider-live Benchmark
+
+## Status: BLOCKED
+
+A fresh post-cutover OpenCode live run authenticated the pinned provider
+and completed intake through case-review. It then stopped at the designed
+`human-review` gate with `needs_human_review`. The change is not
+`achieved`, so publish/idempotent export/archive were not invoked and are
+not claimed. Task 3 Phase 5 admission was not reused or rewritten.
+
+## Baseline
+
+- Branch: `codex/pure-graph-engine-phase3-spec`
+- Committed HEAD: `0444ab389320ee91e4460bb4217bc33f8d36b281`
+- Pre-run dirty `git status --short`: 81 lines, SHA-256
+  `45f7927daa69f9871420bccb1221fa980ede24a9b2a27e00fe3982de6a2865fb`
+- The dirty tree was left in place. Only this task's files are staged.
+- Item: `opencode-ret-dept-management`
+- Product: `assurance-opencode`
+- Provider binding: `http://127.0.0.1:4096` / `opencode-http-v1`
+- Locked route: `openai/gpt-5.6-terra` / `max`
+- Manifest SHA-256:
+  `0bfc82b577eddc952df28c5e4db5aa3505e78c699a40530f9baa3cc66d027c85`
+- OpenCode `/global/health` before start: HTTP 200, `healthy=true`,
+  version `1.18.4`
+- Secret env `AA_NEXT_OPENCODE_TOKEN` was unset; no ambient model/endpoint
+  overrides were present.
+
+### Already-installed RECORD digests (no new smoke)
+
+These hash the worktree `.venv` `RECORD` files that were already installed
+before this run. They are not the isolated live wheels.
+
+| distribution | RECORD SHA-256 |
+|---|---|
+| graph-engine | `8767bc8059f062966b5283ee66a5790a045b5731a06133858cea2713979e7b6b` |
+| agent-runtime-contracts | `0208afb7d82ff48ce327ca1fe5048202d9bfad27cf6d566af319de130e79de7f` |
+| assurance-intake | `313e17675fcbaba0f8053704fd3cbfcab07039c7783e9d96741c7dcf0605f711` |
+| assurance-generation | `18944e670ef4a62f0308e1c00b2566bc74bcb8103188948c496c0ff8ab5ae1db` |
+| assurance-execution | `2857650db8c0fe678332e2fb299ee2eb42630387163e3c0bca19d4d9d1c03814` |
+| assurance-healing | `0cee2772f7c580cb078a9693b78b5708e50f51080d86d8e8be2a66ac7e261dcb` |
+| assurance-quality | `ce556fa2a46cd83a50f5bef65ff9c390282f0ca70e327822b0510846b7212c9a` |
+| assurance-improvement | `fa87e409c1f529214a31673abfbe9bb2de4347ac2f095c88bf79e78105f92a93` |
+| assurance-product | `1f2952732ac26d0f63ba1f6e57a60539b1f77d4077d59fe52e692068f8a3855b` |
+| agent-runtime-opencode | `32edf88b15981f7c41456546d334ae889495943ab97179bdb8c40d60600b9e2e` |
+| agent-runtime-cursor | `4a4b189d44be2971d767e27f809978340bf1fcefb51040931c72faa118291a3e` |
+
+## What I ran
+
+Exact command from the worktree root:
+
+```bash
+bash benchmark/assurance-product/run-opencode.sh
+```
+
+The committed product console is `aa`. The harness still looked up
+`venv/bin` under the retired name, so the isolated install could not
+start. One authorized path fix changed that lookup to `aa`. No product,
+capability, or adapter code was edited.
+
+Fresh invocation (not reused):
+
+- Result dir: `benchmark/assurance-product/results/opencode-20260827-054218-9a2df6f6/`
+- Change id: `BENCH-opencode-ret-dept-management-20260827-054218-9a2df6f6`
+- SUT: `/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin`
+- Started: `2026-08-27T05:42:18Z`
+- Ended: `2026-08-27T05:50:02Z`
+- Process exit: `30`
+
+Harness `evidence.json` SHA-256:
+`7405dc84ae21ca65ad885e64ba3870af0488f8b7375f558a446dbbc62ee005a2`
+
+Isolated wheels actually used by this run (SHA-256 of each `.whl`):
+
+| distribution | wheel SHA-256 |
+|---|---|
+| graph-engine | `8c838caf3f692e2670d84ebdef99c323ecec5bf054a78c0959d73f871f389b26` |
+| agent-runtime-contracts | `15822077129c7a9e36b2dfb16cd6945451aa88c52cd45f8c0420da5966b5531a` |
+| assurance-intake | `d0f2ad29bd09a265501e6ef42150e5ccf0960db8176b084314c9c269ff667818` |
+| assurance-generation | `cfb81d55392e9599f187f602dcbb09ee70ed069b481514b4a4c75b2bfff63c2a` |
+| assurance-execution | `df389c24726ef53dd1f2a4a1eff401bc74fd59094927e03a73df55dd4866df52` |
+| assurance-healing | `cd5a034861732f2141fb1ead16499e5bb738aa2fe35815175e81bff981244087` |
+| assurance-quality | `2863fe0f852bf24a6c4bdd01ae65daecf14580d68b198c3a8afc695fd704a77a` |
+| assurance-improvement | `07b406ad724ae8c0e96c28e6ba0edc5aaf8e309776a5165f6fb3702fefa666c4` |
+| assurance-product | `5d85e3c4fee6b0d19a5fb41efedfa55879ff414fb8526fed3d377bbc39e23522` |
+| agent-runtime-opencode | `09b4cc7490932a9eb5fc5fd9860d2738e844ae88fc700bd549986d6aaaa58916` |
+| agent-runtime-cursor | `3c23e3e5d004371493f2564b4ddaaa8a9aa3f6824118db62ac9220d16a2c89b4` |
+
+## Terminal business projection
+
+Observed `status.json` after the harness finished:
+
+- Invocation status: `interrupted`
+- Change state: `interrupted`
+- Publication: `not_ready`
+- Pending interrupt: `human-review` / `needs_human_review` / `approve|reject`
+- Succeeded logical finalizers: `intake`, `explore`, `case-design`,
+  `case-review`
+- Interrupted node: `human-review`
+- Adapter activities: 4 opaque ids, first
+  `7dbc9308a008288fa351d9df867ba78e0390630d32c1cc878b751dafee8d545a`
+
+Promoted artifacts under the fresh change (no prior change reused):
+
+- `explore/exploration.json`
+- `cases/system/dept/case.yaml`
+- `proposal.md`
+- `trace/minimum-coverage-matrix.json`
+- `review/case-review.json`
+
+Case-review decision (redacted): `needs_human_review`, `risk_level=high`,
+`auto_fix_allowed=false`. Findings `CR-SOURCE-001` and `CR-MRC-001` say
+department source and declared constraint keys were not independently
+verifiable from the projected files; reviewed source was only `run.py`.
+This is a deterministic graph interrupt, not quota or network failure.
+
+## Export / publish
+
+The harness never reached `aa export` because the change is not
+`achieved`. Task 12 already locks `publish_achieved` rejection of
+non-achieved changes. No publish receipt exists, and none is invented.
+Idempotent export and optional archive were not exercised on this change.
+
+## Secrets and legacy
+
+- Harness `evidence.json` and `run.log` have no credential-looking text.
+- Canonical `final-opencode.json` omits session text, provider text, and
+  Tree/HEAD/export vocabulary.
+- Isolated CLI used was `aa`. Result artifacts were not staged.
+
+The leftover untracked
+`benchmark/assurance-product/tests/validate_live_run.py` was used only as
+a fail-closed reference. It correctly rejects this record because
+`admission_status` is not `complete` and the workflow is not `achieved`.
+That validator was not staged.
+
+## Canonical evidence
+
+Wrote
+`.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/final-opencode.json`
+bound to source commit `0444ab389320ee91e4460bb4217bc33f8d36b281` and the
+fresh harness evidence digest above.
+
+## Files changed
+
+Created:
+
+- `.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/final-opencode.json`
+- `.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/` Task 13 report (this file)
+
+Modified:
+
+- `benchmark/assurance-product/run_item.py` (isolated console path `aa` only)
+
+Not staged: leftover Phase 4/5 hunks, `benchmark/**/results/`, `tmp/`,
+provider sessions, frozen Phase 5 admission, Task 3 diagnostics, or
+`validate_live_run.py`.
+
+## Self-review
+
+- The live command was a new invocation. Prior change ids
+  `144256-0fbe82c2`, `141439-41852bc4`, `132110-a9d717c6`,
+  `BENCH-opencode-ret-dept-management-*` from earlier days, and
+  `RET-dept-management-20260818-*` were not reused.
+- Provider contact is real (four opaque activity ids). Achieved, publish,
+  and archive are not claimed.
+- No product-fix campaign was started for the human-review gate or the
+  case-review source-projection findings.
+- Cursor live was not run.
+
+## Issues or concerns
+
+- Task 13 cannot admit a complete final OpenCode product. The unattended
+  harness stops when `human-review` offers `approve`/`reject`.
+- Isolated wheels were built from the dirty worktree, which is how the
+  harness packages source. The source commit recorded here is committed
+  HEAD, not a claim that the dirty tree was clean.
+- Case-review independently verified only `run.py`. Whether that is a
+  remaining read-boundary defect or intended fail-closed review is out of
+  this task's file list.
+- Task 3 Phase 5 live admission remains incomplete and was not rewritten.

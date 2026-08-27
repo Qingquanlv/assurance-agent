@@ -1,0 +1,66 @@
+{
+  "schema_version": "1",
+  "admission_status": "blocked",
+  "source_commit": "0444ab389320ee91e4460bb4217bc33f8d36b281",
+  "manifest_sha256": "0bfc82b577eddc952df28c5e4db5aa3505e78c699a40530f9baa3cc66d027c85",
+  "evidence_sha256": "7405dc84ae21ca65ad885e64ba3870af0488f8b7375f558a446dbbc62ee005a2",
+  "item_id": "opencode-ret-dept-management",
+  "product": "assurance-opencode",
+  "command": "bash benchmark/assurance-product/run-opencode.sh",
+  "started_at": "2026-08-27T05:42:18Z",
+  "ended_at": "2026-08-27T05:50:02Z",
+  "exit_code": 30,
+  "change_id": "BENCH-opencode-ret-dept-management-20260827-054218-9a2df6f6",
+  "provider_model": "openai/gpt-5.6-terra",
+  "worker_profile": "max",
+  "adapter_binding": {
+    "endpoint": "http://127.0.0.1:4096",
+    "protocol": "opencode-http-v1"
+  },
+  "provider": {
+    "session": "7dbc9308a008288fa351d9df867ba78e0390630d32c1cc878b751dafee8d545a",
+    "process": {
+      "endpoint": "http://127.0.0.1:4096",
+      "protocol": "opencode-http-v1"
+    },
+    "authenticated_activity_ids": [
+      "7dbc9308a008288fa351d9df867ba78e0390630d32c1cc878b751dafee8d545a",
+      "097d4b917fd6dc40c5a8beb6572b569fe40cf6e94a29af79a128b09145683554",
+      "fb5030ea9bda34d823cf45b134cce59ce49c4cbc5f13d0cf869fbf3ace1b0cdb",
+      "8ec675209c8f3adbaf72faf0f8bcb80c656d6d49a49c831c92ea9401f837df13"
+    ]
+  },
+  "workflow": {
+    "terminal": "interrupted",
+    "completed_steps": [
+      "intake.intake",
+      "intake.explore",
+      "intake.case-design",
+      "intake.case-review"
+    ],
+    "pending_interrupt": {
+      "node_id": "human-review",
+      "reason_category": "needs_human_review",
+      "actions": ["approve", "reject"]
+    },
+    "publish_receipt": null
+  },
+  "outcome": "blocked",
+  "block_class": "needs_human_review",
+  "external_blocked": false,
+  "harness_result_ref": "benchmark/assurance-product/results/opencode-20260827-054218-9a2df6f6/evidence.json",
+  "isolated_wheel_sha256": {
+    "graph-engine": "8c838caf3f692e2670d84ebdef99c323ecec5bf054a78c0959d73f871f389b26",
+    "agent-runtime-contracts": "15822077129c7a9e36b2dfb16cd6945451aa88c52cd45f8c0420da5966b5531a",
+    "assurance-intake": "d0f2ad29bd09a265501e6ef42150e5ccf0960db8176b084314c9c269ff667818",
+    "assurance-generation": "cfb81d55392e9599f187f602dcbb09ee70ed069b481514b4a4c75b2bfff63c2a",
+    "assurance-execution": "df389c24726ef53dd1f2a4a1eff401bc74fd59094927e03a73df55dd4866df52",
+    "assurance-healing": "cd5a034861732f2141fb1ead16499e5bb738aa2fe35815175e81bff981244087",
+    "assurance-quality": "2863fe0f852bf24a6c4bdd01ae65daecf14580d68b198c3a8afc695fd704a77a",
+    "assurance-improvement": "07b406ad724ae8c0e96c28e6ba0edc5aaf8e309776a5165f6fb3702fefa666c4",
+    "assurance-product": "5d85e3c4fee6b0d19a5fb41efedfa55879ff414fb8526fed3d377bbc39e23522",
+    "agent-runtime-opencode": "09b4cc7490932a9eb5fc5fd9860d2738e844ae88fc700bd549986d6aaaa58916",
+    "agent-runtime-cursor": "3c23e3e5d004371493f2564b4ddaaa8a9aa3f6824118db62ac9220d16a2c89b4"
+  },
+  "notes": "Fresh invocation authenticated the pinned OpenCode endpoint and completed intake through case-review. The graph then interrupted at human-review; the harness did not resume. Publish was not invoked. No achieved claim."
+}
