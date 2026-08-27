@@ -2,14 +2,49 @@
   "schema_version": "1",
   "admission_status": "blocked",
   "source_commit": "0444ab389320ee91e4460bb4217bc33f8d36b281",
+  "evidence_commit": "f43cc40d1b639f32cfe0cc847483e8c972e4974d",
   "manifest_sha256": "0bfc82b577eddc952df28c5e4db5aa3505e78c699a40530f9baa3cc66d027c85",
   "evidence_sha256": "7405dc84ae21ca65ad885e64ba3870af0488f8b7375f558a446dbbc62ee005a2",
   "item_id": "opencode-ret-dept-management",
   "product": "assurance-opencode",
   "command": "bash benchmark/assurance-product/run-opencode.sh",
+  "continuation": {
+    "same_change": true,
+    "isolated_cli": "benchmark/assurance-product/results/opencode-20260827-054218-9a2df6f6/venv/bin/aa",
+    "binding_dist": "assurance-product-bindings-10b8baed00795536",
+    "binding_declaration": "assurance_product_bindings_10b8baed00795536/assurance-deployment-plugin.json",
+    "resume": {
+      "action": "approve",
+      "reason": "closeout operator approval after case-review requested human review",
+      "first_attempt": {
+        "started_at": "2026-08-27T05:59:16Z",
+        "ended_at": "2026-08-27T05:59:29Z",
+        "exit_code": 40,
+        "error": "environment secret source is unset"
+      },
+      "second_attempt": {
+        "started_at": "2026-08-27T06:01:05Z",
+        "ended_at": "2026-08-27T06:01:12Z",
+        "exit_code": 40,
+        "cli_error": "invocation has no pending interrupt",
+        "ledger_recorded": true
+      }
+    },
+    "run_loop": {
+      "iterations": 12,
+      "each_result": {
+        "status": "interrupted",
+        "terminal_reason": "activity_recovery",
+        "actions": []
+      },
+      "events_unchanged_at": 291,
+      "generation_activity_dispatch_started": false,
+      "stopped_at": "2026-08-27T06:14:30Z",
+      "stop_reason": "no progress after repeated structured recovery"
+    }
+  },
   "started_at": "2026-08-27T05:42:18Z",
-  "ended_at": "2026-08-27T05:50:02Z",
-  "exit_code": 30,
+  "ended_at": "2026-08-27T06:14:30Z",
   "change_id": "BENCH-opencode-ret-dept-management-20260827-054218-9a2df6f6",
   "provider_model": "openai/gpt-5.6-terra",
   "worker_profile": "max",
@@ -31,22 +66,20 @@
     ]
   },
   "workflow": {
-    "terminal": "interrupted",
+    "terminal": "running",
     "completed_steps": [
       "intake.intake",
       "intake.explore",
       "intake.case-design",
       "intake.case-review"
     ],
-    "pending_interrupt": {
-      "node_id": "human-review",
-      "reason_category": "needs_human_review",
-      "actions": ["approve", "reject"]
-    },
+    "human_review": "approved",
+    "generation": "running_undispatched_execute",
+    "pending_interrupt": null,
     "publish_receipt": null
   },
   "outcome": "blocked",
-  "block_class": "needs_human_review",
+  "block_class": "stuck_activity_recovery",
   "external_blocked": false,
   "harness_result_ref": "benchmark/assurance-product/results/opencode-20260827-054218-9a2df6f6/evidence.json",
   "isolated_wheel_sha256": {
@@ -62,5 +95,5 @@
     "agent-runtime-opencode": "09b4cc7490932a9eb5fc5fd9860d2738e844ae88fc700bd549986d6aaaa58916",
     "agent-runtime-cursor": "3c23e3e5d004371493f2564b4ddaaa8a9aa3f6824118db62ac9220d16a2c89b4"
   },
-  "notes": "Fresh invocation authenticated the pinned OpenCode endpoint and completed intake through case-review. The graph then interrupted at human-review; the harness did not resume. Publish was not invoked. No achieved claim."
+  "notes": "Operator approve of human-review is in the ledger and generation started. Isolated aa run then returned activity_recovery with empty actions twelve times without a new provider session or activity dispatch. Publish was not invoked. No achieved claim."
 }

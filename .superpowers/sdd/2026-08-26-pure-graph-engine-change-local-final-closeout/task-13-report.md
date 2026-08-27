@@ -3,10 +3,11 @@
 ## Status: BLOCKED
 
 A fresh post-cutover OpenCode live run authenticated the pinned provider
-and completed intake through case-review. It then stopped at the designed
-`human-review` gate with `needs_human_review`. The change is not
-`achieved`, so publish/idempotent export/archive were not invoked and are
-not claimed. Task 3 Phase 5 admission was not reused or rewritten.
+and completed intake through case-review. Controller ruling treated the
+`human-review` stop as operator resume, not a product defect. The same
+change was resumed with `approve` and generation started, then isolated
+`aa run` returned `activity_recovery` twelve times with no new events or
+provider dispatch. The change is not `achieved`. Publish was not invoked.
 
 ## Baseline
 
@@ -141,16 +142,65 @@ Wrote
 bound to source commit `0444ab389320ee91e4460bb4217bc33f8d36b281` and the
 fresh harness evidence digest above.
 
+## Continuation (same change)
+
+Controller ruling: the first stop was operator resume, not a product
+defect. No new `run-opencode.sh` and no new change id.
+
+Isolated CLI (not worktree `.venv`):
+`benchmark/assurance-product/results/opencode-20260827-054218-9a2df6f6/venv/bin/aa`
+
+Reconstructed flags from that result dir:
+
+- `--product assurance-opencode`
+- `--binding-dist assurance-product-bindings-10b8baed00795536`
+- `--binding-entrypoint deployment`
+- `--binding-declaration assurance_product_bindings_10b8baed00795536/assurance-deployment-plugin.json`
+- `--config-tree` that result dir's `config-tree`
+- the same OpenCode handle-to-environment mapping the original run used
+- `--project-dir` `/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin`
+- `--change` / `--invocation-id` `BENCH-opencode-ret-dept-management-20260827-054218-9a2df6f6`
+
+Resume attempts:
+
+1. `05:59:16Z` — exit 40, `environment secret source is unset`. The original
+   harness had bound an empty env value. No ledger change.
+2. `06:01:05Z` — empty env value restored to match the original handle
+   binding. CLI printed `invocation has no pending interrupt` (engine
+   resume requires status `running`). The ledger nevertheless has
+   `interrupt_resumed` action `approve` with the required reason, and
+   `human-review` is `succeeded`.
+
+Generation then started: four family `plan.prepare` tasks promoted, four
+`execute` nodes activated, and one `task_activity_prepared`. Isolated
+`aa run` then returned this JSON twelve times:
+
+```json
+{"actions":[],"status":"interrupted","terminal_reason":"activity_recovery"}
+```
+
+Event count stayed at 291. No `task_activity_dispatch_started` for the
+new generation activity. No OpenCode session created after resume.
+Adapter evidence remains the original four intake activities. The loop
+was stopped at `06:14:30Z` rather than waiting out eight hours with no
+progress.
+
+Fresh isolated `aa status` after stop: invocation `running`, change
+`running`, publication `not_ready`, `human-review` succeeded, generation
+executes still running, no pending interrupt.
+
+Export was not invoked. No publish receipt. No archive.
+
 ## Files changed
 
-Created:
+Created then updated:
 
 - `.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/final-opencode.json`
-- `.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/` Task 13 report (this file)
+- this Task 13 report
 
-Modified:
-
-- `benchmark/assurance-product/run_item.py` (isolated console path `aa` only)
+First commit also included `benchmark/assurance-product/run_item.py`
+(isolated console path `aa` only). Continuation commit stages only the
+two SDD files.
 
 Not staged: leftover Phase 4/5 hunks, `benchmark/**/results/`, `tmp/`,
 provider sessions, frozen Phase 5 admission, Task 3 diagnostics, or
@@ -162,20 +212,20 @@ provider sessions, frozen Phase 5 admission, Task 3 diagnostics, or
   `144256-0fbe82c2`, `141439-41852bc4`, `132110-a9d717c6`,
   `BENCH-opencode-ret-dept-management-*` from earlier days, and
   `RET-dept-management-20260818-*` were not reused.
-- Provider contact is real (four opaque activity ids). Achieved, publish,
+- Continuation used the same change and isolated CLI. Achieved, publish,
   and archive are not claimed.
-- No product-fix campaign was started for the human-review gate or the
-  case-review source-projection findings.
+- Operator resume of `human-review`/`approve` was performed. The harness
+  was not rewritten to auto-resume.
+- No product-fix campaign was started for the stuck generation dispatch.
 - Cursor live was not run.
 
 ## Issues or concerns
 
-- Task 13 cannot admit a complete final OpenCode product. The unattended
-  harness stops when `human-review` offers `approve`/`reject`.
-- Isolated wheels were built from the dirty worktree, which is how the
-  harness packages source. The source commit recorded here is committed
-  HEAD, not a claim that the dirty tree was clean.
-- Case-review independently verified only `run.py`. Whether that is a
-  remaining read-boundary defect or intended fail-closed review is out of
-  this task's file list.
+- After operator approve, generation execute prepares an activity and
+  every later `aa run` yields `activity_recovery` without provider
+  dispatch. That is a deterministic post-resume stall, not quota/network.
+- Isolated wheels were built from the dirty worktree at source commit
+  `0444ab389320ee91e4460bb4217bc33f8d36b281`. Evidence commit `f43cc40`
+  only recorded the first stop.
+- Case-review independently verified only `run.py`.
 - Task 3 Phase 5 live admission remains incomplete and was not rewritten.
