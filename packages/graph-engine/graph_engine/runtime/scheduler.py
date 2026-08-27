@@ -596,11 +596,11 @@ class Scheduler:
             if record is not None and record.status == "promotion_pending":
                 recovered[task.task_id] = self._resume_prepared_promotion(task, lease, record)
                 continue
-            if (
-                self._task_has_live_activity(task)
-                and (task.task_id, task.attempt) not in self._same_attempt_execute
-            ):
-                continue
+            same_attempt = (task.task_id, task.attempt) in self._same_attempt_execute
+            prepared_undispatched = self._activity_is_prepared_undispatched(task)
+            if self._task_has_live_activity(task) and not same_attempt:
+                if not prepared_undispatched or lease.expires_at < self._now():
+                    continue
             if lease.expires_at < self._now():
                 raise LeaseUnavailableError("persisted running task lease expired")
             if self._task_has_live_activity(task):
@@ -1637,6 +1637,14 @@ class Scheduler:
     def _task_has_live_activity(self, task: PlannedTask) -> bool:
         record = self._latest_attempt_record(task)
         return record is not None and record.activity is not None and record.status == "running"
+
+    def _activity_is_prepared_undispatched(self, task: PlannedTask) -> bool:
+        activity = self._live_activity(task)
+        return (
+            activity is not None
+            and activity.state == "prepared"
+            and activity.dispatch_fingerprint_digest is None
+        )
 
     def _live_activity(self, task: PlannedTask) -> TaskActivitySnapshot | None:
         record = self._latest_attempt_record(task)

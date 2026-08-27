@@ -6,11 +6,11 @@ import importlib.util
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import pytest
 
-from graph_engine.canonical import canonical_digest
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import (
     InvocationWorkspaceBinding,
     RecoverableTaskHandler,
@@ -22,6 +22,8 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
+from graph_engine.runtime.activity import LedgerTaskActivityPort
+from graph_engine.runtime.events import TaskActivityDispatchStarted
 from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine, EngineConflictError
@@ -800,3 +802,290 @@ async def _assert_cancel_terminal_does_not_adopt(tmp_path: Path) -> None:
         if reopened_engine is not None:
             reopened_engine.close()
         _restore_call_recording(original_open, original_append)
+
+
+class _PreparedDispatchHost:
+    """Reconcile stays blocked; execute records the same-attempt dispatch."""
+
+    _FINGERPRINT = {"endpoint": "https://127.0.0.1:1", "profile": "test"}
+    _REFERENCE = {"id": "ext-prepared"}
+
+    def __init__(self) -> None:
+        self.execute_calls: list[Any] = []
+        self._handlers: dict[str, TaskHandler] = {}
+        self._store: TaskWorkspaceStore | None = None
+        self._receipts: TerminalReceiptStore | None = None
+        self._ledger: Ledger | None = None
+
+    def bind_ledger(self, ledger: Ledger) -> None:
+        self._ledger = ledger
+
+    def bind_invocation_runtime(
+        self,
+        *,
+        handlers: dict[str, TaskHandler],
+        store: TaskWorkspaceStore,
+        receipts: object | None = None,
+        handler_import_roots: object | None = None,
+    ) -> None:
+        del handler_import_roots
+        self._handlers = handlers
+        self._store = store
+        if receipts is not None:
+            self._receipts = receipts
+
+    async def execute(self, call: object) -> TaskHostCallResult:
+        self.execute_calls.append(call)
+        assert self._store is not None
+        identity = getattr(call, "identity")
+        request = getattr(call, "request")
+        attempt_root = getattr(call, "attempt_root")
+        activity_rpc = getattr(call, "activity_rpc")
+        handler = self._handlers[request.capability_id]
+        workspace = self._store.begin(
+            task_id=attempt_root.workspace_identity.task_id,
+            attempt=attempt_root.workspace_identity.attempt,
+            output_paths=attempt_root.workspace_identity.output_paths,
+        )
+        assert workspace.identity == attempt_root.workspace_identity
+        port = None
+        if activity_rpc.activity_id is not None and self._ledger is not None:
+            port = LedgerTaskActivityPort(ledger=self._ledger, identity=activity_rpc)
+            port.mark_dispatch_started(cast(JSONValue, self._FINGERPRINT))
+            port.bind(cast(JSONValue, self._REFERENCE))
+        outcome = await handler.execute(
+            request,
+            TaskContext(
+                project_root=workspace.project_root,
+                write_root=workspace.write_root,
+                workspace_identity=workspace.identity,
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=request.invocation,
+                activity=port,
+            ),
+        )
+        if port is not None:
+            self._install_receipt(identity, port.snapshot, outcome)
+        return TaskHostCallResult(operation="execute", outcome=outcome)
+
+    async def reconcile(self, call: object) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="reconcile",
+            reconcile_result=TaskActivityReconcileResult(
+                status="indeterminate",
+                reason="prepared undispatched fixture does not adopt",
+            ),
+        )
+
+    async def cancel(self, call: object) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="cancel",
+            cancel_result=TaskActivityCancelResult(
+                status="indeterminate",
+                reason="prepared undispatched fixture does not cancel",
+            ),
+        )
+
+    def read_terminal_receipts(self, identity: object) -> tuple[TaskHostTerminalReceipt, ...]:
+        if self._receipts is None:
+            return ()
+        return self._receipts.authenticate(identity)
+
+    def _install_receipt(
+        self,
+        identity: Any,
+        activity: TaskActivitySnapshot,
+        outcome: TaskOutcome,
+    ) -> None:
+        if self._receipts is None or identity.activity_id is None:
+            return
+        assert self._store is not None
+        sink = self._receipts.sink_for(identity)
+        sink.install(
+            TaskHostTerminalReceipt(
+                host_implementation_digest=identity.host_implementation_digest,
+                wire_schema_version=identity.wire_schema_version,
+                invocation_id=identity.invocation_id,
+                task_id=identity.task_id,
+                activation_id=identity.activation_id,
+                attempt=identity.attempt,
+                activity_id=identity.activity_id,
+                operation=identity.operation,
+                request_digest=activity.request_digest,
+                workspace_identity_digest=activity.workspace_identity.identity_digest,
+                project_root_digest=activity.workspace_identity.project_digest,
+                write_root_digest=activity.workspace_identity.write_root_digest,
+                baseline_digest=canonical_digest(
+                    [item.model_dump(mode="json") for item in activity.workspace_identity.baseline_files]
+                ),
+                staged_write_set_digest=self._store.seal(activity.workspace_identity).staged_digest,
+                dispatch_fingerprint_digest=activity.dispatch_fingerprint_digest,
+                reference_digest=activity.reference_digest,
+                outcome=outcome,
+                outcome_digest=canonical_digest(outcome.model_dump(mode="json")),
+                terminal_proof_digest=None,
+                quiescence_proof_digest=prove_call_quiescent(),
+                host_call_id=sink.host_call_id,
+            )
+        )
+
+
+def _recoverable_product() -> Any:
+    helpers = _load_engine_helpers()
+    try:
+        return helpers._recoverable_task_product(_RecoverableHandler())
+    finally:
+        for name, value in helpers._restored_builtins.items():
+            if value is None:
+                if hasattr(builtins, name):
+                    delattr(builtins, name)
+            else:
+                setattr(builtins, name, value)
+
+
+def _persist_prepared_attempt(
+    tmp_path: Path,
+    host: _PreparedDispatchHost,
+    *,
+    dispatched: bool = False,
+) -> _RecoveryFixture:
+    product = _recoverable_product()
+    start_clock = FakeClock(10.0)
+    workspace_binding = _workspace_binding(tmp_path)
+    engine = Engine(tmp_path, clock=start_clock, host=host)
+    handle = engine.start(
+        product,
+        entrypoint="main",
+        invocation_id="recover-prepared",
+        seed=empty_invocation_seed(),
+        authorization=empty_runtime_authorization(),
+        workspace_binding=workspace_binding,
+    )
+    ledger = Ledger(handle.invocation_root / "ledger")
+    host.bind_ledger(ledger)
+    envelopes = ledger.read_all()
+    plan = plan_next(product.workflow, fold_events(envelopes))
+    if plan.events:
+        ledger.append_batch(plan.events, expected_next_seq=envelopes[-1].seq + 1)
+    task = plan_next(product.workflow, fold_events(ledger.read_all())).tasks[0]
+    owner_id = canonical_digest(
+        {
+            "invocation_id": "recover-prepared",
+            "lock_digest": product.lock_digest,
+            "role": "engine-scheduler",
+        }
+    )
+    with closing(handle.workspace) as store:
+        scheduler = Scheduler(
+            product.registries.capabilities,
+            store,
+            ledger,
+            host,
+            owner_id=owner_id,
+            clock=start_clock,
+            lease_seconds=30.0,
+            lock_digest=product.lock_digest,
+            composition_digest=product.digest,
+            entrypoint="main",
+        )
+        scheduler.start_recoverable(task)
+        if dispatched:
+            attempt = fold_events(ledger.read_all()).activations[-1].attempts[-1]
+            assert attempt.activity is not None
+            fingerprint = {"endpoint": "https://provider.example", "session": "already-live"}
+            ledger.append_batch(
+                (
+                    TaskActivityDispatchStarted(
+                        activity_id=attempt.activity.activity_id,
+                        dispatch_fingerprint=fingerprint,
+                        dispatch_fingerprint_digest=canonical_digest(fingerprint),
+                    ),
+                ),
+                expected_next_seq=ledger.read_all()[-1].seq + 1,
+            )
+    attempt_before = fold_events(ledger.read_all()).activations[-1].attempts[-1].attempt
+    handle.close()
+    engine.close()
+    reopened_engine = Engine(tmp_path, clock=FakeClock(11.0), host=host)
+    reopened = reopened_engine.open(
+        "recover-prepared",
+        product,
+        authorization=empty_runtime_authorization(),
+        workspace_binding=workspace_binding,
+    )
+    host.bind_ledger(Ledger(reopened.invocation_root / "ledger"))
+    return _RecoveryFixture(
+        handle=reopened,
+        engine=reopened_engine,
+        product=product,
+        calls=CallLog(),
+        ledger=ledger,
+        invocation_id="recover-prepared",
+        attempt_before=attempt_before,
+    )
+
+
+def test_prepared_undispatched_resume_dispatches_same_attempt(tmp_path: Path) -> None:
+    host = _PreparedDispatchHost()
+    fixture = _persist_prepared_attempt(tmp_path, host)
+    try:
+        before = fixture.ledger.read_all()
+        attempt = fold_events(before).activations[-1].attempts[-1]
+        assert attempt.status == "running"
+        assert attempt.activity is not None
+        assert attempt.activity.state == "prepared"
+        assert attempt.activity.dispatch_fingerprint is None
+        assert attempt.activity.dispatch_fingerprint_digest is None
+        assert attempt.activity.reference is None
+        activity_id = attempt.activity.activity_id
+        workspace_identity = attempt.activity.workspace_identity
+        result = fixture.engine.run_until_blocked(fixture.handle)
+        after = fixture.ledger.read_all()
+        kinds = [item.event.kind for item in after]
+        assert result.terminal_reason != "activity_recovery"
+        assert result.status == "succeeded"
+        assert len(after) > len(before)
+        assert len(host.execute_calls) == 1
+        execute_call = host.execute_calls[0]
+        assert execute_call.identity.activity_id == activity_id
+        assert execute_call.identity.attempt == fixture.attempt_before == 1
+        assert execute_call.attempt_root.workspace_identity == workspace_identity
+        assert "task_activity_dispatch_started" in kinds
+        started = [item for item in after if item.event.kind == "task_attempt_started"]
+        assert len(started) == 1
+        prepared = [item for item in after if item.event.kind == "task_activity_prepared"]
+        assert len(prepared) == 1
+        assert prepared[0].event.activity_id == activity_id
+        assert prepared[0].event.workspace_identity == workspace_identity
+    finally:
+        fixture.handle.close()
+        fixture.engine.close()
+
+
+def test_already_dispatched_live_activity_still_yields_activity_recovery(tmp_path: Path) -> None:
+    host = _PreparedDispatchHost()
+    fixture = _persist_prepared_attempt(tmp_path, host, dispatched=True)
+    try:
+        before = fixture.ledger.read_all()
+        attempt = fold_events(before).activations[-1].attempts[-1]
+        assert attempt.status == "running"
+        assert attempt.activity is not None
+        assert attempt.activity.state == "dispatch_started"
+        assert attempt.activity.dispatch_fingerprint_digest is not None
+        result = fixture.engine.run_until_blocked(fixture.handle)
+        after = fixture.ledger.read_all()
+        assert result.status == "interrupted"
+        assert result.terminal_reason == "activity_recovery"
+        assert host.execute_calls == []
+        assert [item.event.kind for item in after] == [item.event.kind for item in before]
+        refreshed = fold_events(after).activations[-1].attempts[-1]
+        assert refreshed.attempt == fixture.attempt_before == 1
+        assert refreshed.status == "running"
+        assert refreshed.activity is not None
+        assert refreshed.activity.state == "dispatch_started"
+    finally:
+        fixture.handle.close()
+        fixture.engine.close()

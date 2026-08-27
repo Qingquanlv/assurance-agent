@@ -229,3 +229,57 @@ provider sessions, frozen Phase 5 admission, Task 3 diagnostics, or
   only recorded the first stop.
 - Case-review independently verified only `run.py`.
 - Task 3 Phase 5 live admission remains incomplete and was not rewritten.
+
+## Correction — prepared-undispatched same-attempt dispatch
+
+The live stall after `human-review`/`approve` is a scheduler recovery seam
+bug, not a provider or harness defect. A generation `execute` attempt can
+be left `running` with activity `prepared` and no dispatch fingerprint.
+`recover_live_activities` does not add that attempt to
+`_same_attempt_execute` when reconcile is indeterminate, so
+`resume_running` skipped it and `run_until_blocked` returned
+`activity_recovery` with no new events. Status remains `BLOCKED`; this
+change is not rewritten as `achieved`.
+
+TDD on `codex/pure-graph-engine-phase3-spec` from HEAD `3492913`:
+
+### RED
+
+Added
+`test_prepared_undispatched_resume_dispatches_same_attempt` and
+`test_already_dispatched_live_activity_still_yields_activity_recovery`
+in `packages/graph-engine/tests/runtime/test_activity_recovery.py`.
+
+Command:
+
+```bash
+uv run pytest packages/graph-engine/tests/runtime/test_activity_recovery.py::test_prepared_undispatched_resume_dispatches_same_attempt packages/graph-engine/tests/runtime/test_activity_recovery.py::test_already_dispatched_live_activity_still_yields_activity_recovery -q
+```
+
+Result: 1 failed, 1 passed. Prepared+undispatched
+`run_until_blocked` returned `terminal_reason='activity_recovery'`
+before any host `execute`. Already-dispatched stayed
+`activity_recovery`.
+
+### GREEN
+
+`resume_running` now treats a non-expired prepared activity with no
+dispatch fingerprint as same-attempt execute: it opens the existing
+workspace and passes the existing `activity_id` into `_execute`. It
+does not treat that state as "no live activity" and `begin()` a new
+workspace. Expired non-adopted live activities still skip instead of
+raising `LeaseUnavailableError`.
+
+Commands:
+
+```bash
+uv run pytest packages/graph-engine/tests/runtime/test_activity_recovery.py -q
+uv run pytest packages/graph-engine/tests/runtime/test_activity_recovery.py::test_expired_non_adopted_recovery_does_not_conflict_on_resume -q
+```
+
+Result: 20 passed; expired-non-adopted 3 passed. Ruff check/format
+clean on the two Python files.
+
+No OpenCode live rerun. No `run-opencode.sh`. Export/CLI/product
+capabilities unchanged. Dirty `production_host.py` /
+`production_worker.py` hunks were not staged.
