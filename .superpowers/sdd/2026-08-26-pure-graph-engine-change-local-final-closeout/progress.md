@@ -583,6 +583,27 @@
   incomplete and must not be fabricated. OpenCode live residuals
   become `deferred_out_of_scope` for this evidence pack.
 - Task 14 started from HEAD `9c86bae`.
+- Task 14 implementer: DONE_WITH_CONCERNS (commit `9c86bae..6740dce`).
+  Residuals have no `carried_forward`. Verdict
+  `accepted_with_waivers`. Several Step 2 gates failed. Live not
+  fabricated. Step 4/5 left to controller. Dispatching task review.
+- Task 14 review: spec ✅, quality Approved, 0 Critical/Important.
+  Controller ⚠️: OpenCode/Cursor live deferrals match the user
+  ruling and Global Constraints; Step 2 ran dirty-tree; wheel
+  digests are the 063450 isolated wheels; completion items 3/7/8
+  are waived, not achieved. Whole-branch review of
+  `e712943..6740dce` is 1498 files / ~299k deletions and is not
+  run in this Task 14 close; Task 13 remains open.
+- Task 14 Step 5 spot-check at `6740dce`:
+  `check_no_legacy.py --scope repository` exit 0;
+  `check_remaining_phase_admission.py` prints
+  `accepted_with_waivers` exit 0. Full ruff/pyright/pytest/product
+  smoke were not re-run; prior recorded exits 1/1/1/2/1 stand.
+- Task 14: complete (commits `9c86bae..6740dce`, review clean).
+  Verdict `accepted_with_waivers`. Minors for whole-branch triage:
+  dual-ledger OpenCode vocabulary; wheel binding labeled `9c86bae`
+  lineage; preemptive allowlist of 3 non-hit SDD files;
+  `recorded_at` is gate-start.
 - Task 14 residuals: no `carried_forward` remains. Closeout tasks
   1–2 and 4–12 plus Task 13 recovery map to `verified_complete` or
   `superseded`. Cursor live stays `deferred_out_of_scope`. OpenCode
