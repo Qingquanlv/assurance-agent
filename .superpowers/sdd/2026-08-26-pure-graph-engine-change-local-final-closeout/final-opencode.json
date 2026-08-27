@@ -1,51 +1,42 @@
 {
   "schema_version": "1",
   "admission_status": "blocked",
-  "source_commit": "0444ab389320ee91e4460bb4217bc33f8d36b281",
-  "evidence_commit": "f43cc40d1b639f32cfe0cc847483e8c972e4974d",
+  "source_commit": "0f034de8e3c59c43a64b4949f78335d1e80419b5",
+  "supersedes_change_id": "BENCH-opencode-ret-dept-management-20260827-054218-9a2df6f6",
   "manifest_sha256": "0bfc82b577eddc952df28c5e4db5aa3505e78c699a40530f9baa3cc66d027c85",
-  "evidence_sha256": "7405dc84ae21ca65ad885e64ba3870af0488f8b7375f558a446dbbc62ee005a2",
+  "evidence_sha256": "59be4a82cd2579122fb76c45e240e441cc4674a25bb499ab25ed9d30c811e177",
   "item_id": "opencode-ret-dept-management",
   "product": "assurance-opencode",
   "command": "bash benchmark/assurance-product/run-opencode.sh",
   "continuation": {
     "same_change": true,
-    "isolated_cli": "benchmark/assurance-product/results/opencode-20260827-054218-9a2df6f6/venv/bin/aa",
+    "isolated_cli": "benchmark/assurance-product/results/opencode-20260827-063450-3e30e331/venv/bin/aa",
     "binding_dist": "assurance-product-bindings-10b8baed00795536",
     "binding_declaration": "assurance_product_bindings_10b8baed00795536/assurance-deployment-plugin.json",
     "resume": {
       "action": "approve",
       "reason": "closeout operator approval after case-review requested human review",
-      "first_attempt": {
-        "started_at": "2026-08-27T05:59:16Z",
-        "ended_at": "2026-08-27T05:59:29Z",
-        "exit_code": 40,
-        "error": "environment secret source is unset"
-      },
-      "second_attempt": {
-        "started_at": "2026-08-27T06:01:05Z",
-        "ended_at": "2026-08-27T06:01:12Z",
-        "exit_code": 40,
-        "cli_error": "invocation has no pending interrupt",
-        "ledger_recorded": true
+      "started_at": "2026-08-27T06:47:44Z",
+      "ended_at": "2026-08-27T07:01:35Z",
+      "exit_code": 40,
+      "result": {
+        "action": "approve",
+        "status": "failed",
+        "terminal_reason": "task_failed:execute:invalid_output"
       }
     },
-    "run_loop": {
-      "iterations": 12,
-      "each_result": {
-        "status": "interrupted",
-        "terminal_reason": "activity_recovery",
-        "actions": []
-      },
-      "events_unchanged_at": 291,
-      "generation_activity_dispatch_started": false,
-      "stopped_at": "2026-08-27T06:14:30Z",
-      "stop_reason": "no progress after repeated structured recovery"
+    "post_resume_status": {
+      "status": "failed",
+      "terminal_reason": "task_failed:execute:invalid_output",
+      "change_state": "failed",
+      "publication": "not_ready",
+      "pending_interrupt": null,
+      "checked_at": "2026-08-27T07:04:09Z"
     }
   },
-  "started_at": "2026-08-27T05:42:18Z",
-  "ended_at": "2026-08-27T06:14:30Z",
-  "change_id": "BENCH-opencode-ret-dept-management-20260827-054218-9a2df6f6",
+  "started_at": "2026-08-27T06:34:50Z",
+  "ended_at": "2026-08-27T07:01:35Z",
+  "change_id": "BENCH-opencode-ret-dept-management-20260827-063450-3e30e331",
   "provider_model": "openai/gpt-5.6-terra",
   "worker_profile": "max",
   "adapter_binding": {
@@ -53,20 +44,23 @@
     "protocol": "opencode-http-v1"
   },
   "provider": {
-    "session": "7dbc9308a008288fa351d9df867ba78e0390630d32c1cc878b751dafee8d545a",
+    "session": "c386eec41ab04ddbcc9c021fe0dc26ab6e3b78397c71cb5cef3824fcbe76a1aa",
     "process": {
       "endpoint": "http://127.0.0.1:4096",
       "protocol": "opencode-http-v1"
     },
     "authenticated_activity_ids": [
-      "7dbc9308a008288fa351d9df867ba78e0390630d32c1cc878b751dafee8d545a",
-      "097d4b917fd6dc40c5a8beb6572b569fe40cf6e94a29af79a128b09145683554",
-      "fb5030ea9bda34d823cf45b134cce59ce49c4cbc5f13d0cf869fbf3ace1b0cdb",
-      "8ec675209c8f3adbaf72faf0f8bcb80c656d6d49a49c831c92ea9401f837df13"
+      "c386eec41ab04ddbcc9c021fe0dc26ab6e3b78397c71cb5cef3824fcbe76a1aa",
+      "8f1a26fcb0875029c04e0b2dd7af8bb5893781859a1f20b061992ca4edd38d21",
+      "19c5944fd8aaf57f3288d4be3381f54396ebcee34f2d813fe431cb32911c77d2",
+      "6e183a718826e69bf34ea7e0751520c31d50d9b204851d98c4a48c5f43e63bb0",
+      "c583ebe382c80e1b92ae33f90ea4504aec42741d971b5accc48dbc80136169b3",
+      "2957adc0c8731b29c7a1290340a7f8e3c5f34a45e13d97c8063c0367652b55fd",
+      "6725ebca7e8a87457b25d803c94c1367c03fc059f3938c0b38760665c89bfd02"
     ]
   },
   "workflow": {
-    "terminal": "running",
+    "terminal": "failed",
     "completed_steps": [
       "intake.intake",
       "intake.explore",
@@ -74,16 +68,26 @@
       "intake.case-review"
     ],
     "human_review": "approved",
-    "generation": "running_undispatched_execute",
+    "generation": "failed_api_plan_execute_invalid_output",
     "pending_interrupt": null,
     "publish_receipt": null
   },
+  "recovery_fix": {
+    "commits": [
+      "c0b6393",
+      "0f034de"
+    ],
+    "prepared_undispatched_stall_reproduced": false,
+    "generation_execute_prepared": true,
+    "generation_execute_dispatched": true,
+    "first_generation_activity_id": "c583ebe382c80e1b92ae33f90ea4504aec42741d971b5accc48dbc80136169b3"
+  },
   "outcome": "blocked",
-  "block_class": "stuck_activity_recovery",
+  "block_class": "generation_execute_invalid_output",
   "external_blocked": false,
-  "harness_result_ref": "benchmark/assurance-product/results/opencode-20260827-054218-9a2df6f6/evidence.json",
+  "harness_result_ref": "benchmark/assurance-product/results/opencode-20260827-063450-3e30e331/evidence.json",
   "isolated_wheel_sha256": {
-    "graph-engine": "8c838caf3f692e2670d84ebdef99c323ecec5bf054a78c0959d73f871f389b26",
+    "graph-engine": "01cad6c56f7499a5b215c1bcf1192f67f459c2c92594929da2df492743c7b538",
     "agent-runtime-contracts": "15822077129c7a9e36b2dfb16cd6945451aa88c52cd45f8c0420da5966b5531a",
     "assurance-intake": "d0f2ad29bd09a265501e6ef42150e5ccf0960db8176b084314c9c269ff667818",
     "assurance-generation": "cfb81d55392e9599f187f602dcbb09ee70ed069b481514b4a4c75b2bfff63c2a",
@@ -95,5 +99,5 @@
     "agent-runtime-opencode": "09b4cc7490932a9eb5fc5fd9860d2738e844ae88fc700bd549986d6aaaa58916",
     "agent-runtime-cursor": "3c23e3e5d004371493f2564b4ddaaa8a9aa3f6824118db62ac9220d16a2c89b4"
   },
-  "notes": "Operator approve of human-review is in the ledger and generation started. Isolated aa run then returned activity_recovery with empty actions twelve times without a new provider session or activity dispatch. Publish was not invoked. No achieved claim."
+  "notes": "Fresh invocation after c0b6393/0f034de. Operator approve of human-review is in the ledger. Generation execute prepared and dispatched; the prior prepared-undispatched stall did not recur. Isolated aa resume then terminated failed at generation-api-plan execute with invalid_output (missing case_ids/required_capabilities/coverage/output_files). Publish was not invoked. No achieved claim."
 }

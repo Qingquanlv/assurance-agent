@@ -2,17 +2,20 @@
 
 ## Status: BLOCKED
 
-A fresh post-cutover OpenCode live run authenticated the pinned provider
-and completed intake through case-review. Controller ruling treated the
-`human-review` stop as operator resume, not a product defect. The same
-change was resumed with `approve` and generation started, then isolated
-`aa run` returned `activity_recovery` twelve times with no new events or
-provider dispatch. The change is not `achieved`. Publish was not invoked.
+A fresh post-cutover OpenCode live run at HEAD `0f034de` authenticated
+the pinned provider and completed intake through case-review. Operator
+resume approved `human-review`. The prepared-undispatched recovery fix
+held: generation execute prepared and dispatched. The same isolated
+`aa resume` then reached `generation-api-plan` execute and terminated
+`failed` with `task_failed:execute:invalid_output`. The change is not
+`achieved`. Publish was not invoked. No engine-fix campaign was started.
 
 ## Baseline
 
 - Branch: `codex/pure-graph-engine-phase3-spec`
-- Committed HEAD: `0444ab389320ee91e4460bb4217bc33f8d36b281`
+- Committed HEAD: `0f034de8e3c59c43a64b4949f78335d1e80419b5`
+- Recovery-fix ancestors: `c0b6393` (prepared undispatched dispatch),
+  `0f034de` (cancel-requested skip). Review clean.
 - Pre-run dirty `git status --short`: 81 lines, SHA-256
   `45f7927daa69f9871420bccb1221fa980ede24a9b2a27e00fe3982de6a2865fb`
 - The dirty tree was left in place. Only this task's files are staged.
@@ -25,7 +28,8 @@ provider dispatch. The change is not `achieved`. Publish was not invoked.
 - OpenCode `/global/health` before start: HTTP 200, `healthy=true`,
   version `1.18.4`
 - Secret env `AA_NEXT_OPENCODE_TOKEN` was unset; no ambient model/endpoint
-  overrides were present.
+  overrides were present. Resume bound the same empty env source the
+  harness used (`TOKEN_SET=yes`, `TOKEN_LEN=0`).
 
 ### Already-installed RECORD digests (no new smoke)
 
@@ -54,28 +58,23 @@ Exact command from the worktree root:
 bash benchmark/assurance-product/run-opencode.sh
 ```
 
-The committed product console is `aa`. The harness still looked up
-`venv/bin` under the retired name, so the isolated install could not
-start. One authorized path fix changed that lookup to `aa`. No product,
-capability, or adapter code was edited.
+Fresh invocation (not reused; not `054218-9a2df6f6`):
 
-Fresh invocation (not reused):
-
-- Result dir: `benchmark/assurance-product/results/opencode-20260827-054218-9a2df6f6/`
-- Change id: `BENCH-opencode-ret-dept-management-20260827-054218-9a2df6f6`
+- Result dir: `benchmark/assurance-product/results/opencode-20260827-063450-3e30e331/`
+- Change id: `BENCH-opencode-ret-dept-management-20260827-063450-3e30e331`
 - SUT: `/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin`
-- Started: `2026-08-27T05:42:18Z`
-- Ended: `2026-08-27T05:50:02Z`
+- Started: `2026-08-27T06:34:50Z`
+- Harness ended: `2026-08-27T06:45:45Z`
 - Process exit: `30`
 
 Harness `evidence.json` SHA-256:
-`7405dc84ae21ca65ad885e64ba3870af0488f8b7375f558a446dbbc62ee005a2`
+`59be4a82cd2579122fb76c45e240e441cc4674a25bb499ab25ed9d30c811e177`
 
 Isolated wheels actually used by this run (SHA-256 of each `.whl`):
 
 | distribution | wheel SHA-256 |
 |---|---|
-| graph-engine | `8c838caf3f692e2670d84ebdef99c323ecec5bf054a78c0959d73f871f389b26` |
+| graph-engine | `01cad6c56f7499a5b215c1bcf1192f67f459c2c92594929da2df492743c7b538` |
 | agent-runtime-contracts | `15822077129c7a9e36b2dfb16cd6945451aa88c52cd45f8c0420da5966b5531a` |
 | assurance-intake | `d0f2ad29bd09a265501e6ef42150e5ccf0960db8176b084314c9c269ff667818` |
 | assurance-generation | `cfb81d55392e9599f187f602dcbb09ee70ed069b481514b4a4c75b2bfff63c2a` |
@@ -87,9 +86,12 @@ Isolated wheels actually used by this run (SHA-256 of each `.whl`):
 | agent-runtime-opencode | `09b4cc7490932a9eb5fc5fd9860d2738e844ae88fc700bd549986d6aaaa58916` |
 | agent-runtime-cursor | `3c23e3e5d004371493f2564b4ddaaa8a9aa3f6824118db62ac9220d16a2c89b4` |
 
-## Terminal business projection
+`graph-engine` is the only isolated wheel that changed versus the
+`054218-9a2df6f6` run, as expected after `c0b6393` / `0f034de`.
 
-Observed `status.json` after the harness finished:
+## Terminal business projection after harness stop
+
+Observed `status.json` after `run-opencode.sh` finished:
 
 - Invocation status: `interrupted`
 - Change state: `interrupted`
@@ -99,7 +101,7 @@ Observed `status.json` after the harness finished:
   `case-review`
 - Interrupted node: `human-review`
 - Adapter activities: 4 opaque ids, first
-  `7dbc9308a008288fa351d9df867ba78e0390630d32c1cc878b751dafee8d545a`
+  `c386eec41ab04ddbcc9c021fe0dc26ab6e3b78397c71cb5cef3824fcbe76a1aa`
 
 Promoted artifacts under the fresh change (no prior change reused):
 
@@ -110,17 +112,80 @@ Promoted artifacts under the fresh change (no prior change reused):
 - `review/case-review.json`
 
 Case-review decision (redacted): `needs_human_review`, `risk_level=high`,
-`auto_fix_allowed=false`. Findings `CR-SOURCE-001` and `CR-MRC-001` say
-department source and declared constraint keys were not independently
-verifiable from the projected files; reviewed source was only `run.py`.
-This is a deterministic graph interrupt, not quota or network failure.
+`auto_fix_allowed=false`. Finding `CR-PRODUCT-SOURCE-UNAVAILABLE`.
+This is the designed graph interrupt, not quota or network failure.
+
+## Continuation (same new change)
+
+Isolated CLI (not worktree `.venv`):
+`benchmark/assurance-product/results/opencode-20260827-063450-3e30e331/venv/bin/aa`
+
+Flags reconstructed from that result dir:
+
+- `--product assurance-opencode`
+- `--binding-dist assurance-product-bindings-10b8baed00795536`
+- `--binding-entrypoint deployment`
+- `--binding-declaration assurance_product_bindings_10b8baed00795536/assurance-deployment-plugin.json`
+- `--config-tree` that result dir's `config-tree`
+- `--secret opencode.token=env:AA_NEXT_OPENCODE_TOKEN` with the empty
+  env value the harness bound
+- `--project-dir` `/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin`
+- `--change` / `--invocation-id` `BENCH-opencode-ret-dept-management-20260827-063450-3e30e331`
+
+`aa resume --json --action approve --reason "closeout operator approval after case-review requested human review"`
+started `2026-08-27T06:47:44Z` and itself called `run_until_blocked`.
+
+Ledger after resume (exact activity state):
+
+- seq 180: `interrupt_resumed` action `approve`
+- seq 187: `generation` activated
+- four family `plan.prepare` tasks promoted
+- four `execute` nodes activated
+- seq 291: `task_activity_prepared` activity
+  `c583ebe382c80e1b92ae33f90ea4504aec42741d971b5accc48dbc80136169b3`
+- seq 292: `task_activity_dispatch_started` for that activity
+  (dispatch fingerprint present; not the old prepared+undispatched stall)
+- later generation executes also prepared and dispatched:
+  `2957adc0c8731b29…`, `6725ebca7e8a8745…`
+
+Promoted after resume (in addition to intake artifacts):
+
+- `plans/e2e-plan.md`, `plans/e2e-codegen-plan.md`,
+  `plans/e2e-codegen-mapping.json`, `plans/e2e-test-data-plan.md`,
+  `plans/m4-review-summary.md`
+- `plans/performance-plan.md`, `plans/performance-codegen-plan.md`,
+  `plans/performance-codegen-mapping.json`,
+  `plans/performance-review-summary.md`
+
+Resume JSON (exit 40) at `2026-08-27T07:01:35Z`:
+
+```json
+{"action":"approve","invocation_id":"BENCH-opencode-ret-dept-management-20260827-063450-3e30e331","status":"failed","terminal_reason":"task_failed:execute:invalid_output"}
+```
+
+Failing node: `generation-api-plan` / `execute` (graph instance
+`9075057953bb…`). Activity `6725ebca7e8a87457b25d803c94c1367c03fc059f3938c0b38760665c89bfd02`
+terminal outcome (redacted):
+
+```json
+{"failure":{"kind":"invalid_output","message":"$: missing required properties ['case_ids', 'required_capabilities', 'coverage', 'output_files']","retryable":false},"output":null,"status":"failed"}
+```
+
+Ledger closed at seq 330 with `invocation_finished` status `failed`.
+Sibling e2e/fuzz/performance plan graphs were still projected `running`
+when the root failed. Isolated `aa status` at `07:04:09Z` confirmed
+invocation `failed`, change `failed`, publication `not_ready`, no
+pending interrupt.
+
+A further `aa run` loop was not started: the invocation is finished
+failed. That is a new deterministic blocker, not `activity_recovery`.
 
 ## Export / publish
 
-The harness never reached `aa export` because the change is not
-`achieved`. Task 12 already locks `publish_achieved` rejection of
-non-achieved changes. No publish receipt exists, and none is invented.
-Idempotent export and optional archive were not exercised on this change.
+Export was not invoked. The change is not `achieved`. Task 12 already
+locks `publish_achieved` rejection of non-achieved changes. No publish
+receipt exists, and none is invented. Idempotent export and optional
+archive were not exercised on this change.
 
 ## Secrets and legacy
 
@@ -129,189 +194,50 @@ Idempotent export and optional archive were not exercised on this change.
   Tree/HEAD/export vocabulary.
 - Isolated CLI used was `aa`. Result artifacts were not staged.
 
-The leftover untracked
-`benchmark/assurance-product/tests/validate_live_run.py` was used only as
-a fail-closed reference. It correctly rejects this record because
-`admission_status` is not `complete` and the workflow is not `achieved`.
-That validator was not staged.
-
 ## Canonical evidence
 
 Wrote
 `.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/final-opencode.json`
-bound to source commit `0444ab389320ee91e4460bb4217bc33f8d36b281` and the
+bound to source commit `0f034de8e3c59c43a64b4949f78335d1e80419b5` and the
 fresh harness evidence digest above.
-
-## Continuation (same change)
-
-Controller ruling: the first stop was operator resume, not a product
-defect. No new `run-opencode.sh` and no new change id.
-
-Isolated CLI (not worktree `.venv`):
-`benchmark/assurance-product/results/opencode-20260827-054218-9a2df6f6/venv/bin/aa`
-
-Reconstructed flags from that result dir:
-
-- `--product assurance-opencode`
-- `--binding-dist assurance-product-bindings-10b8baed00795536`
-- `--binding-entrypoint deployment`
-- `--binding-declaration assurance_product_bindings_10b8baed00795536/assurance-deployment-plugin.json`
-- `--config-tree` that result dir's `config-tree`
-- the same OpenCode handle-to-environment mapping the original run used
-- `--project-dir` `/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin`
-- `--change` / `--invocation-id` `BENCH-opencode-ret-dept-management-20260827-054218-9a2df6f6`
-
-Resume attempts:
-
-1. `05:59:16Z` — exit 40, `environment secret source is unset`. The original
-   harness had bound an empty env value. No ledger change.
-2. `06:01:05Z` — empty env value restored to match the original handle
-   binding. CLI printed `invocation has no pending interrupt` (engine
-   resume requires status `running`). The ledger nevertheless has
-   `interrupt_resumed` action `approve` with the required reason, and
-   `human-review` is `succeeded`.
-
-Generation then started: four family `plan.prepare` tasks promoted, four
-`execute` nodes activated, and one `task_activity_prepared`. Isolated
-`aa run` then returned this JSON twelve times:
-
-```json
-{"actions":[],"status":"interrupted","terminal_reason":"activity_recovery"}
-```
-
-Event count stayed at 291. No `task_activity_dispatch_started` for the
-new generation activity. No OpenCode session created after resume.
-Adapter evidence remains the original four intake activities. The loop
-was stopped at `06:14:30Z` rather than waiting out eight hours with no
-progress.
-
-Fresh isolated `aa status` after stop: invocation `running`, change
-`running`, publication `not_ready`, `human-review` succeeded, generation
-executes still running, no pending interrupt.
-
-Export was not invoked. No publish receipt. No archive.
 
 ## Files changed
 
-Created then updated:
+Updated:
 
 - `.superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/final-opencode.json`
 - this Task 13 report
 
-First commit also included `benchmark/assurance-product/run_item.py`
-(isolated console path `aa` only). Continuation commit stages only the
-two SDD files.
+Commit stages only those two SDD files (`git add -f`).
 
 Not staged: leftover Phase 4/5 hunks, `benchmark/**/results/`, `tmp/`,
-provider sessions, frozen Phase 5 admission, Task 3 diagnostics, or
-`validate_live_run.py`.
+provider sessions, frozen Phase 5 admission, Task 3 diagnostics,
+`validate_live_run.py`, or dirty `production_host.py` /
+`production_worker.py` hunks.
 
 ## Self-review
 
 - The live command was a new invocation. Prior change ids
   `144256-0fbe82c2`, `141439-41852bc4`, `132110-a9d717c6`,
-  `BENCH-opencode-ret-dept-management-*` from earlier days, and
-  `RET-dept-management-20260818-*` were not reused.
-- Continuation used the same change and isolated CLI. Achieved, publish,
-  and archive are not claimed.
+  `054218-9a2df6f6`, `BENCH-opencode-ret-dept-management-*` from earlier
+  days, and `RET-dept-management-20260818-*` were not reused.
+- Achieved, publish, and archive are not claimed.
 - Operator resume of `human-review`/`approve` was performed. The harness
   was not rewritten to auto-resume.
-- No product-fix campaign was started for the stuck generation dispatch.
+- The prepared-undispatched stall did not recur after `c0b6393` /
+  `0f034de`. No second engine-fix campaign was started for
+  `invalid_output`.
 - Cursor live was not run.
+- Phase 5 admission is not rewritten as complete.
 
 ## Issues or concerns
 
-- After operator approve, generation execute prepares an activity and
-  every later `aa run` yields `activity_recovery` without provider
-  dispatch. That is a deterministic post-resume stall, not quota/network.
+- After operator approve, generation execute dispatched (fix held) and
+  then `generation-api-plan` execute failed closed on a structured
+  result missing `case_ids`, `required_capabilities`, `coverage`, and
+  `output_files`. That is a deterministic product/result-contract
+  failure, not quota/network and not `activity_recovery`.
 - Isolated wheels were built from the dirty worktree at source commit
-  `0444ab389320ee91e4460bb4217bc33f8d36b281`. Evidence commit `f43cc40`
-  only recorded the first stop.
-- Case-review independently verified only `run.py`.
+  `0f034de8e3c59c43a64b4949f78335d1e80419b5`.
+- Case-review independently reported product source unavailable.
 - Task 3 Phase 5 live admission remains incomplete and was not rewritten.
-
-## Correction — prepared-undispatched same-attempt dispatch
-
-The live stall after `human-review`/`approve` is a scheduler recovery seam
-bug, not a provider or harness defect. A generation `execute` attempt can
-be left `running` with activity `prepared` and no dispatch fingerprint.
-`recover_live_activities` does not add that attempt to
-`_same_attempt_execute` when reconcile is indeterminate, so
-`resume_running` skipped it and `run_until_blocked` returned
-`activity_recovery` with no new events. Status remains `BLOCKED`; this
-change is not rewritten as `achieved`.
-
-TDD on `codex/pure-graph-engine-phase3-spec` from HEAD `3492913`:
-
-### RED
-
-Added
-`test_prepared_undispatched_resume_dispatches_same_attempt` and
-`test_already_dispatched_live_activity_still_yields_activity_recovery`
-in `packages/graph-engine/tests/runtime/test_activity_recovery.py`.
-
-Command:
-
-```bash
-uv run pytest packages/graph-engine/tests/runtime/test_activity_recovery.py::test_prepared_undispatched_resume_dispatches_same_attempt packages/graph-engine/tests/runtime/test_activity_recovery.py::test_already_dispatched_live_activity_still_yields_activity_recovery -q
-```
-
-Result: 1 failed, 1 passed. Prepared+undispatched
-`run_until_blocked` returned `terminal_reason='activity_recovery'`
-before any host `execute`. Already-dispatched stayed
-`activity_recovery`.
-
-### GREEN
-
-`resume_running` now treats a non-expired prepared activity with no
-dispatch fingerprint as same-attempt execute: it opens the existing
-workspace and passes the existing `activity_id` into `_execute`. It
-does not treat that state as "no live activity" and `begin()` a new
-workspace. Expired non-adopted live activities still skip instead of
-raising `LeaseUnavailableError`.
-
-Commands:
-
-```bash
-uv run pytest packages/graph-engine/tests/runtime/test_activity_recovery.py -q
-uv run pytest packages/graph-engine/tests/runtime/test_activity_recovery.py::test_expired_non_adopted_recovery_does_not_conflict_on_resume -q
-```
-
-Result: 20 passed; expired-non-adopted 3 passed. Ruff check/format
-clean on the two Python files.
-
-No OpenCode live rerun. No `run-opencode.sh`. Export/CLI/product
-capabilities unchanged. Dirty `production_host.py` /
-`production_worker.py` hunks were not staged.
-
-### RED (cancel-requested prepared)
-
-Independent review of `c0b6393`: a `cancel_requested` prepared-undispatched
-activity with a valid lease was dispatched by `resume_running` instead of
-staying at `activity_recovery`.
-
-Added `test_cancel_requested_prepared_stays_activity_recovery`. Command:
-
-```bash
-uv run pytest packages/graph-engine/tests/runtime/test_activity_recovery.py::test_cancel_requested_prepared_stays_activity_recovery -q
-```
-
-Result: 1 failed. `run_until_blocked` returned `succeeded` and host
-`execute` ran.
-
-### GREEN (cancel-requested prepared)
-
-`resume_running` now also `continue`s when `activity.cancel_requested`,
-so recover remains the only cancel/reconcile driver. No provider
-dispatch for a cancel-requested prepared activity.
-
-Command:
-
-```bash
-uv run pytest packages/graph-engine/tests/runtime/test_activity_recovery.py -q
-```
-
-Result: 21 passed, including unchanged
-`test_expired_non_adopted_recovery_does_not_conflict_on_resume`.
-Ruff check/format clean. Status remains `BLOCKED`; not rewritten as
-`achieved`. No live rerun. Dirty `production_host.py` hunks not staged.
