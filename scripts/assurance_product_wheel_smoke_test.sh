@@ -29,6 +29,17 @@ mkdir -p "$source_root" "$dist_root" "$bindings_root"
   git archive HEAD
 ) | tar -x -C "$source_root"
 
+uv run \
+  --offline \
+  --no-project \
+  --python 3.11 \
+  --managed-python \
+  --no-python-downloads \
+  python "$source_root/scripts/check_no_legacy.py" \
+    --repo "$source_root" \
+    --allowlist "$source_root/scripts/no_legacy_allowlist.txt" \
+    --scope runtime
+
 cd "$source_root"
 for package in \
   graph-engine \
@@ -195,10 +206,10 @@ def inspect_wheel_archive(wheel: Path, *, deployment: bool) -> None:
             if entry_points_name is None:
                 raise SystemExit("product wheel is missing entry_points.txt")
             entry_points_text = archive.read(entry_points_name).decode("utf-8")
-            if "aa-next =" not in entry_points_text:
-                raise SystemExit("product wheel is missing the aa-next console script")
-            if "\naa =" in f"\n{entry_points_text}":
-                raise SystemExit("product wheel must not ship the legacy aa script")
+            if "aa-next =" in entry_points_text:
+                raise SystemExit("product wheel must not ship the retired console script")
+            if "\naa =" not in f"\n{entry_points_text}":
+                raise SystemExit("product wheel is missing the aa console script")
 
 
 def check_archives(dist_root: Path) -> None:
@@ -289,10 +300,12 @@ def probe_prefix(prefix: str, expected_names: str, expected_entry_points: str, f
         raise SystemExit(f"{prefix} product entry points {product_eps!r} != {PRODUCT_ENTRY_POINTS!r}")
 
     scripts = {ep.name for ep in metadata.entry_points(group="console_scripts")}
-    if "aa" in scripts:
-        raise SystemExit(f"{prefix} legacy aa console script is installed")
-    if "aa-next" not in scripts:
-        raise SystemExit(f"{prefix} aa-next console script is missing")
+    if "aa-next" in scripts:
+        raise SystemExit(f"{prefix} retired console script is installed")
+    if "aa" not in scripts:
+        raise SystemExit(f"{prefix} aa console script is missing")
+    if util.find_spec("scripts") is not None:
+        raise SystemExit(f"{prefix} scripts package leaked into the wheel")
 
     for dist in metadata.distributions():
         name = canonicalize_name(dist.metadata["Name"])
@@ -475,14 +488,15 @@ install_env() {
     --python "$venv/bin/python" \
     --find-links "$dist_root" \
     "$@"
-  if [[ -x "$venv/bin/aa" ]]; then
-    echo "legacy aa must be absent in $name" >&2
+  if [[ -x "$venv/bin/aa-next" ]]; then
+    echo "aa-next must be absent in $name" >&2
     exit 1
   fi
-  if [[ ! -x "$venv/bin/aa-next" ]]; then
-    echo "aa-next must be installed in $name" >&2
+  if [[ ! -x "$venv/bin/aa" ]]; then
+    echo "aa must be installed in $name" >&2
     exit 1
   fi
+  "$venv/bin/aa" --help >/dev/null
 }
 
 inspect_prefix() {
@@ -515,7 +529,7 @@ build_deployment() {
     unset UV_PROJECT
     export PYTHONNOUSERSITE=1
     PATH="$smoke_root/venv-base-no-adapter/bin:$PATH"
-    aa-next bindings build \
+    aa bindings build \
       --json \
       --manifest "$manifest" \
       --output-dir "$output" \
@@ -582,7 +596,7 @@ compile_product() {
     # explicit absolute input while the process cwd stays outside both trees.
     cd "$smoke_root"
     PATH="${venv}/bin:${PATH}"
-    aa-next compile \
+    aa compile \
       --product "${product}" \
       --binding-dist "${binding_dist}" \
       --binding-entrypoint deployment \

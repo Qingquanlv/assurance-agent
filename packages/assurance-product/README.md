@@ -12,6 +12,6 @@ runtime adapter (`agent-runtime-opencode==0.1.0` or
 `agent-runtime-cursor==0.1.0`).
 
 Adapters are optional extras: `assurance-product[opencode]` and
-`assurance-product[cursor]`. The package does not scan a SUT, import
-`assurance-agent` / `assurance-kernel`, select a deployment or config
-provider, or embed runtime binding values.
+`assurance-product[cursor]`. The package does not scan a SUT, import deleted
+distributions, select a deployment or config provider, or embed runtime binding
+values.

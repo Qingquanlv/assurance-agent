@@ -68,8 +68,9 @@ jobs:
         with:
           python-version: "3.11"
           enable-cache: true
-      - name: packaging smoke test
-        run: bash scripts/packaging_smoke_test.sh
+      - run: uv sync --dev
+      - name: Reject leftover deleted-package seams
+        run: uv run python scripts/check_no_legacy.py --scope repository
       - name: graph engine smoke test
         run: bash scripts/graph_engine_smoke_test.sh
       - name: assurance capability wheel smoke test
