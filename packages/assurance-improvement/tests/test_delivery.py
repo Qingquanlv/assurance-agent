@@ -6,7 +6,7 @@ import pytest
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
-from tests.phase5.test_change_local_output_routing import execute_task
+from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_improvement.contracts.agent import ArchiveResultV1
 from assurance_improvement.operations.agent import ArchiveFinalizeHandler, ArchivePrepareHandler

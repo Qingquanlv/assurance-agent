@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.phase5.test_product_packaging import read_wheel_metadata
+from tests.product.test_product_packaging import read_wheel_metadata
 
 
 CLOSED_WHEEL_PACKAGES = (

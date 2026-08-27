@@ -11,7 +11,7 @@ from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
 from tests.phase4.agent_harness import FakeAgentAdapter
-from tests.phase5.test_change_local_output_routing import execute_task
+from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_quality.contracts.agent import (
     FactBaselineResultV1,
@@ -477,7 +477,7 @@ def test_quality_plugin_has_no_product_hooks_import() -> None:
 
 @pytest.mark.asyncio
 async def test_failed_report_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
-    from tests.phase5.test_change_local_output_routing import dual_roots
+    from tests.product.test_change_local_output_routing import dual_roots
 
     project, write_root = dual_roots(tmp_path)
     canonical = project / "qa/changes/CH-DEMO-001/report/report.md"

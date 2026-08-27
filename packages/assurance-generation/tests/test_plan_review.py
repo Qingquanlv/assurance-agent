@@ -6,7 +6,7 @@ from typing import cast
 import pytest
 
 from agent_runtime_contracts import AgentRunRequest
-from tests.phase5.test_change_local_output_routing import execute_task
+from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_generation.operations.review import review_finalize_handler, review_prepare_handler
 from assurance_generation.resource_loader import resource_text

@@ -16,7 +16,7 @@ from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskHandler, TaskOutcome
 from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 from tests.phase4.agent_harness import FakeAgentAdapter
-from tests.phase5.test_change_local_output_routing import dual_roots, execute_task
+from tests.product.test_change_local_output_routing import dual_roots, execute_task
 
 from assurance_intake.operations import (
     CaseDesignFinalizeHandler,

@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import JSONValue, canonical_json_bytes
-from tests.phase5.test_change_local_output_routing import dual_roots, execute_task
+from tests.product.test_change_local_output_routing import dual_roots, execute_task
 
 from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.operations.proposal import (

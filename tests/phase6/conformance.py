@@ -708,7 +708,7 @@ OWNER_REPLACEMENT_TESTS = {
     "assurance.improvement": "packages/assurance-improvement/tests/test_plugin.py",
 }
 
-PHASE5_REPLACEMENT_TEST = "tests/phase5/test_full_graph_audit.py"
+PHASE5_REPLACEMENT_TEST = "tests/product/test_full_graph_audit.py"
 KERNEL_BASELINE_COMMIT = "47941b15b9fd6a4d4f422d8e7bc138482e362528"
 KERNEL_PACKAGE_PREFIX = "packages/assurance-kernel/"
 KERNEL_DESTINATIONS = frozenset(

@@ -9,7 +9,7 @@ import pytest
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
-from tests.phase5.test_change_local_output_routing import execute_task
+from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_improvement.contracts.agent import RetroAnalysisResultV3
 from assurance_improvement.contracts.delivery import artifact_digest
@@ -404,7 +404,7 @@ async def test_reconcile_persists_knowledge_delta_and_supersedes() -> None:
 
 @pytest.mark.asyncio
 async def test_failed_retro_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
-    from tests.phase5.test_change_local_output_routing import dual_roots
+    from tests.product.test_change_local_output_routing import dual_roots
 
     project, write_root = dual_roots(tmp_path)
     canonical = project / "qa/changes/CH-DEMO-001/retro/retro.json"

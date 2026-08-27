@@ -471,9 +471,9 @@ uv run \
   --no-python-downloads \
   python "$smoke_root/check.py" archives --dist "$dist_root"
 
-config_tree="$source_root/tests/phase5/fixtures/project-config"
-opencode_manifest="$source_root/tests/phase5/fixtures/deployment/opencode.yaml"
-cursor_manifest="$source_root/tests/phase5/fixtures/deployment/cursor.yaml"
+config_tree="$source_root/tests/product/fixtures/project-config"
+opencode_manifest="$source_root/tests/product/fixtures/deployment/opencode.yaml"
+cursor_manifest="$source_root/tests/product/fixtures/deployment/cursor.yaml"
 test -d "$config_tree"
 test -f "$opencode_manifest"
 test -f "$cursor_manifest"

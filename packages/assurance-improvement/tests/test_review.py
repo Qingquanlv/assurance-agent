@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import canonical_json_bytes
-from tests.phase5.test_change_local_output_routing import execute_task
+from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_improvement.contracts.agent import ImprovementReviewResultV1
 from assurance_improvement.resource_loader import resource_bytes
@@ -311,7 +311,7 @@ def test_apply_review_helper_matches_legacy_transition_graph() -> None:
 @pytest.mark.asyncio
 async def test_failed_review_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
     from assurance_improvement.operations.agent import ImprovementReviewFinalizeHandler
-    from tests.phase5.test_change_local_output_routing import dual_roots
+    from tests.product.test_change_local_output_routing import dual_roots
 
     project, write_root = dual_roots(tmp_path)
     canonical = project / "qa/changes/CH-DEMO-001/review/improvement-review.json"

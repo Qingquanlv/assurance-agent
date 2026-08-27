@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from tests.phase5.test_product_packaging import read_wheel_metadata
+from tests.product.test_product_packaging import read_wheel_metadata
 
 
 @pytest.fixture
