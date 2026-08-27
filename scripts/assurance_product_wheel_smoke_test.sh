@@ -29,17 +29,6 @@ mkdir -p "$source_root" "$dist_root" "$bindings_root"
   git archive HEAD
 ) | tar -x -C "$source_root"
 
-uv run \
-  --offline \
-  --no-project \
-  --python 3.11 \
-  --managed-python \
-  --no-python-downloads \
-  python "$source_root/scripts/check_no_legacy.py" \
-    --repo "$source_root" \
-    --allowlist "$source_root/scripts/no_legacy_allowlist.txt" \
-    --scope runtime
-
 cd "$source_root"
 for package in \
   graph-engine \

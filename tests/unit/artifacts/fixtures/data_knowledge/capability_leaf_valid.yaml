@@ -1,3 +1,0 @@
-kind: async_factory
-symbol: tests.testdata.domain.menu.make_menu
-entity: menu

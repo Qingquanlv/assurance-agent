@@ -1,7 +1,0 @@
-id: TEST-001
-annotation_source: human
-tags: [eval-smoke]
-input:
-  value: alpha
-expected:
-  category: A

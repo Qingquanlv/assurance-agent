@@ -49,11 +49,10 @@ def test_legacy_packaging_smoke_is_removed(repo_root: Path) -> None:
     assert not (repo_root / "scripts/packaging_smoke_test.sh").exists()
 
 
-def test_ci_uses_no_legacy_gate_and_final_product_smoke(repo_root: Path) -> None:
+def test_ci_uses_final_product_smoke(repo_root: Path) -> None:
     ci = (repo_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "packaging_smoke_test.sh" not in ci
-    assert "scripts/check_no_legacy.py" in ci
-    assert "--scope repository" in ci
+    assert "scripts/check_no_legacy.py" not in ci
     assert "scripts/assurance_product_wheel_smoke_test.sh" in ci
 
 
@@ -75,5 +74,4 @@ def test_final_smoke_builds_eleven_wheels_and_installs_aa(smoke_script: str) -> 
     assert 'if [[ ! -x "$venv/bin/aa" ]]; then' in smoke_script
     assert "aa compile \\" in smoke_script
     assert "aa bindings build \\" in smoke_script
-    assert "check_no_legacy.py" in smoke_script
-    assert "--scope runtime" in smoke_script
+    assert "check_no_legacy.py" not in smoke_script

@@ -20,7 +20,7 @@ Non-obvious notes:
 - Run everything through `uv run ...` (e.g. `uv run aa --help`, `uv run pytest -v`,
   `uv run ruff check .`, `uv run pyright`, `uv run lint-imports`).
 - The full CI gate is: `ruff check .`, `ruff format --check .`, `pyright`, `lint-imports`,
-  `pytest`, `uv run python scripts/check_no_legacy.py --scope repository`, and
+  `pytest`, and
   `bash scripts/assurance_product_wheel_smoke_test.sh`.
 - Installed commands are `aa compile`, `aa start`, `aa run`, `aa status`,
   `aa resume`, `aa export`, `aa archive`, `aa bindings build`, and

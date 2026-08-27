@@ -1,9 +1,0 @@
-id: WC-001
-annotation_source: human
-tags: [workflow-case]
-input:
-  change_id: eval-sample-001
-  fixture_id: eval-sample-001
-  fixture_tier: L0-case-seed
-  run_mode: case-only
-expected: {}

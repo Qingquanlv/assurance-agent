@@ -38,8 +38,6 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/graph-engine/tests", "packages/agent-runtime-contracts/tests", "packages/agent-runtime-opencode/tests", "packages/agent-runtime-cursor/tests", "packages/assurance-intake/tests", "packages/assurance-generation/tests", "packages/assurance-execution/tests", "packages/assurance-healing/tests", "packages/assurance-quality/tests", "packages/assurance-improvement/tests"]
-# Sibling packages under tests/unit/workflow/{issues,improvements}/ share basenames
-# (test_review.py, …); importlib avoids prepend-mode module collisions.
 pythonpath = ["."]
 addopts = ["--import-mode=importlib"]
 markers = [
