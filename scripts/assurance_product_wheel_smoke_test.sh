@@ -306,7 +306,78 @@ def probe_prefix(prefix: str, expected_names: str, expected_entry_points: str, f
     print(f"PREFIX={prefix} ENTRY_POINTS={','.join(expected_eps)}")
 
 
-def check_compile_ok(output: str, product: str) -> None:
+def check_selected_closure(
+    plugin_sources: dict[str, tuple[str, str | None]],
+    selected_adapter: str,
+    binding_distribution: str,
+) -> None:
+    expected = {
+        "assurance.execution": ("wheel_plugin", "assurance-execution"),
+        "assurance.generation": ("wheel_plugin", "assurance-generation"),
+        "assurance.healing": ("wheel_plugin", "assurance-healing"),
+        "assurance.improvement": ("wheel_plugin", "assurance-improvement"),
+        "assurance.intake": ("wheel_plugin", "assurance-intake"),
+        "assurance.product.agent": (
+            "wheel_plugin",
+            canonicalize_name(binding_distribution),
+        ),
+        "assurance.product.configuration": ("config_tree", None),
+        "assurance.quality": ("wheel_plugin", "assurance-quality"),
+        f"runtime.{selected_adapter}": (
+            "wheel_plugin",
+            f"agent-runtime-{selected_adapter}",
+        ),
+    }
+    if plugin_sources != expected:
+        raise SystemExit(
+            "selected plugin/source closure differs from the exact product closure: "
+            f"actual={plugin_sources!r} expected={expected!r}"
+        )
+
+
+def resolve_selected_sources(
+    product: str,
+    binding_distribution: str,
+    binding_declaration: str,
+    config_tree: str,
+) -> dict[str, tuple[str, str | None]]:
+    from assurance_product.product import (
+        AssuranceCompositionRequest,
+        resolve_assurance_composition,
+    )
+    from graph_engine.composition import ConfigTreePluginSource, WheelPluginSource
+    from graph_engine.frozen_json import thaw_json
+
+    composition = resolve_assurance_composition(
+        AssuranceCompositionRequest(
+            product_entrypoint=product,
+            deployment_source=WheelPluginSource(
+                distribution=binding_distribution,
+                entrypoint_name="deployment",
+                declaration_path=binding_declaration,
+            ),
+            configuration_tree=ConfigTreePluginSource(path=Path(config_tree).resolve()),
+        )
+    )
+    projection: dict[str, tuple[str, str | None]] = {}
+    for plugin in composition.lock.plugins:
+        identity = thaw_json(plugin.source.identity)
+        distribution = identity.get("distribution")
+        projection[plugin.plugin_id] = (
+            plugin.source.kind.value,
+            canonicalize_name(str(distribution)) if distribution is not None else None,
+        )
+    return projection
+
+
+def check_compile_ok(
+    output: str,
+    product: str,
+    selected_adapter: str,
+    binding_distribution: str,
+    binding_declaration: str,
+    config_tree: str,
+) -> None:
     document = json.loads(output)
     if document.get("engine_api") != "2.0":
         raise SystemExit(f"compile engine_api {document.get('engine_api')!r} != '2.0'")
@@ -324,6 +395,13 @@ def check_compile_ok(output: str, product: str) -> None:
     ):
         if audit.get(key):
             raise SystemExit(f"compile audit {key} is not empty: {audit.get(key)}")
+    selected_sources = resolve_selected_sources(
+        product,
+        binding_distribution,
+        binding_declaration,
+        config_tree,
+    )
+    check_selected_closure(selected_sources, selected_adapter, binding_distribution)
     print(f"COMPILE_OK product={product} lock_digest={document['lock_digest']}")
 
 
@@ -342,6 +420,10 @@ def main(argv: list[str]) -> int:
     compile_ok = sub.add_parser("compile-ok")
     compile_ok.add_argument("--output", required=True)
     compile_ok.add_argument("--product", required=True)
+    compile_ok.add_argument("--selected-adapter", required=True)
+    compile_ok.add_argument("--binding-dist", required=True)
+    compile_ok.add_argument("--binding-declaration", required=True)
+    compile_ok.add_argument("--config-tree", required=True)
     args = parser.parse_args(argv)
     if args.command == "archives":
         check_archives(Path(args.dist))
@@ -350,7 +432,14 @@ def main(argv: list[str]) -> int:
         check_deployment_archives(Path(args.dist))
         return 0
     if args.command == "compile-ok":
-        check_compile_ok(Path(args.output).read_text(encoding="utf-8"), args.product)
+        check_compile_ok(
+            Path(args.output).read_text(encoding="utf-8"),
+            args.product,
+            args.selected_adapter,
+            args.binding_dist,
+            args.binding_declaration,
+            args.config_tree,
+        )
         return 0
     probe_prefix(args.prefix, args.expected_names, args.expected_entry_points, args.forbidden_names)
     return 0
@@ -488,7 +577,10 @@ compile_product() {
     unset PYTHONPATH
     unset UV_PROJECT
     export PYTHONNOUSERSITE=1
-    cd "$source_root"
+    # Prove the installed wheels do not import from either the repository or
+    # the archived source tree.  The configuration tree is intentionally an
+    # explicit absolute input while the process cwd stays outside both trees.
+    cd "$smoke_root"
     PATH="${venv}/bin:${PATH}"
     aa-next compile \
       --product "${product}" \
@@ -504,11 +596,16 @@ expect_compile_ok() {
   local product="$2"
   local binding_dist="$3"
   local declaration_path="$4"
+  local selected_adapter="${product#assurance-}"
   local out="$smoke_root/${name}-compile.json"
   compile_product "$smoke_root/venv-$name" "$product" "$binding_dist" "$declaration_path" >"$out"
   "$smoke_root/venv-$name/bin/python" "$smoke_root/check.py" compile-ok \
     --output "$out" \
-    --product "$product"
+    --product "$product" \
+    --selected-adapter "$selected_adapter" \
+    --binding-dist "$binding_dist" \
+    --binding-declaration "$declaration_path" \
+    --config-tree "$config_tree"
 }
 
 expect_compile_fail() {
@@ -533,6 +630,92 @@ expect_compile_fail() {
     exit 1
   fi
   echo "ENV=$name COMPILE_FAIL=$status"
+}
+
+scenario() {
+  echo "SCENARIO=$1"
+}
+
+tamper_installed_deployment() {
+  local name="$1"
+  local binding_dist="$2"
+  local declaration_path="$3"
+  "$smoke_root/venv-$name/bin/python" - "$binding_dist" "$declaration_path" <<'PY'
+from importlib import metadata
+from pathlib import Path
+import sys
+
+distribution = metadata.distribution(sys.argv[1])
+path = Path(distribution.locate_file(sys.argv[2]))
+if not path.is_file():
+    raise SystemExit(f"deployment declaration is missing: {path}")
+with path.open("ab") as stream:
+    stream.write(b"\n")
+PY
+}
+
+add_authenticated_extra_binding() {
+  local name="$1"
+  local binding_dist="$2"
+  local declaration_path="$3"
+  "$smoke_root/venv-$name/bin/python" - "$binding_dist" "$declaration_path" <<'PY'
+from __future__ import annotations
+
+import base64
+import copy
+import csv
+import hashlib
+import json
+import sys
+from importlib import metadata
+from pathlib import Path
+
+distribution = metadata.distribution(sys.argv[1])
+declaration_relative = Path(sys.argv[2])
+declaration_path = Path(distribution.locate_file(declaration_relative))
+contribution_relative = declaration_relative.with_name(
+    "assurance-deployment-contribution.json"
+)
+contribution_path = Path(distribution.locate_file(contribution_relative))
+
+declaration = json.loads(declaration_path.read_text(encoding="utf-8"))
+contribution = json.loads(contribution_path.read_text(encoding="utf-8"))
+extra = copy.deepcopy(contribution["bindings"][0])
+extra["capability_id"] = "assurance.product.agent.extra"
+declaration["descriptor"]["bindings"].append(extra["capability_id"])
+contribution["bindings"].append(extra)
+
+for path, document in (
+    (declaration_path, declaration),
+    (contribution_path, contribution),
+):
+    path.write_text(
+        json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+record_relative = next(
+    Path(str(item))
+    for item in distribution.files or ()
+    if str(item).endswith(".dist-info/RECORD")
+)
+record_path = Path(distribution.locate_file(record_relative))
+rows = list(csv.reader(record_path.read_text(encoding="utf-8").splitlines()))
+mutated = {
+    declaration_relative.as_posix(): declaration_path,
+    contribution_relative.as_posix(): contribution_path,
+}
+for row in rows:
+    path = mutated.get(row[0])
+    if path is None:
+        continue
+    payload = path.read_bytes()
+    digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).rstrip(b"=").decode()
+    row[1:] = [f"sha256={digest}", str(len(payload))]
+with record_path.open("w", encoding="utf-8", newline="") as stream:
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerows(rows)
+PY
 }
 
 BASE_NAMES="graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-execution,assurance-healing,assurance-quality,assurance-improvement,assurance-product"
@@ -592,6 +775,63 @@ inspect_prefix cursor-product \
 install_binding cursor-product "$cursor_binding_wheel"
 expect_compile_ok cursor-product assurance-cursor \
   "$cursor_binding_distribution" "$cursor_binding_declaration"
+
+install_env missing-binding "${product_wheel}[opencode]"
+inspect_prefix missing-binding \
+  "$BASE_NAMES,agent-runtime-opencode" \
+  "$BASE_EPS,opencode" \
+  "$FORBIDDEN_OPENCODE"
+expect_compile_fail missing-binding assurance-opencode \
+  "$opencode_binding_distribution" "$opencode_binding_declaration" \
+  "installed distribution not found: $opencode_binding_distribution"
+
+install_env both-adapters "${product_wheel}[opencode,cursor]"
+inspect_prefix both-adapters \
+  "$BASE_NAMES,agent-runtime-opencode,agent-runtime-cursor" \
+  "$BASE_EPS,opencode,cursor" \
+  "assurance-agent,assurance-kernel"
+install_binding both-adapters "$opencode_binding_wheel"
+install_binding both-adapters "$cursor_binding_wheel"
+scenario both-opencode
+expect_compile_ok both-adapters assurance-opencode \
+  "$opencode_binding_distribution" "$opencode_binding_declaration"
+scenario both-cursor
+expect_compile_ok both-adapters assurance-cursor \
+  "$cursor_binding_distribution" "$cursor_binding_declaration"
+
+scenario foreign-binding
+expect_compile_fail both-adapters assurance-opencode \
+  "$cursor_binding_distribution" "$cursor_binding_declaration" \
+  "missing selected plugin source"
+expect_compile_fail both-adapters assurance-cursor \
+  "$opencode_binding_distribution" "$opencode_binding_declaration" \
+  "missing selected plugin source"
+
+install_env deployment-drift "${product_wheel}[opencode]"
+inspect_prefix deployment-drift \
+  "$BASE_NAMES,agent-runtime-opencode" \
+  "$BASE_EPS,opencode" \
+  "$FORBIDDEN_OPENCODE"
+install_binding deployment-drift "$opencode_binding_wheel"
+scenario deployment-drift
+tamper_installed_deployment deployment-drift \
+  "$opencode_binding_distribution" "$opencode_binding_declaration"
+expect_compile_fail deployment-drift assurance-opencode \
+  "$opencode_binding_distribution" "$opencode_binding_declaration" \
+  "RECORD hash mismatch"
+
+install_env extra-binding "${product_wheel}[opencode]"
+inspect_prefix extra-binding \
+  "$BASE_NAMES,agent-runtime-opencode" \
+  "$BASE_EPS,opencode" \
+  "$FORBIDDEN_OPENCODE"
+install_binding extra-binding "$opencode_binding_wheel"
+scenario extra-binding
+add_authenticated_extra_binding extra-binding \
+  "$opencode_binding_distribution" "$opencode_binding_declaration"
+expect_compile_fail extra-binding assurance-opencode \
+  "$opencode_binding_distribution" "$opencode_binding_declaration" \
+  "exact 99 aliases"
 
 install_env source-drift "${product_wheel}[opencode]"
 inspect_prefix source-drift \
