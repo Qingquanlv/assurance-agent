@@ -28,4 +28,8 @@ files:
     resource_id: assurance.product.configuration.project-config
     path: .aa/config.yaml
     media_type: application/yaml
+  - kind: resource
+    resource_id: assurance.product.configuration.capability-catalog
+    path: .aa/capability-catalog.json
+    media_type: application/json
 bindings: []

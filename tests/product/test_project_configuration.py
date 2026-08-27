@@ -89,6 +89,25 @@ def test_project_config_resource_bytes_are_authenticated_source_bytes(config_tre
     assert all(isinstance(resource.content, bytes) for resource in contribution.resources)
 
 
+def test_capability_catalog_is_derived_from_exact_typed_knowledge_leafs():
+    from assurance_product.configuration import capability_leafs_from_knowledge
+
+    leafs = capability_leafs_from_knowledge(
+        {
+            "auth": {"admin": {"method": "token"}},
+            "entities": {"dept": {"constraints": {"name": {"max_length": 64}, "unique": True}}},
+            "capabilities": {"adapters": {"api": {"dept": {"create": {"symbol": "tests.create"}}}}},
+        }
+    )
+    assert leafs == (
+        "auth.admin",
+        "capabilities.adapters.api.dept.create",
+        "entities.dept",
+        "entities.dept.constraints.name_has_max_length",
+        "entities.dept.constraints.unique",
+    )
+
+
 def test_parse_project_config_rejects_unknown_fields(config_document):
     from assurance_product.configuration import ProjectConfigurationError, parse_project_config
 

@@ -71,11 +71,9 @@ class CuttingTaskHost(SixWheelTaskHost):
         if capability.endswith(".finalize"):
             self.finalize_calls += 1
             if self.cut != "terminal-observed":
-                from graph_engine.runtime.host_protocol import TaskHostCallResult
-
-                return TaskHostCallResult(
-                    operation="execute",
-                    outcome=TaskOutcome.failed(
+                return self._execute_result(
+                    call,
+                    TaskOutcome.failed(
                         "invalid_input",
                         f"finalize blocked at {self.cut}",
                         retryable=False,
@@ -83,28 +81,26 @@ class CuttingTaskHost(SixWheelTaskHost):
                 )
         if capability in {"runtime.opencode.execute", "runtime.cursor.execute"}:
             self.spawned = True
-            from graph_engine.runtime.host_protocol import TaskHostCallResult
-
             if self.cut == "prepare-complete":
-                return TaskHostCallResult(
-                    operation="execute",
-                    outcome=TaskOutcome.failed("invalid_input", "prepare-complete cut", retryable=False),
+                return self._execute_result(
+                    call,
+                    TaskOutcome.failed("invalid_input", "prepare-complete cut", retryable=False),
                 )
             if self.cut in {"dispatch-unknown", "bound-running"}:
-                return TaskHostCallResult(
-                    operation="execute",
-                    outcome=TaskOutcome.failed("transient", f"{self.cut} cut", retryable=True),
+                return self._execute_result(
+                    call,
+                    TaskOutcome.failed("transient", f"{self.cut} cut", retryable=True),
                 )
             if self.cut == "result-truncated":
-                return TaskHostCallResult(
-                    operation="execute",
-                    outcome=TaskOutcome.succeeded({"schema_version": "1", "structured_result": {}}),
+                return self._execute_result(
+                    call,
+                    TaskOutcome.succeeded({"schema_version": "1", "structured_result": {}}),
                 )
             if self.cut == "terminal-observed":
                 structured: JSONValue = {"ok": True}
-                return TaskHostCallResult(
-                    operation="execute",
-                    outcome=TaskOutcome.succeeded(
+                return self._execute_result(
+                    call,
+                    TaskOutcome.succeeded(
                         cast(
                             JSONValue,
                             {

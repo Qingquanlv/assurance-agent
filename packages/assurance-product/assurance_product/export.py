@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import stat
-import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal, NoReturn, cast
+from typing import Literal, NoReturn, TypeAlias, cast
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
@@ -27,6 +27,7 @@ from assurance_product.models import (
 )
 
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+_FILE_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 _FILE_WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
 _RECEIPT_NAME = "publish-receipt.json"
 _JOURNAL_NAME = "publish-journal.json"
@@ -48,6 +49,13 @@ class _Bindings:
     final_digest: str
 
 
+_PathIdentity: TypeAlias = tuple[int, int, int, int, int, int, int]
+
+
+def _same_path_object(observed: _PathIdentity, expected: _PathIdentity) -> bool:
+    return observed[:6] == expected[:6]
+
+
 @dataclass(frozen=True, slots=True)
 class _PlannedFile:
     spec: ApplyManifestFileV1
@@ -55,16 +63,167 @@ class _PlannedFile:
     temp_name: str
     backup_name: str
     already_matching: bool
+    target_identity: _PathIdentity | None
 
 
 def _journal_cut(phase: str) -> None:
     del phase
 
 
-def _replace_published_file(parent: Path, temporary_name: str, target_name: str) -> None:
-    os.replace(parent / temporary_name, parent / target_name)
-    directory = os.open(parent, _DIRECTORY_FLAGS)
+def _publication_cut(phase: str) -> None:
+    del phase
+
+
+def _metadata_cut(phase: str, name: str) -> None:
+    del phase, name
+
+
+def _directory_identity(info: os.stat_result) -> tuple[int, int, int]:
+    return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode))
+
+
+def _lstat_at(directory: int, name: str) -> os.stat_result | None:
     try:
+        return os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+
+
+def _open_authenticated_directory(path: Path, label: str) -> int:
+    try:
+        expected = _directory_identity(path.lstat())
+        descriptor = os.open(path, _DIRECTORY_FLAGS)
+    except OSError as error:
+        raise PublishError(f"{label} is unavailable") from error
+    try:
+        if (
+            _directory_identity(os.fstat(descriptor)) != expected
+            or _directory_identity(path.lstat()) != expected
+        ):
+            raise PublishError(f"{label} changed during authentication")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_project_parent(project_directory: int, relative: str) -> int:
+    parts = PurePosixPath(relative).parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise PublishError(f"invalid project-relative target: {relative}")
+    current = os.dup(project_directory)
+    try:
+        for part in parts[:-1]:
+            try:
+                child = os.open(part, _DIRECTORY_FLAGS, dir_fd=current)
+            except OSError as error:
+                raise PublishError(f"target parent contains unsafe ancestor: {relative}") from error
+            if not stat.S_ISDIR(os.fstat(child).st_mode):
+                os.close(child)
+                raise PublishError(f"target parent contains unsafe ancestor: {relative}")
+            os.close(current)
+            current = child
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _require_project_parent(
+    project_directory: int,
+    relative: str,
+    expected_directory: int,
+) -> None:
+    observed = _open_project_parent(project_directory, relative)
+    try:
+        if _directory_identity(os.fstat(observed)) != _directory_identity(os.fstat(expected_directory)):
+            raise PublishError(f"target parent changed after authentication: {relative}")
+    finally:
+        os.close(observed)
+
+
+def _acquire_export_lock(change_root: Path) -> int:
+    """Serialize trusted product publishers; unrelated same-UID editors are outside this protocol."""
+    directory = _open_authenticated_directory(change_root, "change publication directory")
+    try:
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(".publish.lock", flags, 0o600, dir_fd=directory)
+        try:
+            _reject_irregular(os.fstat(descriptor), "publish lock")
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise PublishError("publish is already in progress for this change") from error
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+    except OSError as error:
+        raise PublishError("publish lock is unsafe or unavailable") from error
+    finally:
+        os.close(directory)
+
+
+def _read_descriptor(descriptor: int) -> bytes:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(descriptor, 65536)
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
+def _replace_published_file(
+    parent: Path,
+    temporary_name: str,
+    target_name: str,
+    *,
+    expected_target: _PathIdentity | None,
+    expected_content: bytes,
+    project_directory: int,
+    target_relative: str,
+) -> None:
+    try:
+        directory = _open_project_parent(project_directory, target_relative)
+    except PublishError as error:
+        raise PublishError("publish target parent is unavailable") from error
+    try:
+        try:
+            temporary = os.open(
+                temporary_name,
+                _FILE_READ_FLAGS,
+                dir_fd=directory,
+            )
+        except OSError as error:
+            raise PublishError("publish temporary is unsafe or missing") from error
+        try:
+            temporary_state = _path_identity(os.fstat(temporary))
+            _reject_irregular(os.fstat(temporary), temporary_name)
+            if _read_descriptor(temporary) != expected_content:
+                raise PublishError("publish temporary content does not match the manifest")
+            if _path_identity(os.fstat(temporary)) != temporary_state:
+                raise PublishError("publish temporary changed while reading")
+            named_temporary = _lstat_at(directory, temporary_name)
+            if named_temporary is None or _path_identity(named_temporary) != temporary_state:
+                raise PublishError("publish temporary changed after authentication")
+            _publication_cut("export-before-replace-authentication")
+            _require_project_parent(project_directory, target_relative, directory)
+            observed_target = _lstat_at(directory, target_name)
+            observed_target_state = None if observed_target is None else _path_identity(observed_target)
+            if observed_target_state != expected_target:
+                raise PublishError("publish destination changed before replacement")
+            os.replace(
+                temporary_name,
+                target_name,
+                src_dir_fd=directory,
+                dst_dir_fd=directory,
+            )
+            published = _lstat_at(directory, target_name)
+            if published is None or not _same_path_object(_path_identity(published), temporary_state):
+                raise PublishError("publish destination replacement is indeterminate")
+        finally:
+            os.close(temporary)
         os.fsync(directory)
     finally:
         os.close(directory)
@@ -88,6 +247,22 @@ def publish_achieved(project_root: Path, change_id: str) -> PublishReceiptV1:
         workspace = ChangeWorkspace.open(Path(project_root).resolve(), safe_change_id(change_id))
     except ValueError as error:
         raise PublishError(str(error)) from error
+    project_directory = _open_authenticated_directory(workspace.paths.project_root, "project root")
+    try:
+        lock = _acquire_export_lock(workspace.paths.change_root)
+        try:
+            return _publish_achieved_locked(workspace, project_directory)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            os.close(lock)
+    finally:
+        os.close(project_directory)
+
+
+def _publish_achieved_locked(
+    workspace: ChangeWorkspace,
+    project_directory: int,
+) -> PublishReceiptV1:
     status = _read_status(workspace)
     if status.change.state != "achieved" or status.change.change_id != workspace.paths.change_root.name:
         raise PublishError("cannot publish a change that is not achieved")
@@ -120,7 +295,15 @@ def publish_achieved(project_root: Path, change_id: str) -> PublishReceiptV1:
         prior: tuple[PublishJournalRecordV1, ...] = ()
     else:
         prior = journal.records
-    return _complete_publication(workspace, status, planned, files, bindings, prior)
+    return _complete_publication(
+        workspace,
+        status,
+        planned,
+        files,
+        bindings,
+        prior,
+        project_directory,
+    )
 
 
 def _unpublished_achieved(project: Path) -> tuple[str, ...]:
@@ -154,6 +337,7 @@ def _complete_publication(
     files: tuple[PublishFileV1, ...],
     bindings: _Bindings,
     prior: tuple[PublishJournalRecordV1, ...],
+    project_directory: int,
 ) -> PublishReceiptV1:
     records = prior
     try:
@@ -167,7 +351,7 @@ def _complete_publication(
             records = _append_journal(workspace, records, bindings, files, "replacing")
             _journal_cut("replacing")
         if records[-1].phase == "replacing":
-            _replace_targets(workspace, planned)
+            _replace_targets(workspace, planned, project_directory)
             records = _append_journal(workspace, records, bindings, files, "committed")
             _journal_cut("committed")
     except PublishError:
@@ -213,7 +397,7 @@ def _plan_files(workspace: ChangeWorkspace, manifest: ApplyManifestV1) -> tuple[
         if digest != spec.source_sha256:
             raise PublishError(f"source digest mismatch: {spec.target_path}")
         target = _project_file(workspace.paths.project_root, spec.target_path)
-        already_matching = _authenticate_target(target, spec)
+        already_matching, target_identity = _authenticate_target(target, spec)
         temp_name, backup_name = _transaction_names(manifest.change_id, spec.target_path, spec.source_sha256)
         planned.append(
             _PlannedFile(
@@ -222,24 +406,24 @@ def _plan_files(workspace: ChangeWorkspace, manifest: ApplyManifestV1) -> tuple[
                 temp_name=temp_name,
                 backup_name=backup_name,
                 already_matching=already_matching,
+                target_identity=target_identity,
             )
         )
     return tuple(planned)
 
 
-def _authenticate_target(target: Path, spec: ApplyManifestFileV1) -> bool:
+def _authenticate_target(target: Path, spec: ApplyManifestFileV1) -> tuple[bool, _PathIdentity | None]:
     try:
-        info = target.lstat()
+        content, identity = _read_regular_with_identity(target, spec.target_path)
     except FileNotFoundError:
         if spec.baseline_sha256 is not None:
             raise PublishError(f"target baseline drift: {spec.target_path}")
-        return False
-    _reject_irregular(info, spec.target_path)
-    digest = _prefixed(_read_regular(target, spec.target_path))
+        return False, None
+    digest = _prefixed(content)
     if digest == spec.source_sha256:
-        return True
+        return True, identity
     if digest == spec.baseline_sha256:
-        return False
+        return False, identity
     raise PublishError(f"target baseline drift: {spec.target_path}")
 
 
@@ -264,16 +448,35 @@ def _prepare_temps(workspace: ChangeWorkspace, planned: tuple[_PlannedFile, ...]
         )
 
 
-def _replace_targets(workspace: ChangeWorkspace, planned: tuple[_PlannedFile, ...]) -> None:
+def _replace_targets(
+    workspace: ChangeWorkspace,
+    planned: tuple[_PlannedFile, ...],
+    project_directory: int,
+) -> None:
     for item in planned:
-        if item.already_matching or _target_has_source(workspace, item):
-            continue
+        parent_directory = _open_project_parent(project_directory, item.spec.target_path)
+        try:
+            target = _project_file(workspace.paths.project_root, item.spec.target_path)
+            _require_path_identity(target, item.target_identity, item.spec.target_path)
+            if item.already_matching or _target_has_source(workspace, item):
+                os.fsync(parent_directory)
+                continue
+        finally:
+            os.close(parent_directory)
         parent = _ensure_parent(workspace.paths.project_root, item.spec.target_path)
         target_name = _leaf(item.spec.target_path)
         temp = parent / item.temp_name
         if not temp.is_file():
             _write_named(parent, item.temp_name, item.content, item.spec.mode)
-        _replace_published_file(parent, item.temp_name, target_name)
+        _replace_published_file(
+            parent,
+            item.temp_name,
+            target_name,
+            expected_target=item.target_identity,
+            expected_content=item.content,
+            project_directory=project_directory,
+            target_relative=item.spec.target_path,
+        )
 
 
 def _rollback_targets(workspace: ChangeWorkspace, planned: tuple[_PlannedFile, ...]) -> None:
@@ -469,6 +672,7 @@ def _write_receipt(workspace: ChangeWorkspace, receipt: PublishReceiptV1) -> Non
 
 def _mark_published(workspace: ChangeWorkspace, status: StatusV1) -> None:
     if status.publication.status == "published":
+        _fsync_directory(workspace.paths.change_root)
         return
     payload = status.model_dump(mode="json")
     payload["publication"] = {"status": "published"}
@@ -478,9 +682,82 @@ def _mark_published(workspace: ChangeWorkspace, status: StatusV1) -> None:
 
 
 def _write_json(path: Path, payload: object) -> None:
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_bytes(canonical_json_bytes(cast(JSONValue, payload)) + b"\n")
-    os.replace(temporary, path)
+    content = canonical_json_bytes(cast(JSONValue, payload)) + b"\n"
+    temporary_name = f".{path.name}.tmp"
+    directory = _open_authenticated_directory(path.parent, f"{path.name} parent")
+    descriptor: int | None = None
+    installed = False
+    cleanup_allowed = False
+    try:
+        destination = _lstat_at(directory, path.name)
+        if destination is not None:
+            _reject_irregular(destination, path.name)
+            mode = stat.S_IMODE(destination.st_mode)
+        else:
+            mode = 0o644
+        try:
+            descriptor = os.open(temporary_name, _FILE_WRITE_FLAGS, mode, dir_fd=directory)
+        except FileExistsError:
+            descriptor = os.open(
+                temporary_name,
+                os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory,
+            )
+            _reject_irregular(os.fstat(descriptor), temporary_name)
+        cleanup_allowed = True
+        os.ftruncate(descriptor, 0)
+        os.fchmod(descriptor, mode)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written == 0:
+                raise PublishError(f"failed to write {temporary_name}")
+            view = view[written:]
+        os.fsync(descriptor)
+        temporary_identity = _path_identity(os.fstat(descriptor))
+        named_temporary = _lstat_at(directory, temporary_name)
+        if named_temporary is None or not _same_path_object(
+            _path_identity(named_temporary), temporary_identity
+        ):
+            raise PublishError(f"{temporary_name} changed during publication")
+        _metadata_cut("after-file-fsync", path.name)
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+        )
+        installed = True
+        published = _lstat_at(directory, path.name)
+        if published is None or not _same_path_object(_path_identity(published), temporary_identity):
+            raise PublishError(f"{path.name} replacement is indeterminate")
+        _metadata_cut("after-replace", path.name)
+        os.fsync(directory)
+    except BaseException:
+        if descriptor is not None and cleanup_allowed and not installed:
+            try:
+                opened_identity = _path_identity(os.fstat(descriptor))
+                named_temporary = _lstat_at(directory, temporary_name)
+                if named_temporary is not None and _same_path_object(
+                    _path_identity(named_temporary), opened_identity
+                ):
+                    os.unlink(temporary_name, dir_fd=directory)
+                    os.fsync(directory)
+            except OSError:
+                pass
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        os.close(directory)
+
+
+def _fsync_directory(path: Path) -> None:
+    directory = _open_authenticated_directory(path, f"{path.name} directory")
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def _transaction_names(change_id: str, target_path: str, source_sha256: str) -> tuple[str, str]:
@@ -531,12 +808,66 @@ def _write_named(parent: Path, name: str, content: bytes, mode: int) -> None:
 
 
 def _read_regular(path: Path, label: str) -> bytes:
+    content, _identity = _read_regular_with_identity(path, label)
+    return content
+
+
+def _read_regular_with_identity(path: Path, label: str) -> tuple[bytes, _PathIdentity]:
     try:
         info = path.lstat()
     except FileNotFoundError:
         raise
     _reject_irregular(info, label)
-    return path.read_bytes()
+    expected = _path_identity(info)
+    try:
+        descriptor = os.open(path, _FILE_READ_FLAGS)
+    except OSError as error:
+        raise PublishError(f"failed to open regular file: {label}") from error
+    try:
+        opened = os.fstat(descriptor)
+        _reject_irregular(opened, label)
+        if _path_identity(opened) != expected:
+            raise PublishError(f"path changed during authentication: {label}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        if _path_identity(os.fstat(descriptor)) != expected:
+            raise PublishError(f"path changed during authentication: {label}")
+    finally:
+        os.close(descriptor)
+    try:
+        final = path.lstat()
+    except FileNotFoundError as error:
+        raise PublishError(f"path changed during authentication: {label}") from error
+    if _path_identity(final) != expected:
+        raise PublishError(f"path changed during authentication: {label}")
+    return b"".join(chunks), expected
+
+
+def _require_path_identity(path: Path, expected: _PathIdentity | None, label: str) -> None:
+    try:
+        observed = path.lstat()
+    except FileNotFoundError:
+        if expected is None:
+            return
+        raise PublishError(f"target changed after authentication: {label}") from None
+    if expected is None or _path_identity(observed) != expected:
+        raise PublishError(f"target changed after authentication: {label}")
+
+
+def _path_identity(info: os.stat_result) -> _PathIdentity:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
 
 
 def _reject_irregular(info: os.stat_result, label: str) -> None:

@@ -405,7 +405,16 @@ def common_lifecycle_args(
     extra: Mapping[str, object] | None = None,
 ) -> tuple[list[str], Path, str]:
     project_dir = write_project_dir(tmp_path / "project")
-    overrides = {"selected_test_families": families, "change_id": change_id, **dict(extra or {})}
+    overrides = {
+        "selected_test_families": families,
+        "change_id": change_id,
+        "case_delta_paths": (
+            (f"qa/changes/{change_id}/cases/system/dept/case.yaml",)
+            if entrypoint in {"full", "intake", "case"}
+            else ()
+        ),
+        **dict(extra or {}),
+    }
     input_path = write_product_input(
         tmp_path / "input.json",
         composition,

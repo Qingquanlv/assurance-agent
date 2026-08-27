@@ -7,6 +7,5 @@ data_knowledge:
   notes: []
 capability_catalog:
   schema_version: "1"
-  families:
-    - api
+  typed_leafs: []
 node_policy_values: {}

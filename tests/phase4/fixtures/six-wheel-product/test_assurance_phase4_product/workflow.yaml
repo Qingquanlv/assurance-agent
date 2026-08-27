@@ -20,6 +20,8 @@ graphs:
           capability_leafs:
             - auth.session.create
             - entities.item.create
+          case_delta_paths:
+            - qa/changes/CH-DEMO-001/cases/system/menu/case.yaml
           artifact_paths: []
         retry: once
         timeout: short

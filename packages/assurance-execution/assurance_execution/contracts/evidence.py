@@ -19,6 +19,7 @@ class ExecutionEvidenceV1(BaseModel):
     model_config = _FROZEN
 
     schema_version: Literal["1"] = "1"
+    status: Literal["passed", "failed"] = "passed"
     change_id: NonEmptyStr
     batch_id: NonEmptyStr
     selected_targets: SelectedTargets

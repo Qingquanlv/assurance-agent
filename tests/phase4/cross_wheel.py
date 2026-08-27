@@ -56,6 +56,7 @@ _HEX = "a" * 64
 _PROPOSAL_BINDING = cast(
     JSONValue,
     {
+        "agent_profile": "aa-doc-author",
         "execution": {
             "provider_model": "test-model",
             "worker_profile": "worker",
@@ -217,7 +218,11 @@ def _generation_plan_result_leaf(value: str, *, catalog: object) -> None:
 
 
 def _generation_planning_input_leaf(value: str, *, catalog: object) -> None:
-    validate_plan_input(_planning_input(value, catalog_leafs(catalog)))
+    validate_plan_input(
+        _planning_input(value, catalog_leafs(catalog)),
+        family="api",
+        workspace=Path("."),
+    )
 
 
 def _execution_mapping_leaf(value: str, *, catalog: object) -> None:
@@ -388,7 +393,11 @@ def handoff_seams() -> tuple[dict[str, Any], ...]:
 
 
 def _consume_planning_input(payload: dict[str, Any], leafs: frozenset[str]) -> object:
-    return validate_plan_input(_planning_input_from_cases(payload, leafs))
+    return validate_plan_input(
+        _planning_input_from_cases(payload, leafs),
+        family="api",
+        workspace=Path("."),
+    )
 
 
 def _consume_execution_selection(payload: dict[str, Any], leafs: frozenset[str]) -> object:

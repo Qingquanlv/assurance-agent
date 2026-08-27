@@ -3,13 +3,18 @@ from __future__ import annotations
 import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
+import fcntl
 import hashlib
+from io import BytesIO
+import os
 import re
+import stat
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import BinaryIO, cast
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 import yaml
+from yaml.nodes import MappingNode, Node, SequenceNode
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
@@ -154,6 +159,15 @@ class _RenderedWheel:
     members: dict[str, bytes]
 
 
+@dataclass(frozen=True)
+class _OutputDirectory:
+    path: Path
+    fd: int
+    identity: tuple[int, int]
+    owner: int
+    mode: int
+
+
 def canonical_wheel_filename(distribution: str, version: str) -> str:
     escaped = re.sub(r"[^A-Za-z0-9]+", "_", distribution).strip("_")
     return f"{escaped}-{version}-py3-none-any.whl"
@@ -163,14 +177,17 @@ def build_deployment_wheel(manifest_path: Path, output_dir: Path) -> BuiltDeploy
     document = _load_manifest_document(manifest_path)
     bindings = DeploymentBindingsV1.model_validate(document)
     _reject_capability_source_drift()
-    _require_empty_output_dir(output_dir)
     rendered = _render_wheel_contents(bindings)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    wheel_path = output_dir / rendered.wheel_name
-    _write_deterministic_wheel(wheel_path, rendered.members)
-    wheel_bytes = wheel_path.read_bytes()
+    wheel_bytes = _render_deterministic_wheel_bytes(rendered.members)
+    directory = _open_output_directory(output_dir)
+    try:
+        _publish_wheel(directory, rendered.wheel_name, wheel_bytes)
+        _require_stable_output_directory(directory)
+        _require_final_bytes(directory, rendered.wheel_name, wheel_bytes)
+    finally:
+        os.close(directory.fd)
     return BuiltDeploymentWheel(
-        wheel=wheel_path,
+        wheel=output_dir / rendered.wheel_name,
         manifest_digest=rendered.manifest_digest,
         wheel_digest=_sha256_digest(wheel_bytes),
         distribution=rendered.distribution,
@@ -188,6 +205,9 @@ def _load_manifest_document(manifest_path: Path) -> dict[str, object]:
     except OSError as error:
         raise BindingBuildError(f"cannot read deployment manifest: {manifest_path}") from error
     try:
+        node = yaml.compose(raw, Loader=yaml.SafeLoader)
+        if node is not None:
+            _reject_duplicate_yaml_keys(node, set())
         value = yaml.safe_load(raw)
     except yaml.YAMLError as error:
         raise BindingBuildError("deployment manifest is not valid YAML") from error
@@ -196,11 +216,301 @@ def _load_manifest_document(manifest_path: Path) -> dict[str, object]:
     return value
 
 
-def _require_empty_output_dir(output_dir: Path) -> None:
-    if not output_dir.exists():
+def _reject_duplicate_yaml_keys(node: Node, seen: set[int]) -> None:
+    if id(node) in seen:
         return
-    if not output_dir.is_dir() or any(output_dir.iterdir()):
+    seen.add(id(node))
+    if isinstance(node, MappingNode):
+        keys: set[tuple[str, str]] = set()
+        for key, value in node.value:
+            identity = (key.tag, str(getattr(key, "value", "")))
+            if identity in keys:
+                raise BindingBuildError(f"duplicate YAML key: {identity[1]}")
+            keys.add(identity)
+            _reject_duplicate_yaml_keys(key, seen)
+            _reject_duplicate_yaml_keys(value, seen)
+    elif isinstance(node, SequenceNode):
+        for child in node.value:
+            _reject_duplicate_yaml_keys(child, seen)
+
+
+def _open_output_directory(path: Path) -> _OutputDirectory:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError as error:
+        raise BindingBuildError("output directory must be a real directory") from error
+    try:
+        metadata = os.fstat(fd)
+        mode = stat.S_IMODE(metadata.st_mode)
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or mode & 0o022:
+            raise BindingBuildError("output directory must be a trusted publication domain")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise BindingBuildError("output directory is locked by another builder") from error
+        directory = _OutputDirectory(path, fd, _file_identity(metadata), metadata.st_uid, mode)
+        _require_stable_output_directory(directory)
+        return directory
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _publish_wheel(directory: _OutputDirectory, wheel_name: str, expected: bytes) -> None:
+    temporary = f".{wheel_name}.publishing"
+    entries = _entries(directory)
+    if not entries.issubset({wheel_name, temporary}):
         raise BindingBuildError("output directory must be empty")
+    if _recover_existing(directory, wheel_name, temporary, expected, entries):
+        return
+    try:
+        fd = os.open(
+            temporary,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            _FILE_MODE,
+            dir_fd=directory.fd,
+        )
+    except OSError as error:
+        raise BindingBuildError("cannot safely create temporary wheel") from error
+    identity = _file_identity(os.fstat(fd))
+
+    def verify(links: int = 1) -> None:
+        _require_stable_output_directory(directory)
+        _require_content(directory, temporary, fd, identity, links, expected, "temporary wheel")
+
+    try:
+        _publication_cut("builder-before-file-publication")
+        _require_stable_output_directory(directory)
+        _require_entry(directory, temporary, fd, identity, 1, "temporary wheel")
+        offset = 0
+        while offset < len(expected):
+            offset += os.write(fd, expected[offset:])
+        os.fchmod(fd, _FILE_MODE)
+        os.fsync(fd)
+        verify()
+        for cut in ("builder-after-file-publication", "builder-before-wheel-publication"):
+            _publication_cut(cut)
+            verify()
+        try:
+            os.link(
+                temporary,
+                wheel_name,
+                src_dir_fd=directory.fd,
+                dst_dir_fd=directory.fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError as error:
+            raise BindingBuildError("published wheel path became occupied") from error
+        os.fsync(directory.fd)
+        _publication_cut("builder-after-wheel-publication")
+        verify(2)
+        _require_entry(directory, wheel_name, fd, identity, 2, "published wheel")
+        os.unlink(temporary, dir_fd=directory.fd)
+        os.fsync(directory.fd)
+        _require_final_bytes(directory, wheel_name, expected)
+        _publication_cut("builder-after-final-identity-check")
+        _require_stable_output_directory(directory)
+        _require_final_bytes(directory, wheel_name, expected)
+    except OSError as error:
+        raise BindingBuildError("cannot safely publish deterministic wheel") from error
+    finally:
+        os.close(fd)
+
+
+def _recover_existing(
+    directory: _OutputDirectory,
+    wheel_name: str,
+    temporary: str,
+    expected: bytes,
+    entries: set[str],
+) -> bool:
+    if wheel_name not in entries:
+        if temporary in entries:
+            fd, identity, links = _open_entry(directory, temporary, {1}, "temporary wheel")
+            try:
+                _remove_temporary(directory, temporary, fd, identity, links)
+            finally:
+                os.close(fd)
+        return False
+    final_fd, final_identity, final_links = _open_entry(directory, wheel_name, {1, 2}, "published wheel")
+    try:
+        _require_content(
+            directory,
+            wheel_name,
+            final_fd,
+            final_identity,
+            final_links,
+            expected,
+            "published wheel",
+        )
+        if temporary in entries:
+            fd, identity, links = _open_entry(directory, temporary, {1, 2}, "temporary wheel")
+            try:
+                if identity == final_identity:
+                    if links != 2 or final_links != 2:
+                        raise BindingBuildError("interrupted wheel link identity changed")
+                    _require_content(directory, temporary, fd, identity, 2, expected, "temporary wheel")
+                elif links != 1 or final_links != 1:
+                    raise BindingBuildError("publication residue identity changed")
+                _remove_temporary(directory, temporary, fd, identity, links)
+            finally:
+                os.close(fd)
+    finally:
+        os.close(final_fd)
+    _require_final_bytes(directory, wheel_name, expected)
+    _publication_cut("builder-after-final-identity-check")
+    _require_stable_output_directory(directory)
+    _require_final_bytes(directory, wheel_name, expected)
+    return True
+
+
+def _remove_temporary(
+    directory: _OutputDirectory,
+    name: str,
+    fd: int,
+    identity: tuple[int, int],
+    links: int,
+) -> None:
+    _publication_cut("builder-before-stale-temp-cleanup")
+    _require_stable_output_directory(directory)
+    _require_entry(directory, name, fd, identity, links, "temporary wheel")
+    try:
+        os.unlink(name, dir_fd=directory.fd)
+        os.fsync(directory.fd)
+    except OSError as error:
+        raise BindingBuildError("cannot remove trusted publication residue") from error
+
+
+def _open_entry(
+    directory: _OutputDirectory,
+    name: str,
+    allowed_links: set[int],
+    label: str,
+) -> tuple[int, tuple[int, int], int]:
+    try:
+        fd = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=directory.fd,
+        )
+    except OSError as error:
+        raise BindingBuildError(f"{label} is not a safe regular file") from error
+    metadata = os.fstat(fd)
+    identity = _file_identity(metadata)
+    try:
+        if metadata.st_nlink not in allowed_links:
+            raise BindingBuildError(f"{label} is not a safe regular file")
+        _require_entry(directory, name, fd, identity, metadata.st_nlink, label)
+        return fd, identity, metadata.st_nlink
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _require_entry(
+    directory: _OutputDirectory,
+    name: str,
+    fd: int,
+    identity: tuple[int, int],
+    links: int,
+    label: str,
+) -> None:
+    try:
+        opened = os.fstat(fd)
+        current = os.stat(name, dir_fd=directory.fd, follow_symlinks=False)
+    except OSError as error:
+        raise BindingBuildError(f"{label} identity changed") from error
+    if any(
+        not stat.S_ISREG(item.st_mode)
+        or item.st_uid != directory.owner
+        or item.st_nlink != links
+        or stat.S_IMODE(item.st_mode) & 0o022
+        or _file_identity(item) != identity
+        for item in (opened, current)
+    ):
+        raise BindingBuildError(f"{label} identity changed")
+
+
+def _require_content(
+    directory: _OutputDirectory,
+    name: str,
+    fd: int,
+    identity: tuple[int, int],
+    links: int,
+    expected: bytes,
+    label: str,
+) -> None:
+    _require_entry(directory, name, fd, identity, links, label)
+    before = os.fstat(fd)
+    chunks: list[bytes] = []
+    offset = 0
+    while chunk := os.pread(fd, 1024 * 1024, offset):
+        chunks.append(chunk)
+        offset += len(chunk)
+    after = os.fstat(fd)
+    if (
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+        before.st_nlink,
+    ) != (
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+        after.st_nlink,
+    ):
+        raise BindingBuildError(f"{label} authenticated content changed")
+    _require_entry(directory, name, fd, identity, links, label)
+    if b"".join(chunks) != expected:
+        raise BindingBuildError(f"{label} authenticated content changed")
+
+
+def _require_final_bytes(directory: _OutputDirectory, name: str, expected: bytes) -> None:
+    fd, identity, links = _open_entry(directory, name, {1}, "published wheel")
+    try:
+        _require_content(directory, name, fd, identity, links, expected, "published wheel")
+    finally:
+        os.close(fd)
+
+
+def _entries(directory: _OutputDirectory) -> set[str]:
+    try:
+        return set(os.listdir(directory.fd))
+    except OSError as error:
+        raise BindingBuildError("cannot inspect output directory") from error
+
+
+def _file_identity(metadata: os.stat_result) -> tuple[int, int]:
+    return (metadata.st_dev, metadata.st_ino)
+
+
+def _require_stable_output_directory(directory: _OutputDirectory) -> None:
+    try:
+        opened = os.fstat(directory.fd)
+        current = os.stat(directory.path, follow_symlinks=False)
+    except OSError as error:
+        raise BindingBuildError("output directory trust changed") from error
+    if any(
+        not stat.S_ISDIR(item.st_mode)
+        or _file_identity(item) != directory.identity
+        or item.st_uid != directory.owner
+        or directory.owner != os.geteuid()
+        or stat.S_IMODE(item.st_mode) != directory.mode
+        or directory.mode & 0o022
+        for item in (opened, current)
+    ):
+        raise BindingBuildError("output directory trust changed")
+
+
+def _publication_cut(_fault_id: str) -> None:
+    return
 
 
 def _reject_capability_source_drift() -> None:
@@ -430,7 +740,7 @@ def _metadata_bytes(distribution: str) -> bytes:
     return "\n".join(lines).encode("utf-8")
 
 
-def _write_deterministic_wheel(wheel_path: Path, members: Mapping[str, bytes]) -> None:
+def _write_deterministic_wheel(stream: BinaryIO, members: Mapping[str, bytes]) -> None:
     record_name = next(name for name in members if name.endswith(".dist-info/METADATA")).replace(
         "METADATA", "RECORD"
     )
@@ -444,13 +754,19 @@ def _write_deterministic_wheel(wheel_path: Path, members: Mapping[str, bytes]) -
     ordered[record_name] = record_bytes
     names = [name for name in ordered if name != record_name]
     names.append(record_name)
-    with ZipFile(wheel_path, "w") as archive:
+    with ZipFile(stream, "w") as archive:
         for name in names:
             info = ZipInfo(filename=name, date_time=_WHEEL_EPOCH)
             info.compress_type = ZIP_DEFLATED
             info.create_system = 3
             info.external_attr = _FILE_MODE << 16
             archive.writestr(info, ordered[name], compress_type=ZIP_DEFLATED, compresslevel=9)
+
+
+def _render_deterministic_wheel_bytes(members: Mapping[str, bytes]) -> bytes:
+    stream = BytesIO()
+    _write_deterministic_wheel(stream, members)
+    return stream.getvalue()
 
 
 def _record_hash(content: bytes) -> str:

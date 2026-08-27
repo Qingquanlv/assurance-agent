@@ -223,6 +223,9 @@ class PlanResultV1(BaseModel):
         if self.family == "performance":
             if not self.performance_scenarios:
                 raise ValueError("performance plan requires scenario identity and numeric thresholds")
+            for scenario in self.performance_scenarios:
+                if scenario.capability not in leafs:
+                    raise ValueError(f"unknown capability leaf: {scenario.capability}")
         elif self.performance_scenarios:
             raise ValueError("performance_scenarios is only valid for performance plans")
         return self

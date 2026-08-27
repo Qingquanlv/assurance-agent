@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
 from bootstrap_fixtures import synthetic_invocation_started
+from graph_engine.runtime import production_host
 from graph_engine.runtime import production_worker
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import pinned_execution_host_lock
@@ -48,6 +51,7 @@ from graph_engine.runtime.host_receipts import (
     TerminalReceiptStore,
     prove_call_quiescent,
 )
+from graph_engine.runtime.activity import LedgerTaskActivityPort
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.production_host import ProductionHostError, _ProductionTaskExecutionHost
 from graph_engine.runtime.secret_sources import empty_runtime_authorization
@@ -261,6 +265,42 @@ def _cancel_call(*, workspace: TaskWorkspaceBinding, entrypoint: str) -> TaskHos
     )
 
 
+def _record_real_worker_spawns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[production_host._WorkerProcess]:
+    workers: list[production_host._WorkerProcess] = []
+    original_spawn = production_host._ProcessSupervisor.spawn
+
+    def recording_spawn(
+        self: production_host._ProcessSupervisor,
+        *,
+        attempt_root: Path,
+        call_digest: str,
+    ) -> production_host._WorkerProcess:
+        worker = original_spawn(self, attempt_root=attempt_root, call_digest=call_digest)
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(production_host._ProcessSupervisor, "spawn", recording_spawn)
+    return workers
+
+
+def _process_is_running(process_id: int) -> bool:
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _ledger_activity_snapshot(
+    root: Path,
+    call: TaskHostExecuteCall,
+) -> TaskActivitySnapshot:
+    ledger = Ledger(root / "invocations" / call.identity.invocation_id / "ledger")
+    return LedgerTaskActivityPort(ledger=ledger, identity=call.activity_rpc).snapshot
+
+
 def test_production_host_rejects_wrong_workspace(tmp_path: Path) -> None:
     store = _task_workspace_store(tmp_path)
     workspace = _begin_workspace(store)
@@ -312,6 +352,25 @@ def test_unrelated_workspace_holder_does_not_block_quiescence(tmp_path: Path) ->
     finally:
         holder.kill()
         holder.wait(timeout=2)
+
+
+def test_workspace_writer_probe_retries_a_transient_lsof_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timeouts: list[float] = []
+
+    def run_lsof(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del args
+        timeout = float(kwargs["timeout"])
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            raise subprocess.TimeoutExpired("lsof", timeout)
+        return subprocess.CompletedProcess(["lsof"], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(production_host.subprocess, "run", run_lsof)
+
+    assert production_host._collect_workspace_writers(tmp_path) == ()
+    assert timeouts == [2.0, 10.0]
 
 
 def test_worker_rejects_substituted_project_root_before_handler_execution(tmp_path: Path) -> None:
@@ -558,6 +617,395 @@ def test_production_host_parent_alive_pipe_is_wired(tmp_path: Path, monkeypatch:
     assert captured["parent_alive_w"] >= 0
 
 
+def test_spawn_failure_after_popen_closes_every_pipe_and_reaps_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempt_root = tmp_path / "attempt"
+    attempt_root.mkdir()
+    opened_pipes: list[tuple[int, int]] = []
+    started: list[subprocess.Popen[bytes]] = []
+    original_pipe = os.pipe
+    original_popen = production_host.subprocess.Popen
+
+    def recording_pipe() -> tuple[int, int]:
+        descriptors = original_pipe()
+        opened_pipes.append(descriptors)
+        return descriptors
+
+    def recording_popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        process = original_popen(*args, **kwargs)
+        started.append(process)
+        return process
+
+    def fail_after_popen(fault_id: str) -> None:
+        if fault_id == "host-after-popen-before-worker-return":
+            raise RuntimeError(fault_id)
+
+    monkeypatch.setattr(production_host.os, "pipe", recording_pipe)
+    monkeypatch.setattr(production_host.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(production_host, "_host_fault_cut", fail_after_popen)
+
+    try:
+        with pytest.raises(RuntimeError, match="host-after-popen-before-worker-return"):
+            production_host._ProcessSupervisor.for_platform().spawn(
+                attempt_root=attempt_root,
+                call_digest="d" * 64,
+            )
+
+        assert len(started) == 1
+        assert started[0].wait(timeout=3.0) is not None
+        assert started[0].stdin is not None and started[0].stdin.closed
+        assert started[0].stdout is not None and started[0].stdout.closed
+        assert started[0].stderr is not None and started[0].stderr.closed
+        for descriptors in opened_pipes:
+            for descriptor in descriptors:
+                with pytest.raises(OSError):
+                    os.fstat(descriptor)
+    finally:
+        for process in started:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=3.0)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+        for descriptors in opened_pipes:
+            for descriptor in descriptors:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+@pytest.mark.parametrize("failing_pipe_call", [2, 3])
+def test_pipe_setup_failure_closes_every_previously_created_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failing_pipe_call: int,
+) -> None:
+    attempt_root = tmp_path / "attempt"
+    attempt_root.mkdir()
+    opened: list[tuple[int, int]] = []
+    original_pipe = os.pipe
+
+    def fail_during_pipe_setup() -> tuple[int, int]:
+        if len(opened) + 1 == failing_pipe_call:
+            raise OSError("pipe setup failed")
+        descriptors = original_pipe()
+        opened.append(descriptors)
+        return descriptors
+
+    monkeypatch.setattr(production_host.os, "pipe", fail_during_pipe_setup)
+
+    try:
+        with pytest.raises(OSError, match="pipe setup failed"):
+            production_host._ProcessSupervisor.for_platform().spawn(
+                attempt_root=attempt_root,
+                call_digest="d" * 64,
+            )
+
+        for descriptors in opened:
+            for descriptor in descriptors:
+                with pytest.raises(OSError):
+                    os.fstat(descriptor)
+    finally:
+        for descriptors in opened:
+            for descriptor in descriptors:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def test_partial_worker_control_frame_cannot_block_past_absolute_deadline(tmp_path: Path) -> None:
+    read_fd, write_fd = os.pipe()
+    stream = os.fdopen(read_fd, "rb", buffering=0)
+    session_key = b"k" * 32
+    partial = production_host.encode_authenticated_frame(session_key, b"{}")[:20]
+    os.write(write_fd, partial)
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    observed: list[BaseException] = []
+
+    def read_partial_frame() -> None:
+        try:
+            host._read_frame_with_timeout(stream, session_key, timeout=0.1)
+        except BaseException as error:
+            observed.append(error)
+
+    reader = threading.Thread(target=read_partial_frame, daemon=True)
+    reader.start()
+    reader.join(timeout=0.5)
+    try:
+        assert reader.is_alive() is False
+        assert len(observed) == 1
+        assert isinstance(observed[0], ProductionHostError)
+        assert str(observed[0]) == "worker result pending"
+    finally:
+        os.close(write_fd)
+        reader.join(timeout=1.0)
+        stream.close()
+
+
+@pytest.mark.parametrize("enumeration_failure", ["ps-timeout", "proc-unavailable"])
+def test_descendant_enumeration_failure_still_reaps_worker_and_closes_streams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enumeration_failure: str,
+) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=tmp_path,
+        start_new_session=True,
+    )
+    worker = production_host._WorkerProcess(
+        popen=process,
+        process_group=process.pid,
+        parent_alive_w=-1,
+        activity_response_w=-1,
+        cancel_w=-1,
+        _stderr_chunks=[],
+    )
+    if enumeration_failure == "ps-timeout":
+        monkeypatch.setattr(production_host.sys, "platform", "darwin")
+
+        def timeout_ps(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            raise subprocess.TimeoutExpired("ps", 0.1)
+
+        monkeypatch.setattr(production_host.subprocess, "run", timeout_ps)
+    else:
+        monkeypatch.setattr(production_host.sys, "platform", "linux")
+
+        def unavailable_proc(_path: str) -> list[str]:
+            raise OSError("proc unavailable")
+
+        monkeypatch.setattr(production_host.os, "listdir", unavailable_proc)
+
+    try:
+        with pytest.raises(TerminalReceiptError, match="cannot enumerate process descendants"):
+            production_host._ProcessSupervisor.for_platform().cleanup(worker)
+
+        assert process.wait(timeout=3.0) is not None
+        assert process.stdin is not None and process.stdin.closed
+        assert process.stdout is not None and process.stdout.closed
+        assert process.stderr is not None and process.stderr.closed
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=3.0)
+        for process_stream in (process.stdin, process.stdout, process.stderr):
+            if process_stream is not None:
+                process_stream.close()
+
+
+def test_cleanup_of_reaped_worker_without_live_group_members_never_signals_stale_pgid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = subprocess.Popen(
+        [sys.executable, "-c", "pass"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=tmp_path,
+        start_new_session=True,
+    )
+    process.wait(timeout=3.0)
+    worker = production_host._WorkerProcess(
+        popen=process,
+        process_group=process.pid,
+        parent_alive_w=-1,
+        activity_response_w=-1,
+        cancel_w=-1,
+        _stderr_chunks=[],
+    )
+    monkeypatch.setattr(production_host, "_collect_process_tree_descendants", lambda _pid: ())
+    monkeypatch.setattr(
+        production_host,
+        "_collect_process_group_descendants",
+        lambda **_kwargs: (),
+    )
+
+    def reject_stale_group_signal(_process_group: int, _signal: int) -> None:
+        raise AssertionError("cleanup signalled an unauthenticated stale process group")
+
+    monkeypatch.setattr(production_host.os, "killpg", reject_stale_group_signal)
+
+    production_host._ProcessSupervisor.for_platform().cleanup(worker)
+
+    assert process.stdin is not None and process.stdin.closed
+    assert process.stdout is not None and process.stdout.closed
+    assert process.stderr is not None and process.stderr.closed
+
+
+def test_parent_alive_read_error_kills_worker_instead_of_disabling_supervision() -> None:
+    child_pid = os.fork()
+    if child_pid == 0:
+        os.setsid()
+        production_worker._install_parent_death_supervision(2**30)
+        time.sleep(2.0)
+        os._exit(91)
+
+    _child, status = os.waitpid(child_pid, 0)
+    assert os.waitstatus_to_exitcode(status) == -signal.SIGKILL
+
+
+def test_explicit_normal_worker_shutdown_does_not_trigger_parent_death_kill() -> None:
+    child_pid = os.fork()
+    if child_pid == 0:
+        os.setsid()
+        read_fd, write_fd = os.pipe()
+        supervisor = production_worker._install_parent_death_supervision(read_fd)
+        supervisor.begin_normal_shutdown()
+        os.close(read_fd)
+        os.close(write_fd)
+        time.sleep(0.2)
+        os._exit(0)
+
+    _child, status = os.waitpid(child_pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+
+
+def test_parent_process_crash_with_live_descendants_cleans_group_and_leaves_no_receipt(
+    tmp_path: Path,
+) -> None:
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
+    receipts = TerminalReceiptStore.create(tmp_path / "terminal-receipts")
+    entrypoint, roots = _write_handler(
+        tmp_path,
+        class_name="ParentCrashHandler",
+        body=(
+            "async def execute(self, request, context):\n"
+            "    import asyncio, os, subprocess, sys\n"
+            "    child = subprocess.Popen(\n"
+            "        [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+            "        start_new_session=True,\n"
+            "    )\n"
+            "    (context.write_root / 'held.txt').write_text(str(os.getpid()), encoding='utf-8')\n"
+            "    (context.write_root / 'orphan.pid').write_text(str(child.pid), encoding='utf-8')\n"
+            "    while True:\n"
+            "        await asyncio.sleep(0.1)"
+        ),
+    )
+    call = _execute_call(
+        workspace=workspace,
+        entrypoint=entrypoint,
+        activity_id="activity-1",
+    )
+    host_pid = os.fork()
+    if host_pid == 0:
+        host = _ProductionTaskExecutionHost(
+            root=tmp_path,
+            authorization=empty_runtime_authorization(),
+        )
+        host.bind_invocation_runtime(
+            handlers={"test.echo.run": _EchoHandler()},
+            store=store,
+            receipts=receipts,
+            handler_import_roots={"test.echo.run": roots},
+        )
+        asyncio.run(host.execute(call))
+        os._exit(92)
+
+    worker_pid: int | None = None
+    descendant_pid: int | None = None
+    host_reaped = False
+    try:
+        worker_path = workspace.write_root / "held.txt"
+        descendant_path = workspace.write_root / "orphan.pid"
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if worker_path.is_file() and descendant_path.is_file():
+                worker_pid = int(worker_path.read_text(encoding="utf-8"))
+                descendant_pid = int(descendant_path.read_text(encoding="utf-8"))
+                break
+            time.sleep(0.05)
+        assert worker_pid is not None
+        assert descendant_pid is not None
+
+        os.kill(host_pid, signal.SIGKILL)
+        _child, status = os.waitpid(host_pid, 0)
+        host_reaped = True
+        assert os.waitstatus_to_exitcode(status) == -signal.SIGKILL
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and (
+            _process_is_running(worker_pid) or _process_is_running(descendant_pid)
+        ):
+            time.sleep(0.05)
+
+        assert _process_is_running(worker_pid) is False
+        assert _process_is_running(descendant_pid) is False
+        assert receipts.authenticate(call.identity) == ()
+    finally:
+        if not host_reaped:
+            try:
+                os.kill(host_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.waitpid(host_pid, 0)
+        if worker_pid is not None:
+            try:
+                os.killpg(worker_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if descendant_pid is not None:
+            try:
+                os.kill(descendant_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_successful_handler_cannot_leave_a_detached_descendant_or_install_a_receipt(
+    tmp_path: Path,
+) -> None:
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
+    receipts = TerminalReceiptStore.create(tmp_path / "terminal-receipts")
+    entrypoint, roots = _write_handler(
+        tmp_path,
+        class_name="DetachedDescendantHandler",
+        body=(
+            "async def execute(self, request, context):\n"
+            "    import subprocess, sys\n"
+            "    child = subprocess.Popen(\n"
+            "        [sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+            "        start_new_session=True,\n"
+            "    )\n"
+            "    (context.write_root / 'detached.pid').write_text(str(child.pid), encoding='utf-8')\n"
+            "    return TaskOutcome.succeeded({'ok': True})"
+        ),
+    )
+    call = _execute_call(workspace=workspace, entrypoint=entrypoint, activity_id="activity-1")
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    host.bind_invocation_runtime(
+        handlers={"test.echo.run": _EchoHandler()},
+        store=store,
+        receipts=receipts,
+        handler_import_roots={"test.echo.run": roots},
+    )
+
+    with pytest.raises(ProductionHostError, match="live descendant"):
+        asyncio.run(host.execute(call))
+
+    descendant_pid = int((workspace.write_root / "detached.pid").read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and _process_is_running(descendant_pid):
+        time.sleep(0.05)
+    try:
+        assert _process_is_running(descendant_pid) is False
+        assert receipts.authenticate(call.identity) == ()
+    finally:
+        try:
+            os.kill(descendant_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def test_production_host_cancel_escalates_on_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from graph_engine.runtime import production_host as module
 
@@ -718,6 +1166,308 @@ def _prepare_activity_ledger(root: Path, workspace: TaskWorkspaceBinding) -> Non
         ),
         expected_next_seq=1,
     )
+
+
+def test_host_before_worker_spawn_fault_has_no_child_dispatch_or_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
+    _prepare_activity_ledger(tmp_path, workspace)
+    receipts = TerminalReceiptStore.create(tmp_path / "terminal-receipts")
+    entrypoint, roots = _write_handler(
+        tmp_path,
+        class_name="MustNotSpawnHandler",
+        body=(
+            "async def execute(self, request, context):\n"
+            "    (context.write_root / 'after.txt').write_text('ran', encoding='utf-8')\n"
+            "    return TaskOutcome.succeeded({'ok': True})"
+        ),
+    )
+    call = _execute_call(
+        workspace=workspace,
+        entrypoint=entrypoint,
+        activity_id="activity-1",
+    )
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    host.bind_invocation_runtime(
+        handlers={"test.echo.run": _EchoHandler()},
+        store=store,
+        receipts=receipts,
+        handler_import_roots={"test.echo.run": roots},
+    )
+    workers = _record_real_worker_spawns(monkeypatch)
+
+    def stop_before_spawn(fault_id: str) -> None:
+        if fault_id == "host-before-worker-spawn":
+            raise RuntimeError(fault_id)
+
+    monkeypatch.setattr(production_host, "_host_fault_cut", stop_before_spawn, raising=False)
+    with pytest.raises(RuntimeError, match="host-before-worker-spawn"):
+        asyncio.run(host.execute(call))
+
+    assert workers == []
+    assert not (workspace.write_root / "after.txt").exists()
+    assert host.read_terminal_receipts(call.identity) == ()
+    assert _ledger_activity_snapshot(tmp_path, call).state == "prepared"
+
+
+def test_host_rejects_worker_source_drift_before_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
+    call = _execute_call(workspace=workspace).model_copy(
+        update={
+            "identity": _execute_call(workspace=workspace).identity.model_copy(
+                update={"host_implementation_digest": "f" * 64}
+            )
+        }
+    )
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    host.bind_invocation_runtime(handlers={"test.echo.run": _EchoHandler()}, store=store)
+
+    def must_not_spawn(*_args: object, **_kwargs: object) -> production_host._WorkerProcess:
+        raise AssertionError("worker source drift reached spawn")
+
+    monkeypatch.setattr(production_host._ProcessSupervisor, "spawn", must_not_spawn)
+
+    with pytest.raises(ProductionHostError, match="implementation.*drift"):
+        asyncio.run(host.execute(call))
+
+    assert not (workspace.write_root / "after.txt").exists()
+
+
+def test_worker_attestation_rejects_source_drift_after_spawn_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
+    entrypoint, roots = _write_handler(
+        tmp_path,
+        class_name="MustNotRunAfterSourceDriftHandler",
+        body=(
+            "async def execute(self, request, context):\n"
+            "    (context.write_root / 'after.txt').write_text('ran', encoding='utf-8')\n"
+            "    return TaskOutcome.succeeded({'ok': True})"
+        ),
+    )
+    call = _execute_call(workspace=workspace, entrypoint=entrypoint)
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    host.bind_invocation_runtime(
+        handlers={"test.echo.run": _EchoHandler()},
+        store=store,
+        handler_import_roots={"test.echo.run": roots},
+    )
+    worker_source = Path(production_worker.__file__).resolve()
+    original_source = worker_source.read_bytes()
+    drifted = {"value": False}
+
+    def mutate_after_spawn(fault_id: str) -> None:
+        if fault_id == "host-after-spawn-before-dispatch" and not drifted["value"]:
+            worker_source.write_bytes(original_source + b"\n# post-spawn source drift\n")
+            drifted["value"] = True
+
+    monkeypatch.setattr(production_host, "_host_fault_cut", mutate_after_spawn)
+    try:
+        with pytest.raises(ProductionHostError, match="worker implementation identity drifted"):
+            asyncio.run(host.execute(call))
+    finally:
+        worker_source.write_bytes(original_source)
+
+    assert drifted["value"] is True
+    assert not (workspace.write_root / "after.txt").exists()
+
+
+def test_host_after_spawn_before_dispatch_fault_cleans_child_without_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
+    _prepare_activity_ledger(tmp_path, workspace)
+    receipts = TerminalReceiptStore.create(tmp_path / "terminal-receipts")
+    entrypoint, roots = _write_handler(
+        tmp_path,
+        class_name="MustNotDispatchHandler",
+        body=(
+            "async def execute(self, request, context):\n"
+            "    (context.write_root / 'after.txt').write_text('ran', encoding='utf-8')\n"
+            "    return TaskOutcome.succeeded({'ok': True})"
+        ),
+    )
+    call = _execute_call(
+        workspace=workspace,
+        entrypoint=entrypoint,
+        activity_id="activity-1",
+    )
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    host.bind_invocation_runtime(
+        handlers={"test.echo.run": _EchoHandler()},
+        store=store,
+        receipts=receipts,
+        handler_import_roots={"test.echo.run": roots},
+    )
+    workers = _record_real_worker_spawns(monkeypatch)
+
+    def stop_before_dispatch(fault_id: str) -> None:
+        if fault_id == "host-after-spawn-before-dispatch":
+            raise RuntimeError(fault_id)
+
+    monkeypatch.setattr(production_host, "_host_fault_cut", stop_before_dispatch, raising=False)
+    with pytest.raises(RuntimeError, match="host-after-spawn-before-dispatch"):
+        asyncio.run(host.execute(call))
+
+    assert len(workers) == 1
+    assert workers[0].popen.poll() is not None
+    assert not (workspace.write_root / "after.txt").exists()
+    assert host.read_terminal_receipts(call.identity) == ()
+    assert _ledger_activity_snapshot(tmp_path, call).state == "prepared"
+
+
+def test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
+    _prepare_activity_ledger(tmp_path, workspace)
+    receipts = TerminalReceiptStore.create(tmp_path / "terminal-receipts")
+    execute_entrypoint, roots = _write_handler(
+        tmp_path,
+        class_name="RpcInterruptedHandler",
+        body=(
+            "async def execute(self, request, context):\n"
+            "    if context.activity is None:\n"
+            "        raise ValueError('activity port is required')\n"
+            "    context.activity.mark_dispatch_started({'endpoint': 'https://provider.invalid'})\n"
+            "    (context.write_root / 'after.txt').write_text('ran', encoding='utf-8')\n"
+            "    return TaskOutcome.succeeded({'ok': True})\n\n"
+            "async def reconcile(self, request, context, activity):\n"
+            "    from graph_engine.plugin_api import TaskActivityReconcileResult\n"
+            "    return TaskActivityReconcileResult(status='running')"
+        ),
+    )
+    call = _execute_call(
+        workspace=workspace,
+        entrypoint=execute_entrypoint,
+        activity_id="activity-1",
+    )
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    host.bind_invocation_runtime(
+        handlers={"test.echo.run": _RecoverableEcho()},
+        store=store,
+        receipts=receipts,
+        handler_import_roots={"test.echo.run": roots},
+    )
+    workers = _record_real_worker_spawns(monkeypatch)
+
+    def stop_during_rpc(fault_id: str) -> None:
+        if fault_id == "host-during-activity-rpc":
+            raise RuntimeError(fault_id)
+
+    monkeypatch.setattr(production_host, "_host_fault_cut", stop_during_rpc, raising=False)
+    with pytest.raises(RuntimeError, match="host-during-activity-rpc"):
+        asyncio.run(host.execute(call))
+
+    assert len(workers) == 1
+    assert workers[0].popen.poll() is not None
+    assert not (workspace.write_root / "after.txt").exists()
+    assert host.read_terminal_receipts(call.identity) == ()
+    activity = _ledger_activity_snapshot(tmp_path, call)
+    assert activity.state == "dispatch_started"
+    assert activity.dispatch_fingerprint == {"endpoint": "https://provider.invalid"}
+    ledger = Ledger(tmp_path / "invocations" / call.identity.invocation_id / "ledger")
+    assert [item.event.kind for item in ledger.read_all()].count("task_activity_dispatch_started") == 1
+
+    monkeypatch.setattr(production_host, "_host_fault_cut", lambda _fault_id: None)
+    reconcile = _reconcile_call(
+        workspace=workspace,
+        entrypoint=execute_entrypoint.replace(".execute", ".reconcile"),
+    ).model_copy(update={"activity": activity})
+    result = asyncio.run(host.reconcile(reconcile))
+
+    assert result.reconcile_result is not None
+    assert result.reconcile_result.status == "running"
+    assert len(workers) == 2
+    assert all(worker.popen.poll() is not None for worker in workers)
+    assert host.read_terminal_receipts(call.identity) == ()
+    assert [item.event.kind for item in ledger.read_all()].count("task_activity_dispatch_started") == 1
+
+
+def test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _task_workspace_store(tmp_path)
+    workspace = _begin_workspace(store)
+    _prepare_activity_ledger(tmp_path, workspace)
+    receipts = TerminalReceiptStore.create(tmp_path / "terminal-receipts")
+    execute_entrypoint, roots = _write_handler(
+        tmp_path,
+        class_name="BindInterruptedHandler",
+        body=(
+            "async def execute(self, request, context):\n"
+            "    if context.activity is None:\n"
+            "        raise ValueError('activity port is required')\n"
+            "    context.activity.mark_dispatch_started({'endpoint': 'https://provider.invalid'})\n"
+            "    context.activity.bind({'session_id': 'session-1'})\n"
+            "    (context.write_root / 'after.txt').write_text('ran', encoding='utf-8')\n"
+            "    return TaskOutcome.succeeded({'ok': True})\n\n"
+            "async def reconcile(self, request, context, activity):\n"
+            "    from graph_engine.plugin_api import TaskActivityReconcileResult\n"
+            "    return TaskActivityReconcileResult(\n"
+            "        status='running', reference={'session_id': 'session-1'}\n"
+            "    )"
+        ),
+    )
+    call = _execute_call(
+        workspace=workspace,
+        entrypoint=execute_entrypoint,
+        activity_id="activity-1",
+    )
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    host.bind_invocation_runtime(
+        handlers={"test.echo.run": _RecoverableEcho()},
+        store=store,
+        receipts=receipts,
+        handler_import_roots={"test.echo.run": roots},
+    )
+
+    def stop_after_bind(fault_id: str) -> None:
+        if fault_id == "host-after-reference-bind":
+            raise RuntimeError(fault_id)
+
+    monkeypatch.setattr(production_host, "_host_fault_cut", stop_after_bind, raising=False)
+    with pytest.raises(RuntimeError, match="host-after-reference-bind"):
+        asyncio.run(host.execute(call))
+
+    assert not (workspace.write_root / "after.txt").exists()
+    assert host.read_terminal_receipts(call.identity) == ()
+    activity = _ledger_activity_snapshot(tmp_path, call)
+    assert activity.state == "bound"
+    assert activity.reference == {"session_id": "session-1"}
+    ledger = Ledger(tmp_path / "invocations" / call.identity.invocation_id / "ledger")
+    kinds = [item.event.kind for item in ledger.read_all()]
+    assert kinds.count("task_activity_dispatch_started") == 1
+    assert kinds.count("task_activity_bound") == 1
+
+    monkeypatch.setattr(production_host, "_host_fault_cut", lambda _fault_id: None)
+    reconcile = _reconcile_call(
+        workspace=workspace,
+        entrypoint=execute_entrypoint.replace(".execute", ".reconcile"),
+    ).model_copy(update={"activity": activity})
+    result = asyncio.run(host.reconcile(reconcile))
+
+    assert result.reconcile_result is not None
+    assert result.reconcile_result.status == "running"
+    assert result.reconcile_result.reference == {"session_id": "session-1"}
+    replayed_kinds = [item.event.kind for item in ledger.read_all()]
+    assert replayed_kinds.count("task_activity_dispatch_started") == 1
+    assert replayed_kinds.count("task_activity_bound") == 1
 
 
 def test_production_host_activity_snapshot_rpc_completes(tmp_path: Path) -> None:

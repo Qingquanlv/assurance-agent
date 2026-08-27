@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import ctypes
 import importlib
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -13,9 +13,10 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, NoReturn, Protocol, cast
 
 from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.composition.lock import ExecutionHostLock, pinned_execution_host_lock
 from graph_engine.plugin_api import (
     DirectoryIdentity,
     SecretPort,
@@ -88,31 +89,165 @@ class _ParentActivityPort:
         return TaskActivitySnapshot.model_validate(response["snapshot"])
 
 
-def _install_parent_death_supervision(parent_alive_fd: int | None) -> None:
-    if sys.platform.startswith("linux"):
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        pr_set_pdeathsig = 1
-        if libc.prctl(pr_set_pdeathsig, signal.SIGTERM) != 0:
-            raise TaskHostProtocolError("failed to install parent-death supervisor")
+class _ParentDeathSupervisor:
+    __slots__ = ("_normal_shutdown",)
+
+    def __init__(self) -> None:
+        self._normal_shutdown = threading.Event()
+
+    def begin_normal_shutdown(self) -> None:
+        self._normal_shutdown.set()
+
+    @property
+    def normal_shutdown_started(self) -> bool:
+        return self._normal_shutdown.is_set()
+
+
+def _install_parent_death_supervision(parent_alive_fd: int | None) -> _ParentDeathSupervisor:
+    supervisor = _ParentDeathSupervisor()
 
     def _watch_parent() -> None:
-        if sys.platform == "darwin":
+        if parent_alive_fd is None:
             while True:
                 time.sleep(0.1)
+                if supervisor.normal_shutdown_started:
+                    return
                 if os.getppid() == 1:
-                    os._exit(1)
+                    _kill_worker_process_tree()
             return
-        if parent_alive_fd is not None:
+        while True:
             try:
-                while True:
-                    chunk = os.read(parent_alive_fd, 1)
-                    if chunk == b"":
-                        os._exit(1)
+                chunk = os.read(parent_alive_fd, 1)
             except OSError:
-                os._exit(1)
+                if supervisor.normal_shutdown_started:
+                    return
+                _kill_worker_process_tree()
+            if chunk == b"":
+                if supervisor.normal_shutdown_started:
+                    return
+                _kill_worker_process_tree()
 
     thread = threading.Thread(target=_watch_parent, daemon=True)
     thread.start()
+    return supervisor
+
+
+def _process_table() -> dict[int, tuple[int, int]]:
+    table: dict[int, tuple[int, int]] = {}
+    if sys.platform.startswith("linux"):
+        try:
+            entries = os.listdir("/proc")
+        except OSError as error:
+            raise TaskHostProtocolError("cannot enumerate worker descendants") from error
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            try:
+                stat = (Path("/proc") / entry / "stat").read_text(encoding="ascii")
+                fields = stat.rpartition(") ")[2].split()
+                table[pid] = (int(fields[1]), int(fields[2]))
+            except (OSError, ValueError, IndexError):
+                continue
+        return table
+    try:
+        completed = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,ppid=,pgid="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise TaskHostProtocolError("cannot enumerate worker descendants") from error
+    if completed.returncode != 0:
+        raise TaskHostProtocolError("cannot enumerate worker descendants")
+    for line in completed.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 3:
+            continue
+        try:
+            pid, parent_pid, process_group = (int(field) for field in fields)
+        except ValueError:
+            continue
+        table[pid] = (parent_pid, process_group)
+    return table
+
+
+def _descendant_processes(root_pid: int, *, detached_only: bool = False) -> tuple[int, ...]:
+    table = _process_table()
+    descendants: set[int] = set()
+    frontier = {root_pid}
+    while frontier:
+        children = {
+            pid
+            for pid, (parent_pid, _process_group) in table.items()
+            if parent_pid in frontier and pid not in descendants
+        }
+        if not children:
+            break
+        descendants.update(children)
+        frontier = children
+    process_group = os.getpgrp()
+    return tuple(
+        sorted(
+            (
+                process_id
+                for process_id in descendants
+                if _process_exists(process_id)
+                and (not detached_only or table[process_id][1] != process_group)
+            ),
+            reverse=True,
+        )
+    )
+
+
+def _terminate_worker_descendants() -> tuple[int, ...]:
+    descendants = _descendant_processes(os.getpid())
+    for process_id in descendants:
+        try:
+            os.kill(process_id, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        reaped = False
+        while True:
+            try:
+                child_pid, _status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if child_pid == 0:
+                break
+            reaped = True
+        if not any(_process_exists(process_id) for process_id in descendants):
+            break
+        if not reaped:
+            time.sleep(0.01)
+    return descendants
+
+
+def _process_exists(process_id: int) -> bool:
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _kill_worker_process_tree() -> NoReturn:
+    """Fail closed when the trusted host disappears, including detached descendants."""
+    try:
+        _terminate_worker_descendants()
+    except Exception:
+        # Parent loss is terminal. Even if enumeration fails, the worker group
+        # must not survive without its trusted host.
+        pass
+    try:
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    os._exit(1)
 
 
 def _load_handler(callable_path: str) -> TaskHandler:
@@ -365,7 +500,7 @@ def main() -> int:
     activity_response_fd = int(activity_response_raw) if activity_response_raw else None
     cancel_raw = os.environ.get(_CANCEL_ENV)
     cancel_fd = int(cancel_raw) if cancel_raw else None
-    _install_parent_death_supervision(parent_alive_fd)
+    parent_supervisor = _install_parent_death_supervision(parent_alive_fd)
     session_key = derive_wire_session_key(
         call_digest=call_digest,
         wire_schema_version=TASK_HOST_WIRE_SCHEMA_VERSION,
@@ -374,6 +509,8 @@ def main() -> int:
     cancelled = {"value": False}
     host_call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall | None = None
     parsed: _WorkerJob | None = None
+    startup_host_identity: ExecutionHostLock = pinned_execution_host_lock()
+    attested = False
 
     def cancel_requested() -> bool:
         return cancelled["value"]
@@ -425,7 +562,30 @@ def main() -> int:
         while True:
             frame = _read_frame(session_key, sys.stdin)
             kind = frame.get("kind")
+            if kind == "challenge":
+                if attested:
+                    raise TaskHostProtocolError("worker identity was challenged more than once")
+                nonce = str(frame.get("nonce") or "")
+                if len(nonce) != 64:
+                    raise TaskHostProtocolError("worker identity challenge nonce is invalid")
+                current_host_identity = pinned_execution_host_lock()
+                _write_frame(
+                    session_key,
+                    sys.stdout,
+                    {
+                        "kind": "attestation",
+                        "nonce": nonce,
+                        "implementation_id": startup_host_identity.implementation_id,
+                        "loaded_implementation_digest": (startup_host_identity.implementation_digest),
+                        "current_source_digest": current_host_identity.implementation_digest,
+                        "wire_schema_version": startup_host_identity.wire_schema_version,
+                    },
+                )
+                attested = True
+                continue
             if kind == "job":
+                if not attested:
+                    raise TaskHostProtocolError("worker identity was not attested before dispatch")
                 import_roots = frame.get("handler_import_roots")
                 if not isinstance(import_roots, list):
                     raise TaskHostProtocolError("worker import roots must be a list")
@@ -473,6 +633,10 @@ def main() -> int:
                     cancel_requested=cancel_requested,
                 )
             )
+            live_descendants = _descendant_processes(os.getpid(), detached_only=True)
+            if live_descendants:
+                _terminate_worker_descendants()
+                raise TaskHostProtocolError("handler left live descendant processes")
             _revoke_secrets(secrets)
             _write_frame(
                 session_key,
@@ -481,6 +645,7 @@ def main() -> int:
             )
             return 0
     finally:
+        parent_supervisor.begin_normal_shutdown()
         _revoke_secrets(secrets)
         if parent_alive_fd is not None:
             try:

@@ -48,3 +48,34 @@ does not install OpenCode configuration into the SUT.
 benchmark/assurance-product-phase5/run-opencode.sh
 benchmark/assurance-product-phase5/run-cursor.sh
 ```
+
+## Task 17 observed live attempt (2026-08-26)
+
+Not a workflow acceptance.
+
+- Item: `opencode-ret-dept-management`
+- Change ID: `BENCH-opencode-ret-dept-management-20260826-061801-680125c3`
+- Resolved SUT: `/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin`
+  (worktree SUT copy has no `app/` / `web/`)
+- Provider: `openai/gpt-5.6-terra` / `max` at `http://127.0.0.1:4096` (`healthy`, `1.18.4`)
+- Outcome: `blocked` before `aa start`
+- Session: none
+- Publish receipt: none
+- Change directory: never created
+- Notes: resolved OpenCode config missing `assurance-v1-*` agents and
+  `assurance_boundary_v1`. Env tokens were unset; none were substituted.
+- Harness diagnostics:
+  `benchmark/assurance-product-phase5/results/opencode-20260826-061801-680125c3/evidence.json`
+
+## Task 3 admission attempt (2026-08-26)
+
+Not a workflow acceptance.
+
+- The Task 17 diagnostic above remains the preceding failed live attempt.
+- The fresh pinned command was requested with its existing 28,800-second horizon:
+  `benchmark/assurance-product-phase5/run-opencode.sh`.
+- The execution-approval layer rejected the invocation before process start. No
+  provider request, session, change directory, receipt, export, or business-step
+  evidence was produced.
+- This is an execution authorization blocker, not an OpenCode quota/auth/network
+  outcome and not proof of a completed Phase 3 or Phase 5 Task 24 workflow.

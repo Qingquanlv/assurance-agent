@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Generic, Literal, TypeVar
+from typing import Generic, Literal, Self, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, ValidationInfo, model_validator
 
 from assurance_intake.contracts.common import CaseId, NonEmptyStr, RiskTier
 
@@ -42,6 +42,60 @@ class CaseRemoval(BaseModel):
     case_id: CaseId
 
 
+class FuzzEndpointAuthoring(BaseModel):
+    """Concrete HTTP operation selected for generated fuzz coverage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+    path: str = Field(min_length=1, pattern=r"^/")
+
+
+class FuzzAutomationAuthoring(BaseModel):
+    """Executable fuzz strategy; exposed directly in the agent result schema."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    endpoints: list[FuzzEndpointAuthoring] = Field(min_length=1)
+    property: NonEmptyStr
+    expectations: list[NonEmptyStr] = Field(min_length=1)
+
+
+class PerformanceThresholdsAuthoring(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    p95_ms: float = Field(gt=0)
+    error_rate_max: float = Field(ge=0, le=1)
+
+
+class PerformanceLoadAuthoring(BaseModel):
+    """Absolute, reproducible load shape for a performance scenario."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    concurrency: int = Field(gt=0)
+    spawn_rate_per_second: float = Field(gt=0)
+    duration_seconds: int = Field(gt=0)
+
+
+class PerformanceScenarioAuthoring(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capability: NonEmptyStr
+    endpoint: str = Field(
+        min_length=1,
+        pattern=r"^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) /\S*$",
+    )
+    load: PerformanceLoadAuthoring
+    thresholds: PerformanceThresholdsAuthoring
+
+
+class PerformanceAutomationAuthoring(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scenario: PerformanceScenarioAuthoring
+
+
 class CaseAutomationAuthoring(BaseModel):
     """Automation intent consumed by layer applicability and code generation."""
 
@@ -50,8 +104,8 @@ class CaseAutomationAuthoring(BaseModel):
     status: Literal["not_automated", "planned", "automated", "flaky", "deprecated"]
     confirmed_by: str | None = None
     confirmed_at: str | None = None
-    fuzz: dict[str, object] | None = None
-    performance: dict[str, object] | None = None
+    fuzz: FuzzAutomationAuthoring | None = None
+    performance: PerformanceAutomationAuthoring | None = None
 
 
 class CaseRegressionAuthoring(BaseModel):
@@ -60,6 +114,58 @@ class CaseRegressionAuthoring(BaseModel):
     rationale: NonEmptyStr
     selection_reason: list[str]
     maintenance_rule: NonEmptyStr
+
+
+class CaseTraceCoverage(BaseModel):
+    """Typed proof that an authored case covers a declared capability leaf."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    covered: Literal[True]
+
+
+class MinimumCoverageMatrixRowAuthoring(BaseModel):
+    """One case-design mapping from an MRC obligation to authored cases."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mrc_id: NonEmptyStr
+    key: NonEmptyStr
+    required: bool = True
+    covered_by_cases: list[CaseId] = Field(default_factory=list)
+    status: Literal["covered", "skipped_by_scope"] = "covered"
+    skip_reason: str | None = None
+    category: Literal["api", "e2e", "e2e_if_enabled", "negative", "data_integrity"] | None = None
+    layer: Literal["api", "e2e", "both"] | None = None
+
+    @model_validator(mode="after")
+    def _require_status_evidence(self) -> Self:
+        if self.status == "covered":
+            if not self.covered_by_cases:
+                raise ValueError("covered MRC rows require covered_by_cases")
+            if self.skip_reason is not None:
+                raise ValueError("covered MRC rows cannot declare skip_reason")
+        else:
+            if self.covered_by_cases:
+                raise ValueError("skipped_by_scope MRC rows cannot declare covered_by_cases")
+            if self.skip_reason is None or not self.skip_reason.strip():
+                raise ValueError("skipped_by_scope MRC rows require skip_reason")
+        return self
+
+
+class MinimumCoverageMatrixAuthoring(RootModel[list[MinimumCoverageMatrixRowAuthoring]]):
+    """Authenticated case-design MRC matrix with unique row identities."""
+
+    @model_validator(mode="after")
+    def _require_rows_and_unique_identity(self) -> Self:
+        if not self.root:
+            raise ValueError("minimum coverage matrix must contain at least one row")
+        for field in ("mrc_id", "key"):
+            values = [getattr(row, field) for row in self.root]
+            duplicates = sorted(value for value in set(values) if values.count(value) > 1)
+            if duplicates:
+                raise ValueError(f"duplicate {field} values are not allowed: {duplicates!r}")
+        return self
 
 
 class CaseEntryAuthoring(_CaseEntryBase):
@@ -81,7 +187,7 @@ class CaseEntryAuthoring(_CaseEntryBase):
     risk: CaseRisk
     automation: CaseAutomationAuthoring
     regression: CaseRegressionAuthoring
-    trace: dict[str, object]
+    trace: dict[str, CaseTraceCoverage] = Field(min_length=1)
 
     @model_validator(mode="after")
     def _validate_automation_contract(self) -> CaseEntryAuthoring:
@@ -98,28 +204,19 @@ class CaseEntryAuthoring(_CaseEntryBase):
         if self.risk.level in {"high", "critical"} and not self.automation.required:
             raise ValueError("high/critical risk cases require automation.required=true")
         if self.type == "Fuzz":
-            fuzz = self.automation.fuzz
-            endpoints = fuzz.get("endpoints") if isinstance(fuzz, Mapping) else None
-            if not isinstance(endpoints, list) or not endpoints:
-                raise ValueError("Fuzz automation.fuzz.endpoints must be a non-empty list")
+            if self.automation.fuzz is None:
+                raise ValueError("Fuzz automation.fuzz is required")
+            if self.automation.performance is not None:
+                raise ValueError("Fuzz cases cannot declare automation.performance")
             if not self.related_cases:
                 raise ValueError("Fuzz related_cases must reference a non-Fuzz case")
-        if self.type == "Performance":
-            performance = self.automation.performance
-            scenario = performance.get("scenario") if isinstance(performance, Mapping) else None
-            thresholds = scenario.get("thresholds") if isinstance(scenario, Mapping) else None
-            for field in ("capability", "endpoint"):
-                value = scenario.get(field) if isinstance(scenario, Mapping) else None
-                if not isinstance(value, str) or not value.strip():
-                    raise ValueError(
-                        f"Performance automation.performance.scenario.{field} must be a non-empty string"
-                    )
-            for field in ("p95_ms", "error_rate_max"):
-                value = thresholds.get(field) if isinstance(thresholds, Mapping) else None
-                if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
-                    raise ValueError(
-                        f"Performance automation.performance.scenario.thresholds.{field} must be numeric"
-                    )
+        elif self.type == "Performance":
+            if self.automation.performance is None:
+                raise ValueError("Performance automation.performance is required")
+            if self.automation.fuzz is not None:
+                raise ValueError("Performance cases cannot declare automation.fuzz")
+        elif self.automation.fuzz is not None or self.automation.performance is not None:
+            raise ValueError(f"{self.type} cases cannot declare fuzz/performance automation")
         return self
 
 
@@ -149,8 +246,11 @@ class CaseYamlAuthoring(_CaseYamlBase[CaseEntryAuthoring]):
                 "Set automation.required=true for every layer selected for automated execution; "
                 "otherwise applicability deterministically skips that layer",
                 "Performance entries require automation.performance.scenario.capability "
-                "and automation.performance.scenario.endpoint as non-empty strings, plus numeric "
-                "thresholds.p95_ms and thresholds.error_rate_max",
+                "and automation.performance.scenario.endpoint, an explicit load with positive "
+                "concurrency/spawn_rate_per_second/duration_seconds, plus numeric thresholds",
+                "Fuzz entries require concrete HTTP method/path endpoints, a named property, and "
+                "non-empty oracle expectations",
+                "Every trace must contain at least one exact capability leaf supplied by the graph",
             ]
         }
     )
@@ -195,6 +295,10 @@ class CaseYamlAuthoring(_CaseYamlBase[CaseEntryAuthoring]):
             for key in entry.trace:
                 if key not in leafs:
                     raise ValueError(f"capability key is not a declared typed leaf: {key}")
+            if entry.type == "Performance" and entry.automation.performance is not None:
+                capability = entry.automation.performance.scenario.capability
+                if capability not in leafs:
+                    raise ValueError(f"capability key is not a declared typed leaf: {capability}")
         return self
 
 

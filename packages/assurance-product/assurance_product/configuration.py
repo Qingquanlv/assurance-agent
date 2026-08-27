@@ -29,14 +29,15 @@ _PLUGIN_MANIFEST = "plugin.yaml"
 _CONFIG_PATH = ".aa/config.yaml"
 _POLICY_PATH = ".aa/policy.yaml"
 _KNOWLEDGE_PATH = ".aa/data-knowledge.yaml"
+_CATALOG_PATH = ".aa/capability-catalog.json"
 _ENVELOPE_RESOURCE_ID = "assurance.product.configuration.project-config"
 _POLICY_RESOURCE_ID = "assurance.product.configuration.product-policy"
 _KNOWLEDGE_RESOURCE_ID = "assurance.product.configuration.data-knowledge"
 _CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
 _NODE_POLICY_RESOURCE_ID = "assurance.product.configuration.node-policy-values"
-_REQUIRED_FILES = frozenset({_PLUGIN_MANIFEST, _CONFIG_PATH, _POLICY_PATH, _KNOWLEDGE_PATH})
+_REQUIRED_FILES = frozenset({_PLUGIN_MANIFEST, _CONFIG_PATH, _POLICY_PATH, _KNOWLEDGE_PATH, _CATALOG_PATH})
 _ALLOWED_DECLARED_RESOURCE_IDS = frozenset(
-    {_POLICY_RESOURCE_ID, _KNOWLEDGE_RESOURCE_ID, _ENVELOPE_RESOURCE_ID}
+    {_POLICY_RESOURCE_ID, _KNOWLEDGE_RESOURCE_ID, _CATALOG_RESOURCE_ID, _ENVELOPE_RESOURCE_ID}
 )
 _REQUIRED_DEPENDENCIES = (
     ("assurance.intake", "==0.1.0"),
@@ -85,6 +86,51 @@ class ProjectConfigurationError(Exception):
     """Raised when a project configuration tree is not closed business data."""
 
 
+def _mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _flatten_constraint_keys(constraints: Mapping[str, object]) -> tuple[str, ...]:
+    keys: list[str] = []
+    for key, value in constraints.items():
+        if isinstance(value, Mapping):
+            for attribute in value:
+                suffix = "has_max_length" if attribute == "max_length" else str(attribute)
+                keys.append(f"{key}_{suffix}")
+        else:
+            keys.append(str(key))
+    return tuple(keys)
+
+
+def capability_leafs_from_knowledge(document: Mapping[str, object]) -> tuple[str, ...]:
+    """Return the exact closed L1 typed-leaf catalog for one knowledge document."""
+
+    leafs: set[str] = set()
+    for root in ("accounts", "auth", "entities", "auth_matrix"):
+        for name, value in _mapping(document.get(root)).items():
+            if isinstance(value, Mapping):
+                leafs.add(f"{root}.{name}")
+                if root == "entities":
+                    constraints = _mapping(value.get("constraints"))
+                    leafs.update(
+                        f"entities.{name}.constraints.{key}" for key in _flatten_constraint_keys(constraints)
+                    )
+    capabilities = _mapping(document.get("capabilities"))
+    for module, names in _mapping(capabilities.get("domain_factories")).items():
+        for name, value in _mapping(names).items():
+            if isinstance(value, Mapping):
+                leafs.add(f"capabilities.domain_factories.{module}.{name}")
+    for layer, modules in _mapping(capabilities.get("adapters")).items():
+        for module, names in _mapping(modules).items():
+            for name, value in _mapping(names).items():
+                if isinstance(value, Mapping):
+                    leafs.add(f"capabilities.adapters.{layer}.{module}.{name}")
+    for name, value in _mapping(capabilities.get("cleanup")).items():
+        if isinstance(value, Mapping):
+            leafs.add(f"capabilities.cleanup.{name}")
+    return tuple(sorted(leafs))
+
+
 def parse_project_config(document: Mapping[str, object] | object) -> ProjectConfigV1:
     if not isinstance(document, Mapping):
         raise ProjectConfigurationError("project configuration must be a mapping")
@@ -118,12 +164,21 @@ def load_project_configuration(tree: ConfigTree) -> PluginContribution:
     parsed = parse_project_config(_yaml_mapping(files[_CONFIG_PATH], "project configuration"))
     policy = _yaml_mapping(files[_POLICY_PATH], "product policy")
     knowledge = _yaml_mapping(files[_KNOWLEDGE_PATH], "data knowledge")
+    catalog_source = _yaml_mapping(files[_CATALOG_PATH], "capability catalog")
     _reject_authority_keys(policy, "product policy")
     _reject_authority_keys(knowledge, "data knowledge")
     if thaw_json(freeze_json(policy)) != thaw_json(parsed.product_policy):
         raise ProjectConfigurationError("product policy file disagrees with project configuration")
     if thaw_json(freeze_json(knowledge)) != thaw_json(parsed.data_knowledge):
         raise ProjectConfigurationError("data knowledge file disagrees with project configuration")
+    catalog = {
+        "schema_version": "1",
+        "typed_leafs": list(capability_leafs_from_knowledge(knowledge)),
+    }
+    if catalog_source != catalog:
+        raise ProjectConfigurationError("capability catalog file disagrees with typed knowledge leaves")
+    if thaw_json(parsed.capability_catalog) != catalog:
+        raise ProjectConfigurationError("capability catalog file disagrees with project configuration")
     return PluginContribution(
         resources=(
             ResourceContribution(
@@ -139,7 +194,7 @@ def load_project_configuration(tree: ConfigTree) -> PluginContribution:
             ResourceContribution(
                 resource_id=_CATALOG_RESOURCE_ID,
                 media_type="application/json",
-                content=canonical_json_bytes(thaw_json(parsed.capability_catalog)),
+                content=files[_CATALOG_PATH],
             ),
             ResourceContribution(
                 resource_id=_NODE_POLICY_RESOURCE_ID,

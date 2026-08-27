@@ -46,6 +46,7 @@ _WHEEL_ROOT = Path(__file__).resolve().parent.parent
 
 REFS = {"problem_ids": ["PROB-1"], "occurrence_ids": ["OCC-1"]}
 BINDING: dict[str, JSONValue] = {
+    "agent_profile": "aa-doc-author",
     "execution": {
         "provider_model": "test-model",
         "worker_profile": "worker",

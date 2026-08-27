@@ -63,6 +63,9 @@ def normalize_evidence(
             {
                 "change_id": change_id,
                 "batch_id": batch_id,
+                "status": "failed"
+                if built.exit_code != 0 or any(item.status == "failed" for item in results)
+                else "passed",
                 "selected_targets": selected_targets,
                 "mapping": mapping.model_dump(mode="json"),
                 "mapping_digest": mapping_digest(mapping),

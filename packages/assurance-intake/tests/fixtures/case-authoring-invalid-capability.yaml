@@ -39,6 +39,7 @@ added:
         - critical_user_journey
       maintenance_rule: keep_until_feature_deprecated
     trace:
-      entities.fake: {}
+      entities.fake:
+        covered: true
 modified: []
 removed: []

@@ -168,7 +168,23 @@ class _ScriptedTaskHost:
         self._exhausted = False
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
-        return TaskHostCallResult(operation="execute", outcome=self._outcome(call.request.capability_id))
+        capability_id = call.request.capability_id
+        outcome = self._outcome(capability_id)
+        if capability_id.startswith(_AGENT_PREFIX) and capability_id.endswith(".prepare"):
+            input_value = call.request.input
+            if not isinstance(input_value, Mapping) or not isinstance(input_value.get("change_id"), str):
+                raise AssertionError("scripted agent prepare requires a change_id")
+            if not isinstance(outcome.output, Mapping):
+                raise AssertionError("scripted agent prepare requires an object output")
+            outcome = outcome.model_copy(
+                update={
+                    "output": {
+                        **outcome.output,
+                        "workspace": {"scope_id": input_value["change_id"]},
+                    }
+                }
+            )
+        return TaskHostCallResult(operation="execute", outcome=outcome)
 
     def _outcome(self, capability_id: str) -> TaskOutcome:
         if capability_id in _EXECUTION_FINALIZE:

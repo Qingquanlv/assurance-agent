@@ -61,6 +61,44 @@ def test_wrong_runtime_deployment_fails_closed(installed_sources):
         resolve_assurance_composition(request)
 
 
+def test_unselected_adapter_source_is_rejected_before_provider_import(
+    installed_sources,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import graph_engine.composition.resolver as resolver_module
+
+    import assurance_product.product as product_module
+    from assurance_product.product import resolve_assurance_composition
+    from assurance_product.source_catalog import product_source_catalog
+
+    selected_sources = product_source_catalog("opencode")
+    unselected_source = product_source_catalog("cursor")[-1]
+    assert unselected_source.entrypoint_name == "cursor"
+    loaded_unselected_providers: list[str] = []
+    original_load = resolver_module._load_snapshotted_entrypoint_binding
+
+    def track_provider_load(source, snapshot, metadata_provider, binding_cache):
+        if source.entrypoint_name == unselected_source.entrypoint_name:
+            loaded_unselected_providers.append(source.entrypoint_name)
+        return original_load(source, snapshot, metadata_provider, binding_cache)
+
+    monkeypatch.setattr(
+        product_module,
+        "product_source_catalog",
+        lambda _adapter: (*selected_sources, unselected_source),
+    )
+    monkeypatch.setattr(
+        resolver_module,
+        "_load_snapshotted_entrypoint_binding",
+        track_provider_load,
+    )
+
+    with pytest.raises(DependencyConflict, match="unexpected selected plugin source: runtime.cursor"):
+        resolve_assurance_composition(request_for("opencode", installed_sources))
+
+    assert loaded_unselected_providers == []
+
+
 def test_resolve_accepts_already_imported_assurance_product(installed_sources):
     import assurance_intake
     import assurance_product

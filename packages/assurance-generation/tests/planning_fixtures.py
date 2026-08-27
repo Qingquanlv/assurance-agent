@@ -11,6 +11,7 @@ FAMILIES = ("api", "e2e", "fuzz", "performance")
 VALID_LEAFS = ("auth.session.create", "entities.item.create")
 _SHA = "a" * 64
 BINDING: dict[str, JSONValue] = {
+    "agent_profile": "aa-doc-author",
     "execution": {
         "provider_model": "test-model",
         "worker_profile": "worker",
@@ -116,12 +117,18 @@ def reviewed_case(family: str) -> dict[str, Any]:
         case["automation"]["fuzz"] = {
             "endpoints": [{"method": "POST", "path": "/items"}],
             "property": "item.create.payload",
+            "expectations": ["never returns 5xx", "valid payloads remain schema-conformant"],
         }
     if family == "performance":
         case["automation"]["performance"] = {
             "scenario": {
                 "capability": "entities.item.create",
                 "endpoint": "POST /items",
+                "load": {
+                    "concurrency": 10,
+                    "spawn_rate_per_second": 2,
+                    "duration_seconds": 60,
+                },
                 "thresholds": {"p95_ms": 200, "error_rate_max": 0.01},
             }
         }
@@ -193,7 +200,6 @@ def valid_plan_result(family: str) -> dict[str, Any]:
 
 
 def review_result(family: str, leaf: str = "entities.item.create") -> dict[str, Any]:
-    human_only = family in {"fuzz", "performance"}
     return {
         "schema_version": "1.0",
         "review_type": f"{family}-plan",
@@ -202,8 +208,8 @@ def review_result(family: str, leaf: str = "entities.item.create") -> dict[str, 
         "findings": [],
         "auto_fix_plan": [],
         "next_action": "proceed to codegen",
-        "auto_fix_allowed": not human_only,
-        "human_review_required": human_only,
+        "auto_fix_allowed": False,
+        "human_review_required": False,
         "codegen_readiness": "ready",
         "risk_level": "medium",
         "required_capabilities": [leaf],

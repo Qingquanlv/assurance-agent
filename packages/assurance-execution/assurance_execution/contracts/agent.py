@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
@@ -39,6 +39,7 @@ def _canonical_relative_paths(values: tuple[str, ...]) -> tuple[str, ...]:
 
 
 class AgentBindingDataV1(FrozenModel):
+    agent_profile: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     execution: FrozenExecutionSelection
     request_policy_digest: str = Field(pattern=_SHA256)
     request_config_digest: str = Field(pattern=_SHA256)
@@ -75,6 +76,34 @@ class SelectInputV1(FrozenModel):
         if not value:
             raise ValueError("reviewed_cases must be a mapping")
         return value
+
+
+class ExecutionPrepareInputV1(FrozenModel):
+    """Root data from which prepare locks the executable test selection."""
+
+    change_id: str = Field(min_length=1)
+    selected_test_families: tuple[Literal["api", "e2e", "fuzz", "performance"], ...]
+    capability_leafs: tuple[str, ...]
+
+    @field_validator("selected_test_families")
+    @classmethod
+    def _selected_test_families(
+        cls,
+        value: tuple[Literal["api", "e2e", "fuzz", "performance"], ...],
+    ) -> tuple[Literal["api", "e2e", "fuzz", "performance"], ...]:
+        if not value or len(value) != len(set(value)):
+            raise ValueError("selected_test_families must be non-empty and unique")
+        order = {"api": 0, "e2e": 1, "fuzz": 2, "performance": 3}
+        return tuple(sorted(value, key=order.__getitem__))
+
+    @field_validator("capability_leafs")
+    @classmethod
+    def _prepare_capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _sorted_unique(value, label="capability leaf")
+
+
+class ExecutionFinalizeRequestV1(ExecutionPrepareInputV1):
+    agent_result: AgentRunResult
 
 
 class RunTestsInputV1(FrozenModel):

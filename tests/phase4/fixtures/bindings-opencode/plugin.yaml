@@ -16,6 +16,7 @@ bindings:
   - capability_id: test.assurance.bindings.prepare
     target_capability_id: assurance.intake.case-review.prepare
     data:
+      agent_profile: aa-doc-author
       execution:
         provider_model: fixture/model-v1
         worker_profile: fixture-profile
@@ -27,6 +28,7 @@ bindings:
   - capability_id: test.assurance.bindings.execute
     target_capability_id: runtime.opencode.execute
     data:
+      agent_profile: aa-doc-author
       execution:
         provider_model: fixture/model-v1
         worker_profile: fixture-profile
@@ -38,6 +40,7 @@ bindings:
   - capability_id: test.assurance.bindings.finalize
     target_capability_id: assurance.intake.case-review.finalize
     data:
+      agent_profile: aa-doc-author
       execution:
         provider_model: fixture/model-v1
         worker_profile: fixture-profile

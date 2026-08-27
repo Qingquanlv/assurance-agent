@@ -65,6 +65,235 @@ def test_binding_build_is_byte_deterministic(tmp_path, opencode_manifest):
     assert first.wheel.name == canonical_wheel_filename(first.distribution, "1.0.0")
 
 
+def test_success_leaves_only_the_final_wheel(tmp_path, opencode_manifest):
+    from assurance_product.binding_builder import build_deployment_wheel
+
+    output = tmp_path / "out"
+    built = build_deployment_wheel(opencode_manifest, output)
+
+    assert list(output.iterdir()) == [built.wheel]
+
+
+@pytest.mark.parametrize(
+    "cut",
+    [
+        "builder-before-file-publication",
+        "builder-after-file-publication",
+        "builder-before-wheel-publication",
+        "builder-after-wheel-publication",
+    ],
+)
+def test_interrupted_publication_is_retryable(
+    tmp_path: Path,
+    opencode_manifest: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cut: str,
+) -> None:
+    from assurance_product import binding_builder
+
+    expected = binding_builder.build_deployment_wheel(opencode_manifest, tmp_path / "expected")
+    output = tmp_path / "output"
+
+    def crash(selected: str) -> None:
+        if selected == cut:
+            raise RuntimeError(cut)
+
+    monkeypatch.setattr(binding_builder, "_publication_cut", crash)
+    with pytest.raises(RuntimeError, match=cut):
+        binding_builder.build_deployment_wheel(opencode_manifest, output)
+
+    monkeypatch.setattr(binding_builder, "_publication_cut", lambda _cut: None)
+    retried = binding_builder.build_deployment_wheel(opencode_manifest, output)
+    assert retried.wheel.read_bytes() == expected.wheel.read_bytes()
+    assert list(output.iterdir()) == [retried.wheel]
+    assert retried.wheel.stat().st_nlink == 1
+
+
+def test_partial_temporary_wheel_is_recovered(
+    tmp_path: Path,
+    opencode_manifest: Path,
+) -> None:
+    from assurance_product.binding_builder import build_deployment_wheel
+
+    expected = build_deployment_wheel(opencode_manifest, tmp_path / "expected")
+    output = tmp_path / "output"
+    output.mkdir()
+    temporary = output / f".{expected.wheel.name}.publishing"
+    temporary.write_bytes(b"partial")
+
+    retried = build_deployment_wheel(opencode_manifest, output)
+
+    assert list(output.iterdir()) == [retried.wheel]
+    assert retried.wheel.read_bytes() == expected.wheel.read_bytes()
+
+
+def test_output_directory_symlink_is_rejected(
+    tmp_path: Path,
+    opencode_manifest: Path,
+) -> None:
+    from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
+
+    target = tmp_path / "target"
+    target.mkdir()
+    output = tmp_path / "output"
+    output.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(BindingBuildError, match="output directory"):
+        build_deployment_wheel(opencode_manifest, output)
+    assert list(target.iterdir()) == []
+
+
+@pytest.mark.parametrize("entry", ["temporary", "final"])
+def test_symlink_publication_entry_is_rejected(
+    tmp_path: Path,
+    opencode_manifest: Path,
+    entry: str,
+) -> None:
+    from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
+
+    expected = build_deployment_wheel(opencode_manifest, tmp_path / "expected")
+    output = tmp_path / "output"
+    output.mkdir()
+    external = tmp_path / "external"
+    external.write_bytes(expected.wheel.read_bytes())
+    name = expected.wheel.name if entry == "final" else f".{expected.wheel.name}.publishing"
+    (output / name).symlink_to(external)
+
+    with pytest.raises(BindingBuildError, match="safe regular file"):
+        build_deployment_wheel(opencode_manifest, output)
+    assert external.read_bytes() == expected.wheel.read_bytes()
+
+
+def test_final_created_late_is_not_overwritten(
+    tmp_path: Path,
+    opencode_manifest: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assurance_product import binding_builder
+
+    expected = binding_builder.build_deployment_wheel(opencode_manifest, tmp_path / "expected")
+    output = tmp_path / "output"
+    final = output / expected.wheel.name
+    competing = b"competing-publisher"
+
+    def publish_at_cut(cut: str) -> None:
+        if cut == "builder-before-wheel-publication":
+            final.write_bytes(competing)
+
+    monkeypatch.setattr(binding_builder, "_publication_cut", publish_at_cut)
+    with pytest.raises(binding_builder.BindingBuildError, match="occupied"):
+        binding_builder.build_deployment_wheel(opencode_manifest, output)
+    assert final.read_bytes() == competing
+
+
+def test_same_inode_rewrite_after_file_publication_is_rejected(
+    tmp_path: Path,
+    opencode_manifest: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assurance_product import binding_builder
+
+    expected = binding_builder.build_deployment_wheel(opencode_manifest, tmp_path / "expected")
+    output = tmp_path / "output"
+    temporary = output / f".{expected.wheel.name}.publishing"
+
+    def rewrite_at_cut(cut: str) -> None:
+        if cut == "builder-after-file-publication":
+            temporary.write_bytes(b"x" * len(expected.wheel.read_bytes()))
+
+    monkeypatch.setattr(binding_builder, "_publication_cut", rewrite_at_cut)
+    with pytest.raises(binding_builder.BindingBuildError, match="authenticated content"):
+        binding_builder.build_deployment_wheel(opencode_manifest, output)
+    assert not (output / expected.wheel.name).exists()
+
+
+def test_output_directory_mode_drift_fails_closed(
+    tmp_path: Path,
+    opencode_manifest: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assurance_product import binding_builder
+
+    output = tmp_path / "output"
+
+    def drift_at_cut(cut: str) -> None:
+        if cut == "builder-after-file-publication":
+            output.chmod(0o777)
+
+    monkeypatch.setattr(binding_builder, "_publication_cut", drift_at_cut)
+    with pytest.raises(binding_builder.BindingBuildError, match="trust changed"):
+        binding_builder.build_deployment_wheel(opencode_manifest, output)
+
+
+def test_concurrent_cooperating_builder_is_rejected(
+    tmp_path: Path,
+    opencode_manifest: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from assurance_product import binding_builder
+
+    output = tmp_path / "output"
+    nested_error: Exception | None = None
+
+    def compete_at_cut(cut: str) -> None:
+        nonlocal nested_error
+        if cut == "builder-before-file-publication" and nested_error is None:
+            try:
+                binding_builder.build_deployment_wheel(opencode_manifest, output)
+            except binding_builder.BindingBuildError as error:
+                nested_error = error
+
+    monkeypatch.setattr(binding_builder, "_publication_cut", compete_at_cut)
+    built = binding_builder.build_deployment_wheel(opencode_manifest, output)
+    assert built.wheel.is_file()
+    assert nested_error is not None
+    assert "locked" in str(nested_error)
+
+
+@pytest.mark.parametrize("matches", [True, False])
+def test_existing_final_is_accepted_only_when_bytes_match(
+    tmp_path: Path,
+    opencode_manifest: Path,
+    matches: bool,
+) -> None:
+    from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
+
+    expected = build_deployment_wheel(opencode_manifest, tmp_path / "expected")
+    output = tmp_path / "output"
+    output.mkdir()
+    final = output / expected.wheel.name
+    final.write_bytes(expected.wheel.read_bytes() if matches else b"different")
+
+    if not matches:
+        with pytest.raises(BindingBuildError, match="authenticated content"):
+            build_deployment_wheel(opencode_manifest, output)
+        return
+    built = build_deployment_wheel(opencode_manifest, output)
+    assert built.wheel == final
+    assert list(output.iterdir()) == [final]
+
+
+def test_duplicate_route_assignment_is_rejected_before_build(
+    tmp_path: Path,
+    opencode_manifest: Path,
+) -> None:
+    from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
+
+    raw = opencode_manifest.read_text(encoding="utf-8")
+    first_route = "  assurance.intake.case-design.prepare:\n"
+    next_route = "  assurance.intake.case-review.prepare:\n"
+    start = raw.index(first_route)
+    end = raw.index(next_route)
+    duplicate = raw[start:end]
+    insertion = raw.index("permission_profiles:\n")
+    manifest = tmp_path / "duplicate-route.yaml"
+    manifest.write_text(raw[:insertion] + duplicate + raw[insertion:], encoding="utf-8")
+
+    with pytest.raises(BindingBuildError, match="duplicate"):
+        build_deployment_wheel(manifest, tmp_path / "output")
+    assert not (tmp_path / "output").exists()
+
+
 def test_reordered_yaml_mappings_produce_the_same_wheel(tmp_path, opencode_document):
     from assurance_product.binding_builder import build_deployment_wheel
 

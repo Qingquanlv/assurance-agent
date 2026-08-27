@@ -249,11 +249,12 @@ class Handler:
         store=store,
         handler_import_roots={"test.secret.run": (str(tmp_path),)},
     )
-    revoked_sizes: list[int] = []
+    revoked_secrets: list[dict[str, bytes]] = []
     original_revoke = module._revoke_secrets
 
     def recording_revoke(secrets: dict[str, bytes]) -> None:
-        revoked_sizes.append(len(secrets))
+        if secrets:
+            revoked_secrets.append(secrets)
         original_revoke(secrets)
 
     monkeypatch.setattr(module, "_revoke_secrets", recording_revoke)
@@ -261,7 +262,91 @@ class Handler:
         update={"capability_entrypoint": "secret_handler:Handler.execute"}
     )
     asyncio.run(host.execute(call))
-    assert any(size > 0 for size in revoked_sizes)
+    assert revoked_secrets
+    assert all(not secrets for secrets in revoked_secrets)
+
+
+def test_spawn_failure_revokes_secrets_resolved_by_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graph_engine.runtime import production_host as module
+
+    secret_path = tmp_path / "secret.txt"
+    secret_path.write_bytes(_CANARY)
+    store, attempt_root = _workspace_store(tmp_path)
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=_authorization(secret_path))
+    host.bind_invocation_runtime(handlers={"test.secret.run": _SecretEchoHandler()}, store=store)
+    revoked_secrets: list[dict[str, bytes]] = []
+    original_revoke = module._revoke_secrets
+
+    def recording_revoke(secrets: dict[str, bytes]) -> None:
+        if secrets:
+            revoked_secrets.append(secrets)
+        original_revoke(secrets)
+
+    def fail_spawn(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("spawn failed after secret resolution")
+
+    monkeypatch.setattr(module, "_revoke_secrets", recording_revoke)
+    monkeypatch.setattr(module._ProcessSupervisor, "spawn", fail_spawn)
+
+    with pytest.raises(RuntimeError, match="spawn failed after secret resolution"):
+        asyncio.run(host.execute(_execute_call(attempt_root)))
+
+    assert revoked_secrets
+    assert all(not secrets for secrets in revoked_secrets)
+
+
+def test_secret_channel_disconnect_revokes_parent_material_and_cleans_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from graph_engine.runtime import production_host as module
+
+    handler_path = tmp_path / "secret_handler.py"
+    handler_path.write_text(
+        "from graph_engine.plugin_api import TaskOutcome\n"
+        "class Handler:\n"
+        "    async def execute(self, request, context):\n"
+        "        assert context.secrets is not None\n"
+        "        context.secrets.resolve('test.secret')\n"
+        "        return TaskOutcome.succeeded({'ok': True})\n",
+        encoding="utf-8",
+    )
+    secret_path = tmp_path / "secret.txt"
+    secret_path.write_bytes(_CANARY)
+    authorization = _authorization(secret_path)
+    store, attempt_root = _workspace_store(tmp_path)
+    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=authorization)
+    host.bind_invocation_runtime(
+        handlers={"test.secret.run": _SecretEchoHandler()},
+        store=store,
+        handler_import_roots={"test.secret.run": (str(tmp_path),)},
+    )
+    revoked_secrets: list[dict[str, bytes]] = []
+    original_revoke = module._revoke_secrets
+
+    def recording_revoke(secrets: dict[str, bytes]) -> None:
+        if secrets:
+            revoked_secrets.append(secrets)
+        original_revoke(secrets)
+
+    def disconnect_after_secret_transfer(fault_id: str) -> None:
+        if fault_id == "host-secret-channel-disconnect":
+            raise RuntimeError(fault_id)
+
+    monkeypatch.setattr(module, "_revoke_secrets", recording_revoke)
+    monkeypatch.setattr(module, "_host_fault_cut", disconnect_after_secret_transfer)
+    call = _execute_call(attempt_root).model_copy(
+        update={"capability_entrypoint": "secret_handler:Handler.execute"}
+    )
+
+    with pytest.raises(RuntimeError, match="host-secret-channel-disconnect"):
+        asyncio.run(host.execute(call))
+
+    assert revoked_secrets
+    assert all(not secrets for secrets in revoked_secrets)
 
 
 def test_production_job_frame_excludes_parent_sys_path(

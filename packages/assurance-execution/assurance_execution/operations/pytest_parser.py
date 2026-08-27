@@ -34,6 +34,16 @@ def test_file_from_nodeid(nodeid: str) -> str:
     return nodeid.split("::", 1)[0]
 
 
+def _selected_for_nodeid(nodeid: str, allowed: frozenset[str]) -> str | None:
+    file_path = test_file_from_nodeid(nodeid)
+    if file_path in allowed:
+        return file_path
+    matches = tuple(
+        selector for selector in allowed if nodeid == selector or nodeid.startswith(f"{selector}[")
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
 def _longrepr_text(longrepr: object) -> str:
     if isinstance(longrepr, str):
         return longrepr
@@ -85,8 +95,8 @@ def parse_pytest_report(
         if not isinstance(item, Mapping):
             raise OutputError("pytest report test row must be an object")
         nodeid = str(item.get("nodeid") or "")
-        path = test_file_from_nodeid(nodeid)
-        if path not in allowed:
+        path = _selected_for_nodeid(nodeid, allowed)
+        if path is None:
             raise OutputError(_OUTSIDE_REASON)
         status = _OUTCOME_MAP.get(str(item.get("outcome") or ""), "failed")
         current = aggregated.get(path)

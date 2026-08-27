@@ -107,6 +107,39 @@ def test_plan_review_accepts_exact_typed_leaf() -> None:
     assert model.required_capabilities == ["entities.item.create"]
 
 
+def test_performance_plan_review_accepts_bounded_automatic_repair() -> None:
+    raw = valid_plan_review(required_capabilities=["entities.item.create"])
+    raw.update(
+        {
+            "review_type": "performance-plan",
+            "decision": "needs_fix",
+            "findings": [
+                {
+                    "id": "PERF-PLAN-001",
+                    "severity": "blocking",
+                    "category": "runtime_contract",
+                    "message": "Use the source-backed unfiltered tree lookup for descendants.",
+                    "locator": {
+                        "artifact": "qa/changes/CH-DEMO-001/plans/performance-plan.md",
+                        "case_id": "TC_PERFORMANCE_001",
+                        "key": "Seed Lifecycle",
+                    },
+                }
+            ],
+            "auto_fix_plan": ["PERF-PLAN-001"],
+            "next_action": "repair the bounded seed lookup",
+            "auto_fix_allowed": True,
+            "human_review_required": False,
+            "codegen_readiness": "not_ready",
+        }
+    )
+
+    model = PlanReviewAuthoring.model_validate(raw, context={"capability_leafs": VALID_LEAFS})
+
+    assert model.decision == "needs_fix"
+    assert model.auto_fix_plan == ["PERF-PLAN-001"]
+
+
 def test_generation_contracts_import_only_intake_contracts() -> None:
     assert forbidden_generation_imports() == set()
 

@@ -191,6 +191,88 @@ def test_duplicate_binding_id_fails_closed(installed_sources, tmp_path: Path):
         _drop_modules_from_roots(mutated)
 
 
+def test_forged_alias_target_fails_closed(installed_sources, tmp_path: Path) -> None:
+    from assurance_product.product import AssuranceCompositionError, resolve_assurance_composition
+
+    def forge_alias_target(document: dict[str, object]) -> None:
+        bindings = document["bindings"]
+        assert isinstance(bindings, list)
+        execute = next(
+            binding
+            for binding in bindings
+            if isinstance(binding, dict) and str(binding.get("capability_id", "")).endswith(".execute")
+        )
+        execute["target_capability_id"] = "assurance.intake.intake.prepare"
+
+    request, original, mutated = _mutated_deployment_request(
+        installed_sources,
+        tmp_path,
+        forge_alias_target,
+    )
+    _swap_sys_path(original, mutated)
+    _drop_modules_from_roots(original)
+    try:
+        with pytest.raises(AssuranceCompositionError, match="execute alias target drifted"):
+            resolve_assurance_composition(request)
+    finally:
+        _swap_sys_path(mutated, original)
+        _drop_modules_from_roots(mutated)
+
+
+def test_deployment_wheel_drift_after_resolution_fails_before_provider_import(
+    installed_sources,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from importlib import metadata
+
+    import graph_engine.composition.resolver as resolver_module
+
+    from assurance_product.product import resolve_assurance_composition
+
+    original = installed_sources.extract_roots["opencode"]
+    drifted = tmp_path / "drifted-extract"
+    _copy_extract(original, drifted)
+    contribution = next(drifted.rglob("assurance-deployment-contribution.json"))
+    loaded_deployment_entrypoints: list[str] = []
+    drift_injected = False
+    original_binding_load = resolver_module._load_snapshotted_entrypoint_binding
+    original_entrypoint_load = metadata.EntryPoint.load
+
+    def track_entrypoint_load(entrypoint: metadata.EntryPoint) -> object:
+        if entrypoint.name == "deployment":
+            loaded_deployment_entrypoints.append(entrypoint.name)
+        return original_entrypoint_load(entrypoint)
+
+    def drift_before_provider_import(source, snapshot, metadata_provider, binding_cache):
+        nonlocal drift_injected
+        if (
+            source.distribution == installed_sources.deployments["opencode"].distribution
+            and not drift_injected
+        ):
+            drift_injected = True
+            contribution.write_bytes(contribution.read_bytes() + b" ")
+        return original_binding_load(source, snapshot, metadata_provider, binding_cache)
+
+    monkeypatch.setattr(metadata.EntryPoint, "load", track_entrypoint_load)
+    monkeypatch.setattr(
+        resolver_module,
+        "_load_snapshotted_entrypoint_binding",
+        drift_before_provider_import,
+    )
+    _swap_sys_path(original, drifted)
+    _drop_modules_from_roots(original, drifted)
+    try:
+        with pytest.raises(SourceSnapshotError, match="RECORD hash mismatch|changed after snapshot"):
+            resolve_assurance_composition(request_for("opencode", installed_sources))
+    finally:
+        _swap_sys_path(drifted, original)
+        _drop_modules_from_roots(drifted)
+
+    assert drift_injected is True
+    assert loaded_deployment_entrypoints == []
+
+
 def _mutated_deployment_request(installed_sources, tmp_path: Path, mutate):
     from assurance_product.product import AssuranceCompositionRequest
 

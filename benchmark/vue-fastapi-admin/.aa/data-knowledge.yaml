@@ -200,16 +200,6 @@ capabilities:
         list_auth_routes:
           kind: isolated_worker
           symbol: tests.api.adapters.api.factory_list_auth_routes
-      dept:
-        make_dept:
-          kind: isolated_worker
-          symbol: tests.api.adapters.dept.factory_make_dept
-        cleanup_dept:
-          kind: isolated_worker
-          symbol: tests.api.adapters.dept.factory_cleanup_dept
-        get_dept_closure_rows:
-          kind: isolated_worker
-          symbol: tests.api.adapters.dept.factory_get_dept_closure_rows
       menu:
         make_menu:
           kind: isolated_worker

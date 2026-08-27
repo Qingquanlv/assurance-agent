@@ -13,7 +13,6 @@ FindingSeverity = Literal["low", "medium", "high", "critical", "blocking"]
 
 _CAPABILITY_GATED_REVIEW_TYPES = frozenset({"api-plan", "e2e-plan"})
 _PLAN_REVIEW_TYPES = frozenset({"api-plan", "e2e-plan", "fuzz-plan", "performance-plan"})
-_HUMAN_ONLY_PLAN_REVIEW_TYPES = frozenset({"fuzz-plan", "performance-plan"})
 
 _L1_CAPABILITY_ROOTS = (
     "auth.",
@@ -99,6 +98,41 @@ def _coerce_authoring_findings(findings: list[Any]) -> list[dict[str, Any]]:
     return coerced
 
 
+def _validate_plan_review_routing(
+    *,
+    decision: ReviewDecision,
+    findings: list[Any],
+    auto_fix_plan: list[Any],
+    auto_fix_allowed: bool,
+    human_review_required: bool,
+) -> None:
+    finding_ids = {
+        finding["id"]
+        for finding in findings
+        if isinstance(finding, dict) and isinstance(finding.get("id"), str)
+    }
+    for index, finding_id in enumerate(auto_fix_plan):
+        if not isinstance(finding_id, str) or not finding_id.strip():
+            raise ValueError(f"auto_fix_plan[{index}] must be a non-empty finding id")
+        if finding_id not in finding_ids:
+            raise ValueError(f"auto_fix_plan references unknown finding id: {finding_id}")
+    if auto_fix_plan and not auto_fix_allowed:
+        raise ValueError("auto_fix_plan requires auto_fix_allowed")
+    if decision in {"needs_fix", "changes_requested"}:
+        if auto_fix_allowed:
+            if human_review_required:
+                raise ValueError("bounded automatic repair cannot also require human review")
+            if not auto_fix_plan:
+                raise ValueError("bounded automatic repair requires a non-empty auto_fix_plan")
+        elif not human_review_required:
+            raise ValueError("non-automatic plan repair must require human review")
+    if decision == "needs_human_review":
+        if auto_fix_allowed or auto_fix_plan or not human_review_required:
+            raise ValueError("needs_human_review must route exclusively to human review")
+    if decision in {"pass", "approved"} and human_review_required:
+        raise ValueError("a passing plan review cannot require human review")
+
+
 class Review(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -169,9 +203,13 @@ class PlanReview(Review):
         _validate_nonblank_finding_ids(self.findings)
         _validate_fully_qualified_capabilities(self.required_capabilities)
         _require_exact_capability_leafs(self.required_capabilities, info)
-        if self.review_type in _HUMAN_ONLY_PLAN_REVIEW_TYPES:
-            if self.auto_fix_allowed or self.auto_fix_plan:
-                raise ValueError("human-only plan review cannot authorize automatic fixes")
+        _validate_plan_review_routing(
+            decision=self.decision,
+            findings=self.findings,
+            auto_fix_plan=self.auto_fix_plan or [],
+            auto_fix_allowed=bool(self.auto_fix_allowed),
+            human_review_required=bool(self.human_review_required),
+        )
         return self
 
 
@@ -219,9 +257,11 @@ class PlanReviewAuthoring(BaseModel):
             raise ValueError(
                 "new plan reviews must use decision 'pass'; 'approved' is read-only compatibility"
             )
-        if self.review_type in _HUMAN_ONLY_PLAN_REVIEW_TYPES:
-            if self.auto_fix_allowed:
-                raise ValueError("human-only plan review cannot authorize automatic fixes")
-            if self.auto_fix_plan:
-                raise ValueError("auto_fix_plan must be empty for human-only plan review")
+        _validate_plan_review_routing(
+            decision=self.decision,
+            findings=self.findings,
+            auto_fix_plan=self.auto_fix_plan,
+            auto_fix_allowed=self.auto_fix_allowed,
+            human_review_required=self.human_review_required,
+        )
         return self

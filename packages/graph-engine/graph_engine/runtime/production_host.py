@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
     TaskActivityCancelResult,
@@ -59,6 +60,22 @@ _TERMINATE_GRACE_SECONDS = 0.25
 _PARENT_ALIVE_ENV = "GRAPH_ENGINE_PARENT_ALIVE_FD"
 _ACTIVITY_RESPONSE_ENV = "GRAPH_ENGINE_ACTIVITY_RESPONSE_FD"
 _CANCEL_ENV = "GRAPH_ENGINE_CANCEL_FD"
+
+# Explicit trust-boundary gaps. Installed handler wheels are trusted code: an
+# arbitrary handler can register an atexit hook that starts a new session after
+# the final descendant scan. Preventing that requires an OS sandbox/cgroup/job
+# boundary, not another in-process scan. Likewise, CPython does not expose a
+# canonical resident code-image digest; the worker challenge authenticates the
+# startup and current pinned source projections. Strict resident-image proof
+# requires a signed/native launcher outside this host's current product boundary.
+_TRUSTED_HANDLER_BOUNDARY_GAPS = {
+    "handler-atexit-detached-escape": "requires an OS process-containment boundary",
+    "resident-code-image-attestation": "requires a signed or native worker launcher",
+}
+
+
+def _host_fault_cut(_fault_id: str) -> None:
+    """Internal no-op seam for exact production-host fault boundaries."""
 
 
 class _BinaryStream(Protocol):
@@ -170,6 +187,13 @@ class _ProductionTaskExecutionHost:
     ) -> TaskHostCallResult:
         if self._bound.store is None:
             raise ProductionHostError("production host is not bound to an invocation workspace")
+        pinned_host = pinned_execution_host_lock()
+        if (
+            call.identity.host_implementation_id != pinned_host.implementation_id
+            or call.identity.host_implementation_digest != pinned_host.implementation_digest
+            or call.identity.wire_schema_version != pinned_host.wire_schema_version
+        ):
+            raise ProductionHostError("production host implementation identity drifted")
         handler = self._bound.handlers.get(call.request.capability_id)
         if handler is None:
             raise ProductionHostError(f"missing installed handler: {call.request.capability_id}")
@@ -179,10 +203,14 @@ class _ProductionTaskExecutionHost:
             call_digest=call_digest,
             wire_schema_version=TASK_HOST_WIRE_SCHEMA_VERSION,
         )
-        secrets = self._resolve_authorized_secrets(call.authorized_secret_handles)
         supervisor = _ProcessSupervisor.for_platform()
-        process = supervisor.spawn(attempt_root=workspace.write_root, call_digest=call_digest)
+        _host_fault_cut("host-before-worker-spawn")
+        secrets: dict[str, bytes] = {}
+        process: _WorkerProcess | None = None
         try:
+            secrets = self._resolve_authorized_secrets(call.authorized_secret_handles)
+            process = supervisor.spawn(attempt_root=workspace.write_root, call_digest=call_digest)
+            _host_fault_cut("host-after-spawn-before-dispatch")
             return await asyncio.to_thread(
                 self._drive_worker,
                 process,
@@ -194,7 +222,11 @@ class _ProductionTaskExecutionHost:
             )
         finally:
             _revoke_secrets(secrets)
-            supervisor.cleanup(process)
+            if process is not None:
+                if process.stdout is not None:
+                    stream_key = id(self._stream_io(process.stdout))
+                    self._read_buffers.pop(stream_key, None)
+                supervisor.cleanup(process)
 
     def _drive_worker(
         self,
@@ -206,6 +238,8 @@ class _ProductionTaskExecutionHost:
         secrets: dict[str, bytes],
     ) -> TaskHostCallResult:
         assert process.stdin is not None and process.stdout is not None
+        deadline = time.monotonic() + float(call.timeout_seconds)
+        self._verify_worker_identity(process, call, session_key, deadline=deadline)
         import_roots = self._bound.handler_import_roots.get(call.request.capability_id, ())
         self._write_frame(
             process.stdin,
@@ -227,9 +261,18 @@ class _ProductionTaskExecutionHost:
                 session_key,
                 {"kind": "secret", "handle": handle, "value_hex": secrets[handle].hex()},
             )
+        if call.authorized_secret_handles:
+            _host_fault_cut("host-secret-channel-disconnect")
         self._write_frame(process.stdin, session_key, {"kind": "go"})
 
-        result = self._read_worker_result(process, call, session_key, secrets, process)
+        result = self._read_worker_result(
+            process,
+            call,
+            session_key,
+            secrets,
+            process,
+            deadline=deadline,
+        )
         stderr = process.read_bounded_stderr()
         scan_for_secret_leaks(stderr, secrets.values())
         exit_code = process.wait_with_escalation(session_key, grace_seconds=_TERMINATE_GRACE_SECONDS)
@@ -250,6 +293,45 @@ class _ProductionTaskExecutionHost:
         )
         return result
 
+    def _verify_worker_identity(
+        self,
+        process: "_WorkerProcess",
+        call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
+        session_key: bytes,
+        *,
+        deadline: float,
+    ) -> None:
+        assert process.stdin is not None and process.stdout is not None
+        nonce = os.urandom(32).hex()
+        self._write_frame(
+            process.stdin,
+            session_key,
+            {"kind": "challenge", "nonce": nonce},
+        )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProductionHostError("worker call timed out")
+        try:
+            attestation = self._read_frame_with_timeout(
+                process.stdout,
+                session_key,
+                timeout=remaining,
+            )
+        except ProductionHostError as error:
+            if str(error) == "worker result pending":
+                raise ProductionHostError("worker call timed out") from error
+            raise
+        expected = call.identity
+        if (
+            attestation.get("kind") != "attestation"
+            or attestation.get("nonce") != nonce
+            or attestation.get("implementation_id") != expected.host_implementation_id
+            or attestation.get("loaded_implementation_digest") != expected.host_implementation_digest
+            or attestation.get("current_source_digest") != expected.host_implementation_digest
+            or attestation.get("wire_schema_version") != expected.wire_schema_version
+        ):
+            raise ProductionHostError("worker implementation identity drifted")
+
     def _read_worker_result(
         self,
         process: "_WorkerProcess",
@@ -257,9 +339,10 @@ class _ProductionTaskExecutionHost:
         session_key: bytes,
         secrets: dict[str, bytes],
         worker: "_WorkerProcess",
+        *,
+        deadline: float,
     ) -> TaskHostCallResult:
         assert process.stdout is not None
-        deadline = time.monotonic() + float(call.timeout_seconds)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -281,6 +364,7 @@ class _ProductionTaskExecutionHost:
                 raise
             kind = frame.get("kind")
             if kind == "activity_rpc":
+                _host_fault_cut("host-before-activity-rpc")
                 request_id = str(frame.get("id") or "")
                 if not request_id:
                     raise ProductionHostError("activity rpc is missing a request id")
@@ -298,6 +382,9 @@ class _ProductionTaskExecutionHost:
                         },
                     )
                     raise
+                if str(frame.get("method")) == "bind":
+                    _host_fault_cut("host-after-reference-bind")
+                _host_fault_cut("host-during-activity-rpc")
                 self._write_frame(process.stdin, session_key, {**response, "id": request_id})
                 continue
             if kind == "result":
@@ -316,10 +403,35 @@ class _ProductionTaskExecutionHost:
     ) -> dict[str, JSONValue]:
         buffer_obj = self._stream_io(stream)
         fileno = buffer_obj.fileno()
-        ready, _, _ = select.select([fileno], [], [], timeout)
-        if not ready:
-            raise ProductionHostError("worker result pending")
-        return self._read_frame(stream, session_key)
+        key = id(buffer_obj)
+        buffer = self._read_buffers.pop(key, b"")
+        deadline = time.monotonic() + timeout
+        while True:
+            if len(buffer) >= 40:
+                try:
+                    payload, remainder = decode_authenticated_frame(session_key, buffer)
+                except TaskHostProtocolError as error:
+                    if str(error) != "incomplete authenticated wire frame":
+                        raise ProductionHostError(str(error)) from error
+                else:
+                    self._read_buffers[key] = remainder
+                    document = json.loads(payload.decode("utf-8"))
+                    if not isinstance(document, dict):
+                        raise ProductionHostError("worker frame must be a mapping")
+                    return cast(dict[str, JSONValue], document)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._read_buffers[key] = buffer
+                raise ProductionHostError("worker result pending")
+            ready, _, _ = select.select([fileno], [], [], remaining)
+            if not ready:
+                self._read_buffers[key] = buffer
+                raise ProductionHostError("worker result pending")
+            chunk = self._read_chunk(stream, 4096)
+            if not chunk:
+                self._read_buffers.pop(key, None)
+                raise ProductionHostError("worker control stream closed unexpectedly")
+            buffer += chunk
 
     def _handle_activity_rpc(
         self,
@@ -453,11 +565,15 @@ class _ProductionTaskExecutionHost:
     def _resolve_authorized_secrets(self, handles: tuple[str, ...]) -> dict[str, bytes]:
         resolved: dict[str, bytes] = {}
         bindings = {item.handle: item for item in self._authorization.secret_sources}
-        for handle in handles:
-            binding = bindings.get(handle)
-            if binding is None:
-                raise ProductionHostError(f"missing authorized secret handle: {handle}")
-            resolved[handle] = resolve_secret_source(binding)
+        try:
+            for handle in handles:
+                binding = bindings.get(handle)
+                if binding is None:
+                    raise ProductionHostError(f"missing authorized secret handle: {handle}")
+                resolved[handle] = resolve_secret_source(binding)
+        except BaseException:
+            _revoke_secrets(resolved)
+            raise
         return resolved
 
     @staticmethod
@@ -572,19 +688,76 @@ class _WorkerProcess:
         return prove_call_quiescent(writer_identities=writers, descendant_identities=descendants)
 
     def terminate_group(self, *, grace_seconds: float) -> None:
+        enumeration_error: TerminalReceiptError | None = None
+        descendant_ids: set[int] = set()
+        group_member_ids: set[int] = set()
         try:
-            os.killpg(self.process_group, signal.SIGTERM)
-        except ProcessLookupError:
-            return
+            descendant_ids.update(_collect_process_tree_descendants(self.popen.pid))
+        except TerminalReceiptError as error:
+            enumeration_error = error
+        try:
+            group_member_ids.update(
+                int(process_id)
+                for process_id in _collect_process_group_descendants(
+                    process_group=self.process_group,
+                    exclude={self.popen.pid},
+                )
+            )
+            descendant_ids.update(group_member_ids)
+        except TerminalReceiptError as error:
+            if enumeration_error is None:
+                enumeration_error = error
+        descendants = tuple(sorted(descendant_ids, reverse=True))
+        for process_id in descendants:
+            try:
+                os.kill(process_id, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        if self._has_authenticated_live_group_member(group_member_ids):
+            try:
+                os.killpg(self.process_group, signal.SIGTERM)
+            except ProcessLookupError:
+                if self.popen.poll() is None:
+                    self.popen.terminate()
+            except PermissionError:
+                if self.popen.poll() is None:
+                    self.popen.terminate()
         deadline = time.monotonic() + grace_seconds
+        terminated = False
         while time.monotonic() < deadline:
-            if self.popen.poll() is not None:
-                return
+            if self.popen.poll() is not None and not any(
+                _process_exists(process_id) for process_id in descendants
+            ):
+                terminated = True
+                break
             time.sleep(0.01)
-        try:
-            os.killpg(self.process_group, signal.SIGKILL)
-        except ProcessLookupError:
-            return
+        if not terminated:
+            for process_id in descendants:
+                try:
+                    os.kill(process_id, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if self._has_authenticated_live_group_member(group_member_ids):
+                try:
+                    os.killpg(self.process_group, signal.SIGKILL)
+                except ProcessLookupError:
+                    if self.popen.poll() is None:
+                        self.popen.kill()
+                except PermissionError:
+                    if self.popen.poll() is None:
+                        self.popen.kill()
+            try:
+                self.popen.wait(timeout=grace_seconds + 1.0)
+            except subprocess.TimeoutExpired:
+                self.popen.kill()
+                self.popen.wait(timeout=grace_seconds + 1.0)
+        if enumeration_error is not None:
+            raise enumeration_error
+
+    def _has_authenticated_live_group_member(self, group_member_ids: set[int]) -> bool:
+        if self.popen.poll() is None:
+            return True
+        return any(_process_is_in_group(process_id, self.process_group) for process_id in group_member_ids)
 
 
 class _ProcessSupervisor:
@@ -597,47 +770,57 @@ class _ProcessSupervisor:
         return cls()
 
     def spawn(self, *, attempt_root: Path, call_digest: str) -> _WorkerProcess:
-        read_fd, write_fd = os.pipe()
-        response_r, response_w = os.pipe()
-        cancel_r, cancel_w = os.pipe()
-        command = [sys.executable, "-m", "graph_engine.runtime.production_worker"]
-        env = {
-            "PYTHONUNBUFFERED": "1",
-            "GRAPH_ENGINE_WORKER_CALL_DIGEST": call_digest,
-            _PARENT_ALIVE_ENV: str(read_fd),
-            _ACTIVITY_RESPONSE_ENV: str(response_r),
-            _CANCEL_ENV: str(cancel_r),
-            "PATH": os.environ.get("PATH", ""),
-        }
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(attempt_root),
-            env=env,
-            start_new_session=True,
-            pass_fds=(read_fd, response_r, cancel_r),
-        )
-        os.close(read_fd)
-        os.close(response_r)
-        os.close(cancel_r)
-        worker = _WorkerProcess(
-            popen=process,
-            process_group=process.pid,
-            parent_alive_w=write_fd,
-            activity_response_w=response_w,
-            cancel_w=cancel_w,
-            _stderr_chunks=[],
-        )
-        if process.stderr is not None:
-            worker._stderr_thread = threading.Thread(
-                target=_capture_stderr,
-                args=(process.stderr, worker._stderr_chunks),
-                daemon=True,
+        owned_fds: set[int] = set()
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            read_fd, write_fd = _open_owned_pipe(owned_fds)
+            response_r, response_w = _open_owned_pipe(owned_fds)
+            cancel_r, cancel_w = _open_owned_pipe(owned_fds)
+            command = [sys.executable, "-m", "graph_engine.runtime.production_worker"]
+            env = {
+                "PYTHONUNBUFFERED": "1",
+                "GRAPH_ENGINE_WORKER_CALL_DIGEST": call_digest,
+                _PARENT_ALIVE_ENV: str(read_fd),
+                _ACTIVITY_RESPONSE_ENV: str(response_r),
+                _CANCEL_ENV: str(cancel_r),
+                "PATH": os.environ.get("PATH", ""),
+            }
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(attempt_root),
+                env=env,
+                start_new_session=True,
+                pass_fds=(read_fd, response_r, cancel_r),
             )
-            worker._stderr_thread.start()
-        return worker
+            _host_fault_cut("host-after-popen-before-worker-return")
+            for descriptor in (read_fd, response_r, cancel_r):
+                _close_owned_fd(descriptor, owned_fds)
+            worker = _WorkerProcess(
+                popen=process,
+                process_group=process.pid,
+                parent_alive_w=write_fd,
+                activity_response_w=response_w,
+                cancel_w=cancel_w,
+                _stderr_chunks=[],
+            )
+            if process.stderr is not None:
+                worker._stderr_thread = threading.Thread(
+                    target=_capture_stderr,
+                    args=(process.stderr, worker._stderr_chunks),
+                    daemon=True,
+                )
+                worker._stderr_thread.start()
+            owned_fds.clear()
+            return worker
+        except BaseException:
+            for descriptor in tuple(owned_fds):
+                _close_owned_fd(descriptor, owned_fds)
+            if process is not None:
+                _reap_failed_spawn(process)
+            raise
 
     def cleanup(self, process: _WorkerProcess) -> None:
         if process.parent_alive_w >= 0:
@@ -655,8 +838,53 @@ class _ProcessSupervisor:
                 os.close(process.cancel_w)
             except OSError:
                 pass
-        if process.popen.poll() is None:
+        try:
             process.terminate_group(grace_seconds=_TERMINATE_GRACE_SECONDS)
+        finally:
+            _close_process_streams(process.popen)
+
+
+def _open_owned_pipe(owned_fds: set[int]) -> tuple[int, int]:
+    read_fd, write_fd = os.pipe()
+    owned_fds.update((read_fd, write_fd))
+    return read_fd, write_fd
+
+
+def _close_owned_fd(descriptor: int, owned_fds: set[int]) -> None:
+    if descriptor not in owned_fds:
+        return
+    owned_fds.remove(descriptor)
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def _close_process_streams(process: subprocess.Popen[bytes]) -> None:
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
+def _reap_failed_spawn(process: subprocess.Popen[bytes]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        if process.poll() is None:
+            process.kill()
+    try:
+        process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=1.0)
+    finally:
+        _close_process_streams(process)
 
 
 def _capture_stderr(stream: object, chunks: list[bytes]) -> None:
@@ -686,7 +914,11 @@ def _collect_process_group_descendants(
     excluded = exclude or set()
     descendants: list[int] = []
     if sys.platform.startswith("linux"):
-        for entry in os.listdir("/proc"):
+        try:
+            entries = os.listdir("/proc")
+        except OSError as error:
+            raise TerminalReceiptError("cannot enumerate process descendants") from error
+        for entry in entries:
             if not entry.isdigit():
                 continue
             pid = int(entry)
@@ -703,18 +935,24 @@ def _collect_process_group_descendants(
     else:
         try:
             completed = subprocess.run(
-                ["ps", "-axo", "pid,pgid"],
+                ["/bin/ps", "-axo", "pid,pgid"],
                 check=False,
                 capture_output=True,
                 text=True,
+                timeout=2.0,
             )
-        except OSError:
-            raise TerminalReceiptError("cannot enumerate process descendants") from None
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise TerminalReceiptError("cannot enumerate process descendants") from error
+        if completed.returncode != 0:
+            raise TerminalReceiptError("cannot enumerate process descendants")
         for line in completed.stdout.splitlines()[1:]:
             parts = line.strip().split()
             if len(parts) != 2:
                 continue
-            pid, pgid = int(parts[0]), int(parts[1])
+            try:
+                pid, pgid = int(parts[0]), int(parts[1])
+            except ValueError:
+                continue
             if pgid == process_group and pid not in excluded:
                 descendants.append(pid)
     if descendants:
@@ -722,18 +960,93 @@ def _collect_process_group_descendants(
     return ()
 
 
+def _collect_process_tree_descendants(root_pid: int) -> tuple[int, ...]:
+    parents: dict[int, int] = {}
+    if sys.platform.startswith("linux"):
+        try:
+            entries = os.listdir("/proc")
+        except OSError as error:
+            raise TerminalReceiptError("cannot enumerate process descendants") from error
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            try:
+                stat = (Path("/proc") / entry / "stat").read_text(encoding="ascii")
+                parent_pid = int(stat.rpartition(") ")[2].split()[1])
+            except (OSError, ValueError, IndexError):
+                continue
+            parents[int(entry)] = parent_pid
+    else:
+        try:
+            completed = subprocess.run(
+                ["/bin/ps", "-axo", "pid=,ppid="],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise TerminalReceiptError("cannot enumerate process descendants") from error
+        if completed.returncode != 0:
+            raise TerminalReceiptError("cannot enumerate process descendants")
+        for line in completed.stdout.splitlines():
+            fields = line.split()
+            if len(fields) != 2:
+                continue
+            try:
+                process_id, parent_pid = (int(field) for field in fields)
+            except ValueError:
+                continue
+            parents[process_id] = parent_pid
+    descendants: set[int] = set()
+    frontier = {root_pid}
+    while frontier:
+        children = {
+            process_id
+            for process_id, parent_pid in parents.items()
+            if parent_pid in frontier and process_id not in descendants
+        }
+        if not children:
+            break
+        descendants.update(children)
+        frontier = children
+    return tuple(sorted(descendants, reverse=True))
+
+
+def _process_exists(process_id: int) -> bool:
+    try:
+        os.kill(process_id, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _process_is_in_group(process_id: int, process_group: int) -> bool:
+    try:
+        return os.getpgid(process_id) == process_group
+    except OSError:
+        return False
+
+
 def _collect_workspace_writers(attempt_root: Path) -> tuple[str, ...]:
     resolved = attempt_root.resolve()
     writers: set[str] = set()
-    try:
-        completed = subprocess.run(
-            ["lsof", "-F", "p", "+D", str(resolved)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=2.0,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    completed: subprocess.CompletedProcess[str] | None = None
+    for timeout in (2.0, 10.0):
+        try:
+            completed = subprocess.run(
+                ["lsof", "-F", "p", "+D", str(resolved)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            continue
+        except OSError:
+            pass
+        break
+    if completed is None:
         if sys.platform.startswith("linux"):
             writers.update(_linux_workspace_writers(resolved))
         else:

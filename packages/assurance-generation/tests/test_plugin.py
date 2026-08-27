@@ -16,6 +16,7 @@ from assurance_generation.plugin import (
     GENERATION_VALIDATOR_IDS,
     GenerationPlugin,
 )
+from assurance_generation.operations import generation_handlers
 from assurance_generation.resource_loader import resource_bytes
 from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
 
@@ -72,6 +73,11 @@ def test_generation_source_identity() -> None:
 def test_generation_rejects_unsupported_engine_api() -> None:
     with pytest.raises(ValueError, match="unsupported engine API"):
         GenerationPlugin.contribute(RegistryPorts(engine_api="1.0"))
+
+
+def test_generation_handlers_are_reconstructible_by_the_production_worker() -> None:
+    for handler in generation_handlers().values():
+        assert type(handler)() is not None
 
 
 def test_resource_bytes_rejects_non_canonical_path() -> None:

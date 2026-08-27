@@ -1,51 +1,54 @@
 # Phase 3 provider-live closeout
 
-**Date:** 2026-08-22  
-**Status:** BLOCKED  
+**Date:** 2026-08-23  
+**Status:** DEFERRED — OpenCode passed; Cursor live parked by user (keep original CURSOR_API_KEY design)  
 **Worktree:** `pure-graph-engine-phase3-spec`
 
-## Summary
+Do not treat this as Task 9 acceptance. One of the two required live scripts is still exit 1.
 
-Engine fix landed: bound adapter aliases (`fixture.binding.run` → `runtime.opencode.execute` / `runtime.cursor.execute`) now traverse the recoverable wave path, minting a non-None `activity_id` on production host execute calls. Production worker `_ParentActivityPort` now implements `snapshot` RPC. Preflight passes for both providers; live runs reach adapter handlers with a ledger-backed activity port but time out before producing `result.json`.
-
-## OpenCode fixture
+## OpenCode fixture — passed
 
 **Command:** `bash benchmark/agent-runtime-phase3/run-opencode.sh`  
-**Exit status:** `1`  
+**Exit status:** `0`  
 **Item:** `phase3-opencode-live`  
 **Adapter version:** `0.1.0`  
 **Model:** `provider_default`  
-**Lock digest:** `26f93741b2df64eea6d01dc98d3a46048da7ca1c3e85e6cf9c9499c8b73d63c4`  
-**Result dir:** `benchmark/agent-runtime-phase3/results/opencode-20260822-235336`
+**Lock digest:** `da3be2279db02e6899cceaee0715b33b2433de2e7ba8751ffeaba037800a0869`  
+**Terminal status:** `succeeded`  
+**Result dir:** `benchmark/agent-runtime-phase3/results/opencode-20260823-020800`
 
-Preflight: health `1.18.4`, `/config` reachable (product shape, no `protocol_profile`), `/session` HTTP 200 without token.
+Declared artifacts:
 
-**Blocking error:** `engine terminal status 'interrupted' != expected 'succeeded'` — task activity prepared (`6dee35fc…`) but scheduler cancelled with `reason=timeout` after ~120s (`max_seconds` limit); no terminal adapter outcome or workspace `result.json`.
+| Path | sha256 |
+|---|---|
+| `engine/invocations/phase3-opencode-live/invocation.lock.json` | `da3be2279db02e6899cceaee0715b33b2433de2e7ba8751ffeaba037800a0869` |
+| `engine/invocations/phase3-opencode-live/checkpoint.json` | `2062bbfdd8369fbd9872396f6e6824b7394fefbc53b006a5c04ce950985c962e` |
+| `engine/invocations/phase3-opencode-live/workspace/HEAD.json` | `fb71726250255193fac30750a088459c3f64110c28da202cfc1b762892da9771` |
 
-## Cursor fixture
+Published workspace output is `workspace/trees/8e5d0b20940bfee2c33520caf82aa2f37998b31626a846de0a78a041aae3579e/result.json` with digest `86f85b3898c11dad47aba8ee2bf20e913ed08dccde985a1c6c5b3fefc66d6c79`.
+
+## Cursor fixture — blocked
 
 **Command:** `bash benchmark/agent-runtime-phase3/run-cursor.sh`  
 **Exit status:** `1`  
 **Item:** `phase3-cursor-live`  
 **Adapter version:** `0.1.0`  
 **Model:** `provider_default`  
-**Lock digest:** `31e989c7c1c55066119acc871209adf90f72e3f59693269e2efb112f29928584`  
-**Result dir:** `benchmark/agent-runtime-phase3/results/cursor-20260822-235540`
+**Result dir:** `benchmark/agent-runtime-phase3/results/cursor-20260823-020841`
 
-Preflight: pinned executable digest/version match; `CURSOR_API_KEY` loaded from macOS keychain service `cursor-access-token` (not printed).
+Preflight: pinned executable digest/version match; `CURSOR_API_KEY` loaded from macOS keychain service `cursor-access-token` (value not printed, not invented).
 
-**Blocking error:** `engine terminal status 'interrupted' != expected 'succeeded'` — task activity prepared (`916c15a1…`) but scheduler cancelled with `reason=timeout` after ~120s; no terminal adapter outcome or workspace `result.json`.
+Pinned `cursor-agent` exited 1 in 1.32s. Stderr (ANSI warning, decoded from the process receipt): the provided API key is invalid and was loaded from `CURSOR_API_KEY`. Stdout was empty, so the stream parser raised `exactly one system init is required`. `CursorDispatchIncomplete` then crashed the production worker instead of returning a typed `TaskOutcome`.
 
-## Deterministic gates (passed)
+This is an external credential block. No substitute key was used.
 
-```bash
-uv run pytest packages/graph-engine/tests/runtime/test_scheduler.py packages/graph-engine/tests/runtime/test_production_host.py packages/graph-engine/tests/runtime/test_production_host_faults.py -q
-# 95 passed
+## Fixes that unblocked OpenCode (this session)
 
-uv run pytest tests/phase5/test_phase3_live_fixture_contract.py packages/agent-runtime-opencode/tests packages/agent-runtime-cursor/tests tests/agent_runtime/test_phase3_acceptance_artifacts.py -q
-# 260 passed
-```
+- `203a688` — ignore out-of-group workspace holders at quiescence
+- `3fa7105` — treat completed write-tool JSON as the structured result
+- `1e01b44` — register the Phase 3 live fixture result schema
+- `5afbbba` — read the fixture artifact from the published HEAD tree
 
-## Required to unblock
+## Required to close Task 9
 
-Adapter handlers must complete within the fixture `max_seconds` (120) budget and write `result.json` to the attempt workspace, or the fixture timeout / observation horizon must be raised for live provider latency.
+User 2026-08-23: keep the original confined `CURSOR_API_KEY` design; park Cursor live. Do not switch the adapter to inherit `cursor-agent login`. Re-run `bash benchmark/agent-runtime-phase3/run-cursor.sh` later with a real CLI API key in `CURSOR_API_KEY` (not the IDE keychain `cursor-access-token`). Task 9 is not accepted. Task 10 proceeds with this residual.

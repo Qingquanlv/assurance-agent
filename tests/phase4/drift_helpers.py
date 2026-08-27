@@ -12,6 +12,7 @@ from graph_engine import Engine
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.runtime.engine import EngineError
 from graph_engine.runtime.invocation_lock import InvocationDrift
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
 
 from tests.phase4.six_wheel_harness import (
     FIXTURE_ROOT,
@@ -20,6 +21,7 @@ from tests.phase4.six_wheel_harness import (
     _engine_call,
     _import_activation,
     _start_until_blocked,
+    _workspace_binding,
     resolve_fixture,
 )
 
@@ -53,7 +55,12 @@ def assert_open_rejects_drift_without_ledger_append(
     with _import_activation(original.product_root, original.workspace):
         with pytest.raises((InvocationDrift, EngineError)):
             with Engine(engine_root, host=host) as engine:
-                engine.open(invocation_id, drifted.composition)
+                engine.open(
+                    invocation_id,
+                    drifted.composition,
+                    authorization=empty_runtime_authorization(),
+                    workspace_binding=_workspace_binding(engine_root),
+                )
     assert _ledger_snapshot(invocation_root) == before
 
 

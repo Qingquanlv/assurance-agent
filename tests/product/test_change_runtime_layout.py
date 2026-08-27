@@ -124,16 +124,25 @@ def test_two_changes_are_independently_discoverable(
         invocation_id="inv-change-a",
         change_id="CH-A-001",
     )
+    second_change = "CH-B-001"
+    for change_id in (first_change, second_change):
+        case_path = _change_root(project_dir, change_id) / "cases" / "system" / "dept" / "case.yaml"
+        case_path.parent.mkdir(parents=True, exist_ok=True)
+        case_path.write_text(
+            "schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n",
+            encoding="utf-8",
+        )
     second_input = write_product_input(
         tmp_path / "input-b.json",
         composition,
-        change_id="CH-B-001",
+        change_id=second_change,
+        case_delta_paths=(f"qa/changes/{second_change}/cases/system/dept/case.yaml",),
     )
     second_args = [
         "--project-dir",
         str(project_dir),
         "--change",
-        "CH-B-001",
+        second_change,
         "--invocation-id",
         "inv-change-b",
         *source_args(installed_sources),
@@ -170,7 +179,7 @@ def test_two_changes_are_independently_discoverable(
             "status",
             *_existing_args(
                 project_dir=project_dir,
-                change_id="CH-B-001",
+                change_id=second_change,
                 invocation_id="inv-change-b",
                 installed_sources=installed_sources,
                 secret=first_args[first_args.index("--secret") + 1],
@@ -184,11 +193,15 @@ def test_two_changes_are_independently_discoverable(
     assert first_doc["invocation_id"] == "inv-change-a"
     assert second_doc["invocation_id"] == "inv-change-b"
     assert first_doc["change"]["change_id"] == "CH-A-001"
-    assert second_doc["change"]["change_id"] == "CH-B-001"
-    assert (_change_root(project_dir, "CH-A-001") / ".runtime" / "invocations" / "inv-change-a").is_dir()
-    assert (_change_root(project_dir, "CH-B-001") / ".runtime" / "invocations" / "inv-change-b").is_dir()
-    assert not (_change_root(project_dir, "CH-A-001") / ".runtime" / "invocations" / "inv-change-b").exists()
-    assert not (_change_root(project_dir, "CH-B-001") / ".runtime" / "invocations" / "inv-change-a").exists()
+    assert second_doc["change"]["change_id"] == second_change
+    assert (_change_root(project_dir, first_change) / ".runtime" / "invocations" / "inv-change-a").is_dir()
+    assert (_change_root(project_dir, second_change) / ".runtime" / "invocations" / "inv-change-b").is_dir()
+    assert not (
+        _change_root(project_dir, first_change) / ".runtime" / "invocations" / "inv-change-b"
+    ).exists()
+    assert not (
+        _change_root(project_dir, second_change) / ".runtime" / "invocations" / "inv-change-a"
+    ).exists()
 
 
 def test_status_and_resume_authenticate_the_change_local_ledger(

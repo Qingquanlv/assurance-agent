@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assurance_intake.contracts.common import NonEmptyStr
 
@@ -32,24 +32,6 @@ class CaseReviewFindingV1(BaseModel):
     category: NonEmptyStr
     message: NonEmptyStr
     locator: ReviewFindingLocator
-
-
-def _validate_nonblank_finding_ids(findings: list[Any]) -> None:
-    for index, finding in enumerate(findings):
-        if not isinstance(finding, dict) or not isinstance(finding.get("id"), str):
-            raise ValueError(f"findings[{index}].id must be a non-empty string")
-        if not finding["id"].strip():
-            raise ValueError(f"findings[{index}].id must be a non-empty string")
-
-
-def _coerce_authoring_findings(findings: list[Any]) -> list[dict[str, Any]]:
-    _validate_nonblank_finding_ids(findings)
-    coerced: list[dict[str, Any]] = []
-    for finding in findings:
-        if not isinstance(finding, dict):
-            raise ValueError("findings items must be objects")
-        coerced.append(CaseReviewFindingV1.model_validate(finding).model_dump())
-    return coerced
 
 
 class CaseSourceClaim(BaseModel):
@@ -144,7 +126,7 @@ class CaseReviewResultV1(BaseModel):
     review_type: Literal["case"]
     change_id: NonEmptyStr
     decision: ReviewDecision
-    findings: list[Any]
+    findings: list[CaseReviewFindingV1]
     auto_fix_plan: list[Any]
     next_action: NonEmptyStr
     auto_fix_allowed: bool
@@ -152,8 +134,3 @@ class CaseReviewResultV1(BaseModel):
     risk_level: Literal["low", "medium", "high", "critical"]
     minimum_coverage: CaseMinimumCoverageReview
     source_verification: CaseSourceVerification
-
-    @field_validator("findings")
-    @classmethod
-    def _typed_findings(cls, value: list[Any]) -> list[dict[str, Any]]:
-        return _coerce_authoring_findings(value)

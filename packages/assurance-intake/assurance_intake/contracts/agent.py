@@ -69,6 +69,20 @@ class _SkillInputV1(FrozenModel):
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
 
+    @field_validator("change_id")
+    @classmethod
+    def _change_id(cls, value: str) -> str:
+        posix = PurePosixPath(value)
+        if (
+            len(posix.parts) != 1
+            or posix.is_absolute()
+            or "\\" in value
+            or posix.as_posix() != value
+            or value in {"", ".", ".."}
+        ):
+            raise ValueError("change_id must be a canonical path segment")
+        return value
+
     @field_validator("capability_leafs")
     @classmethod
     def _capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:

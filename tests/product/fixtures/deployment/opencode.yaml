@@ -9,6 +9,7 @@ adapter_binding:
   project_scope: fixture-project
   request_timeout_seconds: 5
   observation_horizon_seconds: 30
+  progress_timeout_seconds: 10
   poll_interval_seconds: 0.5
   cancel_timeout_seconds: 5
   max_response_bytes: 65536

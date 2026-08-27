@@ -38,6 +38,7 @@ def _canonical_paths(values: tuple[str, ...]) -> tuple[str, ...]:
 
 
 class AgentBindingDataV1(FrozenModel):
+    agent_profile: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     execution: FrozenExecutionSelection
     request_policy_digest: str = Field(pattern=_SHA256)
     request_config_digest: str = Field(pattern=_SHA256)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
@@ -42,6 +42,7 @@ def _canonical_write_root(path: str) -> str:
 
 
 class AgentBindingDataV1(FrozenModel):
+    agent_profile: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     execution: FrozenExecutionSelection
     request_policy_digest: str = Field(pattern=_SHA256)
     request_config_digest: str = Field(pattern=_SHA256)
@@ -80,8 +81,8 @@ class PlanInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
-    reviewed_cases: dict[str, Any]
-    family_constraints: FamilyConstraintsV1
+    reviewed_cases: dict[str, Any] | None = None
+    family_constraints: FamilyConstraintsV1 | None = None
 
     @field_validator("capability_leafs")
     @classmethod
@@ -95,8 +96,8 @@ class PlanInputV1(FrozenModel):
 
     @field_validator("reviewed_cases")
     @classmethod
-    def _reviewed_cases(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if not value:
+    def _reviewed_cases(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and not value:
             raise ValueError("reviewed_cases must be a mapping")
         return value
 
@@ -127,27 +128,33 @@ class AgentFinalizeInputV1(FrozenModel):
 class CodegenInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
     capability_leafs: tuple[str, ...]
-    reviewed_plan: dict[str, Any]
-    reviewed_cases: dict[str, Any]
-    family_constraints: FamilyConstraintsV1
-    baseline_tree_id: str = Field(pattern=_SHA256)
+    artifact_paths: tuple[str, ...] = ()
+    reviewed_plan: dict[str, Any] | None = None
+    reviewed_cases: dict[str, Any] | None = None
+    family_constraints: FamilyConstraintsV1 | None = None
+    baseline_tree_id: str | None = Field(default=None, pattern=_SHA256)
 
     @field_validator("capability_leafs")
     @classmethod
     def _capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _sorted_unique(value, label="capability leaf")
 
+    @field_validator("artifact_paths")
+    @classmethod
+    def _artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_relative_paths(value)
+
     @field_validator("reviewed_plan")
     @classmethod
-    def _reviewed_plan(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if not value:
+    def _reviewed_plan(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and not value:
             raise ValueError("reviewed_plan must be a mapping")
         return value
 
     @field_validator("reviewed_cases")
     @classmethod
-    def _reviewed_cases(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if not value:
+    def _reviewed_cases(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and not value:
             raise ValueError("reviewed_cases must be a mapping")
         return value
 
@@ -155,6 +162,19 @@ class CodegenInputV1(FrozenModel):
 class CodegenFixInputV1(CodegenInputV1):
     allowed_paths: tuple[str, ...]
     approved_proposal: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _required_base_fields(self) -> CodegenFixInputV1:
+        required = {
+            "reviewed_plan": self.reviewed_plan,
+            "reviewed_cases": self.reviewed_cases,
+            "family_constraints": self.family_constraints,
+            "baseline_tree_id": self.baseline_tree_id,
+        }
+        missing = sorted(name for name, value in required.items() if value is None)
+        if missing:
+            raise ValueError("codegen-fix is missing required fields: " + ", ".join(missing))
+        return self
 
     @field_validator("allowed_paths")
     @classmethod

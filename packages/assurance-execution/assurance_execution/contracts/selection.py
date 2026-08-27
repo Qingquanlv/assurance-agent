@@ -28,6 +28,16 @@ def _safe_project_relative_path(value: str) -> str:
     return value
 
 
+def selected_test_file(value: str) -> str:
+    """Return and validate the file portion of a pytest-style test selector."""
+
+    path, separator, symbol = value.partition("::")
+    _safe_project_relative_path(path)
+    if separator and (not symbol or any(not part for part in symbol.split("::"))):
+        raise ValueError("test selector must contain non-empty symbol segments")
+    return path
+
+
 class SelectedTargets(BaseModel):
     """Which of the four execution layers were selected for a batch."""
 
@@ -52,7 +62,8 @@ class ClosedMappingEntryV1(BaseModel):
     @field_validator("test")
     @classmethod
     def _safe_test_path(cls, value: str) -> str:
-        return _safe_project_relative_path(value)
+        selected_test_file(value)
+        return value
 
 
 class ClosedMappingV1(BaseModel):
@@ -67,7 +78,9 @@ class ClosedMappingV1(BaseModel):
     @field_validator("selected")
     @classmethod
     def _safe_selected_paths(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(_safe_project_relative_path(value) for value in values)
+        for value in values:
+            selected_test_file(value)
+        return values
 
     @model_validator(mode="after")
     def _selected_equals_mappings(self, info: ValidationInfo) -> Self:

@@ -533,7 +533,25 @@ def _seed_fixture_project(project_root: Path) -> None:
             "layer": "api",
         },
     ]
-    matrix_path = project_root / "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    change_root = project_root / "qa/changes/CH-DEMO-001"
+    fixture_inputs = {
+        change_root / ".qa.yaml": "schema_version: '1.0'\nchange_id: CH-DEMO-001\n",
+        change_root / "proposal.md": "# Fixture case proposal\n",
+        change_root / "cases/system/menu/case.yaml": (
+            "schema_version: '1.0'\n"
+            "added:\n"
+            "  - case_id: TC_MENU_001\n"
+            "    title: Create menu item\n"
+            "    type: API\n"
+            "modified: []\n"
+            "removed: []\n"
+        ),
+    }
+    for path, content in fixture_inputs.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text(content, encoding="utf-8")
+    matrix_path = change_root / "trace/minimum-coverage-matrix.json"
     matrix_path.parent.mkdir(parents=True, exist_ok=True)
     if not matrix_path.exists():
         matrix_path.write_text(json.dumps(matrix), encoding="utf-8")

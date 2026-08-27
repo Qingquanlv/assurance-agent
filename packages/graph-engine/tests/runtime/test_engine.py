@@ -164,6 +164,37 @@ def _project_state_digest(handle: InvocationHandle) -> str:
     return canonical_digest(cast(JSONValue, files))
 
 
+def _directory_state(root: Path) -> tuple[tuple[str, str, bytes], ...]:
+    entries: list[tuple[str, str, bytes]] = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            entries.append((relative, "symlink", os.fsencode(os.readlink(path))))
+        elif path.is_dir():
+            entries.append((relative, "directory", b""))
+        else:
+            entries.append((relative, "file", path.read_bytes()))
+    return tuple(entries)
+
+
+def _workspace_state(
+    binding: InvocationWorkspaceBinding,
+) -> tuple[tuple[tuple[str, str, bytes], ...], ...]:
+    return tuple(
+        _directory_state(root)
+        for root in (binding.project_root, binding.attempts_root, binding.receipts_root)
+    )
+
+
+def _workspace_binding_at(root: Path) -> InvocationWorkspaceBinding:
+    project_root = root / "project"
+    attempts_root = root / "attempts"
+    receipts_root = root / "receipts"
+    for directory in (project_root, attempts_root, receipts_root):
+        directory.mkdir(parents=True, exist_ok=True)
+    return InvocationWorkspaceBinding(project_root, attempts_root, receipts_root)
+
+
 class _FunctionHandler:
     def __init__(
         self,
@@ -1591,6 +1622,102 @@ def test_duplicate_start_rejects_digest_mismatch_without_replacing_invocation(
     assert handle._workspace_binding.project_root.is_dir()
 
 
+def test_repeated_start_with_changed_root_input_rejects_drift_and_preserves_state(
+    tmp_path: Path,
+    resolved_interrupt_product: FrozenComposition,
+) -> None:
+    workspace_binding = _workspace_binding_at(tmp_path / "workspace")
+    (workspace_binding.project_root / "authoritative.txt").write_bytes(b"project")
+    (workspace_binding.attempts_root / "authoritative.txt").write_bytes(b"attempts")
+    (workspace_binding.receipts_root / "authoritative.txt").write_bytes(b"receipts")
+    original_seed = empty_invocation_seed(root_input={"request": "original"})
+    changed_seed = empty_invocation_seed(root_input={"request": "changed"})
+
+    with (
+        Engine(tmp_path / "engine") as engine,
+        engine.start(
+            resolved_interrupt_product,
+            entrypoint="main",
+            invocation_id="changed-root-input",
+            seed=original_seed,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=workspace_binding,
+        ) as handle,
+    ):
+        ledger_before = handle.ledger.read_all()
+        ledger_files_before = _directory_state(handle.invocation_root / "ledger")
+        workspace_before = _workspace_state(workspace_binding)
+        workspace_identity_before = workspace_binding.identity_digest
+
+        with pytest.raises(InvocationDrift, match="seed|root input|start intent"):
+            engine.start(
+                resolved_interrupt_product,
+                entrypoint="main",
+                invocation_id="changed-root-input",
+                seed=changed_seed,
+                authorization=empty_runtime_authorization(),
+                workspace_binding=workspace_binding,
+            )
+
+        assert handle.ledger.read_all() == ledger_before
+        assert _directory_state(handle.invocation_root / "ledger") == ledger_files_before
+        assert _workspace_state(workspace_binding) == workspace_before
+        assert _workspace_binding_at(tmp_path / "workspace").identity_digest == workspace_identity_before
+
+
+def test_repeated_start_with_changed_workspace_binding_rejects_drift_and_preserves_state(
+    tmp_path: Path,
+    resolved_interrupt_product: FrozenComposition,
+) -> None:
+    authoritative = _workspace_binding_at(tmp_path / "authoritative-workspace")
+    foreign = _workspace_binding_at(tmp_path / "foreign-workspace")
+    for label, binding in (("authoritative", authoritative), ("foreign", foreign)):
+        (binding.project_root / "state.txt").write_text(label, encoding="utf-8")
+        (binding.attempts_root / "state.txt").write_text(label, encoding="utf-8")
+        (binding.receipts_root / "state.txt").write_text(label, encoding="utf-8")
+    seed = empty_invocation_seed(root_input={"request": "same"})
+
+    with (
+        Engine(tmp_path / "engine") as engine,
+        engine.start(
+            resolved_interrupt_product,
+            entrypoint="main",
+            invocation_id="changed-workspace-binding",
+            seed=seed,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=authoritative,
+        ) as handle,
+    ):
+        ledger_before = handle.ledger.read_all()
+        ledger_files_before = _directory_state(handle.invocation_root / "ledger")
+        authoritative_before = _workspace_state(authoritative)
+        foreign_before = _workspace_state(foreign)
+        authoritative_identity_before = authoritative.identity_digest
+        foreign_identity_before = foreign.identity_digest
+
+        with pytest.raises(InvocationDrift, match="workspace binding"):
+            engine.start(
+                resolved_interrupt_product,
+                entrypoint="main",
+                invocation_id="changed-workspace-binding",
+                seed=seed,
+                authorization=empty_runtime_authorization(),
+                workspace_binding=foreign,
+            )
+
+        assert handle.ledger.read_all() == ledger_before
+        assert _directory_state(handle.invocation_root / "ledger") == ledger_files_before
+        assert _workspace_state(authoritative) == authoritative_before
+        assert _workspace_state(foreign) == foreign_before
+        assert (
+            _workspace_binding_at(tmp_path / "authoritative-workspace").identity_digest
+            == authoritative_identity_before
+        )
+        assert (
+            _workspace_binding_at(tmp_path / "foreign-workspace").identity_digest == foreign_identity_before
+        )
+
+
 def test_missing_host_fails_closed_without_calling_handler(tmp_path: Path) -> None:
     called = False
 
@@ -1672,6 +1799,95 @@ def test_engine_settles_effects_before_task_and_node_success(tmp_path: Path) -> 
     kinds = [envelope.event.kind for envelope in Ledger(handle.invocation_root / "ledger").read_all()]
     assert kinds.index("effect_receipt_recorded") < kinds.index("task_attempt_succeeded")
     assert kinds.index("task_attempt_succeeded") < kinds.index("node_completed")
+
+
+def test_engine_effect_receipt_publication_crash_replays_without_reapply(tmp_path: Path) -> None:
+    class DurableFileEffect:
+        def __init__(self, marker: Path) -> None:
+            self._marker = marker
+
+        async def apply(self, _intent: object, key: str) -> EffectApplyResult:
+            descriptor = os.open(self._marker, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(descriptor, f"{key}\n".encode())
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            return EffectApplyResult.applied({"remote_id": "r1"})
+
+        async def reconcile(self, _intent: object, _key: str) -> EffectReconcileResult:
+            if self._marker.is_file():
+                return EffectReconcileResult.applied({"remote_id": "r1"})
+            return EffectReconcileResult(status="not_applied")
+
+    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        return TaskOutcome.succeeded(
+            {"ran": True},
+            effects=(context.effect("test.empty.audit", {"n": 1}),),
+        )
+
+    for boundary in ("pending_fsynced", "final_installed", "directory_fsynced"):
+        case_root = tmp_path / boundary
+        marker = case_root / "external-effect.log"
+        marker.parent.mkdir(parents=True)
+        effect = DurableFileEffect(marker)
+        product = _task_product(handler, effect_handlers={"test.empty.audit": effect})
+        with Engine(case_root / "engine", clock=FakeClock(10.0), host=_InProcessTestHost()) as engine:
+            with engine.start(
+                product,
+                entrypoint="main",
+                invocation_id="effect-receipt-cut",
+                seed=empty_invocation_seed(),
+                authorization=empty_runtime_authorization(),
+            ):
+                pass
+
+        process_id = os.fork()
+        if process_id == 0:
+
+            def crash_after_external_apply(name: str) -> None:
+                if marker.is_file() and name == boundary:
+                    os._exit(93)
+
+            ledger_runtime._append_boundary = crash_after_external_apply
+            child_engine = Engine(
+                case_root / "engine",
+                clock=FakeClock(10.0),
+                host=_InProcessTestHost(),
+            )
+            child_handle = child_engine.open(
+                "effect-receipt-cut",
+                product,
+                authorization=empty_runtime_authorization(),
+            )
+            child_engine.run_until_blocked(child_handle)
+            os._exit(94)
+
+        _child, status = os.waitpid(process_id, 0)
+        assert os.waitstatus_to_exitcode(status) == 93
+
+        with Engine(
+            case_root / "engine",
+            clock=FakeClock(10.0),
+            host=_InProcessTestHost(),
+        ) as recovered_engine:
+            with recovered_engine.open(
+                "effect-receipt-cut",
+                product,
+                authorization=empty_runtime_authorization(),
+            ) as recovered_handle:
+                result = recovered_engine.run_until_blocked(recovered_handle)
+                events = recovered_handle.ledger.read_all()
+
+        assert result.status == "succeeded"
+        assert result.output == {"ran": True}
+        assert len(marker.read_text(encoding="utf-8").splitlines()) == 1
+        kinds = tuple(envelope.event.kind for envelope in events)
+        assert kinds.count("effect_apply_started") == 1
+        assert kinds.count("effect_receipt_recorded") == 1
+        assert kinds.count("task_attempt_succeeded") == 1
+        assert result.projection.effects[0].status == "applied"
+        assert thaw_json(result.projection.effects[0].receipt) == {"remote_id": "r1"}
 
 
 def test_engine_returns_generic_effect_pending_result(tmp_path: Path) -> None:

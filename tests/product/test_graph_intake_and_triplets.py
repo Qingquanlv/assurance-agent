@@ -185,6 +185,54 @@ def test_every_agent_node_is_one_closed_triplet(compiled_product_workflow):
     assert_closed_agent_aliases(compiled_product_workflow)
 
 
+def test_full_case_review_routes_fixable_findings_back_to_case_design(
+    compiled_product_workflow,
+):
+    graph = compiled_product_workflow.graphs["full"]
+    nodes = set(graph.nodes)
+    assert {
+        "review-pass-gate",
+        "review-fix-gate",
+        "review-human-gate",
+        "human-review",
+    }.issubset(nodes)
+    edges = {(edge.from_, edge.to) for edge in graph.edges}
+    assert ("case-review", "generation") not in edges
+    assert ("review-pass-gate", "generation") in edges
+    assert ("review-fix-gate", "case-design") in edges
+    assert ("review-human-gate", "human-review") in edges
+
+
+@pytest.mark.parametrize("family", ["api", "e2e", "fuzz", "performance"])
+def test_generation_plan_review_routes_before_codegen(compiled_product_workflow, family):
+    graph = compiled_product_workflow.graphs[f"generation-{family}"]
+    # Each review round activates plan/review plus the three mutually-exclusive
+    # route gates. Keep the graph safety ceiling above the valid repair budget.
+    assert graph.max_activations >= 64
+    nodes = set(graph.nodes)
+    assert {
+        "plan-review-pass-gate",
+        "plan-review-fix-gate",
+        "plan-review-human-gate",
+        "plan-human-review",
+    }.issubset(nodes)
+    edges = {(edge.from_, edge.to) for edge in graph.edges}
+    assert ("plan-review", "codegen") not in edges
+    assert ("plan-review-pass-gate", "codegen") in edges
+    assert ("plan-review-fix-gate", "plan") in edges
+    assert ("plan-review-human-gate", "plan-human-review") in edges
+    assert ("plan-human-review", "codegen") in edges
+
+
+@pytest.mark.parametrize("family", ["api", "e2e"])
+def test_successful_codegen_does_not_unconditionally_run_fixer(compiled_product_workflow, family):
+    graph = compiled_product_workflow.graphs[f"generation-{family}"]
+    edges = {(edge.from_, edge.to) for edge in graph.edges}
+    assert ("codegen", "codegen-fix") not in edges
+    assert ("codegen-pass-gate", "done") in edges
+    assert ("codegen-fix-gate", "codegen-fix") in edges
+
+
 @pytest.mark.parametrize("adapter", ["opencode", "cursor"])
 def test_workflow_compiles_under_both_product_providers(adapter, installed_sources):
     from assurance_product.product import (

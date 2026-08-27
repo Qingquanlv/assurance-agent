@@ -11,6 +11,10 @@ Serve execute and run skills for the closed selected-test mapping.
 - Prefer the confined handler output over any remembered conversation state.
 - Do not write the runtime ledger or an orchestration state file.
 - Write only change-scoped execution paths under `qa/changes/**/execution/`.
+- Keep runner side effects outside the candidate: set
+  `PYTHONDONTWRITEBYTECODE=1`, redirect Hypothesis and Playwright output to the
+  locked batch-scoped `/tmp` paths, and disable pytest's cache provider exactly
+  as the supplied skill specifies.
 - Do not invent capability leaves or case ids. Use the declared catalogs.
 - When done, state which selected tests ran and confirm the evidence covers
   those tests exactly once.
