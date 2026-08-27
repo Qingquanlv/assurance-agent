@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from importlib.resources import files
 from pathlib import Path
 from typing import Literal, cast
 
@@ -490,10 +491,21 @@ def _inventory_path() -> Path | None:
 
 
 def _load_inventory_nodes() -> set[str] | None:
-    path = _inventory_path()
-    if path is None:
+    raw: str | None = None
+    package = __package__
+    if package is not None:
+        packaged = files(package).joinpath("resources", "graph-inventory.yaml")
+        try:
+            raw = packaged.read_text(encoding="utf-8")
+        except (FileNotFoundError, IsADirectoryError, OSError):
+            raw = None
+    if raw is None:
+        path = _inventory_path()
+        if path is not None:
+            raw = path.read_text(encoding="utf-8")
+    if raw is None:
         return None
-    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    document = yaml.safe_load(raw)
     if not isinstance(document, Mapping):
         return None
     nodes = document.get("nodes")
