@@ -927,6 +927,7 @@ def _validate_terminal_causal_proof(
                     graphs,
                     graph_instance_id,
                     reason,
+                    schemas=schemas,
                 )
             )
     contract_cause = _structural_contract_failure_matches(compiled, projection, graphs, schemas)
@@ -1076,6 +1077,8 @@ def _activation_bound_failure_matches(
     graphs: dict[str, GraphInstanceRecord],
     cause_graph_instance_id: str,
     reason: str,
+    *,
+    schemas: SchemaRegistry | None = None,
 ) -> bool:
     if not _failed_graph_propagation_matches(
         projection,
@@ -1120,7 +1123,7 @@ def _activation_bound_failure_matches(
             ),
         }
     )
-    state = _PlannerState.from_projection(compiled, predecessor, schemas=None)
+    state = _PlannerState.from_projection(compiled, predecessor, schemas=schemas)
     if _terminal_task_activations(state):
         return False
     _settle_existing_activations(state)

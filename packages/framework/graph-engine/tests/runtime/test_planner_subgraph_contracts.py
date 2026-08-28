@@ -504,6 +504,47 @@ graphs:
     assert start_token.payload == graph_started.input
 
 
+def test_activation_bound_replay_keeps_schema_registry() -> None:
+    compiled, schemas = _compiled(
+        f"""
+name: contracted-activation-bound
+entrypoints: {{main: parent}}
+schemas: [{_INPUT_SCHEMA_ID}]
+retry: {{}}
+timeout: {{}}
+graphs:
+  parent:
+    max_activations: 4
+    start: child_call
+    nodes:
+      child_call:
+        kind: subgraph
+        graph: child
+        input: {{change_id: C-1, evidence: {{status: passed}}, policy: strict}}
+        input_schema: {_INPUT_SCHEMA_ID}
+      done: {{kind: end}}
+    edges:
+      - {{from: child_call, to: done}}
+  child:
+    max_activations: 1
+    start: loop
+    nodes:
+      loop: {{kind: gate, expression: 'true'}}
+    edges:
+      - {{from: loop, to: loop}}
+"""
+    )
+    plan = plan_next(compiled, _projection(_invocation()), schemas=schemas)
+    assert plan.terminal == "failed"
+    assert plan.reason is not None
+    assert plan.reason.startswith("max_activations_exceeded:")
+    envelopes = _envelopes(_invocation(), *plan.events)
+    folded = fold_events(envelopes)
+    assert folded.status == "failed"
+
+    validate_event_history(compiled, envelopes, folded, schemas=schemas)
+
+
 def test_forged_projected_child_input_fails_replay() -> None:
     compiled, schemas = _compiled(_contracted_workflow_text())
     events, projection = _after_seed(compiled, schemas, root_input={"change_id": "C-1"})
