@@ -299,7 +299,7 @@ def _rewrite_node(
             raise WorkflowAssemblyError(f"undeclared import alias: {node.graph_import}")
         target = modules_by_id.get(spec.module_id)
         if target is None:
-            raise WorkflowAssemblyError(f"undeclared import alias: {node.graph_import}")
+            raise WorkflowAssemblyError(f"missing import module: {spec.module_id}")
         if target.owner_id != spec.owner_id:
             raise WorkflowAssemblyError(f"import owner mismatch: {spec.module_id} owner {spec.owner_id}")
         exported = export_table.get((spec.module_id, spec.export))

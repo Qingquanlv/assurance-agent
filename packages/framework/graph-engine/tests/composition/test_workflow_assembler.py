@@ -537,6 +537,70 @@ def _feature_payload(owner_id: str, module_id: str, **kwargs: Any) -> dict[str, 
 
 
 def test_undeclared_import_alias_fails() -> None:
+    feature = _feature_resource("toy.feature", "toy.feature.workflow")
+    manifest = _manifest(_requirement("toy.feature.workflow", "toy.feature"))
+    product = manifest.workflow_module
+    assert product is not None
+    registries = _registries(
+        feature,
+        schemas=_schema_entries(product, parse_workflow_module(feature.content)),
+    )
+    loaded = _load_authenticated_modules(
+        manifest=manifest,
+        descriptors=_selected(feature),
+        registries=registries,
+    )
+    root = product.graphs["root"]
+    child = root.nodes["child"]
+    tampered_child = type(child).model_construct(
+        **{key: getattr(child, key) for key in type(child).model_fields if key != "graph_import"},
+        graph_import="ghost",
+    )
+    tampered_root = type(root).model_construct(
+        max_activations=root.max_activations,
+        start=root.start,
+        nodes={**root.nodes, "child": tampered_child},
+        edges=root.edges,
+    )
+    tampered_product = WorkflowModuleDef.model_construct(
+        schema_version=product.schema_version,
+        role=product.role,
+        owner_id=product.owner_id,
+        module_id=product.module_id,
+        module_version=product.module_version,
+        name=product.name,
+        entrypoints=product.entrypoints,
+        imports=product.imports,
+        exports=product.exports,
+        capability_slots=product.capability_slots,
+        schemas=product.schemas,
+        resources=product.resources,
+        effects=product.effects,
+        retry=product.retry,
+        timeout=product.timeout,
+        graphs={**product.graphs, "root": tampered_root},
+    )
+    tampered_manifest = ProductManifest.model_construct(
+        schema_version=manifest.schema_version,
+        source=manifest.source,
+        product_id=manifest.product_id,
+        product_version=manifest.product_version,
+        engine_api=manifest.engine_api,
+        plugins=manifest.plugins,
+        entrypoints=manifest.entrypoints,
+        configuration=manifest.configuration,
+        config_plugin_paths=manifest.config_plugin_paths,
+        workflow=manifest.workflow,
+        workflow_resource_id=manifest.workflow_resource_id,
+        workflow_module=tampered_product,
+        workflow_module_resources=manifest.workflow_module_resources,
+        workflow_slot_bindings=manifest.workflow_slot_bindings,
+    )
+    with pytest.raises(WorkflowAssemblyError, match="undeclared import alias"):
+        _lower_module_symbols(loaded, manifest=tampered_manifest, registries=registries)
+
+
+def test_missing_import_module_fails() -> None:
     raw = _payload(PRODUCT_MODULE)
     raw["imports"] = {
         "ghost": {
@@ -548,7 +612,7 @@ def test_undeclared_import_alias_fails() -> None:
     child = raw["graphs"]["root"]["nodes"]["child"]
     child["graph_import"] = "ghost"
     feature = _feature_resource("toy.feature", "toy.feature.workflow")
-    with pytest.raises(WorkflowAssemblyError, match="undeclared"):
+    with pytest.raises(WorkflowAssemblyError, match="missing import module"):
         _lower(feature, product=_dump(raw))
 
 
