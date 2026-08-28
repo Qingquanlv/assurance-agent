@@ -48,8 +48,8 @@ class TimeoutPolicyDef(FrozenModel):
 NodeKind = Literal["task", "gate", "join", "subgraph", "interrupt", "end"]
 
 _REQUIRED_NODE_FIELDS: dict[NodeKind, tuple[str, ...]] = {
-    "task": ("capability", "retry", "timeout"),
-    "subgraph": ("graph",),
+    "task": ("retry", "timeout"),
+    "subgraph": (),
     "join": ("join",),
     "gate": ("expression",),
     "interrupt": ("reason", "actions"),
@@ -60,6 +60,7 @@ _ALLOWED_NODE_FIELDS: dict[NodeKind, frozenset[str]] = {
     "task": frozenset(
         {
             "capability",
+            "capability_slot",
             "input",
             "input_projection",
             "retry",
@@ -72,6 +73,7 @@ _ALLOWED_NODE_FIELDS: dict[NodeKind, frozenset[str]] = {
     "subgraph": frozenset(
         {
             "graph",
+            "graph_import",
             "input",
             "input_projection",
             "input_schema",
@@ -103,7 +105,17 @@ def validate_node_shape(
     for field_name in sorted(supplied_payload - _ALLOWED_NODE_FIELDS[kind]):
         raise ValueError(f"{kind} node does not accept {field_name}")
 
+    if kind == "task":
+        has_capability = _has_node_value(values.get("capability"))
+        has_capability_slot = _has_node_value(values.get("capability_slot"))
+        if has_capability == has_capability_slot:
+            raise ValueError("task node requires exactly one of capability or capability_slot")
+
     if kind == "subgraph":
+        has_graph = _has_node_value(values.get("graph"))
+        has_graph_import = _has_node_value(values.get("graph_import"))
+        if has_graph == has_graph_import:
+            raise ValueError("subgraph node requires exactly one of graph or graph_import")
         has_output_projection = values.get("output_projection") is not None
         has_output_schema = values.get("output_schema") is not None
         if has_output_projection != has_output_schema:
@@ -115,6 +127,12 @@ def validate_node_shape(
             raise ValueError("interrupt actions must be non-empty")
         if len(set(actions)) != len(actions):
             raise ValueError("interrupt actions must be unique")
+
+
+def _has_node_value(value: object) -> bool:
+    if value is None or value == ():
+        return False
+    return not (isinstance(value, str) and not value.strip())
 
 
 def validate_node_schema_id(value: str | None) -> str | None:
@@ -134,7 +152,9 @@ class RoutingDef(FrozenModel):
 class NodeDef(FrozenModel):
     kind: NodeKind
     capability: str | None = None
+    capability_slot: str | None = None
     graph: str | None = None
+    graph_import: str | None = None
     join: Literal["all", "any"] | None = None
     expression: str | None = None
     reason: str | None = None

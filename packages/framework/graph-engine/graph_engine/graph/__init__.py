@@ -14,9 +14,17 @@ from graph_engine.graph.output_projection import (
     project_subgraph_output,
     validate_output_projection_compile,
 )
+from graph_engine.graph.module_schema import (
+    CapabilitySlotDef,
+    WorkflowExportDef,
+    WorkflowImportDef,
+    WorkflowModuleDef,
+    parse_workflow_module,
+)
 from graph_engine.graph.schema import EdgeDef, GraphDef, NodeDef, WorkflowDef, parse_workflow
 
 __all__ = [
+    "CapabilitySlotDef",
     "CompiledWorkflow",
     "EdgeDef",
     "GraphDef",
@@ -24,11 +32,15 @@ __all__ = [
     "NodeDef",
     "OutputProjectionDef",
     "WorkflowDef",
+    "WorkflowExportDef",
+    "WorkflowImportDef",
+    "WorkflowModuleDef",
     "compile_workflow",
     "evaluate_expression",
     "parse_input_projection",
     "parse_output_projection",
     "parse_workflow",
+    "parse_workflow_module",
     "project_subgraph_output",
     "project_task_input",
     "validate_input_projection_compile",

@@ -338,6 +338,10 @@ def _validate_node_references(
     node_id: str,
     node: NodeDef,
 ) -> None:
+    if node.capability_slot:
+        raise CompileError(f"unresolved capability_slot {node.capability_slot} at {graph_id}/{node_id}")
+    if node.graph_import:
+        raise CompileError(f"unresolved graph_import {node.graph_import} at {graph_id}/{node_id}")
     if node.retry is not None and node.retry not in workflow.retry:
         raise CompileError(f"unknown retry policy {node.retry} at {graph_id}/{node_id}")
     if node.timeout is not None and node.timeout not in workflow.timeout:
