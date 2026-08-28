@@ -1295,6 +1295,18 @@ def test_slot_target_handler_outside_descriptor_closure_fails() -> None:
         assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
 
 
+def test_slot_capability_must_be_product_owned() -> None:
+    manifest, descriptors, registries = _slot_assembly_inputs(
+        bindings=(_slot_binding(capability_id="toy.feature.agent.worker.execute"),),
+        binding_registry=_binding_registry(
+            capability_id="toy.feature.agent.worker.execute",
+            binding_owner="toy.feature",
+        ),
+    )
+    with pytest.raises(WorkflowAssemblyError, match="product-owned|owner"):
+        assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
+
+
 def test_valid_slot_lowers_to_concrete_capability() -> None:
     feature = _slotted_feature()
     manifest, descriptors, registries = _slot_assembly_inputs(feature=feature)

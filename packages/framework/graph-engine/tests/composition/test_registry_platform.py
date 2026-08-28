@@ -3632,6 +3632,20 @@ def _resolve_modular(
     return platform.resolve(request)
 
 
+def test_modular_resolve_rejects_wrong_namespaced_entrypoint_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_assemble = resolver_runtime.assemble_product_workflow
+
+    def _wrong_graph(**kwargs: object) -> WorkflowDef:
+        workflow = real_assemble(**kwargs)  # type: ignore[arg-type]
+        return workflow.model_copy(update={"entrypoints": {"main": "toy.feature.workflow.graph.feature-run"}})
+
+    monkeypatch.setattr(resolver_runtime, "assemble_product_workflow", _wrong_graph)
+    with pytest.raises(ResolutionError, match="entrypoints"):
+        _resolve_modular(tmp_path / "wrong-entry", monkeypatch)
+
+
 def test_resolve_legacy_and_modular_products_return_compiled_workflow(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

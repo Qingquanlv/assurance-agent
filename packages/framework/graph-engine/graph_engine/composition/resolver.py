@@ -521,16 +521,20 @@ class RegistryPlatform:
                 workflow = parse_workflow(resource.content.decode("utf-8"))
             except Exception as error:
                 raise ResolutionError("product workflow resource is invalid") from error
-        if set(workflow.entrypoints) != set(manifest.entrypoints) or (
-            manifest.workflow_module is None and dict(workflow.entrypoints) != dict(manifest.entrypoints)
-        ):
+        expected_entrypoints = _expected_product_entrypoints(manifest)
+        if dict(workflow.entrypoints) != expected_entrypoints:
             raise ResolutionError("product entrypoints disagree with the selected workflow")
         compiled = compile_workflow(workflow, registries)
-        if set(compiled.entrypoints) != set(manifest.entrypoints) or (
-            manifest.workflow_module is None and dict(compiled.entrypoints) != dict(manifest.entrypoints)
-        ):  # pragma: no cover - compiler copies.
+        if dict(compiled.entrypoints) != expected_entrypoints:  # pragma: no cover - compiler copies.
             raise ResolutionError("compiled workflow entrypoints disagree with product")
         return compiled
+
+
+def _expected_product_entrypoints(manifest: ProductManifest) -> dict[str, str]:
+    if manifest.workflow_module is None:
+        return dict(manifest.entrypoints)
+    module_id = manifest.workflow_module.module_id
+    return {name: f"{module_id}.graph.{local}" for name, local in manifest.entrypoints.items()}
 
 
 def _capture_engine_snapshot() -> SourceSnapshot:
