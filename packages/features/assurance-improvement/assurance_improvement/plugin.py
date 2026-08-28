@@ -67,6 +67,20 @@ IMPROVEMENT_SCHEMA_IDS: tuple[str, ...] = (
     "assurance.improvement.schema.promotion.v1",
     "assurance.improvement.schema.retro-context.v3",
     "assurance.improvement.schema.retro-signals.v3",
+    "assurance.improvement.workflow.apply.input.v1",
+    "assurance.improvement.workflow.apply.output.v1",
+    "assurance.improvement.workflow.archive.input.v1",
+    "assurance.improvement.workflow.archive.output.v1",
+    "assurance.improvement.workflow.evaluate.input.v1",
+    "assurance.improvement.workflow.evaluate.output.v1",
+    "assurance.improvement.workflow.export.input.v1",
+    "assurance.improvement.workflow.export.output.v1",
+    "assurance.improvement.workflow.retro.input.v1",
+    "assurance.improvement.workflow.retro.output.v1",
+    "assurance.improvement.workflow.review.input.v1",
+    "assurance.improvement.workflow.review.output.v1",
+    "assurance.improvement.workflow.rollback.input.v1",
+    "assurance.improvement.workflow.rollback.output.v1",
 )
 
 IMPROVEMENT_HANDLER_IDS: tuple[str, ...] = tuple(sorted(improvement_handlers()))
@@ -105,6 +119,7 @@ IMPROVEMENT_RESOURCE_FILES: dict[str, str] = {
         "skills/aa-retro-workflow-analysis/SKILL.md"
     ),
     "assurance.improvement.skill.aa-retro.v1": "skills/aa-retro/SKILL.md",
+    "assurance.improvement.workflow.module.v1": "workflow/module.yaml",
 }
 
 IMPROVEMENT_RESOURCE_IDS: tuple[str, ...] = tuple(sorted(IMPROVEMENT_RESOURCE_FILES))
@@ -125,6 +140,20 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.improvement.schema.promotion.v1": "schemas/promotion.v1.schema.json",
     "assurance.improvement.schema.retro-context.v3": "schemas/retro-context.v3.schema.json",
     "assurance.improvement.schema.retro-signals.v3": "schemas/retro-signals.v3.schema.json",
+    "assurance.improvement.workflow.apply.input.v1": "schemas/workflow/apply-input.v1.schema.json",
+    "assurance.improvement.workflow.apply.output.v1": "schemas/workflow/apply-output.v1.schema.json",
+    "assurance.improvement.workflow.archive.input.v1": "schemas/workflow/archive-input.v1.schema.json",
+    "assurance.improvement.workflow.archive.output.v1": "schemas/workflow/archive-output.v1.schema.json",
+    "assurance.improvement.workflow.evaluate.input.v1": "schemas/workflow/evaluate-input.v1.schema.json",
+    "assurance.improvement.workflow.evaluate.output.v1": ("schemas/workflow/evaluate-output.v1.schema.json"),
+    "assurance.improvement.workflow.export.input.v1": "schemas/workflow/export-input.v1.schema.json",
+    "assurance.improvement.workflow.export.output.v1": "schemas/workflow/export-output.v1.schema.json",
+    "assurance.improvement.workflow.retro.input.v1": "schemas/workflow/retro-input.v1.schema.json",
+    "assurance.improvement.workflow.retro.output.v1": "schemas/workflow/retro-output.v1.schema.json",
+    "assurance.improvement.workflow.review.input.v1": "schemas/workflow/review-input.v1.schema.json",
+    "assurance.improvement.workflow.review.output.v1": "schemas/workflow/review-output.v1.schema.json",
+    "assurance.improvement.workflow.rollback.input.v1": "schemas/workflow/rollback-input.v1.schema.json",
+    "assurance.improvement.workflow.rollback.output.v1": ("schemas/workflow/rollback-output.v1.schema.json"),
 }
 
 _VALIDATORS = {
@@ -146,9 +175,16 @@ def _schema_contributions() -> tuple[SchemaContribution, ...]:
     )
 
 
+_WORKFLOW_MODULE_MIME = "application/vnd.graph-engine.workflow-module+yaml"
+
+
 def _resource_media_type(path: str) -> str:
     if path.endswith(".schema.json"):
         return "application/schema+json"
+    if path.endswith("workflow/module.yaml"):
+        return _WORKFLOW_MODULE_MIME
+    if path.endswith(".json"):
+        return "application/json"
     return "text/plain"
 
 

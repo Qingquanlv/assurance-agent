@@ -6,6 +6,19 @@ from types import MappingProxyType
 from agent_runtime_contracts import AgentExecutionContract
 from graph_engine.plugin_api import ResourceClaimTemplate
 
+WORKFLOW_MODULE_ID = "assurance.improvement.workflow"
+WORKFLOW_RESOURCE_ID = "assurance.improvement.workflow.module.v1"
+WORKFLOW_EXPORTS: tuple[str, ...] = (
+    "archive",
+    "retro",
+    "review",
+    "evaluate",
+    "export",
+    "apply",
+    "rollback",
+)
+AGENT_SLOT_PHASES: tuple[str, ...] = ("prepare", "execute", "finalize")
+
 _ARCHIVER = "assurance-v1-archiver"
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _REVIEWER = "assurance-v1-reviewer"
@@ -51,5 +64,9 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
+    "AGENT_SLOT_PHASES",
     "OUTPUT_ROUTE_TEMPLATES",
+    "WORKFLOW_EXPORTS",
+    "WORKFLOW_MODULE_ID",
+    "WORKFLOW_RESOURCE_ID",
 ]

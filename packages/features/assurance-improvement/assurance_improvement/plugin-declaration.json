@@ -93,7 +93,21 @@
       "assurance.improvement.schema.improvement-review.v1",
       "assurance.improvement.schema.promotion.v1",
       "assurance.improvement.schema.retro-context.v3",
-      "assurance.improvement.schema.retro-signals.v3"
+      "assurance.improvement.schema.retro-signals.v3",
+      "assurance.improvement.workflow.apply.input.v1",
+      "assurance.improvement.workflow.apply.output.v1",
+      "assurance.improvement.workflow.archive.input.v1",
+      "assurance.improvement.workflow.archive.output.v1",
+      "assurance.improvement.workflow.evaluate.input.v1",
+      "assurance.improvement.workflow.evaluate.output.v1",
+      "assurance.improvement.workflow.export.input.v1",
+      "assurance.improvement.workflow.export.output.v1",
+      "assurance.improvement.workflow.retro.input.v1",
+      "assurance.improvement.workflow.retro.output.v1",
+      "assurance.improvement.workflow.review.input.v1",
+      "assurance.improvement.workflow.review.output.v1",
+      "assurance.improvement.workflow.rollback.input.v1",
+      "assurance.improvement.workflow.rollback.output.v1"
     ],
     "resources": [
       "assurance.improvement.persona.archiver.v1",
@@ -107,7 +121,8 @@
       "assurance.improvement.skill.aa-retro-eval-analysis.v1",
       "assurance.improvement.skill.aa-retro-issue-analysis.v1",
       "assurance.improvement.skill.aa-retro-workflow-analysis.v1",
-      "assurance.improvement.skill.aa-retro.v1"
+      "assurance.improvement.skill.aa-retro.v1",
+      "assurance.improvement.workflow.module.v1"
     ],
     "effects": [
       "assurance.improvement.effect.archive.v1",

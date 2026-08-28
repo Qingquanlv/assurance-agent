@@ -68,7 +68,7 @@ def test_improvement_source_identity() -> None:
     assert ENGINE_API_VERSION == "2.0"
     assert ImprovementPlugin.descriptor().schemas == IMPROVEMENT_SCHEMA_IDS
     assert tuple(IMPROVEMENT_SCHEMA_IDS) == tuple(sorted(IMPROVEMENT_SCHEMA_IDS))
-    assert len(IMPROVEMENT_SCHEMA_IDS) == 9
+    assert len(IMPROVEMENT_SCHEMA_IDS) == 23
     from assurance_improvement.plugin import (
         IMPROVEMENT_EFFECT_IDS,
         IMPROVEMENT_HANDLER_IDS,
