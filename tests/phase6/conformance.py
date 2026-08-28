@@ -14,7 +14,7 @@ PRODUCTION_METADATA_FILES = (
     "pyproject.toml",
     ".importlinter",
     "uv.lock",
-    "packages/assurance-product/pyproject.toml",
+    "packages/products/assurance-product/pyproject.toml",
     "packages/features/assurance-intake/pyproject.toml",
     "packages/features/assurance-generation/pyproject.toml",
     "packages/features/assurance-execution/pyproject.toml",
@@ -28,7 +28,7 @@ PRODUCTION_METADATA_FILES = (
 )
 
 PRODUCTION_PACKAGE_ROOTS = (
-    "packages/assurance-product/assurance_product",
+    "packages/products/assurance-product/assurance_product",
     "packages/features/assurance-intake/assurance_intake",
     "packages/features/assurance-generation/assurance_generation",
     "packages/features/assurance-execution/assurance_execution",
@@ -68,7 +68,7 @@ KERNEL_DESTINATIONS = frozenset(
 )
 KERNEL_DESTINATION_ROOTS = {
     "graph-engine": "packages/framework/graph-engine",
-    "assurance-product": "packages/assurance-product",
+    "assurance-product": "packages/products/assurance-product",
     "assurance.intake": "packages/features/assurance-intake",
     "assurance.generation": "packages/features/assurance-generation",
     "assurance.execution": "packages/features/assurance-execution",

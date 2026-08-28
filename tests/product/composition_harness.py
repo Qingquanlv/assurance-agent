@@ -30,7 +30,7 @@ _DEPLOYMENT_FIXTURES = _FIXTURE_ROOT / "deployment"
 _CONFIG_FIXTURE = _FIXTURE_ROOT / "project-config"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _WORKSPACE_WHEELS: tuple[tuple[str, str], ...] = (
-    ("assurance-product", "packages/assurance-product"),
+    ("assurance-product", "packages/products/assurance-product"),
     ("assurance-intake", "packages/features/assurance-intake"),
     ("assurance-generation", "packages/features/assurance-generation"),
     ("assurance-execution", "packages/features/assurance-execution"),

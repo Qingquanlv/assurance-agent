@@ -236,7 +236,7 @@ requires-dist = [
 [[package]]
 name = "assurance-product"
 version = "0.1.0"
-source = { editable = "packages/assurance-product" }
+source = { editable = "packages/products/assurance-product" }
 dependencies = [
     { name = "assurance-execution" },
     { name = "assurance-generation" },
@@ -345,7 +345,7 @@ dev = [
     { name = "assurance-healing", editable = "packages/features/assurance-healing" },
     { name = "assurance-improvement", editable = "packages/features/assurance-improvement" },
     { name = "assurance-intake", editable = "packages/features/assurance-intake" },
-    { name = "assurance-product", editable = "packages/assurance-product" },
+    { name = "assurance-product", editable = "packages/products/assurance-product" },
     { name = "assurance-quality", editable = "packages/features/assurance-quality" },
     { name = "click", specifier = ">=8.1" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },

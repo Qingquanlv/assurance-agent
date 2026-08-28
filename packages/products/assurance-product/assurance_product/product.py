@@ -482,7 +482,7 @@ def _is_forbidden_graph_target(capability: str) -> bool:
 def _inventory_path() -> Path | None:
     candidates = (
         Path.cwd() / _INVENTORY_RELATIVE,
-        Path(__file__).resolve().parents[3] / _INVENTORY_RELATIVE,
+        Path(__file__).resolve().parents[4] / _INVENTORY_RELATIVE,
     )
     for path in candidates:
         if path.is_file():

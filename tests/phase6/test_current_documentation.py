@@ -10,13 +10,13 @@ CURRENT_DOC_RELATIVES = (
     "README.md",
     "AGENTS.md",
     "packages/framework/graph-engine/README.md",
-    "packages/assurance-product/README.md",
+    "packages/products/assurance-product/README.md",
 )
 
 PRODUCT_DOC_RELATIVES = (
     "README.md",
     "AGENTS.md",
-    "packages/assurance-product/README.md",
+    "packages/products/assurance-product/README.md",
 )
 
 FORBIDDEN_FRAGMENTS = (

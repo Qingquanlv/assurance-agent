@@ -249,3 +249,20 @@ source_modules =
 forbidden_modules =
     agent_runtime_opencode
     agent_runtime_cursor
+
+[importlinter:contract:product-composition-layer]
+name = product is the only top-level composition layer
+type = forbidden
+source_modules =
+    graph_engine
+    agent_runtime_contracts
+    agent_runtime_opencode
+    agent_runtime_cursor
+    assurance_intake
+    assurance_generation
+    assurance_execution
+    assurance_healing
+    assurance_quality
+    assurance_improvement
+forbidden_modules =
+    assurance_product
