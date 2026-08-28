@@ -10,6 +10,7 @@ from graph_engine.errors import GraphEngineError
 from graph_engine.graph.compiler import CompiledGraph, CompiledNode, CompiledWorkflow
 from graph_engine.graph.expressions import evaluate_expression
 from graph_engine.graph.input_projection import InputProjectionError, project_task_input
+from graph_engine.graph.output_projection import OutputProjectionError, project_subgraph_output
 from graph_engine.json_schema import validate_json_schema
 from graph_engine.plugin_api import ResourceClaimTemplate, TaskFailure
 from graph_engine.runtime.events import (
@@ -772,11 +773,16 @@ def _validate_projection(
             assert graph_id is not None
             child_id = subgraph_instance_id(activation.activation_id, graph_id)
             child = graphs.get(child_id)
+            try:
+                expected_output = _expected_public_parent_output(graphs, node, activation, schemas)
+            except PlanningError:
+                expected_output = None
             if (
                 child is None
                 or child.status != "completed"
                 or child.parent_activation_id != activation.activation_id
-                or thaw_json(child.output) != thaw_json(activation.output)
+                or expected_output is None
+                or thaw_json(activation.output) != thaw_json(expected_output)
             ):
                 raise PlanningError(
                     "planner does not support node kind 'subgraph' without a matching child lifecycle"
@@ -1387,6 +1393,79 @@ def _subgraph_input_violation(
     return None
 
 
+def _validate_compiled_output_schema(
+    schemas: SchemaRegistry | None,
+    node: CompiledNode,
+    value: object,
+) -> None:
+    schema_id = node.definition.output_schema
+    if schema_id is None:
+        return
+    if schemas is None:
+        raise PlanningError("contracted workflow requires a schema registry")
+    entry = schemas.entries.get(schema_id)
+    if entry is None:
+        raise PlanningError(f"unknown schema {schema_id}")
+    try:
+        validate_json_schema(thaw_json(value), entry.content)
+    except ValueError as error:
+        raise PlanningError(f"invalid_output: {error}") from error
+
+
+def _expected_public_parent_output(
+    graphs: dict[str, GraphInstanceRecord],
+    node: CompiledNode,
+    activation: ActivationRecord,
+    schemas: SchemaRegistry | None,
+) -> JSONValue:
+    child_graph_id = node.definition.graph
+    assert child_graph_id is not None
+    child = graphs.get(subgraph_instance_id(activation.activation_id, child_graph_id))
+    if child is None or child.status != "completed":
+        raise PlanningError(
+            "planner does not support node kind 'subgraph' without a matching child lifecycle"
+        )
+    if node.definition.output_projection is None:
+        return cast(JSONValue, thaw_json(child.output))
+    try:
+        value = cast(
+            JSONValue,
+            thaw_json(
+                project_subgraph_output(
+                    node.definition.output_projection,
+                    child_output=child.output,
+                )
+            ),
+        )
+    except OutputProjectionError as error:
+        raise PlanningError(f"invalid_output: {error}") from error
+    _validate_compiled_output_schema(schemas, node, value)
+    return value
+
+
+def _subgraph_public_output(
+    state: _PlannerState,
+    node: CompiledNode,
+    activation: ActivationRecord,
+) -> JSONValue:
+    return _expected_public_parent_output(state.graphs, node, activation, state.schemas)
+
+
+def _subgraph_output_violation(
+    state: _PlannerState,
+    node: CompiledNode,
+    activation: ActivationRecord,
+) -> TaskFailure | None:
+    try:
+        _subgraph_public_output(state, node, activation)
+    except PlanningError as error:
+        message = str(error)
+        if not message.startswith("invalid_output"):
+            raise
+        return TaskFailure(kind="invalid_output", message=message, retryable=False)
+    return None
+
+
 def _pending_fatal_violation(state: _PlannerState) -> _FatalCandidate | None:
     candidates: list[_FatalCandidate] = []
     for activation in state.activations.values():
@@ -1398,6 +1477,24 @@ def _pending_fatal_violation(state: _PlannerState) -> _FatalCandidate | None:
             continue
         child_id = node.definition.graph
         if child_id is not None and subgraph_instance_id(activation.activation_id, child_id) in state.graphs:
+            child = state.graphs[subgraph_instance_id(activation.activation_id, child_id)]
+            if child.status != "completed":
+                continue
+            failure = _subgraph_output_violation(state, node, activation)
+            if failure is None:
+                continue
+            candidates.append(
+                _FatalCandidate(
+                    graph_instance_id=activation.graph_instance_id,
+                    subject_id=activation.activation_id,
+                    reason=f"task_failed:{node.node_id}:{failure.kind}",
+                    kind="invalid_output",
+                    failure=failure,
+                    node_id=node.node_id,
+                    token_ids=activation.token_ids,
+                    activation_id=activation.activation_id,
+                )
+            )
             continue
         failure = _subgraph_input_violation(state, node, activation)
         if failure is None:
@@ -1508,15 +1605,37 @@ def _structural_contract_failure_matches(
         return False
     failure = activation.failure
     assert failure is not None
-    if failure.kind == "invalid_output":
-        return False
-    if any(graph.parent_activation_id == activation.activation_id for graph in projection.graph_instances):
-        return False
     tokens = {token.token_id: token for token in projection.offered_tokens}
-    try:
-        _expected_child_graph_input(graphs, tokens, node, activation, schemas)
-    except PlanningError as error:
-        if not str(error).startswith("invalid_input"):
+    children = tuple(
+        graph
+        for graph in projection.graph_instances
+        if graph.parent_activation_id == activation.activation_id
+    )
+    if failure.kind == "invalid_input":
+        if children:
+            return False
+        try:
+            _expected_child_graph_input(graphs, tokens, node, activation, schemas)
+        except PlanningError as error:
+            if not str(error).startswith("invalid_input"):
+                return False
+        else:
+            return False
+    elif failure.kind == "invalid_output":
+        if len(children) != 1 or children[0].status != "completed":
+            return False
+        try:
+            expected_input = _expected_child_graph_input(graphs, tokens, node, activation, schemas)
+        except PlanningError:
+            return False
+        if thaw_json(children[0].input) != thaw_json(expected_input):
+            return False
+        try:
+            _expected_public_parent_output(graphs, node, activation, schemas)
+        except PlanningError as error:
+            if str(error) != failure.message or not str(error).startswith("invalid_output"):
+                return False
+        else:
             return False
     else:
         return False
@@ -1948,9 +2067,15 @@ def _settle_subgraph_activation(
         _start_subgraph(state, node, activation)
         return
     if child.status == "completed":
-        completed = activation.model_copy(update={"status": "completed", "output": child.output})
+        try:
+            public_output = _subgraph_public_output(state, node, activation)
+        except PlanningError as error:
+            if str(error).startswith("invalid_output"):
+                return
+            raise
+        completed = activation.model_copy(update={"status": "completed", "output": public_output})
         state.activations[activation.activation_id] = completed
-        state.events.append(NodeCompleted(activation_id=activation.activation_id, output=child.output))
+        state.events.append(NodeCompleted(activation_id=activation.activation_id, output=public_output))
         parent = state.graphs[activation.graph_instance_id]
         _route_completion(state, state.compiled.graphs[parent.graph_id], node, completed)
     elif child.status == "failed":

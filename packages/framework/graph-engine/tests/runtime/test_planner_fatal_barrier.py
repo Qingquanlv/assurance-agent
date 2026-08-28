@@ -445,6 +445,174 @@ def test_fatal_barrier_emits_canonical_invalid_input_after_sibling_settles(outco
     validate_event_history(compiled, envelopes, fold_events(envelopes), schemas=schemas)
 
 
+def _compiled_invalid_output() -> tuple[CompiledWorkflow, SchemaRegistry]:
+    bundle = _registries()
+    compiled = compile_workflow(
+        parse_workflow(
+            f"""
+name: fatal-barrier-output
+entrypoints: {{main: parent}}
+schemas: [{_INPUT_SCHEMA_ID}, {_OUTPUT_SCHEMA_ID}]
+retry: {{policy: {{max_attempts: 1, retry_on: []}}}}
+timeout: {{short: {{run_seconds: 5}}}}
+graphs:
+  parent:
+    max_activations: 8
+    start: fork
+    nodes:
+      fork:
+        kind: gate
+        expression: 'true'
+      sibling:
+        kind: task
+        capability: test.tasks.run
+        retry: policy
+        timeout: short
+      child_call:
+        kind: subgraph
+        graph: child
+        input_projection:
+          type: object
+          fields:
+            change_id: {{type: root_pointer, pointer: /change_id}}
+        input_schema: {_INPUT_SCHEMA_ID}
+        output_schema: {_OUTPUT_SCHEMA_ID}
+        output_projection:
+          type: object
+          fields:
+            status: {{type: child_output_pointer, pointer: /status}}
+      done: {{kind: end}}
+    edges:
+      - {{from: fork, to: sibling}}
+      - {{from: fork, to: child_call}}
+      - {{from: sibling, to: done}}
+      - {{from: child_call, to: done}}
+  child:
+    max_activations: 2
+    start: done
+    nodes:
+      done: {{kind: end}}
+    edges: []
+"""
+        ),
+        bundle,
+    )
+    return compiled, bundle.schemas
+
+
+def _output_root() -> GraphStarted:
+    return GraphStarted(graph_instance_id="parent", graph_id="parent", input={"change_id": "C-1"})
+
+
+def _output_start_token(compiled: CompiledWorkflow) -> TokenOffered:
+    graph = compiled.graphs["parent"]
+    return TokenOffered(
+        token_id=canonical_digest(
+            {
+                "graph_instance_id": "parent",
+                "kind": "graph_start",
+                "target": graph.start,
+            }
+        ),
+        graph_instance_id="parent",
+        source=None,
+        target=graph.start,
+        payload={"change_id": "C-1"},
+    )
+
+
+def _bootstrap_invalid_output_with_running_sibling(
+    compiled: CompiledWorkflow, schemas: SchemaRegistry
+) -> tuple[list[object], str, str]:
+    events: list[object] = [
+        _invocation(),
+        _output_root(),
+        _output_start_token(compiled),
+    ]
+    planned = plan_next(compiled, _projection(*events), schemas=schemas)
+    assert planned.terminal is None
+    events.extend(planned.events)
+    if not planned.tasks:
+        planned = plan_next(compiled, _projection(*events), schemas=schemas)
+        events.extend(planned.events)
+    assert [task.node_id for task in planned.tasks] == ["sibling"]
+    sibling = planned.tasks[0]
+    events.extend(_start_sibling(sibling.task_id, sibling.activation_id))
+    return events, sibling.task_id, sibling.activation_id
+
+
+def _invalid_output_chain(plan: object) -> tuple[object, ...]:
+    kinds = [event.kind for event in plan.events]
+    assert "node_failed" in kinds
+    failed = next(event for event in plan.events if isinstance(event, NodeFailed))
+    assert failed.failure.kind == "invalid_output"
+    assert failed.failure.retryable is False
+    assert not any(isinstance(event, TokenOffered) and event.source == "child_call" for event in plan.events)
+    assert plan.tasks == ()
+    assert plan.terminal == "failed"
+    return plan.events
+
+
+def test_fatal_barrier_holds_invalid_output_while_sibling_attempt_is_running() -> None:
+    compiled, schemas = _compiled_invalid_output()
+    events, task_id, activation_id = _bootstrap_invalid_output_with_running_sibling(compiled, schemas)
+    projection = _projection(*events)
+
+    first = plan_next(compiled, projection, schemas=schemas)
+    second = plan_next(compiled, projection, schemas=schemas)
+    running = plan_running_tasks(compiled, projection, schemas=schemas)
+
+    _assert_no_terminal_progress(first)
+    _assert_no_terminal_progress(second)
+    assert first.events == second.events
+    assert [task.activation_id for task in running] == [activation_id]
+    assert [task.task_id for task in running] == [task_id]
+    assert [task.attempt for task in running] == [1]
+
+
+@pytest.mark.parametrize("outcome", ("success", "failure"))
+def test_fatal_barrier_emits_canonical_invalid_output_after_sibling_settles(outcome: str) -> None:
+    compiled, schemas = _compiled_invalid_output()
+    events, task_id, activation_id = _bootstrap_invalid_output_with_running_sibling(compiled, schemas)
+    held = plan_next(compiled, _projection(*events), schemas=schemas)
+    _assert_no_terminal_progress(held)
+
+    if outcome == "success":
+        events.extend(_sibling_success(task_id, activation_id))
+    else:
+        events.extend(_sibling_failure(activation_id))
+    settled = plan_next(compiled, _projection(*events), schemas=schemas)
+    chain = _invalid_output_chain(settled)
+    again = plan_next(compiled, _projection(*events, *chain), schemas=schemas)
+    assert again.events == ()
+    assert again.terminal == "failed"
+
+    history = (*events, *chain)
+    envelopes = _envelopes(*history)
+    validate_event_history(compiled, envelopes, fold_events(envelopes), schemas=schemas)
+
+
+def test_fatal_barrier_rejects_forged_invalid_output_chain_before_sibling_settlement() -> None:
+    compiled, schemas = _compiled_invalid_output()
+    events, task_id, activation_id = _bootstrap_invalid_output_with_running_sibling(compiled, schemas)
+    held = plan_next(compiled, _projection(*events), schemas=schemas)
+    _assert_no_terminal_progress(held)
+
+    canonical = plan_next(
+        compiled,
+        _projection(*events, *_sibling_success(task_id, activation_id)),
+        schemas=schemas,
+    )
+    chain = _invalid_output_chain(canonical)
+    start = 0
+    while start < len(chain) and not isinstance(chain[start], NodeFailed):
+        start += 1
+    forged = _envelopes(*events, *chain[start:])
+    with pytest.raises((PlanningError, ProjectionError)):
+        folded = fold_events(forged)
+        validate_event_history(compiled, forged, folded, schemas=schemas)
+
+
 def test_fatal_barrier_rejects_forged_chain_before_sibling_settlement() -> None:
     compiled, schemas = _compiled()
     events, task_id, activation_id = _bootstrap_to_running_sibling(compiled, schemas)

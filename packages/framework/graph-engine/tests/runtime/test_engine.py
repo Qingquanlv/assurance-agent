@@ -4398,6 +4398,84 @@ def test_open_rejects_forged_child_input_even_with_matching_start_token(
         )
 
 
+def test_open_rejects_forged_parent_output_even_with_matching_token(
+    tmp_path: Path,
+    resolved_subgraph_product: FrozenComposition,
+) -> None:
+    engine = Engine(tmp_path)
+    handle = engine.start(
+        resolved_subgraph_product,
+        entrypoint="main",
+        invocation_id="forged-parent-output",
+        seed=empty_invocation_seed(),
+        authorization=empty_runtime_authorization(),
+    )
+    assert engine.run_until_blocked(handle).status == "succeeded"
+    ledger_root = handle.invocation_root / "ledger"
+    parent_activation_id = next(
+        event.activation_id
+        for event in (envelope.event for envelope in Ledger(ledger_root).read_all())
+        if isinstance(event, NodeActivated) and event.node_id == "child"
+    )
+    forged_events = tuple(
+        event.model_copy(update={"output": {"forged": True}})
+        if isinstance(event, NodeCompleted) and event.activation_id == parent_activation_id
+        else event.model_copy(update={"payload": {"forged": True}})
+        if event.kind == "token_offered" and event.source == "child"
+        else event
+        for event in (envelope.event for envelope in Ledger(ledger_root).read_all())
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
+
+    with pytest.raises(EngineError):
+        Engine(tmp_path).open(
+            "forged-parent-output",
+            resolved_subgraph_product,
+            authorization=empty_runtime_authorization(),
+        )
+
+
+def test_open_rejects_forged_downstream_token_even_with_matching_end_output(
+    tmp_path: Path,
+    resolved_subgraph_product: FrozenComposition,
+) -> None:
+    engine = Engine(tmp_path)
+    handle = engine.start(
+        resolved_subgraph_product,
+        entrypoint="main",
+        invocation_id="forged-downstream-token",
+        seed=empty_invocation_seed(),
+        authorization=empty_runtime_authorization(),
+    )
+    assert engine.run_until_blocked(handle).status == "succeeded"
+    ledger_root = handle.invocation_root / "ledger"
+    end_activation_id = next(
+        event.activation_id
+        for event in (envelope.event for envelope in Ledger(ledger_root).read_all())
+        if isinstance(event, NodeActivated) and event.node_id == "end"
+    )
+    forged_events = tuple(
+        event.model_copy(update={"payload": {"forged": True}})
+        if event.kind == "token_offered" and event.source == "child"
+        else event.model_copy(update={"output": {"forged": True}})
+        if isinstance(event, NodeCompleted) and event.activation_id == end_activation_id
+        else event.model_copy(update={"output": {"forged": True}})
+        if isinstance(event, GraphCompleted) and event.graph_instance_id == "parent"
+        else event
+        for event in (envelope.event for envelope in Ledger(ledger_root).read_all())
+    )
+    _rewrite_ledger(ledger_root, forged_events)
+    assert fold_events(Ledger(ledger_root).read_all()).status == "succeeded"
+
+    with pytest.raises(EngineError):
+        Engine(tmp_path).open(
+            "forged-downstream-token",
+            resolved_subgraph_product,
+            authorization=empty_runtime_authorization(),
+        )
+
+
 def test_interrupt_runtime_metadata_is_required() -> None:
     with pytest.raises(ValidationError):
         NodeInterrupted(activation_id="activation", interrupt_id="interrupt")  # type: ignore[call-arg]

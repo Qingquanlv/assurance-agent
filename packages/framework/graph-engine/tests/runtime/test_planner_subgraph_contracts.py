@@ -37,8 +37,11 @@ from graph_engine.graph.schema import parse_workflow
 from graph_engine.plugin_api import PluginContribution, PluginDescriptor
 from graph_engine.runtime.events import (
     EventEnvelope,
+    GraphCompleted,
     GraphStarted,
     InvocationStarted,
+    NodeActivated,
+    NodeCompleted,
     NodeFailed,
     TaskAttemptStarted,
     TaskAttemptSucceeded,
@@ -70,6 +73,12 @@ _INPUT_SCHEMA = {
         "policy": {"type": "string"},
     },
 }
+_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["status"],
+    "properties": {"status": {"type": "string"}},
+}
 _PROJECTED_FIELDS = """
           type: object
           fields:
@@ -80,7 +89,7 @@ _PROJECTED_FIELDS = """
 _OUTPUT_PROJECTION = """
           type: object
           fields:
-            status: {type: child_output_pointer, pointer: /status}
+            status: {type: child_output_pointer, pointer: /evidence/status}
 """
 
 
@@ -183,13 +192,17 @@ class _Registries:
     effects: EffectRegistry
 
 
-def _registries(*, input_schema: object | None = None) -> _Registries:
+def _registries(
+    *,
+    input_schema: object | None = None,
+    output_schema: object | None = None,
+) -> _Registries:
     return _Registries(
         capabilities=_capability_registry(),
         schemas=SchemaRegistry(
             {
                 _INPUT_SCHEMA_ID: _schema_entry(_INPUT_SCHEMA_ID, input_schema or _INPUT_SCHEMA),
-                _OUTPUT_SCHEMA_ID: _schema_entry(_OUTPUT_SCHEMA_ID),
+                _OUTPUT_SCHEMA_ID: _schema_entry(_OUTPUT_SCHEMA_ID, output_schema or _OUTPUT_SCHEMA),
             }
         ),
         resources=ResourceRegistry({}),
@@ -197,7 +210,11 @@ def _registries(*, input_schema: object | None = None) -> _Registries:
     )
 
 
-def _contracted_workflow_text(*, projection_fields: str = _PROJECTED_FIELDS) -> str:
+def _contracted_workflow_text(
+    *,
+    projection_fields: str = _PROJECTED_FIELDS,
+    output_projection: str = _OUTPUT_PROJECTION,
+) -> str:
     return f"""
 name: subgraph-contracts
 entrypoints: {{main: parent}}
@@ -223,7 +240,7 @@ graphs:
         input_schema: {_INPUT_SCHEMA_ID}
         output_schema: {_OUTPUT_SCHEMA_ID}
         output_projection:
-{_OUTPUT_PROJECTION}
+{output_projection}
       done: {{kind: end}}
     edges:
       - {{from: seed, to: child_call}}
@@ -557,6 +574,168 @@ def test_forged_projected_child_input_fails_replay() -> None:
             continue
         if isinstance(event, TokenOffered) and event.source is None and event.graph_instance_id != "parent":
             forged.append(event.model_copy(update={"payload": {"forged": True}}))
+            continue
+        forged.append(event)
+    envelopes = _envelopes(*forged)
+    folded = fold_events(envelopes)
+
+    with pytest.raises(PlanningError):
+        validate_event_history(compiled, envelopes, folded, schemas=schemas)
+
+
+def _public_output_plan(
+    compiled: CompiledWorkflow,
+    schemas: SchemaRegistry,
+) -> tuple[tuple[object, ...], object]:
+    events, projection = _after_seed(compiled, schemas, root_input={"change_id": "C-1"})
+    plan = plan_next(compiled, projection, schemas=schemas)
+    return (*events, *plan.events), plan
+
+
+def _child_call_activation_id(events: tuple[object, ...]) -> str:
+    return next(
+        event.activation_id
+        for event in events
+        if isinstance(event, NodeActivated) and event.node_id == "child_call"
+    )
+
+
+def test_projected_subgraph_output_reaches_parent_completion_and_token() -> None:
+    compiled, schemas = _compiled(_contracted_workflow_text())
+    history, plan = _public_output_plan(compiled, schemas)
+    parent_activation_id = _child_call_activation_id(plan.events)
+    child_completed = next(
+        event
+        for event in plan.events
+        if isinstance(event, GraphCompleted) and event.graph_instance_id != "parent"
+    )
+    parent_completed = next(
+        event
+        for event in plan.events
+        if isinstance(event, NodeCompleted) and event.activation_id == parent_activation_id
+    )
+    token = next(
+        event for event in plan.events if isinstance(event, TokenOffered) and event.source == "child_call"
+    )
+
+    assert child_completed.output == {
+        "change_id": "C-1",
+        "evidence": {"status": "passed"},
+        "policy": "strict",
+    }
+    assert parent_completed.output == {"status": "passed"}
+    assert token.payload == parent_completed.output
+    folded = fold_events(_envelopes(*history))
+    validate_event_history(compiled, _envelopes(*history), folded, schemas=schemas)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("missing_field", "extra_field", "wrong_type"),
+)
+def test_invalid_subgraph_output_emits_node_failed_without_parent_completion(case: str) -> None:
+    seed_output: object = {"status": "passed"}
+    if case == "missing_field":
+        compiled, schemas = _compiled(
+            _contracted_workflow_text(
+                output_projection="""
+          type: object
+          fields:
+            status: {type: child_output_pointer, pointer: /status}
+"""
+            )
+        )
+    elif case == "extra_field":
+        compiled, schemas = _compiled(
+            _contracted_workflow_text(
+                output_projection="""
+          type: object
+          fields:
+            status: {type: child_output_pointer, pointer: /evidence/status}
+            extra: {type: literal, value: leftover}
+"""
+            )
+        )
+    else:
+        compiled, schemas = _compiled(
+            _contracted_workflow_text(),
+            _registries(
+                output_schema={
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["status"],
+                    "properties": {"status": {"type": "integer"}},
+                }
+            ),
+        )
+
+    events, projection = _after_seed(
+        compiled,
+        schemas,
+        root_input={"change_id": "C-1"},
+        seed_output=seed_output,
+    )
+    plan = plan_next(compiled, projection, schemas=schemas)
+    parent_activation_id = _child_call_activation_id(plan.events)
+    failed = [event for event in plan.events if isinstance(event, NodeFailed)]
+
+    assert failed
+    assert failed[0].failure.kind == "invalid_output"
+    assert failed[0].failure.retryable is False
+    assert any(isinstance(event, GraphCompleted) for event in plan.events)
+    assert not any(
+        isinstance(event, NodeCompleted) and event.activation_id == parent_activation_id
+        for event in plan.events
+    )
+    assert not any(isinstance(event, TokenOffered) and event.source == "child_call" for event in plan.events)
+    assert plan.tasks == ()
+    assert plan.terminal == "failed"
+    assert [event.kind for event in plan.events].count("graph_failed") >= 1
+    assert [event.kind for event in plan.events].count("invocation_finished") == 1
+
+    history = (*events, *plan.events)
+    envelopes = _envelopes(*history)
+    validate_event_history(compiled, envelopes, fold_events(envelopes), schemas=schemas)
+
+
+def test_forged_parent_node_completed_output_fails_replay() -> None:
+    compiled, schemas = _compiled(_contracted_workflow_text())
+    history, plan = _public_output_plan(compiled, schemas)
+    parent_activation_id = _child_call_activation_id(plan.events)
+    forged = []
+    for event in history:
+        if isinstance(event, NodeCompleted) and event.activation_id == parent_activation_id:
+            forged.append(event.model_copy(update={"output": {"forged": True}}))
+            continue
+        if isinstance(event, TokenOffered) and event.source == "child_call":
+            forged.append(event.model_copy(update={"payload": {"forged": True}}))
+            continue
+        forged.append(event)
+    envelopes = _envelopes(*forged)
+    folded = fold_events(envelopes)
+
+    with pytest.raises(PlanningError):
+        validate_event_history(compiled, envelopes, folded, schemas=schemas)
+
+
+def test_forged_downstream_token_payload_fails_replay() -> None:
+    compiled, schemas = _compiled(_contracted_workflow_text())
+    history, plan = _public_output_plan(compiled, schemas)
+    done_activation_id = next(
+        event.activation_id
+        for event in plan.events
+        if isinstance(event, NodeActivated) and event.node_id == "done"
+    )
+    forged = []
+    for event in history:
+        if isinstance(event, TokenOffered) and event.source == "child_call":
+            forged.append(event.model_copy(update={"payload": {"forged": True}}))
+            continue
+        if isinstance(event, NodeCompleted) and event.activation_id == done_activation_id:
+            forged.append(event.model_copy(update={"output": {"forged": True}}))
+            continue
+        if isinstance(event, GraphCompleted) and event.graph_instance_id == "parent":
+            forged.append(event.model_copy(update={"output": {"forged": True}}))
             continue
         forged.append(event)
     envelopes = _envelopes(*forged)
