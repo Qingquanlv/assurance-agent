@@ -148,6 +148,8 @@ def forbidden_improvement_imports() -> set[str]:
                 "assurance_quality",
             }:
                 found.add(module_name)
+            if module_name == "assurance_product" or module_name.startswith("assurance_product."):
+                found.add(module_name)
     return found
 
 
@@ -342,6 +344,32 @@ def test_improvement_schema_bytes_equal_model_schema() -> None:
 
 def test_improvement_contracts_import_only_upstream_public_contracts() -> None:
     assert forbidden_improvement_imports() == set()
+
+
+def test_improvement_agent_job_catalog_is_feature_owned() -> None:
+    from types import MappingProxyType
+
+    from assurance_improvement.contracts.workflow import AGENT_JOB_CONTRACTS
+
+    expected = {
+        "archive": ("aa-archive", "assurance-v1-archiver"),
+        "improvement-review": ("aa-improvement-reviewer", "assurance-v1-reviewer"),
+        "retro-eval-analysis": ("aa-retro-eval-analysis", "assurance-v1-doc-author"),
+        "retro-issue-analysis": ("aa-retro-issue-analysis", "assurance-v1-doc-author"),
+        "retro-workflow-analysis": ("aa-retro-workflow-analysis", "assurance-v1-doc-author"),
+        "retro": ("aa-retro", "assurance-v1-doc-author"),
+    }
+    assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
+    assert len(AGENT_JOB_CONTRACTS) == 6
+    assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
+    for base, (skill_id, agent_profile) in expected.items():
+        contract = AGENT_JOB_CONTRACTS[base]
+        assert contract.contract_id == f"assurance.improvement.agent.{base}.v1"
+        assert contract.skill_id == skill_id
+        assert contract.agent_profile == agent_profile
+        dumped = contract.model_dump_json().lower()
+        assert "opencode" not in dumped
+        assert "cursor" not in dumped
 
 
 def test_delivery_receipts_are_data_only_shapes() -> None:

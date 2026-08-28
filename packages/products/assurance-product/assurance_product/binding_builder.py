@@ -127,6 +127,7 @@ class DeploymentPlugin:
                 data=item["data"],
                 resource_ids=tuple(str(resource_id) for resource_id in item["resource_ids"]),
                 secret_handles=tuple(str(handle) for handle in item["secret_handles"]),
+                contract_id=item.get("contract_id"),
             )
             for item in contribution_doc["bindings"]
         )
@@ -661,7 +662,9 @@ def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object
         assignment = bindings.routes[prepare_id]
         prepare_alias, execute_alias, finalize_alias = alias_ids_for_prepare(prepare_id)
         stem = prepare_id.removesuffix(".prepare")
-        agent_profile = AGENT_EXECUTION_CONTRACTS[prepare_id].agent_profile
+        job = AGENT_EXECUTION_CONTRACTS[prepare_id]
+        agent_profile = job.agent_profile
+        contract_id = job.contract_id
         permission_digest = canonical_digest(
             bindings.permission_profiles[assignment.permission_profile_id].model_dump(mode="json")
         )
@@ -700,6 +703,7 @@ def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object
                     assignment.request_policy_id,
                 ],
                 "secret_handles": [],
+                "contract_id": contract_id,
             }
         )
         documents.append(
@@ -709,6 +713,7 @@ def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object
                 "data": adapter_data,
                 "resource_ids": [],
                 "secret_handles": secret_handles,
+                "contract_id": contract_id,
             }
         )
         documents.append(
@@ -718,6 +723,7 @@ def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object
                 "data": None,
                 "resource_ids": [],
                 "secret_handles": [],
+                "contract_id": contract_id,
             }
         )
     return tuple(sorted(documents, key=lambda item: str(item["capability_id"])))

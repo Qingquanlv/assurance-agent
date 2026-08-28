@@ -149,6 +149,8 @@ def forbidden_healing_imports() -> set[str]:
                     found.add(module_name)
             if module_name in {"assurance_intake", "assurance_generation", "assurance_execution"}:
                 found.add(module_name)
+            if module_name == "assurance_product" or module_name.startswith("assurance_product."):
+                found.add(module_name)
     return found
 
 
@@ -317,3 +319,25 @@ def test_policy_resource_is_closed_and_canonical() -> None:
 
 def test_healing_contracts_import_only_upstream_public_contracts() -> None:
     assert forbidden_healing_imports() == set()
+
+
+def test_healing_agent_job_catalog_is_feature_owned() -> None:
+    from types import MappingProxyType
+
+    from assurance_healing.contracts.workflow import AGENT_JOB_CONTRACTS
+
+    expected = {
+        "coverage-repair": ("aa-coverage-repair", "assurance-v1-test-author"),
+        "fix-proposal": ("aa-fix-proposal", "assurance-v1-doc-author"),
+    }
+    assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
+    assert len(AGENT_JOB_CONTRACTS) == 2
+    assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
+    for base, (skill_id, agent_profile) in expected.items():
+        contract = AGENT_JOB_CONTRACTS[base]
+        assert contract.contract_id == f"assurance.healing.agent.{base}.v1"
+        assert contract.skill_id == skill_id
+        assert contract.agent_profile == agent_profile
+        dumped = contract.model_dump_json().lower()
+        assert "opencode" not in dumped
+        assert "cursor" not in dumped

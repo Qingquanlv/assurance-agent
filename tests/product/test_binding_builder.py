@@ -438,6 +438,9 @@ def test_alias_targets_and_binding_data_follow_section_14(tmp_path, opencode_man
         assert finalize.target_capability_id == f"{stem}.finalize"
         assert finalize.data is None
         assert finalize.secret_handles == ()
+        feature, _, base = key.partition(".")
+        expected_contract_id = f"assurance.{feature}.agent.{base}.v1"
+        assert prepare.contract_id == execute.contract_id == finalize.contract_id == expected_contract_id
 
 
 def test_cursor_wheel_keeps_confined_secret_handle(tmp_path, cursor_manifest):

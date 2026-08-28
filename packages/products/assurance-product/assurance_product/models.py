@@ -13,6 +13,8 @@ from graph_engine.frozen_json import FrozenJSONValue
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel
 
+from assurance_product.agent_contracts import PREPARE_IDS
+
 PRODUCT_ID = "assurance"
 ENGINE_API = "2.0"
 
@@ -21,42 +23,6 @@ PLUGIN_ID = "assurance.product.agent"
 PLUGIN_VERSION = "1.0.0"
 CONFIGURATION_PLUGIN_ID = "assurance.product.configuration"
 CONFIGURATION_PLUGIN_VERSION = "1.0.0"
-
-PREPARE_IDS: tuple[str, ...] = (
-    "assurance.intake.case-design.prepare",
-    "assurance.intake.case-review.prepare",
-    "assurance.intake.explore.prepare",
-    "assurance.intake.intake.prepare",
-    "assurance.generation.api.codegen-fix.prepare",
-    "assurance.generation.api.codegen.prepare",
-    "assurance.generation.api.plan-review.prepare",
-    "assurance.generation.api.plan.prepare",
-    "assurance.generation.e2e.codegen-fix.prepare",
-    "assurance.generation.e2e.codegen.prepare",
-    "assurance.generation.e2e.plan-review.prepare",
-    "assurance.generation.e2e.plan.prepare",
-    "assurance.generation.fuzz.codegen.prepare",
-    "assurance.generation.fuzz.plan-review.prepare",
-    "assurance.generation.fuzz.plan.prepare",
-    "assurance.generation.performance.codegen.prepare",
-    "assurance.generation.performance.plan-review.prepare",
-    "assurance.generation.performance.plan.prepare",
-    "assurance.execution.execute.prepare",
-    "assurance.execution.run.prepare",
-    "assurance.healing.coverage-repair.prepare",
-    "assurance.healing.fix-proposal.prepare",
-    "assurance.quality.fact-baseline.prepare",
-    "assurance.quality.inspect.prepare",
-    "assurance.quality.issue-analysis.prepare",
-    "assurance.quality.issue-triage.prepare",
-    "assurance.quality.report.prepare",
-    "assurance.improvement.archive.prepare",
-    "assurance.improvement.improvement-review.prepare",
-    "assurance.improvement.retro-eval-analysis.prepare",
-    "assurance.improvement.retro-issue-analysis.prepare",
-    "assurance.improvement.retro-workflow-analysis.prepare",
-    "assurance.improvement.retro.prepare",
-)
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _ROUTING_MARKERS = (",", ";", "|", "->", "fallback", "route:", "candidates")

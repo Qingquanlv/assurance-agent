@@ -59,6 +59,8 @@ def forbidden_generation_imports() -> set[str]:
                 or module_name.startswith("assurance_intake.contracts.")
             ):
                 found.add(module_name)
+            if module_name == "assurance_product" or module_name.startswith("assurance_product."):
+                found.add(module_name)
     return found
 
 
@@ -142,6 +144,42 @@ def test_performance_plan_review_accepts_bounded_automatic_repair() -> None:
 
 def test_generation_contracts_import_only_intake_contracts() -> None:
     assert forbidden_generation_imports() == set()
+
+
+def test_generation_agent_job_catalog_is_feature_owned() -> None:
+    from types import MappingProxyType
+
+    from assurance_generation.contracts.workflow import AGENT_JOB_CONTRACTS
+
+    expected = {
+        "api.codegen-fix": ("aa-api-codegen-fixer", "assurance-v1-test-author"),
+        "api.codegen": ("aa-api-codegen", "assurance-v1-test-author"),
+        "api.plan-review": ("aa-api-plan-reviewer", "assurance-v1-reviewer"),
+        "api.plan": ("aa-api-plan", "assurance-v1-doc-author"),
+        "e2e.codegen-fix": ("aa-e2e-codegen-fixer", "assurance-v1-test-author"),
+        "e2e.codegen": ("aa-e2e-codegen", "assurance-v1-test-author"),
+        "e2e.plan-review": ("aa-e2e-plan-reviewer", "assurance-v1-reviewer"),
+        "e2e.plan": ("aa-e2e-plan", "assurance-v1-doc-author"),
+        "fuzz.codegen": ("aa-fuzz-codegen", "assurance-v1-test-author"),
+        "fuzz.plan-review": ("aa-fuzz-plan-reviewer", "assurance-v1-reviewer"),
+        "fuzz.plan": ("aa-fuzz-plan", "assurance-v1-doc-author"),
+        "performance.codegen": ("aa-performance-codegen", "assurance-v1-test-author"),
+        "performance.plan-review": ("aa-performance-plan-reviewer", "assurance-v1-reviewer"),
+        "performance.plan": ("aa-performance-plan", "assurance-v1-doc-author"),
+    }
+    assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
+    assert len(AGENT_JOB_CONTRACTS) == 14
+    assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
+    for base, (skill_id, agent_profile) in expected.items():
+        contract = AGENT_JOB_CONTRACTS[base]
+        assert contract.contract_id == f"assurance.generation.agent.{base}.v1"
+        assert contract.skill_id == skill_id
+        assert contract.agent_profile == agent_profile
+        dumped = contract.model_dump_json().lower()
+        assert "opencode" not in dumped
+        assert "cursor" not in dumped
+    found = forbidden_generation_imports()
+    assert not any(name == "assurance_product" or name.startswith("assurance_product.") for name in found)
 
 
 def test_generation_schema_bytes_equal_model_schema() -> None:

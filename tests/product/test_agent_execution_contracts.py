@@ -315,6 +315,35 @@ def test_opencode_agent_installation_rejects_conflicting_project_profile(tmp_pat
         install_opencode_agents(project)
 
 
+def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
+    from assurance_product.agent_contracts import FEATURE_AGENT_JOB_CATALOGS, expand_agent_job_slots
+    from assurance_product.models import all_binding_ids
+
+    all_contracts = [contract for catalog in FEATURE_AGENT_JOB_CATALOGS for contract in catalog.values()]
+    expanded = expand_agent_job_slots(FEATURE_AGENT_JOB_CATALOGS)
+    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 33
+    assert len(expand_agent_job_slots(FEATURE_AGENT_JOB_CATALOGS)) == 99
+    assert all("opencode" not in contract.model_dump_json().lower() for contract in all_contracts)
+    assert all("cursor" not in contract.model_dump_json().lower() for contract in all_contracts)
+    assert set(expanded) == set(all_binding_ids())
+    assert all(hasattr(contract, "contract_id") for contract in all_contracts)
+
+
+def test_prepare_ids_are_derived_from_the_feature_job_union() -> None:
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS, FEATURE_AGENT_JOB_CATALOGS
+    from assurance_product.models import PREPARE_IDS
+
+    derived = []
+    for catalog in FEATURE_AGENT_JOB_CATALOGS:
+        for contract in catalog.values():
+            body = contract.contract_id.removeprefix("assurance.").removesuffix(".v1")
+            feature, marker, base = body.partition(".agent.")
+            assert marker == ".agent."
+            derived.append(f"assurance.{feature}.{base}.prepare")
+    assert tuple(derived) == PREPARE_IDS
+    assert set(PREPARE_IDS) == set(AGENT_EXECUTION_CONTRACTS) == set(EXPECTED_AGENT_PROFILES)
+
+
 def test_all_agent_skills_have_one_bound_agent_and_execution_contract() -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
     from assurance_product.binding_builder import _binding_documents

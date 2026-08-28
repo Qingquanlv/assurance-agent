@@ -574,3 +574,24 @@ for package in (
     )
     assert completed.returncode == 0
     assert "graph_engine.plugin_api" not in completed.stderr
+
+
+def test_agent_execution_contract_is_provider_neutral() -> None:
+    from graph_engine.plugin_api import ResourceClaimTemplate
+
+    from agent_runtime_contracts import AgentExecutionContract
+
+    contract = AgentExecutionContract(
+        contract_id="assurance.intake.agent.intake.v1",
+        skill_id="aa-intake",
+        agent_profile="assurance-v1-doc-author",
+        resources=ResourceClaimTemplate(
+            parameters={"change_id": "/workspace/scope_id"},
+            reads=("qa",),
+            writes=("qa/changes/{change_id}/requirement.md",),
+        ),
+    )
+    dumped = contract.model_dump_json().lower()
+    assert contract.contract_id == "assurance.intake.agent.intake.v1"
+    assert "opencode" not in dumped
+    assert "cursor" not in dumped

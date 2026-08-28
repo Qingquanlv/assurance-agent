@@ -1,161 +1,38 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from types import MappingProxyType
 
-from assurance_product.change_workspace import safe_change_id, safe_relative_path
+from assurance_execution.contracts.workflow import OUTPUT_ROUTE_TEMPLATES as EXECUTION_OUTPUTS
+from assurance_generation.contracts.workflow import OUTPUT_ROUTE_TEMPLATES as GENERATION_OUTPUTS
+from assurance_healing.contracts.workflow import OUTPUT_ROUTE_TEMPLATES as HEALING_OUTPUTS
+from assurance_improvement.contracts.workflow import OUTPUT_ROUTE_TEMPLATES as IMPROVEMENT_OUTPUTS
+from assurance_intake.contracts.workflow import OUTPUT_ROUTE_TEMPLATES as INTAKE_OUTPUTS
+from assurance_product.change_workspace import safe_change_id
 from assurance_product.models import PREPARE_IDS
+from assurance_quality.contracts.workflow import OUTPUT_ROUTE_TEMPLATES as QUALITY_OUTPUTS
 
 
 def execute_alias_for_prepare(prepare_id: str) -> str:
     return prepare_id.removesuffix(".prepare") + ".execute"
 
 
-def _change(change_id: str, *parts: str) -> str:
-    return "/".join(("qa/changes", safe_change_id(change_id), *parts))
+def _route_templates() -> Mapping[str, tuple[str, ...]]:
+    routes: dict[str, tuple[str, ...]] = {}
+    for feature, templates in (
+        ("intake", INTAKE_OUTPUTS),
+        ("generation", GENERATION_OUTPUTS),
+        ("execution", EXECUTION_OUTPUTS),
+        ("quality", QUALITY_OUTPUTS),
+        ("healing", HEALING_OUTPUTS),
+        ("improvement", IMPROVEMENT_OUTPUTS),
+    ):
+        for base, paths in templates.items():
+            routes[f"assurance.{feature}.{base}.execute"] = paths
+    return MappingProxyType(routes)
 
 
-def _sorted_paths(*paths: str) -> tuple[str, ...]:
-    normalized = tuple(safe_relative_path(path).as_posix() for path in paths)
-    return tuple(sorted(set(normalized)))
-
-
-def _plan_outputs(change_id: str, family: str) -> tuple[str, ...]:
-    names = {
-        "api": (
-            "api-plan.md",
-            "api-test-data-plan.md",
-            "api-codegen-plan.md",
-            "api-codegen-mapping.json",
-            "m3-review-summary.md",
-        ),
-        "e2e": (
-            "e2e-plan.md",
-            "e2e-test-data-plan.md",
-            "e2e-codegen-plan.md",
-            "e2e-codegen-mapping.json",
-            "m4-review-summary.md",
-        ),
-        "fuzz": (
-            "fuzz-plan.md",
-            "fuzz-codegen-plan.md",
-            "fuzz-codegen-mapping.json",
-            "fuzz-review-summary.md",
-        ),
-        "performance": (
-            "performance-plan.md",
-            "performance-codegen-plan.md",
-            "performance-codegen-mapping.json",
-            "performance-review-summary.md",
-        ),
-    }[family]
-    return _sorted_paths(*(_change(change_id, "plans", name) for name in names))
-
-
-def _review_outputs(change_id: str, family: str) -> tuple[str, ...]:
-    return _sorted_paths(
-        _change(change_id, "review", f"{family}-plan-review.json"),
-        _change(change_id, "review", f"{family}-plan-review-summary.md"),
-    )
-
-
-def _codegen_outputs(change_id: str, family: str, *, fix: bool = False) -> tuple[str, ...]:
-    suffix = "-fix" if fix else ""
-    return _sorted_paths(
-        _change(change_id, "codegen", f"{family}-codegen{suffix}-summary.md"),
-        _change(change_id, "codegen", f"{family}-generated-files.json"),
-    )
-
-
-_ROUTE_BUILDERS: Mapping[str, Callable[[str], tuple[str, ...]]] = MappingProxyType(
-    {
-        "assurance.intake.intake.execute": lambda change_id: _sorted_paths(
-            _change(change_id, ".qa.yaml"),
-            _change(change_id, "requirement.md"),
-        ),
-        "assurance.intake.explore.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "explore", "exploration.json"),
-        ),
-        "assurance.intake.case-design.execute": lambda change_id: _sorted_paths(
-            _change(change_id, ".qa.yaml"),
-            _change(change_id, "proposal.md"),
-            _change(change_id, "trace", "minimum-coverage-matrix.json"),
-        ),
-        "assurance.intake.case-review.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "review", "case-review.json"),
-            _change(change_id, "review", "case-review-summary.md"),
-        ),
-        "assurance.generation.api.plan.execute": lambda change_id: _plan_outputs(change_id, "api"),
-        "assurance.generation.api.plan-review.execute": lambda change_id: _review_outputs(change_id, "api"),
-        "assurance.generation.e2e.plan.execute": lambda change_id: _plan_outputs(change_id, "e2e"),
-        "assurance.generation.e2e.plan-review.execute": lambda change_id: _review_outputs(change_id, "e2e"),
-        "assurance.generation.fuzz.plan.execute": lambda change_id: _plan_outputs(change_id, "fuzz"),
-        "assurance.generation.fuzz.plan-review.execute": lambda change_id: _review_outputs(change_id, "fuzz"),
-        "assurance.generation.performance.plan.execute": lambda change_id: _plan_outputs(
-            change_id, "performance"
-        ),
-        "assurance.generation.performance.plan-review.execute": lambda change_id: _review_outputs(
-            change_id, "performance"
-        ),
-        "assurance.generation.api.codegen.execute": lambda change_id: _codegen_outputs(change_id, "api"),
-        "assurance.generation.api.codegen-fix.execute": lambda change_id: _codegen_outputs(
-            change_id, "api", fix=True
-        ),
-        "assurance.generation.e2e.codegen.execute": lambda change_id: _codegen_outputs(change_id, "e2e"),
-        "assurance.generation.e2e.codegen-fix.execute": lambda change_id: _codegen_outputs(
-            change_id, "e2e", fix=True
-        ),
-        "assurance.generation.fuzz.codegen.execute": lambda change_id: _codegen_outputs(change_id, "fuzz"),
-        "assurance.generation.performance.codegen.execute": lambda change_id: _codegen_outputs(
-            change_id, "performance"
-        ),
-        "assurance.execution.execute.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "execution", "execute-result.json"),
-        ),
-        "assurance.execution.run.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "execution", "run-result.json"),
-        ),
-        "assurance.healing.coverage-repair.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "healing", "coverage-repair.json"),
-        ),
-        "assurance.healing.fix-proposal.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "healing", "fix-proposal.json"),
-        ),
-        "assurance.quality.fact-baseline.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "facts", "fact-baseline.json"),
-        ),
-        "assurance.quality.inspect.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "inspect", "inspection.json"),
-        ),
-        "assurance.quality.issue-analysis.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "inspect", "issue-analysis.json"),
-        ),
-        "assurance.quality.issue-triage.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "inspect", "issue-triage.json"),
-        ),
-        "assurance.quality.report.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "report", "report.md"),
-        ),
-        "assurance.improvement.archive.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "archive", "archive-receipt.json"),
-        ),
-        "assurance.improvement.improvement-review.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "review", "improvement-review.json"),
-        ),
-        "assurance.improvement.retro.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "retro", "retro.json"),
-        ),
-        "assurance.improvement.retro-eval-analysis.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "retro", "retro-eval-analysis.json"),
-        ),
-        "assurance.improvement.retro-issue-analysis.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "retro", "retro-issue-analysis.json"),
-        ),
-        "assurance.improvement.retro-workflow-analysis.execute": lambda change_id: _sorted_paths(
-            _change(change_id, "retro", "retro-workflow-analysis.json"),
-        ),
-    }
-)
+_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = _route_templates()
 
 
 class OutputRouteCatalog:
@@ -163,7 +40,7 @@ class OutputRouteCatalog:
 
     def aliases(self) -> tuple[str, ...]:
         expected = tuple(execute_alias_for_prepare(prepare_id) for prepare_id in PREPARE_IDS)
-        actual = tuple(sorted(_ROUTE_BUILDERS))
+        actual = tuple(sorted(_ROUTE_TEMPLATES))
         if actual != tuple(sorted(expected)):
             missing = sorted(set(expected) - set(actual))
             extra = sorted(set(actual) - set(expected))
@@ -171,18 +48,26 @@ class OutputRouteCatalog:
         return expected
 
     def outputs(self, capability_alias: str, change_id: str) -> tuple[str, ...]:
-        builder = _ROUTE_BUILDERS.get(capability_alias)
-        if builder is None:
+        templates = _ROUTE_TEMPLATES.get(capability_alias)
+        if templates is None:
             raise ValueError(f"unknown capability output route: {capability_alias}")
-        return builder(change_id)
+        token = safe_change_id(change_id)
+        return tuple(path.replace("{change_id}", token, 1) for path in templates)
 
     def resource_claims(self, capability_alias: str, change_id: str) -> tuple[str, ...]:
         """Return task-store claims; provider output admission remains exact."""
 
-        outputs = self.outputs(capability_alias, change_id)
-        if capability_alias == "assurance.intake.case-design.execute":
-            return _sorted_paths(*outputs, _change(change_id, "cases"))
-        return outputs
+        from graph_engine.plugin_api import ResourceClaimTemplate
+
+        from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+
+        prepare_id = capability_alias.removesuffix(".execute") + ".prepare"
+        contract = AGENT_EXECUTION_CONTRACTS.get(prepare_id)
+        if contract is None:
+            raise ValueError(f"unknown capability output route: {capability_alias}")
+        if isinstance(contract.resources, ResourceClaimTemplate):
+            return contract.resources.resolve({"workspace": {"scope_id": change_id}}).writes
+        return contract.resources.writes
 
 
 __all__ = [

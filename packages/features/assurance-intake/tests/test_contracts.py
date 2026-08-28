@@ -231,3 +231,28 @@ def test_case_review_result_schema_exposes_typed_finding_locators() -> None:
 
 def test_intake_imports_no_legacy_package() -> None:
     assert forbidden_imports("assurance_intake") == set()
+
+
+def test_intake_agent_job_catalog_is_feature_owned() -> None:
+    from types import MappingProxyType
+
+    from assurance_intake.contracts.workflow import AGENT_JOB_CONTRACTS
+
+    expected = {
+        "case-design": ("aa-case-design", "assurance-v1-doc-author"),
+        "case-review": ("aa-case-reviewer", "assurance-v1-reviewer"),
+        "explore": ("aa-explore", "assurance-v1-explorer"),
+        "intake": ("aa-intake", "assurance-v1-doc-author"),
+    }
+    assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
+    assert len(AGENT_JOB_CONTRACTS) == 4
+    assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
+    for base, (skill_id, agent_profile) in expected.items():
+        contract = AGENT_JOB_CONTRACTS[base]
+        assert contract.contract_id == f"assurance.intake.agent.{base}.v1"
+        assert contract.skill_id == skill_id
+        assert contract.agent_profile == agent_profile
+        dumped = contract.model_dump_json().lower()
+        assert "opencode" not in dumped
+        assert "cursor" not in dumped
+    assert forbidden_imports("assurance_intake", "assurance_product") == set()

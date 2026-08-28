@@ -106,6 +106,8 @@ def forbidden_execution_imports() -> set[str]:
                     found.add(module_name)
             if module_name in {"assurance_intake", "assurance_generation"}:
                 found.add(module_name)
+            if module_name == "assurance_product" or module_name.startswith("assurance_product."):
+                found.add(module_name)
     return found
 
 
@@ -185,3 +187,25 @@ def test_execution_schema_bytes_equal_model_schema() -> None:
 
 def test_execution_contracts_import_only_intake_and_generation_contracts() -> None:
     assert forbidden_execution_imports() == set()
+
+
+def test_execution_agent_job_catalog_is_feature_owned() -> None:
+    from types import MappingProxyType
+
+    from assurance_execution.contracts.workflow import AGENT_JOB_CONTRACTS
+
+    expected = {
+        "execute": ("aa-execute", "assurance-v1-executor"),
+        "run": ("aa-run", "assurance-v1-executor"),
+    }
+    assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
+    assert len(AGENT_JOB_CONTRACTS) == 2
+    assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
+    for base, (skill_id, agent_profile) in expected.items():
+        contract = AGENT_JOB_CONTRACTS[base]
+        assert contract.contract_id == f"assurance.execution.agent.{base}.v1"
+        assert contract.skill_id == skill_id
+        assert contract.agent_profile == agent_profile
+        dumped = contract.model_dump_json().lower()
+        assert "opencode" not in dumped
+        assert "cursor" not in dumped

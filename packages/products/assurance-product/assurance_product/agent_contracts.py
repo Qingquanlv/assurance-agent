@@ -3,114 +3,52 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Mapping
 
+from agent_runtime_contracts import AgentExecutionContract, expand_agent_job_slots
 from graph_engine.graph.schema import RetryPolicyDef, WorkflowDef
-from graph_engine.plugin_api import FrozenModel, ResourceClaimTemplate, ResourceClaims
+from graph_engine.plugin_api import ResourceClaims
 
-from assurance_product.models import PREPARE_IDS, alias_ids_for_prepare
-from assurance_product.output_routes import OutputRouteCatalog, execute_alias_for_prepare
+from assurance_execution.contracts.workflow import AGENT_JOB_CONTRACTS as EXECUTION_AGENT_JOB_CONTRACTS
+from assurance_generation.contracts.workflow import AGENT_JOB_CONTRACTS as GENERATION_AGENT_JOB_CONTRACTS
+from assurance_healing.contracts.workflow import AGENT_JOB_CONTRACTS as HEALING_AGENT_JOB_CONTRACTS
+from assurance_improvement.contracts.workflow import AGENT_JOB_CONTRACTS as IMPROVEMENT_AGENT_JOB_CONTRACTS
+from assurance_intake.contracts.workflow import AGENT_JOB_CONTRACTS as INTAKE_AGENT_JOB_CONTRACTS
+from assurance_quality.contracts.workflow import AGENT_JOB_CONTRACTS as QUALITY_AGENT_JOB_CONTRACTS
 
-
-class AgentExecutionContract(FrozenModel):
-    skill_id: str
-    agent_profile: str
-    resources: ResourceClaims | ResourceClaimTemplate
-
-
-def _contract(
-    prepare_id: str,
-    skill_id: str,
-    agent_profile: str,
-) -> AgentExecutionContract:
-    change_id = "CHANGE-ID-PLACEHOLDER"
-    execute_alias = execute_alias_for_prepare(prepare_id)
-    catalog = OutputRouteCatalog()
-    exact_outputs = catalog.outputs(execute_alias, change_id)
-    expected = catalog.resource_claims(execute_alias, change_id)
-    marker = f"qa/changes/{change_id}/"
-    writes = tuple(path.replace(marker, "qa/changes/{change_id}/", 1) for path in expected)
-    if any(
-        path == source or not source.startswith(marker) for path, source in zip(writes, expected, strict=True)
-    ):
-        raise ValueError(f"agent output route is not a current-change path: {execute_alias}")
-    if any(path not in expected for path in exact_outputs):
-        raise ValueError(f"agent output claim omits an exact output route: {execute_alias}")
-    return AgentExecutionContract(
-        skill_id=skill_id,
-        agent_profile=agent_profile,
-        resources=ResourceClaimTemplate(
-            parameters={"change_id": "/workspace/scope_id"},
-            reads=("qa",),
-            writes=writes,
-        ),
-    )
-
-
-_AGENT_RETRY_NAME = "agent-transient"
-_AGENT_RETRY_POLICY = RetryPolicyDef(max_attempts=12, retry_on=("transient",))
-_ARCHIVER_PROFILE = "assurance-v1-archiver"
-_DOC_AUTHOR_PROFILE = "assurance-v1-doc-author"
-_EXECUTOR_PROFILE = "assurance-v1-executor"
-_EXPLORER_PROFILE = "assurance-v1-explorer"
-_REPORTER_PROFILE = "assurance-v1-reporter"
-_REVIEWER_PROFILE = "assurance-v1-reviewer"
-_TEST_AUTHOR_PROFILE = "assurance-v1-test-author"
-
-_AGENT_SKILL_PROFILES: Mapping[str, tuple[str, str]] = MappingProxyType(
-    {
-        "assurance.intake.case-design.prepare": ("aa-case-design", _DOC_AUTHOR_PROFILE),
-        "assurance.intake.case-review.prepare": ("aa-case-reviewer", _REVIEWER_PROFILE),
-        "assurance.intake.explore.prepare": ("aa-explore", _EXPLORER_PROFILE),
-        "assurance.intake.intake.prepare": ("aa-intake", _DOC_AUTHOR_PROFILE),
-        "assurance.generation.api.codegen-fix.prepare": ("aa-api-codegen-fixer", _TEST_AUTHOR_PROFILE),
-        "assurance.generation.api.codegen.prepare": ("aa-api-codegen", _TEST_AUTHOR_PROFILE),
-        "assurance.generation.api.plan-review.prepare": ("aa-api-plan-reviewer", _REVIEWER_PROFILE),
-        "assurance.generation.api.plan.prepare": ("aa-api-plan", _DOC_AUTHOR_PROFILE),
-        "assurance.generation.e2e.codegen-fix.prepare": ("aa-e2e-codegen-fixer", _TEST_AUTHOR_PROFILE),
-        "assurance.generation.e2e.codegen.prepare": ("aa-e2e-codegen", _TEST_AUTHOR_PROFILE),
-        "assurance.generation.e2e.plan-review.prepare": ("aa-e2e-plan-reviewer", _REVIEWER_PROFILE),
-        "assurance.generation.e2e.plan.prepare": ("aa-e2e-plan", _DOC_AUTHOR_PROFILE),
-        "assurance.generation.fuzz.codegen.prepare": ("aa-fuzz-codegen", _TEST_AUTHOR_PROFILE),
-        "assurance.generation.fuzz.plan-review.prepare": ("aa-fuzz-plan-reviewer", _REVIEWER_PROFILE),
-        "assurance.generation.fuzz.plan.prepare": ("aa-fuzz-plan", _DOC_AUTHOR_PROFILE),
-        "assurance.generation.performance.codegen.prepare": ("aa-performance-codegen", _TEST_AUTHOR_PROFILE),
-        "assurance.generation.performance.plan-review.prepare": (
-            "aa-performance-plan-reviewer",
-            _REVIEWER_PROFILE,
-        ),
-        "assurance.generation.performance.plan.prepare": ("aa-performance-plan", _DOC_AUTHOR_PROFILE),
-        "assurance.execution.execute.prepare": ("aa-execute", _EXECUTOR_PROFILE),
-        "assurance.execution.run.prepare": ("aa-run", _EXECUTOR_PROFILE),
-        "assurance.healing.coverage-repair.prepare": ("aa-coverage-repair", _TEST_AUTHOR_PROFILE),
-        "assurance.healing.fix-proposal.prepare": ("aa-fix-proposal", _DOC_AUTHOR_PROFILE),
-        "assurance.quality.fact-baseline.prepare": ("aa-fact-baseline", _DOC_AUTHOR_PROFILE),
-        "assurance.quality.inspect.prepare": ("aa-inspect", _REVIEWER_PROFILE),
-        "assurance.quality.issue-analysis.prepare": ("aa-issue-analyzer", _REPORTER_PROFILE),
-        "assurance.quality.issue-triage.prepare": ("aa-issue-triage-advisor", _REPORTER_PROFILE),
-        "assurance.quality.report.prepare": ("aa-report-generator", _REPORTER_PROFILE),
-        "assurance.improvement.archive.prepare": ("aa-archive", _ARCHIVER_PROFILE),
-        "assurance.improvement.improvement-review.prepare": ("aa-improvement-reviewer", _REVIEWER_PROFILE),
-        "assurance.improvement.retro-eval-analysis.prepare": ("aa-retro-eval-analysis", _DOC_AUTHOR_PROFILE),
-        "assurance.improvement.retro-issue-analysis.prepare": (
-            "aa-retro-issue-analysis",
-            _DOC_AUTHOR_PROFILE,
-        ),
-        "assurance.improvement.retro-workflow-analysis.prepare": (
-            "aa-retro-workflow-analysis",
-            _DOC_AUTHOR_PROFILE,
-        ),
-        "assurance.improvement.retro.prepare": ("aa-retro", _DOC_AUTHOR_PROFILE),
-    }
+FEATURE_AGENT_JOB_CATALOGS: tuple[Mapping[str, AgentExecutionContract], ...] = (
+    INTAKE_AGENT_JOB_CONTRACTS,
+    GENERATION_AGENT_JOB_CONTRACTS,
+    EXECUTION_AGENT_JOB_CONTRACTS,
+    QUALITY_AGENT_JOB_CONTRACTS,
+    HEALING_AGENT_JOB_CONTRACTS,
+    IMPROVEMENT_AGENT_JOB_CONTRACTS,
 )
+
+
+def _prepare_id(contract: AgentExecutionContract) -> str:
+    body = contract.contract_id.removeprefix("assurance.").removesuffix(".v1")
+    feature, marker, base = body.partition(".agent.")
+    if marker != ".agent.":
+        raise ValueError(f"invalid agent job contract id: {contract.contract_id!r}")
+    return f"assurance.{feature}.{base}.prepare"
+
 
 AGENT_EXECUTION_CONTRACTS: Mapping[str, AgentExecutionContract] = MappingProxyType(
     {
-        prepare_id: _contract(prepare_id, skill_id, agent_profile)
-        for prepare_id, (skill_id, agent_profile) in _AGENT_SKILL_PROFILES.items()
+        _prepare_id(contract): contract
+        for catalog in FEATURE_AGENT_JOB_CATALOGS
+        for contract in catalog.values()
     }
 )
+PREPARE_IDS: tuple[str, ...] = tuple(AGENT_EXECUTION_CONTRACTS)
+
+_AGENT_RETRY_NAME = "agent-transient"
+_AGENT_RETRY_POLICY = RetryPolicyDef(max_attempts=12, retry_on=("transient",))
 
 
 def bind_agent_execution_contracts(workflow: WorkflowDef) -> WorkflowDef:
+    from assurance_product.models import alias_ids_for_prepare
+    from assurance_product.output_routes import OutputRouteCatalog, execute_alias_for_prepare
+
     expected = set(PREPARE_IDS)
     actual = set(AGENT_EXECUTION_CONTRACTS)
     if actual != expected:
@@ -161,6 +99,9 @@ def bind_agent_execution_contracts(workflow: WorkflowDef) -> WorkflowDef:
 
 __all__ = [
     "AGENT_EXECUTION_CONTRACTS",
+    "FEATURE_AGENT_JOB_CATALOGS",
+    "PREPARE_IDS",
     "AgentExecutionContract",
     "bind_agent_execution_contracts",
+    "expand_agent_job_slots",
 ]

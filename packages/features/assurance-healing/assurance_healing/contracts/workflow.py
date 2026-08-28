@@ -1,0 +1,45 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from types import MappingProxyType
+
+from agent_runtime_contracts import AgentExecutionContract
+from graph_engine.plugin_api import ResourceClaimTemplate
+
+_DOC_AUTHOR = "assurance-v1-doc-author"
+_TEST_AUTHOR = "assurance-v1-test-author"
+
+
+def _paths(*suffixes: str) -> tuple[str, ...]:
+    return tuple(sorted(f"qa/changes/{{change_id}}/{suffix}" for suffix in suffixes))
+
+
+def _job(base: str, skill_id: str, agent_profile: str, outputs: tuple[str, ...]) -> AgentExecutionContract:
+    return AgentExecutionContract(
+        contract_id=f"assurance.healing.agent.{base}.v1",
+        skill_id=skill_id,
+        agent_profile=agent_profile,
+        resources=ResourceClaimTemplate(
+            parameters={"change_id": "/workspace/scope_id"},
+            reads=("qa",),
+            writes=_paths(*outputs),
+        ),
+    )
+
+
+_JOBS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
+    ("coverage-repair", "aa-coverage-repair", _TEST_AUTHOR, ("healing/coverage-repair.json",)),
+    ("fix-proposal", "aa-fix-proposal", _DOC_AUTHOR, ("healing/fix-proposal.json",)),
+)
+
+AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract] = MappingProxyType(
+    {base: _job(base, skill_id, agent_profile, outputs) for base, skill_id, agent_profile, outputs in _JOBS}
+)
+OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {base: _paths(*outputs) for base, _skill_id, _profile, outputs in _JOBS}
+)
+
+__all__ = [
+    "AGENT_JOB_CONTRACTS",
+    "OUTPUT_ROUTE_TEMPLATES",
+]
