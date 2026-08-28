@@ -15,9 +15,9 @@ from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import PluginDescriptor, RegistryPorts, validate_contribution
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "agent_runtime_opencode"
-_ENGINE_ROOT = _REPO_ROOT / "packages" / "graph-engine" / "graph_engine"
+_ENGINE_ROOT = _REPO_ROOT / "packages" / "framework" / "graph-engine" / "graph_engine"
 _SHA = "a" * 64
 _CANARY = "canary-secret-value"
 _PINNED_CLIENT_ROUTES = frozenset(

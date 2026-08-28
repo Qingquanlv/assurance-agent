@@ -19,9 +19,9 @@ from agent_runtime_contracts import (
 from agent_runtime_contracts.schema import canonical_digest
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "agent_runtime_contracts"
-_ENGINE_ROOT = _REPO_ROOT / "packages" / "graph-engine" / "graph_engine"
+_ENGINE_ROOT = _REPO_ROOT / "packages" / "framework" / "graph-engine" / "graph_engine"
 _SHA_A = "1" * 64
 _SHA_B = "2" * 64
 _SHA_C = "3" * 64

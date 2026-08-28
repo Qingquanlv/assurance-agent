@@ -57,8 +57,8 @@ _CREDENTIAL_PATTERN = re.compile(
 )
 _WORKSPACE_PACKAGES = {
     "agent-runtime-fixture": ("examples/agent-runtime-fixture", "agent_runtime_fixture"),
-    "agent-runtime-opencode": ("packages/agent-runtime-opencode", "agent_runtime_opencode"),
-    "agent-runtime-cursor": ("packages/agent-runtime-cursor", "agent_runtime_cursor"),
+    "agent-runtime-opencode": ("packages/clients/agent-runtime-opencode", "agent_runtime_opencode"),
+    "agent-runtime-cursor": ("packages/clients/agent-runtime-cursor", "agent_runtime_cursor"),
 }
 
 

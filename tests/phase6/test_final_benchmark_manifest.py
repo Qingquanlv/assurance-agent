@@ -135,7 +135,7 @@ def test_cursor_live_entries_are_absent_while_adapter_packaging_remains(repo_roo
     items = document["items"]
     assert all(entry.get("adapter_binding", {}).get("protocol_profile") != "cursor" for entry in items)
     assert all("cursor" not in str(entry.get("id", "")).lower() for entry in items)
-    assert (repo_root / "packages/agent-runtime-cursor").is_dir()
+    assert (repo_root / "packages/clients/agent-runtime-cursor").is_dir()
     packaging = repo_root / "tests/product/test_product_packaging.py"
     providers = repo_root / "tests/product/test_product_providers.py"
     cursor_fixture = repo_root / "tests/product/fixtures/deployment/cursor.yaml"

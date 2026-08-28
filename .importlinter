@@ -150,6 +150,22 @@ forbidden_modules =
     agent_runtime_opencode
     agent_runtime_cursor
 
+[importlinter:contract:clients-downward]
+name = clients must not import features or products
+type = forbidden
+source_modules =
+    agent_runtime_contracts
+    agent_runtime_opencode
+    agent_runtime_cursor
+forbidden_modules =
+    assurance_intake
+    assurance_generation
+    assurance_execution
+    assurance_healing
+    assurance_quality
+    assurance_improvement
+    assurance_product
+
 [importlinter:contract:adapter-independence]
 name = runtime adapters are independent
 type = independence

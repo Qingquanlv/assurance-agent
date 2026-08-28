@@ -37,8 +37,8 @@ _WORKSPACE_WHEELS: tuple[tuple[str, str], ...] = (
     ("assurance-healing", "packages/assurance-healing"),
     ("assurance-quality", "packages/assurance-quality"),
     ("assurance-improvement", "packages/assurance-improvement"),
-    ("agent-runtime-opencode", "packages/agent-runtime-opencode"),
-    ("agent-runtime-cursor", "packages/agent-runtime-cursor"),
+    ("agent-runtime-opencode", "packages/clients/agent-runtime-opencode"),
+    ("agent-runtime-cursor", "packages/clients/agent-runtime-cursor"),
 )
 COVERAGE_PATH = EVIDENCE_ROOT / "binding-coverage.json"
 

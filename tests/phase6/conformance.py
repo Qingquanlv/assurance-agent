@@ -22,9 +22,9 @@ PRODUCTION_METADATA_FILES = (
     "packages/assurance-quality/pyproject.toml",
     "packages/assurance-improvement/pyproject.toml",
     "packages/framework/graph-engine/pyproject.toml",
-    "packages/agent-runtime-contracts/pyproject.toml",
-    "packages/agent-runtime-opencode/pyproject.toml",
-    "packages/agent-runtime-cursor/pyproject.toml",
+    "packages/clients/agent-runtime-contracts/pyproject.toml",
+    "packages/clients/agent-runtime-opencode/pyproject.toml",
+    "packages/clients/agent-runtime-cursor/pyproject.toml",
 )
 
 PRODUCTION_PACKAGE_ROOTS = (
@@ -36,9 +36,9 @@ PRODUCTION_PACKAGE_ROOTS = (
     "packages/assurance-quality/assurance_quality",
     "packages/assurance-improvement/assurance_improvement",
     "packages/framework/graph-engine/graph_engine",
-    "packages/agent-runtime-contracts/agent_runtime_contracts",
-    "packages/agent-runtime-opencode/agent_runtime_opencode",
-    "packages/agent-runtime-cursor/agent_runtime_cursor",
+    "packages/clients/agent-runtime-contracts/agent_runtime_contracts",
+    "packages/clients/agent-runtime-opencode/agent_runtime_opencode",
+    "packages/clients/agent-runtime-cursor/agent_runtime_cursor",
 )
 
 OWNER_REPLACEMENT_TESTS = {
