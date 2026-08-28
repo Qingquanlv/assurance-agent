@@ -31,12 +31,12 @@ _CONFIG_FIXTURE = _FIXTURE_ROOT / "project-config"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _WORKSPACE_WHEELS: tuple[tuple[str, str], ...] = (
     ("assurance-product", "packages/assurance-product"),
-    ("assurance-intake", "packages/assurance-intake"),
-    ("assurance-generation", "packages/assurance-generation"),
-    ("assurance-execution", "packages/assurance-execution"),
-    ("assurance-healing", "packages/assurance-healing"),
-    ("assurance-quality", "packages/assurance-quality"),
-    ("assurance-improvement", "packages/assurance-improvement"),
+    ("assurance-intake", "packages/features/assurance-intake"),
+    ("assurance-generation", "packages/features/assurance-generation"),
+    ("assurance-execution", "packages/features/assurance-execution"),
+    ("assurance-healing", "packages/features/assurance-healing"),
+    ("assurance-quality", "packages/features/assurance-quality"),
+    ("assurance-improvement", "packages/features/assurance-improvement"),
     ("agent-runtime-opencode", "packages/clients/agent-runtime-opencode"),
     ("agent-runtime-cursor", "packages/clients/agent-runtime-cursor"),
 )

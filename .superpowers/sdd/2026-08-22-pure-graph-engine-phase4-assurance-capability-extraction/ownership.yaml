@@ -1747,399 +1747,399 @@ items:
   owner: assurance.intake
   new_id: assurance.intake.schema.case-authoring.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.intake.schema.case-review.v1
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.schema.case-review.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.intake.schema.case.v1
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.schema.case.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.intake.schema.qa-change.v1
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.schema.qa-change.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-intake/tests/test_contracts.py::test_intake_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.generation.schema.codegen-mapping.v1
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.schema.codegen-mapping.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.generation.schema.discovery-campaign.v1
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.schema.discovery-campaign.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.generation.schema.generated-files.v1
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.schema.generated-files.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.generation.schema.plan-check.v1
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.schema.plan-check.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.generation.schema.plan-review.v1
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.schema.plan-review.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-generation/tests/test_contracts.py::test_generation_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.execution.schema.selected-targets.v1
   disposition: migrate
   owner: assurance.execution
   new_id: assurance.execution.schema.selected-targets.v1
   status: verified
-  verification: packages/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.execution.schema.execution-manifest.v1
   disposition: migrate
   owner: assurance.execution
   new_id: assurance.execution.schema.execution-manifest.v1
   status: verified
-  verification: packages/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.execution.schema.closed-mapping.v1
   disposition: migrate
   owner: assurance.execution
   new_id: assurance.execution.schema.closed-mapping.v1
   status: verified
-  verification: packages/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.execution.schema.execution-evidence.v1
   disposition: migrate
   owner: assurance.execution
   new_id: assurance.execution.schema.execution-evidence.v1
   status: verified
-  verification: packages/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-execution/tests/test_contracts.py::test_execution_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.healing.schema.allocation-intent.v2
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.schema.allocation-intent.v2
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.healing.schema.allocation-receipt.v2
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.schema.allocation-receipt.v2
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.healing.schema.coverage-repair.v1
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.schema.coverage-repair.v1
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.healing.schema.fix-proposal.v1
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.schema.fix-proposal.v1
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.healing.schema.heal-apply-intent.v2
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.schema.heal-apply-intent.v2
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.healing.schema.heal-apply-receipt.v2
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.schema.heal-apply-receipt.v2
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.healing.schema.healing-safety.v1
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.schema.healing-safety.v1
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.healing.schema.healing-status.v1
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.schema.healing-status.v1
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.healing.schema.proposal-approved-intent.v1
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.schema.proposal-approved-intent.v1
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.healing.schema.proposal-approved-receipt.v1
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.schema.proposal-approved-receipt.v1
   status: verified
-  verification: packages/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-healing/tests/test_contracts.py::test_healing_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.adversarial-yield.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.adversarial-yield.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.assertion-strength.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.assertion-strength.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.auth-matrix.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.auth-matrix.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.baseline-drift.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.baseline-drift.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.c-layer.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.c-layer.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.constraint-coverage.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.constraint-coverage.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.coverage-diff.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.coverage-diff.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.coverage-gaps.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.coverage-gaps.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.fact-baseline.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.fact-baseline.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.issue-events.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.issue-events.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.issues.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.issues.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.journey-coverage.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.journey-coverage.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.metrics.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.metrics.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.minimum-coverage.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.minimum-coverage.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.mutation.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.mutation.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.perf-slack.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.perf-slack.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.quality-gate.v2
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.quality-gate.v2
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.quarantine.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.quarantine.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.report.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.report.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.sufficiency.v2
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.sufficiency.v2
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.trace-sufficiency.v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.trace-sufficiency.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.quality.schema.trace.v2
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.schema.trace.v2
   status: verified
-  verification: packages/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-quality/tests/test_contracts.py::test_quality_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.improvement.schema.declaration-proposal.v1
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.schema.declaration-proposal.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.improvement.schema.improvement-candidates.v3
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.schema.improvement-candidates.v3
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.improvement.schema.improvement-delivery.v1
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.schema.improvement-delivery.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.improvement.schema.improvement-effect-intent.v1
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.schema.improvement-effect-intent.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.improvement.schema.improvement-effect-receipt.v1
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.schema.improvement-effect-receipt.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.improvement.schema.improvement-review.v1
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.schema.improvement-review.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.improvement.schema.promotion.v1
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.schema.promotion.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.improvement.schema.retro-context.v3
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.schema.retro-context.v3
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.improvement.schema.retro-signals.v3
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.schema.retro-signals.v3
   status: verified
-  verification: packages/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
+  verification: packages/features/assurance-improvement/tests/test_contracts.py::test_improvement_schema_bytes_equal_model_schema
 - kind: schema
   legacy_id: assurance.improvement.result.archive.v1
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.result.archive.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_delivery.py::test_archive_result_contract_bytes_equal_typed_model
+  verification: packages/features/assurance-improvement/tests/test_delivery.py::test_archive_result_contract_bytes_equal_typed_model
 - kind: schema
   legacy_id: assurance.improvement.result.improvement-review.v1
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.result.improvement-review.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_review.py::test_review_result_contract_bytes_equal_typed_model
+  verification: packages/features/assurance-improvement/tests/test_review.py::test_review_result_contract_bytes_equal_typed_model
 - kind: schema
   legacy_id: assurance.improvement.result.retro-analysis.v3
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.result.retro-analysis.v3
   status: verified
-  verification: packages/assurance-improvement/tests/test_retro.py::test_result_contract_bytes_equal_typed_models
+  verification: packages/features/assurance-improvement/tests/test_retro.py::test_result_contract_bytes_equal_typed_models
 - kind: operation
   legacy_id: operation:aggregate-nightly-metrics
   disposition: migrate
@@ -2664,238 +2664,238 @@ items:
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-api-codegen.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
+  verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-api-codegen-fixer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-api-codegen-fixer.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_fix_prepare_includes_allowed_paths
+  verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_fix_prepare_includes_allowed_paths
 - kind: skill
   legacy_id: aa-api-plan
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-api-plan.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
+  verification: packages/features/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-api-plan-reviewer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-api-plan-reviewer.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
+  verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
   legacy_id: aa-archive
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-archive.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_delivery.py::test_archive_prepare_locks_archiver_persona
+  verification: packages/features/assurance-improvement/tests/test_delivery.py::test_archive_prepare_locks_archiver_persona
 - kind: skill
   legacy_id: aa-case-design
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.skill.aa-case-design.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_agent_skills.py::test_case_design_prepare_is_canonical_and_provider_neutral
+  verification: packages/features/assurance-intake/tests/test_agent_skills.py::test_case_design_prepare_is_canonical_and_provider_neutral
 - kind: skill
   legacy_id: aa-case-reviewer
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.skill.aa-case-reviewer.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_agent_skills.py::test_case_review_finalize_rejects_nonexistent_leaf
+  verification: packages/features/assurance-intake/tests/test_agent_skills.py::test_case_review_finalize_rejects_nonexistent_leaf
 - kind: skill
   legacy_id: aa-coverage-repair
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.skill.aa-coverage-repair.v1
   status: verified
-  verification: packages/assurance-healing/tests/test_proposal.py::test_coverage_repair_prepare_and_finalize
+  verification: packages/features/assurance-healing/tests/test_proposal.py::test_coverage_repair_prepare_and_finalize
 - kind: skill
   legacy_id: aa-dashboard
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-dashboard.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_agent_skills.py::test_quality_resources_forbid_legacy_and_provider_names
+  verification: packages/features/assurance-quality/tests/test_agent_skills.py::test_quality_resources_forbid_legacy_and_provider_names
 - kind: skill
   legacy_id: aa-e2e-codegen
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-e2e-codegen.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
+  verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-e2e-codegen-fixer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-e2e-codegen-fixer.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_fix_prepare_includes_allowed_paths
+  verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_fix_prepare_includes_allowed_paths
 - kind: skill
   legacy_id: aa-e2e-plan
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-e2e-plan.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
+  verification: packages/features/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-e2e-plan-reviewer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-e2e-plan-reviewer.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
+  verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
   legacy_id: aa-execute
   disposition: migrate
   owner: assurance.execution
   new_id: assurance.execution.skill.aa-execute.v1
   status: verified
-  verification: packages/assurance-execution/tests/test_agent_skills.py::test_execute_prepare_is_canonical_and_provider_neutral
+  verification: packages/features/assurance-execution/tests/test_agent_skills.py::test_execute_prepare_is_canonical_and_provider_neutral
 - kind: skill
   legacy_id: aa-explore
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.skill.aa-explore.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_agent_skills.py::test_explore_finalize_returns_artifact_digests
+  verification: packages/features/assurance-intake/tests/test_agent_skills.py::test_explore_finalize_returns_artifact_digests
 - kind: skill
   legacy_id: aa-fact-baseline
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-fact-baseline.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_agent_skills.py::test_each_prepare_locks_skill_persona_and_execution
+  verification: packages/features/assurance-quality/tests/test_agent_skills.py::test_each_prepare_locks_skill_persona_and_execution
 - kind: skill
   legacy_id: aa-fix-proposal
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.skill.aa-fix-proposal.v1
   status: verified
-  verification: packages/assurance-healing/tests/test_proposal.py::test_fix_proposal_prepare_is_deterministic_and_provider_neutral
+  verification: packages/features/assurance-healing/tests/test_proposal.py::test_fix_proposal_prepare_is_deterministic_and_provider_neutral
 - kind: skill
   legacy_id: aa-fuzz-codegen
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-fuzz-codegen.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
+  verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-fuzz-plan
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-fuzz-plan.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
+  verification: packages/features/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-fuzz-plan-reviewer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-fuzz-plan-reviewer.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
+  verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
   legacy_id: aa-improvement-reviewer
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-improvement-reviewer.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_review.py::test_review_prepare_locks_improvement_reviewer
+  verification: packages/features/assurance-improvement/tests/test_review.py::test_review_prepare_locks_improvement_reviewer
 - kind: skill
   legacy_id: aa-inspect
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-inspect.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_inspect.py::test_inspect_classifies_locator_failure
+  verification: packages/features/assurance-quality/tests/test_inspect.py::test_inspect_classifies_locator_failure
 - kind: skill
   legacy_id: aa-intake
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.skill.aa-intake.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_agent_skills.py::test_case_design_prepare_is_canonical_and_provider_neutral
+  verification: packages/features/assurance-intake/tests/test_agent_skills.py::test_case_design_prepare_is_canonical_and_provider_neutral
 - kind: skill
   legacy_id: aa-issue-analyzer
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-issue-analyzer.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_agent_skills.py::test_issue_finalize_rejects_candidate_without_owned_evidence
+  verification: packages/features/assurance-quality/tests/test_agent_skills.py::test_issue_finalize_rejects_candidate_without_owned_evidence
 - kind: skill
   legacy_id: aa-issue-triage-advisor
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-issue-triage-advisor.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_agent_skills.py::test_issue_triage_finalize_rejects_unauthenticated_evidence_digest
+  verification: packages/features/assurance-quality/tests/test_agent_skills.py::test_issue_triage_finalize_rejects_unauthenticated_evidence_digest
 - kind: skill
   legacy_id: aa-performance-codegen
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-performance-codegen.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
+  verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-performance-plan
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-performance-plan.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
+  verification: packages/features/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
 - kind: skill
   legacy_id: aa-performance-plan-reviewer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.skill.aa-performance-plan-reviewer.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
+  verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
   legacy_id: aa-report-generator
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.skill.aa-report-generator.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_report.py::test_generate_report_uses_gate_status_not_issue_risk
+  verification: packages/features/assurance-quality/tests/test_report.py::test_generate_report_uses_gate_status_not_issue_risk
 - kind: skill
   legacy_id: aa-retro
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-retro.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_retro.py::test_prepare_instruction_order_is_skill_persona_business
+  verification: packages/features/assurance-improvement/tests/test_retro.py::test_prepare_instruction_order_is_skill_persona_business
 - kind: skill
   legacy_id: aa-retro-eval-analysis
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-retro-eval-analysis.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_retro.py::test_each_prepare_locks_skill_persona_and_execution
+  verification: packages/features/assurance-improvement/tests/test_retro.py::test_each_prepare_locks_skill_persona_and_execution
 - kind: skill
   legacy_id: aa-retro-issue-analysis
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-retro-issue-analysis.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_retro.py::test_each_prepare_locks_skill_persona_and_execution
+  verification: packages/features/assurance-improvement/tests/test_retro.py::test_each_prepare_locks_skill_persona_and_execution
 - kind: skill
   legacy_id: aa-retro-workflow-analysis
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.skill.aa-retro-workflow-analysis.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_retro.py::test_each_prepare_locks_skill_persona_and_execution
+  verification: packages/features/assurance-improvement/tests/test_retro.py::test_each_prepare_locks_skill_persona_and_execution
 - kind: skill
   legacy_id: aa-run
   disposition: migrate
   owner: assurance.execution
   new_id: assurance.execution.skill.aa-run.v1
   status: verified
-  verification: packages/assurance-execution/tests/test_agent_skills.py::test_run_finalize_rejects_result_outside_mapping
+  verification: packages/features/assurance-execution/tests/test_agent_skills.py::test_run_finalize_rejects_result_outside_mapping
 - kind: skill
   legacy_id: aa-workflow
   disposition: replace_phase5
@@ -2916,112 +2916,112 @@ items:
   owner: assurance.improvement
   new_id: assurance.improvement.persona.archiver.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_delivery.py::test_archive_prepare_locks_archiver_persona
+  verification: packages/features/assurance-improvement/tests/test_delivery.py::test_archive_prepare_locks_archiver_persona
 - kind: persona
   legacy_id: aa-doc-author
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.persona.doc-author.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_agent_skills.py::test_prepare_instruction_order_is_skill_persona_business
+  verification: packages/features/assurance-intake/tests/test_agent_skills.py::test_prepare_instruction_order_is_skill_persona_business
 - kind: persona
   legacy_id: aa-explorer
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.persona.explorer.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_agent_skills.py::test_explore_finalize_returns_artifact_digests
+  verification: packages/features/assurance-intake/tests/test_agent_skills.py::test_explore_finalize_returns_artifact_digests
 - kind: persona
   legacy_id: aa-intake-host
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.persona.intake-host.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_agent_skills.py::test_case_design_prepare_is_canonical_and_provider_neutral
+  verification: packages/features/assurance-intake/tests/test_agent_skills.py::test_case_design_prepare_is_canonical_and_provider_neutral
 - kind: persona
   legacy_id: aa-reporter
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.persona.reporter.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_agent_skills.py::test_quality_resources_forbid_legacy_and_provider_names
+  verification: packages/features/assurance-quality/tests/test_agent_skills.py::test_quality_resources_forbid_legacy_and_provider_names
 - kind: persona
   legacy_id: aa-reviewer
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.persona.reviewer.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_plan_review.py::test_plan_review_prepare_uses_reviewer_persona
+  verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_prepare_uses_reviewer_persona
 - kind: persona
   legacy_id: aa-test-author
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.persona.test-author.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_planning.py::test_plan_prepare_instruction_order_is_skill_persona_cases_constraints
+  verification: packages/features/assurance-generation/tests/test_planning.py::test_plan_prepare_instruction_order_is_skill_persona_cases_constraints
 - kind: validator
   legacy_id: archive_integrity/v1
   disposition: migrate
   owner: assurance.improvement
   new_id: assurance.improvement.validator.archive-integrity.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_delivery.py::test_archive_integrity_requires_all_four_authenticated_inputs
+  verification: packages/features/assurance-improvement/tests/test_delivery.py::test_archive_integrity_requires_all_four_authenticated_inputs
 - kind: validator
   legacy_id: codegen_fix_candidate/v1
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.validator.codegen-fix-candidate.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_generated_files_validator.py::test_fix_candidate_validator_authenticates_proposal_baseline_and_allowed_set
+  verification: packages/features/assurance-generation/tests/test_generated_files_validator.py::test_fix_candidate_validator_authenticates_proposal_baseline_and_allowed_set
 - kind: validator
   legacy_id: cross_artifact_invariants/v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.validator.cross-artifact.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_metrics.py::test_metrics_and_cross_artifact_validators
+  verification: packages/features/assurance-quality/tests/test_metrics.py::test_metrics_and_cross_artifact_validators
 - kind: validator
   legacy_id: generated_files_candidate/v1
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.validator.generated-files.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_generated_files_validator.py::test_plugin_contributed_codegen_validators_allowlist_registered_paths
+  verification: packages/features/assurance-generation/tests/test_generated_files_validator.py::test_plugin_contributed_codegen_validators_allowlist_registered_paths
 - kind: validator
   legacy_id: plan_mechanical_candidate/v1
   disposition: migrate
   owner: assurance.generation
   new_id: assurance.generation.validator.plan-mechanical.v1
   status: verified
-  verification: packages/assurance-generation/tests/test_plan_validator.py::test_plan_mechanical_dispatches_closed_family_table
+  verification: packages/features/assurance-generation/tests/test_plan_validator.py::test_plan_mechanical_dispatches_closed_family_table
 - kind: validator
   legacy_id: problem_apply_candidate/v1
   disposition: migrate
   owner: assurance.quality
   new_id: assurance.quality.validator.problem-apply.v1
   status: verified
-  verification: packages/assurance-quality/tests/test_issues.py::test_problem_apply_validator_rejects_forged_review_id
+  verification: packages/features/assurance-quality/tests/test_issues.py::test_problem_apply_validator_rejects_forged_review_id
 - kind: effect
   legacy_id: fixer_proposal_approved/v1
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.effect.proposal-approved.v1
   status: verified
-  verification: packages/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound
+  verification: packages/features/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound
 - kind: effect
   legacy_id: heal_record_apply/v2
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.effect.heal-apply.v2
   status: verified
-  verification: packages/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound
+  verification: packages/features/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound
 - kind: effect
   legacy_id: healing_allocation/v2
   disposition: migrate
   owner: assurance.healing
   new_id: assurance.healing.effect.allocation.v2
   status: verified
-  verification: packages/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound
+  verification: packages/features/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound
 - kind: hook
   legacy_id: assert_test_changes_override_allowed
   disposition: migrate
@@ -3707,21 +3707,21 @@ items:
   owner: assurance.improvement
   new_id: assurance.improvement.prompt.archive-summary.v1
   status: verified
-  verification: packages/assurance-improvement/tests/test_plugin.py::test_improvement_plugin_conforms
+  verification: packages/features/assurance-improvement/tests/test_plugin.py::test_improvement_plugin_conforms
 - kind: resource
   legacy_id: assurance_agent/_resources/skills/aa-case-design/case-delta-reviewer-prompt.md
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.skill.aa-case-design.case-delta-reviewer-prompt.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_plugin.py::test_intake_plugin_conforms
+  verification: packages/features/assurance-intake/tests/test_plugin.py::test_intake_plugin_conforms
 - kind: resource
   legacy_id: assurance_agent/_resources/skills/aa-case-design/visual-companion.md
   disposition: migrate
   owner: assurance.intake
   new_id: assurance.intake.skill.aa-case-design.visual-companion.v1
   status: verified
-  verification: packages/assurance-intake/tests/test_plugin.py::test_intake_plugin_conforms
+  verification: packages/features/assurance-intake/tests/test_plugin.py::test_intake_plugin_conforms
 - kind: resource
   legacy_id: assurance_agent/_resources/skills/aa-dashboard/scripts/case-center.html
   disposition: delete_phase6

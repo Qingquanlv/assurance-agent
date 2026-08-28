@@ -36,6 +36,32 @@ ADAPTER_PEERS = {
     "agent_runtime_cursor": "agent_runtime_opencode",
 }
 
+FEATURE_DISTRIBUTIONS = (
+    "assurance-intake",
+    "assurance-generation",
+    "assurance-execution",
+    "assurance-healing",
+    "assurance-quality",
+    "assurance-improvement",
+)
+
+FEATURE_SOURCE_TREES = (
+    ("assurance_intake", "packages/features/assurance-intake/assurance_intake"),
+    ("assurance_generation", "packages/features/assurance-generation/assurance_generation"),
+    ("assurance_execution", "packages/features/assurance-execution/assurance_execution"),
+    ("assurance_healing", "packages/features/assurance-healing/assurance_healing"),
+    ("assurance_quality", "packages/features/assurance-quality/assurance_quality"),
+    ("assurance_improvement", "packages/features/assurance-improvement/assurance_improvement"),
+)
+
+FEATURE_DOWNWARD_FORBIDDEN = frozenset(
+    {
+        "agent_runtime_opencode",
+        "agent_runtime_cursor",
+        "assurance_product",
+    }
+)
+
 
 ALLOWED_ROOTS = set(sys.stdlib_module_names) | {
     "graph_engine",
@@ -103,6 +129,43 @@ def test_clients_import_no_features_or_product(repo_root: Path) -> None:
                     continue
                 for name in names:
                     if name in forbidden:
+                        violations.append(f"{path}:{node.lineno}:{name}")
+    assert violations == []
+
+
+def test_all_capability_wheels_are_feature_subprojects(repo_root: Path) -> None:
+    expected = {
+        "assurance-intake",
+        "assurance-generation",
+        "assurance-execution",
+        "assurance-healing",
+        "assurance-quality",
+        "assurance-improvement",
+    }
+    assert {path.name for path in (repo_root / "packages/features").iterdir()} == expected
+    for directory_name in FEATURE_DISTRIBUTIONS:
+        target = repo_root / "packages" / "features" / directory_name
+        assert target.is_dir()
+        assert not (repo_root / "packages" / directory_name).exists()
+        pyproject = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
+        assert pyproject["project"]["name"] == directory_name
+
+
+def test_features_import_no_concrete_clients_or_product(repo_root: Path) -> None:
+    violations: list[str] = []
+    for _package_name, relative in FEATURE_SOURCE_TREES:
+        root = repo_root / relative
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [alias.name.split(".", 1)[0] for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    names = [node.module.split(".", 1)[0]]
+                else:
+                    continue
+                for name in names:
+                    if name in FEATURE_DOWNWARD_FORBIDDEN:
                         violations.append(f"{path}:{node.lineno}:{name}")
     assert violations == []
 

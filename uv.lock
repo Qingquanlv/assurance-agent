@@ -123,7 +123,7 @@ wheels = [
 [[package]]
 name = "assurance-execution"
 version = "0.1.0"
-source = { editable = "packages/assurance-execution" }
+source = { editable = "packages/features/assurance-execution" }
 dependencies = [
     { name = "agent-runtime-contracts" },
     { name = "assurance-generation" },
@@ -136,8 +136,8 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/clients/agent-runtime-contracts" },
-    { name = "assurance-generation", editable = "packages/assurance-generation" },
-    { name = "assurance-intake", editable = "packages/assurance-intake" },
+    { name = "assurance-generation", editable = "packages/features/assurance-generation" },
+    { name = "assurance-intake", editable = "packages/features/assurance-intake" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -146,7 +146,7 @@ requires-dist = [
 [[package]]
 name = "assurance-generation"
 version = "0.1.0"
-source = { editable = "packages/assurance-generation" }
+source = { editable = "packages/features/assurance-generation" }
 dependencies = [
     { name = "agent-runtime-contracts" },
     { name = "assurance-intake" },
@@ -158,7 +158,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/clients/agent-runtime-contracts" },
-    { name = "assurance-intake", editable = "packages/assurance-intake" },
+    { name = "assurance-intake", editable = "packages/features/assurance-intake" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -167,7 +167,7 @@ requires-dist = [
 [[package]]
 name = "assurance-healing"
 version = "0.1.0"
-source = { editable = "packages/assurance-healing" }
+source = { editable = "packages/features/assurance-healing" }
 dependencies = [
     { name = "agent-runtime-contracts" },
     { name = "assurance-execution" },
@@ -180,9 +180,9 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/clients/agent-runtime-contracts" },
-    { name = "assurance-execution", editable = "packages/assurance-execution" },
-    { name = "assurance-generation", editable = "packages/assurance-generation" },
-    { name = "assurance-intake", editable = "packages/assurance-intake" },
+    { name = "assurance-execution", editable = "packages/features/assurance-execution" },
+    { name = "assurance-generation", editable = "packages/features/assurance-generation" },
+    { name = "assurance-intake", editable = "packages/features/assurance-intake" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
@@ -190,7 +190,7 @@ requires-dist = [
 [[package]]
 name = "assurance-improvement"
 version = "0.1.0"
-source = { editable = "packages/assurance-improvement" }
+source = { editable = "packages/features/assurance-improvement" }
 dependencies = [
     { name = "agent-runtime-contracts" },
     { name = "assurance-execution" },
@@ -205,11 +205,11 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/clients/agent-runtime-contracts" },
-    { name = "assurance-execution", editable = "packages/assurance-execution" },
-    { name = "assurance-generation", editable = "packages/assurance-generation" },
-    { name = "assurance-healing", editable = "packages/assurance-healing" },
-    { name = "assurance-intake", editable = "packages/assurance-intake" },
-    { name = "assurance-quality", editable = "packages/assurance-quality" },
+    { name = "assurance-execution", editable = "packages/features/assurance-execution" },
+    { name = "assurance-generation", editable = "packages/features/assurance-generation" },
+    { name = "assurance-healing", editable = "packages/features/assurance-healing" },
+    { name = "assurance-intake", editable = "packages/features/assurance-intake" },
+    { name = "assurance-quality", editable = "packages/features/assurance-quality" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
@@ -217,7 +217,7 @@ requires-dist = [
 [[package]]
 name = "assurance-intake"
 version = "0.1.0"
-source = { editable = "packages/assurance-intake" }
+source = { editable = "packages/features/assurance-intake" }
 dependencies = [
     { name = "agent-runtime-contracts" },
     { name = "graph-engine" },
@@ -260,12 +260,12 @@ opencode = [
 requires-dist = [
     { name = "agent-runtime-cursor", marker = "extra == 'cursor'", editable = "packages/clients/agent-runtime-cursor" },
     { name = "agent-runtime-opencode", marker = "extra == 'opencode'", editable = "packages/clients/agent-runtime-opencode" },
-    { name = "assurance-execution", editable = "packages/assurance-execution" },
-    { name = "assurance-generation", editable = "packages/assurance-generation" },
-    { name = "assurance-healing", editable = "packages/assurance-healing" },
-    { name = "assurance-improvement", editable = "packages/assurance-improvement" },
-    { name = "assurance-intake", editable = "packages/assurance-intake" },
-    { name = "assurance-quality", editable = "packages/assurance-quality" },
+    { name = "assurance-execution", editable = "packages/features/assurance-execution" },
+    { name = "assurance-generation", editable = "packages/features/assurance-generation" },
+    { name = "assurance-healing", editable = "packages/features/assurance-healing" },
+    { name = "assurance-improvement", editable = "packages/features/assurance-improvement" },
+    { name = "assurance-intake", editable = "packages/features/assurance-intake" },
+    { name = "assurance-quality", editable = "packages/features/assurance-quality" },
     { name = "click", specifier = ">=8.1" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
 ]
@@ -274,7 +274,7 @@ provides-extras = ["opencode", "cursor"]
 [[package]]
 name = "assurance-quality"
 version = "0.1.0"
-source = { editable = "packages/assurance-quality" }
+source = { editable = "packages/features/assurance-quality" }
 dependencies = [
     { name = "agent-runtime-contracts" },
     { name = "assurance-execution" },
@@ -288,10 +288,10 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/clients/agent-runtime-contracts" },
-    { name = "assurance-execution", editable = "packages/assurance-execution" },
-    { name = "assurance-generation", editable = "packages/assurance-generation" },
-    { name = "assurance-healing", editable = "packages/assurance-healing" },
-    { name = "assurance-intake", editable = "packages/assurance-intake" },
+    { name = "assurance-execution", editable = "packages/features/assurance-execution" },
+    { name = "assurance-generation", editable = "packages/features/assurance-generation" },
+    { name = "assurance-healing", editable = "packages/features/assurance-healing" },
+    { name = "assurance-intake", editable = "packages/features/assurance-intake" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
@@ -340,13 +340,13 @@ dev = [
     { name = "agent-runtime-cursor", editable = "packages/clients/agent-runtime-cursor" },
     { name = "agent-runtime-fixture", editable = "examples/agent-runtime-fixture" },
     { name = "agent-runtime-opencode", editable = "packages/clients/agent-runtime-opencode" },
-    { name = "assurance-execution", editable = "packages/assurance-execution" },
-    { name = "assurance-generation", editable = "packages/assurance-generation" },
-    { name = "assurance-healing", editable = "packages/assurance-healing" },
-    { name = "assurance-improvement", editable = "packages/assurance-improvement" },
-    { name = "assurance-intake", editable = "packages/assurance-intake" },
+    { name = "assurance-execution", editable = "packages/features/assurance-execution" },
+    { name = "assurance-generation", editable = "packages/features/assurance-generation" },
+    { name = "assurance-healing", editable = "packages/features/assurance-healing" },
+    { name = "assurance-improvement", editable = "packages/features/assurance-improvement" },
+    { name = "assurance-intake", editable = "packages/features/assurance-intake" },
     { name = "assurance-product", editable = "packages/assurance-product" },
-    { name = "assurance-quality", editable = "packages/assurance-quality" },
+    { name = "assurance-quality", editable = "packages/features/assurance-quality" },
     { name = "click", specifier = ">=8.1" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },

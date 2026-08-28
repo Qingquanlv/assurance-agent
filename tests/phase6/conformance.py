@@ -15,12 +15,12 @@ PRODUCTION_METADATA_FILES = (
     ".importlinter",
     "uv.lock",
     "packages/assurance-product/pyproject.toml",
-    "packages/assurance-intake/pyproject.toml",
-    "packages/assurance-generation/pyproject.toml",
-    "packages/assurance-execution/pyproject.toml",
-    "packages/assurance-healing/pyproject.toml",
-    "packages/assurance-quality/pyproject.toml",
-    "packages/assurance-improvement/pyproject.toml",
+    "packages/features/assurance-intake/pyproject.toml",
+    "packages/features/assurance-generation/pyproject.toml",
+    "packages/features/assurance-execution/pyproject.toml",
+    "packages/features/assurance-healing/pyproject.toml",
+    "packages/features/assurance-quality/pyproject.toml",
+    "packages/features/assurance-improvement/pyproject.toml",
     "packages/framework/graph-engine/pyproject.toml",
     "packages/clients/agent-runtime-contracts/pyproject.toml",
     "packages/clients/agent-runtime-opencode/pyproject.toml",
@@ -29,12 +29,12 @@ PRODUCTION_METADATA_FILES = (
 
 PRODUCTION_PACKAGE_ROOTS = (
     "packages/assurance-product/assurance_product",
-    "packages/assurance-intake/assurance_intake",
-    "packages/assurance-generation/assurance_generation",
-    "packages/assurance-execution/assurance_execution",
-    "packages/assurance-healing/assurance_healing",
-    "packages/assurance-quality/assurance_quality",
-    "packages/assurance-improvement/assurance_improvement",
+    "packages/features/assurance-intake/assurance_intake",
+    "packages/features/assurance-generation/assurance_generation",
+    "packages/features/assurance-execution/assurance_execution",
+    "packages/features/assurance-healing/assurance_healing",
+    "packages/features/assurance-quality/assurance_quality",
+    "packages/features/assurance-improvement/assurance_improvement",
     "packages/framework/graph-engine/graph_engine",
     "packages/clients/agent-runtime-contracts/agent_runtime_contracts",
     "packages/clients/agent-runtime-opencode/agent_runtime_opencode",
@@ -42,12 +42,12 @@ PRODUCTION_PACKAGE_ROOTS = (
 )
 
 OWNER_REPLACEMENT_TESTS = {
-    "assurance.intake": "packages/assurance-intake/tests/test_plugin.py",
-    "assurance.generation": "packages/assurance-generation/tests/test_contracts.py",
-    "assurance.execution": "packages/assurance-execution/tests/test_contracts.py",
-    "assurance.healing": "packages/assurance-healing/tests/test_contracts.py",
-    "assurance.quality": "packages/assurance-quality/tests/test_contracts.py",
-    "assurance.improvement": "packages/assurance-improvement/tests/test_plugin.py",
+    "assurance.intake": "packages/features/assurance-intake/tests/test_plugin.py",
+    "assurance.generation": "packages/features/assurance-generation/tests/test_contracts.py",
+    "assurance.execution": "packages/features/assurance-execution/tests/test_contracts.py",
+    "assurance.healing": "packages/features/assurance-healing/tests/test_contracts.py",
+    "assurance.quality": "packages/features/assurance-quality/tests/test_contracts.py",
+    "assurance.improvement": "packages/features/assurance-improvement/tests/test_plugin.py",
 }
 
 PHASE5_REPLACEMENT_TEST = "tests/product/test_full_graph_audit.py"
@@ -69,12 +69,12 @@ KERNEL_DESTINATIONS = frozenset(
 KERNEL_DESTINATION_ROOTS = {
     "graph-engine": "packages/framework/graph-engine",
     "assurance-product": "packages/assurance-product",
-    "assurance.intake": "packages/assurance-intake",
-    "assurance.generation": "packages/assurance-generation",
-    "assurance.execution": "packages/assurance-execution",
-    "assurance.healing": "packages/assurance-healing",
-    "assurance.quality": "packages/assurance-quality",
-    "assurance.improvement": "packages/assurance-improvement",
+    "assurance.intake": "packages/features/assurance-intake",
+    "assurance.generation": "packages/features/assurance-generation",
+    "assurance.execution": "packages/features/assurance-execution",
+    "assurance.healing": "packages/features/assurance-healing",
+    "assurance.quality": "packages/features/assurance-quality",
+    "assurance.improvement": "packages/features/assurance-improvement",
 }
 _KERNEL_EXACT_OWNERS: dict[str, str] = {
     "packages/assurance-kernel/pyproject.toml": "obsolete",
