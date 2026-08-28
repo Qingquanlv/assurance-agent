@@ -122,6 +122,7 @@ graphs:
       fanout:
         kind: gate
         expression: 'true'
+        routing: {mode: fanout, min_matches: 4}
       select-api:
         kind: gate
         expression: "'api' in selected_test_families"
@@ -131,18 +132,22 @@ graphs:
             selected_test_families:
               type: graph_input_pointer
               pointer: /selected_test_families
+        routing: {mode: fanout, min_matches: 1}
       select-e2e:
         kind: gate
         expression: "'e2e' in selected_test_families"
         input_projection: *family-selection
+        routing: {mode: fanout, min_matches: 1}
       select-fuzz:
         kind: gate
         expression: "'fuzz' in selected_test_families"
         input_projection: *family-selection
+        routing: {mode: fanout, min_matches: 1}
       select-performance:
         kind: gate
         expression: "'performance' in selected_test_families"
         input_projection: *family-selection
+        routing: {mode: fanout, min_matches: 1}
       api:
         kind: subgraph
         graph: generation-api
@@ -256,6 +261,7 @@ graphs:
         kind: subgraph
         graph: generation-api-plan-review
         input_projection: *leaf-input
+        routing: {mode: fanout, min_matches: 3}
       plan-review-pass-gate:
         kind: gate
         expression: &plan-review-pass-expression >-
@@ -302,6 +308,7 @@ graphs:
         kind: subgraph
         graph: generation-api-codegen
         input_projection: *leaf-input
+        routing: {mode: fanout, min_matches: 2}
       codegen-pass-gate:
         kind: gate
         expression: &codegen-pass-expression 'needs_fix == false'
@@ -499,6 +506,7 @@ graphs:
         kind: subgraph
         graph: generation-e2e-plan-review
         input_projection: *leaf-input
+        routing: {mode: fanout, min_matches: 3}
       plan-review-pass-gate:
         kind: gate
         expression: *plan-review-pass-expression
@@ -519,6 +527,7 @@ graphs:
         kind: subgraph
         graph: generation-e2e-codegen
         input_projection: *leaf-input
+        routing: {mode: fanout, min_matches: 2}
       codegen-pass-gate:
         kind: gate
         expression: *codegen-pass-expression
@@ -687,6 +696,7 @@ graphs:
         kind: subgraph
         graph: generation-fuzz-plan-review
         input_projection: *leaf-input
+        routing: {mode: fanout, min_matches: 3}
       plan-review-pass-gate:
         kind: gate
         expression: *plan-review-pass-expression
@@ -827,6 +837,7 @@ graphs:
         kind: subgraph
         graph: generation-performance-plan-review
         input_projection: *leaf-input
+        routing: {mode: fanout, min_matches: 3}
       plan-review-pass-gate:
         kind: gate
         expression: *plan-review-pass-expression

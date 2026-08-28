@@ -1307,6 +1307,18 @@ def test_slot_capability_must_be_product_owned() -> None:
         assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
 
 
+def test_product_deployment_plugin_owner_is_product_owned() -> None:
+    feature = _slotted_feature()
+    manifest, descriptors, registries = _slot_assembly_inputs(
+        feature=feature,
+        binding_registry=_binding_registry(binding_owner="toy.product.agent"),
+    )
+    assembled = assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
+    task = assembled.graphs["toy.feature.workflow.graph.feature-run"].nodes["work"]
+    assert task.capability == "toy.product.agent.worker.execute"
+    assert task.capability_slot is None
+
+
 def test_valid_slot_lowers_to_concrete_capability() -> None:
     feature = _slotted_feature()
     manifest, descriptors, registries = _slot_assembly_inputs(feature=feature)

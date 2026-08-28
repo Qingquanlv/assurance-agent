@@ -17,6 +17,36 @@ from assurance_product.agent_contracts import PREPARE_IDS
 
 PRODUCT_ID = "assurance"
 ENGINE_API = "2.0"
+PRODUCT_WORKFLOW_MODULE_ID = "assurance.product.workflow"
+FEATURE_WORKFLOW_OWNERS: tuple[str, ...] = (
+    "assurance.execution",
+    "assurance.generation",
+    "assurance.healing",
+    "assurance.improvement",
+    "assurance.intake",
+    "assurance.quality",
+)
+PUBLIC_WORKFLOW_IMPORT_ALIASES: tuple[str, ...] = (
+    "execution.execute",
+    "execution.rerun",
+    "generation.generate",
+    "healing.repair-coverage",
+    "healing.repair-failure",
+    "improvement.apply",
+    "improvement.archive",
+    "improvement.evaluate",
+    "improvement.export",
+    "improvement.review",
+    "improvement.rollback",
+    "improvement.retro",
+    "intake.case",
+    "intake.prepare",
+    "quality.assess",
+    "quality.issue-analyze",
+    "quality.issue-reconcile",
+    "quality.issue-review",
+    "quality.report",
+)
 
 AdapterName = Literal["opencode", "cursor"]
 PLUGIN_ID = "assurance.product.agent"

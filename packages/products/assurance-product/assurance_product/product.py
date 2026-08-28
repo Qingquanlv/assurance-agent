@@ -27,10 +27,15 @@ from graph_engine.composition import (
 from graph_engine.composition.sources import WheelProductDeclaration
 from graph_engine.frozen_json import thaw_json
 from graph_engine.graph.compiler import CompiledWorkflow
+from graph_engine.graph.module_schema import WorkflowModuleDef, parse_workflow_module
 from graph_engine.graph.schema import WorkflowDef, parse_workflow
 from graph_engine.plugin_api import FrozenModel, ProviderSource
 
-from assurance_product.agent_contracts import bind_agent_execution_contracts
+from assurance_product.agent_contracts import (
+    bind_agent_execution_contracts,
+    product_workflow_module_requirements,
+    product_workflow_slot_bindings,
+)
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.models import (
     CONFIGURATION_PLUGIN_ID,
@@ -72,7 +77,9 @@ _PLUGIN_VERSIONS: dict[str, str] = {
     PLUGIN_ID: f"=={PLUGIN_VERSION}",
     CONFIGURATION_PLUGIN_ID: f"=={CONFIGURATION_PLUGIN_VERSION}",
 }
-_WORKFLOW_PATH = Path(__file__).resolve().parent / "resources" / "workflow" / "assurance-full.yaml"
+_WORKFLOW_DIR = Path(__file__).resolve().parent / "resources" / "workflow"
+_PRE_MODULAR_WORKFLOW_PATH = _WORKFLOW_DIR / "assurance-full.yaml"
+_PRODUCT_MODULE_PATH = _WORKFLOW_DIR / "main.yaml"
 
 
 def prepare_change_workspace(project_root: Path, change_id: str) -> ChangeWorkspace:
@@ -85,20 +92,21 @@ def reopen_change_workspace(project_root: Path, change_id: str) -> ChangeWorkspa
     return workspace
 
 
-def load_canonical_workflow() -> WorkflowDef:
-    workflow = parse_workflow(_WORKFLOW_PATH.read_text(encoding="utf-8"))
+def load_pre_modular_workflow() -> WorkflowDef:
+    workflow = parse_workflow(_PRE_MODULAR_WORKFLOW_PATH.read_text(encoding="utf-8"))
     return bind_agent_execution_contracts(workflow)
 
 
-def _canonical_workflow_document() -> dict[str, JSONValue]:
-    return cast(
-        dict[str, JSONValue],
-        load_canonical_workflow().model_dump(mode="json", by_alias=True, exclude_unset=True),
-    )
+def load_product_workflow_module() -> WorkflowModuleDef:
+    return parse_workflow_module(_PRODUCT_MODULE_PATH.read_text(encoding="utf-8"))
 
 
-_WORKFLOW = load_canonical_workflow()
-_ENTRYPOINTS = dict(_WORKFLOW.entrypoints)
+def load_canonical_workflow() -> WorkflowDef:
+    return load_pre_modular_workflow()
+
+
+_PRODUCT_MODULE = load_product_workflow_module()
+_ENTRYPOINTS = dict(_PRODUCT_MODULE.entrypoints)
 _PROVIDERS: dict[AdapterName, str] = {
     "opencode": "AssuranceOpenCodeProductProvider",
     "cursor": "AssuranceCursorProductProvider",
@@ -109,19 +117,17 @@ _PREPARE_DATA_FIELDS = frozenset(
 _PREPARE_EXECUTION_FIELDS = frozenset(
     {"provider_model", "worker_profile", "permission_profile_digest", "limits"}
 )
-_PHASE4_IMPROVEMENT_AGENT_IDS = frozenset(
-    f"{prepare_id.removesuffix('.prepare')}{suffix}"
-    for prepare_id in PREPARE_IDS
-    if prepare_id.startswith("assurance.improvement.")
-    for suffix in (".prepare", ".finalize")
-)
 _FORBIDDEN_GRAPH_PREFIXES = (
     "runtime.",
+    "test.",
+)
+_FEATURE_CAPABILITY_PREFIXES = (
     "assurance.intake.",
     "assurance.generation.",
     "assurance.execution.",
     "assurance.quality.",
     "assurance.healing.",
+    "assurance.improvement.",
 )
 _TEST_ONLY_MARKERS = (".test.",)
 _INVENTORY_RELATIVE = Path(
@@ -205,7 +211,9 @@ def _build_manifest(
         entrypoints=dict(_ENTRYPOINTS),
         configuration={},
         config_plugin_paths=config_plugin_paths,
-        workflow=_WORKFLOW,
+        workflow_module=_PRODUCT_MODULE,
+        workflow_module_resources=product_workflow_module_requirements(),
+        workflow_slot_bindings=product_workflow_slot_bindings(),
     )
 
 
@@ -214,9 +222,15 @@ def product_declaration_document(
     config_plugin_paths: tuple[str, ...] = (),
 ) -> dict[str, JSONValue]:
     source = _product_source(adapter).model_dump(mode="json")
-    manifest = _build_manifest(adapter, config_plugin_paths).model_dump(mode="json")
-    manifest["workflow"] = _canonical_workflow_document()
+    manifest = _build_manifest(adapter, config_plugin_paths).model_dump(mode="json", exclude_none=True)
+    manifest.pop("workflow", None)
     manifest.pop("workflow_resource_id", None)
+    if _PRODUCT_MODULE is not None:
+        manifest["workflow_module"] = _PRODUCT_MODULE.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_unset=True,
+        )
     return {
         "schema_version": "1",
         "kind": "product",
@@ -276,14 +290,6 @@ def _graph_binding_ids(composition: FrozenComposition) -> set[str]:
     }
 
 
-def _is_allowed_phase4_operation(capability: str) -> bool:
-    return (
-        capability.startswith("assurance.improvement.")
-        and capability not in _PHASE4_IMPROVEMENT_AGENT_IDS
-        and not capability.startswith(_FORBIDDEN_GRAPH_PREFIXES)
-    )
-
-
 def _prepare_data_is_assignment(value: object) -> bool:
     data = thaw_json(value)
     if not isinstance(data, Mapping):
@@ -325,25 +331,16 @@ def _authenticate_assurance_composition(
     if _lock_binding_ids(composition) != expected_bindings:
         raise AssuranceCompositionError("lock binding projection is not the exact 99 aliases")
     graph_bindings = _graph_binding_ids(composition)
-    expected_graph = {
-        node.capability
-        for graph in _WORKFLOW.graphs.values()
-        for node in graph.nodes.values()
-        if node.capability is not None
-    }
     agent_bindings = {capability for capability in graph_bindings if capability.startswith(f"{PLUGIN_ID}.")}
-    operation_bindings = graph_bindings - agent_bindings
+    feature_bindings = graph_bindings - agent_bindings
+    execute_aliases = {alias_ids_for_prepare(prepare_id)[1] for prepare_id in PREPARE_IDS}
     if not agent_bindings.issubset(expected_bindings):
         raise AssuranceCompositionError("graph bindings must be a subset of the frozen 99 aliases")
-    if not expected_bindings.issubset(agent_bindings):
-        raise AssuranceCompositionError("graph is missing required agent aliases")
-    if graph_bindings != expected_graph:
-        raise AssuranceCompositionError("compiled workflow capabilities do not match the canonical slice")
+    if not execute_aliases.issubset(agent_bindings):
+        raise AssuranceCompositionError("graph is missing required agent execute aliases")
     if any(capability.startswith(_FORBIDDEN_GRAPH_PREFIXES) for capability in graph_bindings):
         raise AssuranceCompositionError("graph referenced a direct runtime or Phase 4 capability")
-    if any(capability in _PHASE4_IMPROVEMENT_AGENT_IDS for capability in graph_bindings):
-        raise AssuranceCompositionError("graph referenced a Phase 4 agent prepare id")
-    if any(not _is_allowed_phase4_operation(capability) for capability in operation_bindings):
+    if any(not capability.startswith(_FEATURE_CAPABILITY_PREFIXES) for capability in feature_bindings):
         raise AssuranceCompositionError("graph referenced a non-product agent alias")
 
     source = composition.manifest.source
@@ -472,11 +469,11 @@ def _reachable_node_ids(workflow: CompiledWorkflow) -> set[str]:
 def _is_forbidden_graph_target(capability: str) -> bool:
     if capability.startswith(_FORBIDDEN_GRAPH_PREFIXES):
         return True
-    if capability in _PHASE4_IMPROVEMENT_AGENT_IDS:
-        return True
     if capability.startswith("test.") or any(marker in capability for marker in _TEST_ONLY_MARKERS):
         return True
-    return False
+    if capability.startswith(f"{PLUGIN_ID}."):
+        return False
+    return not capability.startswith(_FEATURE_CAPABILITY_PREFIXES)
 
 
 def _inventory_path() -> Path | None:

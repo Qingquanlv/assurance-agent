@@ -523,6 +523,10 @@ def _binding_entry(
     return entry
 
 
+def _is_product_owned_capability(owner_id: str, product_id: str) -> bool:
+    return owner_id == product_id or owner_id.startswith(f"{product_id}.")
+
+
 def _verify_slot_binding(
     binding: WorkflowSlotBinding,
     *,
@@ -538,7 +542,7 @@ def _verify_slot_binding(
         raise WorkflowAssemblyError(f"binding contract missing: {binding.capability_id}")
     if entry.contract_id != binding.contract_id or entry.contract_id != module_contract:
         raise WorkflowAssemblyError(f"slot contract mismatch: {binding.capability_id}")
-    if entry.owner_id != manifest.product_id:
+    if not _is_product_owned_capability(entry.owner_id, manifest.product_id):
         raise WorkflowAssemblyError(f"capability owner is not product-owned: {binding.capability_id}")
     if entry.target_provenance.owner_id not in selected:
         raise WorkflowAssemblyError(

@@ -504,6 +504,7 @@ graphs:
         kind: subgraph
         graph: improvement-review
         input_projection: *child-input
+        routing: {mode: fanout, min_matches: 2}
       review-human-gate:
         kind: gate
         expression: "decision != 'pass' and decision != 'approved'"

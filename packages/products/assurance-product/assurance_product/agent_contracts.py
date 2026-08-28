@@ -4,6 +4,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from agent_runtime_contracts import AgentExecutionContract, expand_agent_job_slots
+from graph_engine.composition.models import WorkflowModuleRequirement, WorkflowSlotBinding
 from graph_engine.graph.schema import RetryPolicyDef, WorkflowDef
 from graph_engine.plugin_api import ResourceClaims
 
@@ -40,6 +41,48 @@ AGENT_EXECUTION_CONTRACTS: Mapping[str, AgentExecutionContract] = MappingProxyTy
     }
 )
 PREPARE_IDS: tuple[str, ...] = tuple(AGENT_EXECUTION_CONTRACTS)
+
+
+def _slot_parts(alias: str) -> tuple[str, str, str]:
+    rest = alias.removeprefix("assurance.product.agent.")
+    feature, _, remainder = rest.partition(".")
+    base, _, phase = remainder.rpartition(".")
+    if not feature or not base or phase not in {"prepare", "execute", "finalize"}:
+        raise ValueError(f"invalid product agent alias: {alias!r}")
+    return feature, base, phase
+
+
+def product_workflow_module_requirements() -> tuple[WorkflowModuleRequirement, ...]:
+    from assurance_product.models import FEATURE_WORKFLOW_OWNERS
+
+    return tuple(
+        WorkflowModuleRequirement(
+            module_id=f"{owner}.workflow",
+            owner_id=owner,
+            resource_id=f"{owner}.workflow.module.v1",
+        )
+        for owner in FEATURE_WORKFLOW_OWNERS
+    )
+
+
+def product_workflow_slot_bindings() -> tuple[WorkflowSlotBinding, ...]:
+    expanded = expand_agent_job_slots(FEATURE_AGENT_JOB_CATALOGS)
+    return tuple(
+        sorted(
+            (
+                WorkflowSlotBinding(
+                    module_id=f"assurance.{feature}.workflow",
+                    slot=f"{base}.{phase}",
+                    capability_id=alias,
+                    contract_id=contract.contract_id,
+                )
+                for alias, contract in expanded.items()
+                for feature, base, phase in (_slot_parts(alias),)
+            ),
+            key=lambda item: (item.module_id, item.slot),
+        )
+    )
+
 
 _AGENT_RETRY_NAME = "agent-transient"
 _AGENT_RETRY_POLICY = RetryPolicyDef(max_attempts=12, retry_on=("transient",))
@@ -104,4 +147,6 @@ __all__ = [
     "AgentExecutionContract",
     "bind_agent_execution_contracts",
     "expand_agent_job_slots",
+    "product_workflow_module_requirements",
+    "product_workflow_slot_bindings",
 ]
