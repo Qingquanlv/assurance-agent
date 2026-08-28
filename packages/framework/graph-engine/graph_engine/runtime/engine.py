@@ -992,7 +992,11 @@ class Engine:
                     try:
                         asyncio.run(
                             scheduler.recover_live_activities(
-                                plan_running_tasks(composition.workflow, projection)
+                                plan_running_tasks(
+                                    composition.workflow,
+                                    projection,
+                                    schemas=composition.registries.schemas,
+                                )
                             )
                         )
                     except LedgerConflictError as error:
@@ -1041,7 +1045,11 @@ class Engine:
                     )
                 raise EngineError("effect settlement made no progress")
 
-            running_tasks = plan_running_tasks(composition.workflow, projection)
+            running_tasks = plan_running_tasks(
+                composition.workflow,
+                projection,
+                schemas=composition.registries.schemas,
+            )
             if running_tasks:
                 try:
                     resumed = asyncio.run(scheduler.resume_running(running_tasks))
@@ -1069,7 +1077,11 @@ class Engine:
                     )
                 continue
 
-            plan = plan_next(composition.workflow, projection)
+            plan = plan_next(
+                composition.workflow,
+                projection,
+                schemas=composition.registries.schemas,
+            )
             if plan.events:
                 self._append_authenticated(
                     context="planner_append",
@@ -1334,7 +1346,11 @@ class Engine:
                 return RecoveryResult()
             try:
                 return await scheduler.recover_live_activities(
-                    plan_running_tasks(composition.workflow, projection)
+                    plan_running_tasks(
+                        composition.workflow,
+                        projection,
+                        schemas=composition.registries.schemas,
+                    )
                 )
             except LedgerConflictError as error:
                 raise EngineConflictError("another runner advanced the invocation") from error
@@ -1486,7 +1502,11 @@ class Engine:
         projection: InvocationProjection,
     ) -> None:
         try:
-            validate_projection(composition.workflow, projection)
+            validate_projection(
+                composition.workflow,
+                projection,
+                schemas=composition.registries.schemas,
+            )
         except PlanningError as error:
             raise EngineError(f"invocation does not match frozen composition workflow: {error}") from error
 
@@ -1497,7 +1517,12 @@ class Engine:
         projection: InvocationProjection,
     ) -> None:
         try:
-            validate_event_history(composition.workflow, envelopes, projection)
+            validate_event_history(
+                composition.workflow,
+                envelopes,
+                projection,
+                schemas=composition.registries.schemas,
+            )
         except PlanningError as error:
             raise EngineError(f"invocation event history is invalid: {error}") from error
 

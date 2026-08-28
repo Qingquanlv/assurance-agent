@@ -266,6 +266,52 @@ graphs:
         plan_next(compiled, projection)
 
 
+def test_planner_graph_input_pointer_reads_current_graph_instance_input() -> None:
+    compiled = _compiled(
+        """
+name: planner-projection
+entrypoints: {main: root}
+retry: {policy: {max_attempts: 1, retry_on: []}}
+timeout: {short: {run_seconds: 5}}
+graphs:
+  root:
+    max_activations: 4
+    start: child_call
+    nodes:
+      child_call: {kind: subgraph, graph: child, input: {change_id: nested-1}}
+      done: {kind: end}
+    edges:
+      - {from: child_call, to: done}
+  child:
+    max_activations: 3
+    start: work
+    nodes:
+      work:
+        kind: task
+        capability: test.tasks.run
+        retry: policy
+        timeout: short
+        input_projection:
+          type: object
+          fields:
+            from_graph: {type: graph_input_pointer, pointer: /change_id}
+            from_root: {type: root_pointer, pointer: /change_id}
+      done: {kind: end}
+    edges:
+      - {from: work, to: done}
+"""
+    )
+    projection = _bootstrapped_projection(compiled, root_input={"change_id": "root-1"})
+
+    plan = plan_next(compiled, projection)
+    nested = next(task for task in plan.tasks if task.node_id == "work")
+
+    assert nested.model_dump(mode="json")["input"] == {
+        "from_graph": "nested-1",
+        "from_root": "root-1",
+    }
+
+
 def test_planner_gate_scope_uses_projected_input() -> None:
     compiled = _compiled(
         """

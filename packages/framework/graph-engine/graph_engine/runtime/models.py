@@ -852,7 +852,7 @@ def _advance_fold(
                     _fail(envelope.seq, "node failed without a failed latest attempt")
                 if activation.attempts[-1].failure != event.failure:
                     _fail(envelope.seq, "node failure disagrees with latest attempt failure")
-            elif not any(
+            elif event.failure.kind not in {"invalid_input", "invalid_output"} and not any(
                 graph.parent_activation_id == activation.activation_id and graph.status == "failed"
                 for graph in projection.graph_instances
             ):

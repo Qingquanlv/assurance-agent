@@ -5,10 +5,12 @@ from dataclasses import dataclass, field
 from typing import Literal, cast
 
 from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.composition.models import SchemaRegistry
 from graph_engine.errors import GraphEngineError
 from graph_engine.graph.compiler import CompiledGraph, CompiledNode, CompiledWorkflow
 from graph_engine.graph.expressions import evaluate_expression
 from graph_engine.graph.input_projection import InputProjectionError, project_task_input
+from graph_engine.json_schema import validate_json_schema
 from graph_engine.plugin_api import ResourceClaimTemplate, TaskFailure
 from graph_engine.runtime.events import (
     EffectApplyStarted,
@@ -135,6 +137,18 @@ def _edge_token_id(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _FatalCandidate:
+    graph_instance_id: str
+    subject_id: str
+    reason: str
+    kind: Literal["invalid_input", "invalid_output"]
+    failure: TaskFailure
+    node_id: str
+    token_ids: tuple[str, ...] = ()
+    activation_id: str | None = None
+
+
 @dataclass(slots=True)
 class _PlannerState:
     compiled: CompiledWorkflow
@@ -143,13 +157,20 @@ class _PlannerState:
     tokens: dict[str, TokenRecord]
     activations: dict[str, ActivationRecord]
     activation_order: list[str]
+    schemas: SchemaRegistry | None = None
     events: list[RuntimeEvent] = field(default_factory=list)
     tasks: list[PlannedTask] = field(default_factory=list)
     terminal: TerminalStatus | None = None
     reason: str | None = None
 
     @classmethod
-    def from_projection(cls, compiled: CompiledWorkflow, projection: InvocationProjection) -> _PlannerState:
+    def from_projection(
+        cls,
+        compiled: CompiledWorkflow,
+        projection: InvocationProjection,
+        *,
+        schemas: SchemaRegistry | None = None,
+    ) -> _PlannerState:
         return cls(
             compiled=compiled,
             projection=projection,
@@ -157,6 +178,7 @@ class _PlannerState:
             tokens={item.token_id: item for item in projection.offered_tokens},
             activations={item.activation_id: item for item in projection.activations},
             activation_order=[item.activation_id for item in projection.activations],
+            schemas=schemas,
         )
 
     @property
@@ -173,9 +195,15 @@ class _PlannerState:
         )
 
 
-def plan_next(compiled: CompiledWorkflow, projection: InvocationProjection) -> PlanResult:
+def plan_next(
+    compiled: CompiledWorkflow,
+    projection: InvocationProjection,
+    *,
+    schemas: SchemaRegistry | None = None,
+) -> PlanResult:
     """Purely plan the next authoritative event batch and runnable task attempts."""
-    _validate_projection(compiled, projection)
+    _require_schema_registry(compiled, schemas)
+    _validate_projection(compiled, projection, schemas=schemas)
     if projection.status != "running":
         terminal = cast(
             TerminalStatus | None,
@@ -183,7 +211,7 @@ def plan_next(compiled: CompiledWorkflow, projection: InvocationProjection) -> P
         )
         return PlanResult(terminal=terminal, reason=projection.terminal_reason)
 
-    state = _PlannerState.from_projection(compiled, projection)
+    state = _PlannerState.from_projection(compiled, projection, schemas=schemas)
     if projection.pending_interrupt is not None:
         state.terminal = "interrupted"
         state.reason = projection.pending_interrupt.reason
@@ -193,16 +221,23 @@ def plan_next(compiled: CompiledWorkflow, projection: InvocationProjection) -> P
         if graph_record.status == "running":
             _ensure_start_token(state, graph_record)
 
+    _settle_existing_activations(state)
+    _finish_settled_graphs(state)
+    if state.terminal is not None:
+        return state.result()
+
+    fatal = _pending_fatal_violation(state)
+    if fatal is not None:
+        if _has_in_flight_work(state):
+            return state.result()
+        _materialize_fatal(state, fatal)
+        return state.result()
+
     terminal_activations = _terminal_task_activations(state)
     if terminal_activations:
         if _has_running_attempt(state):
             return state.result()
         _finish_terminal_tasks(state, terminal_activations)
-        return state.result()
-
-    _settle_existing_activations(state)
-    _finish_settled_graphs(state)
-    if state.terminal is not None:
         return state.result()
 
     while True:
@@ -219,6 +254,15 @@ def plan_next(compiled: CompiledWorkflow, projection: InvocationProjection) -> P
         behavior = _behavior(node)
         if behavior.execution == "unsupported":
             raise PlanningError(f"planner does not support node kind {node.definition.kind!r}")
+        if behavior.execution == "subgraph":
+            probe = ActivationRecord(
+                activation_id="",
+                graph_instance_id=graph_instance_id,
+                node_id=node.node_id,
+                token_ids=token_ids,
+            )
+            if _subgraph_input_violation(state, node, probe) is not None:
+                break
         activation = _activate(state, graph_instance_id, node, token_ids)
         if behavior.execution == "task":
             state.tasks.append(_planned_task(state, node, activation))
@@ -233,20 +277,33 @@ def plan_next(compiled: CompiledWorkflow, projection: InvocationProjection) -> P
             if state.terminal is not None:
                 break
 
+    if state.terminal is None and not _has_in_flight_work(state):
+        fatal = _pending_fatal_violation(state)
+        if fatal is not None:
+            _materialize_fatal(state, fatal)
     return state.result()
 
 
-def validate_projection(compiled: CompiledWorkflow, projection: InvocationProjection) -> None:
+def validate_projection(
+    compiled: CompiledWorkflow,
+    projection: InvocationProjection,
+    *,
+    schemas: SchemaRegistry | None = None,
+) -> None:
     """Validate a folded projection against its exact compiled workflow."""
-    _validate_projection(compiled, projection)
+    _require_schema_registry(compiled, schemas)
+    _validate_projection(compiled, projection, schemas=schemas)
 
 
 def validate_event_history(
     compiled: CompiledWorkflow,
     envelopes: tuple[EventEnvelope, ...],
     projection: InvocationProjection,
+    *,
+    schemas: SchemaRegistry | None = None,
 ) -> None:
     """Replay a ledger and prove every compiled transition in causal event order."""
+    _require_schema_registry(compiled, schemas)
     if len(envelopes) < 3 or not isinstance(envelopes[0].event, InvocationStarted):
         raise PlanningError("event history lacks the canonical invocation bootstrap")
     started = envelopes[0].event
@@ -280,8 +337,8 @@ def validate_event_history(
     fold_cursor = FoldCursor().advance(envelopes[:offset])
     current = fold_cursor.projection
     while offset < len(envelopes):
-        _validate_projection(compiled, current)
-        planned = plan_next(compiled, current)
+        _validate_projection(compiled, current, schemas=schemas)
+        planned = plan_next(compiled, current, schemas=schemas)
         actual = envelopes[offset].event
         defer_planned = planned.events and _can_defer_planned_events(current, actual)
         if planned.events and not defer_planned:
@@ -298,7 +355,7 @@ def validate_event_history(
         offset += batch_size
         current = fold_cursor.projection
 
-    _validate_projection(compiled, current)
+    _validate_projection(compiled, current, schemas=schemas)
     if current.model_dump(mode="json") != projection.model_dump(mode="json"):
         raise PlanningError("event history replay disagrees with the supplied projection")
 
@@ -485,10 +542,13 @@ def _can_defer_planned_events(
 def plan_running_tasks(
     compiled: CompiledWorkflow,
     projection: InvocationProjection,
+    *,
+    schemas: SchemaRegistry | None = None,
 ) -> tuple[PlannedTask, ...]:
     """Rebuild exact tasks for persisted running attempts without emitting events."""
-    _validate_projection(compiled, projection)
-    state = _PlannerState.from_projection(compiled, projection)
+    _require_schema_registry(compiled, schemas)
+    _validate_projection(compiled, projection, schemas=schemas)
+    state = _PlannerState.from_projection(compiled, projection, schemas=schemas)
     tasks: list[PlannedTask] = []
     for activation in state.activations.values():
         if not activation.attempts or activation.attempts[-1].status not in {
@@ -505,7 +565,12 @@ def plan_running_tasks(
     return tuple(sorted(tasks, key=lambda item: (item.topology_rank, item.declaration_index, item.task_id)))
 
 
-def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProjection) -> None:
+def _validate_projection(
+    compiled: CompiledWorkflow,
+    projection: InvocationProjection,
+    *,
+    schemas: SchemaRegistry | None = None,
+) -> None:
     if projection.status == "not_started":
         raise PlanningError("invocation has not started")
     if projection.entrypoint not in compiled.entrypoints:
@@ -547,13 +612,29 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
             if parent_record is None:
                 raise PlanningError("child graph parent activation has an unknown graph")
             parent_node = compiled.graphs[parent_record.graph_id].nodes.get(parent_activation.node_id)
+            token_by_id = {token.token_id: token for token in projection.offered_tokens}
+            try:
+                expected_child_input = (
+                    _expected_child_graph_input(
+                        graphs,
+                        token_by_id,
+                        parent_node,
+                        parent_activation,
+                        schemas,
+                    )
+                    if parent_node is not None
+                    else None
+                )
+            except PlanningError:
+                expected_child_input = None
             if (
                 parent_node is None
                 or parent_node.definition.kind != "subgraph"
                 or parent_node.definition.graph != graph.graph_id
                 or parent_activation.graph_instance_id != graph.parent_graph_instance_id
                 or parent_activation.node_id != graph.parent_node_id
-                or thaw_json(graph.input) != thaw_json(parent_node.definition.input)
+                or expected_child_input is None
+                or thaw_json(graph.input) != thaw_json(expected_child_input)
             ):
                 raise PlanningError("child graph parent binding disagrees with compiled workflow")
 
@@ -602,7 +683,7 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
                 "lacks a matching completed end activation"
             )
 
-    validation_state = _PlannerState.from_projection(compiled, projection)
+    validation_state = _PlannerState.from_projection(compiled, projection, schemas=schemas)
     generations: dict[tuple[str, str], int] = {}
     for activation in projection.activations:
         graph_record = graphs.get(activation.graph_instance_id)
@@ -722,7 +803,7 @@ def _validate_projection(compiled: CompiledWorkflow, projection: InvocationProje
                 f"activation {activation.activation_id!r} violates the compiled consumption contract"
             )
 
-    _validate_terminal_causal_proof(compiled, projection, graphs)
+    _validate_terminal_causal_proof(compiled, projection, graphs, schemas=schemas)
 
     pending = projection.pending_interrupt
     if pending is not None:
@@ -751,6 +832,8 @@ def _validate_terminal_causal_proof(
     compiled: CompiledWorkflow,
     projection: InvocationProjection,
     graphs: dict[str, GraphInstanceRecord],
+    *,
+    schemas: SchemaRegistry | None = None,
 ) -> None:
     if projection.status not in {"failed", "stopped"}:
         return
@@ -761,6 +844,7 @@ def _validate_terminal_causal_proof(
         compiled,
         projection,
         graphs,
+        schemas=schemas,
     )
     if projection.status == "stopped":
         expected_reason = terminal_tasks[0].attempts[-1].stop_reason if terminal_tasks else None
@@ -845,7 +929,8 @@ def _validate_terminal_causal_proof(
                     reason,
                 )
             )
-    if not task_cause and not activation_bound_cause:
+    contract_cause = _structural_contract_failure_matches(compiled, projection, graphs, schemas)
+    if not task_cause and not activation_bound_cause and not contract_cause:
         raise PlanningError("failed invocation lacks exact compiled causal proof")
 
 
@@ -853,6 +938,8 @@ def _task_terminal_settlement(
     compiled: CompiledWorkflow,
     projection: InvocationProjection,
     graphs: dict[str, GraphInstanceRecord],
+    *,
+    schemas: SchemaRegistry | None = None,
 ) -> tuple[Literal["failed", "stopped"] | None, tuple[ActivationRecord, ...], bool]:
     actual_settled: set[str] = set()
     predecessor_activations: dict[str, ActivationRecord] = {}
@@ -881,7 +968,9 @@ def _task_terminal_settlement(
             )
         }
     )
-    terminal = _terminal_task_activations(_PlannerState.from_projection(compiled, predecessor))
+    terminal = _terminal_task_activations(
+        _PlannerState.from_projection(compiled, predecessor, schemas=schemas)
+    )
     stopped = tuple(activation for activation in terminal if activation.status == "stopped")
     if stopped:
         return "stopped", stopped, not actual_settled
@@ -1031,7 +1120,7 @@ def _activation_bound_failure_matches(
             ),
         }
     )
-    state = _PlannerState.from_projection(compiled, predecessor)
+    state = _PlannerState.from_projection(compiled, predecessor, schemas=None)
     if _terminal_task_activations(state):
         return False
     _settle_existing_activations(state)
@@ -1194,6 +1283,269 @@ def _has_running_attempt(state: _PlannerState) -> bool:
     )
 
 
+def _workflow_has_io_contracts(compiled: CompiledWorkflow) -> bool:
+    return any(
+        node.definition.input_schema is not None or node.definition.output_schema is not None
+        for graph in compiled.graphs.values()
+        for node in graph.nodes.values()
+    )
+
+
+def _require_schema_registry(compiled: CompiledWorkflow, schemas: SchemaRegistry | None) -> None:
+    if schemas is None and _workflow_has_io_contracts(compiled):
+        raise PlanningError("contracted workflow requires a schema registry")
+
+
+def _has_active_unstarted_task(state: _PlannerState) -> bool:
+    for activation in state.activations.values():
+        if activation.status != "active" or activation.attempts:
+            continue
+        graph_record = state.graphs[activation.graph_instance_id]
+        node = state.compiled.graphs[graph_record.graph_id].nodes[activation.node_id]
+        if _behavior(node).execution == "task":
+            return True
+    return False
+
+
+def _has_in_flight_work(state: _PlannerState) -> bool:
+    return bool(state.tasks) or _has_running_attempt(state) or _has_active_unstarted_task(state)
+
+
+def _validate_compiled_input_schema(
+    schemas: SchemaRegistry | None,
+    node: CompiledNode,
+    value: object,
+) -> None:
+    schema_id = node.definition.input_schema
+    if schema_id is None:
+        return
+    if schemas is None:
+        raise PlanningError("contracted workflow requires a schema registry")
+    entry = schemas.entries.get(schema_id)
+    if entry is None:
+        raise PlanningError(f"unknown schema {schema_id}")
+    try:
+        validate_json_schema(thaw_json(value), entry.content)
+    except ValueError as error:
+        raise PlanningError(f"invalid_input: {error}") from error
+
+
+def _expected_child_graph_input(
+    graphs: dict[str, GraphInstanceRecord],
+    tokens: dict[str, TokenRecord],
+    node: CompiledNode,
+    activation: ActivationRecord,
+    schemas: SchemaRegistry | None,
+) -> JSONValue:
+    if node.definition.input_projection is None:
+        value = cast(JSONValue, thaw_json(node.definition.input))
+    else:
+        root_input = _root_input_value(graphs)
+        graph_record = graphs[activation.graph_instance_id]
+        try:
+            value = cast(
+                JSONValue,
+                thaw_json(
+                    project_task_input(
+                        node.definition.input_projection,
+                        root_input=root_input,
+                        graph_input=graph_record.input,
+                        node_config=node.definition.input,
+                        predecessor_tokens=_predecessor_token_payloads(tokens, activation),
+                    )
+                ),
+            )
+        except InputProjectionError as error:
+            raise PlanningError(f"invalid_input: {error}") from error
+    _validate_compiled_input_schema(schemas, node, value)
+    return value
+
+
+def _subgraph_input(
+    state: _PlannerState,
+    node: CompiledNode,
+    activation: ActivationRecord,
+) -> JSONValue:
+    return _expected_child_graph_input(state.graphs, state.tokens, node, activation, state.schemas)
+
+
+def _subgraph_input_violation(
+    state: _PlannerState,
+    node: CompiledNode,
+    activation: ActivationRecord,
+) -> TaskFailure | None:
+    try:
+        _subgraph_input(state, node, activation)
+    except PlanningError as error:
+        message = str(error)
+        if not message.startswith("invalid_input"):
+            raise
+        return TaskFailure(kind="invalid_input", message=message, retryable=False)
+    return None
+
+
+def _pending_fatal_violation(state: _PlannerState) -> _FatalCandidate | None:
+    candidates: list[_FatalCandidate] = []
+    for activation in state.activations.values():
+        if activation.status != "active":
+            continue
+        graph_record = state.graphs[activation.graph_instance_id]
+        node = state.compiled.graphs[graph_record.graph_id].nodes[activation.node_id]
+        if _behavior(node).execution != "subgraph":
+            continue
+        child_id = node.definition.graph
+        if child_id is not None and subgraph_instance_id(activation.activation_id, child_id) in state.graphs:
+            continue
+        failure = _subgraph_input_violation(state, node, activation)
+        if failure is None:
+            continue
+        candidates.append(
+            _FatalCandidate(
+                graph_instance_id=activation.graph_instance_id,
+                subject_id=activation.activation_id,
+                reason=f"task_failed:{node.node_id}:{failure.kind}",
+                kind="invalid_input",
+                failure=failure,
+                node_id=node.node_id,
+                token_ids=activation.token_ids,
+                activation_id=activation.activation_id,
+            )
+        )
+    ready_seen: set[tuple[str, str, tuple[str, ...]]] = set()
+    for graph_instance_id in sorted(state.graphs):
+        graph_record = state.graphs[graph_instance_id]
+        if graph_record.status != "running":
+            continue
+        graph = state.compiled.graphs[graph_record.graph_id]
+        for node in graph.nodes.values():
+            if _behavior(node).execution != "subgraph":
+                continue
+            token_ids = _ready_token_ids(state, graph_instance_id, node)
+            if not token_ids:
+                continue
+            key = (graph_instance_id, node.node_id, token_ids)
+            if key in ready_seen:
+                continue
+            ready_seen.add(key)
+            probe = ActivationRecord(
+                activation_id="",
+                graph_instance_id=graph_instance_id,
+                node_id=node.node_id,
+                token_ids=token_ids,
+            )
+            failure = _subgraph_input_violation(state, node, probe)
+            if failure is None:
+                continue
+            candidates.append(
+                _FatalCandidate(
+                    graph_instance_id=graph_instance_id,
+                    subject_id=node.node_id,
+                    reason=f"task_failed:{node.node_id}:{failure.kind}",
+                    kind="invalid_input",
+                    failure=failure,
+                    node_id=node.node_id,
+                    token_ids=token_ids,
+                )
+            )
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: (item.graph_instance_id, item.subject_id, item.reason))
+
+
+def _materialize_fatal(state: _PlannerState, candidate: _FatalCandidate) -> None:
+    if candidate.kind == "invalid_input":
+        if candidate.activation_id is None:
+            graph_record = state.graphs[candidate.graph_instance_id]
+            node = state.compiled.graphs[graph_record.graph_id].nodes[candidate.node_id]
+            activation = _activate(state, candidate.graph_instance_id, node, candidate.token_ids)
+        else:
+            activation = state.activations[candidate.activation_id]
+        state.events.append(NodeFailed(activation_id=activation.activation_id, failure=candidate.failure))
+        state.activations[activation.activation_id] = activation.model_copy(
+            update={"status": "failed", "failure": candidate.failure, "structural_failure": True}
+        )
+        _fail_graph(state, candidate.graph_instance_id, candidate.reason)
+        return
+    activation_id = candidate.activation_id
+    assert activation_id is not None
+    activation = state.activations[activation_id]
+    state.events.append(NodeFailed(activation_id=activation.activation_id, failure=candidate.failure))
+    state.activations[activation.activation_id] = activation.model_copy(
+        update={"status": "failed", "failure": candidate.failure, "structural_failure": True}
+    )
+    _fail_graph(state, candidate.graph_instance_id, candidate.reason)
+
+
+def _structural_contract_failure_matches(
+    compiled: CompiledWorkflow,
+    projection: InvocationProjection,
+    graphs: dict[str, GraphInstanceRecord],
+    schemas: SchemaRegistry | None,
+) -> bool:
+    if any(
+        activation.status == "failed" and not activation.structural_failure
+        for activation in projection.activations
+    ):
+        return False
+    causes = [
+        activation
+        for activation in projection.activations
+        if activation.status == "failed"
+        and activation.structural_failure
+        and activation.failure is not None
+        and activation.failure.kind in {"invalid_input", "invalid_output"}
+        and not activation.attempts
+    ]
+    if len(causes) != 1:
+        return False
+    activation = causes[0]
+    graph_record = graphs[activation.graph_instance_id]
+    node = compiled.graphs[graph_record.graph_id].nodes.get(activation.node_id)
+    if node is None or node.definition.kind != "subgraph":
+        return False
+    failure = activation.failure
+    assert failure is not None
+    if failure.kind == "invalid_output":
+        return False
+    if any(graph.parent_activation_id == activation.activation_id for graph in projection.graph_instances):
+        return False
+    tokens = {token.token_id: token for token in projection.offered_tokens}
+    try:
+        _expected_child_graph_input(graphs, tokens, node, activation, schemas)
+    except PlanningError as error:
+        if not str(error).startswith("invalid_input"):
+            return False
+    else:
+        return False
+    expected_reason = f"task_failed:{activation.node_id}:{failure.kind}"
+    roots = tuple(graph for graph in projection.graph_instances if graph.parent_graph_instance_id is None)
+    root = roots[0] if len(roots) == 1 else None
+    if (
+        projection.terminal_reason != expected_reason
+        or root is None
+        or root.status != "failed"
+        or root.failure_reason != expected_reason
+    ):
+        return False
+    expected_graphs: set[str] = set()
+    current = graphs[activation.graph_instance_id]
+    while True:
+        expected_graphs.add(current.graph_instance_id)
+        if current.parent_graph_instance_id is None:
+            break
+        current = graphs[current.parent_graph_instance_id]
+    expected_structural = {activation.activation_id}
+    current = graphs[activation.graph_instance_id]
+    while current.parent_activation_id is not None and current.parent_graph_instance_id is not None:
+        expected_structural.add(current.parent_activation_id)
+        current = graphs[current.parent_graph_instance_id]
+    actual_graphs = {
+        graph.graph_instance_id for graph in projection.graph_instances if graph.status == "failed"
+    }
+    actual_structural = {item.activation_id for item in projection.activations if item.structural_failure}
+    return actual_graphs == expected_graphs and actual_structural == expected_structural
+
+
 def _finish_terminal_tasks(state: _PlannerState, terminal_activations: tuple[ActivationRecord, ...]) -> None:
     stopped = next(
         (activation for activation in terminal_activations if activation.status == "stopped"),
@@ -1256,7 +1608,7 @@ def _settle_existing_activations(state: _PlannerState) -> None:
         if activation.status == "completed":
             if behavior.completes_graph:
                 _finish_graph_if_settled(state, activation)
-            elif behavior.routes_completion:
+            elif behavior.routes_completion and not _has_running_attempt(state):
                 _route_completion(state, graph, node, activation)
             if state.terminal is not None:
                 return
@@ -1264,6 +1616,8 @@ def _settle_existing_activations(state: _PlannerState) -> None:
         if activation.status != "active":
             continue
         if behavior.execution == "subgraph":
+            if _subgraph_input_violation(state, node, activation) is not None:
+                continue
             _settle_subgraph_activation(state, node, activation)
             continue
         if behavior.execution == "interrupt":
@@ -1284,10 +1638,19 @@ def _settle_existing_activations(state: _PlannerState) -> None:
             completed = activation.model_copy(update={"status": "completed", "output": latest.output})
             state.events.append(NodeCompleted(activation_id=activation.activation_id, output=latest.output))
             state.activations[activation.activation_id] = completed
-            if behavior.routes_completion:
+            if behavior.routes_completion and not _has_running_attempt(state):
                 _route_completion(state, graph, node, completed)
         elif latest.status == "failed":
             assert latest.failure is not None
+            policy_name = node.definition.retry
+            assert policy_name is not None
+            policy = state.compiled.retry[policy_name]
+            if (
+                latest.failure.kind not in policy.retry_on
+                or latest.attempt >= policy.max_attempts
+                or not latest.failure.retryable
+            ):
+                continue
             state.tasks.append(_planned_task(state, node, activation))
 
 
@@ -1417,6 +1780,7 @@ def _expected_activation_input(
             },
         )
     root_input = _root_input_value(graphs)
+    graph_input = graphs[activation.graph_instance_id].input
     try:
         return cast(
             JSONValue,
@@ -1424,7 +1788,7 @@ def _expected_activation_input(
                 project_task_input(
                     node.definition.input_projection,
                     root_input=root_input,
-                    graph_input=root_input,
+                    graph_input=graph_input,
                     node_config=node.definition.input,
                     predecessor_tokens=_predecessor_token_payloads(tokens, activation),
                 )
@@ -1545,7 +1909,7 @@ def _start_subgraph(
         ):
             raise PlanningError(f"derived subgraph instance {identifier!r} disagrees with projection")
         return
-    child_input = cast(JSONValue, thaw_json(node.definition.input))
+    child_input = _subgraph_input(state, node, activation)
     record = GraphInstanceRecord(
         graph_instance_id=identifier,
         graph_id=child_graph_id,
