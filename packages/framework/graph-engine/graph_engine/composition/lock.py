@@ -880,7 +880,11 @@ def _source_identity_projection(identity: SourceIdentity) -> dict[str, JSONValue
 
 def _workflow_lock_projection(workflow: WorkflowDef) -> JSONValue:
     dumped = workflow.model_dump(mode="json", by_alias=True, exclude_defaults=True)
-    _restore_input_projection_discriminators(dumped, workflow.graphs)
+    _restore_input_projection_discriminators(
+        dumped,
+        workflow.graphs,
+        restore_output_projection=True,
+    )
     return cast(JSONValue, dumped)
 
 

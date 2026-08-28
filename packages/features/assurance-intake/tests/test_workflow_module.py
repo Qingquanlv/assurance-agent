@@ -18,7 +18,7 @@ from graph_engine.graph.input_projection import (
 )
 from graph_engine.graph.module_schema import WorkflowModuleDef
 from graph_engine.graph.output_projection import (
-    ChildOutputPointerProjection,
+    LiteralProjection,
     ObjectProjection as OutputObjectProjection,
 )
 from graph_engine.graph.schema import EdgeDef, NodeDef
@@ -363,7 +363,7 @@ def test_export_output_projections_expose_review_outcome_and_artifact_refs() -> 
         assert isinstance(projection, OutputObjectProjection)
         assert set(projection.fields) == {"decision", "artifacts"}
         for field in projection.fields.values():
-            assert isinstance(field, ChildOutputPointerProjection)
+            assert isinstance(field, LiteralProjection)
         schema = json.loads(_schema(_io_schema_id(export_name, "output")).content)
         assert set(schema["properties"]) == {"decision", "artifacts"}
 

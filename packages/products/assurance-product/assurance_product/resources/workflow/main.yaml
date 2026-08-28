@@ -169,9 +169,17 @@ graphs:
           type: object
           fields:
             allowed_artifact_paths: {type: graph_input_pointer, pointer: /allowed_artifact_paths}
+            artifacts:
+              type: predecessor_pointer
+              predecessor: prepare
+              pointer: /artifacts
             budgets: {type: graph_input_pointer, pointer: /budgets}
             capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
             change_id: {type: graph_input_pointer, pointer: /change_id}
+            decision:
+              type: predecessor_pointer
+              predecessor: prepare
+              pointer: /decision
             selected_test_families: {type: graph_input_pointer, pointer: /selected_test_families}
       retro:
         kind: subgraph
@@ -185,6 +193,8 @@ graphs:
             allowed_artifact_paths: {type: graph_input_pointer, pointer: /allowed_artifact_paths}
             capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
             change_id: {type: graph_input_pointer, pointer: /change_id}
+            evidence_refs: {type: config_pointer, pointer: /evidence_refs}
+            lifecycle_state: {type: config_pointer, pointer: /lifecycle_state}
       improvement:
         kind: subgraph
         graph_import: improvement.apply
@@ -210,8 +220,10 @@ graphs:
           type: object
           fields:
             allowed_artifact_paths: {type: graph_input_pointer, pointer: /allowed_artifact_paths}
+            artifacts: {type: graph_input_pointer, pointer: /artifacts}
             capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
             change_id: {type: graph_input_pointer, pointer: /change_id}
+            decision: {type: graph_input_pointer, pointer: /decision}
             selected_test_families: {type: graph_input_pointer, pointer: /selected_test_families}
       execute:
         kind: subgraph
@@ -254,6 +266,8 @@ graphs:
             budgets: {type: graph_input_pointer, pointer: /budgets}
             capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
             change_id: {type: graph_input_pointer, pointer: /change_id}
+            evidence_refs: {type: config_pointer, pointer: /evidence_refs}
+            execution_status: {type: config_pointer, pointer: /execution_status}
       issue-analysis:
         kind: subgraph
         graph_import: quality.issue-analyze
@@ -296,6 +310,8 @@ graphs:
             budgets: {type: graph_input_pointer, pointer: /budgets}
             capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
             change_id: {type: graph_input_pointer, pointer: /change_id}
+            evidence_refs: {type: config_pointer, pointer: /evidence_refs}
+            execution_status: {type: config_pointer, pointer: /execution_status}
       coverage-policy-gate:
         kind: gate
         expression: "coverage_state == 'repair_required'"
@@ -320,6 +336,8 @@ graphs:
             budgets: {type: graph_input_pointer, pointer: /budgets}
             capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
             change_id: {type: graph_input_pointer, pointer: /change_id}
+            classification: {type: config_pointer, pointer: /classification}
+            fix_eligible: {type: config_pointer, pointer: /fix_eligible}
       report:
         kind: subgraph
         graph_import: quality.report
@@ -333,6 +351,8 @@ graphs:
             budgets: {type: graph_input_pointer, pointer: /budgets}
             capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
             change_id: {type: graph_input_pointer, pointer: /change_id}
+            evidence_refs: {type: config_pointer, pointer: /evidence_refs}
+            execution_status: {type: config_pointer, pointer: /execution_status}
       done:
         kind: end
     edges:
@@ -419,6 +439,8 @@ graphs:
             budgets: {type: graph_input_pointer, pointer: /budgets}
             capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
             change_id: {type: graph_input_pointer, pointer: /change_id}
+            evidence_refs: {type: config_pointer, pointer: /evidence_refs}
+            execution_status: {type: config_pointer, pointer: /execution_status}
       done: {kind: end}
     edges:
       - {from: run, to: done}

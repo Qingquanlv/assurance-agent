@@ -258,9 +258,25 @@ def _projection_has_root_pointer(projection: InputProjectionDef | None) -> bool:
 
 
 def test_inventory_records_every_public_entrypoint(compiled_product_workflow):
+    from tests.product.graph_inventory import load_graph_inventory
+
+    inventory = load_graph_inventory()
     assert set(compiled_product_workflow.entrypoints) == PUBLIC_ENTRYPOINTS
+    assert set(inventory["entrypoints"]) == PUBLIC_ENTRYPOINTS
     for entrypoint, graph_id in compiled_product_workflow.entrypoints.items():
         graph = compiled_product_workflow.graphs[graph_id]
+        recorded = inventory["entrypoints"][entrypoint]
+        assert recorded["nodes"]
+        assert recorded["edges"]
+        assert recorded["aliases"]
         assert graph.nodes
         assert graph.edges
+        assert graph.start in graph.nodes
         assert graph_id == f"assurance.product.workflow.graph.product-{entrypoint}"
+        assert compiled_product_workflow.entrypoints[entrypoint] == graph_id
+        from assurance_product.models import all_binding_ids
+
+        product_aliases = {
+            alias for alias in recorded["aliases"] if alias.startswith("assurance.product.agent.")
+        }
+        assert product_aliases.issubset(all_binding_ids())

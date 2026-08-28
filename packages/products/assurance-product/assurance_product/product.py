@@ -333,11 +333,19 @@ def _authenticate_assurance_composition(
     graph_bindings = _graph_binding_ids(composition)
     agent_bindings = {capability for capability in graph_bindings if capability.startswith(f"{PLUGIN_ID}.")}
     feature_bindings = graph_bindings - agent_bindings
+    slot_aliases = {item.capability_id for item in composition.manifest.workflow_slot_bindings}
+    if slot_aliases != expected_bindings or len(slot_aliases) != 99:
+        raise AssuranceCompositionError("workflow slot bindings are not the exact 99 aliases")
     execute_aliases = {alias_ids_for_prepare(prepare_id)[1] for prepare_id in PREPARE_IDS}
+    feature_prepare_finalize = set(PREPARE_IDS) | {
+        prepare_id.removesuffix(".prepare") + ".finalize" for prepare_id in PREPARE_IDS
+    }
     if not agent_bindings.issubset(expected_bindings):
         raise AssuranceCompositionError("graph bindings must be a subset of the frozen 99 aliases")
     if not execute_aliases.issubset(agent_bindings):
         raise AssuranceCompositionError("graph is missing required agent execute aliases")
+    if not feature_prepare_finalize.issubset(graph_bindings):
+        raise AssuranceCompositionError("graph is missing required feature prepare/finalize capabilities")
     if any(capability.startswith(_FORBIDDEN_GRAPH_PREFIXES) for capability in graph_bindings):
         raise AssuranceCompositionError("graph referenced a direct runtime or Phase 4 capability")
     if any(not capability.startswith(_FEATURE_CAPABILITY_PREFIXES) for capability in feature_bindings):

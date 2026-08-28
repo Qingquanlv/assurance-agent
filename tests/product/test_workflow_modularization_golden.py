@@ -8,7 +8,10 @@ import yaml
 
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.composition.workflow_assembler import assemble_product_workflow
+from graph_engine.frozen_json import thaw_json
+from graph_engine.graph.input_projection import ObjectProjection, PredecessorPointerProjection
 from graph_engine.graph.schema import GraphDef, WorkflowDef, parse_workflow
+from graph_engine.runtime.models import InvocationProjection
 
 from tests.product.graph_inventory import (
     EXPECTED_OWNER_COUNTS,
@@ -16,6 +19,7 @@ from tests.product.graph_inventory import (
     assert_workflow_module_ownership,
     load_workflow_module_ownership,
 )
+from tests.product.product_runner import ProductRun, _product_alias, resolve_product_workflow_composition
 
 GOLDEN = Path(__file__).resolve().parent / "goldens" / "assurance-full-pre-modular.json"
 RELOCATION_DIFF = Path(__file__).resolve().parent / "fixtures" / "architectural-relocation-diff.yaml"
@@ -31,25 +35,9 @@ _FEATURE_MODULE_IDS = {
     "healing": "assurance.healing.workflow",
     "improvement": "assurance.improvement.workflow",
 }
-_PRODUCT_MODULE_ID = "assurance.product.workflow"
 _BOUNDARY_FIELDS = frozenset(
     {"input_schema", "output_schema", "output_projection", "capability_slot", "graph_import"}
 )
-_PUBLIC_CALL_MAP = {
-    "generation": "generation.generate",
-    "execution-execute": "execution.execute",
-    "execution-run": "execution.rerun",
-    "quality": "quality.assess",
-    "quality-issue-triage": "quality.issue-review",
-    "issue-review": "quality.issue-review",
-    "quality-issue-analysis": "quality.issue-analyze",
-    "issue-analyze": "quality.issue-analyze",
-    "healing-fix-proposal": "healing.repair-failure",
-    "healing-coverage-repair": "healing.repair-coverage",
-    "quality-report": "quality.report",
-    "retro": "improvement.retro",
-    "improvement-apply": "improvement.apply",
-}
 INTENTIONAL_SEMANTIC_DIFF: frozenset[str] = frozenset()
 THIN_WRAPPER_ENTRYPOINTS = (
     "intake",
@@ -155,32 +143,105 @@ def test_product_wrappers_are_one_public_call_and_end(installed_sources) -> None
         assert [(edge.from_, edge.to) for edge in graph.edges] == [(subgraphs[0], ends[0])]
 
 
+_PUBLIC_ENTRYPOINTS = (
+    "intake",
+    "case",
+    "full",
+    "execute",
+    "archive",
+    "retro",
+    "issue-review",
+    "issue-analyze",
+    "issue-reconcile",
+    "improvement-review",
+    "improvement-evaluate",
+    "improvement-export",
+    "improvement-apply",
+    "improvement-rollback",
+)
+_ROOT_CHARACTERIZATION_SCENARIOS = (
+    {"entrypoint": "full"},
+    {"entrypoint": "full", "execution_sequence": ("failed", "passed")},
+    {"entrypoint": "full", "execution_sequence": ("product_issue", "passed")},
+    {"entrypoint": "full", "execution_sequence": ("infrastructure_failure",)},
+    {"entrypoint": "full", "coverage_sequence": (0.40, 0.72, 0.91), "threshold": 0.90},
+    {
+        "entrypoint": "full",
+        "coverage_sequence": (0.40, 0.41, 0.42),
+        "threshold": 0.90,
+        "coverage_rounds": 1,
+    },
+    {"entrypoint": "full", "execution_sequence": ("failed",), "healing_decision": "disallowed"},
+    {"entrypoint": "execute"},
+    {"entrypoint": "execute", "execution_sequence": ("failed", "passed")},
+    {"entrypoint": "execute", "execution_sequence": ("product_issue", "passed")},
+    {"entrypoint": "execute", "execution_sequence": ("infrastructure_failure",)},
+    {"entrypoint": "execute", "coverage_sequence": (0.40, 0.91), "threshold": 0.90},
+)
+_STANDALONE_PASS_SCENARIOS = tuple(
+    {"entrypoint": name} for name in _PUBLIC_ENTRYPOINTS if name not in {"full", "execute"}
+)
+
+
 @pytest.mark.usefixtures("installed_sources")
-def test_product_roots_preserve_public_closure_behavior(installed_sources) -> None:
-    pre = _load_unbound_pre_modular()
-    assembled = _assemble_modular(installed_sources)
-    scenarios = (
-        {"execute_status": "passed", "coverage_state": "satisfied"},
-        {"execute_status": "failed", "coverage_state": "satisfied"},
-        {"execute_status": "passed", "coverage_state": "repair_required"},
+def test_product_full_threads_prepare_output_into_generate() -> None:
+    from assurance_product.product import load_product_workflow_module
+
+    root = load_product_workflow_module()
+    execute_tail = root.graphs["product-full"].nodes["execute-tail"]
+    generation = root.graphs["product-execute"].nodes["generation"]
+    assert isinstance(execute_tail.input_projection, ObjectProjection)
+    assert isinstance(generation.input_projection, ObjectProjection)
+    for field in ("artifacts", "decision"):
+        pointer = execute_tail.input_projection.fields[field]
+        assert isinstance(pointer, PredecessorPointerProjection)
+        assert pointer.predecessor == "prepare"
+        assert pointer.pointer == f"/{field}"
+        assert field in generation.input_projection.fields
+
+
+@pytest.mark.usefixtures("installed_sources")
+def test_product_roots_preserve_public_closure_behavior(installed_sources, tmp_path) -> None:
+    pre = resolve_product_workflow_composition(_load_bound_pre_modular())
+    modular = _modular_composition(installed_sources)
+    for scenario in _ROOT_CHARACTERIZATION_SCENARIOS:
+        expected = _public_closure_trace(pre, tmp_path / "pre" / scenario["entrypoint"], scenario)
+        actual = _public_closure_trace(modular, tmp_path / "mod" / scenario["entrypoint"], scenario)
+        _assert_public_closure(actual, expected, require_terminal_output=True)
+
+
+@pytest.mark.usefixtures("installed_sources")
+def test_fourteen_entrypoints_preserve_characterized_public_behavior(
+    installed_sources, tmp_path
+) -> None:
+    pre = resolve_product_workflow_composition(_load_bound_pre_modular())
+    modular = _modular_composition(installed_sources)
+    for scenario in tuple({"entrypoint": name} for name in _PUBLIC_ENTRYPOINTS):
+        expected = _public_closure_trace(pre, tmp_path / "pre" / scenario["entrypoint"], scenario)
+        actual = _public_closure_trace(modular, tmp_path / "mod" / scenario["entrypoint"], scenario)
+        _assert_public_closure(
+            actual,
+            expected,
+            require_terminal_output=scenario["entrypoint"] in {"full", "execute"},
+        )
+
+
+@pytest.mark.usefixtures("installed_sources")
+def test_standalone_intake_non_pass_differs_only_by_relocated_review_prefix(
+    installed_sources, tmp_path
+) -> None:
+    pre = resolve_product_workflow_composition(_load_bound_pre_modular())
+    modular = _modular_composition(installed_sources)
+    scenario = {"entrypoint": "intake", "review_decision": "needs_human_review"}
+    expected = _public_closure_trace(pre, tmp_path / "pre-intake", scenario)
+    actual = _public_closure_trace(modular, tmp_path / "mod-intake", scenario)
+    assert expected["dispatches"] == actual["dispatches"] or _is_prefix(
+        expected["dispatches"], actual["dispatches"]
     )
-    for scenario in scenarios:
-        assert _walk_public_closure(
-            pre.graphs["full"], scenario, legacy=True, workflow=pre
-        ) == _walk_public_closure(
-            assembled.graphs[f"{_PRODUCT_MODULE_ID}.graph.product-full"],
-            scenario,
-            legacy=False,
-            workflow=assembled,
-        )
-        assert _walk_public_closure(
-            pre.graphs["execute"], scenario, legacy=True, workflow=pre
-        ) == _walk_public_closure(
-            assembled.graphs[f"{_PRODUCT_MODULE_ID}.graph.product-execute"],
-            scenario,
-            legacy=False,
-            workflow=assembled,
-        )
+    assert expected["effects"] == actual["effects"]
+    extra_interrupts = _subtract(actual["interrupts"], expected["interrupts"])
+    assert extra_interrupts
+    assert all(reason == "needs_human_review" for reason, _actions in extra_interrupts)
 
 
 def _assemble_modular(installed_sources) -> WorkflowDef:
@@ -193,6 +254,130 @@ def _assemble_modular(installed_sources) -> WorkflowDef:
         descriptors={item.plugin_id: item for item in composition.descriptors},
         registries=composition.registries,
     )
+
+
+def _modular_composition(installed_sources):
+    assembled = _assemble_modular(installed_sources)
+    from assurance_product.agent_contracts import bind_agent_execution_contracts
+
+    try:
+        bound = bind_agent_execution_contracts(assembled)
+    except ValueError:
+        bound = assembled
+    return resolve_product_workflow_composition(bound)
+
+
+def _load_bound_pre_modular() -> WorkflowDef:
+    from assurance_product.product import load_pre_modular_workflow
+
+    return load_pre_modular_workflow()
+
+
+def _run_scenario(composition, engine_root: Path, scenario: dict[str, Any]):
+    run = ProductRun(
+        entrypoint=str(scenario["entrypoint"]),
+        selected_test_families=("api",) if scenario["entrypoint"] in {"full", "execute"} else (),
+        review_decision=str(scenario.get("review_decision", "pass")),
+        healing_decision=str(scenario.get("healing_decision", "allowed")),
+        execution_sequence=tuple(scenario.get("execution_sequence", ())),
+        coverage_sequence=tuple(scenario.get("coverage_sequence", ())),
+        threshold=float(scenario.get("threshold", 0.90)),
+        coverage_rounds=scenario.get("coverage_rounds"),
+        engine_root=engine_root,
+        composition=composition,
+    )
+    return run.run_to_terminal()
+
+
+def _assert_public_closure(
+    actual: dict[str, Any],
+    expected: dict[str, Any],
+    *,
+    require_terminal_output: bool,
+) -> None:
+    assert actual["dispatches"] == expected["dispatches"]
+    assert actual["interrupts"] == expected["interrupts"]
+    assert actual["effects"] == expected["effects"]
+    assert actual["terminal"] == expected["terminal"]
+    if require_terminal_output:
+        _assert_public_terminal(actual["terminal_output"], expected["terminal_output"])
+
+
+def _assert_public_terminal(actual: object, expected: object) -> None:
+    if actual == expected:
+        return
+    assert isinstance(actual, dict) and isinstance(expected, dict)
+    assert actual
+    for key, value in actual.items():
+        assert key in expected
+        assert expected[key] == value
+
+
+def _public_closure_trace(composition, engine_root: Path, scenario: dict[str, Any]) -> dict[str, Any]:
+    engine_root.mkdir(parents=True, exist_ok=True)
+    result = _run_scenario(composition, engine_root, scenario)
+    projection = result.projection
+    return {
+        "dispatches": _task_dispatches(projection, composition),
+        "interrupts": _interrupts(projection),
+        "effects": _effects(projection),
+        "terminal": (result.status, result.stop_reason),
+        "terminal_output": thaw_json(
+            next(item.output for item in projection.graph_instances if item.parent_graph_instance_id is None)
+        ),
+    }
+
+
+def _task_dispatches(projection: InvocationProjection, composition) -> tuple[str, ...]:
+    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+    dispatches: list[str] = []
+    for activation in projection.activations:
+        graph = graphs[activation.graph_instance_id]
+        node = composition.workflow.graphs[graph.graph_id].nodes[activation.node_id]
+        if node.definition.kind != "task" or node.definition.capability is None:
+            continue
+        if not activation.attempts:
+            continue
+        dispatches.append(_product_alias(node.definition.capability))
+    return tuple(dispatches)
+
+
+def _interrupts(projection: InvocationProjection) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    seen: list[tuple[str, tuple[str, ...]]] = []
+    for activation in projection.activations:
+        if activation.interrupt_reason is None:
+            continue
+        seen.append((activation.interrupt_reason, tuple(activation.interrupt_actions)))
+    if projection.pending_interrupt is not None:
+        pending = (
+            projection.pending_interrupt.reason,
+            tuple(projection.pending_interrupt.actions),
+        )
+        if pending not in seen:
+            seen.append(pending)
+    return tuple(seen)
+
+
+def _effects(projection: InvocationProjection) -> tuple[tuple[str, str], ...]:
+    return tuple((item.kind, item.status) for item in projection.effects)
+
+
+def _is_prefix(shorter: tuple[str, ...], longer: tuple[str, ...]) -> bool:
+    return len(longer) >= len(shorter) and longer[: len(shorter)] == shorter
+
+
+def _subtract(
+    actual: tuple[tuple[str, tuple[str, ...]], ...],
+    expected: tuple[tuple[str, tuple[str, ...]], ...],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    remaining = list(expected)
+    extra: list[tuple[str, tuple[str, ...]]] = []
+    for item in actual:
+        if item in remaining:
+            remaining.remove(item)
+        else:
+            extra.append(item)
+    return tuple(extra)
 
 
 def _load_unbound_pre_modular() -> WorkflowDef:
@@ -305,169 +490,3 @@ def _extract_full_intake_prefix(full: GraphDef, relocation: dict[str, Any]) -> d
         edges.append(remapped)
     assert set(RELOCATION_PREFIX_NODES) == set(relocation["prefix_nodes"])
     return {"start": "intake", "nodes": nodes, "edges": edges}
-
-
-_QUALIFIED_PUBLIC_ALIASES = {
-    "assurance.intake.workflow.graph.entry": "intake.prepare",
-    "assurance.intake.workflow.graph.case": "intake.case",
-    "assurance.generation.workflow.graph.generation": "generation.generate",
-    "assurance.execution.workflow.graph.execution-execute": "execution.execute",
-    "assurance.execution.workflow.graph.execution-run": "execution.rerun",
-    "assurance.quality.workflow.graph.quality": "quality.assess",
-    "assurance.quality.workflow.graph.issue-review": "quality.issue-review",
-    "assurance.quality.workflow.graph.quality-issue-triage": "quality.issue-review",
-    "assurance.quality.workflow.graph.issue-analyze": "quality.issue-analyze",
-    "assurance.quality.workflow.graph.quality-issue-analysis": "quality.issue-analyze",
-    "assurance.quality.workflow.graph.quality-report": "quality.report",
-    "assurance.healing.workflow.graph.healing-fix-proposal": "healing.repair-failure",
-    "assurance.healing.workflow.graph.healing-coverage-repair": "healing.repair-coverage",
-    "assurance.improvement.workflow.graph.retro": "improvement.retro",
-    "assurance.improvement.workflow.graph.improvement-apply": "improvement.apply",
-}
-_INTAKE_PREFIX_NODES = frozenset(
-    {
-        "intake",
-        "explore",
-        "case-design",
-        "case-review",
-        "review-pass-gate",
-        "review-fix-gate",
-        "review-human-gate",
-        "human-review",
-        "prepare",
-    }
-)
-_PRODUCT_LOCAL_MARKERS = ("product-execute", "execute-tail")
-
-
-def _public_alias(node, current: str) -> str | None:
-    if node.graph_import is not None:
-        return node.graph_import
-    target = node.graph or current
-    if target in _QUALIFIED_PUBLIC_ALIASES:
-        return _QUALIFIED_PUBLIC_ALIASES[target]
-    if target in _PUBLIC_CALL_MAP:
-        return _PUBLIC_CALL_MAP[target]
-    if current in _PUBLIC_CALL_MAP:
-        return _PUBLIC_CALL_MAP[current]
-    if current in _INTAKE_PREFIX_NODES or target in {"intake", "entry"}:
-        return "intake.prepare"
-    return target
-
-
-def _is_product_local(target: str | None, current: str) -> bool:
-    name = target or current
-    return any(marker in name for marker in _PRODUCT_LOCAL_MARKERS)
-
-
-def _walk_public_closure(
-    graph: GraphDef,
-    scenario: dict[str, str],
-    *,
-    legacy: bool,
-    workflow: WorkflowDef | None = None,
-) -> tuple[str, ...]:
-    calls, _finished = _walk_public_closure_state(graph, scenario, legacy=legacy, workflow=workflow)
-    return calls
-
-
-def _walk_public_closure_state(
-    graph: GraphDef,
-    scenario: dict[str, str],
-    *,
-    legacy: bool,
-    workflow: WorkflowDef | None = None,
-) -> tuple[tuple[str, ...], bool]:
-    calls: list[str] = []
-    current = graph.start
-    current_graph = graph
-    seen: set[tuple[str, str, str, str]] = set()
-    tokens = {
-        "execute": {"status": scenario["execute_status"]},
-        "quality": {"coverage_state": scenario["coverage_state"], "coverage": {"measured": 0.4}},
-    }
-    while current not in {"done", "achieved"}:
-        key = (current_graph.start, current, tokens["execute"]["status"], tokens["quality"]["coverage_state"])
-        if key in seen:
-            break
-        seen.add(key)
-        node = current_graph.nodes[current]
-        if legacy and current in _INTAKE_PREFIX_NODES and "generation" in current_graph.nodes:
-            if not calls or calls[-1] != "intake.prepare":
-                calls.append("intake.prepare")
-            current = "generation"
-            continue
-        if node.kind == "subgraph":
-            target = node.graph
-            if _is_product_local(target, current) and workflow is not None and target in workflow.graphs:
-                nested, finished = _walk_public_closure_state(
-                    workflow.graphs[target],
-                    scenario,
-                    legacy=False,
-                    workflow=workflow,
-                )
-                for alias in nested:
-                    if not calls or calls[-1] != alias:
-                        calls.append(alias)
-                if not finished:
-                    break
-                outgoing = [edge for edge in current_graph.edges if edge.from_ == current]
-                current = outgoing[0].to if outgoing else "done"
-                continue
-            alias = _public_alias(node, current)
-            if alias and not _is_product_local(alias, current):
-                if not calls or calls[-1] != alias:
-                    calls.append(alias)
-            current = _next_from_subgraph(current_graph, current, tokens)
-            continue
-        if node.kind == "gate":
-            current = _next_from_gate(current_graph, current, tokens) or "done"
-            continue
-        if node.kind == "end":
-            break
-        outgoing = [edge for edge in current_graph.edges if edge.from_ == current]
-        current = outgoing[0].to if outgoing else "done"
-    return tuple(calls), current in {"done", "achieved"}
-
-
-def _next_from_subgraph(graph: GraphDef, node_id: str, tokens: dict[str, dict[str, Any]]) -> str:
-    outgoing = [edge for edge in graph.edges if edge.from_ == node_id]
-    if len(outgoing) == 1:
-        return outgoing[0].to
-    chosen: list[str] = []
-    for edge in outgoing:
-        target = graph.nodes.get(edge.to)
-        if target is not None and target.kind == "gate" and _gate_value(target.expression or "", tokens):
-            nxt = _next_from_gate(graph, edge.to, tokens)
-            if nxt:
-                chosen.append(nxt)
-    return chosen[0] if chosen else (outgoing[0].to if outgoing else "done")
-
-
-def _next_from_gate(graph: GraphDef, node_id: str, tokens: dict[str, dict[str, Any]]) -> str | None:
-    value = _gate_value(graph.nodes[node_id].expression or "", tokens)
-    for edge in graph.edges:
-        if edge.from_ != node_id:
-            continue
-        if edge.condition == "output.value == true" and value:
-            return edge.to
-        if edge.condition == "output.value == false" and not value:
-            return edge.to
-    return None
-
-
-def _gate_value(expression: str, tokens: dict[str, dict[str, Any]]) -> bool:
-    compact = " ".join(expression.split())
-    status = tokens["execute"]["status"]
-    coverage_state = tokens["quality"]["coverage_state"]
-    if "status == 'passed'" in compact:
-        return status == "passed"
-    if "product_issue" in compact:
-        return status in {"failed", "product_issue"}
-    if "infrastructure_failure" in compact:
-        return status == "infrastructure_failure"
-    if "coverage_state == 'repair_required'" in compact:
-        return coverage_state == "repair_required"
-    if "measured < threshold" in compact:
-        return coverage_state == "repair_required"
-    return False

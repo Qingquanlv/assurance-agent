@@ -524,7 +524,7 @@ def _binding_entry(
 
 
 def _is_product_owned_capability(owner_id: str, product_id: str) -> bool:
-    return owner_id == product_id or owner_id.startswith(f"{product_id}.")
+    return owner_id == product_id or owner_id == f"{product_id}.agent"
 
 
 def _verify_slot_binding(

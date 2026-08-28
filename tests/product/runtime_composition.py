@@ -30,6 +30,11 @@ setattr(builtins, _CALLBACK_REGISTRY_NAME, _CALLBACKS)
 
 _PLUGIN_OWNERS = (
     "assurance.product.agent",
+    "assurance.intake",
+    "assurance.generation",
+    "assurance.execution",
+    "assurance.quality",
+    "assurance.healing",
     "assurance.improvement",
 )
 
@@ -59,6 +64,34 @@ def _handlers_by_owner(handlers: Mapping[str, TaskHandler]) -> dict[str, dict[st
     return grouped
 
 
+_PERMISSIVE_SCHEMA = b"true"
+
+
+def _workflow_schema_ids(workflow: WorkflowDef) -> tuple[str, ...]:
+    ids: set[str] = set(workflow.schemas)
+    for graph in workflow.graphs.values():
+        for node in graph.nodes.values():
+            if node.input_schema is not None:
+                ids.add(node.input_schema)
+            if node.output_schema is not None:
+                ids.add(node.output_schema)
+    return tuple(sorted(ids))
+
+
+def _owner_for_schema(schema_id: str) -> str:
+    for owner in sorted(_PLUGIN_OWNERS, key=len, reverse=True):
+        if schema_id.startswith(f"{owner}."):
+            return owner
+    raise AssertionError(f"workflow schema is not owned by a test plugin: {schema_id}")
+
+
+def _schemas_by_owner(workflow: WorkflowDef) -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {}
+    for schema_id in _workflow_schema_ids(workflow):
+        grouped.setdefault(_owner_for_schema(schema_id), []).append(schema_id)
+    return {owner: tuple(sorted(ids)) for owner, ids in grouped.items()}
+
+
 def resolve_workflow_composition(
     workflow: dict[str, object],
     handlers: Mapping[str, TaskHandler],
@@ -75,7 +108,10 @@ def resolve_workflow_composition(
     provider_value = f"{package_name}.provider"
     product_declaration_path = f"{package_name}/product-declaration.json"
     grouped = _handlers_by_owner(handlers)
-    owners = tuple(owner for owner in _PLUGIN_OWNERS if owner in grouped)
+    schemas_by_owner = _schemas_by_owner(parsed_workflow)
+    owners = tuple(
+        owner for owner in _PLUGIN_OWNERS if owner in grouped or owner in schemas_by_owner
+    )
     product_source = ProviderSource(
         distribution=distribution_name,
         version="1.0.0",
@@ -105,11 +141,19 @@ def resolve_workflow_composition(
             plugin_id=owner,
             plugin_version="1.0.0",
             engine_api=ENGINE_API_VERSION,
-            task_handlers=tuple(sorted(grouped[owner])),
+            task_handlers=tuple(sorted(grouped.get(owner, {}))),
             commit_validators=(),
+            schemas=schemas_by_owner.get(owner, ()),
         )
         plugin_specs.append(
-            (plugin_entrypoint, declaration_path, class_name, descriptor, plugin_source, grouped[owner])
+            (
+                plugin_entrypoint,
+                declaration_path,
+                class_name,
+                descriptor,
+                plugin_source,
+                grouped.get(owner, {}),
+            )
         )
     manifest = ProductManifest(
         schema_version="1",
@@ -144,7 +188,7 @@ def resolve_workflow_composition(
         "import builtins",
         "import json",
         "from graph_engine.composition import ProductManifest",
-        "from graph_engine.plugin_api import PluginContribution, PluginDescriptor",
+        "from graph_engine.plugin_api import PluginContribution, PluginDescriptor, SchemaContribution",
         f"_all_callbacks = getattr(builtins, {_CALLBACK_REGISTRY_NAME!r})[{callback_key!r}]",
         "class _DelegatingHandler:",
         "    def __init__(self, delegate):",
@@ -177,6 +221,7 @@ def resolve_workflow_composition(
         )
         handler_keys = json.dumps(sorted(owner_handlers), sort_keys=True)
         descriptor_json = json.dumps(descriptor.model_dump(mode="json"), sort_keys=True)
+        owner_schema_ids = json.dumps(list(descriptor.schemas), sort_keys=True)
         provider_lines.extend(
             [
                 f"class {class_name}:",
@@ -186,8 +231,13 @@ def resolve_workflow_composition(
                 "    @staticmethod",
                 "    def contribute(_ports):",
                 f"        keys = {handler_keys}",
+                f"        schema_ids = {owner_schema_ids}",
                 "        return PluginContribution(",
                 "            task_handlers={key: _DelegatingHandler(_all_callbacks[key]) for key in keys},",
+                "            schemas=tuple(",
+                "                SchemaContribution(schema_id, 'application/schema+json', b'true')",
+                "                for schema_id in schema_ids",
+                "            ),",
                 "        )",
             ]
         )

@@ -18,7 +18,7 @@ from graph_engine.graph.input_projection import (
 )
 from graph_engine.graph.module_schema import WorkflowModuleDef
 from graph_engine.graph.output_projection import (
-    ChildOutputPointerProjection,
+    LiteralProjection,
     ObjectProjection as OutputObjectProjection,
 )
 from graph_engine.graph.schema import EdgeDef, NodeDef
@@ -411,7 +411,7 @@ def test_export_output_projection_exposes_normalized_per_family_aggregate() -> N
     assert isinstance(projection, OutputObjectProjection)
     assert set(projection.fields) == {"families", "selected_families"}
     for field in projection.fields.values():
-        assert isinstance(field, ChildOutputPointerProjection)
+        assert isinstance(field, LiteralProjection)
     schema = json.loads(_schema(_io_schema_id("generate", "output")).content)
     assert set(schema["properties"]) == {"families", "selected_families"}
     assert schema["properties"]["selected_families"]["items"]["enum"] == list(_FAMILIES)

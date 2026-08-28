@@ -524,6 +524,11 @@ class BusinessBudgetsV1(FrozenModel):
     execution_retries: int = Field(ge=0)
 
 
+class ArtifactRefV1(FrozenModel):
+    path: str = Field(min_length=1)
+    digest: str = Field(pattern=_SHA256)
+
+
 class ProductInputV1(FrozenModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["1"]
@@ -538,6 +543,8 @@ class ProductInputV1(FrozenModel):
     data_knowledge: ResourceRefV1
     allowed_artifact_paths: tuple[str, ...]
     budgets: BusinessBudgetsV1
+    artifacts: tuple[ArtifactRefV1, ...] = ()
+    decision: str = "pass"
 
     @field_validator("change_id")
     @classmethod

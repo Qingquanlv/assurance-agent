@@ -1319,6 +1319,16 @@ def test_product_deployment_plugin_owner_is_product_owned() -> None:
     assert task.capability_slot is None
 
 
+def test_product_owned_prefix_does_not_include_unrelated_descendants() -> None:
+    feature = _slotted_feature()
+    manifest, descriptors, registries = _slot_assembly_inputs(
+        feature=feature,
+        binding_registry=_binding_registry(binding_owner="toy.product.other"),
+    )
+    with pytest.raises(WorkflowAssemblyError, match="product-owned|owner"):
+        assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
+
+
 def test_valid_slot_lowers_to_concrete_capability() -> None:
     feature = _slotted_feature()
     manifest, descriptors, registries = _slot_assembly_inputs(feature=feature)

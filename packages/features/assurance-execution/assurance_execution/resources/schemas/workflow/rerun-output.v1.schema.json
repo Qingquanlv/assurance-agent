@@ -1,1 +1,1 @@
-{"additionalProperties":false,"properties":{"status":{"enum":["failed","passed"],"type":"string"}},"required":["status"],"type":"object"}
+{"additionalProperties":false,"properties":{"status":{"enum":["failed","infrastructure_failure","passed","product_issue"],"type":"string"}},"required":["status"],"type":"object"}

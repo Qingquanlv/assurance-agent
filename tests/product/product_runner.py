@@ -30,13 +30,36 @@ from graph_engine.runtime.host_protocol import (
     TaskHostTerminalReceipt,
 )
 from graph_engine.runtime.models import InvocationProjection
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.runtime.secret_sources import (
+    InvocationRuntimeAuthorization,
+    SecretSourceBinding,
+    runtime_authorization_digest,
+)
 from graph_engine.runtime.seed import empty_invocation_seed
 
 GENERATION_FAMILIES = ("api", "e2e", "fuzz", "performance")
 FAMILY_TERMINALS = ("api-done", "e2e-done", "fuzz-done", "performance-done")
 _GENERATION_PREFIX = "assurance.product.agent.generation."
 _AGENT_PREFIX = "assurance.product.agent."
+_FEATURE_OWNERS = (
+    "intake",
+    "generation",
+    "execution",
+    "quality",
+    "healing",
+    "improvement",
+)
+_PUBLIC_DIGEST = "a" * 64
+
+
+def _product_alias(capability_id: str) -> str:
+    if capability_id.startswith(_AGENT_PREFIX):
+        return capability_id
+    for feature in _FEATURE_OWNERS:
+        prefix = f"assurance.{feature}."
+        if capability_id.startswith(prefix):
+            return f"{_AGENT_PREFIX}{capability_id.removeprefix('assurance.')}"
+    return capability_id
 _JOIN_NODE_ID = "join-selected"
 _SHA = "a" * 64
 _EXECUTION_FINALIZE = (
@@ -106,6 +129,7 @@ class TerminalResult:
     has_nested_stop: bool
     report: ReportTrace
     change: object
+    projection: InvocationProjection
     _engine: Engine
     _handle: InvocationHandle
     _composition: FrozenComposition
@@ -168,8 +192,8 @@ class _ScriptedTaskHost:
         self._exhausted = False
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
-        capability_id = call.request.capability_id
-        outcome = self._outcome(capability_id)
+        capability_id = _product_alias(call.request.capability_id)
+        outcome = self._outcome(capability_id, call.request.input)
         if capability_id.startswith(_AGENT_PREFIX) and capability_id.endswith(".prepare"):
             input_value = call.request.input
             if not isinstance(input_value, Mapping) or not isinstance(input_value.get("change_id"), str):
@@ -186,11 +210,37 @@ class _ScriptedTaskHost:
             )
         return TaskHostCallResult(operation="execute", outcome=outcome)
 
-    def _outcome(self, capability_id: str) -> TaskOutcome:
+    def _public_fields(self, extra: Mapping[str, object] | None = None) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+            "auto_fix_allowed": False,
+            "change_id": "CH-DEMO-001",
+            "classification": "failed",
+            "coverage_state": "satisfied" if self._last_measured >= self._threshold else "repair_required",
+            "decision": "pass",
+            "effect_refs": [],
+            "evidence_refs": [],
+            "fix_eligible": True,
+            "human_review_required": False,
+            "lifecycle_state": "proposed",
+            "needs_fix": False,
+            "outcome": "applied",
+            "receipt_refs": [],
+            "report_refs": [],
+            "status": self._last_status,
+        }
+        if extra:
+            payload.update(dict(extra))
+        return payload
+
+    def _outcome(self, capability_id: str, request_input: object = None) -> TaskOutcome:
+        change_id = "CH-DEMO-001"
+        if isinstance(request_input, Mapping) and isinstance(request_input.get("change_id"), str):
+            change_id = request_input["change_id"]
         if capability_id in _EXECUTION_FINALIZE:
             status = self._next_execution()
             self._last_status = status
-            return TaskOutcome.succeeded({"status": status})
+            return TaskOutcome.succeeded(self._public_fields({"status": status, "change_id": change_id}))
         if capability_id == _INSPECT_FINALIZE:
             measured = self._next_coverage()
             rounds_used = self._inspect_count
@@ -198,19 +248,34 @@ class _ScriptedTaskHost:
             self._last_measured = measured
             decision = measured >= self._threshold
             self._exhausted = measured < self._threshold and rounds_used >= self._coverage_rounds
+            coverage_state = "satisfied" if decision else "repair_required"
+            if self._exhausted:
+                coverage_state = "exhausted"
             return TaskOutcome.succeeded(
-                {
-                    "coverage": {
-                        "measured": measured,
-                        "threshold": self._threshold,
-                        "rounds_used": rounds_used,
-                        "rounds_budget": self._coverage_rounds,
-                        "decision": decision,
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "coverage": {
+                            "measured": measured,
+                            "threshold": self._threshold,
+                            "rounds_used": rounds_used,
+                            "rounds_budget": self._coverage_rounds,
+                            "decision": decision,
+                        },
+                        "coverage_state": coverage_state,
                     }
-                }
+                )
             )
         if capability_id == _REPORT_FINALIZE:
-            output = cast(JSONValue, {"report": {"exists": True, "coverage": self._last_measured}})
+            output = cast(
+                JSONValue,
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "report": {"exists": True, "coverage": self._last_measured},
+                    }
+                ),
+            )
             if self._last_status == "infrastructure_failure":
                 return TaskOutcome.stopped("infrastructure_failure", output)
             if self._exhausted:
@@ -218,28 +283,36 @@ class _ScriptedTaskHost:
             return TaskOutcome.succeeded(output)
         if capability_id.startswith(_GENERATION_PREFIX) and capability_id.endswith(".plan-review.finalize"):
             return TaskOutcome.succeeded(
-                {
-                    "decision": "pass",
-                    "codegen_readiness": "ready",
-                    "auto_fix_allowed": False,
-                    "human_review_required": False,
-                }
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "decision": "pass",
+                        "codegen_readiness": "ready",
+                        "auto_fix_allowed": False,
+                        "human_review_required": False,
+                    }
+                )
             )
         if capability_id == _CASE_REVIEW_FINALIZE:
             fixable = self._review_decision in {"needs_fix", "changes_requested"}
             human = self._review_decision in {"needs_human_review", "reject"}
             return TaskOutcome.succeeded(
-                {
-                    "decision": self._review_decision,
-                    "auto_fix_allowed": fixable,
-                    "human_review_required": human,
-                }
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "decision": self._review_decision,
+                        "auto_fix_allowed": fixable,
+                        "human_review_required": human,
+                    }
+                )
             )
         if capability_id in _REVIEW_FINALIZES:
-            return TaskOutcome.succeeded({"decision": self._review_decision, "needs_fix": False})
+            return TaskOutcome.succeeded(
+                self._public_fields({"change_id": change_id, "decision": self._review_decision, "needs_fix": False})
+            )
         if capability_id == _FIX_PROPOSAL_FINALIZE and self._healing_decision == "disallowed":
             return TaskOutcome.stopped("healing_disallowed")
-        return TaskOutcome.succeeded({"decision": "pass", "needs_fix": False})
+        return TaskOutcome.succeeded(self._public_fields({"change_id": change_id}))
 
     def _next_execution(self) -> str:
         if self._execution_index < len(self._execution_sequence):
@@ -402,7 +475,7 @@ class ProductRun:
             entrypoint=self._entrypoint,
             invocation_id=invocation_id,
             seed=seed,
-            authorization=empty_runtime_authorization(),
+            authorization=_scripted_authorization(),
             workspace_binding=workspace.runtime_binding(),
         )
         result = engine.run_until_blocked(handle)
@@ -445,6 +518,7 @@ def _product_input(
 
 
 def _logical_step(capability: str) -> str | None:
+    capability = _product_alias(capability)
     operation = _OPERATION_LOGICAL_STEPS.get(capability)
     if operation is not None:
         return operation
@@ -489,6 +563,7 @@ def _terminal_from_run(
         has_nested_stop=_has_nested_stop(projection),
         report=flow.report,
         change=_change_projection(projection),
+        projection=projection,
         _engine=engine,
         _handle=handle,
         _composition=composition,
@@ -509,6 +584,7 @@ def _change_projection(projection: InvocationProjection) -> object:
 
 
 def _prepare_stem(capability: str) -> str | None:
+    capability = _product_alias(capability)
     if not capability.startswith(_AGENT_PREFIX) or not capability.endswith(".prepare"):
         return None
     return f"assurance.{capability.removeprefix(_AGENT_PREFIX).removesuffix('.prepare')}"
@@ -677,6 +753,26 @@ def _workflow_capabilities(workflow: WorkflowDef) -> tuple[str, ...]:
                 if node.capability is not None
             }
         )
+    )
+
+
+def _scripted_authorization() -> InvocationRuntimeAuthorization:
+    sources = (
+        SecretSourceBinding(
+            handle="opencode.token",
+            source_kind="environment",
+            source_locator="OPENCODE_TOKEN",
+        ),
+        SecretSourceBinding(
+            handle="cursor.token",
+            source_kind="environment",
+            source_locator="CURSOR_TOKEN",
+        ),
+    )
+    return InvocationRuntimeAuthorization(
+        schema_version="1",
+        secret_sources=sources,
+        digest=runtime_authorization_digest(sources),
     )
 
 
