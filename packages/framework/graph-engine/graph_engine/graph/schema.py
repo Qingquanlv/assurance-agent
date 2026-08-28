@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Literal, Self, cast
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from graph_engine.graph.input_projection import InputProjectionDef
 from graph_engine.graph.output_projection import OutputProjectionDef
@@ -50,7 +58,16 @@ _REQUIRED_NODE_FIELDS: dict[NodeKind, tuple[str, ...]] = {
 
 _ALLOWED_NODE_FIELDS: dict[NodeKind, frozenset[str]] = {
     "task": frozenset(
-        {"capability", "input", "input_projection", "retry", "timeout", "resources", "validators"}
+        {
+            "capability",
+            "input",
+            "input_projection",
+            "retry",
+            "timeout",
+            "resources",
+            "validators",
+            "routing",
+        }
     ),
     "subgraph": frozenset(
         {
@@ -61,11 +78,12 @@ _ALLOWED_NODE_FIELDS: dict[NodeKind, frozenset[str]] = {
             "output_projection",
             "output_schema",
             "resources",
+            "routing",
         }
     ),
-    "join": frozenset({"join", "input_projection"}),
-    "gate": frozenset({"expression", "input_projection"}),
-    "interrupt": frozenset({"reason", "actions", "input_projection"}),
+    "join": frozenset({"join", "input_projection", "routing"}),
+    "gate": frozenset({"expression", "input_projection", "routing"}),
+    "interrupt": frozenset({"reason", "actions", "input_projection", "routing"}),
     "end": frozenset(),
 }
 
@@ -108,6 +126,11 @@ def validate_node_schema_id(value: str | None) -> str | None:
         raise ValueError(f"invalid qualified identifier: {value!r}") from error
 
 
+class RoutingDef(FrozenModel):
+    mode: Literal["exclusive", "fanout"]
+    min_matches: int | None = Field(default=None, ge=0)
+
+
 class NodeDef(FrozenModel):
     kind: NodeKind
     capability: str | None = None
@@ -125,6 +148,7 @@ class NodeDef(FrozenModel):
     timeout: str | None = None
     resources: ResourceClaims | ResourceClaimTemplate = Field(default_factory=ResourceClaims)
     validators: tuple[str, ...] = ()
+    routing: RoutingDef | None = None
 
     @field_validator("input_schema", "output_schema")
     @classmethod
@@ -141,6 +165,14 @@ class EdgeDef(FrozenModel):
     from_: str = Field(alias="from")
     to: str
     condition: str | None = None
+    otherwise: bool = False
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> Any:
+        serialized = handler(self)
+        if isinstance(serialized, dict) and serialized.get("otherwise") is False:
+            serialized.pop("otherwise", None)
+        return serialized
 
 
 class GraphDef(FrozenModel):
@@ -188,6 +220,7 @@ __all__ = [
     "GraphDef",
     "NodeDef",
     "RetryPolicyDef",
+    "RoutingDef",
     "TimeoutPolicyDef",
     "WorkflowDef",
     "parse_workflow",

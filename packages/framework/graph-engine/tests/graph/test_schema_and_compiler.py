@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 from collections.abc import Mapping
@@ -34,10 +35,11 @@ from graph_engine.composition.models import (
 )
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import _build_registries
+from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
 from graph_engine.graph.compiler import CompiledNode, CompiledWorkflow, CompileError, compile_workflow
 from graph_engine.graph.expressions import ExpressionError, evaluate_expression
-from graph_engine.graph.schema import NodeDef, parse_workflow
+from graph_engine.graph.schema import EdgeDef, NodeDef, RoutingDef, parse_workflow
 from graph_engine.plugin_api import (
     CandidateWriteSet,
     PluginContribution,
@@ -1075,3 +1077,249 @@ def test_subgraph_io_contract_rejects_module_metadata() -> None:
     for field, value in (("capability_slot", "slot"), ("graph_import", "alias")):
         with pytest.raises(ValidationError):
             NodeDef.model_validate({"kind": "subgraph", "graph": "child", field: value})
+
+
+_LEGACY_EDGE_DUMP = {"from": "ping", "to": "done", "condition": None}
+_LEGACY_WORKFLOW_DIGEST = "65b20fd9cb94b200eab9324a5c7523e62aefa0b50c06d866e357d6efa26e2d44"
+_LEGACY_COMPILED_DUMP_DIGEST = "984be3092af5dfb54fb778cbe550055b80e7f8602a243dc5808bd3903a28c714"
+
+
+def _routed_workflow(
+    *,
+    routing: dict[str, object] | None,
+    edges: list[dict[str, object]],
+):
+    raw = _raw_valid()
+    graph = raw["graphs"]["root"]  # type: ignore[index]
+    choose: dict[str, object] = {"kind": "gate", "expression": "true"}
+    if routing is not None:
+        choose["routing"] = routing
+    nodes: dict[str, object] = {"choose": choose}
+    for edge in edges:
+        target = cast(str, edge["to"])
+        if target not in nodes:
+            nodes[target] = {"kind": "end"}
+    graph["start"] = "choose"  # type: ignore[index]
+    graph["nodes"] = nodes  # type: ignore[index]
+    graph["edges"] = edges  # type: ignore[index]
+    return _parse_raw(raw)
+
+
+def exclusive_without_otherwise():
+    return _routed_workflow(
+        routing={"mode": "exclusive"},
+        edges=[{"from": "choose", "to": "left", "condition": "true"}],
+    )
+
+
+def test_routing_accepts_valid_exclusive_with_one_otherwise(registry: CapabilityRegistry) -> None:
+    compiled = compile_workflow(
+        _routed_workflow(
+            routing={"mode": "exclusive"},
+            edges=[
+                {"from": "choose", "to": "left", "condition": 'input.route == "left"'},
+                {"from": "choose", "to": "right", "otherwise": True},
+            ],
+        ),
+        registry,
+    )
+    definition = compiled.graphs["root"].nodes["choose"].definition
+    assert isinstance(definition.routing, RoutingDef)
+    assert definition.routing.mode == "exclusive"
+    assert definition.routing.min_matches is None
+    dumped = compiled.model_dump(mode="json", by_alias=True)
+    edges = dumped["graphs"]["root"]["edges"]
+    assert edges == [
+        {"from": "choose", "to": "left", "condition": 'input.route == "left"'},
+        {"from": "choose", "to": "right", "condition": None, "otherwise": True},
+    ]
+    assert '"otherwise": false' not in json.dumps(dumped)
+    assert '"otherwise": true' in json.dumps(dumped)
+
+
+def test_routing_exclusive_without_otherwise_is_rejected(registry: CapabilityRegistry) -> None:
+    with pytest.raises(CompileError, match="exclusive route .* requires exactly one otherwise"):
+        compile_workflow(exclusive_without_otherwise(), registry)
+
+
+def test_routing_exclusive_multiple_otherwise_is_rejected(registry: CapabilityRegistry) -> None:
+    with pytest.raises(CompileError, match="exclusive route .* requires exactly one otherwise"):
+        compile_workflow(
+            _routed_workflow(
+                routing={"mode": "exclusive"},
+                edges=[
+                    {"from": "choose", "to": "left", "otherwise": True},
+                    {"from": "choose", "to": "right", "otherwise": True},
+                ],
+            ),
+            registry,
+        )
+
+
+def test_routing_rejects_condition_plus_otherwise(registry: CapabilityRegistry) -> None:
+    with pytest.raises(CompileError, match="cannot combine condition and otherwise"):
+        compile_workflow(
+            _routed_workflow(
+                routing={"mode": "exclusive"},
+                edges=[{"from": "choose", "to": "left", "condition": "true", "otherwise": True}],
+            ),
+            registry,
+        )
+
+
+def test_routing_exclusive_rejects_unconditional_non_otherwise_edge(
+    registry: CapabilityRegistry,
+) -> None:
+    with pytest.raises(CompileError, match="unconditional non-otherwise"):
+        compile_workflow(
+            _routed_workflow(
+                routing={"mode": "exclusive"},
+                edges=[
+                    {"from": "choose", "to": "left"},
+                    {"from": "choose", "to": "right", "otherwise": True},
+                ],
+            ),
+            registry,
+        )
+
+
+def test_routing_exclusive_rejects_min_matches(registry: CapabilityRegistry) -> None:
+    with pytest.raises(CompileError, match="exclusive route .* does not accept min_matches"):
+        compile_workflow(
+            _routed_workflow(
+                routing={"mode": "exclusive", "min_matches": 1},
+                edges=[{"from": "choose", "to": "left", "otherwise": True}],
+            ),
+            registry,
+        )
+
+
+@pytest.mark.parametrize("min_matches", [0, 1])
+def test_routing_accepts_valid_fanout_min_matches(registry: CapabilityRegistry, min_matches: int) -> None:
+    compiled = compile_workflow(
+        _routed_workflow(
+            routing={"mode": "fanout", "min_matches": min_matches},
+            edges=[
+                {"from": "choose", "to": "left", "condition": "true"},
+                {"from": "choose", "to": "right"},
+            ],
+        ),
+        registry,
+    )
+    routing = compiled.graphs["root"].nodes["choose"].definition.routing
+    assert routing is not None
+    assert routing.mode == "fanout"
+    assert routing.min_matches == min_matches
+    dumped = compiled.model_dump(mode="json", by_alias=True)
+    assert dumped["graphs"]["root"]["nodes"]["choose"]["definition"]["routing"] == {
+        "mode": "fanout",
+        "min_matches": min_matches,
+    }
+    assert '"otherwise"' not in json.dumps(dumped["graphs"]["root"]["edges"])
+
+
+def test_routing_fanout_missing_min_matches_is_rejected(registry: CapabilityRegistry) -> None:
+    with pytest.raises(CompileError, match="fanout route .* requires min_matches"):
+        compile_workflow(
+            _routed_workflow(
+                routing={"mode": "fanout"},
+                edges=[
+                    {"from": "choose", "to": "left"},
+                    {"from": "choose", "to": "right"},
+                ],
+            ),
+            registry,
+        )
+
+
+def test_routing_fanout_rejects_otherwise(registry: CapabilityRegistry) -> None:
+    with pytest.raises(CompileError, match="fanout route .* does not accept otherwise"):
+        compile_workflow(
+            _routed_workflow(
+                routing={"mode": "fanout", "min_matches": 0},
+                edges=[
+                    {"from": "choose", "to": "left"},
+                    {"from": "choose", "to": "right", "otherwise": True},
+                ],
+            ),
+            registry,
+        )
+
+
+def test_routing_fanout_rejects_min_matches_greater_than_outgoing_count(
+    registry: CapabilityRegistry,
+) -> None:
+    with pytest.raises(CompileError, match="min_matches exceeds outgoing count"):
+        compile_workflow(
+            _routed_workflow(
+                routing={"mode": "fanout", "min_matches": 3},
+                edges=[
+                    {"from": "choose", "to": "left"},
+                    {"from": "choose", "to": "right"},
+                ],
+            ),
+            registry,
+        )
+
+
+def test_routing_rejects_duplicate_canonical_route(registry: CapabilityRegistry) -> None:
+    with pytest.raises(CompileError, match="duplicate route"):
+        compile_workflow(
+            _routed_workflow(
+                routing={"mode": "fanout", "min_matches": 1},
+                edges=[
+                    {"from": "choose", "to": "left", "condition": "true"},
+                    {"from": "choose", "to": "left", "condition": "true"},
+                ],
+            ),
+            registry,
+        )
+
+
+def test_routing_legacy_node_may_omit_routing(registry: CapabilityRegistry) -> None:
+    compiled = compile_workflow(parse_workflow(VALID), registry)
+    assert compiled.graphs["root"].nodes["ping"].definition.routing is None
+    assert (
+        "routing"
+        not in compiled.model_dump(mode="json", by_alias=True)["graphs"]["root"]["nodes"]["ping"][
+            "definition"
+        ]
+    )
+
+    multi = compile_workflow(
+        _routed_workflow(
+            routing=None,
+            edges=[
+                {"from": "choose", "to": "left"},
+                {"from": "choose", "to": "right"},
+            ],
+        ),
+        registry,
+    )
+    assert multi.graphs["root"].nodes["choose"].definition.routing is None
+
+
+def test_routing_legacy_fixture_dumps_remain_byte_identical(registry: CapabilityRegistry) -> None:
+    raw = _raw_valid()
+    raw["graphs"]["root"]["edges"][0]["otherwise"] = False  # type: ignore[index]
+    compiled = compile_workflow(_parse_raw(raw), registry)
+    edge = compiled.graphs["root"].edges[0]
+
+    assert edge.otherwise is False
+    assert edge.model_dump(mode="json", by_alias=True) == _LEGACY_EDGE_DUMP
+    assert "otherwise" not in EdgeDef.model_validate({"from": "ping", "to": "done"}).model_dump(
+        mode="json", by_alias=True
+    )
+
+    dumped = compiled.model_dump(mode="json", by_alias=True)
+    dumped_text = json.dumps(dumped)
+    assert '"otherwise": false' not in dumped_text
+    assert '"otherwise":false' not in dumped_text
+    assert compiled.digest == _LEGACY_WORKFLOW_DIGEST
+    assert canonical_digest({key: value for key, value in dumped.items() if key != "digest"}) == (
+        _LEGACY_WORKFLOW_DIGEST
+    )
+    assert hashlib.sha256(canonical_json_bytes(dumped)).hexdigest() == _LEGACY_COMPILED_DUMP_DIGEST
+    lock_bytes = canonical_json_bytes({key: value for key, value in dumped.items() if key != "digest"})
+    assert compiled.digest == hashlib.sha256(lock_bytes).hexdigest()
+    assert b'"otherwise": false' not in lock_bytes

@@ -25,6 +25,7 @@ from graph_engine.graph.schema import (
     NodeDef,
     NodeKind,
     RetryPolicyDef,
+    RoutingDef,
     TimeoutPolicyDef,
     WorkflowDef,
     validate_node_schema_id,
@@ -98,6 +99,7 @@ class CompiledNodeDefinition(_CompiledModel):
     timeout: str | None = None
     resources: ResourceClaims | ResourceClaimTemplate = Field(default_factory=ResourceClaims)
     validators: tuple[str, ...] = ()
+    routing: RoutingDef | None = None
 
     @field_validator("input", mode="after")
     @classmethod
@@ -249,13 +251,16 @@ def _validate_workflow(
 
         incoming_sources: dict[str, set[str]] = {node_id: set() for node_id in graph.nodes}
         outgoing: dict[str, list[str]] = {node_id: [] for node_id in graph.nodes}
+        outgoing_edges: dict[str, list[EdgeDef]] = {node_id: [] for node_id in graph.nodes}
         for edge in graph.edges:
             incoming_sources[edge.to].add(edge.from_)
             outgoing[edge.from_].append(edge.to)
+            outgoing_edges[edge.from_].append(edge)
 
         for node_id, node in graph.nodes.items():
             _validate_node_references(workflow, capabilities, graph_id, node_id, node)
             _validate_node_io_contract(workflow, schemas, graph_id, node_id, node)
+            _validate_node_route_set(graph_id, node_id, node, outgoing_edges[node_id])
             if node.input_projection is not None:
                 validate_input_projection_compile(
                     node.input_projection,
@@ -344,6 +349,46 @@ def _validate_node_references(
     for validator_id in node.validators:
         if validator_id not in registry.commit_validators:
             raise CompileError(f"unknown validator {validator_id} at {graph_id}/{node_id}")
+
+
+def _validate_node_route_set(
+    graph_id: str,
+    node_id: str,
+    node: NodeDef,
+    edges: list[EdgeDef],
+) -> None:
+    routing = node.routing
+    if routing is None:
+        return
+    location = f"{graph_id}/{node_id}"
+    seen: set[tuple[str, str, bool]] = set()
+    for edge in edges:
+        if edge.otherwise and edge.condition is not None:
+            raise CompileError(
+                f"route {graph_id}/{edge.from_}->{edge.to} cannot combine condition and otherwise"
+            )
+        key = (edge.to, edge.condition or "", edge.otherwise)
+        if key in seen:
+            raise CompileError(f"duplicate route {location}")
+        seen.add(key)
+
+    otherwise_count = sum(1 for edge in edges if edge.otherwise)
+    if routing.mode == "exclusive":
+        if "min_matches" in routing.model_fields_set:
+            raise CompileError(f"exclusive route {location} does not accept min_matches")
+        if otherwise_count != 1:
+            raise CompileError(f"exclusive route {location} requires exactly one otherwise")
+        for edge in edges:
+            if not edge.otherwise and edge.condition is None:
+                raise CompileError(f"exclusive route {location} rejects unconditional non-otherwise edge")
+        return
+
+    if otherwise_count:
+        raise CompileError(f"fanout route {location} does not accept otherwise")
+    if "min_matches" not in routing.model_fields_set or routing.min_matches is None:
+        raise CompileError(f"fanout route {location} requires min_matches")
+    if routing.min_matches > len(edges):
+        raise CompileError(f"fanout route {location} min_matches exceeds outgoing count")
 
 
 def _validate_node_io_contract(
