@@ -36,6 +36,7 @@ def test_fixture_run_node_projects_the_frozen_agent_run_request() -> None:
     projected = project_task_input(
         node.input_projection,
         root_input={},
+        graph_input={},
         node_config=node.input,
         predecessor_tokens={},
     )

@@ -92,6 +92,11 @@ class RootPointerProjection(_ProjectionModel):
     pointer: JSONPointer
 
 
+class GraphInputPointerProjection(_ProjectionModel):
+    type: Literal["graph_input_pointer"] = "graph_input_pointer"
+    pointer: JSONPointer
+
+
 class ConfigPointerProjection(_ProjectionModel):
     type: Literal["config_pointer"] = "config_pointer"
     pointer: JSONPointer
@@ -135,6 +140,7 @@ class TupleProjection(_ProjectionModel):
 InputProjectionDef = Annotated[
     LiteralProjection
     | RootPointerProjection
+    | GraphInputPointerProjection
     | ConfigPointerProjection
     | PredecessorPointerProjection
     | PredecessorValueProjection
@@ -147,19 +153,25 @@ InputProjectionDef = Annotated[
 _INPUT_PROJECTION_ADAPTER: TypeAdapter[InputProjectionDef] = TypeAdapter(InputProjectionDef)
 
 
+def parse_input_projection(value: object) -> InputProjectionDef:
+    return _INPUT_PROJECTION_ADAPTER.validate_python(value)
+
+
 def project_task_input(
     projection: InputProjectionDef,
     *,
     root_input: FrozenJSONValue,
+    graph_input: FrozenJSONValue,
     node_config: FrozenJSONValue,
     predecessor_tokens: Mapping[str, FrozenJSONValue],
 ) -> FrozenJSONValue:
-    return _evaluate_projection(projection, root_input, node_config, predecessor_tokens)
+    return _evaluate_projection(projection, root_input, graph_input, node_config, predecessor_tokens)
 
 
 def _evaluate_projection(
     projection: InputProjectionDef,
     root_input: object,
+    graph_input: object,
     node_config: object,
     predecessor_tokens: Mapping[str, object],
 ) -> object:
@@ -167,6 +179,8 @@ def _evaluate_projection(
         return thaw_json(projection.value)
     if isinstance(projection, RootPointerProjection):
         return thaw_json(resolve_json_pointer(root_input, projection.pointer))
+    if isinstance(projection, GraphInputPointerProjection):
+        return thaw_json(resolve_json_pointer(graph_input, projection.pointer))
     if isinstance(projection, ConfigPointerProjection):
         return thaw_json(resolve_json_pointer(node_config, projection.pointer))
     if isinstance(projection, PredecessorPointerProjection):
@@ -178,12 +192,12 @@ def _evaluate_projection(
         return tuple(thaw_json(predecessor_tokens[predecessor]) for predecessor in sorted(predecessor_tokens))
     if isinstance(projection, ObjectProjection):
         return {
-            key: _evaluate_projection(item, root_input, node_config, predecessor_tokens)
+            key: _evaluate_projection(item, root_input, graph_input, node_config, predecessor_tokens)
             for key, item in sorted(projection.fields.items())
         }
     if isinstance(projection, TupleProjection):
         return tuple(
-            _evaluate_projection(item, root_input, node_config, predecessor_tokens)
+            _evaluate_projection(item, root_input, graph_input, node_config, predecessor_tokens)
             for item in projection.items
         )
     raise InputProjectionError(f"unsupported projection operator {type(projection).__name__}")
@@ -206,7 +220,7 @@ def validate_input_projection_compile(
 
     if isinstance(projection, Mapping):
         _detect_raw_projection_cycle(projection, seen=set(), location=location)
-    parsed = _INPUT_PROJECTION_ADAPTER.validate_python(projection)
+    parsed = parse_input_projection(projection)
     _validate_projection_tree(
         parsed,
         node_kind=node_kind,
@@ -287,6 +301,7 @@ def _validate_projection_tree(
 __all__ = [
     "AllPredecessorTokensProjection",
     "ConfigPointerProjection",
+    "GraphInputPointerProjection",
     "InputProjectionDef",
     "InputProjectionError",
     "JSONPointer",
@@ -296,6 +311,7 @@ __all__ = [
     "PredecessorValueProjection",
     "RootPointerProjection",
     "TupleProjection",
+    "parse_input_projection",
     "project_task_input",
     "resolve_json_pointer",
     "validate_input_projection_compile",

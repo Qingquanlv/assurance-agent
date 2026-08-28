@@ -660,6 +660,7 @@ def _join_output(
         project_task_input(
             projection_def,
             root_input=root_input,
+            graph_input=root_input,
             node_config=dict(compiled.definition.input),
             predecessor_tokens=predecessor_tokens,
         )

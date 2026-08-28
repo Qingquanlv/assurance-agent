@@ -1416,13 +1416,15 @@ def _expected_activation_input(
                 "tokens": [thaw_json(tokens[token_id_].payload) for token_id_ in activation.token_ids],
             },
         )
+    root_input = _root_input_value(graphs)
     try:
         return cast(
             JSONValue,
             thaw_json(
                 project_task_input(
                     node.definition.input_projection,
-                    root_input=_root_input_value(graphs),
+                    root_input=root_input,
+                    graph_input=root_input,
                     node_config=node.definition.input,
                     predecessor_tokens=_predecessor_token_payloads(tokens, activation),
                 )

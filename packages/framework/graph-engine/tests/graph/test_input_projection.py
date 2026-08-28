@@ -16,6 +16,7 @@ from graph_engine.graph.input_projection import (
     PredecessorValueProjection,
     RootPointerProjection,
     TupleProjection,
+    parse_input_projection,
     project_task_input,
     validate_input_projection_compile,
 )
@@ -136,6 +137,7 @@ def test_object_projection_combines_only_declared_sources():
     assert project_task_input(
         projection,
         root_input={"change_id": "CH-1", "ignored": "x"},
+        graph_input={},
         node_config={"policy": "strict"},
         predecessor_tokens={"left": {"a": 1}, "right": {"b": 2}},
     ) == {"change_id": "CH-1", "policy": "strict", "inputs": ({"a": 1}, {"b": 2})}
@@ -153,6 +155,7 @@ def test_literal_projection_returns_exact_value():
     assert project_task_input(
         projection,
         root_input={"ignored": True},
+        graph_input={},
         node_config={"ignored": True},
         predecessor_tokens={},
     ) == {"mode": "strict"}
@@ -164,6 +167,7 @@ def test_root_pointer_projection_reads_root_input():
         project_task_input(
             projection,
             root_input={"change_id": "CH-9"},
+            graph_input={},
             node_config={},
             predecessor_tokens={},
         )
@@ -177,6 +181,7 @@ def test_config_pointer_projection_reads_node_config():
         project_task_input(
             projection,
             root_input={},
+            graph_input={},
             node_config={"policy": {"mode": "strict"}},
             predecessor_tokens={},
         )
@@ -190,6 +195,7 @@ def test_predecessor_pointer_projection_reads_named_token():
         project_task_input(
             projection,
             root_input={},
+            graph_input={},
             node_config={},
             predecessor_tokens={"left": {"value": 42}},
         )
@@ -202,6 +208,7 @@ def test_predecessor_value_projection_returns_whole_token():
     assert project_task_input(
         projection,
         root_input={},
+        graph_input={},
         node_config={},
         predecessor_tokens={"right": {"ok": True}},
     ) == {"ok": True}
@@ -217,6 +224,7 @@ def test_tuple_projection_builds_ordered_values():
     assert project_task_input(
         projection,
         root_input={"id": "CH-1"},
+        graph_input={},
         node_config={"mode": "x"},
         predecessor_tokens={},
     ) == ("CH-1", "x")
@@ -227,6 +235,7 @@ def test_all_predecessor_tokens_are_sorted_by_predecessor_id():
     assert project_task_input(
         projection,
         root_input={},
+        graph_input={},
         node_config={},
         predecessor_tokens={"right": "R", "left": "L"},
     ) == ("L", "R")
@@ -235,7 +244,13 @@ def test_all_predecessor_tokens_are_sorted_by_predecessor_id():
 def test_projection_rejects_missing_pointer():
     projection = RootPointerProjection(pointer="/missing")
     with pytest.raises(InputProjectionError, match="missing pointer"):
-        project_task_input(projection, root_input={"present": 1}, node_config={}, predecessor_tokens={})
+        project_task_input(
+            projection,
+            root_input={"present": 1},
+            graph_input={},
+            node_config={},
+            predecessor_tokens={},
+        )
 
 
 def test_projection_rejects_non_canonical_pointer():
@@ -246,7 +261,7 @@ def test_projection_rejects_non_canonical_pointer():
 def test_projection_rejects_missing_predecessor_token():
     projection = PredecessorValueProjection(predecessor="left")
     with pytest.raises(InputProjectionError, match="missing predecessor"):
-        project_task_input(projection, root_input={}, node_config={}, predecessor_tokens={})
+        project_task_input(projection, root_input={}, graph_input={}, node_config={}, predecessor_tokens={})
 
 
 def test_projection_rejects_non_json_literal():
@@ -372,3 +387,47 @@ graphs:
 """
     with pytest.raises(CompileError, match="non-direct predecessor"):
         compile_workflow(parse_workflow(text), _registry())
+
+
+def test_graph_input_pointer_does_not_change_root_pointer() -> None:
+    graph_projection = parse_input_projection({"type": "graph_input_pointer", "pointer": "/change_id"})
+    root_projection = parse_input_projection({"type": "root_pointer", "pointer": "/change_id"})
+    context = {
+        "root_input": {"change_id": "ROOT"},
+        "graph_input": {"change_id": "CHILD"},
+        "node_config": {},
+        "predecessor_tokens": {},
+    }
+    assert project_task_input(graph_projection, **context) == "CHILD"
+    assert project_task_input(root_projection, **context) == "ROOT"
+
+
+def test_input_projection_rejects_child_output_pointer() -> None:
+    with pytest.raises(ValidationError):
+        parse_input_projection({"type": "child_output_pointer", "pointer": "/status"})
+
+
+def test_graph_input_pointer_miss_fails_deterministically() -> None:
+    projection = parse_input_projection({"type": "graph_input_pointer", "pointer": "/missing"})
+    with pytest.raises(InputProjectionError, match="missing pointer"):
+        project_task_input(
+            projection,
+            root_input={"present": 1},
+            graph_input={"present": 1},
+            node_config={},
+            predecessor_tokens={},
+        )
+
+
+def test_parsed_object_projection_rejects_duplicate_normalized_field_names() -> None:
+    key_a = "caf" + "e\u0301"
+    key_b = "caf\u00e9"
+    assert unicodedata.normalize("NFC", key_a) == unicodedata.normalize("NFC", key_b)
+    assert key_a != key_b
+    with pytest.raises(ValidationError, match="duplicate object projection field"):
+        parse_input_projection(
+            {
+                "type": "object",
+                "fields": {key_a: {"type": "literal", "value": 1}, key_b: {"type": "literal", "value": 2}},
+            }
+        )
