@@ -105,6 +105,7 @@ QUALITY_RESOURCE_FILES: dict[str, str] = {
     "assurance.quality.skill.aa-issue-analyzer.v1": "skills/aa-issue-analyzer/SKILL.md",
     "assurance.quality.skill.aa-issue-triage-advisor.v1": "skills/aa-issue-triage-advisor/SKILL.md",
     "assurance.quality.skill.aa-report-generator.v1": "skills/aa-report-generator/SKILL.md",
+    "assurance.quality.workflow.module.v1": "workflow/module.yaml",
 }
 
 QUALITY_RESOURCE_IDS: tuple[str, ...] = tuple(sorted(QUALITY_RESOURCE_FILES))
@@ -132,6 +133,16 @@ QUALITY_SCHEMA_IDS: tuple[str, ...] = (
     "assurance.quality.schema.sufficiency.v2",
     "assurance.quality.schema.trace-sufficiency.v1",
     "assurance.quality.schema.trace.v2",
+    "assurance.quality.workflow.assess.input.v1",
+    "assurance.quality.workflow.assess.output.v1",
+    "assurance.quality.workflow.issue-analyze.input.v1",
+    "assurance.quality.workflow.issue-analyze.output.v1",
+    "assurance.quality.workflow.issue-reconcile.input.v1",
+    "assurance.quality.workflow.issue-reconcile.output.v1",
+    "assurance.quality.workflow.issue-review.input.v1",
+    "assurance.quality.workflow.issue-review.output.v1",
+    "assurance.quality.workflow.report.input.v1",
+    "assurance.quality.workflow.report.output.v1",
 )
 
 _SCHEMA_FILES: dict[str, str] = {
@@ -157,6 +168,28 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.quality.schema.sufficiency.v2": "schemas/sufficiency.v2.schema.json",
     "assurance.quality.schema.trace-sufficiency.v1": "schemas/trace-sufficiency.v1.schema.json",
     "assurance.quality.schema.trace.v2": "schemas/trace.v2.schema.json",
+    "assurance.quality.workflow.assess.input.v1": "schemas/workflow/assess-input.v1.schema.json",
+    "assurance.quality.workflow.assess.output.v1": "schemas/workflow/assess-output.v1.schema.json",
+    "assurance.quality.workflow.issue-analyze.input.v1": (
+        "schemas/workflow/issue-analyze-input.v1.schema.json"
+    ),
+    "assurance.quality.workflow.issue-analyze.output.v1": (
+        "schemas/workflow/issue-analyze-output.v1.schema.json"
+    ),
+    "assurance.quality.workflow.issue-reconcile.input.v1": (
+        "schemas/workflow/issue-reconcile-input.v1.schema.json"
+    ),
+    "assurance.quality.workflow.issue-reconcile.output.v1": (
+        "schemas/workflow/issue-reconcile-output.v1.schema.json"
+    ),
+    "assurance.quality.workflow.issue-review.input.v1": (
+        "schemas/workflow/issue-review-input.v1.schema.json"
+    ),
+    "assurance.quality.workflow.issue-review.output.v1": (
+        "schemas/workflow/issue-review-output.v1.schema.json"
+    ),
+    "assurance.quality.workflow.report.input.v1": "schemas/workflow/report-input.v1.schema.json",
+    "assurance.quality.workflow.report.output.v1": "schemas/workflow/report-output.v1.schema.json",
 }
 
 
@@ -181,9 +214,16 @@ def _schema_contributions() -> tuple[SchemaContribution, ...]:
     )
 
 
+_WORKFLOW_MODULE_MIME = "application/vnd.graph-engine.workflow-module+yaml"
+
+
 def _resource_media_type(path: str) -> str:
     if path.endswith(".schema.json"):
         return "application/schema+json"
+    if path.endswith("workflow/module.yaml"):
+        return _WORKFLOW_MODULE_MIME
+    if path.endswith(".json"):
+        return "application/json"
     return "text/plain"
 
 

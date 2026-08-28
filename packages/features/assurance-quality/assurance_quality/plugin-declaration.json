@@ -45,7 +45,8 @@
       "assurance.quality.skill.aa-inspect.v1",
       "assurance.quality.skill.aa-issue-analyzer.v1",
       "assurance.quality.skill.aa-issue-triage-advisor.v1",
-      "assurance.quality.skill.aa-report-generator.v1"
+      "assurance.quality.skill.aa-report-generator.v1",
+      "assurance.quality.workflow.module.v1"
     ],
     "schema_version": "1",
     "schemas": [
@@ -70,7 +71,17 @@
       "assurance.quality.schema.report.v1",
       "assurance.quality.schema.sufficiency.v2",
       "assurance.quality.schema.trace-sufficiency.v1",
-      "assurance.quality.schema.trace.v2"
+      "assurance.quality.schema.trace.v2",
+      "assurance.quality.workflow.assess.input.v1",
+      "assurance.quality.workflow.assess.output.v1",
+      "assurance.quality.workflow.issue-analyze.input.v1",
+      "assurance.quality.workflow.issue-analyze.output.v1",
+      "assurance.quality.workflow.issue-reconcile.input.v1",
+      "assurance.quality.workflow.issue-reconcile.output.v1",
+      "assurance.quality.workflow.issue-review.input.v1",
+      "assurance.quality.workflow.issue-review.output.v1",
+      "assurance.quality.workflow.report.input.v1",
+      "assurance.quality.workflow.report.output.v1"
     ],
     "source": {
       "declaration_path": "assurance_quality/plugin-declaration.json",

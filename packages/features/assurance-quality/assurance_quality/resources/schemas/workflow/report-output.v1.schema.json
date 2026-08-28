@@ -1,0 +1,1 @@
+{"additionalProperties":false,"properties":{"change_id":{"minLength":1,"type":"string"},"report_refs":{"items":{"additionalProperties":false,"properties":{"digest":{"pattern":"^[0-9a-f]{64}$","type":"string"},"path":{"minLength":1,"type":"string"}},"required":["digest","path"],"type":"object"},"type":"array"}},"required":["change_id","report_refs"],"type":"object"}

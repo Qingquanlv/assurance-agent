@@ -65,7 +65,7 @@ def test_quality_source_identity() -> None:
     assert ENGINE_API_VERSION == "2.0"
     assert QualityPlugin.descriptor().schemas == QUALITY_SCHEMA_IDS
     assert tuple(QUALITY_SCHEMA_IDS) == tuple(sorted(QUALITY_SCHEMA_IDS))
-    assert len(QUALITY_SCHEMA_IDS) == 22
+    assert len(QUALITY_SCHEMA_IDS) == 32
     from assurance_quality.plugin import QUALITY_HANDLER_IDS, QUALITY_VALIDATOR_IDS
 
     assert QualityPlugin.descriptor().task_handlers == QUALITY_HANDLER_IDS

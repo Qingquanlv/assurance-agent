@@ -1,0 +1,393 @@
+schema_version: "1"
+role: feature
+owner_id: assurance.quality
+module_id: assurance.quality.workflow
+module_version: 0.1.0
+imports: {}
+exports:
+  assess:
+    graph: quality
+    input_schema: assurance.quality.workflow.assess.input.v1
+    output_schema: assurance.quality.workflow.assess.output.v1
+    output_projection:
+      type: object
+      fields:
+        change_id:
+          type: child_output_pointer
+          pointer: /change_id
+        coverage_state:
+          type: child_output_pointer
+          pointer: /coverage_state
+        evidence_refs:
+          type: child_output_pointer
+          pointer: /evidence_refs
+  issue-review:
+    graph: issue-review
+    input_schema: assurance.quality.workflow.issue-review.input.v1
+    output_schema: assurance.quality.workflow.issue-review.output.v1
+    output_projection: &issue-output
+      type: object
+      fields:
+        change_id:
+          type: child_output_pointer
+          pointer: /change_id
+        classification:
+          type: child_output_pointer
+          pointer: /classification
+        evidence_refs:
+          type: child_output_pointer
+          pointer: /evidence_refs
+        fix_eligible:
+          type: child_output_pointer
+          pointer: /fix_eligible
+  issue-analyze:
+    graph: issue-analyze
+    input_schema: assurance.quality.workflow.issue-analyze.input.v1
+    output_schema: assurance.quality.workflow.issue-analyze.output.v1
+    output_projection: *issue-output
+  issue-reconcile:
+    graph: issue-reconcile
+    input_schema: assurance.quality.workflow.issue-reconcile.input.v1
+    output_schema: assurance.quality.workflow.issue-reconcile.output.v1
+    output_projection: *issue-output
+  report:
+    graph: quality-report
+    input_schema: assurance.quality.workflow.report.input.v1
+    output_schema: assurance.quality.workflow.report.output.v1
+    output_projection:
+      type: object
+      fields:
+        change_id:
+          type: child_output_pointer
+          pointer: /change_id
+        report_refs:
+          type: child_output_pointer
+          pointer: /report_refs
+capability_slots:
+  fact-baseline.prepare:
+    contract_id: assurance.quality.agent.fact-baseline.v1
+  fact-baseline.execute:
+    contract_id: assurance.quality.agent.fact-baseline.v1
+  fact-baseline.finalize:
+    contract_id: assurance.quality.agent.fact-baseline.v1
+  inspect.prepare:
+    contract_id: assurance.quality.agent.inspect.v1
+  inspect.execute:
+    contract_id: assurance.quality.agent.inspect.v1
+  inspect.finalize:
+    contract_id: assurance.quality.agent.inspect.v1
+  issue-analysis.prepare:
+    contract_id: assurance.quality.agent.issue-analysis.v1
+  issue-analysis.execute:
+    contract_id: assurance.quality.agent.issue-analysis.v1
+  issue-analysis.finalize:
+    contract_id: assurance.quality.agent.issue-analysis.v1
+  issue-triage.prepare:
+    contract_id: assurance.quality.agent.issue-triage.v1
+  issue-triage.execute:
+    contract_id: assurance.quality.agent.issue-triage.v1
+  issue-triage.finalize:
+    contract_id: assurance.quality.agent.issue-triage.v1
+  report.prepare:
+    contract_id: assurance.quality.agent.report.v1
+  report.execute:
+    contract_id: assurance.quality.agent.report.v1
+  report.finalize:
+    contract_id: assurance.quality.agent.report.v1
+schemas:
+  - assurance.quality.workflow.assess.input.v1
+  - assurance.quality.workflow.assess.output.v1
+  - assurance.quality.workflow.issue-analyze.input.v1
+  - assurance.quality.workflow.issue-analyze.output.v1
+  - assurance.quality.workflow.issue-reconcile.input.v1
+  - assurance.quality.workflow.issue-reconcile.output.v1
+  - assurance.quality.workflow.issue-review.input.v1
+  - assurance.quality.workflow.issue-review.output.v1
+  - assurance.quality.workflow.report.input.v1
+  - assurance.quality.workflow.report.output.v1
+resources: []
+effects: []
+retry:
+  once:
+    max_attempts: 1
+timeout:
+  short:
+    run_seconds: 3600
+graphs:
+  quality:
+    max_activations: 8
+    start: fact-baseline
+    nodes:
+      fact-baseline:
+        kind: subgraph
+        graph: quality-fact-baseline
+        input_projection: &child-input
+          type: object
+          fields:
+            allowed_artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            budgets:
+              type: graph_input_pointer
+              pointer: /budgets
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            evidence_refs:
+              type: graph_input_pointer
+              pointer: /evidence_refs
+            execution_status:
+              type: graph_input_pointer
+              pointer: /execution_status
+      inspect:
+        kind: subgraph
+        graph: quality-inspect
+        input_projection: *child-input
+      done:
+        kind: end
+    edges:
+      - {from: fact-baseline, to: inspect}
+      - {from: inspect, to: done}
+  quality-fact-baseline:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.quality.fact-baseline.prepare
+        input: &prepare-input
+          capability_leafs: []
+        input_projection: &prepare-projection
+          type: object
+          fields:
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            budgets:
+              type: graph_input_pointer
+              pointer: /budgets
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            evidence_refs:
+              type: graph_input_pointer
+              pointer: /evidence_refs
+            execution_status:
+              type: graph_input_pointer
+              pointer: /execution_status
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: fact-baseline.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.quality.fact-baseline.finalize
+        input: *prepare-input
+        input_projection: &finalize-projection
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            budgets:
+              type: graph_input_pointer
+              pointer: /budgets
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            evidence_refs:
+              type: graph_input_pointer
+              pointer: /evidence_refs
+            execution_status:
+              type: graph_input_pointer
+              pointer: /execution_status
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  quality-inspect:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.quality.inspect.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: inspect.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.quality.inspect.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  quality-issue-triage:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.quality.issue-triage.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: issue-triage.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.quality.issue-triage.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  quality-issue-analysis:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.quality.issue-analysis.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: issue-analysis.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.quality.issue-analysis.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  quality-report:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.quality.report.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: report.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.quality.report.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  issue-review:
+    max_activations: 4
+    start: review
+    nodes:
+      review:
+        kind: subgraph
+        graph: quality-issue-triage
+        input_projection: *child-input
+      done:
+        kind: end
+    edges:
+      - {from: review, to: done}
+  issue-analyze:
+    max_activations: 4
+    start: analyze
+    nodes:
+      analyze:
+        kind: subgraph
+        graph: quality-issue-analysis
+        input_projection: *child-input
+      done:
+        kind: end
+    edges:
+      - {from: analyze, to: done}
+  issue-reconcile:
+    max_activations: 4
+    start: analyze
+    nodes:
+      analyze:
+        kind: subgraph
+        graph: quality-issue-analysis
+        input_projection: *child-input
+      done:
+        kind: end
+    edges:
+      - {from: analyze, to: done}
