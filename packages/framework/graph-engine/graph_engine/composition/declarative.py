@@ -17,6 +17,8 @@ from graph_engine.composition.models import (
     SourceIdentity,
     SourceKind,
     SourceSnapshot,
+    WorkflowModuleRequirement,
+    WorkflowSlotBinding,
     _validate_canonical_relative_path,
 )
 from graph_engine.composition.source_fs import (
@@ -26,6 +28,7 @@ from graph_engine.composition.source_fs import (
     capture_explicit_file,
 )
 from graph_engine.errors import GraphEngineError
+from graph_engine.graph.module_schema import WorkflowModuleDef
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
@@ -281,6 +284,9 @@ class DeclarativeProductDocument(FrozenModel):
     config_plugin_paths: tuple[str, ...] = ()
     workflow: WorkflowDef | None = None
     workflow_resource_id: str | None = None
+    workflow_module: WorkflowModuleDef | None = None
+    workflow_module_resources: tuple[WorkflowModuleRequirement, ...] = ()
+    workflow_slot_bindings: tuple[WorkflowSlotBinding, ...] = ()
 
     @field_validator("product_id")
     @classmethod
@@ -337,8 +343,37 @@ class DeclarativeProductDocument(FrozenModel):
 
     @model_validator(mode="after")
     def _validate_manifest_closure(self) -> Self:
-        if (self.workflow is None) == (self.workflow_resource_id is None):
+        if (
+            sum(
+                value is not None
+                for value in (self.workflow, self.workflow_resource_id, self.workflow_module)
+            )
+            != 1
+        ):
             raise ValueError("product manifest requires exactly one workflow form")
+        if self.workflow_module is None:
+            if self.workflow_module_resources:
+                raise ValueError("workflow module resources are allowed only on the modular product form")
+            if self.workflow_slot_bindings:
+                raise ValueError("workflow slot bindings are allowed only on the modular product form")
+        else:
+            if self.workflow_module.owner_id != self.product_id:
+                raise ValueError("product module owner must equal product id")
+            if self.workflow_module.role != "product":
+                raise ValueError("product module role must be product")
+            if self.workflow_module.module_version != self.product_version:
+                raise ValueError("product module version must equal product version")
+            if self.workflow_module.entrypoints != self.entrypoints:
+                raise ValueError("product module entrypoints must equal product entrypoints")
+        module_ids = tuple(item.module_id for item in self.workflow_module_resources)
+        if len(set(module_ids)) != len(module_ids):
+            raise ValueError("workflow module resource module ids must be unique")
+        resource_ids = tuple(item.resource_id for item in self.workflow_module_resources)
+        if len(set(resource_ids)) != len(resource_ids):
+            raise ValueError("workflow module resource ids must be unique")
+        slot_keys = tuple((item.module_id, item.slot) for item in self.workflow_slot_bindings)
+        if len(set(slot_keys)) != len(slot_keys):
+            raise ValueError("workflow slot bindings must be unique")
         plugin_ids = tuple(requirement.plugin_id for requirement in self.plugins)
         if not plugin_ids:
             raise ValueError("product manifest must require at least one plugin")
@@ -474,21 +509,37 @@ def _parse_plugin_document(content: bytes) -> DeclarativePluginDocument:
 
 def _parse_product_document(content: bytes) -> DeclarativeProductDocument:
     try:
-        raw = _safe_yaml_mapping(content, "product manifest")
+        raw = _safe_yaml_mapping(
+            content,
+            "product manifest",
+            allowed_executable_paths=frozenset({("workflow_module", "imports")}),
+        )
         document = DeclarativeProductDocument.model_validate(raw)
         return cast(DeclarativeProductDocument, _freeze_nested_values(document))
     except (ValidationError, PluginContractError, ValueError) as error:
         raise DeclarativeProductRejected(f"invalid product manifest: {error}") from error
 
 
-def _safe_yaml_mapping(content: bytes, label: str) -> dict[str, Any]:
-    raw = _strict_yaml_value(content, label)
+def _safe_yaml_mapping(
+    content: bytes,
+    label: str,
+    allowed_executable_paths: frozenset[tuple[str, ...]] = frozenset(),
+) -> dict[str, Any]:
+    raw = _strict_yaml_value(
+        content,
+        label,
+        allowed_executable_paths=allowed_executable_paths,
+    )
     if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
         raise ValueError(f"{label} must be a string-keyed mapping")
     return cast(dict[str, Any], raw)
 
 
-def _strict_yaml_value(content: bytes, label: str) -> object:
+def _strict_yaml_value(
+    content: bytes,
+    label: str,
+    allowed_executable_paths: frozenset[tuple[str, ...]] = frozenset(),
+) -> object:
     text = _decode_utf8(content, label)
     try:
         node = yaml.compose(text, Loader=yaml.SafeLoader)
@@ -499,7 +550,7 @@ def _strict_yaml_value(content: bytes, label: str) -> object:
     except yaml.YAMLError as error:
         raise ValueError(f"{label} is not safe YAML") from error
     _validate_json_value(raw, label)
-    _reject_executable_keys(raw, label)
+    _reject_executable_keys(raw, label, allowed_paths=allowed_executable_paths)
     return raw
 
 
@@ -602,6 +653,9 @@ def _reject_executable_keys(
     value: object,
     label: str,
     seen: set[int] | None = None,
+    *,
+    path: tuple[str, ...] = (),
+    allowed_paths: frozenset[tuple[str, ...]] = frozenset(),
 ) -> None:
     seen = set() if seen is None else seen
     if isinstance(value, dict):
@@ -609,15 +663,29 @@ def _reject_executable_keys(
             raise ValueError(f"{label} YAML aliases are not allowed")
         seen.add(id(value))
         for key, child in value.items():
+            child_path = (*path, key) if isinstance(key, str) else path
             if isinstance(key, str) and key.casefold() in _EXECUTABLE_KEYS:
-                raise ValueError(f"{label} contains executable declaration: {key}")
-            _reject_executable_keys(child, label, seen)
+                if key != "imports" or child_path not in allowed_paths:
+                    raise ValueError(f"{label} contains executable declaration: {key}")
+            _reject_executable_keys(
+                child,
+                label,
+                seen,
+                path=child_path,
+                allowed_paths=allowed_paths,
+            )
     elif isinstance(value, list):
         if id(value) in seen:
             raise ValueError(f"{label} YAML aliases are not allowed")
         seen.add(id(value))
         for child in value:
-            _reject_executable_keys(child, label, seen)
+            _reject_executable_keys(
+                child,
+                label,
+                seen,
+                path=path,
+                allowed_paths=allowed_paths,
+            )
 
 
 def _freeze_nested_values(value: object) -> object:

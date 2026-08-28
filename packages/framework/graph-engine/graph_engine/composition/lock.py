@@ -33,7 +33,8 @@ from graph_engine.composition.models import (
 from graph_engine.composition.dependencies import DependencyConflict, resolve_dependency_order
 from graph_engine.frozen_json import FrozenJSONValue, thaw_json
 from graph_engine.graph.compiler import CompiledWorkflow
-from graph_engine.graph.schema import WorkflowDef
+from graph_engine.graph.module_schema import WorkflowModuleDef
+from graph_engine.graph.schema import GraphDef, WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel, PluginDescriptor, ProviderSource
 
@@ -877,21 +878,66 @@ def _source_identity_projection(identity: SourceIdentity) -> dict[str, JSONValue
 
 def _workflow_lock_projection(workflow: WorkflowDef) -> JSONValue:
     dumped = workflow.model_dump(mode="json", by_alias=True, exclude_defaults=True)
-    for graph_id, graph in workflow.graphs.items():
-        dumped_nodes = dumped["graphs"][graph_id]["nodes"]
-        for node_id, node in graph.nodes.items():
-            if node.input_projection is not None:
-                dumped_nodes[node_id]["input_projection"] = node.input_projection.model_dump(
+    _restore_input_projection_discriminators(dumped, workflow.graphs)
+    return cast(JSONValue, dumped)
+
+
+def _workflow_module_lock_projection(module: WorkflowModuleDef) -> JSONValue:
+    dumped = module.model_dump(mode="json", by_alias=True, exclude_defaults=True)
+    _restore_input_projection_discriminators(
+        dumped,
+        module.graphs,
+        restore_output_projection=True,
+    )
+    dumped_exports = dumped.get("exports")
+    if isinstance(dumped_exports, dict):
+        for export_name, export in module.exports.items():
+            dumped_export = dumped_exports.get(export_name)
+            if isinstance(dumped_export, dict):
+                dumped_export["output_projection"] = export.output_projection.model_dump(
                     mode="json",
                     by_alias=True,
                 )
     return cast(JSONValue, dumped)
 
 
+def _restore_input_projection_discriminators(
+    dumped: dict[str, object],
+    graphs: Mapping[str, GraphDef],
+    *,
+    restore_output_projection: bool = False,
+) -> None:
+    dumped_graphs = dumped.get("graphs")
+    if not isinstance(dumped_graphs, dict):
+        return
+    for graph_id, graph in graphs.items():
+        dumped_graph = dumped_graphs[graph_id]
+        if not isinstance(dumped_graph, dict):
+            continue
+        dumped_nodes = dumped_graph["nodes"]
+        for node_id, node in graph.nodes.items():
+            if node.input_projection is not None:
+                dumped_nodes[node_id]["input_projection"] = node.input_projection.model_dump(
+                    mode="json",
+                    by_alias=True,
+                )
+            if restore_output_projection and node.output_projection is not None:
+                dumped_nodes[node_id]["output_projection"] = node.output_projection.model_dump(
+                    mode="json",
+                    by_alias=True,
+                )
+
+
 def _manifest_projection(manifest: ProductManifest) -> JSONValue:
     projection = manifest.model_dump(mode="json", by_alias=True)
     if manifest.workflow is not None:
         projection["workflow"] = _workflow_lock_projection(manifest.workflow)
+    if manifest.workflow_module is not None:
+        projection["workflow_module"] = _workflow_module_lock_projection(manifest.workflow_module)
+    else:
+        projection.pop("workflow_module", None)
+        projection.pop("workflow_module_resources", None)
+        projection.pop("workflow_slot_bindings", None)
     return cast(JSONValue, projection)
 
 

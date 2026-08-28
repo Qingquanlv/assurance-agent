@@ -19,6 +19,7 @@ from graph_engine.composition import (
     load_config_tree,
     load_product_file,
 )
+from graph_engine.graph.module_schema import WorkflowImportDef
 
 
 def _workflow() -> dict[str, object]:
@@ -92,12 +93,62 @@ def _write_plugin_tree(
             path.write_text("role instructions\n", encoding="utf-8")
 
 
+def _product_module() -> dict[str, object]:
+    return {
+        "schema_version": "1",
+        "role": "product",
+        "name": "toy",
+        "owner_id": "toy.product",
+        "module_id": "toy.product.workflow",
+        "module_version": "1.0.0",
+        "entrypoints": {"main": "root"},
+        "imports": {
+            "run": {
+                "owner_id": "toy.feature",
+                "module_id": "toy.feature.workflow",
+                "export": "run",
+            }
+        },
+        "exports": {},
+        "capability_slots": {},
+        "schemas": [
+            "toy.feature.workflow.run.input.v1",
+            "toy.feature.workflow.run.output.v1",
+        ],
+        "resources": [],
+        "effects": [],
+        "retry": {"once": {"max_attempts": 1}},
+        "timeout": {"short": {"run_seconds": 30}},
+        "graphs": {
+            "root": {
+                "max_activations": 2,
+                "start": "child",
+                "nodes": {
+                    "child": {
+                        "kind": "subgraph",
+                        "graph_import": "run",
+                        "input_schema": "toy.feature.workflow.run.input.v1",
+                        "output_schema": "toy.feature.workflow.run.output.v1",
+                        "output_projection": {
+                            "type": "child_output_pointer",
+                            "pointer": "",
+                        },
+                    },
+                    "done": {"kind": "end"},
+                },
+                "edges": [{"from": "child", "to": "done"}],
+            }
+        },
+    }
+
+
 def _write_product_file(
     path: Path,
     *,
     extra: dict[str, object] | None = None,
     workflow: dict[str, object] | None = None,
     workflow_resource_id: str | None = None,
+    workflow_module: dict[str, object] | None = None,
     config_plugin_paths: list[str] | None = None,
 ) -> None:
     document: dict[str, object] = {
@@ -113,7 +164,9 @@ def _write_product_file(
         "configuration": {"toy.runtime": {"greeting": "hello"}},
         "config_plugin_paths": config_plugin_paths or [],
     }
-    if workflow_resource_id is not None:
+    if workflow_module is not None:
+        document["workflow_module"] = workflow_module
+    elif workflow_resource_id is not None:
         document["workflow_resource_id"] = workflow_resource_id
     else:
         document["workflow"] = workflow or _workflow()
@@ -758,3 +811,188 @@ def test_product_file_rejects_non_data_file_forms(tmp_path: Path, fault: str) ->
 
     with pytest.raises(DeclarativeProductRejected):
         load_product_file(ProductFileSource(path=product_path))
+
+
+def test_product_file_accepts_workflow_module_imports_at_exact_path(tmp_path: Path) -> None:
+    product_path = tmp_path / "product.yaml"
+    _write_product_file(product_path, workflow_module=_product_module())
+
+    loaded = load_product_file(ProductFileSource(path=product_path))
+
+    assert loaded.manifest.workflow is None
+    assert loaded.manifest.workflow_resource_id is None
+    assert loaded.manifest.workflow_module is not None
+    imported = loaded.manifest.workflow_module.imports["run"]
+    assert isinstance(imported, WorkflowImportDef)
+    assert imported.owner_id == "toy.feature"
+    assert imported.module_id == "toy.feature.workflow"
+    assert imported.export == "run"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    (
+        {
+            "imports": {
+                "run": {
+                    "owner_id": "toy.feature",
+                    "module_id": "toy.feature.workflow",
+                    "export": "run",
+                }
+            }
+        },
+        {
+            "configuration": {
+                "toy.runtime": {
+                    "imports": {
+                        "run": {
+                            "owner_id": "toy.feature",
+                            "module_id": "toy.feature.workflow",
+                            "export": "run",
+                        }
+                    }
+                }
+            }
+        },
+    ),
+)
+def test_product_file_rejects_imports_outside_workflow_module_path(
+    tmp_path: Path, extra: dict[str, object]
+) -> None:
+    product_path = tmp_path / "product.yaml"
+    _write_product_file(product_path, extra=extra)
+
+    with pytest.raises(DeclarativeProductRejected, match="executable declaration"):
+        load_product_file(ProductFileSource(path=product_path))
+
+
+def test_product_file_rejects_imports_inside_node_input(tmp_path: Path) -> None:
+    product_path = tmp_path / "product.yaml"
+    workflow = {
+        "name": "toy",
+        "entrypoints": {"main": "root"},
+        "retry": {"once": {"max_attempts": 1}},
+        "timeout": {"short": {"run_seconds": 1}},
+        "graphs": {
+            "root": {
+                "max_activations": 1,
+                "start": "run",
+                "nodes": {
+                    "run": {
+                        "kind": "task",
+                        "capability": "toy.run",
+                        "input": {
+                            "imports": {
+                                "run": {
+                                    "owner_id": "toy.feature",
+                                    "module_id": "toy.feature.workflow",
+                                    "export": "run",
+                                }
+                            }
+                        },
+                        "retry": "once",
+                        "timeout": "short",
+                    },
+                    "done": {"kind": "end"},
+                },
+                "edges": [{"from": "run", "to": "done"}],
+            }
+        },
+    }
+    _write_product_file(product_path, workflow=workflow)
+
+    with pytest.raises(DeclarativeProductRejected, match="executable declaration"):
+        load_product_file(ProductFileSource(path=product_path))
+
+
+def test_product_file_rejects_imports_nested_under_workflow_module_graphs(tmp_path: Path) -> None:
+    product_path = tmp_path / "product.yaml"
+    module = _product_module()
+    graphs = module["graphs"]
+    assert isinstance(graphs, dict)
+    root = graphs["root"]
+    assert isinstance(root, dict)
+    nodes = root["nodes"]
+    assert isinstance(nodes, dict)
+    child = nodes["child"]
+    assert isinstance(child, dict)
+    child["input"] = {
+        "imports": {
+            "nested": {
+                "owner_id": "toy.feature",
+                "module_id": "toy.feature.workflow",
+                "export": "run",
+            }
+        }
+    }
+    _write_product_file(product_path, workflow_module=module)
+
+    with pytest.raises(DeclarativeProductRejected, match="executable declaration"):
+        load_product_file(ProductFileSource(path=product_path))
+
+
+def test_plugin_document_rejects_imports_even_at_workflow_module_path(tmp_path: Path) -> None:
+    _write_plugin_tree(
+        tmp_path,
+        extra={
+            "workflow_module": {
+                "imports": {
+                    "run": {
+                        "owner_id": "toy.feature",
+                        "module_id": "toy.feature.workflow",
+                        "export": "run",
+                    }
+                }
+            }
+        },
+    )
+
+    with pytest.raises(DeclarativePluginRejected, match="executable declaration"):
+        load_config_tree(ConfigTreePluginSource(path=tmp_path))
+
+
+def test_plugin_resource_rejects_imports_even_at_workflow_module_path(tmp_path: Path) -> None:
+    files: list[dict[str, object]] = [
+        {
+            "kind": "resource",
+            "resource_id": "toy.flow.data",
+            "path": "data.yaml",
+            "media_type": "application/yaml",
+        }
+    ]
+    _write_plugin_tree(tmp_path, files=files)
+    (tmp_path / "data.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "workflow_module": {
+                    "imports": {
+                        "run": {
+                            "owner_id": "toy.feature",
+                            "module_id": "toy.feature.workflow",
+                            "export": "run",
+                        }
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DeclarativePluginRejected, match="resource"):
+        load_config_tree(ConfigTreePluginSource(path=tmp_path))
+
+
+def test_config_tree_rejects_workflow_module_media_type(tmp_path: Path) -> None:
+    files: list[dict[str, object]] = [
+        {
+            "kind": "resource",
+            "resource_id": "toy.flow.module",
+            "path": "module.yaml",
+            "media_type": "application/vnd.graph-engine.workflow-module+yaml",
+        }
+    ]
+    _write_plugin_tree(tmp_path, files=files)
+
+    with pytest.raises(DeclarativePluginRejected, match="media type"):
+        load_config_tree(ConfigTreePluginSource(path=tmp_path))

@@ -2723,6 +2723,8 @@ def test_product_manifest_requires_one_workflow_form_and_entrypoint_closure() ->
     }
     with pytest.raises(ValueError, match="exactly one workflow form"):
         ProductManifest.model_validate({**base, "workflow": workflow, "workflow_resource_id": "toy.a.flow"})
+    with pytest.raises(ValueError, match="exactly one workflow form"):
+        ProductManifest.model_validate({**base})
     with pytest.raises(ValueError, match="entrypoints"):
         ProductManifest.model_validate({**base, "entrypoints": {"other": "root"}, "workflow": workflow})
 

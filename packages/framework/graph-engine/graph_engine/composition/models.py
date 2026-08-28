@@ -15,6 +15,7 @@ from pydantic import Field, field_serializer, field_validator, model_validator
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
+from graph_engine.graph.module_schema import WorkflowModuleDef
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.json_schema import assert_closed_json_schema
@@ -1308,6 +1309,60 @@ class PluginRequirement(FrozenModel):
             raise ValueError(f"invalid plugin version specifier: {value!r}") from error
 
 
+class WorkflowModuleRequirement(FrozenModel):
+    """One Feature or Product module resource required by a modular product."""
+
+    module_id: str
+    owner_id: str
+    resource_id: str
+
+    @field_validator("module_id")
+    @classmethod
+    def _validate_module_id(cls, value: str) -> str:
+        return _validate_manifest_id(value, "workflow module module id")
+
+    @field_validator("owner_id")
+    @classmethod
+    def _validate_owner_id(cls, value: str) -> str:
+        return _validate_manifest_id(value, "workflow module owner id")
+
+    @field_validator("resource_id")
+    @classmethod
+    def _validate_resource_id(cls, value: str) -> str:
+        return _validate_manifest_id(value, "workflow module resource id")
+
+
+class WorkflowSlotBinding(FrozenModel):
+    """One Product-owned binding of a module slot to a concrete capability."""
+
+    module_id: str
+    slot: str
+    capability_id: str
+    contract_id: str
+
+    @field_validator("module_id")
+    @classmethod
+    def _validate_module_id(cls, value: str) -> str:
+        return _validate_manifest_id(value, "workflow slot module id")
+
+    @field_validator("capability_id")
+    @classmethod
+    def _validate_capability_id(cls, value: str) -> str:
+        return _validate_manifest_id(value, "workflow slot capability id")
+
+    @field_validator("contract_id")
+    @classmethod
+    def _validate_contract_id(cls, value: str) -> str:
+        return _validate_manifest_id(value, "workflow slot contract id")
+
+    @field_validator("slot")
+    @classmethod
+    def _validate_slot(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("workflow slot name must be non-empty text")
+        return value
+
+
 class ProductManifest(FrozenModel):
     """Normalized product input consumed by the registry platform."""
 
@@ -1322,6 +1377,9 @@ class ProductManifest(FrozenModel):
     config_plugin_paths: tuple[str, ...] = ()
     workflow: WorkflowDef | None = None
     workflow_resource_id: str | None = None
+    workflow_module: WorkflowModuleDef | None = None
+    workflow_module_resources: tuple[WorkflowModuleRequirement, ...] = ()
+    workflow_slot_bindings: tuple[WorkflowSlotBinding, ...] = ()
 
     @field_validator("product_id")
     @classmethod
@@ -1395,8 +1453,37 @@ class ProductManifest(FrozenModel):
 
     @model_validator(mode="after")
     def _validate_manifest_closure(self) -> ProductManifest:
-        if (self.workflow is None) == (self.workflow_resource_id is None):
+        if (
+            sum(
+                value is not None
+                for value in (self.workflow, self.workflow_resource_id, self.workflow_module)
+            )
+            != 1
+        ):
             raise ValueError("product manifest requires exactly one workflow form")
+        if self.workflow_module is None:
+            if self.workflow_module_resources:
+                raise ValueError("workflow module resources are allowed only on the modular product form")
+            if self.workflow_slot_bindings:
+                raise ValueError("workflow slot bindings are allowed only on the modular product form")
+        else:
+            if self.workflow_module.owner_id != self.product_id:
+                raise ValueError("product module owner must equal product id")
+            if self.workflow_module.role != "product":
+                raise ValueError("product module role must be product")
+            if self.workflow_module.module_version != self.product_version:
+                raise ValueError("product module version must equal product version")
+            if dict(self.workflow_module.entrypoints) != dict(self.entrypoints):
+                raise ValueError("product module entrypoints must equal product entrypoints")
+        module_ids = tuple(item.module_id for item in self.workflow_module_resources)
+        if len(set(module_ids)) != len(module_ids):
+            raise ValueError("workflow module resource module ids must be unique")
+        resource_ids = tuple(item.resource_id for item in self.workflow_module_resources)
+        if len(set(resource_ids)) != len(resource_ids):
+            raise ValueError("workflow module resource ids must be unique")
+        slot_keys = tuple((item.module_id, item.slot) for item in self.workflow_slot_bindings)
+        if len(set(slot_keys)) != len(slot_keys):
+            raise ValueError("workflow slot bindings must be unique")
         if not self.plugins:
             raise ValueError("product manifest must require at least one plugin")
         plugin_ids = tuple(requirement.plugin_id for requirement in self.plugins)
@@ -1762,6 +1849,8 @@ __all__ = [
     "FrozenComposition",
     "PluginRequirement",
     "ProductManifest",
+    "WorkflowModuleRequirement",
+    "WorkflowSlotBinding",
     "RegistrySet",
     "ResourceEntry",
     "ResourceRegistry",
