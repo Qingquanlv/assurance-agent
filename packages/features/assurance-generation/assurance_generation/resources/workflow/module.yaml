@@ -1,0 +1,957 @@
+schema_version: "1"
+role: feature
+owner_id: assurance.generation
+module_id: assurance.generation.workflow
+module_version: 0.1.0
+imports: {}
+exports:
+  generate:
+    graph: generation
+    input_schema: assurance.generation.workflow.generate.input.v1
+    output_schema: assurance.generation.workflow.generate.output.v1
+    output_projection:
+      type: object
+      fields:
+        families:
+          type: child_output_pointer
+          pointer: /completed
+        selected_families:
+          type: child_output_pointer
+          pointer: /selected_families
+capability_slots:
+  api.codegen.prepare:
+    contract_id: assurance.generation.agent.api.codegen.v1
+  api.codegen.execute:
+    contract_id: assurance.generation.agent.api.codegen.v1
+  api.codegen.finalize:
+    contract_id: assurance.generation.agent.api.codegen.v1
+  api.codegen-fix.prepare:
+    contract_id: assurance.generation.agent.api.codegen-fix.v1
+  api.codegen-fix.execute:
+    contract_id: assurance.generation.agent.api.codegen-fix.v1
+  api.codegen-fix.finalize:
+    contract_id: assurance.generation.agent.api.codegen-fix.v1
+  api.plan.prepare:
+    contract_id: assurance.generation.agent.api.plan.v1
+  api.plan.execute:
+    contract_id: assurance.generation.agent.api.plan.v1
+  api.plan.finalize:
+    contract_id: assurance.generation.agent.api.plan.v1
+  api.plan-review.prepare:
+    contract_id: assurance.generation.agent.api.plan-review.v1
+  api.plan-review.execute:
+    contract_id: assurance.generation.agent.api.plan-review.v1
+  api.plan-review.finalize:
+    contract_id: assurance.generation.agent.api.plan-review.v1
+  e2e.codegen.prepare:
+    contract_id: assurance.generation.agent.e2e.codegen.v1
+  e2e.codegen.execute:
+    contract_id: assurance.generation.agent.e2e.codegen.v1
+  e2e.codegen.finalize:
+    contract_id: assurance.generation.agent.e2e.codegen.v1
+  e2e.codegen-fix.prepare:
+    contract_id: assurance.generation.agent.e2e.codegen-fix.v1
+  e2e.codegen-fix.execute:
+    contract_id: assurance.generation.agent.e2e.codegen-fix.v1
+  e2e.codegen-fix.finalize:
+    contract_id: assurance.generation.agent.e2e.codegen-fix.v1
+  e2e.plan.prepare:
+    contract_id: assurance.generation.agent.e2e.plan.v1
+  e2e.plan.execute:
+    contract_id: assurance.generation.agent.e2e.plan.v1
+  e2e.plan.finalize:
+    contract_id: assurance.generation.agent.e2e.plan.v1
+  e2e.plan-review.prepare:
+    contract_id: assurance.generation.agent.e2e.plan-review.v1
+  e2e.plan-review.execute:
+    contract_id: assurance.generation.agent.e2e.plan-review.v1
+  e2e.plan-review.finalize:
+    contract_id: assurance.generation.agent.e2e.plan-review.v1
+  fuzz.codegen.prepare:
+    contract_id: assurance.generation.agent.fuzz.codegen.v1
+  fuzz.codegen.execute:
+    contract_id: assurance.generation.agent.fuzz.codegen.v1
+  fuzz.codegen.finalize:
+    contract_id: assurance.generation.agent.fuzz.codegen.v1
+  fuzz.plan.prepare:
+    contract_id: assurance.generation.agent.fuzz.plan.v1
+  fuzz.plan.execute:
+    contract_id: assurance.generation.agent.fuzz.plan.v1
+  fuzz.plan.finalize:
+    contract_id: assurance.generation.agent.fuzz.plan.v1
+  fuzz.plan-review.prepare:
+    contract_id: assurance.generation.agent.fuzz.plan-review.v1
+  fuzz.plan-review.execute:
+    contract_id: assurance.generation.agent.fuzz.plan-review.v1
+  fuzz.plan-review.finalize:
+    contract_id: assurance.generation.agent.fuzz.plan-review.v1
+  performance.codegen.prepare:
+    contract_id: assurance.generation.agent.performance.codegen.v1
+  performance.codegen.execute:
+    contract_id: assurance.generation.agent.performance.codegen.v1
+  performance.codegen.finalize:
+    contract_id: assurance.generation.agent.performance.codegen.v1
+  performance.plan.prepare:
+    contract_id: assurance.generation.agent.performance.plan.v1
+  performance.plan.execute:
+    contract_id: assurance.generation.agent.performance.plan.v1
+  performance.plan.finalize:
+    contract_id: assurance.generation.agent.performance.plan.v1
+  performance.plan-review.prepare:
+    contract_id: assurance.generation.agent.performance.plan-review.v1
+  performance.plan-review.execute:
+    contract_id: assurance.generation.agent.performance.plan-review.v1
+  performance.plan-review.finalize:
+    contract_id: assurance.generation.agent.performance.plan-review.v1
+schemas:
+  - assurance.generation.workflow.generate.input.v1
+  - assurance.generation.workflow.generate.output.v1
+resources: []
+effects: []
+retry:
+  once:
+    max_attempts: 1
+timeout:
+  short:
+    run_seconds: 3600
+graphs:
+  generation:
+    max_activations: 32
+    start: fanout
+    nodes:
+      fanout:
+        kind: gate
+        expression: 'true'
+      select-api:
+        kind: gate
+        expression: "'api' in selected_test_families"
+        input_projection: &family-selection
+          type: object
+          fields:
+            selected_test_families:
+              type: graph_input_pointer
+              pointer: /selected_test_families
+      select-e2e:
+        kind: gate
+        expression: "'e2e' in selected_test_families"
+        input_projection: *family-selection
+      select-fuzz:
+        kind: gate
+        expression: "'fuzz' in selected_test_families"
+        input_projection: *family-selection
+      select-performance:
+        kind: gate
+        expression: "'performance' in selected_test_families"
+        input_projection: *family-selection
+      api:
+        kind: subgraph
+        graph: generation-api
+        input_projection: &lane-input
+          type: object
+          fields:
+            allowed_artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+      e2e:
+        kind: subgraph
+        graph: generation-e2e
+        input_projection: *lane-input
+      fuzz:
+        kind: subgraph
+        graph: generation-fuzz
+        input_projection: *lane-input
+      performance:
+        kind: subgraph
+        graph: generation-performance
+        input_projection: *lane-input
+      api-skip:
+        kind: gate
+        expression: 'true'
+      e2e-skip:
+        kind: gate
+        expression: 'true'
+      fuzz-skip:
+        kind: gate
+        expression: 'true'
+      performance-skip:
+        kind: gate
+        expression: 'true'
+      api-done:
+        kind: gate
+        expression: 'true'
+      e2e-done:
+        kind: gate
+        expression: 'true'
+      fuzz-done:
+        kind: gate
+        expression: 'true'
+      performance-done:
+        kind: gate
+        expression: 'true'
+      join-selected:
+        kind: join
+        join: all
+        input_projection:
+          type: object
+          fields:
+            selected_families:
+              type: graph_input_pointer
+              pointer: /selected_test_families
+            completed:
+              type: all_predecessor_tokens
+      done:
+        kind: end
+    edges:
+      - {from: fanout, to: select-api}
+      - {from: fanout, to: select-e2e}
+      - {from: fanout, to: select-fuzz}
+      - {from: fanout, to: select-performance}
+      - {from: select-api, to: api, condition: 'output.value == true'}
+      - {from: select-api, to: api-skip, condition: 'output.value == false'}
+      - {from: select-e2e, to: e2e, condition: 'output.value == true'}
+      - {from: select-e2e, to: e2e-skip, condition: 'output.value == false'}
+      - {from: select-fuzz, to: fuzz, condition: 'output.value == true'}
+      - {from: select-fuzz, to: fuzz-skip, condition: 'output.value == false'}
+      - {from: select-performance, to: performance, condition: 'output.value == true'}
+      - {from: select-performance, to: performance-skip, condition: 'output.value == false'}
+      - {from: api, to: api-done}
+      - {from: api-skip, to: api-done}
+      - {from: e2e, to: e2e-done}
+      - {from: e2e-skip, to: e2e-done}
+      - {from: fuzz, to: fuzz-done}
+      - {from: fuzz-skip, to: fuzz-done}
+      - {from: performance, to: performance-done}
+      - {from: performance-skip, to: performance-done}
+      - {from: api-done, to: join-selected}
+      - {from: e2e-done, to: join-selected}
+      - {from: fuzz-done, to: join-selected}
+      - {from: performance-done, to: join-selected}
+      - {from: join-selected, to: done}
+  generation-api:
+    max_activations: 64
+    start: plan
+    nodes:
+      plan:
+        kind: subgraph
+        graph: generation-api-plan
+        input_projection: &leaf-input
+          type: object
+          fields:
+            allowed_artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+      plan-review:
+        kind: subgraph
+        graph: generation-api-plan-review
+        input_projection: *leaf-input
+      plan-review-pass-gate:
+        kind: gate
+        expression: &plan-review-pass-expression >-
+          (decision == 'pass' or decision == 'approved') and
+          codegen_readiness != 'not_ready' and human_review_required == false
+        input_projection: &plan-review-route-projection
+          type: object
+          fields:
+            decision:
+              type: predecessor_pointer
+              predecessor: plan-review
+              pointer: /decision
+            codegen_readiness:
+              type: predecessor_pointer
+              predecessor: plan-review
+              pointer: /codegen_readiness
+            auto_fix_allowed:
+              type: predecessor_pointer
+              predecessor: plan-review
+              pointer: /auto_fix_allowed
+            human_review_required:
+              type: predecessor_pointer
+              predecessor: plan-review
+              pointer: /human_review_required
+      plan-review-fix-gate:
+        kind: gate
+        expression: &plan-review-fix-expression >-
+          (decision == 'needs_fix' or decision == 'changes_requested') and
+          auto_fix_allowed == true and human_review_required == false
+        input_projection: *plan-review-route-projection
+      plan-review-human-gate:
+        kind: gate
+        expression: &plan-review-human-expression >-
+          not (((decision == 'pass' or decision == 'approved') and
+          codegen_readiness != 'not_ready' and human_review_required == false) or
+          ((decision == 'needs_fix' or decision == 'changes_requested') and
+          auto_fix_allowed == true and human_review_required == false))
+        input_projection: *plan-review-route-projection
+      plan-human-review:
+        kind: interrupt
+        reason: api_plan_needs_human_review
+        actions: [approve]
+      codegen:
+        kind: subgraph
+        graph: generation-api-codegen
+        input_projection: *leaf-input
+      codegen-pass-gate:
+        kind: gate
+        expression: &codegen-pass-expression 'needs_fix == false'
+        input_projection: &codegen-route-projection
+          type: object
+          fields:
+            needs_fix:
+              type: predecessor_pointer
+              predecessor: codegen
+              pointer: /needs_fix
+      codegen-fix-gate:
+        kind: gate
+        expression: &codegen-fix-expression 'needs_fix == true'
+        input_projection: *codegen-route-projection
+      codegen-fix:
+        kind: subgraph
+        graph: generation-api-codegen-fix
+        input_projection: *leaf-input
+      done:
+        kind: end
+    edges:
+      - {from: plan, to: plan-review}
+      - {from: plan-review, to: plan-review-pass-gate}
+      - {from: plan-review, to: plan-review-fix-gate}
+      - {from: plan-review, to: plan-review-human-gate}
+      - {from: plan-review-pass-gate, to: codegen, condition: 'output.value == true'}
+      - {from: plan-review-fix-gate, to: plan, condition: 'output.value == true'}
+      - {from: plan-review-human-gate, to: plan-human-review, condition: 'output.value == true'}
+      - {from: plan-human-review, to: codegen}
+      - {from: codegen, to: codegen-pass-gate}
+      - {from: codegen, to: codegen-fix-gate}
+      - {from: codegen-pass-gate, to: done, condition: 'output.value == true'}
+      - {from: codegen-fix-gate, to: codegen-fix, condition: 'output.value == true'}
+      - {from: codegen-fix, to: done}
+  generation-api-plan:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.api.plan.prepare
+        input: &prepare-input
+          capability_leafs: []
+        input_projection: &prepare-projection
+          type: object
+          fields:
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: api.plan.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.api.plan.finalize
+        input: *prepare-input
+        input_projection: &finalize-projection
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-api-plan-review:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.api.plan-review.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: api.plan-review.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.api.plan-review.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-api-codegen:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.api.codegen.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: api.codegen.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.api.codegen.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-api-codegen-fix:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.api.codegen-fix.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: api.codegen-fix.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.api.codegen-fix.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-e2e:
+    max_activations: 64
+    start: plan
+    nodes:
+      plan:
+        kind: subgraph
+        graph: generation-e2e-plan
+        input_projection: *leaf-input
+      plan-review:
+        kind: subgraph
+        graph: generation-e2e-plan-review
+        input_projection: *leaf-input
+      plan-review-pass-gate:
+        kind: gate
+        expression: *plan-review-pass-expression
+        input_projection: *plan-review-route-projection
+      plan-review-fix-gate:
+        kind: gate
+        expression: *plan-review-fix-expression
+        input_projection: *plan-review-route-projection
+      plan-review-human-gate:
+        kind: gate
+        expression: *plan-review-human-expression
+        input_projection: *plan-review-route-projection
+      plan-human-review:
+        kind: interrupt
+        reason: e2e_plan_needs_human_review
+        actions: [approve]
+      codegen:
+        kind: subgraph
+        graph: generation-e2e-codegen
+        input_projection: *leaf-input
+      codegen-pass-gate:
+        kind: gate
+        expression: *codegen-pass-expression
+        input_projection: *codegen-route-projection
+      codegen-fix-gate:
+        kind: gate
+        expression: *codegen-fix-expression
+        input_projection: *codegen-route-projection
+      codegen-fix:
+        kind: subgraph
+        graph: generation-e2e-codegen-fix
+        input_projection: *leaf-input
+      done:
+        kind: end
+    edges:
+      - {from: plan, to: plan-review}
+      - {from: plan-review, to: plan-review-pass-gate}
+      - {from: plan-review, to: plan-review-fix-gate}
+      - {from: plan-review, to: plan-review-human-gate}
+      - {from: plan-review-pass-gate, to: codegen, condition: 'output.value == true'}
+      - {from: plan-review-fix-gate, to: plan, condition: 'output.value == true'}
+      - {from: plan-review-human-gate, to: plan-human-review, condition: 'output.value == true'}
+      - {from: plan-human-review, to: codegen}
+      - {from: codegen, to: codegen-pass-gate}
+      - {from: codegen, to: codegen-fix-gate}
+      - {from: codegen-pass-gate, to: done, condition: 'output.value == true'}
+      - {from: codegen-fix-gate, to: codegen-fix, condition: 'output.value == true'}
+      - {from: codegen-fix, to: done}
+  generation-e2e-plan:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.e2e.plan.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: e2e.plan.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.e2e.plan.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-e2e-plan-review:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.e2e.plan-review.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: e2e.plan-review.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.e2e.plan-review.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-e2e-codegen:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.e2e.codegen.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: e2e.codegen.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.e2e.codegen.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-e2e-codegen-fix:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.e2e.codegen-fix.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: e2e.codegen-fix.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.e2e.codegen-fix.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-fuzz:
+    max_activations: 64
+    start: plan
+    nodes:
+      plan:
+        kind: subgraph
+        graph: generation-fuzz-plan
+        input_projection: *leaf-input
+      plan-review:
+        kind: subgraph
+        graph: generation-fuzz-plan-review
+        input_projection: *leaf-input
+      plan-review-pass-gate:
+        kind: gate
+        expression: *plan-review-pass-expression
+        input_projection: *plan-review-route-projection
+      plan-review-fix-gate:
+        kind: gate
+        expression: *plan-review-fix-expression
+        input_projection: *plan-review-route-projection
+      plan-review-human-gate:
+        kind: gate
+        expression: *plan-review-human-expression
+        input_projection: *plan-review-route-projection
+      plan-human-review:
+        kind: interrupt
+        reason: fuzz_plan_needs_human_review
+        actions: [approve]
+      codegen:
+        kind: subgraph
+        graph: generation-fuzz-codegen
+        input_projection: *leaf-input
+      done:
+        kind: end
+    edges:
+      - {from: plan, to: plan-review}
+      - {from: plan-review, to: plan-review-pass-gate}
+      - {from: plan-review, to: plan-review-fix-gate}
+      - {from: plan-review, to: plan-review-human-gate}
+      - {from: plan-review-pass-gate, to: codegen, condition: 'output.value == true'}
+      - {from: plan-review-fix-gate, to: plan, condition: 'output.value == true'}
+      - {from: plan-review-human-gate, to: plan-human-review, condition: 'output.value == true'}
+      - {from: plan-human-review, to: codegen}
+      - {from: codegen, to: done}
+  generation-fuzz-plan:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.fuzz.plan.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: fuzz.plan.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.fuzz.plan.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-fuzz-plan-review:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.fuzz.plan-review.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: fuzz.plan-review.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.fuzz.plan-review.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-fuzz-codegen:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.fuzz.codegen.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: fuzz.codegen.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.fuzz.codegen.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-performance:
+    max_activations: 64
+    start: plan
+    nodes:
+      plan:
+        kind: subgraph
+        graph: generation-performance-plan
+        input_projection: *leaf-input
+      plan-review:
+        kind: subgraph
+        graph: generation-performance-plan-review
+        input_projection: *leaf-input
+      plan-review-pass-gate:
+        kind: gate
+        expression: *plan-review-pass-expression
+        input_projection: *plan-review-route-projection
+      plan-review-fix-gate:
+        kind: gate
+        expression: *plan-review-fix-expression
+        input_projection: *plan-review-route-projection
+      plan-review-human-gate:
+        kind: gate
+        expression: *plan-review-human-expression
+        input_projection: *plan-review-route-projection
+      plan-human-review:
+        kind: interrupt
+        reason: performance_plan_needs_human_review
+        actions: [approve]
+      codegen:
+        kind: subgraph
+        graph: generation-performance-codegen
+        input_projection: *leaf-input
+      done:
+        kind: end
+    edges:
+      - {from: plan, to: plan-review}
+      - {from: plan-review, to: plan-review-pass-gate}
+      - {from: plan-review, to: plan-review-fix-gate}
+      - {from: plan-review, to: plan-review-human-gate}
+      - {from: plan-review-pass-gate, to: codegen, condition: 'output.value == true'}
+      - {from: plan-review-fix-gate, to: plan, condition: 'output.value == true'}
+      - {from: plan-review-human-gate, to: plan-human-review, condition: 'output.value == true'}
+      - {from: plan-human-review, to: codegen}
+      - {from: codegen, to: done}
+  generation-performance-plan:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.performance.plan.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: performance.plan.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.performance.plan.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-performance-plan-review:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.performance.plan-review.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: performance.plan-review.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.performance.plan-review.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  generation-performance-codegen:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.generation.performance.codegen.prepare
+        input: *prepare-input
+        input_projection: *prepare-projection
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: performance.codegen.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.generation.performance.codegen.finalize
+        input: *prepare-input
+        input_projection: *finalize-projection
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}

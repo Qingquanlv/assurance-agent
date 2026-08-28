@@ -37,6 +37,8 @@ GENERATION_SCHEMA_IDS: tuple[str, ...] = (
     "assurance.generation.schema.generated-files.v1",
     "assurance.generation.schema.plan-check.v1",
     "assurance.generation.schema.plan-review.v1",
+    "assurance.generation.workflow.generate.input.v1",
+    "assurance.generation.workflow.generate.output.v1",
 )
 
 GENERATION_DEPENDENCIES: tuple[PluginDependency, ...] = (PluginDependency("assurance.intake", "==0.1.0"),)
@@ -104,6 +106,7 @@ GENERATION_RESOURCE_FILES: dict[str, str] = {
     "assurance.generation.skill.aa-performance-codegen.v1": "skills/aa-performance-codegen/SKILL.md",
     "assurance.generation.skill.aa-performance-plan-reviewer.v1": "skills/aa-performance-plan-reviewer/SKILL.md",
     "assurance.generation.skill.aa-performance-plan.v1": "skills/aa-performance-plan/SKILL.md",
+    "assurance.generation.workflow.module.v1": "workflow/module.yaml",
 }
 
 GENERATION_RESOURCE_IDS: tuple[str, ...] = tuple(sorted(GENERATION_RESOURCE_FILES))
@@ -114,6 +117,8 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.generation.schema.generated-files.v1": "schemas/generated-files.v1.schema.json",
     "assurance.generation.schema.plan-check.v1": "schemas/plan-check.v1.schema.json",
     "assurance.generation.schema.plan-review.v1": "schemas/plan-review.v1.schema.json",
+    "assurance.generation.workflow.generate.input.v1": "schemas/workflow/generate-input.v1.schema.json",
+    "assurance.generation.workflow.generate.output.v1": "schemas/workflow/generate-output.v1.schema.json",
 }
 
 _VALIDATORS = {
@@ -139,9 +144,14 @@ def _schema_contributions() -> tuple[SchemaContribution, ...]:
     )
 
 
+_WORKFLOW_MODULE_MIME = "application/vnd.graph-engine.workflow-module+yaml"
+
+
 def _resource_media_type(path: str) -> str:
     if path.endswith(".schema.json"):
         return "application/schema+json"
+    if path.endswith("workflow/module.yaml"):
+        return _WORKFLOW_MODULE_MIME
     return "text/plain"
 
 

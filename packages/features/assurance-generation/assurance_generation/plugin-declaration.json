@@ -41,7 +41,8 @@
       "assurance.generation.skill.aa-fuzz-plan.v1",
       "assurance.generation.skill.aa-performance-codegen.v1",
       "assurance.generation.skill.aa-performance-plan-reviewer.v1",
-      "assurance.generation.skill.aa-performance-plan.v1"
+      "assurance.generation.skill.aa-performance-plan.v1",
+      "assurance.generation.workflow.module.v1"
     ],
     "schema_version": "1",
     "schemas": [
@@ -49,7 +50,9 @@
       "assurance.generation.schema.discovery-campaign.v1",
       "assurance.generation.schema.generated-files.v1",
       "assurance.generation.schema.plan-check.v1",
-      "assurance.generation.schema.plan-review.v1"
+      "assurance.generation.schema.plan-review.v1",
+      "assurance.generation.workflow.generate.input.v1",
+      "assurance.generation.workflow.generate.output.v1"
     ],
     "source": {
       "declaration_path": "assurance_generation/plugin-declaration.json",
