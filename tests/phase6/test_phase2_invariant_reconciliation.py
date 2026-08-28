@@ -11,23 +11,23 @@ from graph_engine.runtime.json_schema import match_json_schema
 
 _CURRENT_BEHAVIORAL_NODES = {
     "effect_crash_recovery": (
-        "packages/graph-engine/tests/runtime/test_effects.py::"
+        "packages/framework/graph-engine/tests/runtime/test_effects.py::"
         "test_executor_reconciles_after_apply_started_without_blind_reapply"
     ),
     "retry_exhaustion": (
-        "packages/graph-engine/tests/runtime/test_effects.py::"
+        "packages/framework/graph-engine/tests/runtime/test_effects.py::"
         "test_executor_exhausts_policy_as_non_retryable_failure"
     ),
     "composition_source_authentication": (
-        "packages/graph-engine/tests/composition/test_wheel_sources.py::"
+        "packages/framework/graph-engine/tests/composition/test_wheel_sources.py::"
         "test_load_rejects_arbitrary_preloaded_module_at_authenticated_path"
     ),
     "toy_a_crash_recovery": (
-        "packages/graph-engine/tests/runtime/test_effects.py::"
+        "packages/framework/graph-engine/tests/runtime/test_effects.py::"
         "test_executor_reconciles_after_apply_started_without_blind_reapply"
     ),
     "installed_wheel_isolation": (
-        "packages/graph-engine/tests/test_cli.py::test_run_executes_only_the_explicit_product_plugin_bundle"
+        "packages/framework/graph-engine/tests/test_cli.py::test_run_executes_only_the_explicit_product_plugin_bundle"
     ),
 }
 

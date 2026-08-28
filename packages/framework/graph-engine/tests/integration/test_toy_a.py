@@ -28,7 +28,7 @@ def _toy_a_composition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> FrozenComposition:
     source = root / "source"
-    repository = Path(__file__).parents[4]
+    repository = Path(__file__).parents[5]
     shutil.copytree(
         repository / "examples" / "graph-engine-toy-a",
         source,

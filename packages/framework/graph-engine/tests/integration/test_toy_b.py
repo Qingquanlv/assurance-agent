@@ -41,7 +41,7 @@ def _toy_composition(
     toy: str,
 ) -> FrozenComposition:
     source = root / "source"
-    repository = Path(__file__).parents[4]
+    repository = Path(__file__).parents[5]
     distribution = f"graph-engine-toy-{toy}"
     package_name = f"graph_engine_toy_{toy}"
     entrypoint_name = f"toy-{toy}"

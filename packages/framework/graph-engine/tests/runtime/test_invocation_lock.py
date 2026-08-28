@@ -158,7 +158,7 @@ def _toy_a_composition(
     interrupt: bool = False,
 ) -> FrozenComposition:
     source = root / "source"
-    repository = Path(__file__).parents[4]
+    repository = Path(__file__).parents[5]
     shutil.copytree(
         repository / "examples" / "graph-engine-toy-a",
         source,
@@ -250,7 +250,7 @@ def _toy_b_composition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> FrozenComposition:
     source = root / "source"
-    repository = Path(__file__).parents[4]
+    repository = Path(__file__).parents[5]
     shutil.copytree(
         repository / "examples" / "graph-engine-toy-b",
         source,

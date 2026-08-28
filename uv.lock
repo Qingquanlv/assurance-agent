@@ -43,7 +43,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
 
@@ -60,7 +60,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
 
@@ -76,7 +76,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
 ]
 
 [[package]]
@@ -93,7 +93,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
@@ -138,7 +138,7 @@ requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
     { name = "assurance-generation", editable = "packages/assurance-generation" },
     { name = "assurance-intake", editable = "packages/assurance-intake" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
@@ -159,7 +159,7 @@ dependencies = [
 requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
     { name = "assurance-intake", editable = "packages/assurance-intake" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
@@ -183,7 +183,7 @@ requires-dist = [
     { name = "assurance-execution", editable = "packages/assurance-execution" },
     { name = "assurance-generation", editable = "packages/assurance-generation" },
     { name = "assurance-intake", editable = "packages/assurance-intake" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
 
@@ -210,7 +210,7 @@ requires-dist = [
     { name = "assurance-healing", editable = "packages/assurance-healing" },
     { name = "assurance-intake", editable = "packages/assurance-intake" },
     { name = "assurance-quality", editable = "packages/assurance-quality" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
 
@@ -228,7 +228,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/agent-runtime-contracts" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
@@ -267,7 +267,7 @@ requires-dist = [
     { name = "assurance-intake", editable = "packages/assurance-intake" },
     { name = "assurance-quality", editable = "packages/assurance-quality" },
     { name = "click", specifier = ">=8.1" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
 ]
 provides-extras = ["opencode", "cursor"]
 
@@ -292,7 +292,7 @@ requires-dist = [
     { name = "assurance-generation", editable = "packages/assurance-generation" },
     { name = "assurance-healing", editable = "packages/assurance-healing" },
     { name = "assurance-intake", editable = "packages/assurance-intake" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "pydantic", specifier = ">=2.7" },
 ]
 
@@ -348,7 +348,7 @@ dev = [
     { name = "assurance-product", editable = "packages/assurance-product" },
     { name = "assurance-quality", editable = "packages/assurance-quality" },
     { name = "click", specifier = ">=8.1" },
-    { name = "graph-engine", editable = "packages/graph-engine" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },
     { name = "graph-engine-toy-b", editable = "examples/graph-engine-toy-b" },
     { name = "httpx", specifier = ">=0.27" },
@@ -480,7 +480,7 @@ wheels = [
 [[package]]
 name = "graph-engine"
 version = "0.1.0"
-source = { editable = "packages/graph-engine" }
+source = { editable = "packages/framework/graph-engine" }
 dependencies = [
     { name = "packaging" },
     { name = "pydantic" },
@@ -503,7 +503,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "graph-engine", editable = "packages/graph-engine" }]
+requires-dist = [{ name = "graph-engine", editable = "packages/framework/graph-engine" }]
 
 [[package]]
 name = "graph-engine-toy-b"
@@ -514,7 +514,7 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "graph-engine", editable = "packages/graph-engine" }]
+requires-dist = [{ name = "graph-engine", editable = "packages/framework/graph-engine" }]
 
 [[package]]
 name = "grimp"

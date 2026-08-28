@@ -25,7 +25,7 @@ from graph_engine.runtime.seed import InvocationSeed
 
 def _composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FrozenComposition:
     source = tmp_path / "composition-source"
-    repository = Path(__file__).parents[4]
+    repository = Path(__file__).parents[5]
     shutil.copytree(
         repository / "examples" / "graph-engine-toy-a",
         source,

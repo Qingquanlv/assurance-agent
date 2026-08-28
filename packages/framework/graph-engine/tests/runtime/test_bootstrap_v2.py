@@ -41,7 +41,7 @@ _BOOTSTRAP_APPEND_BOUNDARIES = (
 @pytest.fixture
 def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FrozenComposition:
     source = tmp_path / "source"
-    repository = Path(__file__).parents[4]
+    repository = Path(__file__).parents[5]
     shutil.copytree(
         repository / "examples" / "graph-engine-toy-a",
         source,

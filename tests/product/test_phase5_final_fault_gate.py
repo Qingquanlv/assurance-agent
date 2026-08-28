@@ -116,7 +116,7 @@ EXPECTED_GAP_FAULT_IDS = (
 EXPECTED_FAULT_GATE_NODE_IDS = {
     "provider_state_loss_replay": (
         "packages/agent-runtime-cursor/tests/test_process_host.py::test_durable_terminal_survives_new_host_instance",
-        "packages/graph-engine/tests/runtime/test_staged_promotion_recovery.py::test_recovery_consumes_durable_promotion_without_reexecuting_handler",
+        "packages/framework/graph-engine/tests/runtime/test_staged_promotion_recovery.py::test_recovery_consumes_durable_promotion_without_reexecuting_handler",
         "tests/product/test_replay_properties.py::test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash_subset",
     ),
     "fault_crash_recovery": (

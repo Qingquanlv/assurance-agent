@@ -15,7 +15,7 @@ EXPECTED_SECURITY_GATE_NODE_IDS = {
         "tests/product/test_composition_authority.py::test_mutated_config_tree_changes_lock",
         "tests/product/test_product_input.py::test_product_input_authenticates_resource_refs_against_composition",
         "tests/phase4/test_six_wheel_composition.py::test_binding_digests_recompute_from_checked_in_bytes",
-        "packages/graph-engine/tests/runtime/test_engine.py::test_open_rejects_a_distinct_authenticated_handler_source",
+        "packages/framework/graph-engine/tests/runtime/test_engine.py::test_open_rejects_a_distinct_authenticated_handler_source",
     ),
     "adapter_confinement": (
         "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[absolute-intake]",

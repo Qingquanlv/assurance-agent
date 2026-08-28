@@ -104,11 +104,11 @@ that differs from the product manifest.
 From the repository root:
 
 ```bash
-uv run ruff check packages/graph-engine examples/graph-engine-toy-a examples/graph-engine-toy-b tests/architecture/test_graph_engine_boundaries.py
-uv run ruff format --check packages/graph-engine examples/graph-engine-toy-a examples/graph-engine-toy-b tests/architecture/test_graph_engine_boundaries.py
-uv run pyright packages/graph-engine/graph_engine examples/graph-engine-toy-a examples/graph-engine-toy-b
+uv run ruff check packages/framework/graph-engine examples/graph-engine-toy-a examples/graph-engine-toy-b tests/architecture/test_graph_engine_boundaries.py
+uv run ruff format --check packages/framework/graph-engine examples/graph-engine-toy-a examples/graph-engine-toy-b tests/architecture/test_graph_engine_boundaries.py
+uv run pyright packages/framework/graph-engine/graph_engine examples/graph-engine-toy-a examples/graph-engine-toy-b
 uv run lint-imports
-uv run pytest packages/graph-engine/tests tests/architecture/test_graph_engine_boundaries.py -q
+uv run pytest packages/framework/graph-engine/tests tests/architecture/test_graph_engine_boundaries.py -q
 bash scripts/graph_engine_smoke_test.sh
 ```
 

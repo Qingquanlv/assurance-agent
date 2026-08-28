@@ -27,7 +27,7 @@ def _run_cli(*arguments: str, pythonpath: Path | None = None) -> subprocess.Comp
 def _installed_toy_a_site(tmp_path: Path) -> Path:
     site = tmp_path / "site"
     package = site / "graph_engine_toy_a"
-    source = Path(__file__).parents[3] / "examples" / "graph-engine-toy-a" / "graph_engine_toy_a"
+    source = Path(__file__).parents[4] / "examples" / "graph-engine-toy-a" / "graph_engine_toy_a"
     shutil.copytree(source, package, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     dist_info = site / "graph_engine_toy_a-1.0.0.dist-info"
     dist_info.mkdir()

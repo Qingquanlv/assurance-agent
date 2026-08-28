@@ -208,7 +208,7 @@ SECURITY_GATE_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "tests/product/test_composition_authority.py::test_mutated_config_tree_changes_lock",
             "tests/product/test_product_input.py::test_product_input_authenticates_resource_refs_against_composition",
             "tests/phase4/test_six_wheel_composition.py::test_binding_digests_recompute_from_checked_in_bytes",
-            "packages/graph-engine/tests/runtime/test_engine.py::test_open_rejects_a_distinct_authenticated_handler_source",
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_open_rejects_a_distinct_authenticated_handler_source",
         ),
         "adapter_confinement": (
             "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[absolute-intake]",
@@ -238,7 +238,7 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_receipt_before_engine_ack_replays_without_provider",
             "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_replay_without_provider",
             "packages/agent-runtime-cursor/tests/test_process_host.py::test_durable_terminal_survives_new_host_instance",
-            "packages/graph-engine/tests/runtime/test_staged_promotion_recovery.py::test_recovery_consumes_durable_promotion_without_reexecuting_handler",
+            "packages/framework/graph-engine/tests/runtime/test_staged_promotion_recovery.py::test_recovery_consumes_durable_promotion_without_reexecuting_handler",
             "tests/product/test_replay_properties.py::test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash_subset",
         ),
         "fault_crash_recovery": (
@@ -284,32 +284,32 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "tests/product/test_project_configuration_security.py::test_bindings_are_rejected_even_when_phase2_would_accept_them",
             "tests/product/test_project_configuration_security.py::test_runtime_adapter_dependency_is_rejected",
             "tests/product/test_binding_builder.py::test_extra_prepare_assignment_is_rejected",
-            "packages/graph-engine/tests/runtime/test_engine.py::test_initialization_failure_before_ledger_leaves_exactly_recoverable_identity",
-            "packages/graph-engine/tests/runtime/test_invocation_workspace_binding.py::test_start_requires_binding_and_does_not_capture_the_project_tree",
-            "packages/graph-engine/tests/runtime/test_invocation_lock.py::test_engine_persists_lock_before_bootstrap",
-            "packages/graph-engine/tests/runtime/test_invocation_lock.py::test_start_intent_fault_cuts_are_exactly_recoverable[after_rename-True]",
-            "packages/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[0]",
-            "packages/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[2]",
-            "packages/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[3]",
-            "packages/graph-engine/tests/runtime/test_engine.py::test_duplicate_start_rejects_digest_mismatch_without_replacing_invocation",
-            "packages/graph-engine/tests/runtime/test_engine.py::test_open_rejects_forged_root_input_even_with_matching_start_token",
-            "packages/graph-engine/tests/runtime/test_engine.py::test_open_rejects_terminal_history_with_omitted_fanout_branch",
-            "packages/graph-engine/tests/runtime/test_engine.py::test_open_rejects_extra_duplicate_edge_token",
-            "packages/graph-engine/tests/runtime/test_engine.py::test_open_rejects_non_earliest_token_for_all_join_predecessor",
-            "packages/graph-engine/tests/runtime/test_engine.py::test_open_rejects_changed_canonical_edge_token[token_id]",
-            "packages/graph-engine/tests/runtime/test_ledger_and_checkpoint.py::test_checkpoint_rejects_impossible_or_mismatched_projection",
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_host_before_worker_spawn_fault_has_no_child_dispatch_or_receipt",
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_host_after_spawn_before_dispatch_fault_cleans_child_without_receipt",
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely",
-            "packages/graph-engine/tests/runtime/test_host_receipts.py::test_recovery_checks_receipt_before_reconcile",
-            "packages/graph-engine/tests/runtime/test_host_receipts.py::test_quiescence_rejects_live_writers",
-            "packages/graph-engine/tests/runtime/test_host_receipts.py::test_terminal_receipt_cut_recovery_is_exactly_once[after_receipt_rename]",
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_production_host_crash_after_receipt_leaves_durable_receipt",
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_leftover_process_group_child_still_fails_quiescence",
-            "packages/graph-engine/tests/runtime/test_production_host_security.py::test_production_host_revokes_parent_secrets_after_call",
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_worker_rejects_substituted_project_root_before_handler_execution",
-            "packages/graph-engine/tests/runtime/test_host_receipts.py::test_receipt_store_rejects_partial_symlink_linked_changed_multiple_foreign_and_nonmonotonic",
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_production_host_rejects_forged_terminal_receipt",
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_initialization_failure_before_ledger_leaves_exactly_recoverable_identity",
+            "packages/framework/graph-engine/tests/runtime/test_invocation_workspace_binding.py::test_start_requires_binding_and_does_not_capture_the_project_tree",
+            "packages/framework/graph-engine/tests/runtime/test_invocation_lock.py::test_engine_persists_lock_before_bootstrap",
+            "packages/framework/graph-engine/tests/runtime/test_invocation_lock.py::test_start_intent_fault_cuts_are_exactly_recoverable[after_rename-True]",
+            "packages/framework/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[0]",
+            "packages/framework/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[2]",
+            "packages/framework/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[3]",
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_duplicate_start_rejects_digest_mismatch_without_replacing_invocation",
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_open_rejects_forged_root_input_even_with_matching_start_token",
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_open_rejects_terminal_history_with_omitted_fanout_branch",
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_open_rejects_extra_duplicate_edge_token",
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_open_rejects_non_earliest_token_for_all_join_predecessor",
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_open_rejects_changed_canonical_edge_token[token_id]",
+            "packages/framework/graph-engine/tests/runtime/test_ledger_and_checkpoint.py::test_checkpoint_rejects_impossible_or_mismatched_projection",
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_host_before_worker_spawn_fault_has_no_child_dispatch_or_receipt",
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_host_after_spawn_before_dispatch_fault_cleans_child_without_receipt",
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely",
+            "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_recovery_checks_receipt_before_reconcile",
+            "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_quiescence_rejects_live_writers",
+            "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_terminal_receipt_cut_recovery_is_exactly_once[after_receipt_rename]",
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_production_host_crash_after_receipt_leaves_durable_receipt",
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_leftover_process_group_child_still_fails_quiescence",
+            "packages/framework/graph-engine/tests/runtime/test_production_host_security.py::test_production_host_revokes_parent_secrets_after_call",
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_worker_rejects_substituted_project_root_before_handler_execution",
+            "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_receipt_store_rejects_partial_symlink_linked_changed_multiple_foreign_and_nonmonotonic",
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_production_host_rejects_forged_terminal_receipt",
             "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_temporary_empty_discovery_stays_indeterminate",
             "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_multiple_matches_fail_closed",
             "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_lost_sse_authenticates_with_get",
@@ -403,79 +403,79 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "tests/product/test_composition_authority.py::test_forged_alias_target_fails_closed"
         ),
         "start-intent-publication-cut": (
-            "packages/graph-engine/tests/runtime/test_invocation_lock.py::test_start_intent_fault_cuts_are_exactly_recoverable[after_rename-True]"
+            "packages/framework/graph-engine/tests/runtime/test_invocation_lock.py::test_start_intent_fault_cuts_are_exactly_recoverable[after_rename-True]"
         ),
         "bootstrap-before-append": (
-            "packages/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[0]"
+            "packages/framework/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[0]"
         ),
         "bootstrap-after-append": (
-            "packages/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[3]"
+            "packages/framework/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[3]"
         ),
         "bootstrap-before-directory-fsync": (
-            "packages/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[2]"
+            "packages/framework/graph-engine/tests/runtime/test_bootstrap_v2.py::test_start_recovers_to_one_authenticated_bootstrap_prefix[2]"
         ),
         "repeated-start-root-input-drift": (
-            "packages/graph-engine/tests/runtime/test_engine.py::test_repeated_start_with_changed_root_input_rejects_drift_and_preserves_state"
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_repeated_start_with_changed_root_input_rejects_drift_and_preserves_state"
         ),
         "projection-missing-root-pointer": (
-            "packages/graph-engine/tests/graph/test_input_projection.py::test_projection_rejects_missing_pointer"
+            "packages/framework/graph-engine/tests/graph/test_input_projection.py::test_projection_rejects_missing_pointer"
         ),
         "projection-missing-predecessor": (
-            "packages/graph-engine/tests/graph/test_input_projection.py::test_projection_rejects_missing_predecessor_token"
+            "packages/framework/graph-engine/tests/graph/test_input_projection.py::test_projection_rejects_missing_predecessor_token"
         ),
         "projection-duplicate-predecessor-token": (
-            "packages/graph-engine/tests/runtime/test_planner.py::test_all_join_waits_for_each_distinct_predecessor"
+            "packages/framework/graph-engine/tests/runtime/test_planner.py::test_all_join_waits_for_each_distinct_predecessor"
         ),
         "projection-wrong-join-cardinality": (
-            "packages/graph-engine/tests/graph/test_schema_and_compiler.py::test_compile_requires_two_distinct_sources_for_all_join"
+            "packages/framework/graph-engine/tests/graph/test_schema_and_compiler.py::test_compile_requires_two_distinct_sources_for_all_join"
         ),
         "projection-token-schema-mismatch": (
-            "packages/graph-engine/tests/runtime/test_engine.py::test_open_rejects_changed_canonical_edge_token[payload]"
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_open_rejects_changed_canonical_edge_token[payload]"
         ),
         "projection-noncanonical-pointer": (
-            "packages/graph-engine/tests/graph/test_input_projection.py::test_projection_rejects_non_canonical_pointer"
+            "packages/framework/graph-engine/tests/graph/test_input_projection.py::test_projection_rejects_non_canonical_pointer"
         ),
         "projection-replay-drift": (
-            "packages/graph-engine/tests/runtime/test_ledger_and_checkpoint.py::test_checkpoint_rejects_impossible_or_mismatched_projection"
+            "packages/framework/graph-engine/tests/runtime/test_ledger_and_checkpoint.py::test_checkpoint_rejects_impossible_or_mismatched_projection"
         ),
         "host-before-worker-spawn": (
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_host_before_worker_spawn_fault_has_no_child_dispatch_or_receipt"
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_host_before_worker_spawn_fault_has_no_child_dispatch_or_receipt"
         ),
         "host-after-spawn-before-dispatch": (
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_host_after_spawn_before_dispatch_fault_cleans_child_without_receipt"
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_host_after_spawn_before_dispatch_fault_cleans_child_without_receipt"
         ),
         "host-during-activity-rpc": (
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely"
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely"
         ),
         "host-after-reference-bind": (
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile"
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile"
         ),
         "host-response-before-quiescence": (
-            "packages/graph-engine/tests/runtime/test_host_receipts.py::test_terminal_receipt_cut_recovery_is_exactly_once[before_quiescence]"
+            "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_terminal_receipt_cut_recovery_is_exactly_once[before_quiescence]"
         ),
         "host-terminal-receipt-publication": (
-            "packages/graph-engine/tests/runtime/test_host_receipts.py::test_terminal_receipt_cut_recovery_is_exactly_once[after_receipt_rename]"
+            "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_terminal_receipt_cut_recovery_is_exactly_once[after_receipt_rename]"
         ),
         "host-receipt-durable-before-ack": (
-            "packages/graph-engine/tests/runtime/test_host_receipts.py::test_terminal_receipt_cut_recovery_is_exactly_once[after_staged_seal]"
+            "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_terminal_receipt_cut_recovery_is_exactly_once[after_staged_seal]"
         ),
         "host-parent-crash-live-descendants": (
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_parent_process_crash_with_live_descendants_cleans_group_and_leaves_no_receipt"
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_parent_process_crash_with_live_descendants_cleans_group_and_leaves_no_receipt"
         ),
         "host-secret-channel-disconnect": (
-            "packages/graph-engine/tests/runtime/test_production_host_security.py::test_secret_channel_disconnect_revokes_parent_material_and_cleans_worker"
+            "packages/framework/graph-engine/tests/runtime/test_production_host_security.py::test_secret_channel_disconnect_revokes_parent_material_and_cleans_worker"
         ),
         "host-secret-channel-revocation": (
-            "packages/graph-engine/tests/runtime/test_production_host_security.py::test_production_host_revokes_parent_secrets_after_call"
+            "packages/framework/graph-engine/tests/runtime/test_production_host_security.py::test_production_host_revokes_parent_secrets_after_call"
         ),
         "host-worker-source-drift": (
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_host_rejects_worker_source_drift_before_spawn"
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_host_rejects_worker_source_drift_before_spawn"
         ),
         "host-duplicate-terminal-receipt": (
-            "packages/graph-engine/tests/runtime/test_host_receipts.py::test_receipt_store_rejects_partial_symlink_linked_changed_multiple_foreign_and_nonmonotonic"
+            "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_receipt_store_rejects_partial_symlink_linked_changed_multiple_foreign_and_nonmonotonic"
         ),
         "host-foreign-terminal-receipt": (
-            "packages/graph-engine/tests/runtime/test_production_host_faults.py::test_production_host_rejects_forged_terminal_receipt"
+            "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_production_host_rejects_forged_terminal_receipt"
         ),
         "opencode-ambiguous-session-create": (
             "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[after_create_before_response]"
@@ -535,13 +535,13 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "packages/agent-runtime-cursor/tests/test_fault_matrix.py::test_cleanup_ambiguity_is_indeterminate"
         ),
         "effect-before-intent": (
-            "packages/graph-engine/tests/runtime/test_scheduler.py::test_prepared_intent_cas_conflict_leaves_project_unchanged"
+            "packages/framework/graph-engine/tests/runtime/test_scheduler.py::test_prepared_intent_cas_conflict_leaves_project_unchanged"
         ),
         "effect-after-intent": (
-            "packages/graph-engine/tests/runtime/test_scheduler.py::test_prepared_append_installed_completes[final_installed]"
+            "packages/framework/graph-engine/tests/runtime/test_scheduler.py::test_prepared_append_installed_completes[final_installed]"
         ),
         "effect-receipt-publication": (
-            "packages/graph-engine/tests/runtime/test_engine.py::test_engine_effect_receipt_publication_crash_replays_without_reapply"
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_engine_effect_receipt_publication_crash_replays_without_reapply"
         ),
         "effect-reconcile-lost-ack": (
             "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_receipt-assurance.improvement.effect.archive.v1]"
@@ -571,23 +571,23 @@ _PHASE5_SUPERSEDED_FAULTS: Mapping[str, tuple[str, str]] = MappingProxyType(
     {
         "seed-capture-cut": (
             "Change-local InvocationSeed has no project-tree capture or WorkspaceSeed authority.",
-            "packages/graph-engine/tests/runtime/test_invocation_workspace_binding.py::test_invocation_seed_contains_root_input_but_no_project_tree_identity",
+            "packages/framework/graph-engine/tests/runtime/test_invocation_workspace_binding.py::test_invocation_seed_contains_root_input_but_no_project_tree_identity",
         ),
         "seed-captured-before-start": (
             "Engine.start requires a process-local descriptor-bound workspace binding and never captures a seed tree.",
-            "packages/graph-engine/tests/runtime/test_invocation_workspace_binding.py::test_start_requires_binding_and_does_not_capture_the_project_tree",
+            "packages/framework/graph-engine/tests/runtime/test_invocation_workspace_binding.py::test_start_requires_binding_and_does_not_capture_the_project_tree",
         ),
         "initial-tree-publication-cut": (
             "SnapshotStore initial-tree publication was removed; each attempt now starts with an empty isolated write root.",
-            "packages/graph-engine/tests/runtime/test_task_workspace.py::test_begin_creates_empty_attempt_root_with_stable_path_free_identity",
+            "packages/framework/graph-engine/tests/runtime/test_task_workspace.py::test_begin_creates_empty_attempt_root_with_stable_path_free_identity",
         ),
         "initial-tree-durable-before-intent": (
             "There is no initial tree durability boundary; the authenticated invocation lock precedes bootstrap.",
-            "packages/graph-engine/tests/runtime/test_invocation_lock.py::test_engine_persists_lock_before_bootstrap",
+            "packages/framework/graph-engine/tests/runtime/test_invocation_lock.py::test_engine_persists_lock_before_bootstrap",
         ),
         "repeated-start-seed-drift": (
             "WorkspaceSeed/tree identity was removed; repeated start now authenticates the process-local workspace binding.",
-            "packages/graph-engine/tests/runtime/test_engine.py::test_repeated_start_with_changed_workspace_binding_rejects_drift_and_preserves_state",
+            "packages/framework/graph-engine/tests/runtime/test_engine.py::test_repeated_start_with_changed_workspace_binding_rejects_drift_and_preserves_state",
         ),
         "comparison-input-drift": (
             "Legacy-vs-current comparison input authentication was removed; replay authentication remains in product publish tests.",

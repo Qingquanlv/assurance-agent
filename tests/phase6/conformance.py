@@ -21,7 +21,7 @@ PRODUCTION_METADATA_FILES = (
     "packages/assurance-healing/pyproject.toml",
     "packages/assurance-quality/pyproject.toml",
     "packages/assurance-improvement/pyproject.toml",
-    "packages/graph-engine/pyproject.toml",
+    "packages/framework/graph-engine/pyproject.toml",
     "packages/agent-runtime-contracts/pyproject.toml",
     "packages/agent-runtime-opencode/pyproject.toml",
     "packages/agent-runtime-cursor/pyproject.toml",
@@ -35,7 +35,7 @@ PRODUCTION_PACKAGE_ROOTS = (
     "packages/assurance-healing/assurance_healing",
     "packages/assurance-quality/assurance_quality",
     "packages/assurance-improvement/assurance_improvement",
-    "packages/graph-engine/graph_engine",
+    "packages/framework/graph-engine/graph_engine",
     "packages/agent-runtime-contracts/agent_runtime_contracts",
     "packages/agent-runtime-opencode/agent_runtime_opencode",
     "packages/agent-runtime-cursor/agent_runtime_cursor",
@@ -67,7 +67,7 @@ KERNEL_DESTINATIONS = frozenset(
     }
 )
 KERNEL_DESTINATION_ROOTS = {
-    "graph-engine": "packages/graph-engine",
+    "graph-engine": "packages/framework/graph-engine",
     "assurance-product": "packages/assurance-product",
     "assurance.intake": "packages/assurance-intake",
     "assurance.generation": "packages/assurance-generation",

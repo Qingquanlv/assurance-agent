@@ -13,6 +13,7 @@ root_packages =
     agent_runtime_opencode
     agent_runtime_cursor
     agent_runtime_fixture
+    assurance_product
 
 [importlinter:contract:generation-intake-contracts-only]
 name = generation may import only intake contracts
@@ -120,11 +121,21 @@ forbidden_modules =
     assurance_quality.resource_loader
 
 [importlinter:contract:graph-engine-independent]
-name = graph engine must not import products or the old runtime
+name = framework must not import clients, features, products, or fixtures
 type = forbidden
 source_modules =
     graph_engine
 forbidden_modules =
+    agent_runtime_contracts
+    agent_runtime_opencode
+    agent_runtime_cursor
+    assurance_intake
+    assurance_generation
+    assurance_execution
+    assurance_healing
+    assurance_quality
+    assurance_improvement
+    assurance_product
     graph_engine_toy_a
     graph_engine_toy_b
     agent_runtime_fixture
