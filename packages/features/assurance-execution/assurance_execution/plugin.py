@@ -30,6 +30,10 @@ EXECUTION_SCHEMA_IDS: tuple[str, ...] = (
     "assurance.execution.schema.execution-evidence.v1",
     "assurance.execution.schema.execution-manifest.v1",
     "assurance.execution.schema.selected-targets.v1",
+    "assurance.execution.workflow.execute.input.v1",
+    "assurance.execution.workflow.execute.output.v1",
+    "assurance.execution.workflow.rerun.input.v1",
+    "assurance.execution.workflow.rerun.output.v1",
 )
 
 EXECUTION_DEPENDENCIES: tuple[PluginDependency, ...] = (
@@ -58,6 +62,7 @@ EXECUTION_RESOURCE_FILES: dict[str, str] = {
     "assurance.execution.result.execution.v1": "result-contracts/execution.v1.schema.json",
     "assurance.execution.skill.aa-execute.v1": "skills/aa-execute/SKILL.md",
     "assurance.execution.skill.aa-run.v1": "skills/aa-run/SKILL.md",
+    "assurance.execution.workflow.module.v1": "workflow/module.yaml",
 }
 
 EXECUTION_RESOURCE_IDS: tuple[str, ...] = tuple(sorted(EXECUTION_RESOURCE_FILES))
@@ -67,6 +72,10 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.execution.schema.execution-evidence.v1": "schemas/execution-evidence.v1.schema.json",
     "assurance.execution.schema.execution-manifest.v1": "schemas/execution-manifest.v1.schema.json",
     "assurance.execution.schema.selected-targets.v1": "schemas/selected-targets.v1.schema.json",
+    "assurance.execution.workflow.execute.input.v1": "schemas/workflow/execute-input.v1.schema.json",
+    "assurance.execution.workflow.execute.output.v1": "schemas/workflow/execute-output.v1.schema.json",
+    "assurance.execution.workflow.rerun.input.v1": "schemas/workflow/rerun-input.v1.schema.json",
+    "assurance.execution.workflow.rerun.output.v1": "schemas/workflow/rerun-output.v1.schema.json",
 }
 
 _VALIDATORS = {
@@ -86,9 +95,14 @@ def _schema_contributions() -> tuple[SchemaContribution, ...]:
     )
 
 
+_WORKFLOW_MODULE_MIME = "application/vnd.graph-engine.workflow-module+yaml"
+
+
 def _resource_media_type(path: str) -> str:
     if path.endswith(".schema.json"):
         return "application/schema+json"
+    if path.endswith("workflow/module.yaml"):
+        return _WORKFLOW_MODULE_MIME
     return "text/plain"
 
 

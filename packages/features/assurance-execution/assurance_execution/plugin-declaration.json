@@ -23,14 +23,19 @@
       "assurance.execution.persona.executor.v1",
       "assurance.execution.result.execution.v1",
       "assurance.execution.skill.aa-execute.v1",
-      "assurance.execution.skill.aa-run.v1"
+      "assurance.execution.skill.aa-run.v1",
+      "assurance.execution.workflow.module.v1"
     ],
     "schema_version": "1",
     "schemas": [
       "assurance.execution.schema.closed-mapping.v1",
       "assurance.execution.schema.execution-evidence.v1",
       "assurance.execution.schema.execution-manifest.v1",
-      "assurance.execution.schema.selected-targets.v1"
+      "assurance.execution.schema.selected-targets.v1",
+      "assurance.execution.workflow.execute.input.v1",
+      "assurance.execution.workflow.execute.output.v1",
+      "assurance.execution.workflow.rerun.input.v1",
+      "assurance.execution.workflow.rerun.output.v1"
     ],
     "source": {
       "declaration_path": "assurance_execution/plugin-declaration.json",
