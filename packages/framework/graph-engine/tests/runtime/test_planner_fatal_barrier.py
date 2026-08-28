@@ -637,3 +637,39 @@ def test_fatal_barrier_rejects_forged_chain_before_sibling_settlement() -> None:
     with pytest.raises((PlanningError, ProjectionError)):
         folded = fold_events(forged)
         validate_event_history(compiled, forged, folded, schemas=schemas)
+
+
+def test_fatal_barrier_holds_route_overlap_while_sibling_attempt_is_running() -> None:
+    from test_planner_routing import (
+        _assert_no_terminal_progress as _routing_no_progress,
+        _bootstrap_route_failure_with_running_sibling,
+        _parallel_route_failure_workflow,
+    )
+
+    compiled = _parallel_route_failure_workflow(mode="overlap")
+    events, task_id, activation_id = _bootstrap_route_failure_with_running_sibling(compiled)
+    projection = _projection(*events)
+    first = plan_next(compiled, projection)
+    second = plan_next(compiled, projection)
+    running = plan_running_tasks(compiled, projection)
+    _routing_no_progress(first)
+    _routing_no_progress(second)
+    assert first.events == second.events
+    assert [task.activation_id for task in running] == [activation_id]
+    assert [task.task_id for task in running] == [task_id]
+
+
+def test_fatal_barrier_holds_insufficient_route_matches_while_sibling_attempt_is_running() -> None:
+    from test_planner_routing import (
+        _assert_no_terminal_progress as _routing_no_progress,
+        _bootstrap_route_failure_with_running_sibling,
+        _parallel_route_failure_workflow,
+    )
+
+    compiled = _parallel_route_failure_workflow(mode="insufficient")
+    events, task_id, activation_id = _bootstrap_route_failure_with_running_sibling(compiled)
+    first = plan_next(compiled, _projection(*events))
+    _routing_no_progress(first)
+    running = plan_running_tasks(compiled, _projection(*events))
+    assert [task.activation_id for task in running] == [activation_id]
+    assert [task.task_id for task in running] == [task_id]

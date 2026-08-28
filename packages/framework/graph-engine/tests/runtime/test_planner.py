@@ -970,6 +970,43 @@ def test_false_gate_with_no_matching_edge_emits_no_outgoing_token() -> None:
     assert plan.terminal is None
 
 
+def test_legacy_multi_edge_keeps_global_declaration_index() -> None:
+    compiled = _compiled(
+        """      choose: {kind: gate, expression: 'true'}
+      late: {kind: end}
+      early: {kind: end}""",
+        """      - {from: choose, to: late, condition: 'true'}
+      - {from: choose, to: early, condition: 'true'}""",
+        start="choose",
+    )
+    plan = plan_next(compiled, _projection(_invocation()))
+    start = _canonical_start_token(compiled)
+    choose = activation_id("root", "choose", 0, (start.token_id,))
+    offered = [event for event in plan.events if event.kind == "token_offered" and event.source == "choose"]
+
+    assert [event.target for event in offered] == ["late", "early"]
+    assert offered[0].token_id == canonical_digest(
+        {
+            "edge_index": 0,
+            "graph_instance_id": "root",
+            "kind": "edge",
+            "source": "choose",
+            "source_activation_id": choose,
+            "target": "late",
+        }
+    )
+    assert offered[1].token_id == canonical_digest(
+        {
+            "edge_index": 1,
+            "graph_instance_id": "root",
+            "kind": "edge",
+            "source": "choose",
+            "source_activation_id": choose,
+            "target": "early",
+        }
+    )
+
+
 def test_cycle_is_bounded_before_creating_more_work() -> None:
     compiled = _compiled(
         "      loop: {kind: gate, expression: 'true'}",

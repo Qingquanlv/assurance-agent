@@ -8,6 +8,7 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.models import SchemaRegistry
 from graph_engine.errors import GraphEngineError
 from graph_engine.graph.compiler import CompiledGraph, CompiledNode, CompiledWorkflow
+from graph_engine.graph.schema import EdgeDef
 from graph_engine.graph.expressions import evaluate_expression
 from graph_engine.graph.input_projection import InputProjectionError, project_task_input
 from graph_engine.graph.output_projection import OutputProjectionError, project_subgraph_output
@@ -61,6 +62,12 @@ from graph_engine.runtime.models import (
 
 class PlanningError(GraphEngineError):
     """Raised when a projection cannot be planned against its compiled workflow."""
+
+
+class _RouteSelectionError(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 TerminalStatus = Literal["succeeded", "failed", "stopped", "interrupted"]
@@ -143,7 +150,7 @@ class _FatalCandidate:
     graph_instance_id: str
     subject_id: str
     reason: str
-    kind: Literal["invalid_input", "invalid_output"]
+    kind: Literal["invalid_input", "invalid_output", "route"]
     failure: TaskFailure
     node_id: str
     token_ids: tuple[str, ...] = ()
@@ -937,7 +944,8 @@ def _validate_terminal_causal_proof(
                 )
             )
     contract_cause = _structural_contract_failure_matches(compiled, projection, graphs, schemas)
-    if not task_cause and not activation_bound_cause and not contract_cause:
+    route_cause = _route_selection_failure_matches(compiled, projection, graphs, schemas=schemas)
+    if not task_cause and not activation_bound_cause and not contract_cause and not route_cause:
         raise PlanningError("failed invocation lacks exact compiled causal proof")
 
 
@@ -1547,12 +1555,37 @@ def _pending_fatal_violation(state: _PlannerState) -> _FatalCandidate | None:
                     token_ids=token_ids,
                 )
             )
+    for activation in state.activations.values():
+        if activation.status != "completed":
+            continue
+        graph_record = state.graphs[activation.graph_instance_id]
+        if graph_record.status != "running":
+            continue
+        graph = state.compiled.graphs[graph_record.graph_id]
+        node = graph.nodes[activation.node_id]
+        reason = _route_selection_error(state, graph, node, activation)
+        if reason is None:
+            continue
+        candidates.append(
+            _FatalCandidate(
+                graph_instance_id=activation.graph_instance_id,
+                subject_id=activation.activation_id,
+                reason=reason,
+                kind="route",
+                failure=TaskFailure(kind="internal", message=reason, retryable=False),
+                node_id=node.node_id,
+                activation_id=activation.activation_id,
+            )
+        )
     if not candidates:
         return None
     return min(candidates, key=lambda item: (item.graph_instance_id, item.subject_id, item.reason))
 
 
 def _materialize_fatal(state: _PlannerState, candidate: _FatalCandidate) -> None:
+    if candidate.kind == "route":
+        _fail_graph(state, candidate.graph_instance_id, candidate.reason)
+        return
     if candidate.kind == "invalid_input":
         if candidate.activation_id is None:
             graph_record = state.graphs[candidate.graph_instance_id]
@@ -1666,6 +1699,65 @@ def _structural_contract_failure_matches(
     }
     actual_structural = {item.activation_id for item in projection.activations if item.structural_failure}
     return actual_graphs == expected_graphs and actual_structural == expected_structural
+
+
+def _route_selection_failure_matches(
+    compiled: CompiledWorkflow,
+    projection: InvocationProjection,
+    graphs: dict[str, GraphInstanceRecord],
+    *,
+    schemas: SchemaRegistry | None = None,
+) -> bool:
+    reason = projection.terminal_reason
+    if reason is None or not (
+        reason.startswith("ambiguous_route:") or reason.startswith("insufficient_route_matches:")
+    ):
+        return False
+    if any(
+        activation.status == "failed" and not activation.structural_failure
+        for activation in projection.activations
+    ):
+        return False
+    state = _PlannerState.from_projection(compiled, projection, schemas=schemas)
+    if _has_running_attempt(state):
+        return False
+    matches: list[ActivationRecord] = []
+    for activation in projection.activations:
+        if activation.status != "completed":
+            continue
+        graph_record = graphs[activation.graph_instance_id]
+        graph = compiled.graphs[graph_record.graph_id]
+        node = graph.nodes[activation.node_id]
+        selected_reason = _route_selection_error(state, graph, node, activation)
+        if selected_reason is None:
+            continue
+        if selected_reason != reason:
+            return False
+        matches.append(activation)
+    if len(matches) != 1:
+        return False
+    source = matches[0]
+    if any(
+        token.source == source.node_id and token.graph_instance_id == source.graph_instance_id
+        for token in projection.offered_tokens
+    ):
+        return False
+    roots = tuple(graph for graph in projection.graph_instances if graph.parent_graph_instance_id is None)
+    root = roots[0] if len(roots) == 1 else None
+    if (
+        root is None
+        or root.status != "failed"
+        or root.failure_reason != reason
+        or not _failed_graph_propagation_matches(projection, graphs, source.graph_instance_id, reason)
+        or not _selected_failure_state_matches(
+            projection,
+            graphs,
+            (source.graph_instance_id,),
+            include_root_causes=True,
+        )
+    ):
+        return False
+    return True
 
 
 def _finish_terminal_tasks(state: _PlannerState, terminal_activations: tuple[ActivationRecord, ...]) -> None:
@@ -2131,29 +2223,119 @@ def _end_output(state: _PlannerState, _node: CompiledNode, activation: Activatio
     return payloads[0] if len(payloads) == 1 else {"tokens": payloads}
 
 
+def _route_key(edge: EdgeDef) -> tuple[str, str, bool]:
+    return (edge.to, edge.condition or "", edge.otherwise)
+
+
+def _format_route_keys(keys: list[tuple[str, str, bool]]) -> str:
+    return ";".join(
+        f"{target}|{condition}|{str(otherwise).lower()}" for target, condition, otherwise in sorted(keys)
+    )
+
+
+def _route_scope(
+    state: _PlannerState,
+    node: CompiledNode,
+    activation: ActivationRecord,
+) -> dict[str, JSONValue]:
+    return cast(
+        dict[str, JSONValue],
+        {
+            "input": thaw_json(_activation_input(state, node, activation)),
+            "output": thaw_json(activation.output),
+        },
+    )
+
+
+def _select_routes(
+    graph: CompiledGraph,
+    node: CompiledNode,
+    scope: dict[str, JSONValue],
+) -> list[tuple[int, EdgeDef]]:
+    outgoing = [(index, edge) for index, edge in enumerate(graph.edges) if edge.from_ == node.node_id]
+    decisions: list[tuple[int, EdgeDef, bool]] = []
+    for edge_index, edge in outgoing:
+        if edge.otherwise:
+            matched = False
+        elif edge.condition is None:
+            matched = True
+        else:
+            matched = bool(evaluate_expression(edge.condition, scope))
+        decisions.append((edge_index, edge, matched))
+    routing = node.definition.routing
+    if routing is None:
+        return [
+            (edge_index, edge) for edge_index, edge, matched in decisions if edge.condition is None or matched
+        ]
+    ranks = {key: index for index, key in enumerate(sorted(_route_key(edge) for _, edge in outgoing))}
+    matches = [(edge_index, edge) for edge_index, edge, matched in decisions if matched]
+    if routing.mode == "exclusive":
+        if len(matches) > 1:
+            keys = [_route_key(edge) for _, edge in matches]
+            raise _RouteSelectionError(
+                f"ambiguous_route:{graph.graph_id}/{node.node_id}:{_format_route_keys(keys)}"
+            )
+        if len(matches) == 1:
+            _, edge = matches[0]
+            return [(ranks[_route_key(edge)], edge)]
+        otherwise = next(edge for _, edge, _ in decisions if edge.otherwise)
+        return [(ranks[_route_key(otherwise)], otherwise)]
+    minimum = 0 if routing.min_matches is None else routing.min_matches
+    if len(matches) < minimum:
+        raise _RouteSelectionError(
+            f"insufficient_route_matches:{graph.graph_id}/{node.node_id}:{len(matches)}/{minimum}"
+        )
+    matches.sort(key=lambda item: _route_key(item[1]))
+    return [(ranks[_route_key(edge)], edge) for _, edge in matches]
+
+
+def _route_selection_error(
+    state: _PlannerState,
+    graph: CompiledGraph,
+    node: CompiledNode,
+    activation: ActivationRecord,
+) -> str | None:
+    if node.definition.routing is None or not _behavior(node).routes_completion:
+        return None
+    try:
+        _select_routes(graph, node, _route_scope(state, node, activation))
+    except _RouteSelectionError as error:
+        return error.reason
+    return None
+
+
+def _has_other_route_selection_error(state: _PlannerState, activation_id: str) -> bool:
+    for other in state.activations.values():
+        if other.activation_id == activation_id or other.status != "completed":
+            continue
+        graph_record = state.graphs[other.graph_instance_id]
+        if graph_record.status != "running":
+            continue
+        graph = state.compiled.graphs[graph_record.graph_id]
+        node = graph.nodes[other.node_id]
+        if _route_selection_error(state, graph, node, other) is not None:
+            return True
+    return False
+
+
 def _route_completion(
     state: _PlannerState,
     graph: CompiledGraph,
     node: CompiledNode,
     activation: ActivationRecord,
 ) -> None:
-    activation_input = _activation_input(state, node, activation)
-    scope = cast(
-        dict[str, JSONValue],
-        {
-            "input": thaw_json(activation_input),
-            "output": thaw_json(activation.output),
-        },
-    )
-    outgoing_indices = [index for index, edge in enumerate(graph.edges) if edge.from_ == node.node_id]
-    for edge_index in outgoing_indices:
-        edge = graph.edges[edge_index]
-        if edge.condition is not None and not bool(evaluate_expression(edge.condition, scope)):
-            continue
+    scope = _route_scope(state, node, activation)
+    try:
+        selected = _select_routes(graph, node, scope)
+    except _RouteSelectionError:
+        return
+    if _has_other_route_selection_error(state, activation.activation_id):
+        return
+    for token_index, edge in selected:
         identifier = _edge_token_id(
             activation.graph_instance_id,
             activation.activation_id,
-            edge_index,
+            token_index,
             edge.from_,
             edge.to,
         )
