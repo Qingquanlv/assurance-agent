@@ -28,14 +28,19 @@
       "assurance.intake.skill.aa-case-design.visual-companion.v1",
       "assurance.intake.skill.aa-case-reviewer.v1",
       "assurance.intake.skill.aa-explore.v1",
-      "assurance.intake.skill.aa-intake.v1"
+      "assurance.intake.skill.aa-intake.v1",
+      "assurance.intake.workflow.module.v1"
     ],
     "schema_version": "1",
     "schemas": [
       "assurance.intake.schema.case-authoring.v1",
       "assurance.intake.schema.case-review.v1",
       "assurance.intake.schema.case.v1",
-      "assurance.intake.schema.qa-change.v1"
+      "assurance.intake.schema.qa-change.v1",
+      "assurance.intake.workflow.case.input.v1",
+      "assurance.intake.workflow.case.output.v1",
+      "assurance.intake.workflow.prepare.input.v1",
+      "assurance.intake.workflow.prepare.output.v1"
     ],
     "source": {
       "declaration_path": "assurance_intake/plugin-declaration.json",

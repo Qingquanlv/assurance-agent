@@ -54,6 +54,10 @@ INTAKE_SCHEMA_IDS: tuple[str, ...] = (
     "assurance.intake.schema.case-review.v1",
     "assurance.intake.schema.case.v1",
     "assurance.intake.schema.qa-change.v1",
+    "assurance.intake.workflow.case.input.v1",
+    "assurance.intake.workflow.case.output.v1",
+    "assurance.intake.workflow.prepare.input.v1",
+    "assurance.intake.workflow.prepare.output.v1",
 )
 
 INTAKE_RESOURCE_FILES: dict[str, str] = {
@@ -79,6 +83,7 @@ INTAKE_RESOURCE_FILES: dict[str, str] = {
     "assurance.intake.skill.aa-case-reviewer.v1": "skills/aa-case-reviewer/SKILL.md",
     "assurance.intake.skill.aa-explore.v1": "skills/aa-explore/SKILL.md",
     "assurance.intake.skill.aa-intake.v1": "skills/aa-intake/SKILL.md",
+    "assurance.intake.workflow.module.v1": "workflow/module.yaml",
 }
 
 INTAKE_RESOURCE_IDS: tuple[str, ...] = tuple(sorted(INTAKE_RESOURCE_FILES))
@@ -88,6 +93,10 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.intake.schema.case-review.v1": "schemas/case-review.v1.schema.json",
     "assurance.intake.schema.case.v1": "schemas/case.v1.schema.json",
     "assurance.intake.schema.qa-change.v1": "schemas/qa-change.v1.schema.json",
+    "assurance.intake.workflow.case.input.v1": "schemas/workflow/case-input.v1.schema.json",
+    "assurance.intake.workflow.case.output.v1": "schemas/workflow/case-output.v1.schema.json",
+    "assurance.intake.workflow.prepare.input.v1": "schemas/workflow/prepare-input.v1.schema.json",
+    "assurance.intake.workflow.prepare.output.v1": "schemas/workflow/prepare-output.v1.schema.json",
 }
 
 _HANDLERS = {
@@ -118,9 +127,14 @@ def _schema_contributions() -> tuple[SchemaContribution, ...]:
     )
 
 
+_WORKFLOW_MODULE_MIME = "application/vnd.graph-engine.workflow-module+yaml"
+
+
 def _resource_media_type(path: str) -> str:
     if path.endswith(".schema.json"):
         return "application/schema+json"
+    if path.endswith("workflow/module.yaml"):
+        return _WORKFLOW_MODULE_MIME
     return "text/plain"
 
 
