@@ -284,23 +284,47 @@ def test_quality_contracts_import_only_upstream_public_contracts() -> None:
 def test_quality_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_quality.contracts.workflow import AGENT_JOB_CONTRACTS
+    from assurance_quality.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
-        "fact-baseline": ("aa-fact-baseline", "assurance-v1-doc-author"),
-        "inspect": ("aa-inspect", "assurance-v1-reviewer"),
-        "issue-analysis": ("aa-issue-analyzer", "assurance-v1-reporter"),
-        "issue-triage": ("aa-issue-triage-advisor", "assurance-v1-reporter"),
-        "report": ("aa-report-generator", "assurance-v1-reporter"),
+        "fact-baseline": (
+            "aa-fact-baseline",
+            "assurance-v1-doc-author",
+            ("qa/changes/{change_id}/facts/fact-baseline.json",),
+        ),
+        "inspect": (
+            "aa-inspect",
+            "assurance-v1-reviewer",
+            ("qa/changes/{change_id}/inspect/inspection.json",),
+        ),
+        "issue-analysis": (
+            "aa-issue-analyzer",
+            "assurance-v1-reporter",
+            ("qa/changes/{change_id}/inspect/issue-analysis.json",),
+        ),
+        "issue-triage": (
+            "aa-issue-triage-advisor",
+            "assurance-v1-reporter",
+            ("qa/changes/{change_id}/inspect/issue-triage.json",),
+        ),
+        "report": (
+            "aa-report-generator",
+            "assurance-v1-reporter",
+            ("qa/changes/{change_id}/report/report.md",),
+        ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
+    assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
     assert len(AGENT_JOB_CONTRACTS) == 5
     assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
-    for base, (skill_id, agent_profile) in expected.items():
+    assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
+    for base, (skill_id, agent_profile, writes) in expected.items():
         contract = AGENT_JOB_CONTRACTS[base]
         assert contract.contract_id == f"assurance.quality.agent.{base}.v1"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
+        assert contract.resources.writes == writes
+        assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = contract.model_dump_json().lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped

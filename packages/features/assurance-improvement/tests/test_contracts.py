@@ -349,24 +349,52 @@ def test_improvement_contracts_import_only_upstream_public_contracts() -> None:
 def test_improvement_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_improvement.contracts.workflow import AGENT_JOB_CONTRACTS
+    from assurance_improvement.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
-        "archive": ("aa-archive", "assurance-v1-archiver"),
-        "improvement-review": ("aa-improvement-reviewer", "assurance-v1-reviewer"),
-        "retro-eval-analysis": ("aa-retro-eval-analysis", "assurance-v1-doc-author"),
-        "retro-issue-analysis": ("aa-retro-issue-analysis", "assurance-v1-doc-author"),
-        "retro-workflow-analysis": ("aa-retro-workflow-analysis", "assurance-v1-doc-author"),
-        "retro": ("aa-retro", "assurance-v1-doc-author"),
+        "archive": (
+            "aa-archive",
+            "assurance-v1-archiver",
+            ("qa/changes/{change_id}/archive/archive-receipt.json",),
+        ),
+        "improvement-review": (
+            "aa-improvement-reviewer",
+            "assurance-v1-reviewer",
+            ("qa/changes/{change_id}/review/improvement-review.json",),
+        ),
+        "retro-eval-analysis": (
+            "aa-retro-eval-analysis",
+            "assurance-v1-doc-author",
+            ("qa/changes/{change_id}/retro/retro-eval-analysis.json",),
+        ),
+        "retro-issue-analysis": (
+            "aa-retro-issue-analysis",
+            "assurance-v1-doc-author",
+            ("qa/changes/{change_id}/retro/retro-issue-analysis.json",),
+        ),
+        "retro-workflow-analysis": (
+            "aa-retro-workflow-analysis",
+            "assurance-v1-doc-author",
+            ("qa/changes/{change_id}/retro/retro-workflow-analysis.json",),
+        ),
+        "retro": (
+            "aa-retro",
+            "assurance-v1-doc-author",
+            ("qa/changes/{change_id}/retro/retro.json",),
+        ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
+    assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
     assert len(AGENT_JOB_CONTRACTS) == 6
     assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
-    for base, (skill_id, agent_profile) in expected.items():
+    assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
+    for base, (skill_id, agent_profile, writes) in expected.items():
         contract = AGENT_JOB_CONTRACTS[base]
         assert contract.contract_id == f"assurance.improvement.agent.{base}.v1"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
+        assert contract.resources.writes == writes
+        assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = contract.model_dump_json().lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped

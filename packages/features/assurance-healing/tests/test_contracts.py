@@ -324,20 +324,32 @@ def test_healing_contracts_import_only_upstream_public_contracts() -> None:
 def test_healing_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_healing.contracts.workflow import AGENT_JOB_CONTRACTS
+    from assurance_healing.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
-        "coverage-repair": ("aa-coverage-repair", "assurance-v1-test-author"),
-        "fix-proposal": ("aa-fix-proposal", "assurance-v1-doc-author"),
+        "coverage-repair": (
+            "aa-coverage-repair",
+            "assurance-v1-test-author",
+            ("qa/changes/{change_id}/healing/coverage-repair.json",),
+        ),
+        "fix-proposal": (
+            "aa-fix-proposal",
+            "assurance-v1-doc-author",
+            ("qa/changes/{change_id}/healing/fix-proposal.json",),
+        ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
+    assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
     assert len(AGENT_JOB_CONTRACTS) == 2
     assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
-    for base, (skill_id, agent_profile) in expected.items():
+    assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
+    for base, (skill_id, agent_profile, writes) in expected.items():
         contract = AGENT_JOB_CONTRACTS[base]
         assert contract.contract_id == f"assurance.healing.agent.{base}.v1"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
+        assert contract.resources.writes == writes
+        assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = contract.model_dump_json().lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped

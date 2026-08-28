@@ -149,32 +149,144 @@ def test_generation_contracts_import_only_intake_contracts() -> None:
 def test_generation_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_generation.contracts.workflow import AGENT_JOB_CONTRACTS
+    from assurance_generation.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
-        "api.codegen-fix": ("aa-api-codegen-fixer", "assurance-v1-test-author"),
-        "api.codegen": ("aa-api-codegen", "assurance-v1-test-author"),
-        "api.plan-review": ("aa-api-plan-reviewer", "assurance-v1-reviewer"),
-        "api.plan": ("aa-api-plan", "assurance-v1-doc-author"),
-        "e2e.codegen-fix": ("aa-e2e-codegen-fixer", "assurance-v1-test-author"),
-        "e2e.codegen": ("aa-e2e-codegen", "assurance-v1-test-author"),
-        "e2e.plan-review": ("aa-e2e-plan-reviewer", "assurance-v1-reviewer"),
-        "e2e.plan": ("aa-e2e-plan", "assurance-v1-doc-author"),
-        "fuzz.codegen": ("aa-fuzz-codegen", "assurance-v1-test-author"),
-        "fuzz.plan-review": ("aa-fuzz-plan-reviewer", "assurance-v1-reviewer"),
-        "fuzz.plan": ("aa-fuzz-plan", "assurance-v1-doc-author"),
-        "performance.codegen": ("aa-performance-codegen", "assurance-v1-test-author"),
-        "performance.plan-review": ("aa-performance-plan-reviewer", "assurance-v1-reviewer"),
-        "performance.plan": ("aa-performance-plan", "assurance-v1-doc-author"),
+        "api.codegen-fix": (
+            "aa-api-codegen-fixer",
+            "assurance-v1-test-author",
+            (
+                "qa/changes/{change_id}/codegen/api-codegen-fix-summary.md",
+                "qa/changes/{change_id}/codegen/api-generated-files.json",
+            ),
+        ),
+        "api.codegen": (
+            "aa-api-codegen",
+            "assurance-v1-test-author",
+            (
+                "qa/changes/{change_id}/codegen/api-codegen-summary.md",
+                "qa/changes/{change_id}/codegen/api-generated-files.json",
+            ),
+        ),
+        "api.plan-review": (
+            "aa-api-plan-reviewer",
+            "assurance-v1-reviewer",
+            (
+                "qa/changes/{change_id}/review/api-plan-review-summary.md",
+                "qa/changes/{change_id}/review/api-plan-review.json",
+            ),
+        ),
+        "api.plan": (
+            "aa-api-plan",
+            "assurance-v1-doc-author",
+            (
+                "qa/changes/{change_id}/plans/api-codegen-mapping.json",
+                "qa/changes/{change_id}/plans/api-codegen-plan.md",
+                "qa/changes/{change_id}/plans/api-plan.md",
+                "qa/changes/{change_id}/plans/api-test-data-plan.md",
+                "qa/changes/{change_id}/plans/m3-review-summary.md",
+            ),
+        ),
+        "e2e.codegen-fix": (
+            "aa-e2e-codegen-fixer",
+            "assurance-v1-test-author",
+            (
+                "qa/changes/{change_id}/codegen/e2e-codegen-fix-summary.md",
+                "qa/changes/{change_id}/codegen/e2e-generated-files.json",
+            ),
+        ),
+        "e2e.codegen": (
+            "aa-e2e-codegen",
+            "assurance-v1-test-author",
+            (
+                "qa/changes/{change_id}/codegen/e2e-codegen-summary.md",
+                "qa/changes/{change_id}/codegen/e2e-generated-files.json",
+            ),
+        ),
+        "e2e.plan-review": (
+            "aa-e2e-plan-reviewer",
+            "assurance-v1-reviewer",
+            (
+                "qa/changes/{change_id}/review/e2e-plan-review-summary.md",
+                "qa/changes/{change_id}/review/e2e-plan-review.json",
+            ),
+        ),
+        "e2e.plan": (
+            "aa-e2e-plan",
+            "assurance-v1-doc-author",
+            (
+                "qa/changes/{change_id}/plans/e2e-codegen-mapping.json",
+                "qa/changes/{change_id}/plans/e2e-codegen-plan.md",
+                "qa/changes/{change_id}/plans/e2e-plan.md",
+                "qa/changes/{change_id}/plans/e2e-test-data-plan.md",
+                "qa/changes/{change_id}/plans/m4-review-summary.md",
+            ),
+        ),
+        "fuzz.codegen": (
+            "aa-fuzz-codegen",
+            "assurance-v1-test-author",
+            (
+                "qa/changes/{change_id}/codegen/fuzz-codegen-summary.md",
+                "qa/changes/{change_id}/codegen/fuzz-generated-files.json",
+            ),
+        ),
+        "fuzz.plan-review": (
+            "aa-fuzz-plan-reviewer",
+            "assurance-v1-reviewer",
+            (
+                "qa/changes/{change_id}/review/fuzz-plan-review-summary.md",
+                "qa/changes/{change_id}/review/fuzz-plan-review.json",
+            ),
+        ),
+        "fuzz.plan": (
+            "aa-fuzz-plan",
+            "assurance-v1-doc-author",
+            (
+                "qa/changes/{change_id}/plans/fuzz-codegen-mapping.json",
+                "qa/changes/{change_id}/plans/fuzz-codegen-plan.md",
+                "qa/changes/{change_id}/plans/fuzz-plan.md",
+                "qa/changes/{change_id}/plans/fuzz-review-summary.md",
+            ),
+        ),
+        "performance.codegen": (
+            "aa-performance-codegen",
+            "assurance-v1-test-author",
+            (
+                "qa/changes/{change_id}/codegen/performance-codegen-summary.md",
+                "qa/changes/{change_id}/codegen/performance-generated-files.json",
+            ),
+        ),
+        "performance.plan-review": (
+            "aa-performance-plan-reviewer",
+            "assurance-v1-reviewer",
+            (
+                "qa/changes/{change_id}/review/performance-plan-review-summary.md",
+                "qa/changes/{change_id}/review/performance-plan-review.json",
+            ),
+        ),
+        "performance.plan": (
+            "aa-performance-plan",
+            "assurance-v1-doc-author",
+            (
+                "qa/changes/{change_id}/plans/performance-codegen-mapping.json",
+                "qa/changes/{change_id}/plans/performance-codegen-plan.md",
+                "qa/changes/{change_id}/plans/performance-plan.md",
+                "qa/changes/{change_id}/plans/performance-review-summary.md",
+            ),
+        ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
+    assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
     assert len(AGENT_JOB_CONTRACTS) == 14
     assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
-    for base, (skill_id, agent_profile) in expected.items():
+    assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
+    for base, (skill_id, agent_profile, writes) in expected.items():
         contract = AGENT_JOB_CONTRACTS[base]
         assert contract.contract_id == f"assurance.generation.agent.{base}.v1"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
+        assert contract.resources.writes == writes
+        assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = contract.model_dump_json().lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped

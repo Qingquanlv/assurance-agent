@@ -392,12 +392,18 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
         "qa/archive",
         "qa/cases",
     )
+    extra_claims = {
+        "assurance.intake.case-design.prepare": (f"qa/changes/{change_id}/cases",),
+    }
     for prepare_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         execute_alias = execute_alias_for_prepare(prepare_id)
         assert isinstance(contract.resources, ResourceClaimTemplate)
         assert contract.resources.parameters == {"change_id": "/workspace/scope_id"}
         resolved = contract.resources.resolve({"workspace": {"scope_id": change_id}})
-        assert resolved.writes == catalog.resource_claims(execute_alias, change_id)
+        extra = extra_claims.get(prepare_id, ())
+        outputs = catalog.outputs(execute_alias, change_id)
+        assert outputs == tuple(path for path in resolved.writes if path not in extra)
+        assert extra == tuple(path for path in resolved.writes if path not in outputs)
         assert all(path.startswith(f"qa/changes/{change_id}/") for path in resolved.writes)
         assert all("/.runtime/" not in path and "/.staging/" not in path for path in resolved.writes)
         assert all(path not in forbidden_prefixes for path in resolved.writes)

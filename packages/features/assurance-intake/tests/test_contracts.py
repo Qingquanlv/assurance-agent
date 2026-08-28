@@ -236,22 +236,61 @@ def test_intake_imports_no_legacy_package() -> None:
 def test_intake_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_intake.contracts.workflow import AGENT_JOB_CONTRACTS
+    from assurance_intake.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
-        "case-design": ("aa-case-design", "assurance-v1-doc-author"),
-        "case-review": ("aa-case-reviewer", "assurance-v1-reviewer"),
-        "explore": ("aa-explore", "assurance-v1-explorer"),
-        "intake": ("aa-intake", "assurance-v1-doc-author"),
+        "case-design": (
+            "aa-case-design",
+            "assurance-v1-doc-author",
+            (
+                "qa/changes/{change_id}/.qa.yaml",
+                "qa/changes/{change_id}/cases",
+                "qa/changes/{change_id}/proposal.md",
+                "qa/changes/{change_id}/trace/minimum-coverage-matrix.json",
+            ),
+            (
+                "qa/changes/{change_id}/.qa.yaml",
+                "qa/changes/{change_id}/proposal.md",
+                "qa/changes/{change_id}/trace/minimum-coverage-matrix.json",
+            ),
+        ),
+        "case-review": (
+            "aa-case-reviewer",
+            "assurance-v1-reviewer",
+            (
+                "qa/changes/{change_id}/review/case-review-summary.md",
+                "qa/changes/{change_id}/review/case-review.json",
+            ),
+            (
+                "qa/changes/{change_id}/review/case-review-summary.md",
+                "qa/changes/{change_id}/review/case-review.json",
+            ),
+        ),
+        "explore": (
+            "aa-explore",
+            "assurance-v1-explorer",
+            ("qa/changes/{change_id}/explore/exploration.json",),
+            ("qa/changes/{change_id}/explore/exploration.json",),
+        ),
+        "intake": (
+            "aa-intake",
+            "assurance-v1-doc-author",
+            ("qa/changes/{change_id}/.qa.yaml", "qa/changes/{change_id}/requirement.md"),
+            ("qa/changes/{change_id}/.qa.yaml", "qa/changes/{change_id}/requirement.md"),
+        ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
+    assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
     assert len(AGENT_JOB_CONTRACTS) == 4
     assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
-    for base, (skill_id, agent_profile) in expected.items():
+    assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
+    for base, (skill_id, agent_profile, writes, routes) in expected.items():
         contract = AGENT_JOB_CONTRACTS[base]
         assert contract.contract_id == f"assurance.intake.agent.{base}.v1"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
+        assert contract.resources.writes == writes
+        assert OUTPUT_ROUTE_TEMPLATES[base] == routes
         dumped = contract.model_dump_json().lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped
