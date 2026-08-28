@@ -1026,6 +1026,7 @@ class CapabilityBindingContribution(FrozenModel):
     data: FrozenJSONValue = None
     resource_ids: tuple[str, ...] = ()
     secret_handles: tuple[str, ...] = ()
+    contract_id: str | None = None
 
     @field_validator("capability_id", "target_capability_id")
     @classmethod
@@ -1034,6 +1035,16 @@ class CapabilityBindingContribution(FrozenModel):
             return validate_qualified_id(value)
         except IdentifierError as error:
             raise ValueError(f"invalid capability id: {value!r}") from error
+
+    @field_validator("contract_id")
+    @classmethod
+    def _validate_contract_id_field(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            return validate_qualified_id(value)
+        except IdentifierError as error:
+            raise ValueError(f"invalid contract id: {value!r}") from error
 
     @field_validator("resource_ids")
     @classmethod

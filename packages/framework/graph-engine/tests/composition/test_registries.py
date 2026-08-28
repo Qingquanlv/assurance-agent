@@ -37,6 +37,7 @@ from graph_engine.composition.models import (
     ExecutableAuthority,
 )
 from graph_engine.composition.provenance import StandardLoader
+from graph_engine.composition.lock import compute_registry_projections
 from graph_engine.composition.registries import (
     _build_registries as _build_authenticated_registries,
     validate_registry_contribution_authorities,
@@ -971,6 +972,13 @@ def test_registry_requires_exact_selected_source_and_contribution_sets() -> None
 def test_plugin_contribution_has_no_sixth_registry_kind() -> None:
     with pytest.raises(TypeError):
         PluginContribution(lifecycles=())  # type: ignore[call-arg]
+    assert tuple(RegistrySet.__dataclass_fields__) == (
+        "sources",
+        "capabilities",
+        "schemas",
+        "resources",
+        "effects",
+    )
 
 
 def test_every_selected_plugin_retains_one_six_category_contribution_authority() -> None:
@@ -1103,6 +1111,93 @@ def test_contribution_authority_rejects_missing_nonexecutable_registry_value(
             {"toy.runtime": authenticated.authority},
             (authenticated.descriptor,),
         )
+
+
+def test_binding_registry_entry_propagates_contract_id() -> None:
+    binding = CapabilityBindingContribution(
+        capability_id="toy.product.agent.worker.execute",
+        target_capability_id="toy.runtime.execute",
+        contract_id="toy.feature.agent.worker.v1",
+    )
+    resolved = build_registries(
+        sources=(
+            _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),
+            _source("toy.product"),
+        ),
+        contributions=(
+            _runtime_contribution(),
+            PluginContribution(bindings=(binding,)),
+        ),
+        dependency_order=("toy.runtime", "toy.product"),
+    ).capabilities
+    assert resolved.bindings[binding.capability_id].contract_id == "toy.feature.agent.worker.v1"
+
+
+def test_binding_contract_id_is_included_in_contribution_and_registry_projections() -> None:
+    binding = CapabilityBindingContribution(
+        capability_id="toy.product.agent.worker.execute",
+        target_capability_id="toy.runtime.execute",
+        contract_id="toy.feature.agent.worker.v1",
+    )
+    runtime = _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN)
+    product = _source("toy.product")
+    registries = build_registries(
+        sources=(runtime, product),
+        contributions=(
+            _runtime_contribution(),
+            PluginContribution(bindings=(binding,)),
+        ),
+        dependency_order=("toy.runtime", "toy.product"),
+    )
+    authenticated = _authenticated(product, PluginContribution(bindings=(binding,)))
+    expected = {
+        "capability_id": "toy.product.agent.worker.execute",
+        "contract_id": "toy.feature.agent.worker.v1",
+        "data": None,
+        "resource_ids": [],
+        "secret_handles": [],
+        "target_capability_id": "toy.runtime.execute",
+    }
+    assert thaw_json(authenticated.authority.projection["bindings"]) == [expected]
+    projected = next(
+        item
+        for item in thaw_json(compute_registry_projections(registries).capabilities)
+        if isinstance(item, dict) and item.get("capability_id") == binding.capability_id
+    )
+    assert projected["contract_id"] == "toy.feature.agent.worker.v1"
+
+
+def test_legacy_binding_omits_none_contract_id_from_projection() -> None:
+    snapshot = _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN)
+    contribution = PluginContribution(
+        task_handlers={"toy.runtime.execute": _Handler()},
+        bindings=(
+            CapabilityBindingContribution(
+                capability_id="toy.runtime.bound",
+                target_capability_id="toy.runtime.execute",
+            ),
+        ),
+    )
+    authenticated = _authenticated(snapshot, contribution)
+    registries = _build_authenticated_registries((snapshot,), (authenticated,), ("toy.runtime",))
+    projected = thaw_json(authenticated.authority.projection["bindings"])
+    assert projected == [
+        {
+            "capability_id": "toy.runtime.bound",
+            "data": None,
+            "resource_ids": [],
+            "secret_handles": [],
+            "target_capability_id": "toy.runtime.execute",
+        }
+    ]
+    assert "contract_id" not in projected[0]
+    registry_binding = next(
+        item
+        for item in thaw_json(compute_registry_projections(registries).capabilities)
+        if isinstance(item, dict) and item.get("capability_id") == "toy.runtime.bound"
+    )
+    assert "contract_id" not in registry_binding
+    assert registries.capabilities.bindings["toy.runtime.bound"].contract_id is None
 
 
 def test_data_only_plugin_authority_is_required_even_without_executables() -> None:

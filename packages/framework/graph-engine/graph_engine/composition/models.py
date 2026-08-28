@@ -685,6 +685,7 @@ class _BoundTaskHandler:
     resource_ids: tuple[str, ...]
     target: TaskHandler
     secret_handles: tuple[str, ...] = ()
+    contract_id: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "data", freeze_json(self.data))
@@ -727,10 +728,13 @@ class CapabilityBindingEntry:
     handler: TaskHandler
     target_provenance: ExecutableProvenance
     secret_handles: tuple[str, ...] = ()
+    contract_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_owned_registry_id(self.capability_id, self.owner_id, "binding")
         _validate_registry_id(self.target_capability_id, "binding target capability id")
+        if self.contract_id is not None:
+            _validate_registry_id(self.contract_id, "binding contract id")
         try:
             frozen_data = freeze_json(self.data)
         except (TypeError, ValueError) as error:
@@ -756,6 +760,7 @@ class CapabilityBindingEntry:
             or self.handler.data != frozen_data
             or self.handler.resource_ids != resource_ids
             or self.handler.secret_handles != secret_handles
+            or self.handler.contract_id != self.contract_id
         ):
             raise ValueError("bound adapter disagrees with binding entry")
         _validate_entry_provenance(
@@ -775,6 +780,7 @@ class CapabilityBindingEntry:
         data: object,
         resource_ids: tuple[str, ...],
         secret_handles: tuple[str, ...] = (),
+        contract_id: str | None = None,
         target: TaskHandler,
         target_provenance: ExecutableProvenance,
     ) -> CapabilityBindingEntry:
@@ -784,6 +790,7 @@ class CapabilityBindingEntry:
             data=data,
             resource_ids=resource_ids,
             secret_handles=secret_handles,
+            contract_id=contract_id,
             target=target,
         )
         return cls(
@@ -793,6 +800,7 @@ class CapabilityBindingEntry:
             data=handler.data,
             resource_ids=handler.resource_ids,
             secret_handles=handler.secret_handles,
+            contract_id=handler.contract_id,
             handler=handler,
             target_provenance=target_provenance,
         )

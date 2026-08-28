@@ -6,7 +6,14 @@ from dataclasses import dataclass
 import hashlib
 from typing import cast
 
-from pydantic import StrictFloat, StrictInt, field_validator, model_validator
+from pydantic import (
+    SerializerFunctionWrapHandler,
+    StrictFloat,
+    StrictInt,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.models import (
@@ -262,6 +269,24 @@ class BindingContributionProjection(FrozenModel):
     data: FrozenJSONValue
     resource_ids: tuple[str, ...]
     secret_handles: tuple[str, ...] = ()
+    contract_id: str | None = None
+
+    @field_validator("contract_id")
+    @classmethod
+    def _validate_contract_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            return validate_qualified_id(value)
+        except IdentifierError as error:
+            raise ValueError(f"invalid binding contract id: {value!r}") from error
+
+    @model_serializer(mode="wrap")
+    def _omit_none_contract_id(self, serializer: SerializerFunctionWrapHandler) -> object:
+        data = serializer(self)
+        if isinstance(data, dict) and data.get("contract_id") is None:
+            data.pop("contract_id", None)
+        return data
 
 
 class ContributionProjection(FrozenModel):
@@ -363,6 +388,8 @@ class ContributionProjection(FrozenModel):
             )
         for item in self.bindings:
             _qualified_id(item.target_capability_id, "binding target capability id")
+            if item.contract_id is not None:
+                _qualified_id(item.contract_id, "binding contract id")
             if len(item.resource_ids) != len(set(item.resource_ids)):
                 raise ValueError(f"duplicate binding resource id: {item.capability_id}")
             for resource_id in item.resource_ids:
@@ -435,6 +462,7 @@ class ContributionProjection(FrozenModel):
                     data=freeze_json(item.data),
                     resource_ids=tuple(item.resource_ids),
                     secret_handles=tuple(item.secret_handles),
+                    contract_id=item.contract_id,
                 )
                 for item in sorted(contribution.bindings, key=lambda item: item.capability_id)
             ),
@@ -479,6 +507,7 @@ class ContributionProjection(FrozenModel):
                         data=entry.data,
                         resource_ids=entry.resource_ids,
                         secret_handles=entry.secret_handles,
+                        contract_id=entry.contract_id,
                     )
                 )
         effects = []
@@ -602,6 +631,7 @@ class ContributionProjection(FrozenModel):
                     "data": cast(JSONValue, thaw_json(item.data)),
                     "resource_ids": list(item.resource_ids),
                     "secret_handles": list(item.secret_handles),
+                    **({"contract_id": item.contract_id} if item.contract_id is not None else {}),
                 }
                 for item in self.bindings
             ),

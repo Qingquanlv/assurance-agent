@@ -370,6 +370,23 @@ def test_invocation_lock_has_one_golden_canonical_projection() -> None:
     assert "digest" not in json.loads(lock.canonical_bytes)
 
 
+def test_lock_golden_omits_none_contract_id() -> None:
+    lock = _lock()
+    expected = (
+        Path(__file__)
+        .with_name("invocation-lock-v2.golden.json")
+        .read_text(encoding="utf-8")
+        .strip()
+        .encode()
+    )
+    assert lock.canonical_bytes == expected
+    assert b'"contract_id"' not in lock.canonical_bytes
+    payload = json.loads(lock.canonical_bytes)
+    assert all("contract_id" not in binding for binding in payload["plugins"][0]["contribution"]["bindings"])
+    assert all("contract_id" not in entry for entry in payload["registry_projections"]["capabilities"])
+    assert all("contract_id" not in binding for binding in payload["capability_bindings"])
+
+
 def test_invocation_lock_schema_version_2_pins_execution_host() -> None:
     lock = _lock()
     assert lock.schema_version == "2"

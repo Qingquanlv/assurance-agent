@@ -263,6 +263,7 @@ def _build_capability_registry(
             data=binding.data,
             resource_ids=tuple(binding.resource_ids),
             secret_handles=tuple(binding.secret_handles),
+            contract_id=binding.contract_id,
             target=target,
             target_provenance=target_entry.provenance,
         )

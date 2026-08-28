@@ -211,6 +211,32 @@ def test_plugin_binding_contribution_validates_secret_handles() -> None:
     assert binding.secret_handles == ("alpha.token", "beta.token")
 
 
+def test_binding_contribution_accepts_qualified_contract_id() -> None:
+    binding = CapabilityBindingContribution(
+        capability_id="toy.product.agent.worker.execute",
+        target_capability_id="toy.runtime.execute",
+        contract_id="toy.feature.agent.worker.v1",
+    )
+    assert binding.contract_id == "toy.feature.agent.worker.v1"
+
+
+def test_binding_contribution_rejects_invalid_contract_id() -> None:
+    with pytest.raises(ValidationError, match="contract id"):
+        CapabilityBindingContribution(
+            capability_id="toy.product.agent.worker.execute",
+            target_capability_id="toy.runtime.execute",
+            contract_id="NotAQualifiedId",
+        )
+
+
+def test_binding_contribution_defaults_contract_id_to_none() -> None:
+    binding = CapabilityBindingContribution(
+        capability_id="toy.flow.run",
+        target_capability_id="toy.runtime.execute",
+    )
+    assert binding.contract_id is None
+
+
 def test_plugin_provider_exposes_only_the_phase_two_execution_methods() -> None:
     assert "contribute" in PluginProvider.__dict__
     assert "bind" not in PluginProvider.__dict__

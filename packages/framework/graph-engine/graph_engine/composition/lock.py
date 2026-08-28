@@ -619,6 +619,8 @@ def compute_registry_projections(registries: RegistrySet) -> RegistryProjections
                     "implementation_digest": entry.target_provenance.digest,
                 }
             )
+            if entry.contract_id is not None:
+                base["contract_id"] = entry.contract_id
         else:  # pragma: no cover - capability registry is a closed authenticated union.
             raise TypeError(f"unsupported capability entry: {type(entry).__name__}")
         capabilities.append(base)
