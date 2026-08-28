@@ -59,6 +59,10 @@ HEALING_SCHEMA_IDS: tuple[str, ...] = (
     "assurance.healing.schema.healing-status.v1",
     "assurance.healing.schema.proposal-approved-intent.v1",
     "assurance.healing.schema.proposal-approved-receipt.v1",
+    "assurance.healing.workflow.repair-coverage.input.v1",
+    "assurance.healing.workflow.repair-coverage.output.v1",
+    "assurance.healing.workflow.repair-failure.input.v1",
+    "assurance.healing.workflow.repair-failure.output.v1",
 )
 
 HEALING_DEPENDENCIES: tuple[PluginDependency, ...] = (
@@ -108,6 +112,7 @@ HEALING_RESOURCE_FILES: dict[str, str] = {
     "assurance.healing.result.fix-proposal.v1": "result-contracts/fix-proposal.v1.schema.json",
     "assurance.healing.skill.aa-coverage-repair.v1": "skills/aa-coverage-repair/SKILL.md",
     "assurance.healing.skill.aa-fix-proposal.v1": "skills/aa-fix-proposal/SKILL.md",
+    "assurance.healing.workflow.module.v1": "workflow/module.yaml",
 }
 
 HEALING_RESOURCE_IDS: tuple[str, ...] = tuple(sorted(HEALING_RESOURCE_FILES))
@@ -126,6 +131,18 @@ _SCHEMA_FILES: dict[str, str] = {
     ),
     "assurance.healing.schema.proposal-approved-receipt.v1": (
         "schemas/proposal-approved-receipt.v1.schema.json"
+    ),
+    "assurance.healing.workflow.repair-coverage.input.v1": (
+        "schemas/workflow/repair-coverage-input.v1.schema.json"
+    ),
+    "assurance.healing.workflow.repair-coverage.output.v1": (
+        "schemas/workflow/repair-coverage-output.v1.schema.json"
+    ),
+    "assurance.healing.workflow.repair-failure.input.v1": (
+        "schemas/workflow/repair-failure-input.v1.schema.json"
+    ),
+    "assurance.healing.workflow.repair-failure.output.v1": (
+        "schemas/workflow/repair-failure-output.v1.schema.json"
     ),
 }
 
@@ -147,9 +164,14 @@ def _schema_contributions() -> tuple[SchemaContribution, ...]:
     )
 
 
+_WORKFLOW_MODULE_MIME = "application/vnd.graph-engine.workflow-module+yaml"
+
+
 def _resource_media_type(path: str) -> str:
     if path.endswith(".schema.json"):
         return "application/schema+json"
+    if path.endswith("workflow/module.yaml"):
+        return _WORKFLOW_MODULE_MIME
     if path.endswith(".json"):
         return "application/json"
     return "text/plain"

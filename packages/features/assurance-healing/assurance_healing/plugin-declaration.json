@@ -61,7 +61,11 @@
       "assurance.healing.schema.healing-safety.v1",
       "assurance.healing.schema.healing-status.v1",
       "assurance.healing.schema.proposal-approved-intent.v1",
-      "assurance.healing.schema.proposal-approved-receipt.v1"
+      "assurance.healing.schema.proposal-approved-receipt.v1",
+      "assurance.healing.workflow.repair-coverage.input.v1",
+      "assurance.healing.workflow.repair-coverage.output.v1",
+      "assurance.healing.workflow.repair-failure.input.v1",
+      "assurance.healing.workflow.repair-failure.output.v1"
     ],
     "resources": [
       "assurance.healing.persona.fix-proposer.v1",
@@ -69,7 +73,8 @@
       "assurance.healing.result.coverage-repair.v1",
       "assurance.healing.result.fix-proposal.v1",
       "assurance.healing.skill.aa-coverage-repair.v1",
-      "assurance.healing.skill.aa-fix-proposal.v1"
+      "assurance.healing.skill.aa-fix-proposal.v1",
+      "assurance.healing.workflow.module.v1"
     ],
     "effects": [
       "assurance.healing.effect.allocation.v2",

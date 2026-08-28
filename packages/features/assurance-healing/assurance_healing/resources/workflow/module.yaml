@@ -1,0 +1,220 @@
+schema_version: "1"
+role: feature
+owner_id: assurance.healing
+module_id: assurance.healing.workflow
+module_version: 0.1.0
+imports: {}
+exports:
+  repair-failure:
+    graph: healing-fix-proposal
+    input_schema: assurance.healing.workflow.repair-failure.input.v1
+    output_schema: assurance.healing.workflow.repair-failure.output.v1
+    output_projection:
+      type: object
+      fields:
+        change_id:
+          type: child_output_pointer
+          pointer: /change_id
+        effect_refs:
+          type: child_output_pointer
+          pointer: /effect_refs
+        status:
+          type: child_output_pointer
+          pointer: /status
+  repair-coverage:
+    graph: healing-coverage-repair
+    input_schema: assurance.healing.workflow.repair-coverage.input.v1
+    output_schema: assurance.healing.workflow.repair-coverage.output.v1
+    output_projection:
+      type: object
+      fields:
+        change_id:
+          type: child_output_pointer
+          pointer: /change_id
+        effect_refs:
+          type: child_output_pointer
+          pointer: /effect_refs
+        status:
+          type: child_output_pointer
+          pointer: /status
+capability_slots:
+  coverage-repair.prepare:
+    contract_id: assurance.healing.agent.coverage-repair.v1
+  coverage-repair.execute:
+    contract_id: assurance.healing.agent.coverage-repair.v1
+  coverage-repair.finalize:
+    contract_id: assurance.healing.agent.coverage-repair.v1
+  fix-proposal.prepare:
+    contract_id: assurance.healing.agent.fix-proposal.v1
+  fix-proposal.execute:
+    contract_id: assurance.healing.agent.fix-proposal.v1
+  fix-proposal.finalize:
+    contract_id: assurance.healing.agent.fix-proposal.v1
+schemas:
+  - assurance.healing.workflow.repair-coverage.input.v1
+  - assurance.healing.workflow.repair-coverage.output.v1
+  - assurance.healing.workflow.repair-failure.input.v1
+  - assurance.healing.workflow.repair-failure.output.v1
+resources: []
+effects: []
+retry:
+  once:
+    max_attempts: 1
+timeout:
+  short:
+    run_seconds: 3600
+graphs:
+  healing-fix-proposal:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.healing.fix-proposal.prepare
+        input:
+          capability_leafs: []
+        input_projection:
+          type: object
+          fields:
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            budgets:
+              type: graph_input_pointer
+              pointer: /budgets
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            classification:
+              type: graph_input_pointer
+              pointer: /classification
+            fix_eligible:
+              type: graph_input_pointer
+              pointer: /fix_eligible
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: fix-proposal.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.healing.fix-proposal.finalize
+        input:
+          capability_leafs: []
+        input_projection:
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            budgets:
+              type: graph_input_pointer
+              pointer: /budgets
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            classification:
+              type: graph_input_pointer
+              pointer: /classification
+            fix_eligible:
+              type: graph_input_pointer
+              pointer: /fix_eligible
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  healing-coverage-repair:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.healing.coverage-repair.prepare
+        input:
+          capability_leafs: []
+        input_projection:
+          type: object
+          fields:
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            budgets:
+              type: graph_input_pointer
+              pointer: /budgets
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            classification:
+              type: graph_input_pointer
+              pointer: /classification
+            fix_eligible:
+              type: graph_input_pointer
+              pointer: /fix_eligible
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: coverage-repair.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: once
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.healing.coverage-repair.finalize
+        input:
+          capability_leafs: []
+        input_projection:
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            budgets:
+              type: graph_input_pointer
+              pointer: /budgets
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            classification:
+              type: graph_input_pointer
+              pointer: /classification
+            fix_eligible:
+              type: graph_input_pointer
+              pointer: /fix_eligible
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
