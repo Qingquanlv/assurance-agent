@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 from itertools import permutations
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.composition.models import (
@@ -15,6 +17,7 @@ from graph_engine.composition.models import (
     RegistrySet,
     ResourceEntry,
     ResourceRegistry,
+    SchemaEntry,
     SchemaRegistry,
     SourceEntry,
     SourceIdentity,
@@ -26,10 +29,16 @@ from graph_engine.composition.models import (
     WorkflowModuleRequirement,
 )
 from graph_engine.composition.workflow_assembler import (
+    LoadedModule,
+    LoadedModules,
     WorkflowAssemblyError,
     _load_authenticated_modules,
+    _lower_module_symbols,
 )
 from graph_engine.graph import parse_workflow_module
+from graph_engine.graph.compiler import CompileError, compile_workflow
+from graph_engine.graph.module_schema import WorkflowModuleDef
+from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import PluginDescriptor
 
 MODULE_MIME = "application/vnd.graph-engine.workflow-module+yaml"
@@ -82,7 +91,27 @@ def _feature_yaml(
     module_id: str,
     *,
     version: str = "1.0.0",
+    retry_max_attempts: int = 1,
+    timeout_run_seconds: float = 30,
+    slotted: bool = False,
 ) -> bytes:
+    work_nodes = """      done: {kind: end}"""
+    work_edges = "    edges: []"
+    slots = "capability_slots: {}"
+    start = "done"
+    if slotted:
+        slots = f"""capability_slots:
+  worker.execute:
+    contract_id: {owner_id}.agent.worker.v1"""
+        start = "work"
+        work_nodes = """      work:
+        kind: task
+        capability_slot: worker.execute
+        retry: once
+        timeout: short
+      done: {kind: end}"""
+        work_edges = """    edges:
+      - {from: work, to: done}"""
     return f"""
 schema_version: "1"
 role: feature
@@ -97,18 +126,23 @@ exports:
     output_projection:
       type: child_output_pointer
       pointer: ""
-capability_slots: {{}}
+{slots}
+schemas:
+  - {module_id}.run.input.v1
+  - {module_id}.run.output.v1
+resources: []
+effects: []
 retry:
-  once: {{max_attempts: 1}}
+  once: {{max_attempts: {retry_max_attempts}}}
 timeout:
-  short: {{run_seconds: 30}}
+  short: {{run_seconds: {timeout_run_seconds}}}
 graphs:
   run:
     max_activations: 2
-    start: done
+    start: {start}
     nodes:
-      done: {{kind: end}}
-    edges: []
+{work_nodes}
+{work_edges}
 """.encode()
 
 
@@ -136,11 +170,21 @@ def _feature_resource(
     resource_id: str | None = None,
     version: str = "1.0.0",
     media_type: str = MODULE_MIME,
+    slotted: bool = False,
+    retry_max_attempts: int = 1,
+    timeout_run_seconds: float = 30,
 ) -> ResourceEntry:
     return _resource(
         resource_id or f"{module_id}.module",
         owner_id,
-        _feature_yaml(owner_id, module_id, version=version),
+        _feature_yaml(
+            owner_id,
+            module_id,
+            version=version,
+            slotted=slotted,
+            retry_max_attempts=retry_max_attempts,
+            timeout_run_seconds=timeout_run_seconds,
+        ),
         media_type=media_type,
     )
 
@@ -177,17 +221,23 @@ def _requirement(
 
 def _manifest(
     *requirements: WorkflowModuleRequirement,
+    workflow_module: str | WorkflowModuleDef | None = None,
 ) -> ProductManifest:
+    module = (
+        workflow_module
+        if isinstance(workflow_module, WorkflowModuleDef)
+        else parse_workflow_module(workflow_module if workflow_module is not None else PRODUCT_MODULE)
+    )
     return ProductManifest.model_validate(
         {
             "schema_version": "1",
             "source": None,
-            "product_id": "toy.product",
-            "product_version": "1.0.0",
+            "product_id": module.owner_id,
+            "product_version": module.module_version,
             "engine_api": "2.0",
             "plugins": (PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.0.0"),),
-            "entrypoints": {"main": "root"},
-            "workflow_module": parse_workflow_module(PRODUCT_MODULE),
+            "entrypoints": dict(module.entrypoints),
+            "workflow_module": module,
             "workflow_module_resources": requirements,
         }
     )
@@ -205,7 +255,29 @@ def _plugin_source(plugin_id: str, *, version: str = "1.0.0") -> SourceSnapshot:
     )
 
 
-def _registries(*resources: ResourceEntry) -> RegistrySet:
+def _schema_entry(schema_id: str) -> SchemaEntry:
+    return SchemaEntry.from_content(
+        schema_id=schema_id,
+        owner_id=".".join(schema_id.split(".")[:2]),
+        media_type="application/schema+json",
+        content=b'{"type":"object","additionalProperties":false}',
+    )
+
+
+def _schema_entries(*modules: WorkflowModuleDef) -> dict[str, SchemaEntry]:
+    schema_ids: set[str] = set()
+    for module in modules:
+        schema_ids.update(module.schemas)
+        for export in module.exports.values():
+            schema_ids.add(export.input_schema)
+            schema_ids.add(export.output_schema)
+    return {schema_id: _schema_entry(schema_id) for schema_id in schema_ids}
+
+
+def _registries(
+    *resources: ResourceEntry,
+    schemas: dict[str, SchemaEntry] | None = None,
+) -> RegistrySet:
     sources: dict[SourceKey, SourceEntry] = {}
     for resource in resources:
         key = SourceKey(SourceRole.CONFIG, resource.owner_id)
@@ -216,7 +288,7 @@ def _registries(*resources: ResourceEntry) -> RegistrySet:
     return RegistrySet(
         sources=SourceRegistry(sources),
         capabilities=CapabilityRegistry.empty(),
-        schemas=SchemaRegistry(entries={}),
+        schemas=SchemaRegistry(entries=schemas or {}),
         resources=ResourceRegistry({item.resource_id: item for item in resources}),
         effects=EffectRegistry(entries={}),
     )
@@ -400,3 +472,466 @@ def test_requirement_and_registry_construction_order_is_independent() -> None:
         "toy.alpha.workflow",
         "toy.zeta.workflow",
     ]
+
+
+def _payload(text: str) -> dict[str, Any]:
+    loaded = yaml.safe_load(text)
+    assert isinstance(loaded, dict)
+    return loaded
+
+
+def _dump(raw: dict[str, Any]) -> str:
+    return yaml.safe_dump(raw, sort_keys=False)
+
+
+def _nested_keys(value: object) -> set[str]:
+    keys: set[str] = set()
+    if isinstance(value, dict):
+        keys.update(value)
+        for item in value.values():
+            keys.update(_nested_keys(item))
+    elif isinstance(value, list | tuple):
+        for item in value:
+            keys.update(_nested_keys(item))
+    return keys
+
+
+def _capability_slots(workflow: object) -> set[str]:
+    slots: set[str] = set()
+    graphs = getattr(workflow, "graphs")
+    for graph in graphs.values():
+        for node in graph.nodes.values():
+            slot = getattr(node, "capability_slot", None)
+            if slot:
+                slots.add(slot)
+    return slots
+
+
+def _lower(
+    *resources: ResourceEntry,
+    product: str | WorkflowModuleDef | None = None,
+) -> WorkflowDef:
+    requirements = tuple(
+        _requirement(
+            parse_workflow_module(resource.content).module_id,
+            resource.owner_id,
+            resource.resource_id,
+        )
+        for resource in resources
+    )
+    manifest = _manifest(*requirements, workflow_module=product)
+    module = manifest.workflow_module
+    assert module is not None
+    parsed_features = [parse_workflow_module(resource.content) for resource in resources]
+    registries = _registries(*resources, schemas=_schema_entries(module, *parsed_features))
+    loaded = _load_authenticated_modules(
+        manifest=manifest,
+        descriptors=_selected(*resources),
+        registries=registries,
+    )
+    return _lower_module_symbols(loaded, manifest=manifest, registries=registries)
+
+
+def _feature_payload(owner_id: str, module_id: str, **kwargs: Any) -> dict[str, Any]:
+    return _payload(_feature_yaml(owner_id, module_id, **kwargs).decode())
+
+
+def test_undeclared_import_alias_fails() -> None:
+    raw = _payload(PRODUCT_MODULE)
+    raw["imports"] = {
+        "ghost": {
+            "owner_id": "toy.ghost",
+            "module_id": "toy.ghost.workflow",
+            "export": "run",
+        }
+    }
+    child = raw["graphs"]["root"]["nodes"]["child"]
+    child["graph_import"] = "ghost"
+    feature = _feature_resource("toy.feature", "toy.feature.workflow")
+    with pytest.raises(WorkflowAssemblyError, match="undeclared"):
+        _lower(feature, product=_dump(raw))
+
+
+def test_missing_export_fails() -> None:
+    raw = _payload(PRODUCT_MODULE)
+    raw["imports"]["run"]["export"] = "missing"
+    feature = _feature_resource("toy.feature", "toy.feature.workflow")
+    with pytest.raises(WorkflowAssemblyError, match="export"):
+        _lower(feature, product=_dump(raw))
+
+
+def test_private_graph_reference_fails() -> None:
+    feature_raw = _feature_payload("toy.feature", "toy.feature.workflow")
+    feature_raw["graphs"]["helper"] = {
+        "max_activations": 1,
+        "start": "done",
+        "nodes": {"done": {"kind": "end"}},
+        "edges": [],
+    }
+    product_raw = _payload(PRODUCT_MODULE)
+    product_raw["imports"]["run"]["export"] = "helper"
+    feature = _resource(
+        "toy.feature.workflow.module",
+        "toy.feature",
+        _dump(feature_raw).encode(),
+    )
+    with pytest.raises(WorkflowAssemblyError, match="private"):
+        _lower(feature, product=_dump(product_raw))
+
+
+def test_duplicate_local_export_import_name_collision_fails() -> None:
+    raw = _payload(PRODUCT_MODULE)
+    raw["imports"]["root"] = raw["imports"].pop("run")
+    raw["graphs"]["root"]["nodes"]["child"]["graph_import"] = "root"
+    feature = _feature_resource("toy.feature", "toy.feature.workflow")
+    with pytest.raises(WorkflowAssemblyError, match="collision|duplicate"):
+        _lower(feature, product=_dump(raw))
+
+
+def test_module_import_cycle_fails() -> None:
+    alpha_raw = _feature_payload("toy.alpha", "toy.alpha.workflow")
+    zeta_raw = _feature_payload("toy.zeta", "toy.zeta.workflow")
+    alpha_raw["imports"] = {
+        "peer": {
+            "owner_id": "toy.zeta",
+            "module_id": "toy.zeta.workflow",
+            "export": "run",
+        }
+    }
+    alpha_raw["graphs"]["run"] = {
+        "max_activations": 2,
+        "start": "child",
+        "nodes": {
+            "child": {"kind": "subgraph", "graph_import": "peer"},
+            "done": {"kind": "end"},
+        },
+        "edges": [{"from": "child", "to": "done"}],
+    }
+    zeta_raw["imports"] = {
+        "peer": {
+            "owner_id": "toy.alpha",
+            "module_id": "toy.alpha.workflow",
+            "export": "run",
+        }
+    }
+    zeta_raw["graphs"]["run"] = {
+        "max_activations": 2,
+        "start": "child",
+        "nodes": {
+            "child": {"kind": "subgraph", "graph_import": "peer"},
+            "done": {"kind": "end"},
+        },
+        "edges": [{"from": "child", "to": "done"}],
+    }
+    product_raw = _payload(PRODUCT_MODULE)
+    product_raw["imports"] = {
+        "alpha": {
+            "owner_id": "toy.alpha",
+            "module_id": "toy.alpha.workflow",
+            "export": "run",
+        }
+    }
+    product_raw["graphs"]["root"]["nodes"]["child"]["graph_import"] = "alpha"
+    product_raw["schemas"] = [
+        "toy.alpha.workflow.run.input.v1",
+        "toy.alpha.workflow.run.output.v1",
+    ]
+    alpha = _resource("toy.alpha.workflow.module", "toy.alpha", _dump(alpha_raw).encode())
+    zeta = _resource("toy.zeta.workflow.module", "toy.zeta", _dump(zeta_raw).encode())
+    with pytest.raises(WorkflowAssemblyError, match="cycle"):
+        _lower(alpha, zeta, product=_dump(product_raw))
+
+
+def test_invalid_local_symbol_fails() -> None:
+    feature_raw = _feature_payload("toy.feature", "toy.feature.workflow")
+    feature_raw["graphs"]["run"] = {
+        "max_activations": 2,
+        "start": "child",
+        "nodes": {
+            "child": {"kind": "subgraph", "graph": "missing"},
+            "done": {"kind": "end"},
+        },
+        "edges": [{"from": "child", "to": "done"}],
+    }
+    feature = _resource(
+        "toy.feature.workflow.module",
+        "toy.feature",
+        _dump(feature_raw).encode(),
+    )
+    with pytest.raises(WorkflowAssemblyError, match="local symbol|unknown"):
+        _lower(feature)
+
+
+def test_feature_to_feature_graph_import_fails() -> None:
+    alpha_raw = _feature_payload("toy.alpha", "toy.alpha.workflow")
+    alpha_raw["imports"] = {
+        "peer": {
+            "owner_id": "toy.zeta",
+            "module_id": "toy.zeta.workflow",
+            "export": "run",
+        }
+    }
+    alpha_raw["graphs"]["run"] = {
+        "max_activations": 2,
+        "start": "child",
+        "nodes": {
+            "child": {"kind": "subgraph", "graph_import": "peer"},
+            "done": {"kind": "end"},
+        },
+        "edges": [{"from": "child", "to": "done"}],
+    }
+    product_raw = _payload(PRODUCT_MODULE)
+    product_raw["imports"] = {
+        "alpha": {
+            "owner_id": "toy.alpha",
+            "module_id": "toy.alpha.workflow",
+            "export": "run",
+        }
+    }
+    product_raw["graphs"]["root"]["nodes"]["child"]["graph_import"] = "alpha"
+    product_raw["schemas"] = [
+        "toy.alpha.workflow.run.input.v1",
+        "toy.alpha.workflow.run.output.v1",
+        "toy.zeta.workflow.run.input.v1",
+        "toy.zeta.workflow.run.output.v1",
+    ]
+    alpha = _resource("toy.alpha.workflow.module", "toy.alpha", _dump(alpha_raw).encode())
+    zeta = _feature_resource("toy.zeta", "toy.zeta.workflow")
+    with pytest.raises(WorkflowAssemblyError, match="feature-to-feature|import tables"):
+        _lower(alpha, zeta, product=_dump(product_raw))
+
+
+def test_product_direct_graph_reference_fails() -> None:
+    raw = _payload(PRODUCT_MODULE)
+    child = raw["graphs"]["root"]["nodes"]["child"]
+    child.pop("graph_import")
+    child["graph"] = "run"
+    feature = _feature_resource("toy.feature", "toy.feature.workflow")
+    with pytest.raises(WorkflowAssemblyError, match="direct graph|structural"):
+        _lower(feature, product=_dump(raw))
+
+
+def test_product_direct_capability_reference_fails() -> None:
+    raw = _payload(PRODUCT_MODULE)
+    raw["graphs"]["root"]["nodes"]["work"] = {
+        "kind": "task",
+        "capability": "toy.feature.do-work",
+        "retry": "once",
+        "timeout": "short",
+    }
+    raw["graphs"]["root"]["edges"].append({"from": "done", "to": "work"})
+    feature = _feature_resource("toy.feature", "toy.feature.workflow")
+    with pytest.raises(WorkflowAssemblyError, match="capability|structural|task"):
+        _lower(feature, product=_dump(raw))
+
+
+def test_product_task_node_fails() -> None:
+    raw = _payload(PRODUCT_MODULE)
+    raw["graphs"]["root"]["nodes"]["work"] = {
+        "kind": "task",
+        "capability_slot": "worker.execute",
+        "retry": "once",
+        "timeout": "short",
+    }
+    raw["capability_slots"] = {"worker.execute": {"contract_id": "toy.feature.agent.worker.v1"}}
+    raw["graphs"]["root"]["edges"].append({"from": "done", "to": "work"})
+    feature = _feature_resource("toy.feature", "toy.feature.workflow")
+    with pytest.raises(WorkflowAssemblyError, match="task|structural"):
+        _lower(feature, product=_dump(raw))
+
+
+def test_feature_entrypoint_rejected_for_product_assembly() -> None:
+    feature = _feature_resource("toy.feature", "toy.feature.workflow", slotted=True)
+    manifest = _manifest(_requirement("toy.feature.workflow", "toy.feature"))
+    product = manifest.workflow_module
+    assert product is not None
+    registries = _registries(
+        feature,
+        schemas=_schema_entries(product, parse_workflow_module(feature.content)),
+    )
+    loaded = _load_authenticated_modules(
+        manifest=manifest,
+        descriptors=_selected(feature),
+        registries=registries,
+    )
+    module = loaded.modules[0].module
+    tampered = WorkflowModuleDef.model_construct(
+        schema_version=module.schema_version,
+        role=module.role,
+        owner_id=module.owner_id,
+        module_id=module.module_id,
+        module_version=module.module_version,
+        name=module.name,
+        entrypoints={"main": "run"},
+        imports=module.imports,
+        exports=module.exports,
+        capability_slots=module.capability_slots,
+        schemas=module.schemas,
+        resources=module.resources,
+        effects=module.effects,
+        retry=module.retry,
+        timeout=module.timeout,
+        graphs=module.graphs,
+    )
+    with pytest.raises(WorkflowAssemblyError, match="entrypoint"):
+        _lower_module_symbols(
+            LoadedModules(
+                modules=(
+                    LoadedModule(
+                        module_id=tampered.module_id,
+                        owner_id=tampered.owner_id,
+                        resource_id=loaded.modules[0].resource_id,
+                        module_version=tampered.module_version,
+                        media_type=loaded.modules[0].media_type,
+                        content=loaded.modules[0].content,
+                        sha256=loaded.modules[0].sha256,
+                        module=tampered,
+                    ),
+                )
+            ),
+            manifest=manifest,
+            registries=registries,
+        )
+
+
+def test_modular_multi_out_node_without_routing_fails() -> None:
+    raw = _payload(PRODUCT_MODULE)
+    raw["graphs"]["root"]["nodes"]["other"] = {"kind": "end"}
+    raw["graphs"]["root"]["edges"].append({"from": "child", "to": "other"})
+    feature = _feature_resource("toy.feature", "toy.feature.workflow")
+    with pytest.raises(WorkflowAssemblyError, match="routing"):
+        _lower(feature, product=_dump(raw))
+
+
+def test_valid_product_feature_import_lowers_public_symbols() -> None:
+    feature = _feature_resource("toy.feature", "toy.feature.workflow", slotted=True)
+    registries_feature = parse_workflow_module(feature.content)
+    manifest = _manifest(_requirement("toy.feature.workflow", "toy.feature"))
+    module = manifest.workflow_module
+    assert module is not None
+    registries = _registries(feature, schemas=_schema_entries(module, registries_feature))
+    loaded = _load_authenticated_modules(
+        manifest=manifest,
+        descriptors=_selected(feature),
+        registries=registries,
+    )
+    lowered = _lower_module_symbols(loaded, manifest=manifest, registries=registries)
+    assert lowered.name == "toy"
+    assert lowered.entrypoints == {"main": "toy.product.workflow.graph.root"}
+    assert set(lowered.graphs) == {
+        "toy.product.workflow.graph.root",
+        "toy.feature.workflow.graph.run",
+    }
+    assert set(lowered.retry) == {
+        "toy.product.workflow.retry.once",
+        "toy.feature.workflow.retry.once",
+    }
+    assert set(lowered.timeout) == {
+        "toy.product.workflow.timeout.short",
+        "toy.feature.workflow.timeout.short",
+    }
+    child = lowered.graphs["toy.product.workflow.graph.root"].nodes["child"]
+    assert child.kind == "subgraph"
+    assert child.graph == "toy.feature.workflow.graph.run"
+    assert child.graph_import is None
+    assert child.input_schema == "toy.feature.workflow.run.input.v1"
+    assert child.output_schema == "toy.feature.workflow.run.output.v1"
+    assert child.output_projection is not None
+    assert child.output_projection.model_dump()["pointer"] == ""
+    work = lowered.graphs["toy.feature.workflow.graph.run"].nodes["work"]
+    assert work.capability_slot == "worker.execute"
+    assert work.retry == "toy.feature.workflow.retry.once"
+    assert work.timeout == "toy.feature.workflow.timeout.short"
+    payload = lowered.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    keys = _nested_keys(payload)
+    assert "module_id" not in keys
+    assert "imports" not in keys
+    assert "exports" not in keys
+    assert "graph_import" not in keys
+    assert _capability_slots(lowered) == {"worker.execute"}
+    with pytest.raises(CompileError, match="unresolved capability_slot"):
+        compile_workflow(lowered, registries)
+
+
+def test_same_named_policies_do_not_collision_across_features() -> None:
+    alpha = _resource(
+        "toy.alpha.workflow.module",
+        "toy.alpha",
+        _feature_yaml(
+            "toy.alpha",
+            "toy.alpha.workflow",
+            retry_max_attempts=1,
+            timeout_run_seconds=30,
+        ),
+    )
+    zeta = _resource(
+        "toy.zeta.workflow.module",
+        "toy.zeta",
+        _feature_yaml(
+            "toy.zeta",
+            "toy.zeta.workflow",
+            retry_max_attempts=3,
+            timeout_run_seconds=9,
+        ),
+    )
+    product_raw = _payload(PRODUCT_MODULE)
+    product_raw["imports"] = {
+        "alpha": {
+            "owner_id": "toy.alpha",
+            "module_id": "toy.alpha.workflow",
+            "export": "run",
+        },
+        "zeta": {
+            "owner_id": "toy.zeta",
+            "module_id": "toy.zeta.workflow",
+            "export": "run",
+        },
+    }
+    product_raw["schemas"] = [
+        "toy.alpha.workflow.run.input.v1",
+        "toy.alpha.workflow.run.output.v1",
+        "toy.zeta.workflow.run.input.v1",
+        "toy.zeta.workflow.run.output.v1",
+    ]
+    product_raw["graphs"]["root"] = {
+        "max_activations": 2,
+        "start": "alpha_child",
+        "nodes": {
+            "alpha_child": {"kind": "subgraph", "graph_import": "alpha"},
+            "zeta_child": {"kind": "subgraph", "graph_import": "zeta"},
+            "done": {"kind": "end"},
+        },
+        "edges": [
+            {"from": "alpha_child", "to": "zeta_child"},
+            {"from": "zeta_child", "to": "done"},
+        ],
+    }
+    lowered = _lower(alpha, zeta, product=_dump(product_raw))
+    assert set(lowered.graphs) >= {
+        "toy.alpha.workflow.graph.run",
+        "toy.zeta.workflow.graph.run",
+    }
+    assert lowered.retry["toy.alpha.workflow.retry.once"].max_attempts == 1
+    assert lowered.retry["toy.zeta.workflow.retry.once"].max_attempts == 3
+    assert lowered.timeout["toy.alpha.workflow.timeout.short"].run_seconds == 30
+    assert lowered.timeout["toy.zeta.workflow.timeout.short"].run_seconds == 9
+    assert "once" not in lowered.retry
+    assert "short" not in lowered.timeout
+    assert lowered.graphs["toy.product.workflow.graph.root"].nodes["alpha_child"].graph == (
+        "toy.alpha.workflow.graph.run"
+    )
+    assert lowered.graphs["toy.product.workflow.graph.root"].nodes["zeta_child"].graph == (
+        "toy.zeta.workflow.graph.run"
+    )
+
+
+def test_same_module_dangling_policy_reference_fails() -> None:
+    feature_raw = _feature_payload("toy.feature", "toy.feature.workflow", slotted=True)
+    feature_raw["graphs"]["run"]["nodes"]["work"]["retry"] = "missing"
+    feature = _resource(
+        "toy.feature.workflow.module",
+        "toy.feature",
+        _dump(feature_raw).encode(),
+    )
+    with pytest.raises(WorkflowAssemblyError, match="policy|dangling"):
+        _lower(feature)
