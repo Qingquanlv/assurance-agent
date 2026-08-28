@@ -2,6 +2,7 @@ import json
 import sys
 from collections.abc import Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -12,10 +13,14 @@ from pydantic import ValidationError
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.composition import (
     CapabilityRegistry,
+    EffectRegistry,
     ExecutableBindingMode,
     ExecutableKind,
     ExecutableModuleProvenance,
     ExecutableProvenance,
+    ResourceRegistry,
+    SchemaEntry,
+    SchemaRegistry,
     SourceIdentity,
     SourceKey,
     SourceKind,
@@ -370,10 +375,16 @@ def test_interrupt_requires_non_empty_unique_actions(payload: dict[str, object])
     ("kind", "payload"),
     [
         ("task", {"graph": "child"}),
+        ("task", {"input_schema": "toy.feature.workflow.run.input.v1"}),
+        ("task", {"output_schema": "toy.feature.workflow.run.output.v1"}),
+        ("task", {"output_projection": {"type": "literal", "value": True}}),
         ("subgraph", {"capability": "toy.one.ping"}),
         ("join", {"expression": "true"}),
+        ("join", {"input_schema": "toy.feature.workflow.run.input.v1"}),
         ("gate", {"reason": "stop"}),
+        ("gate", {"output_schema": "toy.feature.workflow.run.output.v1"}),
         ("interrupt", {"join": "all"}),
+        ("interrupt", {"output_projection": {"type": "literal", "value": True}}),
     ],
 )
 def test_node_kinds_reject_foreign_payload(kind: str, payload: dict[str, object]) -> None:
@@ -402,6 +413,9 @@ def test_node_kinds_reject_foreign_payload(kind: str, payload: dict[str, object]
         ("timeout", "short"),
         ("resources", {"reads": ["src"]}),
         ("validators", ["toy.one.clean"]),
+        ("input_schema", "toy.feature.workflow.run.input.v1"),
+        ("output_schema", "toy.feature.workflow.run.output.v1"),
+        ("output_projection", {"type": "literal", "value": True}),
     ],
 )
 def test_end_rejects_non_end_fields(field: str, value: object) -> None:
@@ -788,6 +802,9 @@ def test_compiled_node_freezes_a_normally_validated_node_definition() -> None:
         ("timeout", None),
         ("resources", {}),
         ("validators", []),
+        ("input_schema", None),
+        ("output_schema", None),
+        ("output_projection", None),
     ],
 )
 def test_compiled_node_rejects_forbidden_explicit_default_fields(field: str, value: object) -> None:
@@ -832,3 +849,229 @@ def test_compiled_edges_and_adjacency_are_tuples(registry: CapabilityRegistry) -
     assert isinstance(graph.edges, tuple)
     assert isinstance(graph.nodes["ping"].incoming, tuple)
     assert isinstance(graph.nodes["ping"].outgoing, tuple)
+
+
+_CONTRACTED_INPUT_SCHEMA = "toy.feature.workflow.run.input.v1"
+_CONTRACTED_OUTPUT_SCHEMA = "toy.feature.workflow.run.output.v1"
+_CONTRACTED_OUTPUT_PROJECTION = {
+    "type": "object",
+    "fields": {"status": {"type": "child_output_pointer", "pointer": "/status"}},
+}
+
+
+def _contracted_subgraph_node() -> dict[str, object]:
+    return {
+        "kind": "subgraph",
+        "graph": "child",
+        "input_schema": _CONTRACTED_INPUT_SCHEMA,
+        "output_schema": _CONTRACTED_OUTPUT_SCHEMA,
+        "output_projection": deepcopy(_CONTRACTED_OUTPUT_PROJECTION),
+    }
+
+
+def _schema_entry(schema_id: str) -> SchemaEntry:
+    return SchemaEntry.from_content(
+        schema_id=schema_id,
+        owner_id="toy.feature",
+        media_type="application/schema+json",
+        content=b'{"type":"object","additionalProperties":false}',
+    )
+
+
+@dataclass(frozen=True)
+class _ContractedRegistry:
+    capabilities: CapabilityRegistry
+    schemas: SchemaRegistry
+    resources: ResourceRegistry
+    effects: EffectRegistry
+
+
+def contracted_registry() -> _ContractedRegistry:
+    return _ContractedRegistry(
+        capabilities=CapabilityRegistry.empty(),
+        schemas=SchemaRegistry(
+            {
+                _CONTRACTED_INPUT_SCHEMA: _schema_entry(_CONTRACTED_INPUT_SCHEMA),
+                _CONTRACTED_OUTPUT_SCHEMA: _schema_entry(_CONTRACTED_OUTPUT_SCHEMA),
+            }
+        ),
+        resources=ResourceRegistry({}),
+        effects=EffectRegistry({}),
+    )
+
+
+def contracted_subgraph_workflow_raw() -> dict[str, object]:
+    return {
+        "name": "toy",
+        "entrypoints": {"main": "parent"},
+        "schemas": [_CONTRACTED_INPUT_SCHEMA, _CONTRACTED_OUTPUT_SCHEMA],
+        "retry": {"once": {"max_attempts": 1, "retry_on": []}},
+        "timeout": {"short": {"run_seconds": 5}},
+        "graphs": {
+            "parent": {
+                "max_activations": 20,
+                "start": "child",
+                "nodes": {
+                    "child": _contracted_subgraph_node(),
+                    "done": {"kind": "end"},
+                },
+                "edges": [{"from": "child", "to": "done"}],
+            },
+            "child": {
+                "max_activations": 20,
+                "start": "done",
+                "nodes": {"done": {"kind": "end"}},
+                "edges": [],
+            },
+        },
+    }
+
+
+def contracted_subgraph_workflow():
+    return _parse_raw(contracted_subgraph_workflow_raw())
+
+
+def test_compiled_subgraph_preserves_public_io_contract() -> None:
+    compiled = compile_workflow(contracted_subgraph_workflow(), contracted_registry())
+    definition = compiled.graphs["parent"].nodes["child"].definition
+    assert definition.input_schema == "toy.feature.workflow.run.input.v1"
+    assert definition.output_schema == "toy.feature.workflow.run.output.v1"
+    assert definition.output_projection is not None
+
+
+@pytest.mark.parametrize(
+    ("kind", "required"),
+    [
+        ("task", {"capability": "toy.one.ping", "retry": "once", "timeout": "short"}),
+        ("join", {"join": "any"}),
+        ("gate", {"expression": "true"}),
+        ("interrupt", {"reason": "choose", "actions": ["continue"]}),
+        ("end", {}),
+    ],
+)
+@pytest.mark.parametrize(
+    "field",
+    (
+        "input_schema",
+        "output_schema",
+        "output_projection",
+    ),
+)
+def test_subgraph_io_contract_fields_are_subgraph_only(
+    kind: str, required: dict[str, object], field: str
+) -> None:
+    accepted = NodeDef.model_validate(_contracted_subgraph_node())
+    assert accepted.input_schema == _CONTRACTED_INPUT_SCHEMA
+    assert accepted.output_schema == _CONTRACTED_OUTPUT_SCHEMA
+    assert accepted.output_projection is not None
+
+    foreign = {"kind": kind, **required, field: _contracted_subgraph_node()[field]}
+    with pytest.raises(ValidationError, match=field):
+        NodeDef.model_validate(foreign)
+
+
+def test_subgraph_io_contract_schema_ids_must_be_qualified() -> None:
+    accepted = NodeDef.model_validate(_contracted_subgraph_node())
+    assert accepted.input_schema == _CONTRACTED_INPUT_SCHEMA
+    for field in ("input_schema", "output_schema"):
+        payload = _contracted_subgraph_node()
+        payload[field] = "unqualified"
+        with pytest.raises(ValidationError, match="qualified"):
+            NodeDef.model_validate(payload)
+
+
+def test_subgraph_io_contract_schema_ids_must_occur_in_workflow_schemas() -> None:
+    raw = contracted_subgraph_workflow_raw()
+    raw["schemas"] = []
+    with pytest.raises(CompileError, match="workflow schemas"):
+        compile_workflow(_parse_raw(raw), contracted_registry())
+
+
+def test_subgraph_io_contract_schema_ids_must_exist_in_registry() -> None:
+    with pytest.raises(CompileError, match="unknown schema"):
+        compile_workflow(contracted_subgraph_workflow(), CapabilityRegistry.empty())
+
+
+def test_subgraph_io_contract_requires_output_projection_and_schema_together() -> None:
+    NodeDef.model_validate({"kind": "subgraph", "graph": "child"})
+    NodeDef.model_validate(_contracted_subgraph_node())
+    with pytest.raises(ValidationError, match="together"):
+        NodeDef.model_validate(
+            {
+                "kind": "subgraph",
+                "graph": "child",
+                "output_projection": deepcopy(_CONTRACTED_OUTPUT_PROJECTION),
+            }
+        )
+    with pytest.raises(ValidationError, match="together"):
+        NodeDef.model_validate(
+            {
+                "kind": "subgraph",
+                "graph": "child",
+                "output_schema": _CONTRACTED_OUTPUT_SCHEMA,
+            }
+        )
+
+
+def test_legacy_subgraph_may_omit_all_io_contract_fields() -> None:
+    node = NodeDef.model_validate({"kind": "subgraph", "graph": "child"})
+    assert node.input_schema is None
+    assert node.output_projection is None
+    assert node.output_schema is None
+
+
+def test_compiled_subgraph_io_contract_json_round_trip_includes_set_values() -> None:
+    compiled = compile_workflow(contracted_subgraph_workflow(), contracted_registry())
+    dumped = compiled.model_dump(mode="json", by_alias=True)
+    definition = dumped["graphs"]["parent"]["nodes"]["child"]["definition"]
+    assert definition["input_schema"] == _CONTRACTED_INPUT_SCHEMA
+    assert definition["output_schema"] == _CONTRACTED_OUTPUT_SCHEMA
+    assert definition["output_projection"] == _CONTRACTED_OUTPUT_PROJECTION
+
+    from graph_engine.canonical import canonical_digest
+
+    payload = {key: value for key, value in dumped.items() if key != "digest"}
+    assert canonical_digest(payload) == compiled.digest
+
+    reconstructed = CompiledWorkflow.model_validate(dumped)
+    assert reconstructed.digest == compiled.digest
+    assert reconstructed.model_dump(mode="json", by_alias=True) == dumped
+    reconstructed_definition = reconstructed.graphs["parent"].nodes["child"].definition
+    assert reconstructed_definition.input_schema == _CONTRACTED_INPUT_SCHEMA
+    assert reconstructed_definition.output_schema == _CONTRACTED_OUTPUT_SCHEMA
+    assert reconstructed_definition.output_projection is not None
+
+
+def test_compiled_legacy_subgraph_omits_unset_io_contract_defaults(
+    registry: CapabilityRegistry,
+) -> None:
+    raw = _raw_valid()
+    graphs = cast(dict[str, object], raw["graphs"])
+    graphs["child"] = {
+        "max_activations": 20,
+        "start": "done",
+        "nodes": {"done": {"kind": "end"}},
+        "edges": [],
+    }
+    root = cast(dict[str, object], graphs["root"])
+    nodes = cast(dict[str, object], root["nodes"])
+    nodes["ping"] = {"kind": "subgraph", "graph": "child"}
+
+    compiled = compile_workflow(_parse_raw(raw), registry)
+    dumped = compiled.model_dump(mode="json", by_alias=True)
+    definition = dumped["graphs"]["root"]["nodes"]["ping"]["definition"]
+    assert definition == {"kind": "subgraph", "graph": "child"}
+    assert "input_schema" not in definition
+    assert "output_schema" not in definition
+    assert "output_projection" not in definition
+
+    from graph_engine.canonical import canonical_digest
+
+    payload = {key: value for key, value in dumped.items() if key != "digest"}
+    assert canonical_digest(payload) == compiled.digest
+
+
+def test_subgraph_io_contract_rejects_module_metadata() -> None:
+    for field, value in (("capability_slot", "slot"), ("graph_import", "alias")):
+        with pytest.raises(ValidationError):
+            NodeDef.model_validate({"kind": "subgraph", "graph": "child", field: value})

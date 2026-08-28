@@ -18,6 +18,7 @@ from pydantic import (
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.graph.input_projection import InputProjectionDef, validate_input_projection_compile
+from graph_engine.graph.output_projection import OutputProjectionDef, validate_output_projection_compile
 from graph_engine.graph.schema import (
     EdgeDef,
     GraphDef,
@@ -26,6 +27,7 @@ from graph_engine.graph.schema import (
     RetryPolicyDef,
     TimeoutPolicyDef,
     WorkflowDef,
+    validate_node_schema_id,
     validate_node_shape,
 )
 from graph_engine.plugin_api import ResourceClaims, ResourceClaimTemplate
@@ -89,6 +91,9 @@ class CompiledNodeDefinition(_CompiledModel):
     actions: tuple[str, ...] = ()
     input: FrozenJSONMap = Field(default_factory=lambda: MappingProxyType({}))
     input_projection: InputProjectionDef | None = None
+    input_schema: str | None = None
+    output_projection: OutputProjectionDef | None = None
+    output_schema: str | None = None
     retry: str | None = None
     timeout: str | None = None
     resources: ResourceClaims | ResourceClaimTemplate = Field(default_factory=ResourceClaims)
@@ -98,6 +103,11 @@ class CompiledNodeDefinition(_CompiledModel):
     @classmethod
     def _freeze_input(cls, value: Mapping[str, object]) -> Mapping[str, object]:
         return _freeze_json_map(value)
+
+    @field_validator("input_schema", "output_schema")
+    @classmethod
+    def _validate_node_schema_ids(cls, value: str | None) -> str | None:
+        return validate_node_schema_id(value)
 
     @model_validator(mode="after")
     def _validate_kind_shape(self) -> Self:
@@ -245,6 +255,7 @@ def _validate_workflow(
 
         for node_id, node in graph.nodes.items():
             _validate_node_references(workflow, capabilities, graph_id, node_id, node)
+            _validate_node_io_contract(workflow, schemas, graph_id, node_id, node)
             if node.input_projection is not None:
                 validate_input_projection_compile(
                     node.input_projection,
@@ -333,6 +344,27 @@ def _validate_node_references(
     for validator_id in node.validators:
         if validator_id not in registry.commit_validators:
             raise CompileError(f"unknown validator {validator_id} at {graph_id}/{node_id}")
+
+
+def _validate_node_io_contract(
+    workflow: WorkflowDef,
+    schemas: Mapping[str, object],
+    graph_id: str,
+    node_id: str,
+    node: NodeDef,
+) -> None:
+    for field_name in ("input_schema", "output_schema"):
+        schema_id = getattr(node, field_name)
+        if schema_id is None:
+            continue
+        if schema_id not in workflow.schemas:
+            raise CompileError(
+                f"{field_name} {schema_id} is not declared in workflow schemas at {graph_id}/{node_id}"
+            )
+        if schema_id not in schemas:
+            raise CompileError(f"unknown schema {schema_id} at {graph_id}/{node_id}")
+    if node.output_projection is not None:
+        validate_output_projection_compile(node.output_projection, location=f"{graph_id}/{node_id}")
 
 
 def _reachable_from(start: str, outgoing: dict[str, list[str]]) -> set[str]:
