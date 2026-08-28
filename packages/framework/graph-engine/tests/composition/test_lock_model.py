@@ -387,6 +387,16 @@ def test_lock_golden_omits_none_contract_id() -> None:
     assert all("contract_id" not in binding for binding in payload["capability_bindings"])
 
 
+def test_invocation_lock_schema_version_stays_2_when_modular_fields_unset() -> None:
+    lock = _lock()
+    assert lock.schema_version == "2"
+    payload = json.loads(lock.canonical_bytes)
+    manifest = payload["product"]["manifest"]
+    assert "workflow_module" not in manifest
+    assert "workflow_module_resources" not in manifest
+    assert "workflow_slot_bindings" not in manifest
+
+
 def test_invocation_lock_schema_version_2_pins_execution_host() -> None:
     lock = _lock()
     assert lock.schema_version == "2"

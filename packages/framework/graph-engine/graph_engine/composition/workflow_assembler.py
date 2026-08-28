@@ -5,7 +5,13 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from graph_engine.canonical import JSONValue
-from graph_engine.composition.models import ProductManifest, RegistrySet, ResourceEntry
+from graph_engine.composition.models import (
+    CapabilityBindingEntry,
+    ProductManifest,
+    RegistrySet,
+    ResourceEntry,
+    WorkflowSlotBinding,
+)
 from graph_engine.errors import GraphEngineError
 from graph_engine.graph.module_schema import (
     WorkflowExportDef,
@@ -447,4 +453,190 @@ def _lower_module_symbols(
         for node in graph.nodes.values():
             if node.graph_import is not None:
                 raise WorkflowAssemblyError(f"unresolved graph_import: {node.graph_import}")
+    return workflow
+
+
+def _modules_by_id(loaded: LoadedModules, product: WorkflowModuleDef) -> dict[str, WorkflowModuleDef]:
+    modules = {product.module_id: product}
+    for item in loaded.modules:
+        if item.module_id in modules:
+            raise WorkflowAssemblyError(f"duplicate module identity: {item.module_id}")
+        modules[item.module_id] = item.module
+    return modules
+
+
+def _selected_slot_contracts(
+    modules: Mapping[str, WorkflowModuleDef],
+) -> dict[tuple[str, str], str]:
+    slots: dict[tuple[str, str], str] = {}
+    for module_id, module in modules.items():
+        for slot_name, slot in module.capability_slots.items():
+            key = (module_id, slot_name)
+            if key in slots:
+                raise WorkflowAssemblyError(f"duplicate capability slot: {module_id}/{slot_name}")
+            slots[key] = slot.contract_id
+    return slots
+
+
+def _module_id_for_graph(graph_id: str, module_ids: Mapping[str, WorkflowModuleDef]) -> str:
+    matches = [module_id for module_id in module_ids if graph_id.startswith(f"{module_id}.graph.")]
+    if not matches:
+        raise WorkflowAssemblyError(f"unknown assembled graph: {graph_id}")
+    return max(matches, key=len)
+
+
+def _nested_payload_keys(value: object) -> set[str]:
+    keys: set[str] = set()
+    if isinstance(value, Mapping):
+        keys.update(value)
+        for item in value.values():
+            keys.update(_nested_payload_keys(item))
+    elif isinstance(value, list | tuple):
+        for item in value:
+            keys.update(_nested_payload_keys(item))
+    return keys
+
+
+def _assert_assembled_closed(workflow: WorkflowDef) -> None:
+    payload = workflow.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    leftover = {"module_id", "imports", "exports", "graph_import", "capability_slots", "capability_slot"}
+    found = leftover & _nested_payload_keys(payload)
+    if found:
+        raise WorkflowAssemblyError(f"assembled workflow retains module metadata: {sorted(found)[0]}")
+    for graph in workflow.graphs.values():
+        for node in graph.nodes.values():
+            if node.graph_import is not None:
+                raise WorkflowAssemblyError(f"unresolved graph_import: {node.graph_import}")
+            if node.capability_slot is not None:
+                raise WorkflowAssemblyError(f"unresolved capability_slot: {node.capability_slot}")
+
+
+def _binding_entry(
+    capability_id: str,
+    registries: RegistrySet,
+) -> CapabilityBindingEntry:
+    entry = registries.capabilities.entries.get(capability_id)
+    if entry is None:
+        raise WorkflowAssemblyError(f"unregistered capability: {capability_id}")
+    if not isinstance(entry, CapabilityBindingEntry):
+        raise WorkflowAssemblyError(f"selected capability is not a CapabilityBindingEntry: {capability_id}")
+    return entry
+
+
+def _verify_slot_binding(
+    binding: WorkflowSlotBinding,
+    *,
+    module_contract: str,
+    manifest: ProductManifest,
+    selected: Mapping[str, PluginDescriptor],
+    registries: RegistrySet,
+) -> None:
+    if binding.contract_id != module_contract:
+        raise WorkflowAssemblyError(f"slot contract mismatch: {binding.module_id}/{binding.slot}")
+    entry = _binding_entry(binding.capability_id, registries)
+    if entry.contract_id is None:
+        raise WorkflowAssemblyError(f"binding contract missing: {binding.capability_id}")
+    if entry.contract_id != binding.contract_id or entry.contract_id != module_contract:
+        raise WorkflowAssemblyError(f"slot contract mismatch: {binding.capability_id}")
+    if entry.owner_id != manifest.product_id:
+        raise WorkflowAssemblyError(f"capability owner is not product-owned: {binding.capability_id}")
+    if entry.target_provenance.owner_id not in selected:
+        raise WorkflowAssemblyError(
+            f"target handler outside descriptor closure: {entry.target_capability_id}"
+        )
+
+
+def _lower_capability_slots(
+    workflow: WorkflowDef,
+    *,
+    loaded: LoadedModules,
+    manifest: ProductManifest,
+    descriptors: Mapping[str, PluginDescriptor],
+    registries: RegistrySet,
+) -> WorkflowDef:
+    if manifest.workflow_module is None:
+        raise WorkflowAssemblyError("workflow module resources require the modular product form")
+    selected = _selected_descriptors(descriptors)
+    modules = _modules_by_id(loaded, manifest.workflow_module)
+    selected_slots = _selected_slot_contracts(modules)
+    bindings = manifest.workflow_slot_bindings
+    binding_keys = [(item.module_id, item.slot) for item in bindings]
+    if len(binding_keys) != len(set(binding_keys)):
+        raise WorkflowAssemblyError("duplicate slot binding")
+    binding_set = set(binding_keys)
+    selected_set = set(selected_slots)
+    for item in bindings:
+        if item.module_id not in modules:
+            raise WorkflowAssemblyError(f"unknown slot: {item.module_id}/{item.slot}")
+    extra = binding_set - selected_set
+    if extra:
+        module_id, slot = sorted(extra)[0]
+        raise WorkflowAssemblyError(f"extra slot binding: {module_id}/{slot}")
+    missing = selected_set - binding_set
+    if missing:
+        module_id, slot = sorted(missing)[0]
+        raise WorkflowAssemblyError(f"missing slot binding: {module_id}/{slot}")
+    by_key = {(item.module_id, item.slot): item for item in bindings}
+    for key, binding in by_key.items():
+        _verify_slot_binding(
+            binding,
+            module_contract=selected_slots[key],
+            manifest=manifest,
+            selected=selected,
+            registries=registries,
+        )
+    rewritten_graphs: dict[str, GraphDef] = {}
+    for graph_id, graph in workflow.graphs.items():
+        module_id = _module_id_for_graph(graph_id, modules)
+        nodes: dict[str, NodeDef] = {}
+        for node_id, node in graph.nodes.items():
+            if node.capability_slot is None:
+                nodes[node_id] = node
+                continue
+            key = (module_id, node.capability_slot)
+            binding = by_key.get(key)
+            if binding is None:
+                raise WorkflowAssemblyError(f"unknown slot: {module_id}/{node.capability_slot}")
+            payload = node.model_dump(mode="python", by_alias=True, exclude_unset=True)
+            payload.pop("capability_slot", None)
+            payload["capability"] = binding.capability_id
+            nodes[node_id] = NodeDef.model_validate(payload)
+        rewritten_graphs[graph_id] = GraphDef(
+            max_activations=graph.max_activations,
+            start=graph.start,
+            nodes=nodes,
+            edges=graph.edges,
+        )
+    return WorkflowDef(
+        name=workflow.name,
+        entrypoints=workflow.entrypoints,
+        schemas=workflow.schemas,
+        resources=workflow.resources,
+        effects=workflow.effects,
+        retry=workflow.retry,
+        timeout=workflow.timeout,
+        graphs=_sorted_mapping(rewritten_graphs),
+    )
+
+
+def assemble_product_workflow(
+    *,
+    manifest: ProductManifest,
+    descriptors: Mapping[str, PluginDescriptor],
+    registries: RegistrySet,
+) -> WorkflowDef:
+    loaded = _load_authenticated_modules(
+        manifest=manifest,
+        descriptors=descriptors,
+        registries=registries,
+    )
+    lowered = _lower_module_symbols(loaded, manifest=manifest, registries=registries)
+    workflow = _lower_capability_slots(
+        lowered,
+        loaded=loaded,
+        manifest=manifest,
+        descriptors=descriptors,
+        registries=registries,
+    )
+    _assert_assembled_closed(workflow)
     return workflow

@@ -10,8 +10,15 @@ import yaml
 
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.composition.models import (
+    AuthenticatedContribution,
     CapabilityRegistry,
+    ContributionAuthority,
     EffectRegistry,
+    ExecutableAuthority,
+    ExecutableBindingMode,
+    ExecutableKind,
+    ExecutableModuleProvenance,
+    ExecutableProvenance,
     PluginRequirement,
     ProductManifest,
     RegistrySet,
@@ -27,19 +34,30 @@ from graph_engine.composition.models import (
     SourceRole,
     SourceSnapshot,
     WorkflowModuleRequirement,
+    WorkflowSlotBinding,
 )
+from graph_engine.composition.provenance import StandardLoader
+from graph_engine.composition.registries import _build_registries as _build_authenticated_registries
 from graph_engine.composition.workflow_assembler import (
     LoadedModule,
     LoadedModules,
     WorkflowAssemblyError,
     _load_authenticated_modules,
     _lower_module_symbols,
+    assemble_product_workflow,
 )
 from graph_engine.graph import parse_workflow_module
 from graph_engine.graph.compiler import CompileError, compile_workflow
 from graph_engine.graph.module_schema import WorkflowModuleDef
 from graph_engine.graph.schema import WorkflowDef
-from graph_engine.plugin_api import PluginDescriptor
+from graph_engine.plugin_api import (
+    CapabilityBindingContribution,
+    PluginContribution,
+    PluginDescriptor,
+    TaskContext,
+    TaskOutcome,
+    TaskRequest,
+)
 
 MODULE_MIME = "application/vnd.graph-engine.workflow-module+yaml"
 
@@ -94,6 +112,7 @@ def _feature_yaml(
     retry_max_attempts: int = 1,
     timeout_run_seconds: float = 30,
     slotted: bool = False,
+    graph: str = "run",
 ) -> bytes:
     work_nodes = """      done: {kind: end}"""
     work_edges = "    edges: []"
@@ -120,7 +139,7 @@ module_id: {module_id}
 module_version: {version}
 exports:
   run:
-    graph: run
+    graph: {graph}
     input_schema: {module_id}.run.input.v1
     output_schema: {module_id}.run.output.v1
     output_projection:
@@ -137,7 +156,7 @@ retry:
 timeout:
   short: {{run_seconds: {timeout_run_seconds}}}
 graphs:
-  run:
+  {graph}:
     max_activations: 2
     start: {start}
     nodes:
@@ -173,6 +192,7 @@ def _feature_resource(
     slotted: bool = False,
     retry_max_attempts: int = 1,
     timeout_run_seconds: float = 30,
+    graph: str = "run",
 ) -> ResourceEntry:
     return _resource(
         resource_id or f"{module_id}.module",
@@ -184,6 +204,7 @@ def _feature_resource(
             slotted=slotted,
             retry_max_attempts=retry_max_attempts,
             timeout_run_seconds=timeout_run_seconds,
+            graph=graph,
         ),
         media_type=media_type,
     )
@@ -219,9 +240,25 @@ def _requirement(
     )
 
 
+def _slot_binding(
+    *,
+    module_id: str = "toy.feature.workflow",
+    slot: str = "worker.execute",
+    capability_id: str = "toy.product.agent.worker.execute",
+    contract_id: str = "toy.feature.agent.worker.v1",
+) -> WorkflowSlotBinding:
+    return WorkflowSlotBinding(
+        module_id=module_id,
+        slot=slot,
+        capability_id=capability_id,
+        contract_id=contract_id,
+    )
+
+
 def _manifest(
     *requirements: WorkflowModuleRequirement,
     workflow_module: str | WorkflowModuleDef | None = None,
+    workflow_slot_bindings: tuple[WorkflowSlotBinding, ...] = (),
 ) -> ProductManifest:
     module = (
         workflow_module
@@ -239,6 +276,7 @@ def _manifest(
             "entrypoints": dict(module.entrypoints),
             "workflow_module": module,
             "workflow_module_resources": requirements,
+            "workflow_slot_bindings": workflow_slot_bindings,
         }
     )
 
@@ -274,9 +312,151 @@ def _schema_entries(*modules: WorkflowModuleDef) -> dict[str, SchemaEntry]:
     return {schema_id: _schema_entry(schema_id) for schema_id in schema_ids}
 
 
+class _Handler:
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        del request, context
+        return TaskOutcome.succeeded({"ok": True})
+
+
+def _wheel_source(plugin_id: str) -> SourceSnapshot:
+    return SourceSnapshot.from_identity(
+        SourceIdentity(
+            kind=SourceKind.WHEEL_PLUGIN,
+            root=Path(f"/sources/{plugin_id}"),
+            distribution=plugin_id.replace(".", "-"),
+            version="1.0.0",
+            entrypoint_group="graph_engine.plugins",
+            entrypoint_name=plugin_id,
+            entrypoint_value=f"{plugin_id.replace('.', '_')}:provider",
+            declaration_path=f"{plugin_id.replace('.', '_')}/plugin-declaration.json",
+            import_roots=("",),
+            plugin_id=plugin_id,
+            plugin_version="1.0.0",
+        ),
+        (),
+    )
+
+
+def _source_key(snapshot: SourceSnapshot) -> SourceKey:
+    role = SourceRole.CONFIG if snapshot.identity.kind is SourceKind.CONFIG_TREE else SourceRole.PLUGIN
+    owner_id = snapshot.identity.plugin_id
+    assert owner_id is not None
+    return SourceKey(role, owner_id)
+
+
+def _proof(snapshot: SourceSnapshot, kind: ExecutableKind, registry_id: str) -> ExecutableProvenance:
+    source_key = _source_key(snapshot)
+    return ExecutableProvenance.create(
+        kind=kind,
+        registry_id=registry_id,
+        owner_id=source_key.owner_id,
+        source_key=source_key,
+        source_digest=snapshot.digest,
+        module=ExecutableModuleProvenance(
+            module_name=f"{source_key.owner_id.replace('.', '_')}.implementation",
+            standard_loader=StandardLoader.SOURCE,
+            standard_is_package=False,
+            relative_origin="implementation.py",
+            authenticated_locations=(),
+            physical_sha256="0" * 64,
+            source_digest=snapshot.digest,
+        ),
+        callable_path="implementation:Handler.execute",
+        binding_mode=ExecutableBindingMode.INSTANCE_METHOD,
+    )
+
+
+def _authenticated(snapshot: SourceSnapshot, contribution: PluginContribution) -> AuthenticatedContribution:
+    source_key = _source_key(snapshot)
+    proofs = tuple(
+        _proof(snapshot, ExecutableKind.TASK_HANDLER, capability_id)
+        for capability_id in contribution.task_handlers
+    )
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id=source_key.owner_id,
+        plugin_version="1.0.0",
+        engine_api="1.0.0",
+        task_handlers=tuple(contribution.task_handlers),
+        commit_validators=(),
+        schemas=tuple(item.schema_id for item in contribution.schemas),
+        resources=tuple(item.resource_id for item in contribution.resources),
+        bindings=tuple(item.capability_id for item in contribution.bindings),
+    )
+    authorities = tuple(
+        ExecutableAuthority(
+            executable=contribution.task_handlers[proof.registry_id],
+            function=type(contribution.task_handlers[proof.registry_id]).__dict__[proof.kind.slot],
+            bound_self=contribution.task_handlers[proof.registry_id],
+            descriptor=type(contribution.task_handlers[proof.registry_id]).__dict__[proof.kind.slot],
+            provenance=proof,
+        )
+        for proof in proofs
+    )
+    return AuthenticatedContribution(
+        owner_id=source_key.owner_id,
+        source_key=source_key,
+        source_digest=snapshot.digest,
+        descriptor=descriptor,
+        contribution=contribution,
+        executables=proofs,
+        authority=ContributionAuthority(
+            provider_binding=object() if source_key.role is SourceRole.PLUGIN else None,
+            descriptor=descriptor,
+            owner_id=source_key.owner_id,
+            source_key=source_key,
+            source_digest=snapshot.digest,
+            contribution=contribution,
+            authorities=authorities,
+        ),
+    )
+
+
+def _binding_registry(
+    *,
+    capability_id: str = "toy.product.agent.worker.execute",
+    target_capability_id: str = "toy.runtime.execute",
+    contract_id: str | None = "toy.feature.agent.worker.v1",
+    binding_owner: str = "toy.product",
+    target_owner: str = "toy.runtime",
+    as_direct_handler: bool = False,
+) -> RegistrySet:
+    runtime = _wheel_source(target_owner)
+    handler = _Handler()
+    contributions = [
+        _authenticated(
+            runtime,
+            PluginContribution(task_handlers={target_capability_id: handler}),
+        )
+    ]
+    sources = [runtime]
+    order = [target_owner]
+    if not as_direct_handler:
+        product = _plugin_source(binding_owner)
+        contributions.append(
+            _authenticated(
+                product,
+                PluginContribution(
+                    bindings=(
+                        CapabilityBindingContribution(
+                            capability_id=capability_id,
+                            target_capability_id=target_capability_id,
+                            contract_id=contract_id,
+                        ),
+                    )
+                ),
+            )
+        )
+        sources.append(product)
+        order.append(binding_owner)
+    return _build_authenticated_registries(tuple(sources), tuple(contributions), tuple(order))
+
+
 def _registries(
     *resources: ResourceEntry,
     schemas: dict[str, SchemaEntry] | None = None,
+    binding_registry: RegistrySet | None = None,
 ) -> RegistrySet:
     sources: dict[SourceKey, SourceEntry] = {}
     for resource in resources:
@@ -285,9 +465,13 @@ def _registries(
             continue
         snapshot = _plugin_source(resource.owner_id)
         sources[key] = SourceEntry(source_key=key, snapshot=snapshot)
+    capabilities = CapabilityRegistry.empty()
+    if binding_registry is not None:
+        sources.update(binding_registry.sources.entries)
+        capabilities = binding_registry.capabilities
     return RegistrySet(
         sources=SourceRegistry(sources),
-        capabilities=CapabilityRegistry.empty(),
+        capabilities=capabilities,
         schemas=SchemaRegistry(entries=schemas or {}),
         resources=ResourceRegistry({item.resource_id: item for item in resources}),
         effects=EffectRegistry(entries={}),
@@ -999,3 +1183,131 @@ def test_same_module_dangling_policy_reference_fails() -> None:
     )
     with pytest.raises(WorkflowAssemblyError, match="policy|dangling"):
         _lower(feature)
+
+
+def _slotted_feature(*, graph: str = "feature-run") -> ResourceEntry:
+    return _feature_resource("toy.feature", "toy.feature.workflow", slotted=True, graph=graph)
+
+
+def _slot_assembly_inputs(
+    *,
+    feature: ResourceEntry | None = None,
+    bindings: tuple[WorkflowSlotBinding, ...] | None = None,
+    binding_registry: RegistrySet | None = None,
+) -> tuple[ProductManifest, dict[str, PluginDescriptor], RegistrySet]:
+    resource = feature or _slotted_feature()
+    parsed = parse_workflow_module(resource.content)
+    manifest = _manifest(
+        _requirement(parsed.module_id, resource.owner_id, resource.resource_id),
+        workflow_slot_bindings=(_slot_binding(),) if bindings is None else bindings,
+    )
+    module = manifest.workflow_module
+    assert module is not None
+    descriptors = {
+        **_selected(resource),
+        "toy.runtime": _descriptor("toy.runtime"),
+    }
+    registries = _registries(
+        resource,
+        schemas=_schema_entries(module, parsed),
+        binding_registry=binding_registry if binding_registry is not None else _binding_registry(),
+    )
+    return manifest, descriptors, registries
+
+
+def test_missing_slot_binding_fails() -> None:
+    manifest, descriptors, registries = _slot_assembly_inputs(bindings=())
+    with pytest.raises(WorkflowAssemblyError, match="missing"):
+        assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
+
+
+def test_extra_slot_binding_fails() -> None:
+    manifest, descriptors, registries = _slot_assembly_inputs(
+        bindings=(
+            _slot_binding(),
+            _slot_binding(slot="ghost.execute", contract_id="toy.feature.agent.ghost.v1"),
+        )
+    )
+    with pytest.raises(WorkflowAssemblyError, match="extra"):
+        assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
+
+
+def test_duplicate_slot_binding_fails() -> None:
+    manifest, descriptors, registries = _slot_assembly_inputs()
+    duplicate = _slot_binding()
+    tampered = ProductManifest.model_construct(
+        schema_version=manifest.schema_version,
+        source=manifest.source,
+        product_id=manifest.product_id,
+        product_version=manifest.product_version,
+        engine_api=manifest.engine_api,
+        plugins=manifest.plugins,
+        entrypoints=manifest.entrypoints,
+        configuration=manifest.configuration,
+        config_plugin_paths=manifest.config_plugin_paths,
+        workflow=manifest.workflow,
+        workflow_resource_id=manifest.workflow_resource_id,
+        workflow_module=manifest.workflow_module,
+        workflow_module_resources=manifest.workflow_module_resources,
+        workflow_slot_bindings=(duplicate, duplicate),
+    )
+    with pytest.raises(WorkflowAssemblyError, match="duplicate"):
+        assemble_product_workflow(manifest=tampered, descriptors=descriptors, registries=registries)
+
+
+def test_unknown_slot_binding_fails() -> None:
+    manifest, descriptors, registries = _slot_assembly_inputs(
+        bindings=(_slot_binding(module_id="toy.ghost.workflow"),)
+    )
+    with pytest.raises(WorkflowAssemblyError, match="unknown"):
+        assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
+
+
+def test_slot_contract_mismatch_fails() -> None:
+    manifest, descriptors, registries = _slot_assembly_inputs(
+        bindings=(_slot_binding(contract_id="toy.feature.agent.other.v1"),)
+    )
+    with pytest.raises(WorkflowAssemblyError, match="contract"):
+        assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
+
+
+def test_selected_slot_capability_must_be_binding_entry() -> None:
+    manifest, descriptors, registries = _slot_assembly_inputs(
+        bindings=(_slot_binding(capability_id="toy.runtime.execute"),),
+        binding_registry=_binding_registry(as_direct_handler=True),
+    )
+    with pytest.raises(WorkflowAssemblyError, match="CapabilityBindingEntry"):
+        assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
+
+
+def test_slot_binding_contract_missing_fails() -> None:
+    manifest, descriptors, registries = _slot_assembly_inputs(
+        binding_registry=_binding_registry(contract_id=None),
+    )
+    with pytest.raises(WorkflowAssemblyError, match="contract"):
+        assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
+
+
+def test_slot_target_handler_outside_descriptor_closure_fails() -> None:
+    manifest, descriptors, registries = _slot_assembly_inputs()
+    descriptors.pop("toy.runtime")
+    with pytest.raises(WorkflowAssemblyError, match="descriptor|closure|target"):
+        assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
+
+
+def test_valid_slot_lowers_to_concrete_capability() -> None:
+    feature = _slotted_feature()
+    manifest, descriptors, registries = _slot_assembly_inputs(feature=feature)
+    assembled = assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)
+    task = assembled.graphs["toy.feature.workflow.graph.feature-run"].nodes["work"]
+    assert task.capability == "toy.product.agent.worker.execute"
+    assert task.capability_slot is None
+    payload = assembled.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    keys = _nested_keys(payload)
+    assert "module_id" not in keys
+    assert "imports" not in keys
+    assert "exports" not in keys
+    assert "graph_import" not in keys
+    assert "capability_slot" not in keys
+    assert _capability_slots(assembled) == set()
+    compile_workflow(assembled, registries)

@@ -38,6 +38,10 @@ from graph_engine.composition.models import (
     SourceSnapshot,
 )
 from graph_engine.composition.registries import _build_registries
+from graph_engine.composition.workflow_assembler import (
+    WorkflowAssemblyError,
+    assemble_product_workflow,
+)
 from graph_engine.composition.source_fs import (
     DeclaredTreePolicy,
     SourceSnapshotError,
@@ -194,7 +198,7 @@ class RegistryPlatform:
         configuration = self._validate_configuration(manifest, loaded.descriptors)
 
         # 12. Resolve a frozen inline/resource workflow and compile every entrypoint.
-        workflow = self._compile_product_workflow(manifest, registries)
+        workflow = self._compile_product_workflow(manifest, registries, loaded.descriptors)
 
         # 13-14. Compute canonical projections/digests and construct the immutable lock.
         lock = build_invocation_lock(
@@ -491,8 +495,18 @@ class RegistryPlatform:
         self,
         manifest: ProductManifest,
         registries: RegistrySet,
+        descriptors: Mapping[str, PluginDescriptor],
     ) -> CompiledWorkflow:
-        if manifest.workflow is not None:
+        if manifest.workflow_module is not None:
+            try:
+                workflow = assemble_product_workflow(
+                    manifest=manifest,
+                    descriptors=descriptors,
+                    registries=registries,
+                )
+            except WorkflowAssemblyError as error:
+                raise ResolutionError(str(error)) from error
+        elif manifest.workflow is not None:
             workflow = manifest.workflow
         else:
             assert manifest.workflow_resource_id is not None
@@ -507,10 +521,14 @@ class RegistryPlatform:
                 workflow = parse_workflow(resource.content.decode("utf-8"))
             except Exception as error:
                 raise ResolutionError("product workflow resource is invalid") from error
-        if dict(workflow.entrypoints) != dict(manifest.entrypoints):
+        if set(workflow.entrypoints) != set(manifest.entrypoints) or (
+            manifest.workflow_module is None and dict(workflow.entrypoints) != dict(manifest.entrypoints)
+        ):
             raise ResolutionError("product entrypoints disagree with the selected workflow")
         compiled = compile_workflow(workflow, registries)
-        if dict(compiled.entrypoints) != dict(manifest.entrypoints):  # pragma: no cover - compiler copies.
+        if set(compiled.entrypoints) != set(manifest.entrypoints) or (
+            manifest.workflow_module is None and dict(compiled.entrypoints) != dict(manifest.entrypoints)
+        ):  # pragma: no cover - compiler copies.
             raise ResolutionError("compiled workflow entrypoints disagree with product")
         return compiled
 
@@ -610,6 +628,9 @@ def _normalize_declarative_product(product: DeclarativeProduct) -> ProductManife
         config_plugin_paths=tuple(str(path) for path in product.config_plugin_paths),
         workflow=document.workflow,
         workflow_resource_id=document.workflow_resource_id,
+        workflow_module=document.workflow_module,
+        workflow_module_resources=document.workflow_module_resources,
+        workflow_slot_bindings=document.workflow_slot_bindings,
     )
 
 
