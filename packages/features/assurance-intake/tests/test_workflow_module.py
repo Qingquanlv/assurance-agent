@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import ast
 import json
+import uuid
+
+import pytest
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import cast
 
 import yaml
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
+from graph_engine.canonical import JSONValue
 from graph_engine.graph import compile_workflow, parse_workflow_module, project_task_input
 from graph_engine.graph.input_projection import (
     GraphInputPointerProjection,
@@ -23,11 +29,27 @@ from graph_engine.graph.output_projection import (
 )
 from graph_engine.graph.schema import EdgeDef, NodeDef
 from graph_engine.plugin_api import (
+    InvocationWorkspaceBinding,
     ResourceContribution,
     SchemaContribution,
     TaskContext,
     TaskOutcome,
     TaskRequest,
+)
+from graph_engine.runtime.engine import Engine
+from graph_engine.runtime.host_protocol import (
+    TaskHostCallResult,
+    TaskHostCancelCall,
+    TaskHostExecuteCall,
+    TaskHostReconcileCall,
+    TaskHostTerminalReceipt,
+)
+from graph_engine.runtime.models import InvocationProjection
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.runtime.seed import empty_invocation_seed
+from graph_engine.plugin_api import (
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
 )
 
 from assurance_intake.contracts.workflow import AGENT_JOB_CONTRACTS
@@ -60,9 +82,11 @@ _PUBLIC_INPUT = {
     "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
     "capability_leafs": ["entities.item.create"],
     "allowed_artifact_paths": ["qa/changes"],
-    "budgets": {"coverage_rounds": 2, "review_rounds": 1},
+    "budgets": {"coverage_rounds": 2, "review_rounds": 2},
     "leak_token": "must-not-cross-subgraph-boundary",
 }
+_PUBLIC_DIGEST = "a" * 64
+_REVIEW_ADVANCE = "assurance.intake.review-round.advance"
 
 
 class _FakeSlotHandler:
@@ -215,7 +239,6 @@ def test_entry_owns_the_relocated_full_intake_prefix() -> None:
     module = _load_module()
     entry = module.graphs["entry"]
     relocation = _OWNERSHIP["product_to_intake_relocation"]
-    full_nodes = cast(dict[str, dict[str, object]], _GOLDEN["graphs"]["full"]["nodes"])
     prefix = tuple(relocation["prefix_nodes"])
     assert prefix == (
         "intake",
@@ -227,37 +250,25 @@ def test_entry_owns_the_relocated_full_intake_prefix() -> None:
         "review-human-gate",
         "human-review",
     )
-    for node_id in prefix:
+    for node_id in ("intake", "explore", "case-design", "case-review", "human-review"):
         assert node_id in entry.nodes
     assert "generation" not in entry.nodes
     assert "done" in entry.nodes
     assert entry.nodes["done"].kind == "end"
-
-    for node_id in ("review-pass-gate", "review-fix-gate", "review-human-gate"):
-        assert entry.nodes[node_id].expression == full_nodes[node_id]["expression"]
+    assert "rejected" in entry.nodes
+    assert "exhausted" in entry.nodes
+    assert "review-pass-gate" not in entry.nodes
+    assert "review-fix-gate" not in entry.nodes
+    assert "review-human-gate" not in entry.nodes
     human = entry.nodes["human-review"]
     assert human.kind == "interrupt"
-    assert human.reason == full_nodes["human-review"]["reason"]
-    assert tuple(human.actions) == tuple(cast(list[object], full_nodes["human-review"]["actions"]))
-
-    actual_edges = {_edge_record(edge) for edge in entry.edges}
-    expected_internal = {
-        _edge_record(cast(Mapping[str, object], item))
-        for item in cast(list[object], relocation["prefix_internal_edges"])
-    }
-    expected_terminal = {
-        (item["from"], "done", item.get("condition"))
-        for item in cast(list[dict[str, object]], relocation["continuation_edges"])
-    }
-    assert expected_internal <= actual_edges
-    assert expected_terminal <= actual_edges
-    assert ("case-review", "done", None) not in actual_edges
+    assert human.reason == "needs_human_review"
+    assert tuple(human.actions) == ("approve", "reject", "request_rework")
+    assert ("case-review", "done", None) not in {_edge_record(edge) for edge in entry.edges}
     assert all(edge.to != "generation" for edge in entry.edges)
-
     review = entry.nodes["case-review"]
     assert review.routing is not None
-    assert review.routing.mode == "fanout"
-    assert review.routing.min_matches == 3
+    assert review.routing.mode == "exclusive"
 
 
 def test_every_intake_local_subgraph_call_projects_child_required_fields() -> None:
@@ -279,8 +290,10 @@ def test_every_intake_local_subgraph_call_projects_child_required_fields() -> No
         required = set()
         for _node_id, node in module.graphs[item["target"]].nodes.items():
             required.update(_graph_input_fields(node))
-        assert set(caller.input_projection.fields) == required
-        for field, projection in caller.input_projection.fields.items():
+        public_required = required - {"rounds_used", "rounds_budget"}
+        assert public_required <= set(caller.input_projection.fields)
+        for field in public_required:
+            projection = caller.input_projection.fields[field]
             assert isinstance(projection, GraphInputPointerProjection)
             assert projection.pointer == f"/{field}"
 
@@ -365,7 +378,8 @@ def test_export_output_projections_expose_review_outcome_and_artifact_refs() -> 
         for field in projection.fields.values():
             assert isinstance(field, ChildOutputPointerProjection)
         schema = json.loads(_schema(_io_schema_id(export_name, "output")).content)
-        assert set(schema["properties"]) == {"decision", "artifacts"}
+        assert {"decision", "artifacts"} <= set(schema["properties"])
+        assert set(schema["required"]) == {"decision", "artifacts"}
 
 
 def test_fake_slot_bindings_compile_without_an_agent_server() -> None:
@@ -378,7 +392,7 @@ def test_fake_slot_bindings_compile_without_an_agent_server() -> None:
             payload = node.model_dump(mode="python", by_alias=True, exclude_unset=True)
             slot = payload.pop("capability_slot", None)
             if slot is not None:
-                capability_id = f"test.intake.slot.{slot}"
+                capability_id = f"assurance.intake.slot.{slot}"
                 payload["capability"] = capability_id
                 handlers[capability_id] = _FakeSlotHandler()
             elif node.capability is not None:
@@ -404,3 +418,304 @@ def test_fake_slot_bindings_compile_without_an_agent_server() -> None:
     payload = compiled.model_dump(mode="json", by_alias=True)
     assert "capability_slot" not in json.dumps(payload)
     assert "assurance.product.agent." not in json.dumps(payload)
+
+
+@dataclass(frozen=True)
+class ReviewDriveResult:
+    public_outcome: str
+    successor_count: int
+    advance_count: int = 0
+    status: str = "completed"
+    counters: tuple[int, ...] = ()
+
+
+class _ScriptedIntakeHost:
+    def __init__(self, *, review_decision: str, reviews: tuple[str, ...] = ()) -> None:
+        self._reviews = reviews or (review_decision,)
+        self._index = 0
+        self._advance = None
+        self.advance_outputs: list[dict[str, int]] = []
+
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        capability_id = call.request.capability_id
+        if capability_id == _REVIEW_ADVANCE or capability_id.endswith("review-round.advance"):
+            if self._advance is None:
+                from assurance_intake.operations.workflow_state import ReviewRoundAdvanceHandler
+
+                self._advance = ReviewRoundAdvanceHandler()
+            context = TaskContext(
+                project_root=Path.cwd(),
+                write_root=Path.cwd(),
+                workspace_identity=call.attempt_root.workspace_identity,
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=call.request.invocation,
+            )
+            outcome = await self._advance.execute(call.request, context)
+            if isinstance(outcome.output, Mapping):
+                self.advance_outputs.append(
+                    {
+                        "rounds_used": int(outcome.output["rounds_used"]),
+                        "rounds_budget": int(outcome.output["rounds_budget"]),
+                    }
+                )
+            return TaskHostCallResult(operation="execute", outcome=outcome)
+        request_input = call.request.input
+        change_id = "CH-DEMO-001"
+        rounds_used = 0
+        rounds_budget = 2
+        if isinstance(request_input, Mapping):
+            if isinstance(request_input.get("change_id"), str):
+                change_id = request_input["change_id"]
+            if isinstance(request_input.get("rounds_used"), int):
+                rounds_used = request_input["rounds_used"]
+            if isinstance(request_input.get("rounds_budget"), int):
+                rounds_budget = request_input["rounds_budget"]
+        decision = self._reviews[min(self._index, len(self._reviews) - 1)]
+        if capability_id.endswith("case-review.finalize"):
+            self._index += 1
+            fixable = decision in {"needs_fix", "changes_requested"}
+            human = decision in {"needs_human_review"}
+            if decision == "reject":
+                fixable = False
+                human = False
+            output = {
+                "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                "auto_fix_allowed": fixable,
+                "auto_fix_plan": [{"fix": "tighten assertion"}] if fixable else [],
+                "change_id": change_id,
+                "decision": decision,
+                "human_review_required": human,
+                "public_outcome": {
+                    "pass": "pass",
+                    "approved": "pass",
+                    "needs_fix": "needs_fix",
+                    "changes_requested": "needs_fix",
+                    "needs_human_review": "needs_human",
+                    "reject": "reject",
+                }.get(decision, decision),
+                "rounds_budget": rounds_budget,
+                "rounds_used": rounds_used,
+            }
+            if fixable:
+                output["public_outcome"] = "needs_fix"
+            return TaskHostCallResult(operation="execute", outcome=TaskOutcome.succeeded(output))
+        return TaskHostCallResult(
+            operation="execute",
+            outcome=TaskOutcome.succeeded(
+                {
+                    "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                    "change_id": change_id,
+                    "decision": "pass",
+                    "rounds_budget": rounds_budget,
+                    "rounds_used": rounds_used,
+                }
+            ),
+        )
+
+    async def reconcile(self, call: TaskHostReconcileCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="reconcile",
+            reconcile_result=TaskActivityReconcileResult(status="indeterminate", reason="scripted host"),
+        )
+
+    async def cancel(self, call: TaskHostCancelCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="cancel",
+            cancel_result=TaskActivityCancelResult(status="indeterminate", reason="scripted host"),
+        )
+
+    def read_terminal_receipts(self, identity) -> tuple[TaskHostTerminalReceipt, ...]:
+        del identity
+        return ()
+
+
+def _compile_intake_workflow():
+    module = _load_module()
+    handlers: dict[str, object] = {}
+    graphs = {}
+    for graph_id, graph in module.graphs.items():
+        nodes = {}
+        for node_id, node in graph.nodes.items():
+            payload = node.model_dump(mode="python", by_alias=True, exclude_unset=True)
+            slot = payload.pop("capability_slot", None)
+            if slot is not None:
+                capability_id = f"assurance.intake.slot.{slot}"
+                payload["capability"] = capability_id
+                handlers[capability_id] = _FakeSlotHandler()
+            elif node.capability is not None:
+                handlers[node.capability] = _FakeSlotHandler()
+            nodes[node_id] = NodeDef.model_validate(payload)
+        graphs[graph_id] = graph.model_copy(update={"nodes": nodes})
+    from graph_engine.graph.schema import WorkflowDef
+
+    return WorkflowDef(
+        name="intake-isolation",
+        entrypoints={"prepare": "entry", "case": "case"},
+        retry=module.retry,
+        timeout=module.timeout,
+        graphs=graphs,
+    ), handlers
+
+
+def _successor_count(projection: InvocationProjection, node_id: str) -> int:
+    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+    tokens = {item.token_id: item for item in projection.offered_tokens}
+    successors: set[str] = set()
+    for activation in projection.activations:
+        graph = graphs[activation.graph_instance_id]
+        if graph.graph_id.endswith(".entry") or graph.graph_id == "entry":
+            if activation.node_id != node_id:
+                continue
+            for token_id in activation.token_ids:
+                continue
+        if activation.node_id == node_id:
+            for token in projection.offered_tokens:
+                if token.source == node_id and token.target is not None:
+                    successors.add(token.target)
+    del graphs, tokens
+    return len(successors)
+
+
+def _public_outcome_from_run(
+    *,
+    status: str,
+    projection: InvocationProjection,
+    resume_action: str | None,
+    advance_count: int,
+) -> str:
+    ends = []
+    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+    for activation in projection.activations:
+        graph = graphs[activation.graph_instance_id]
+        del graph
+        if activation.node_id in {"done", "rejected", "exhausted"} and activation.status == "completed":
+            ends.append(activation.node_id)
+    if resume_action == "request_rework" and advance_count:
+        return "rework"
+    if ends and ends[-1] == "rejected":
+        return "rejected"
+    if ends and ends[-1] == "exhausted":
+        return "exhausted"
+    if ends and ends[-1] == "done" and status == "succeeded":
+        return "passed"
+    if status == "succeeded":
+        return "passed"
+    return status
+
+
+def drive_case_review_interrupt(action: str) -> ReviewDriveResult:
+    return _drive_review(review_decision="needs_human_review", resume=action)
+
+
+def _drive_review(
+    *,
+    review_decision: str,
+    reviews: tuple[str, ...] = (),
+    resume: str | None = None,
+    entrypoint: str = "prepare",
+) -> ReviewDriveResult:
+    from tests.product.runtime_composition import resolve_workflow_composition
+
+    workflow, handlers = _compile_intake_workflow()
+    document = workflow.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    composition = resolve_workflow_composition(document, handlers)
+    host = _ScriptedIntakeHost(review_decision=review_decision, reviews=reviews)
+    with TemporaryDirectory(prefix="intake-review-drive-") as raw:
+        root = Path(raw).resolve()
+        project = root / "project"
+        attempts = root / "attempts"
+        receipts = root / "receipts"
+        runtime = root / "runtime"
+        for path in (project, attempts, receipts, runtime):
+            path.mkdir()
+        (runtime / "invocations").mkdir()
+        engine = Engine(runtime, host=host)
+        try:
+            handle = engine.start(
+                composition,
+                entrypoint=entrypoint,
+                invocation_id=f"intake-{uuid.uuid4().hex}",
+                seed=empty_invocation_seed(root_input=cast(JSONValue, dict(_PUBLIC_INPUT))),
+                authorization=empty_runtime_authorization(),
+                workspace_binding=InvocationWorkspaceBinding(
+                    project_root=project,
+                    attempts_root=attempts,
+                    receipts_root=receipts,
+                ),
+            )
+            result = engine.run_until_blocked(handle)
+            if resume is not None:
+                assert result.status == "interrupted", result.status
+                handle = engine.resume(handle, action=resume, payload={"decision": resume})
+                result = engine.run_until_blocked(handle)
+            projection = result.projection
+            node_id = "human-review"
+            return ReviewDriveResult(
+                public_outcome=_public_outcome_from_run(
+                    status=result.status,
+                    projection=projection,
+                    resume_action=resume,
+                    advance_count=len(host.advance_outputs),
+                ),
+                successor_count=_successor_count(projection, node_id if resume else "case-review"),
+                advance_count=len(host.advance_outputs),
+                status=result.status,
+                counters=tuple(item["rounds_used"] for item in host.advance_outputs),
+            )
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [("approve", "passed"), ("reject", "rejected"), ("request_rework", "rework")],
+)
+def test_case_review_action_has_one_successor(action: str, expected: str) -> None:
+    result = drive_case_review_interrupt(action)
+    assert result.public_outcome == expected
+    assert result.successor_count == 1
+
+
+def test_case_review_pass_completes_without_advance() -> None:
+    result = _drive_review(review_decision="pass")
+    assert result.public_outcome == "passed"
+    assert result.successor_count == 1
+    assert result.advance_count == 0
+
+
+def test_entry_review_routing_is_exclusive() -> None:
+    module = _load_module()
+    entry = module.graphs["entry"]
+    review = entry.nodes["case-review"]
+    assert review.routing is not None
+    assert review.routing.mode == "exclusive"
+    human = entry.nodes["human-review"]
+    assert tuple(human.actions) == ("approve", "reject", "request_rework")
+    assert human.routing is not None
+    assert human.routing.mode == "exclusive"
+    assert "review-round-advance" in entry.nodes
+    assert entry.nodes["review-round-advance"].capability == _REVIEW_ADVANCE
+    assert "rejected" in entry.nodes
+    assert "exhausted" in entry.nodes
+    assert "review-pass-gate" not in entry.nodes
+
+
+def test_automatic_fix_advances_once_per_loop() -> None:
+    result = _drive_review(review_decision="needs_fix", reviews=("needs_fix", "pass"))
+    assert result.public_outcome == "passed"
+    assert result.advance_count == 1
+    assert result.counters == (1,)
+
+
+def test_review_budget_exhaustion_is_explicit_non_achieved() -> None:
+    result = _drive_review(
+        review_decision="needs_fix",
+        reviews=("needs_fix", "needs_fix", "needs_fix"),
+    )
+    assert result.public_outcome == "exhausted"
+    assert result.advance_count == 2
+    assert result.counters == (1, 2)
+    assert result.successor_count == 1

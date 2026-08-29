@@ -229,6 +229,102 @@ def test_case_review_result_schema_exposes_typed_finding_locators() -> None:
     assert schema["properties"]["findings"]["items"] == {"$ref": "#/$defs/CaseReviewFindingV1"}
 
 
+def _review_payload(
+    *,
+    decision: str,
+    auto_fix_allowed: bool,
+    human_review_required: bool,
+    auto_fix_plan: list[object] | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "review_type": "case",
+        "change_id": "CH-DEMO-001",
+        "decision": decision,
+        "findings": [],
+        "auto_fix_plan": [] if auto_fix_plan is None else auto_fix_plan,
+        "next_action": "continue",
+        "auto_fix_allowed": auto_fix_allowed,
+        "human_review_required": human_review_required,
+        "risk_level": "low",
+        "minimum_coverage": {
+            "total_required": 0,
+            "covered": 0,
+            "skipped_by_scope": 0,
+            "missing": [],
+        },
+        "source_verification": {
+            "independent": True,
+            "reviewed_source_files": ["src/app.py"],
+            "verified_claims": [{"claim": "create item persists", "evidence_files": ["src/app.py"]}],
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("decision", "auto_fix_allowed", "human_review_required", "expected"),
+    [
+        ("pass", False, False, "pass"),
+        ("approved", False, False, "pass"),
+        ("needs_fix", True, False, "needs_fix"),
+        ("changes_requested", True, False, "needs_fix"),
+        ("needs_fix", False, True, "needs_human"),
+        ("changes_requested", False, True, "needs_human"),
+        ("needs_human_review", False, True, "needs_human"),
+        ("reject", False, False, "reject"),
+    ],
+)
+def test_raw_review_decisions_normalize_to_public_outcomes(
+    decision: str,
+    auto_fix_allowed: bool,
+    human_review_required: bool,
+    expected: str,
+) -> None:
+    from assurance_intake.contracts.review import PUBLIC_REVIEW_OUTCOMES, public_review_outcome
+
+    model = CaseReviewResultV1.model_validate(
+        _review_payload(
+            decision=decision,
+            auto_fix_allowed=auto_fix_allowed,
+            human_review_required=human_review_required,
+            auto_fix_plan=[{"fix": "tighten assertion"}] if expected == "needs_fix" else [],
+        )
+    )
+    assert public_review_outcome(decision, auto_fix_allowed, human_review_required) == expected
+    assert model.public_outcome == expected
+    assert public_review_outcome(model) == expected
+    assert expected in PUBLIC_REVIEW_OUTCOMES
+
+
+@pytest.mark.parametrize(
+    ("decision", "auto_fix_allowed", "human_review_required"),
+    [
+        ("pass", True, False),
+        ("approved", False, True),
+        ("needs_fix", True, True),
+        ("needs_fix", False, False),
+        ("changes_requested", True, True),
+        ("needs_human_review", True, True),
+        ("needs_human_review", False, False),
+        ("reject", True, False),
+        ("reject", False, True),
+    ],
+)
+def test_contradictory_review_combinations_fail_validation(
+    decision: str,
+    auto_fix_allowed: bool,
+    human_review_required: bool,
+) -> None:
+    with pytest.raises(ValidationError, match="review"):
+        CaseReviewResultV1.model_validate(
+            _review_payload(
+                decision=decision,
+                auto_fix_allowed=auto_fix_allowed,
+                human_review_required=human_review_required,
+            )
+        )
+
+
 def test_intake_imports_no_legacy_package() -> None:
     assert forbidden_imports("assurance_intake") == set()
 

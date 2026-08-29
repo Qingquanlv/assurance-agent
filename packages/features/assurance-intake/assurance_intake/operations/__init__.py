@@ -10,6 +10,7 @@ from assurance_intake.operations.finalize import (
     ExploreFinalizeHandler,
     IntakeFinalizeHandler,
 )
+from assurance_intake.operations.workflow_state import ReviewRoundAdvanceHandler
 
 __all__ = [
     "CaseDesignFinalizeHandler",
@@ -20,4 +21,5 @@ __all__ = [
     "ExplorePrepareHandler",
     "IntakeFinalizeHandler",
     "IntakePrepareHandler",
+    "ReviewRoundAdvanceHandler",
 ]

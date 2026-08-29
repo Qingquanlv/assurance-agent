@@ -34,6 +34,28 @@ def failed_output(message: str) -> TaskOutcome:
     return TaskOutcome.failed("invalid_output", message, retryable=True)
 
 
+def _review_round_fields(raw: object) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    used = raw.get("rounds_used")
+    budget = raw.get("rounds_budget")
+    fields: dict[str, int] = {}
+    if isinstance(used, int) and used >= 0:
+        fields["rounds_used"] = used
+    if isinstance(budget, int) and budget >= 0:
+        fields["rounds_budget"] = budget
+    return fields
+
+
+def _finalize_payload(raw: object) -> object:
+    if not isinstance(raw, dict):
+        return raw
+    cleaned = dict(raw)
+    cleaned.pop("rounds_used", None)
+    cleaned.pop("rounds_budget", None)
+    return cleaned
+
+
 def _leafs(values: Iterable[str]) -> frozenset[str]:
     return frozenset(values)
 
@@ -297,7 +319,7 @@ class ExploreFinalizeHandler:
 class CaseDesignFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            payload = validate_input(AgentFinalizeInputV1, _finalize_payload(request.input))
             change_id = _case_change_id(payload.change_id)
             capability_leafs = _leafs(payload.capability_leafs)
             receipt = _artifact_list(payload)
@@ -344,6 +366,7 @@ class CaseDesignFinalizeHandler:
                 capability_leafs=capability_leafs,
             )
             authored_json = authored.model_dump(mode="json")
+            authored_json.update(_review_round_fields(request.input))
             if payload.selected_test_families:
                 _require_selected_test_families(authored, payload.selected_test_families)
             if authored.added or authored.modified:
@@ -364,7 +387,7 @@ class CaseDesignFinalizeHandler:
 class CaseReviewFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            payload = validate_input(AgentFinalizeInputV1, _finalize_payload(request.input))
             try:
                 document = CaseReviewResultV1.model_validate(_structured(payload))
             except ValidationError as error:
@@ -386,7 +409,11 @@ class CaseReviewFinalizeHandler:
             document = document.model_copy(
                 update={"minimum_coverage": CaseMinimumCoverageReview.model_validate(expected_projection)}
             )
-            return TaskOutcome.succeeded(document.model_dump(mode="json"))
+            output = document.model_dump(mode="json")
+            output.update(_review_round_fields(request.input))
+            if "artifacts" not in output:
+                output["artifacts"] = []
+            return TaskOutcome.succeeded(output)
         except InputError as error:
             return failed_input(error)
         except OutputError as error:

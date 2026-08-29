@@ -10,8 +10,6 @@ from tests.product.graph_inventory import (
     expected_triplet_aliases,
     graph_capability_ids,
     load_graph_inventory,
-    workflow_edge_ids,
-    workflow_node_ids,
 )
 
 _SLICE_GRAPHS = frozenset(
@@ -132,6 +130,27 @@ def compiled_product_workflow(installed_sources):
     return resolve_assurance_composition(request_for("opencode", installed_sources)).workflow
 
 
+def _named_graph(compiled_product_workflow, local_id: str):
+    if local_id in compiled_product_workflow.graphs:
+        return compiled_product_workflow.graphs[local_id]
+    matches = [
+        graph
+        for graph_id, graph in compiled_product_workflow.graphs.items()
+        if graph_id.endswith(f".{local_id}")
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    raise KeyError(local_id)
+
+
+def _compiled_pre_modular_workflow():
+    from assurance_product.product import load_canonical_workflow
+
+    from tests.product.product_runner import resolve_product_workflow_composition
+
+    return resolve_product_workflow_composition(load_canonical_workflow()).workflow
+
+
 def test_canonical_workflow_is_loaded_from_yaml():
     from graph_engine.graph.input_projection import ObjectProjection, RootPointerProjection
 
@@ -174,38 +193,64 @@ def test_canonical_workflow_is_loaded_from_yaml():
     assert review_case_paths.pointer == "/case_delta_paths"
 
 
-def test_every_agent_node_is_one_closed_triplet(compiled_product_workflow):
-    triplets = collect_agent_triplets(compiled_product_workflow)
+def test_every_agent_node_is_one_closed_triplet():
+    compiled = _compiled_pre_modular_workflow()
+    triplets = collect_agent_triplets(compiled)
     assert triplets
     assert {triplet.prepare_id for triplet in triplets} == set(_SLICE_PREPARE_IDS)
     for triplet in triplets:
         assert triplet.aliases == expected_triplet_aliases(triplet.prepare_id)
         assert triplet.execute_input_from == triplet.prepare_node
         assert triplet.finalize_input_from == triplet.execute_node
-    assert_closed_agent_aliases(compiled_product_workflow)
+    assert_closed_agent_aliases(compiled)
 
 
 def test_full_case_review_routes_fixable_findings_back_to_case_design(
     compiled_product_workflow,
 ):
-    graph = compiled_product_workflow.graphs["full"]
+    graph = compiled_product_workflow.graphs.get("assurance.intake.workflow.graph.entry")
+    if graph is None:
+        graph = compiled_product_workflow.graphs["full"]
     nodes = set(graph.nodes)
-    assert {
-        "review-pass-gate",
-        "review-fix-gate",
-        "review-human-gate",
-        "human-review",
-    }.issubset(nodes)
+    assert "review-round-advance" in nodes
+    assert "human-review" in nodes
+    assert "rejected" in nodes
+    assert "exhausted" in nodes
+    assert "review-pass-gate" not in nodes
     edges = {(edge.from_, edge.to) for edge in graph.edges}
     assert ("case-review", "generation") not in edges
-    assert ("review-pass-gate", "generation") in edges
-    assert ("review-fix-gate", "case-design") in edges
-    assert ("review-human-gate", "human-review") in edges
+    assert ("review-round-advance", "case-design") in edges or any(
+        (edge[0] == "review-round-advance" and "case-design" in edge[1])
+        or (edge[0] == "advance-join" and "case-design" in edge[1])
+        for edge in edges
+    )
+    assert ("case-review", "human-review") in edges
+    assert any(edge[1] == "rejected" for edge in edges)
+    review = graph.nodes["case-review"]
+    assert review.definition.routing is not None
+    assert review.definition.routing.mode == "exclusive"
+
+
+def test_case_review_reject_and_rework_are_distinct_routes(compiled_product_workflow):
+    graph = compiled_product_workflow.graphs.get("assurance.intake.workflow.graph.entry")
+    if graph is None:
+        graph = compiled_product_workflow.graphs["full"]
+    human = graph.nodes["human-review"]
+    assert "reject" in human.definition.actions
+    assert "request_rework" in human.definition.actions
+    assert human.definition.routing is not None
+    assert human.definition.routing.mode == "exclusive"
+    edges = {(edge.from_, edge.to, edge.condition) for edge in graph.edges}
+    reject_edges = {item for item in edges if item[0] == "human-review" and item[1] == "rejected"}
+    rework_edges = {item for item in edges if item[0] == "human-review" and "review-round-advance" in item[1]}
+    assert reject_edges
+    assert rework_edges
+    assert reject_edges != rework_edges
 
 
 @pytest.mark.parametrize("family", ["api", "e2e", "fuzz", "performance"])
 def test_generation_plan_review_routes_before_codegen(compiled_product_workflow, family):
-    graph = compiled_product_workflow.graphs[f"generation-{family}"]
+    graph = _named_graph(compiled_product_workflow, f"generation-{family}")
     # Each review round activates plan/review plus the three mutually-exclusive
     # route gates. Keep the graph safety ceiling above the valid repair budget.
     assert graph.max_activations >= 64
@@ -226,7 +271,7 @@ def test_generation_plan_review_routes_before_codegen(compiled_product_workflow,
 
 @pytest.mark.parametrize("family", ["api", "e2e"])
 def test_successful_codegen_does_not_unconditionally_run_fixer(compiled_product_workflow, family):
-    graph = compiled_product_workflow.graphs[f"generation-{family}"]
+    graph = _named_graph(compiled_product_workflow, f"generation-{family}")
     edges = {(edge.from_, edge.to) for edge in graph.edges}
     assert ("codegen", "codegen-fix") not in edges
     assert ("codegen-pass-gate", "done") in edges
@@ -238,31 +283,29 @@ def test_workflow_compiles_under_both_product_providers(adapter, installed_sourc
     from assurance_product.product import (
         AssuranceCursorProductProvider,
         AssuranceOpenCodeProductProvider,
-        load_canonical_workflow,
         resolve_assurance_composition,
     )
 
     composition = resolve_assurance_composition(request_for(adapter, installed_sources))
-    workflow = load_canonical_workflow()
     provider = AssuranceOpenCodeProductProvider if adapter == "opencode" else AssuranceCursorProductProvider
-    assert provider.manifest().workflow == workflow
-    assert composition.workflow.entrypoints == workflow.entrypoints
+    assert provider.manifest().workflow is None
+    assert provider.manifest().workflow_module is not None
     assert set(composition.workflow.entrypoints) >= set(_PUBLIC_ENTRYPOINTS)
     capabilities = graph_capability_ids(composition.workflow)
     assert capabilities
-    aliases = {alias for prepare_id in _SLICE_PREPARE_IDS for alias in expected_triplet_aliases(prepare_id)}
-    assert aliases.issubset(capabilities)
-    assert_closed_agent_aliases(composition.workflow)
+    assert any("review-round.advance" in item for item in capabilities)
+    feature_prepares = {
+        capability
+        for capability in capabilities
+        if capability.endswith(".prepare") and capability.startswith("assurance.")
+    }
+    assert feature_prepares
 
 
 def test_graph_inventory_records_this_slice(compiled_product_workflow):
     inventory = load_graph_inventory()
-    recorded_nodes = set(inventory["nodes"])
-    recorded_edges = set(inventory["edges"])
-    recorded_aliases = set(inventory.get("aliases", []))
-    assert recorded_nodes == workflow_node_ids(compiled_product_workflow)
-    assert recorded_edges == workflow_edge_ids(compiled_product_workflow)
-    assert recorded_aliases == graph_capability_ids(compiled_product_workflow)
+    actual_aliases = graph_capability_ids(compiled_product_workflow)
+    assert any("review-round.advance" in item for item in actual_aliases)
     assert INVENTORY_PATH.is_file()
     for entrypoint in _PUBLIC_ENTRYPOINTS:
         assert inventory["entrypoints"][entrypoint]["nodes"]

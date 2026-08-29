@@ -128,9 +128,18 @@ graphs:
             selected_test_families:
               type: graph_input_pointer
               pointer: /selected_test_families
+            rounds_used:
+              type: literal
+              value: 0
+            rounds_budget:
+              type: literal
+              value: 2
       case-review:
         kind: subgraph
         graph: case-review
+        input: &review_round_seed
+          rounds_used: 0
+          rounds_budget: 2
         input_projection: &case_review_input
           type: object
           fields:
@@ -146,54 +155,186 @@ graphs:
             change_id:
               type: graph_input_pointer
               pointer: /change_id
-        routing:
-          mode: fanout
-          min_matches: 3
-      review-pass-gate:
-        kind: gate
-        expression: "(decision == 'pass' or decision == 'approved') and human_review_required == false"
-        input_projection: &review_gate_input
+            rounds_used:
+              type: literal
+              value: 0
+            rounds_budget:
+              type: literal
+              value: 2
+        routing: {mode: exclusive}
+      review-round-advance:
+        kind: task
+        capability: assurance.intake.review-round.advance
+        input: *review_round_seed
+        input_projection: &advance_from_config
           type: object
           fields:
-            decision:
+            rounds_used:
+              type: config_pointer
+              pointer: /rounds_used
+            rounds_budget:
+              type: config_pointer
+              pointer: /rounds_budget
+        retry: once
+        timeout: short
+      review-round-advance-rework:
+        kind: task
+        capability: assurance.intake.review-round.advance
+        input: *review_round_seed
+        input_projection: *advance_from_config
+        retry: once
+        timeout: short
+      advance-join:
+        kind: join
+        join: any
+      case-design-retry:
+        kind: subgraph
+        graph: case-design
+        input_projection: &case_design_retry_input
+          type: object
+          fields:
+            allowed_artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            case_delta_paths:
+              type: graph_input_pointer
+              pointer: /case_delta_paths
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            selected_test_families:
+              type: graph_input_pointer
+              pointer: /selected_test_families
+            rounds_used:
               type: predecessor_pointer
-              predecessor: case-review
-              pointer: /decision
-            auto_fix_allowed:
+              predecessor: advance-join
+              pointer: /tokens/0/rounds_used
+            rounds_budget:
               type: predecessor_pointer
-              predecessor: case-review
-              pointer: /auto_fix_allowed
-            human_review_required:
+              predecessor: advance-join
+              pointer: /tokens/0/rounds_budget
+      case-review-retry:
+        kind: subgraph
+        graph: case-review
+        input_projection: &case_review_retry_input
+          type: object
+          fields:
+            allowed_artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            case_delta_paths:
+              type: graph_input_pointer
+              pointer: /case_delta_paths
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            rounds_used:
               type: predecessor_pointer
-              predecessor: case-review
-              pointer: /human_review_required
-      review-fix-gate:
-        kind: gate
-        expression: "(decision == 'needs_fix' or decision == 'changes_requested') and auto_fix_allowed == true and human_review_required == false"
-        input_projection: *review_gate_input
-      review-human-gate:
-        kind: gate
-        expression: "not (((decision == 'pass' or decision == 'approved') and human_review_required == false) or ((decision == 'needs_fix' or decision == 'changes_requested') and auto_fix_allowed == true and human_review_required == false))"
-        input_projection: *review_gate_input
+              predecessor: case-design-retry
+              pointer: /rounds_used
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: case-design-retry
+              pointer: /rounds_budget
+        routing: {mode: exclusive}
+      review-round-advance-retry:
+        kind: task
+        capability: assurance.intake.review-round.advance
+        input_projection:
+          type: object
+          fields:
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: case-review-retry
+              pointer: /rounds_used
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: case-review-retry
+              pointer: /rounds_budget
+        retry: once
+        timeout: short
       human-review:
         kind: interrupt
         reason: needs_human_review
-        actions:
-          - approve
-          - reject
+        actions: [approve, reject, request_rework]
+        input_projection:
+          type: object
+          fields:
+            rounds_used: {type: literal, value: 0}
+            rounds_budget: {type: literal, value: 2}
+        routing: {mode: exclusive}
+      human-review-retry:
+        kind: interrupt
+        reason: needs_human_review
+        actions: [approve, reject, request_rework]
+        input_projection:
+          type: object
+          fields:
+            rounds_used: {type: literal, value: 1}
+            rounds_budget: {type: literal, value: 2}
+        routing: {mode: exclusive}
+      review-round-advance-rework-retry:
+        kind: task
+        capability: assurance.intake.review-round.advance
+        input: {rounds_used: 1, rounds_budget: 2}
+        input_projection: *advance_from_config
+        retry: once
+        timeout: short
+      case-design-rework:
+        kind: subgraph
+        graph: case-design
+        input_projection: *case_design_input
+      case-review-rework:
+        kind: subgraph
+        graph: case-review
+        input: {rounds_used: 1, rounds_budget: 2}
+        input_projection: *case_review_input
+        routing: {mode: exclusive}
+      rejected:
+        kind: end
+      exhausted:
+        kind: end
       done:
         kind: end
     edges:
       - {from: intake, to: explore}
       - {from: explore, to: case-design}
       - {from: case-design, to: case-review}
-      - {from: case-review, to: review-pass-gate}
-      - {from: case-review, to: review-fix-gate}
-      - {from: case-review, to: review-human-gate}
-      - {from: review-fix-gate, to: case-design, condition: output.value == true}
-      - {from: review-human-gate, to: human-review, condition: output.value == true}
-      - {from: review-pass-gate, to: done, condition: output.value == true}
-      - {from: human-review, to: done}
+      - {from: case-review, to: done, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.human_review_required == false"}
+      - {from: case-review, to: review-round-advance, condition: "(output.decision == 'needs_fix' or output.decision == 'changes_requested') and output.auto_fix_allowed == true and output.human_review_required == false and input.rounds_used < input.rounds_budget"}
+      - {from: case-review, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
+      - {from: case-review, to: human-review, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
+      - {from: case-review, to: exhausted, otherwise: true}
+      - {from: human-review, to: done, condition: "output.action == 'approve'"}
+      - {from: human-review, to: rejected, condition: "output.action == 'reject'"}
+      - {from: human-review, to: review-round-advance-rework, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
+      - {from: human-review, to: exhausted, otherwise: true}
+      - {from: review-round-advance, to: advance-join}
+      - {from: review-round-advance-retry, to: advance-join}
+      - {from: advance-join, to: case-design-retry}
+      - {from: case-design-retry, to: case-review-retry}
+      - {from: case-review-retry, to: done, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.human_review_required == false"}
+      - {from: case-review-retry, to: review-round-advance-retry, condition: "(output.decision == 'needs_fix' or output.decision == 'changes_requested') and output.auto_fix_allowed == true and output.human_review_required == false and input.rounds_used < input.rounds_budget"}
+      - {from: case-review-retry, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
+      - {from: case-review-retry, to: human-review-retry, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
+      - {from: case-review-retry, to: exhausted, otherwise: true}
+      - {from: human-review-retry, to: done, condition: "output.action == 'approve'"}
+      - {from: human-review-retry, to: rejected, condition: "output.action == 'reject'"}
+      - {from: human-review-retry, to: review-round-advance-rework-retry, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
+      - {from: human-review-retry, to: exhausted, otherwise: true}
+      - {from: review-round-advance-rework, to: case-design-rework}
+      - {from: review-round-advance-rework-retry, to: case-design-rework}
+      - {from: case-design-rework, to: case-review-rework}
+      - {from: case-review-rework, to: done, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.human_review_required == false"}
+      - {from: case-review-rework, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
+      - {from: case-review-rework, to: human-review-retry, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
+      - {from: case-review-rework, to: exhausted, otherwise: true}
   case:
     max_activations: 6
     start: case-design
@@ -205,6 +346,7 @@ graphs:
       case-review:
         kind: subgraph
         graph: case-review
+        input: *review_round_seed
         input_projection: *case_review_input
       done:
         kind: end
@@ -399,6 +541,12 @@ graphs:
             artifact_paths:
               type: graph_input_pointer
               pointer: /allowed_artifact_paths
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
         retry: once
         timeout: short
       done:
@@ -458,6 +606,12 @@ graphs:
             artifact_paths:
               type: graph_input_pointer
               pointer: /allowed_artifact_paths
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
         retry: once
         timeout: short
       done:

@@ -61,7 +61,8 @@
       "assurance.intake.explore.finalize",
       "assurance.intake.explore.prepare",
       "assurance.intake.intake.finalize",
-      "assurance.intake.intake.prepare"
+      "assurance.intake.intake.prepare",
+      "assurance.intake.review-round.advance"
     ]
   },
   "kind": "plugin",

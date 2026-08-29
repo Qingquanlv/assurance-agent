@@ -19,6 +19,7 @@ from assurance_intake.operations import (
     ExplorePrepareHandler,
     IntakeFinalizeHandler,
     IntakePrepareHandler,
+    ReviewRoundAdvanceHandler,
 )
 from assurance_intake.resource_loader import resource_bytes
 from assurance_intake.validators import CaseCandidateValidator, CaseReferenceValidator
@@ -42,6 +43,7 @@ INTAKE_HANDLER_IDS: tuple[str, ...] = (
     "assurance.intake.explore.prepare",
     "assurance.intake.intake.finalize",
     "assurance.intake.intake.prepare",
+    "assurance.intake.review-round.advance",
 )
 
 INTAKE_VALIDATOR_IDS: tuple[str, ...] = (
@@ -108,6 +110,7 @@ _HANDLERS = {
     "assurance.intake.explore.prepare": ExplorePrepareHandler(),
     "assurance.intake.intake.finalize": IntakeFinalizeHandler(),
     "assurance.intake.intake.prepare": IntakePrepareHandler(),
+    "assurance.intake.review-round.advance": ReviewRoundAdvanceHandler(),
 }
 
 _VALIDATORS = {

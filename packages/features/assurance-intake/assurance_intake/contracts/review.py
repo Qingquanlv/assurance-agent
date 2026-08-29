@@ -9,7 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from assurance_intake.contracts.common import NonEmptyStr
 
 ReviewDecision = Literal["pass", "approved", "needs_fix", "needs_human_review", "changes_requested", "reject"]
+PublicReviewOutcome = Literal["pass", "needs_fix", "needs_human", "reject"]
+PUBLIC_REVIEW_OUTCOMES: tuple[PublicReviewOutcome, ...] = ("pass", "needs_fix", "needs_human", "reject")
 FindingSeverity = Literal["low", "medium", "high", "critical", "blocking"]
+
+_PASS_DECISIONS = frozenset({"pass", "approved"})
+_FIX_DECISIONS = frozenset({"needs_fix", "changes_requested"})
+_HUMAN_DECISIONS = frozenset({"needs_human_review"})
+_REJECT_DECISIONS = frozenset({"reject"})
 
 
 class ReviewFindingLocator(BaseModel):
@@ -134,3 +141,62 @@ class CaseReviewResultV1(BaseModel):
     risk_level: Literal["low", "medium", "high", "critical"]
     minimum_coverage: CaseMinimumCoverageReview
     source_verification: CaseSourceVerification
+    public_outcome: PublicReviewOutcome | None = None
+    rounds_used: int | None = Field(default=None, ge=0)
+    rounds_budget: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _normalize_public_outcome(self) -> CaseReviewResultV1:
+        outcome = normalize_public_review_outcome(
+            self.decision,
+            self.auto_fix_allowed,
+            self.human_review_required,
+        )
+        if self.public_outcome is not None and self.public_outcome != outcome:
+            raise ValueError("public_outcome does not match the normalized review decision")
+        if self.rounds_used is not None and self.rounds_budget is not None:
+            if self.rounds_used > self.rounds_budget:
+                raise ValueError("rounds_used cannot exceed rounds_budget")
+        return self.model_copy(update={"public_outcome": outcome})
+
+
+def normalize_public_review_outcome(
+    decision: str,
+    auto_fix_allowed: bool,
+    human_review_required: bool,
+) -> PublicReviewOutcome:
+    if decision in _PASS_DECISIONS:
+        if auto_fix_allowed or human_review_required:
+            raise ValueError("pass review cannot request auto-fix or human review")
+        return "pass"
+    if decision in _FIX_DECISIONS:
+        if auto_fix_allowed and not human_review_required:
+            return "needs_fix"
+        if human_review_required and not auto_fix_allowed:
+            return "needs_human"
+        raise ValueError("needs_fix review must be either auto-fixable or human-required")
+    if decision in _HUMAN_DECISIONS:
+        if auto_fix_allowed or not human_review_required:
+            raise ValueError("needs_human_review must require human review and forbid auto-fix")
+        return "needs_human"
+    if decision in _REJECT_DECISIONS:
+        if auto_fix_allowed or human_review_required:
+            raise ValueError("reject review cannot request auto-fix or human review")
+        return "reject"
+    raise ValueError(f"unsupported review decision: {decision}")
+
+
+def public_review_outcome(
+    decision: str | CaseReviewResultV1,
+    auto_fix_allowed: bool | None = None,
+    human_review_required: bool | None = None,
+) -> PublicReviewOutcome:
+    public_outcome = getattr(decision, "public_outcome", None)
+    raw_decision = getattr(decision, "decision", None)
+    if public_outcome is not None and raw_decision is not None:
+        return public_outcome  # type: ignore[return-value]
+    if not isinstance(decision, str):
+        raise TypeError("decision must be a review decision string or CaseReviewResultV1")
+    if auto_fix_allowed is None or human_review_required is None:
+        raise TypeError("auto_fix_allowed and human_review_required are required")
+    return normalize_public_review_outcome(decision, auto_fix_allowed, human_review_required)
