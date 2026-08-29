@@ -263,8 +263,8 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "coverage_healing": (
             "tests/product/test_coverage_loop.py::test_low_coverage_reenters_generation_until_policy_passes",
             "tests/product/test_coverage_loop.py::test_coverage_repair_exhaustion_stops_with_a_report",
-            "tests/product/test_issue_healing_flow.py::test_issue_path_runs_triage_analysis_and_fix_before_rerun",
-            "tests/product/test_issue_healing_flow.py::test_product_issue_runs_the_same_healing_chain",
+            "tests/product/test_issue_healing_flow.py::test_issue_path_runs_analysis_and_fix_before_rerun",
+            "tests/product/test_issue_healing_flow.py::test_product_issue_never_runs_the_healing_chain",
         ),
         "task26_fault_coverage": (
             "tests/product/test_binding_builder.py::test_unknown_prepare_assignment_is_rejected",
