@@ -1,21 +1,15 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 from assurance_generation.contracts.families import GENERATION_FAMILIES
 
-_FEATURE_TESTS = Path(__file__).resolve().parents[2] / "packages/features/assurance-generation/tests"
-if str(_FEATURE_TESTS) not in sys.path:
-    sys.path.insert(0, str(_FEATURE_TESTS))
-
-from test_workflow_module import _drive_generate  # noqa: E402
+from tests.product.product_runner import FAMILY_TERMINALS
+from tests.product.test_generation_branches import _run_execute
 
 
 def test_all_family_join_is_order_independent() -> None:
-    forward = _drive_generate(selected=GENERATION_FAMILIES)
-    reverse = _drive_generate(selected=GENERATION_FAMILIES)
-    assert forward.join_token_count == reverse.join_token_count == 4
-    assert forward.dispatched_families == reverse.dispatched_families == set(GENERATION_FAMILIES)
-    assert forward.skip_families == reverse.skip_families == set()
-    assert forward.counters == reverse.counters
+    _status, dispatched, forward = _run_execute(GENERATION_FAMILIES, completion_order="forward")
+    _status, dispatched_reverse, reverse = _run_execute(GENERATION_FAMILIES, completion_order="reverse")
+    assert dispatched == dispatched_reverse == set(GENERATION_FAMILIES)
+    assert forward == reverse
+    assert list(forward["selected_families"]) == list(GENERATION_FAMILIES)  # type: ignore[index]
+    assert tuple(FAMILY_TERMINALS) == ("api-done", "e2e-done", "fuzz-done", "performance-done")

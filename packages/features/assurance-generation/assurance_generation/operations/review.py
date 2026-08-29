@@ -23,6 +23,7 @@ from assurance_generation.operations.planning import (
     plan_review_outputs,
     prepare_plan_outcome,
     resolve_family,
+    split_finalize_input,
     validate_plan_input,
 )
 
@@ -71,7 +72,8 @@ class PlanReviewFinalizeHandler:
         del context
         try:
             family = resolve_family(self._family, request)
-            payload = AgentFinalizeInputV1.model_validate(request.input)
+            stripped, used, budget = split_finalize_input(request.input)
+            payload = AgentFinalizeInputV1.model_validate(stripped)
             try:
                 document = PlanReviewAuthoring.model_validate(
                     thaw_json(payload.agent_result.structured_result),
@@ -82,17 +84,14 @@ class PlanReviewFinalizeHandler:
             expected = f"{family}-plan"
             if document.review_type != expected:
                 raise OutputError(f"review_type {document.review_type!r} does not match {expected}")
-            raw_input = request.input if isinstance(request.input, dict) else {}
-            used = raw_input.get("rounds_used")
-            budget = raw_input.get("rounds_budget")
             extra: dict[str, object] = {
                 "public_outcome": normalize_public_review_outcome(
                     document.decision,
                     document.auto_fix_allowed,
                     document.human_review_required,
                 ),
-                "rounds_used": used if isinstance(used, int) and used >= 0 else 0,
-                "rounds_budget": budget if isinstance(budget, int) and budget >= 1 else 2,
+                "rounds_used": used if used is not None else 0,
+                "rounds_budget": budget if budget is not None else 2,
             }
             return TaskOutcome.succeeded({**document.model_dump(mode="json"), **extra})
         except (InputError, ValidationError) as error:

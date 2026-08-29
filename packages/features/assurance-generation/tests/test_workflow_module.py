@@ -19,7 +19,9 @@ from graph_engine.graph import compile_workflow, parse_workflow_module, project_
 from graph_engine.graph.input_projection import (
     GraphInputPointerProjection,
     InputProjectionDef,
+    LiteralProjection,
     ObjectProjection,
+    PredecessorPointerProjection,
     RootPointerProjection,
 )
 from graph_engine.graph.module_schema import WorkflowModuleDef
@@ -48,6 +50,8 @@ from graph_engine.runtime.host_protocol import (
 )
 from graph_engine.runtime.models import InvocationProjection
 from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.frozen_json import freeze_json, thaw_json
+from graph_engine.json_schema import validate_json_schema
 from graph_engine.runtime.seed import empty_invocation_seed
 
 from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
@@ -255,7 +259,7 @@ def test_generate_input_carries_closed_nonempty_family_selection_and_root_depend
     families = schema["properties"]["selected_test_families"]
     assert families["type"] == "array"
     assert families["minItems"] == 1
-    assert families["uniqueItems"] is True
+    assert "uniqueItems" not in families
     assert families["items"]["enum"] == list(_FAMILIES)
     validate_selected_families(tuple(_FAMILIES))
 
@@ -292,7 +296,11 @@ def test_every_generation_local_subgraph_call_projects_child_required_fields() -
         for _node_id, node in module.graphs[item["target"]].nodes.items():
             required.update(_graph_input_fields(node))
         assert set(caller.input_projection.fields) == required
+        counter_fields = {"rounds_used", "rounds_budget"}
         for field, projection in caller.input_projection.fields.items():
+            if field in counter_fields:
+                assert isinstance(projection, LiteralProjection | PredecessorPointerProjection)
+                continue
             assert isinstance(projection, GraphInputPointerProjection)
             assert projection.pointer == f"/{field}"
 
@@ -350,6 +358,8 @@ def test_selected_lane_root_to_plan_review_codegen_propagates_family_budget_and_
         assert child_input["capability_leafs"] == ["entities.item.create"]
         assert "leak_token" not in child_input
         assert "budgets" not in child_input
+        leaf = {key: child_input[key] for key in ("change_id", "allowed_artifact_paths", "capability_leafs")}
+        hop_inputs[node_id] = leaf
 
         prepare = _as_mapping(
             project_task_input(
@@ -421,6 +431,8 @@ def test_review_and_codegen_outcomes_use_exclusive_routes() -> None:
         assert lane.nodes["plan-review-round-advance"].capability == (
             "assurance.generation.review-round.advance"
         )
+        assert lane.nodes["plan-review-round-advance"].routing is not None
+        assert lane.nodes["plan-review-round-advance"].routing.mode == "exclusive"
         assert "rejected" in lane.nodes
         assert "exhausted" in lane.nodes
         assert "plan-review-pass-gate" not in lane.nodes
@@ -525,9 +537,11 @@ class _ScriptedGenerationHost:
         *,
         reviews: tuple[str, ...] = ("pass",),
         codegen_verdicts: tuple[str, ...] = ("accepted",),
+        pass_readiness: str = "ready",
     ) -> None:
         self._reviews = reviews
         self._codegen = codegen_verdicts
+        self._pass_readiness = pass_readiness
         self._review_index = 0
         self._review_index_by_family: dict[str, int] = {}
         self._codegen_index = 0
@@ -590,10 +604,6 @@ class _ScriptedGenerationHost:
                 public = "needs_fix"
             elif human:
                 public = "needs_human"
-            if self.advance_outputs:
-                last = self.advance_outputs[-1]
-                rounds_used = int(last["rounds_used"])
-                rounds_budget = int(last["rounds_budget"])
             return TaskHostCallResult(
                 operation="execute",
                 outcome=TaskOutcome.succeeded(
@@ -601,7 +611,7 @@ class _ScriptedGenerationHost:
                         "auto_fix_allowed": fixable,
                         "auto_fix_plan": ["FIX-1"] if fixable else [],
                         "change_id": change_id,
-                        "codegen_readiness": "ready" if public == "pass" else "not_ready",
+                        "codegen_readiness": self._pass_readiness if public == "pass" else "not_ready",
                         "decision": decision,
                         "human_review_required": human,
                         "public_outcome": public,
@@ -616,18 +626,19 @@ class _ScriptedGenerationHost:
             verdict = self._codegen[min(index, len(self._codegen) - 1)]
             self._codegen_index_by_family[family] = index + 1
             self._codegen_index += 1
-            output: dict[str, object] = {
-                "change_id": change_id,
-                "needs_fix": verdict == "needs_fix",
-                "rounds_budget": rounds_budget,
-                "rounds_used": rounds_used,
-                "verdict": verdict,
-            }
-            if verdict == "needs_fix":
-                output["repair"] = {
-                    "allowed_paths": ["tests/api/test_users.py"],
-                    "summary": "repair generated assertion",
+            if family in {"api", "e2e"}:
+                output: dict[str, object] = {
+                    "change_id": change_id,
+                    "schema_version": "2",
+                    "verdict": verdict,
                 }
+                if verdict == "needs_fix":
+                    output["repair"] = {
+                        "allowed_paths": ["tests/api/test_users.py"],
+                        "summary": "repair generated assertion",
+                    }
+            else:
+                output = {"change_id": change_id, "needs_fix": False, "schema_version": "1"}
             return TaskHostCallResult(operation="execute", outcome=TaskOutcome.succeeded(output))
         return TaskHostCallResult(
             operation="execute",
@@ -706,14 +717,26 @@ def _drive_generate(
     reviews: tuple[str, ...] = ("pass",),
     codegen_verdicts: tuple[str, ...] = ("accepted",),
     resumes: tuple[str, ...] = (),
+    pass_readiness: str = "ready",
 ) -> GenerationDriveResult:
     from tests.product.runtime_composition import resolve_workflow_composition
 
     validate_selected_families(selected)
+    validate_json_schema(
+        {
+            "allowed_artifact_paths": _PUBLIC_INPUT["allowed_artifact_paths"],
+            "capability_leafs": _PUBLIC_INPUT["capability_leafs"],
+            "change_id": _PUBLIC_INPUT["change_id"],
+            "selected_test_families": list(selected),
+        },
+        _schema(_io_schema_id("generate", "input")).content,
+    )
     workflow, handlers = _compile_generation_workflow()
     document = workflow.model_dump(mode="json", by_alias=True, exclude_unset=True)
     composition = resolve_workflow_composition(document, handlers)
-    host = _ScriptedGenerationHost(reviews=reviews, codegen_verdicts=codegen_verdicts)
+    host = _ScriptedGenerationHost(
+        reviews=reviews, codegen_verdicts=codegen_verdicts, pass_readiness=pass_readiness
+    )
     root_input = {
         **_PUBLIC_INPUT,
         "selected_test_families": list(selected),
@@ -863,8 +886,122 @@ def test_api_e2e_codegen_needs_fix_reaches_fixer(family: str) -> None:
     assert result.end_nodes == {"done"}
 
 
+_FAMILY_TERMINALS = ("api-done", "e2e-done", "fuzz-done", "performance-done")
+
+
+def _project_join_selected(
+    projection: InvocationProjection,
+    *,
+    order: tuple[str, ...],
+    graph_input: Mapping[str, object],
+) -> object:
+    module = _load_module()
+    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+    join = next(
+        activation
+        for activation in projection.activations
+        if activation.status == "completed"
+        and activation.node_id == "join-selected"
+        and (
+            graphs[activation.graph_instance_id].graph_id == "generation"
+            or graphs[activation.graph_instance_id].graph_id.endswith(".generation")
+        )
+    )
+    tokens = {item.token_id: item for item in projection.offered_tokens}
+    raw: dict[str, object] = {}
+    for token_id in join.token_ids:
+        token = tokens[token_id]
+        if token.source is not None:
+            raw[token.source] = thaw_json(token.payload)
+    missing = [source for source in order if source not in raw]
+    extra = sorted(set(raw) - set(order))
+    assert not missing and not extra, f"join predecessors missing={missing} extra={extra}"
+    predecessor_tokens = {source: raw[source] for source in order}
+    compiled = module.graphs["generation"].nodes["join-selected"]
+    assert compiled.input_projection is not None
+    return freeze_json(
+        project_task_input(
+            compiled.input_projection,
+            root_input=graph_input,
+            graph_input=graph_input,
+            node_config={},
+            predecessor_tokens=predecessor_tokens,
+        )
+    )
+
+
+def _drive_generate_projection(
+    *,
+    selected: tuple[str, ...],
+    reviews: tuple[str, ...] = ("pass",),
+) -> InvocationProjection:
+    from tests.product.runtime_composition import resolve_workflow_composition
+
+    validate_selected_families(selected)
+    workflow, handlers = _compile_generation_workflow()
+    composition = resolve_workflow_composition(
+        workflow.model_dump(mode="json", by_alias=True, exclude_unset=True),
+        handlers,
+    )
+    host = _ScriptedGenerationHost(reviews=reviews)
+    root_input = {**_PUBLIC_INPUT, "selected_test_families": list(selected)}
+    with TemporaryDirectory(prefix="generation-join-") as raw:
+        root = Path(raw).resolve()
+        project = root / "project"
+        attempts = root / "attempts"
+        receipts = root / "receipts"
+        runtime = root / "runtime"
+        for path in (project, attempts, receipts, runtime):
+            path.mkdir()
+        (runtime / "invocations").mkdir()
+        engine = Engine(runtime, host=host)
+        try:
+            handle = engine.start(
+                composition,
+                entrypoint="generate",
+                invocation_id=f"generation-join-{uuid.uuid4().hex}",
+                seed=empty_invocation_seed(root_input=cast(JSONValue, root_input)),
+                authorization=empty_runtime_authorization(),
+                workspace_binding=InvocationWorkspaceBinding(
+                    project_root=project,
+                    attempts_root=attempts,
+                    receipts_root=receipts,
+                ),
+            )
+            return engine.run_until_blocked(handle).projection
+        finally:
+            engine.close()
+
+
 def test_join_is_order_independent_for_all_four_lanes() -> None:
-    forward = _drive_generate(selected=GENERATION_FAMILIES)
-    reverse = _drive_generate(selected=GENERATION_FAMILIES)
-    assert forward.join_token_count == reverse.join_token_count == 4
-    assert forward.dispatched_families == reverse.dispatched_families == frozenset(GENERATION_FAMILIES)
+    graph_input = {**_PUBLIC_INPUT, "selected_test_families": list(GENERATION_FAMILIES)}
+    projection = _drive_generate_projection(selected=GENERATION_FAMILIES)
+    forward = _project_join_selected(projection, order=_FAMILY_TERMINALS, graph_input=graph_input)
+    reverse = _project_join_selected(
+        projection, order=tuple(reversed(_FAMILY_TERMINALS)), graph_input=graph_input
+    )
+    assert forward == reverse
+    assert list(forward["selected_families"]) == list(GENERATION_FAMILIES)
+    result = _drive_generate(selected=GENERATION_FAMILIES)
+    assert result.join_token_count == 4
+    assert result.dispatched_families == frozenset(GENERATION_FAMILIES)
+
+
+def test_two_lane_completions_in_scheduler_order_share_counters() -> None:
+    first = _drive_generate(selected=("api", "e2e"), reviews=("needs_fix", "pass"))
+    second = _drive_generate(selected=("e2e", "api"), reviews=("needs_fix", "pass"))
+    assert first.counters == second.counters == (1, 1)
+    graph_input = {**_PUBLIC_INPUT, "selected_test_families": ["api", "e2e"]}
+    projection = _drive_generate_projection(selected=("api", "e2e"), reviews=("needs_fix", "pass"))
+    forward = _project_join_selected(projection, order=_FAMILY_TERMINALS, graph_input=graph_input)
+    reverse = _project_join_selected(
+        projection, order=tuple(reversed(_FAMILY_TERMINALS)), graph_input=graph_input
+    )
+    assert forward == reverse
+
+
+def test_not_ready_pass_does_not_enter_codegen() -> None:
+    result = _drive_generate(selected=("api",), reviews=("pass",), pass_readiness="not_ready")
+    assert result.end_nodes == {"exhausted"}
+    assert result.advance_count == 0
+    assert result.public_outcome == "exhausted"

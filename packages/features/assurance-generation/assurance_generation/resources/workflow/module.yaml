@@ -245,7 +245,7 @@ graphs:
       plan:
         kind: subgraph
         graph: generation-api-plan
-        input_projection: &leaf-input
+        input_projection: &leaf-with-initial-rounds
           type: object
           fields:
             allowed_artifact_paths:
@@ -257,13 +257,15 @@ graphs:
             change_id:
               type: graph_input_pointer
               pointer: /change_id
+            rounds_budget: {type: literal, value: 2}
+            rounds_used: {type: literal, value: 0}
       plan-review:
         kind: subgraph
         graph: generation-api-plan-review
         input: &plan-round-seed
           rounds_used: 0
           rounds_budget: 2
-        input_projection: *leaf-input
+        input_projection: *leaf-with-initial-rounds
         routing: {mode: exclusive}
       plan-review-round-advance:
         kind: task
@@ -280,6 +282,7 @@ graphs:
             stage: {type: config_pointer, pointer: /stage}
             rounds_used: {type: config_pointer, pointer: /rounds_used}
             rounds_budget: {type: config_pointer, pointer: /rounds_budget}
+        routing: {mode: exclusive}
         retry: once
         timeout: short
       plan-round-join:
@@ -288,11 +291,49 @@ graphs:
       plan-retry:
         kind: subgraph
         graph: generation-api-plan
-        input_projection: *leaf-input
+        input_projection: &retry-plan-from-join
+          type: object
+          fields:
+            allowed_artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: plan-round-join
+              pointer: /tokens/0/rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: plan-round-join
+              pointer: /tokens/0/rounds_used
       plan-review-retry:
         kind: subgraph
         graph: generation-api-plan-review
-        input_projection: *leaf-input
+        input_projection: &retry-review-from-plan
+          type: object
+          fields:
+            allowed_artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: plan-retry
+              pointer: /rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: plan-retry
+              pointer: /rounds_used
         routing: {mode: exclusive}
       plan-review-round-advance-retry:
         kind: task
@@ -303,33 +344,57 @@ graphs:
           rounds_used: 1
           rounds_budget: 2
         input_projection: *advance-from-config
+        routing: {mode: exclusive}
         retry: once
         timeout: short
       plan-human-review:
         kind: interrupt
         reason: api_plan_needs_human_review
         actions: [approve, reject, request_rework]
-        input_projection: &human-round-seed
+        input_projection: &human-from-review
           type: object
           fields:
-            rounds_used: {type: literal, value: 0}
-            rounds_budget: {type: literal, value: 2}
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: plan-review
+              pointer: /rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: plan-review
+              pointer: /rounds_used
         routing: {mode: exclusive}
       plan-human-review-retry:
         kind: interrupt
         reason: api_plan_needs_human_review
         actions: [approve, reject, request_rework]
-        input_projection:
+        input_projection: &human-retry-from-review
           type: object
           fields:
-            rounds_used: {type: literal, value: 1}
-            rounds_budget: {type: literal, value: 2}
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: plan-review-retry
+              pointer: /rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: plan-review-retry
+              pointer: /rounds_used
         routing: {mode: exclusive}
       codegen:
         kind: subgraph
         graph: generation-api-codegen
         input: *plan-round-seed
-        input_projection: *leaf-input
+        input_projection: &leaf-input
+          type: object
+          fields:
+            allowed_artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
         routing: {mode: exclusive}
       codegen-round-advance:
         kind: task
@@ -354,7 +419,7 @@ graphs:
         kind: end
     edges:
       - {from: plan, to: plan-review}
-      - {from: plan-review, to: codegen, condition: "output.decision == 'pass' or output.decision == 'approved'"}
+      - {from: plan-review, to: codegen, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.codegen_readiness != 'not_ready'"}
       - {from: plan-review, to: plan-review-round-advance, condition: "(output.decision == 'needs_fix' or output.decision == 'changes_requested') and output.auto_fix_allowed == true and output.human_review_required == false and output.rounds_used < output.rounds_budget"}
       - {from: plan-review, to: plan-human-review, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
       - {from: plan-review, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
@@ -363,11 +428,13 @@ graphs:
       - {from: plan-human-review, to: rejected, condition: "output.action == 'reject'"}
       - {from: plan-human-review, to: plan-review-round-advance, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
       - {from: plan-human-review, to: exhausted, otherwise: true}
-      - {from: plan-review-round-advance, to: plan-round-join}
-      - {from: plan-review-round-advance-retry, to: plan-round-join}
+      - {from: plan-review-round-advance, to: plan-round-join, condition: "output.rounds_used < output.rounds_budget"}
+      - {from: plan-review-round-advance, to: exhausted, otherwise: true}
+      - {from: plan-review-round-advance-retry, to: plan-round-join, condition: "output.rounds_used < output.rounds_budget"}
+      - {from: plan-review-round-advance-retry, to: exhausted, otherwise: true}
       - {from: plan-round-join, to: plan-retry}
       - {from: plan-retry, to: plan-review-retry}
-      - {from: plan-review-retry, to: codegen, condition: "output.decision == 'pass' or output.decision == 'approved'"}
+      - {from: plan-review-retry, to: codegen, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.codegen_readiness != 'not_ready'"}
       - {from: plan-review-retry, to: plan-review-round-advance-retry, condition: "(output.decision == 'needs_fix' or output.decision == 'changes_requested') and output.auto_fix_allowed == true and output.human_review_required == false and output.rounds_used < output.rounds_budget"}
       - {from: plan-review-retry, to: plan-human-review-retry, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
       - {from: plan-review-retry, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
@@ -376,11 +443,12 @@ graphs:
       - {from: plan-human-review-retry, to: rejected, condition: "output.action == 'reject'"}
       - {from: plan-human-review-retry, to: plan-review-round-advance-retry, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
       - {from: plan-human-review-retry, to: exhausted, otherwise: true}
-      - {from: codegen, to: done, condition: "output.needs_fix == false"}
-      - {from: codegen, to: codegen-round-advance, condition: "output.needs_fix == true"}
+      - {from: codegen, to: done, condition: "('verdict' in output and output.verdict == 'accepted') or ('needs_fix' in output and output.needs_fix == false)"}
+      - {from: codegen, to: codegen-round-advance, condition: "('verdict' in output and output.verdict == 'needs_fix') or ('needs_fix' in output and output.needs_fix == true)"}
       - {from: codegen, to: exhausted, otherwise: true}
       - {from: codegen-round-advance, to: codegen-fix}
       - {from: codegen-fix, to: done}
+
   generation-api-plan:
     max_activations: 8
     start: prepare
@@ -416,18 +484,24 @@ graphs:
         kind: task
         capability: assurance.generation.api.plan.finalize
         input: *prepare-input
-        input_projection: &finalize-projection
+        input_projection: &stateful-finalize-projection
           type: object
           fields:
             agent_result:
               type: predecessor
               predecessor: execute
-            capability_leafs:
-              type: graph_input_pointer
-              pointer: /capability_leafs
             artifact_paths:
               type: graph_input_pointer
               pointer: /allowed_artifact_paths
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
         retry: once
         timeout: short
       done:
@@ -459,7 +533,7 @@ graphs:
         kind: task
         capability: assurance.generation.api.plan-review.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection: *stateful-finalize-projection
         retry: once
         timeout: short
       done:
@@ -491,7 +565,18 @@ graphs:
         kind: task
         capability: assurance.generation.api.codegen.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection: &finalize-projection
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
         retry: once
         timeout: short
       done:
@@ -539,12 +624,12 @@ graphs:
       plan:
         kind: subgraph
         graph: generation-e2e-plan
-        input_projection: *leaf-input
+        input_projection: *leaf-with-initial-rounds
       plan-review:
         kind: subgraph
         graph: generation-e2e-plan-review
         input: *plan-round-seed
-        input_projection: *leaf-input
+        input_projection: *leaf-with-initial-rounds
         routing: {mode: exclusive}
       plan-review-round-advance:
         kind: task
@@ -555,6 +640,7 @@ graphs:
           rounds_used: 0
           rounds_budget: 2
         input_projection: *advance-from-config
+        routing: {mode: exclusive}
         retry: once
         timeout: short
       plan-round-join:
@@ -563,11 +649,11 @@ graphs:
       plan-retry:
         kind: subgraph
         graph: generation-e2e-plan
-        input_projection: *leaf-input
+        input_projection: *retry-plan-from-join
       plan-review-retry:
         kind: subgraph
         graph: generation-e2e-plan-review
-        input_projection: *leaf-input
+        input_projection: *retry-review-from-plan
         routing: {mode: exclusive}
       plan-review-round-advance-retry:
         kind: task
@@ -578,23 +664,20 @@ graphs:
           rounds_used: 1
           rounds_budget: 2
         input_projection: *advance-from-config
+        routing: {mode: exclusive}
         retry: once
         timeout: short
       plan-human-review:
         kind: interrupt
         reason: e2e_plan_needs_human_review
         actions: [approve, reject, request_rework]
-        input_projection: *human-round-seed
+        input_projection: *human-from-review
         routing: {mode: exclusive}
       plan-human-review-retry:
         kind: interrupt
         reason: e2e_plan_needs_human_review
         actions: [approve, reject, request_rework]
-        input_projection:
-          type: object
-          fields:
-            rounds_used: {type: literal, value: 1}
-            rounds_budget: {type: literal, value: 2}
+        input_projection: *human-retry-from-review
         routing: {mode: exclusive}
       codegen:
         kind: subgraph
@@ -625,7 +708,7 @@ graphs:
         kind: end
     edges:
       - {from: plan, to: plan-review}
-      - {from: plan-review, to: codegen, condition: "output.decision == 'pass' or output.decision == 'approved'"}
+      - {from: plan-review, to: codegen, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.codegen_readiness != 'not_ready'"}
       - {from: plan-review, to: plan-review-round-advance, condition: "(output.decision == 'needs_fix' or output.decision == 'changes_requested') and output.auto_fix_allowed == true and output.human_review_required == false and output.rounds_used < output.rounds_budget"}
       - {from: plan-review, to: plan-human-review, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
       - {from: plan-review, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
@@ -634,11 +717,13 @@ graphs:
       - {from: plan-human-review, to: rejected, condition: "output.action == 'reject'"}
       - {from: plan-human-review, to: plan-review-round-advance, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
       - {from: plan-human-review, to: exhausted, otherwise: true}
-      - {from: plan-review-round-advance, to: plan-round-join}
-      - {from: plan-review-round-advance-retry, to: plan-round-join}
+      - {from: plan-review-round-advance, to: plan-round-join, condition: "output.rounds_used < output.rounds_budget"}
+      - {from: plan-review-round-advance, to: exhausted, otherwise: true}
+      - {from: plan-review-round-advance-retry, to: plan-round-join, condition: "output.rounds_used < output.rounds_budget"}
+      - {from: plan-review-round-advance-retry, to: exhausted, otherwise: true}
       - {from: plan-round-join, to: plan-retry}
       - {from: plan-retry, to: plan-review-retry}
-      - {from: plan-review-retry, to: codegen, condition: "output.decision == 'pass' or output.decision == 'approved'"}
+      - {from: plan-review-retry, to: codegen, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.codegen_readiness != 'not_ready'"}
       - {from: plan-review-retry, to: plan-review-round-advance-retry, condition: "(output.decision == 'needs_fix' or output.decision == 'changes_requested') and output.auto_fix_allowed == true and output.human_review_required == false and output.rounds_used < output.rounds_budget"}
       - {from: plan-review-retry, to: plan-human-review-retry, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
       - {from: plan-review-retry, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
@@ -647,11 +732,12 @@ graphs:
       - {from: plan-human-review-retry, to: rejected, condition: "output.action == 'reject'"}
       - {from: plan-human-review-retry, to: plan-review-round-advance-retry, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
       - {from: plan-human-review-retry, to: exhausted, otherwise: true}
-      - {from: codegen, to: done, condition: "output.needs_fix == false"}
-      - {from: codegen, to: codegen-round-advance, condition: "output.needs_fix == true"}
+      - {from: codegen, to: done, condition: "('verdict' in output and output.verdict == 'accepted') or ('needs_fix' in output and output.needs_fix == false)"}
+      - {from: codegen, to: codegen-round-advance, condition: "('verdict' in output and output.verdict == 'needs_fix') or ('needs_fix' in output and output.needs_fix == true)"}
       - {from: codegen, to: exhausted, otherwise: true}
       - {from: codegen-round-advance, to: codegen-fix}
       - {from: codegen-fix, to: done}
+
   generation-e2e-plan:
     max_activations: 8
     start: prepare
@@ -675,7 +761,7 @@ graphs:
         kind: task
         capability: assurance.generation.e2e.plan.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection: *stateful-finalize-projection
         retry: once
         timeout: short
       done:
@@ -707,7 +793,7 @@ graphs:
         kind: task
         capability: assurance.generation.e2e.plan-review.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection: *stateful-finalize-projection
         retry: once
         timeout: short
       done:
@@ -787,12 +873,12 @@ graphs:
       plan:
         kind: subgraph
         graph: generation-fuzz-plan
-        input_projection: *leaf-input
+        input_projection: *leaf-with-initial-rounds
       plan-review:
         kind: subgraph
         graph: generation-fuzz-plan-review
         input: *plan-round-seed
-        input_projection: *leaf-input
+        input_projection: *leaf-with-initial-rounds
         routing: {mode: exclusive}
       plan-review-round-advance:
         kind: task
@@ -803,6 +889,7 @@ graphs:
           rounds_used: 0
           rounds_budget: 2
         input_projection: *advance-from-config
+        routing: {mode: exclusive}
         retry: once
         timeout: short
       plan-round-join:
@@ -811,11 +898,11 @@ graphs:
       plan-retry:
         kind: subgraph
         graph: generation-fuzz-plan
-        input_projection: *leaf-input
+        input_projection: *retry-plan-from-join
       plan-review-retry:
         kind: subgraph
         graph: generation-fuzz-plan-review
-        input_projection: *leaf-input
+        input_projection: *retry-review-from-plan
         routing: {mode: exclusive}
       plan-review-round-advance-retry:
         kind: task
@@ -826,27 +913,25 @@ graphs:
           rounds_used: 1
           rounds_budget: 2
         input_projection: *advance-from-config
+        routing: {mode: exclusive}
         retry: once
         timeout: short
       plan-human-review:
         kind: interrupt
         reason: fuzz_plan_needs_human_review
         actions: [approve, reject, request_rework]
-        input_projection: *human-round-seed
+        input_projection: *human-from-review
         routing: {mode: exclusive}
       plan-human-review-retry:
         kind: interrupt
         reason: fuzz_plan_needs_human_review
         actions: [approve, reject, request_rework]
-        input_projection:
-          type: object
-          fields:
-            rounds_used: {type: literal, value: 1}
-            rounds_budget: {type: literal, value: 2}
+        input_projection: *human-retry-from-review
         routing: {mode: exclusive}
       codegen:
         kind: subgraph
         graph: generation-fuzz-codegen
+        input: *plan-round-seed
         input_projection: *leaf-input
       rejected:
         kind: end
@@ -856,7 +941,7 @@ graphs:
         kind: end
     edges:
       - {from: plan, to: plan-review}
-      - {from: plan-review, to: codegen, condition: "output.decision == 'pass' or output.decision == 'approved'"}
+      - {from: plan-review, to: codegen, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.codegen_readiness != 'not_ready'"}
       - {from: plan-review, to: plan-review-round-advance, condition: "(output.decision == 'needs_fix' or output.decision == 'changes_requested') and output.auto_fix_allowed == true and output.human_review_required == false and output.rounds_used < output.rounds_budget"}
       - {from: plan-review, to: plan-human-review, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
       - {from: plan-review, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
@@ -865,11 +950,13 @@ graphs:
       - {from: plan-human-review, to: rejected, condition: "output.action == 'reject'"}
       - {from: plan-human-review, to: plan-review-round-advance, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
       - {from: plan-human-review, to: exhausted, otherwise: true}
-      - {from: plan-review-round-advance, to: plan-round-join}
-      - {from: plan-review-round-advance-retry, to: plan-round-join}
+      - {from: plan-review-round-advance, to: plan-round-join, condition: "output.rounds_used < output.rounds_budget"}
+      - {from: plan-review-round-advance, to: exhausted, otherwise: true}
+      - {from: plan-review-round-advance-retry, to: plan-round-join, condition: "output.rounds_used < output.rounds_budget"}
+      - {from: plan-review-round-advance-retry, to: exhausted, otherwise: true}
       - {from: plan-round-join, to: plan-retry}
       - {from: plan-retry, to: plan-review-retry}
-      - {from: plan-review-retry, to: codegen, condition: "output.decision == 'pass' or output.decision == 'approved'"}
+      - {from: plan-review-retry, to: codegen, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.codegen_readiness != 'not_ready'"}
       - {from: plan-review-retry, to: plan-review-round-advance-retry, condition: "(output.decision == 'needs_fix' or output.decision == 'changes_requested') and output.auto_fix_allowed == true and output.human_review_required == false and output.rounds_used < output.rounds_budget"}
       - {from: plan-review-retry, to: plan-human-review-retry, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
       - {from: plan-review-retry, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
@@ -879,6 +966,7 @@ graphs:
       - {from: plan-human-review-retry, to: plan-review-round-advance-retry, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
       - {from: plan-human-review-retry, to: exhausted, otherwise: true}
       - {from: codegen, to: done}
+
   generation-fuzz-plan:
     max_activations: 8
     start: prepare
@@ -902,7 +990,7 @@ graphs:
         kind: task
         capability: assurance.generation.fuzz.plan.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection: *stateful-finalize-projection
         retry: once
         timeout: short
       done:
@@ -934,7 +1022,7 @@ graphs:
         kind: task
         capability: assurance.generation.fuzz.plan-review.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection: *stateful-finalize-projection
         retry: once
         timeout: short
       done:
@@ -982,12 +1070,12 @@ graphs:
       plan:
         kind: subgraph
         graph: generation-performance-plan
-        input_projection: *leaf-input
+        input_projection: *leaf-with-initial-rounds
       plan-review:
         kind: subgraph
         graph: generation-performance-plan-review
         input: *plan-round-seed
-        input_projection: *leaf-input
+        input_projection: *leaf-with-initial-rounds
         routing: {mode: exclusive}
       plan-review-round-advance:
         kind: task
@@ -998,6 +1086,7 @@ graphs:
           rounds_used: 0
           rounds_budget: 2
         input_projection: *advance-from-config
+        routing: {mode: exclusive}
         retry: once
         timeout: short
       plan-round-join:
@@ -1006,11 +1095,11 @@ graphs:
       plan-retry:
         kind: subgraph
         graph: generation-performance-plan
-        input_projection: *leaf-input
+        input_projection: *retry-plan-from-join
       plan-review-retry:
         kind: subgraph
         graph: generation-performance-plan-review
-        input_projection: *leaf-input
+        input_projection: *retry-review-from-plan
         routing: {mode: exclusive}
       plan-review-round-advance-retry:
         kind: task
@@ -1021,27 +1110,25 @@ graphs:
           rounds_used: 1
           rounds_budget: 2
         input_projection: *advance-from-config
+        routing: {mode: exclusive}
         retry: once
         timeout: short
       plan-human-review:
         kind: interrupt
         reason: performance_plan_needs_human_review
         actions: [approve, reject, request_rework]
-        input_projection: *human-round-seed
+        input_projection: *human-from-review
         routing: {mode: exclusive}
       plan-human-review-retry:
         kind: interrupt
         reason: performance_plan_needs_human_review
         actions: [approve, reject, request_rework]
-        input_projection:
-          type: object
-          fields:
-            rounds_used: {type: literal, value: 1}
-            rounds_budget: {type: literal, value: 2}
+        input_projection: *human-retry-from-review
         routing: {mode: exclusive}
       codegen:
         kind: subgraph
         graph: generation-performance-codegen
+        input: *plan-round-seed
         input_projection: *leaf-input
       rejected:
         kind: end
@@ -1051,7 +1138,7 @@ graphs:
         kind: end
     edges:
       - {from: plan, to: plan-review}
-      - {from: plan-review, to: codegen, condition: "output.decision == 'pass' or output.decision == 'approved'"}
+      - {from: plan-review, to: codegen, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.codegen_readiness != 'not_ready'"}
       - {from: plan-review, to: plan-review-round-advance, condition: "(output.decision == 'needs_fix' or output.decision == 'changes_requested') and output.auto_fix_allowed == true and output.human_review_required == false and output.rounds_used < output.rounds_budget"}
       - {from: plan-review, to: plan-human-review, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
       - {from: plan-review, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
@@ -1060,11 +1147,13 @@ graphs:
       - {from: plan-human-review, to: rejected, condition: "output.action == 'reject'"}
       - {from: plan-human-review, to: plan-review-round-advance, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
       - {from: plan-human-review, to: exhausted, otherwise: true}
-      - {from: plan-review-round-advance, to: plan-round-join}
-      - {from: plan-review-round-advance-retry, to: plan-round-join}
+      - {from: plan-review-round-advance, to: plan-round-join, condition: "output.rounds_used < output.rounds_budget"}
+      - {from: plan-review-round-advance, to: exhausted, otherwise: true}
+      - {from: plan-review-round-advance-retry, to: plan-round-join, condition: "output.rounds_used < output.rounds_budget"}
+      - {from: plan-review-round-advance-retry, to: exhausted, otherwise: true}
       - {from: plan-round-join, to: plan-retry}
       - {from: plan-retry, to: plan-review-retry}
-      - {from: plan-review-retry, to: codegen, condition: "output.decision == 'pass' or output.decision == 'approved'"}
+      - {from: plan-review-retry, to: codegen, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.codegen_readiness != 'not_ready'"}
       - {from: plan-review-retry, to: plan-review-round-advance-retry, condition: "(output.decision == 'needs_fix' or output.decision == 'changes_requested') and output.auto_fix_allowed == true and output.human_review_required == false and output.rounds_used < output.rounds_budget"}
       - {from: plan-review-retry, to: plan-human-review-retry, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
       - {from: plan-review-retry, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
@@ -1074,6 +1163,7 @@ graphs:
       - {from: plan-human-review-retry, to: plan-review-round-advance-retry, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
       - {from: plan-human-review-retry, to: exhausted, otherwise: true}
       - {from: codegen, to: done}
+
   generation-performance-plan:
     max_activations: 8
     start: prepare
@@ -1097,7 +1187,7 @@ graphs:
         kind: task
         capability: assurance.generation.performance.plan.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection: *stateful-finalize-projection
         retry: once
         timeout: short
       done:
@@ -1129,7 +1219,7 @@ graphs:
         kind: task
         capability: assurance.generation.performance.plan-review.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection: *stateful-finalize-projection
         retry: once
         timeout: short
       done:

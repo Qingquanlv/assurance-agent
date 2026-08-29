@@ -216,6 +216,24 @@ def failed_output(message: str) -> TaskOutcome:
     return TaskOutcome.failed("invalid_output", message, retryable=True)
 
 
+def split_finalize_input(raw: object) -> tuple[dict[str, object], int | None, int | None]:
+    if not isinstance(raw, dict):
+        return {}, None, None
+    used = raw.get("rounds_used")
+    budget = raw.get("rounds_budget")
+    payload = {key: value for key, value in raw.items() if key not in {"rounds_used", "rounds_budget"}}
+    return (
+        payload,
+        used if isinstance(used, int) and used >= 0 else None,
+        budget if isinstance(budget, int) and budget >= 1 else None,
+    )
+
+
+def round_counters(raw: object) -> tuple[int | None, int | None]:
+    _payload, used, budget = split_finalize_input(raw)
+    return used, budget
+
+
 def leafs_of(values: tuple[str, ...]) -> frozenset[str]:
     return frozenset(values)
 
@@ -461,7 +479,8 @@ class PlanFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             family = resolve_family(self._family, request)
-            payload = AgentFinalizeInputV1.model_validate(request.input)
+            stripped, _used, _budget = split_finalize_input(request.input)
+            payload = AgentFinalizeInputV1.model_validate(stripped)
             try:
                 document = PlanResultV1.model_validate(
                     _structured(payload),
@@ -474,12 +493,10 @@ class PlanFinalizeHandler:
             if payload.artifact_paths:
                 _authenticate_files(context.project_root, document.output_files, payload.artifact_paths)
             dumped = document.model_dump(mode="json")
-            raw_input = request.input if isinstance(request.input, dict) else {}
-            used = raw_input.get("rounds_used")
-            budget = raw_input.get("rounds_budget")
-            if isinstance(used, int) and used >= 0:
+            used, budget = round_counters(request.input)
+            if used is not None:
                 dumped["rounds_used"] = used
-            if isinstance(budget, int) and budget >= 0:
+            if budget is not None:
                 dumped["rounds_budget"] = budget
             return TaskOutcome.succeeded(cast(JSONValue, dumped))
         except (InputError, ValidationError) as error:
@@ -517,5 +534,7 @@ __all__ = [
     "request_family",
     "resolve_family",
     "result_contract",
+    "round_counters",
+    "split_finalize_input",
     "validate_plan_input",
 ]
