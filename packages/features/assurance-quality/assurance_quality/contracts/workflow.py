@@ -19,6 +19,14 @@ FailureClassification = Literal[
     "unknown",
 ]
 FIX_ELIGIBLE_CLASSIFICATIONS: frozenset[str] = frozenset({"test", "test-data"})
+CoverageState = Literal["exhausted", "inconclusive", "needs_human", "repair_required", "satisfied"]
+COVERAGE_STATES: tuple[CoverageState, ...] = (
+    "exhausted",
+    "inconclusive",
+    "needs_human",
+    "repair_required",
+    "satisfied",
+)
 
 
 class IssueAnalysisPublicV1(BaseModel):
@@ -32,6 +40,15 @@ class IssueAnalysisPublicV1(BaseModel):
         if self.fix_eligible and self.classification not in FIX_ELIGIBLE_CLASSIFICATIONS:
             raise ValueError("fix_eligible is only valid for test or test-data classification")
         return self
+
+
+class CoverageAssessmentPublicV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    coverage_state: CoverageState
+    rounds_budget: int
+    rounds_used: int
+
 
 WORKFLOW_MODULE_ID = "assurance.quality.workflow"
 WORKFLOW_RESOURCE_ID = "assurance.quality.workflow.module.v1"
@@ -84,6 +101,9 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
 __all__ = [
     "AGENT_JOB_CONTRACTS",
     "AGENT_SLOT_PHASES",
+    "COVERAGE_STATES",
+    "CoverageAssessmentPublicV1",
+    "CoverageState",
     "FIX_ELIGIBLE_CLASSIFICATIONS",
     "FailureClassification",
     "IssueAnalysisPublicV1",

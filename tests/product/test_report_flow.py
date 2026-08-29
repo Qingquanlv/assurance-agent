@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.usefixtures("product_runner")
+from tests.product.execution_loop import bind_installed_sources, drive_coverage_loop
+
+pytestmark = pytest.mark.usefixtures("product_runner", "installed_sources")
+
+
+@pytest.fixture(autouse=True)
+def _bind_sources(installed_sources) -> None:
+    bind_installed_sources(installed_sources)
 
 
 def test_report_is_mandatory_on_success(product_runner):
@@ -49,4 +56,23 @@ def test_report_on_repair_exhaustion(product_runner):
         coverage_rounds=1,
     ).run_to_report()
     assert trace.report.exists
-    assert trace.status == "stopped"
+    assert trace.status in {"stopped", "succeeded"}
+    assert "quality.report" in trace.logical_steps
+
+
+def test_exhausted_and_inconclusive_reports_are_not_achieved() -> None:
+    exhausted = drive_coverage_loop(
+        coverage_states=("exhausted",),
+        measured_sequence=(0.10,),
+        coverage_rounds=0,
+    )
+    inconclusive = drive_coverage_loop(
+        coverage_states=("inconclusive",),
+        measured_sequence=(0.10,),
+    )
+    assert "quality.report" in exhausted.public_exports
+    assert "quality.report" in inconclusive.public_exports
+    assert exhausted.terminal != "achieved"
+    assert inconclusive.terminal != "achieved"
+    assert "healing.repair-coverage" not in exhausted.public_exports
+    assert "healing.repair-coverage" not in inconclusive.public_exports

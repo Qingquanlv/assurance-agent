@@ -165,6 +165,7 @@ graphs:
       execute-tail:
         kind: subgraph
         graph: product-execute
+        routing: {mode: exclusive}
         input_projection: &execute_root_input
           type: object
           fields:
@@ -204,9 +205,12 @@ graphs:
         input_projection: *lifecycle_input
       achieved:
         kind: end
+      not-achieved:
+        kind: end
     edges:
       - {from: prepare, to: execute-tail}
-      - {from: execute-tail, to: retro}
+      - {from: execute-tail, to: retro, condition: "output.coverage_state == 'satisfied'"}
+      - {from: execute-tail, to: not-achieved, otherwise: true}
       - {from: retro, to: improvement}
       - {from: improvement, to: achieved}
   product-execute:
@@ -326,19 +330,36 @@ graphs:
             change_id: {type: graph_input_pointer, pointer: /change_id}
             evidence_refs: {type: config_pointer, pointer: /evidence_refs}
             execution_status: {type: config_pointer, pointer: /execution_status}
-            rounds_budget: {type: graph_input_pointer, pointer: /budgets/healing_rounds}
+            rounds_budget: {type: graph_input_pointer, pointer: /budgets/coverage_rounds}
             rounds_used: {type: literal, value: 0}
-      coverage-policy-gate:
-        kind: gate
-        expression: "coverage_state == 'repair_required'"
+        routing: {mode: exclusive}
+      quality-recheck:
+        kind: subgraph
+        graph_import: quality.assess
+        input:
+          evidence_refs: []
+          execution_status: passed
         input_projection:
           type: object
           fields:
-            coverage_state:
+            allowed_artifact_paths: {type: graph_input_pointer, pointer: /allowed_artifact_paths}
+            budgets: {type: graph_input_pointer, pointer: /budgets}
+            capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
+            change_id: {type: graph_input_pointer, pointer: /change_id}
+            evidence_refs: {type: config_pointer, pointer: /evidence_refs}
+            execution_status: {type: config_pointer, pointer: /execution_status}
+            rounds_budget:
               type: predecessor_pointer
-              predecessor: quality
-              pointer: /coverage_state
-        routing: {mode: fanout, min_matches: 1}
+              predecessor: coverage-repair
+              pointer: /rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: coverage-repair
+              pointer: /rounds_used
+        routing: {mode: exclusive}
+      coverage-needed:
+        kind: join
+        join: any
       coverage-repair:
         kind: subgraph
         graph_import: healing.repair-coverage
@@ -356,8 +377,19 @@ graphs:
             classification: {type: config_pointer, pointer: /classification}
             fix_eligible: {type: config_pointer, pointer: /fix_eligible}
             kind: {type: config_pointer, pointer: /kind}
-            rounds_budget: {type: graph_input_pointer, pointer: /budgets/coverage_rounds}
-            rounds_used: {type: literal, value: 0}
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: coverage-needed
+              pointer: /tokens/0/rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: coverage-needed
+              pointer: /tokens/0/rounds_used
+        routing: {mode: exclusive}
+      coverage-human:
+        kind: interrupt
+        reason: coverage_needs_human
+        actions: [approve, reject]
       report:
         kind: subgraph
         graph_import: quality.report
@@ -375,6 +407,13 @@ graphs:
             execution_status: {type: config_pointer, pointer: /execution_status}
             rounds_budget: {type: graph_input_pointer, pointer: /budgets/healing_rounds}
             rounds_used: {type: literal, value: 0}
+      report-unsatisfied:
+        kind: subgraph
+        graph_import: quality.report
+        input:
+          evidence_refs: []
+          execution_status: passed
+        input_projection: *report_input
       not-achieved:
         kind: end
       done:
@@ -392,11 +431,22 @@ graphs:
       - {from: issue-analysis, to: report, condition: "output.classification == 'product_bug' or output.classification == 'environment_failure' or output.classification == 'infrastructure_failure'"}
       - {from: issue-analysis, to: not-achieved, otherwise: true}
       - {from: fix-proposal, to: run}
-      - {from: quality, to: coverage-policy-gate}
-      - {from: coverage-policy-gate, to: coverage-repair, condition: "output.value == true"}
-      - {from: coverage-policy-gate, to: report, condition: "output.value == false"}
-      - {from: coverage-repair, to: generation}
+      - {from: quality, to: coverage-needed, condition: "output.coverage_state == 'repair_required' and input.rounds_used < input.rounds_budget"}
+      - {from: quality, to: report, condition: "output.coverage_state == 'satisfied'"}
+      - {from: quality, to: report-unsatisfied, condition: "output.coverage_state == 'exhausted' or output.coverage_state == 'inconclusive'"}
+      - {from: quality, to: coverage-human, condition: "output.coverage_state == 'needs_human'"}
+      - {from: quality, to: not-achieved, otherwise: true}
+      - {from: quality-recheck, to: coverage-needed, condition: "output.coverage_state == 'repair_required' and input.rounds_used < input.rounds_budget"}
+      - {from: quality-recheck, to: report, condition: "output.coverage_state == 'satisfied'"}
+      - {from: quality-recheck, to: report-unsatisfied, condition: "output.coverage_state == 'exhausted' or output.coverage_state == 'inconclusive'"}
+      - {from: quality-recheck, to: coverage-human, condition: "output.coverage_state == 'needs_human'"}
+      - {from: quality-recheck, to: not-achieved, otherwise: true}
+      - {from: coverage-needed, to: coverage-repair}
+      - {from: coverage-repair, to: quality-recheck, condition: "output.status == 'repaired'"}
+      - {from: coverage-repair, to: report-unsatisfied, condition: "output.status == 'exhausted' or output.status == 'not_eligible' or output.status == 'failed'"}
+      - {from: coverage-repair, to: not-achieved, otherwise: true}
       - {from: report, to: done}
+      - {from: report-unsatisfied, to: not-achieved}
   product-intake:
     max_activations: 8
     start: run

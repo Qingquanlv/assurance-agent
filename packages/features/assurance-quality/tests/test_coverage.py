@@ -380,6 +380,58 @@ def test_constraint_auth_journey_slack_persist_source_digest() -> None:
     assert slack.source_digest == "deadbeef"
 
 
+@pytest.mark.parametrize(
+    ("measured", "threshold", "rounds_used", "rounds_budget", "signal", "expected"),
+    [
+        (0.91, 0.90, 0, 2, "measured", "satisfied"),
+        (0.90, 0.90, 0, 2, "measured", "satisfied"),
+        (0.40, 0.90, 0, 2, "measured", "repair_required"),
+        (0.40, 0.90, 0, 0, "measured", "exhausted"),
+        (0.40, 0.90, 1, 1, "measured", "exhausted"),
+        (0.40, 0.90, 2, 2, "measured", "exhausted"),
+        (0.40, 0.90, 0, 2, "needs_human", "needs_human"),
+        (0.95, 0.90, 0, 2, "needs_human", "needs_human"),
+        (0.40, 0.90, 0, 2, "inconclusive", "inconclusive"),
+        (0.95, 0.90, 0, 2, "inconclusive", "inconclusive"),
+    ],
+)
+def test_classify_coverage_state_table(
+    measured: float,
+    threshold: float,
+    rounds_used: int,
+    rounds_budget: int,
+    signal: str,
+    expected: str,
+) -> None:
+    from assurance_quality.contracts.coverage import classify_coverage_state
+
+    assert (
+        classify_coverage_state(
+            measured=measured,
+            threshold=threshold,
+            rounds_used=rounds_used,
+            rounds_budget=rounds_budget,
+            signal=signal,  # type: ignore[arg-type]
+        )
+        == expected
+    )
+
+
+def test_coverage_states_are_exactly_the_closed_set() -> None:
+    from assurance_quality.contracts.coverage import COVERAGE_STATES
+    from assurance_quality.contracts.workflow import CoverageAssessmentPublicV1
+
+    assert set(COVERAGE_STATES) == {
+        "satisfied",
+        "repair_required",
+        "exhausted",
+        "needs_human",
+        "inconclusive",
+    }
+    assert len(COVERAGE_STATES) == 5
+    assert CoverageAssessmentPublicV1.model_fields["coverage_state"].annotation is not None
+
+
 def test_coverage_gap_converts_to_healing_repair_brief() -> None:
     document = CoverageGapsDocument(
         schema_version="1",

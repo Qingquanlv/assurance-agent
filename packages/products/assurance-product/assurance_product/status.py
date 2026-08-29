@@ -446,7 +446,13 @@ def _require_quality_gate(project: Path, change_id: str) -> None:
     report_path = project / "qa" / "changes" / change_id / "report" / "report.md"
     payload = _read_json_object(inspect_path, "quality evidence")
     coverage = payload.get("coverage")
-    if not isinstance(coverage, Mapping) or coverage.get("decision") is not True:
+    state = payload.get("coverage_state")
+    if not isinstance(state, str) and isinstance(coverage, Mapping):
+        state = coverage.get("coverage_state")
+    decision_pass = isinstance(coverage, Mapping) and coverage.get("decision") is True
+    if state == "satisfied" or (state is None and decision_pass):
+        pass
+    else:
         raise ValueError("quality gate failed")
     if not report_path.is_file() or report_path.is_symlink():
         raise ValueError("quality gate failed: report is missing")

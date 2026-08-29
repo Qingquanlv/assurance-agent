@@ -279,13 +279,9 @@ def test_plugin_problem_apply_validator_is_path_only() -> None:
 def test_public_issue_analysis_allows_fix_eligible_only_for_test_kinds(classification: str) -> None:
     from assurance_quality.contracts.workflow import IssueAnalysisPublicV1
 
-    accepted = IssueAnalysisPublicV1.model_validate(
-        {"classification": classification, "fix_eligible": True}
-    )
+    accepted = IssueAnalysisPublicV1.model_validate({"classification": classification, "fix_eligible": True})
     assert accepted.fix_eligible is True
-    denied = IssueAnalysisPublicV1.model_validate(
-        {"classification": classification, "fix_eligible": False}
-    )
+    denied = IssueAnalysisPublicV1.model_validate({"classification": classification, "fix_eligible": False})
     assert denied.fix_eligible is False
 
 
@@ -299,7 +295,5 @@ def test_public_issue_analysis_rejects_fix_eligible_for_non_test_kinds(classific
 
     with pytest.raises(ValidationError):
         IssueAnalysisPublicV1.model_validate({"classification": classification, "fix_eligible": True})
-    denied = IssueAnalysisPublicV1.model_validate(
-        {"classification": classification, "fix_eligible": False}
-    )
+    denied = IssueAnalysisPublicV1.model_validate({"classification": classification, "fix_eligible": False})
     assert denied.fix_eligible is False

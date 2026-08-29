@@ -16,7 +16,17 @@ RepairableGapKind = Literal[
     "constraint_without_property",
     "matrix_cell_unasserted",
 ]
-CoverageRepairStatusValue = Literal["repaired", "exhausted", "not_eligible", "failed", "in_progress"]
+CoverageRepairStatusValue = Literal[
+    "exhausted", "failed", "in_progress", "needs_review", "not_eligible", "repaired"
+]
+HealingRepairOutcome = Literal["exhausted", "failed", "needs_review", "not_eligible", "repaired"]
+HEALING_REPAIR_OUTCOMES: tuple[HealingRepairOutcome, ...] = (
+    "exhausted",
+    "failed",
+    "needs_review",
+    "not_eligible",
+    "repaired",
+)
 CoverageGapKind = Literal[
     "uncovered_required_case",
     "stale_required_case",

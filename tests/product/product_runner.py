@@ -274,14 +274,20 @@ class _ScriptedTaskHost:
             )
         if capability_id == _INSPECT_FINALIZE:
             measured = self._next_coverage()
-            rounds_used = self._inspect_count
+            rounds_used = int(echoed.get("rounds_used", self._inspect_count))
+            rounds_budget = int(echoed.get("rounds_budget", self._coverage_rounds))
             self._inspect_count += 1
             self._last_measured = measured
-            decision = measured >= self._threshold
-            self._exhausted = measured < self._threshold and rounds_used >= self._coverage_rounds
-            coverage_state = "satisfied" if decision else "repair_required"
-            if self._exhausted:
-                coverage_state = "exhausted"
+            from assurance_quality.contracts.coverage import classify_coverage_state
+
+            coverage_state = classify_coverage_state(
+                measured=measured,
+                threshold=self._threshold,
+                rounds_used=rounds_used,
+                rounds_budget=rounds_budget,
+            )
+            decision = coverage_state == "satisfied"
+            self._exhausted = coverage_state == "exhausted"
             return TaskOutcome.succeeded(
                 self._public_fields(
                     {
@@ -290,10 +296,12 @@ class _ScriptedTaskHost:
                             "measured": measured,
                             "threshold": self._threshold,
                             "rounds_used": rounds_used,
-                            "rounds_budget": self._coverage_rounds,
+                            "rounds_budget": rounds_budget,
                             "decision": decision,
                         },
                         "coverage_state": coverage_state,
+                        "rounds_used": rounds_used,
+                        "rounds_budget": rounds_budget,
                     }
                 )
             )
@@ -345,7 +353,11 @@ class _ScriptedTaskHost:
             )
         if capability_id == _FIX_PROPOSAL_FINALIZE and self._healing_decision == "disallowed":
             return TaskOutcome.stopped("healing_disallowed")
-        return TaskOutcome.succeeded(self._public_fields({"change_id": change_id, **echoed}))
+        extra = {"change_id": change_id, **echoed}
+        if capability_id.endswith("coverage-repair.finalize"):
+            extra.setdefault("kind", "coverage")
+            extra.setdefault("status", "repaired")
+        return TaskOutcome.succeeded(self._public_fields(extra))
 
     def _next_execution(self) -> str:
         if self._execution_index < len(self._execution_sequence):

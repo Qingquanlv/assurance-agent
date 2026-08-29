@@ -322,10 +322,17 @@ graphs:
               pointer: /rounds_used
         retry: once
         timeout: short
+        routing: {mode: exclusive}
       exhausted:
         kind: end
       not-eligible:
         kind: end
+      failed:
+        kind: end
+      needs-review:
+        kind: interrupt
+        reason: coverage_repair_needs_review
+        actions: [approve, reject]
       done:
         kind: end
     edges:
@@ -335,4 +342,9 @@ graphs:
       - {from: repair-round-advance, to: prepare}
       - {from: prepare, to: execute}
       - {from: execute, to: finalize}
-      - {from: finalize, to: done}
+      - {from: finalize, to: done, condition: "output.status == 'repaired'"}
+      - {from: finalize, to: needs-review, condition: "output.status == 'needs_review'"}
+      - {from: finalize, to: exhausted, condition: "output.status == 'exhausted'"}
+      - {from: finalize, to: not-eligible, condition: "output.status == 'not_eligible'"}
+      - {from: finalize, to: failed, condition: "output.status == 'failed'"}
+      - {from: finalize, to: failed, otherwise: true}

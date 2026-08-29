@@ -114,6 +114,15 @@ _OWNED_NODES = {
     "prepare",
     "repair-round-advance",
 }
+_COVERAGE_OWNED_NODES = _OWNED_NODES | {"failed", "needs-review"}
+_ADMIT_EDGES = {
+    ("admit", "repair-round-advance", "output.value == true"),
+    ("admit", "exhausted", "input.rounds_used >= input.rounds_budget"),
+    ("admit", "not-eligible", None),
+    ("repair-round-advance", "prepare", None),
+    ("prepare", "execute", None),
+    ("execute", "finalize", None),
+}
 
 
 class _FakeSlotHandler:
@@ -345,7 +354,8 @@ def test_healing_exports_are_independent_and_do_not_import_quality() -> None:
         ("healing-coverage-repair", "healing-fix-proposal"),
     ):
         graph = module.graphs[graph_id]
-        assert set(graph.nodes) == _OWNED_NODES
+        expected_nodes = _COVERAGE_OWNED_NODES if graph_id == "healing-coverage-repair" else _OWNED_NODES
+        assert set(graph.nodes) == expected_nodes
         assert graph.start == "admit"
         assert graph.nodes["admit"].kind == "gate"
         assert graph.nodes["admit"].routing is not None
@@ -356,18 +366,26 @@ def test_healing_exports_are_independent_and_do_not_import_quality() -> None:
         assert graph.nodes["not-eligible"].kind == "end"
         assert all(node.kind != "subgraph" for node in graph.nodes.values())
         assert all(getattr(node, "graph", None) != other for node in graph.nodes.values())
-        assert {_edge_record(edge) for edge in graph.edges} == {
-            ("admit", "repair-round-advance", "output.value == true"),
-            ("admit", "exhausted", "input.rounds_used >= input.rounds_budget"),
-            ("admit", "not-eligible", None),
-            ("repair-round-advance", "prepare", None),
-            ("prepare", "execute", None),
-            ("execute", "finalize", None),
-            ("finalize", "done", None),
-        }
-        otherwise = [edge for edge in graph.edges if edge.to == "not-eligible"]
-        assert len(otherwise) == 1
-        assert otherwise[0].otherwise is True
+        if graph_id == "healing-coverage-repair":
+            assert {_edge_record(edge) for edge in graph.edges} == _ADMIT_EDGES | {
+                ("finalize", "done", "output.status == 'repaired'"),
+                ("finalize", "needs-review", "output.status == 'needs_review'"),
+                ("finalize", "exhausted", "output.status == 'exhausted'"),
+                ("finalize", "not-eligible", "output.status == 'not_eligible'"),
+                ("finalize", "failed", "output.status == 'failed'"),
+                ("finalize", "failed", None),
+            }
+            assert graph.nodes["needs-review"].kind == "interrupt"
+            assert graph.nodes["failed"].kind == "end"
+        else:
+            assert {_edge_record(edge) for edge in graph.edges} == _ADMIT_EDGES | {
+                ("finalize", "done", None),
+            }
+        admit_otherwise = [
+            edge for edge in graph.edges if edge.from_ == "admit" and edge.to == "not-eligible"
+        ]
+        assert len(admit_otherwise) == 1
+        assert admit_otherwise[0].otherwise is True
 
 
 def test_each_export_projects_classification_budget_and_change_refs_from_graph_input() -> None:

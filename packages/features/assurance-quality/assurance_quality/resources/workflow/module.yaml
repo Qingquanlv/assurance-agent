@@ -21,6 +21,12 @@ exports:
         evidence_refs:
           type: child_output_pointer
           pointer: /evidence_refs
+        rounds_budget:
+          type: child_output_pointer
+          pointer: /rounds_budget
+        rounds_used:
+          type: child_output_pointer
+          pointer: /rounds_used
   issue-review:
     graph: issue-review
     input_schema: assurance.quality.workflow.issue-review.input.v1
@@ -66,6 +72,9 @@ exports:
         change_id:
           type: child_output_pointer
           pointer: /change_id
+        coverage_state:
+          type: child_output_pointer
+          pointer: /coverage_state
         report_refs:
           type: child_output_pointer
           pointer: /report_refs

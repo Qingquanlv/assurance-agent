@@ -501,7 +501,13 @@ def test_public_outputs_expose_normalized_assessment_without_achieved() -> None:
 
     assess = module.exports["assess"].output_projection
     assert isinstance(assess, OutputObjectProjection)
-    assert set(assess.fields) == {"change_id", "coverage_state", "evidence_refs"}
+    assert set(assess.fields) == {
+        "change_id",
+        "coverage_state",
+        "evidence_refs",
+        "rounds_budget",
+        "rounds_used",
+    }
     for field in assess.fields.values():
         assert isinstance(field, ChildOutputPointerProjection)
     assess_schema = json.loads(_schema(_io_schema_id("assess", "output")).content)
@@ -510,11 +516,11 @@ def test_public_outputs_expose_normalized_assessment_without_achieved() -> None:
 
     report = module.exports["report"].output_projection
     assert isinstance(report, OutputObjectProjection)
-    assert set(report.fields) == {"change_id", "report_refs"}
+    assert set(report.fields) == {"change_id", "coverage_state", "report_refs"}
     for field in report.fields.values():
         assert isinstance(field, ChildOutputPointerProjection)
     report_schema = json.loads(_schema(_io_schema_id("report", "output")).content)
-    assert set(report_schema["properties"]) == {"change_id", "report_refs"}
+    assert set(report_schema["properties"]) == {"change_id", "coverage_state", "report_refs"}
     assert "achieved" not in json.dumps(report_schema)
     assert "achieved" not in json.dumps(report.model_dump(mode="json"))
     dumped = json.dumps(module.exports["report"].model_dump(mode="json", by_alias=True))

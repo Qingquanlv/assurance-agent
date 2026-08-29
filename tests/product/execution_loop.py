@@ -81,12 +81,39 @@ def drive_failed_execution(
     )
 
 
+def drive_coverage_loop(
+    *,
+    coverage_states: tuple[str, ...],
+    repair_statuses: tuple[str, ...] = (),
+    coverage_rounds: int = 1,
+    measured_sequence: tuple[float, ...] = (),
+    threshold: float = 0.90,
+    entrypoint: str = "execute",
+) -> ExecutionLoopTrace:
+    return drive_execution_loop(
+        execution_sequence=("passed",),
+        classifications=(),
+        fix_eligible=(),
+        coverage_rounds=coverage_rounds,
+        coverage_states=coverage_states,
+        repair_statuses=repair_statuses,
+        measured_sequence=measured_sequence,
+        threshold=threshold,
+        entrypoint=entrypoint,
+    )
+
+
 def drive_execution_loop(
     *,
     execution_sequence: tuple[str, ...],
     classifications: tuple[str, ...],
     fix_eligible: tuple[bool, ...],
     healing_rounds: int = 1,
+    coverage_rounds: int = 1,
+    coverage_states: tuple[str, ...] = (),
+    repair_statuses: tuple[str, ...] = (),
+    measured_sequence: tuple[float, ...] = (),
+    threshold: float = 0.90,
     entrypoint: str = "execute",
 ) -> ExecutionLoopTrace:
     if _INSTALLED_SOURCES is None:
@@ -96,8 +123,17 @@ def drive_execution_loop(
         execution_sequence=execution_sequence,
         classifications=classifications,
         fix_eligible=fix_eligible,
+        coverage_states=coverage_states,
+        repair_statuses=repair_statuses,
+        measured_sequence=measured_sequence,
+        threshold=threshold,
+        coverage_rounds=coverage_rounds,
     )
-    root_input = _loop_input(healing_rounds=healing_rounds)
+    root_input = _loop_input(
+        healing_rounds=healing_rounds,
+        coverage_rounds=coverage_rounds,
+        entrypoint=entrypoint,
+    )
     with TemporaryDirectory(prefix="execution-loop-") as raw:
         project = Path(raw).resolve() / "project"
         project.mkdir()
@@ -130,20 +166,26 @@ def drive_execution_loop(
             engine.close()
 
 
-def _loop_input(*, healing_rounds: int) -> dict[str, object]:
+def _loop_input(
+    *,
+    healing_rounds: int,
+    coverage_rounds: int = 1,
+    entrypoint: str = "execute",
+) -> dict[str, object]:
     from assurance_product.models import ProductInputV1
 
-    payload = _product_input(selected_test_families=("api",), coverage_rounds=1)
+    payload = _product_input(selected_test_families=("api",), coverage_rounds=coverage_rounds)
     payload["budgets"] = {
         "review_rounds": 1,
-        "coverage_rounds": 1,
+        "coverage_rounds": coverage_rounds,
         "healing_rounds": healing_rounds,
         "execution_retries": 1,
     }
     payload["artifacts"] = [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}]
     payload["decision"] = "pass"
-    payload["case_delta_paths"] = ()
-    return ProductInputV1.model_validate(payload).validate_for_entrypoint("execute").model_dump(mode="json")
+    if entrypoint not in {"full", "intake", "case"}:
+        payload["case_delta_paths"] = ()
+    return ProductInputV1.model_validate(payload).validate_for_entrypoint(entrypoint).model_dump(mode="json")
 
 
 class _ExecutionLoopHost:
@@ -153,12 +195,24 @@ class _ExecutionLoopHost:
         execution_sequence: tuple[str, ...],
         classifications: tuple[str, ...],
         fix_eligible: tuple[bool, ...],
+        coverage_states: tuple[str, ...] = (),
+        repair_statuses: tuple[str, ...] = (),
+        measured_sequence: tuple[float, ...] = (),
+        threshold: float = 0.90,
+        coverage_rounds: int = 1,
     ) -> None:
         self._execution_sequence = execution_sequence
         self._classifications = classifications
         self._fix_eligible = fix_eligible
+        self._coverage_states = coverage_states
+        self._repair_statuses = repair_statuses
+        self._measured_sequence = measured_sequence
+        self._threshold = threshold
+        self._coverage_rounds = coverage_rounds
         self._execution_index = 0
         self._analysis_index = 0
+        self._coverage_index = 0
+        self._repair_index = 0
         self._advance = None
         self.advance_outputs: list[dict[str, object]] = []
 
@@ -240,6 +294,33 @@ class _ExecutionLoopHost:
                     "rounds_used": rounds_used,
                 }
             )
+        if aliased.endswith("quality.inspect.finalize"):
+            measured = (
+                self._measured_sequence[min(self._coverage_index, len(self._measured_sequence) - 1)]
+                if self._measured_sequence
+                else 1.0
+            )
+            if self._coverage_states:
+                state = self._coverage_states[min(self._coverage_index, len(self._coverage_states) - 1)]
+            else:
+                state = "satisfied" if measured >= self._threshold else "repair_required"
+            self._coverage_index += 1
+            return TaskOutcome.succeeded(
+                {
+                    "change_id": change_id,
+                    "coverage_state": state,
+                    "evidence_refs": [],
+                    "rounds_budget": rounds_budget,
+                    "rounds_used": rounds_used,
+                    "coverage": {
+                        "measured": measured,
+                        "threshold": self._threshold,
+                        "rounds_used": rounds_used,
+                        "rounds_budget": rounds_budget,
+                        "decision": state == "satisfied",
+                    },
+                }
+            )
         if aliased.endswith("healing.fix-proposal.finalize"):
             return TaskOutcome.succeeded(
                 {
@@ -249,6 +330,23 @@ class _ExecutionLoopHost:
                     "rounds_budget": rounds_budget,
                     "rounds_used": rounds_used,
                     "status": "repaired",
+                }
+            )
+        if aliased.endswith("healing.coverage-repair.finalize"):
+            status = (
+                self._repair_statuses[min(self._repair_index, len(self._repair_statuses) - 1)]
+                if self._repair_statuses
+                else "repaired"
+            )
+            self._repair_index += 1
+            return TaskOutcome.succeeded(
+                {
+                    "change_id": change_id,
+                    "effect_refs": [],
+                    "kind": kind,
+                    "rounds_budget": rounds_budget,
+                    "rounds_used": rounds_used,
+                    "status": status,
                 }
             )
         return TaskOutcome.succeeded(
@@ -269,7 +367,9 @@ class _ExecutionLoopHost:
                 "needs_fix": False,
                 "outcome": "applied",
                 "receipt_refs": [],
-                "report_refs": [{"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _PUBLIC_DIGEST}],
+                "report_refs": [
+                    {"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _PUBLIC_DIGEST}
+                ],
                 "rounds_budget": rounds_budget,
                 "rounds_used": rounds_used,
                 "status": "passed",
@@ -350,11 +450,19 @@ def _terminal_name(projection: InvocationProjection, status: str) -> str:
 
 
 def assert_each_repair_is_preceded_by_one_advance(capabilities: tuple[str, ...]) -> None:
-    repairs = [index for index, item in enumerate(capabilities) if item.endswith("fix-proposal.finalize")]
+    _assert_advance_before_finalize(capabilities, "fix-proposal.finalize")
+
+
+def assert_each_coverage_repair_is_preceded_by_one_advance(capabilities: tuple[str, ...]) -> None:
+    _assert_advance_before_finalize(capabilities, "coverage-repair.finalize")
+
+
+def _assert_advance_before_finalize(capabilities: tuple[str, ...], finalize_suffix: str) -> None:
+    repairs = [index for index, item in enumerate(capabilities) if item.endswith(finalize_suffix)]
     advances = [index for index, item in enumerate(capabilities) if item.endswith("repair-round.advance")]
     assert len(repairs) == len(advances)
     for repair_index, advance_index in zip(repairs, advances, strict=True):
         assert advance_index < repair_index
         between = capabilities[advance_index + 1 : repair_index]
         assert not any(item.endswith("repair-round.advance") for item in between)
-        assert not any(item.endswith("fix-proposal.finalize") for item in between)
+        assert not any(item.endswith(finalize_suffix) for item in between)

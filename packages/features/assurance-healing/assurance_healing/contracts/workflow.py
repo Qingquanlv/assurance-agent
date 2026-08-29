@@ -13,6 +13,14 @@ WORKFLOW_EXPORTS: tuple[str, ...] = ("repair-failure", "repair-coverage")
 REPAIR_ROUND_ADVANCE_ID = "assurance.healing.repair-round.advance"
 RepairRoundKind = Literal["failure", "coverage"]
 REPAIR_ROUND_KINDS: tuple[RepairRoundKind, ...] = ("coverage", "failure")
+HealingRepairOutcome = Literal["exhausted", "failed", "needs_review", "not_eligible", "repaired"]
+HEALING_REPAIR_OUTCOMES: tuple[HealingRepairOutcome, ...] = (
+    "exhausted",
+    "failed",
+    "needs_review",
+    "not_eligible",
+    "repaired",
+)
 AGENT_SLOT_PHASES: tuple[str, ...] = ("prepare", "execute", "finalize")
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
@@ -52,6 +60,8 @@ __all__ = [
     "AGENT_JOB_CONTRACTS",
     "AGENT_SLOT_PHASES",
     "OUTPUT_ROUTE_TEMPLATES",
+    "HEALING_REPAIR_OUTCOMES",
+    "HealingRepairOutcome",
     "REPAIR_ROUND_ADVANCE_ID",
     "REPAIR_ROUND_KINDS",
     "RepairRoundKind",

@@ -197,6 +197,55 @@ def test_finalize_achieved_rejects_invalid_merge_without_writing(tmp_path: Path)
     assert not (change / "apply-manifest.json").exists()
 
 
+@pytest.mark.parametrize(
+    "coverage",
+    [
+        {
+            "measured": 0.40,
+            "threshold": 0.9,
+            "rounds_used": 1,
+            "rounds_budget": 1,
+            "decision": False,
+            "coverage_state": "exhausted",
+        },
+        {
+            "measured": 0.40,
+            "threshold": 0.9,
+            "rounds_used": 0,
+            "rounds_budget": 1,
+            "decision": False,
+            "coverage_state": "inconclusive",
+        },
+        {
+            "measured": 0.95,
+            "threshold": 0.9,
+            "rounds_used": 0,
+            "rounds_budget": 1,
+            "decision": True,
+            "coverage_state": "needs_human",
+        },
+    ],
+)
+def test_finalize_achieved_rejects_unsatisfied_coverage_without_writing(
+    tmp_path: Path, coverage: dict[str, object]
+) -> None:
+    from assurance_product.status import finalize_achieved
+
+    project = _ready_change(tmp_path)
+    _write(
+        project,
+        f"qa/changes/{CHANGE_ID}/inspect/inspection.json",
+        json.dumps({"coverage": coverage, "coverage_state": coverage["coverage_state"]}).encode("utf-8"),
+    )
+
+    with pytest.raises(ValueError, match="quality"):
+        finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status())
+
+    change = project / "qa" / "changes" / CHANGE_ID
+    assert not (change / "status.json").exists()
+    assert not (change / "apply-manifest.json").exists()
+
+
 def test_finalize_achieved_requires_terminal_full_success(tmp_path: Path):
     from assurance_product.status import finalize_achieved
 

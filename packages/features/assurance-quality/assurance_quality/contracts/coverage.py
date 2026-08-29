@@ -20,6 +20,36 @@ COVERAGE_GAPS_REL = "inspect/coverage-gaps.json"
 
 CoverageGapsSchemaVersion = Literal["1"]
 
+CoverageState = Literal["exhausted", "inconclusive", "needs_human", "repair_required", "satisfied"]
+COVERAGE_STATES: tuple[CoverageState, ...] = (
+    "exhausted",
+    "inconclusive",
+    "needs_human",
+    "repair_required",
+    "satisfied",
+)
+CoverageSignal = Literal["inconclusive", "measured", "needs_human"]
+
+
+def classify_coverage_state(
+    *,
+    measured: float,
+    threshold: float,
+    rounds_used: int,
+    rounds_budget: int,
+    signal: CoverageSignal = "measured",
+) -> CoverageState:
+    if signal == "needs_human":
+        return "needs_human"
+    if signal == "inconclusive":
+        return "inconclusive"
+    if measured >= threshold:
+        return "satisfied"
+    if rounds_budget <= 0 or rounds_used >= rounds_budget:
+        return "exhausted"
+    return "repair_required"
+
+
 # Closed vocabulary — unknown kinds fail validation (fail-closed).
 CoverageGapKind = Literal[
     "uncovered_required_case",
@@ -113,13 +143,17 @@ class CoverageGapsDocument(BaseModel):
 __all__ = [
     "COVERAGE_GAPS_REL",
     "COVERAGE_GAP_KIND_ORDER",
+    "COVERAGE_STATES",
     "CoverageGap",
+    "CoverageSignal",
+    "CoverageState",
     "CoverageGapFeedstock",
     "CoverageGapKind",
     "CoverageGapLayer",
     "CoverageGapLocator",
     "CoverageGapsDocument",
     "CoverageGapsSchemaVersion",
+    "classify_coverage_state",
 ]
 
 
@@ -429,7 +463,11 @@ __all__ = [
     "MrcLayer",
     "MrcMappingSource",
     "MrcObligation",
+    "COVERAGE_STATES",
+    "CoverageSignal",
+    "CoverageState",
     "auth_known_keys",
+    "classify_coverage_state",
     "journey_known_keys",
     "maps_from_advisory_mrc",
     "mrc_closed_key_findings",
