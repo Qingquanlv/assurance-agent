@@ -9,7 +9,7 @@ exports:
     graph: healing-fix-proposal
     input_schema: assurance.healing.workflow.repair-failure.input.v1
     output_schema: assurance.healing.workflow.repair-failure.output.v1
-    output_projection:
+    output_projection: &repair-output
       type: object
       fields:
         change_id:
@@ -18,6 +18,15 @@ exports:
         effect_refs:
           type: child_output_pointer
           pointer: /effect_refs
+        kind:
+          type: child_output_pointer
+          pointer: /kind
+        rounds_budget:
+          type: child_output_pointer
+          pointer: /rounds_budget
+        rounds_used:
+          type: child_output_pointer
+          pointer: /rounds_used
         status:
           type: child_output_pointer
           pointer: /status
@@ -25,18 +34,7 @@ exports:
     graph: healing-coverage-repair
     input_schema: assurance.healing.workflow.repair-coverage.input.v1
     output_schema: assurance.healing.workflow.repair-coverage.output.v1
-    output_projection:
-      type: object
-      fields:
-        change_id:
-          type: child_output_pointer
-          pointer: /change_id
-        effect_refs:
-          type: child_output_pointer
-          pointer: /effect_refs
-        status:
-          type: child_output_pointer
-          pointer: /status
+    output_projection: *repair-output
 capability_slots:
   coverage-repair.prepare:
     contract_id: assurance.healing.agent.coverage-repair.v1
@@ -66,14 +64,50 @@ timeout:
 graphs:
   healing-fix-proposal:
     max_activations: 8
-    start: prepare
+    start: admit
     nodes:
+      admit:
+        kind: gate
+        expression: "(classification == 'test' or classification == 'test-data') and fix_eligible == true and rounds_used < rounds_budget"
+        input_projection: &admit-input
+          type: object
+          fields:
+            classification:
+              type: graph_input_pointer
+              pointer: /classification
+            fix_eligible:
+              type: graph_input_pointer
+              pointer: /fix_eligible
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
+        routing: {mode: exclusive}
+      repair-round-advance:
+        kind: task
+        capability: assurance.healing.repair-round.advance
+        input_projection:
+          type: object
+          fields:
+            kind:
+              type: literal
+              value: failure
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
+        retry: once
+        timeout: short
       prepare:
         kind: task
         capability: assurance.healing.fix-proposal.prepare
         input:
           capability_leafs: []
-        input_projection:
+        input_projection: &failure-prepare
           type: object
           fields:
             artifact_paths:
@@ -94,6 +128,18 @@ graphs:
             fix_eligible:
               type: graph_input_pointer
               pointer: /fix_eligible
+            kind:
+              type: predecessor_pointer
+              predecessor: repair-round-advance
+              pointer: /kind
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: repair-round-advance
+              pointer: /rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: repair-round-advance
+              pointer: /rounds_used
         retry: once
         timeout: short
       execute:
@@ -133,18 +179,59 @@ graphs:
             fix_eligible:
               type: graph_input_pointer
               pointer: /fix_eligible
+            kind:
+              type: graph_input_pointer
+              pointer: /kind
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: execute
+              pointer: /rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: execute
+              pointer: /rounds_used
         retry: once
         timeout: short
+      exhausted:
+        kind: end
+      not-eligible:
+        kind: end
       done:
         kind: end
     edges:
+      - {from: admit, to: repair-round-advance, condition: "output.value == true"}
+      - {from: admit, to: exhausted, condition: "input.rounds_used >= input.rounds_budget"}
+      - {from: admit, to: not-eligible, otherwise: true}
+      - {from: repair-round-advance, to: prepare}
       - {from: prepare, to: execute}
       - {from: execute, to: finalize}
       - {from: finalize, to: done}
   healing-coverage-repair:
     max_activations: 8
-    start: prepare
+    start: admit
     nodes:
+      admit:
+        kind: gate
+        expression: "fix_eligible == true and rounds_used < rounds_budget"
+        input_projection: *admit-input
+        routing: {mode: exclusive}
+      repair-round-advance:
+        kind: task
+        capability: assurance.healing.repair-round.advance
+        input_projection:
+          type: object
+          fields:
+            kind:
+              type: literal
+              value: coverage
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
+        retry: once
+        timeout: short
       prepare:
         kind: task
         capability: assurance.healing.coverage-repair.prepare
@@ -171,6 +258,18 @@ graphs:
             fix_eligible:
               type: graph_input_pointer
               pointer: /fix_eligible
+            kind:
+              type: predecessor_pointer
+              predecessor: repair-round-advance
+              pointer: /kind
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: repair-round-advance
+              pointer: /rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: repair-round-advance
+              pointer: /rounds_used
         retry: once
         timeout: short
       execute:
@@ -210,11 +309,30 @@ graphs:
             fix_eligible:
               type: graph_input_pointer
               pointer: /fix_eligible
+            kind:
+              type: graph_input_pointer
+              pointer: /kind
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: execute
+              pointer: /rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: execute
+              pointer: /rounds_used
         retry: once
         timeout: short
+      exhausted:
+        kind: end
+      not-eligible:
+        kind: end
       done:
         kind: end
     edges:
+      - {from: admit, to: repair-round-advance, condition: "output.value == true"}
+      - {from: admit, to: exhausted, condition: "input.rounds_used >= input.rounds_budget"}
+      - {from: admit, to: not-eligible, otherwise: true}
+      - {from: repair-round-advance, to: prepare}
       - {from: prepare, to: execute}
       - {from: execute, to: finalize}
       - {from: finalize, to: done}

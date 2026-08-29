@@ -168,10 +168,11 @@ def test_finalize_achieved_writes_status_and_apply_manifest(tmp_path: Path):
     assert not (project / "qa" / "archive").exists()
 
 
-def test_finalize_achieved_rejects_failed_execution_without_writing(tmp_path: Path):
+@pytest.mark.parametrize("execution_status", ["failed", "product_issue", "infrastructure_failure"])
+def test_finalize_achieved_rejects_failed_execution_without_writing(tmp_path: Path, execution_status: str):
     from assurance_product.status import finalize_achieved
 
-    project = _ready_change(tmp_path, execution_status="failed")
+    project = _ready_change(tmp_path, execution_status=execution_status)
 
     with pytest.raises(ValueError, match="execution"):
         finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status())

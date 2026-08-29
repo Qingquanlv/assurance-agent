@@ -98,6 +98,8 @@ _INPUT_FIELDS = {
     "change_id",
     "evidence_refs",
     "execution_status",
+    "rounds_budget",
+    "rounds_used",
 }
 _ASSESS_INPUT = {
     "change_id": "CH-ASSESS-001",
@@ -106,6 +108,8 @@ _ASSESS_INPUT = {
     "execution_status": "passed",
     "evidence_refs": [{"path": "qa/changes/CH-ASSESS-001/execution/result.json", "digest": "a" * 64}],
     "budgets": {"coverage_rounds": 2, "failure_rounds": 1},
+    "rounds_budget": 2,
+    "rounds_used": 0,
     "leak_token": "must-not-cross-assess-boundary",
 }
 _ISSUE_INPUT = {
@@ -115,6 +119,8 @@ _ISSUE_INPUT = {
     "execution_status": "failed",
     "evidence_refs": [{"path": "qa/archive/CH-ISSUE-002/execution/result.json", "digest": "b" * 64}],
     "budgets": {"coverage_rounds": 9, "failure_rounds": 4},
+    "rounds_budget": 4,
+    "rounds_used": 1,
     "leak_token": "must-not-cross-issue-boundary",
 }
 _REPORT_INPUT = {
@@ -124,6 +130,8 @@ _REPORT_INPUT = {
     "execution_status": "passed",
     "evidence_refs": [{"path": "qa/changes/CH-REPORT-003/inspect/inspection.json", "digest": "c" * 64}],
     "budgets": {"coverage_rounds": 3, "failure_rounds": 2},
+    "rounds_budget": 3,
+    "rounds_used": 0,
     "leak_token": "must-not-cross-report-boundary",
 }
 
@@ -471,7 +479,14 @@ def test_execute_nodes_use_slots_and_prepare_finalize_keep_feature_ids() -> None
 
 def test_public_outputs_expose_normalized_assessment_without_achieved() -> None:
     module = _load_module()
-    issue_fields = {"change_id", "classification", "evidence_refs", "fix_eligible"}
+    issue_fields = {
+        "change_id",
+        "classification",
+        "evidence_refs",
+        "fix_eligible",
+        "rounds_budget",
+        "rounds_used",
+    }
     for export in ("issue-review", "issue-analyze", "issue-reconcile"):
         projection = module.exports[export].output_projection
         assert isinstance(projection, OutputObjectProjection)

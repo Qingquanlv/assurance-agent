@@ -9,9 +9,15 @@ exports:
     graph: execution-execute
     input_schema: assurance.execution.workflow.execute.input.v1
     output_schema: assurance.execution.workflow.execute.output.v1
-    output_projection:
+    output_projection: &execution-output
       type: object
       fields:
+        rounds_budget:
+          type: child_output_pointer
+          pointer: /rounds_budget
+        rounds_used:
+          type: child_output_pointer
+          pointer: /rounds_used
         status:
           type: child_output_pointer
           pointer: /status
@@ -19,12 +25,7 @@ exports:
     graph: execution-run
     input_schema: assurance.execution.workflow.rerun.input.v1
     output_schema: assurance.execution.workflow.rerun.output.v1
-    output_projection:
-      type: object
-      fields:
-        status:
-          type: child_output_pointer
-          pointer: /status
+    output_projection: *execution-output
 capability_slots:
   execute.prepare:
     contract_id: assurance.execution.agent.execute.v1
@@ -73,6 +74,12 @@ graphs:
             capability_leafs:
               type: graph_input_pointer
               pointer: /capability_leafs
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
         retry: once
         timeout: short
       execute:
@@ -103,6 +110,12 @@ graphs:
             capability_leafs:
               type: graph_input_pointer
               pointer: /capability_leafs
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
         retry: once
         timeout: short
       done:
@@ -132,6 +145,12 @@ graphs:
             capability_leafs:
               type: graph_input_pointer
               pointer: /capability_leafs
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
         retry: once
         timeout: short
       execute:
@@ -162,6 +181,12 @@ graphs:
             capability_leafs:
               type: graph_input_pointer
               pointer: /capability_leafs
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
         retry: once
         timeout: short
       done:

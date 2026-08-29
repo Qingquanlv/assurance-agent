@@ -190,7 +190,13 @@ def healing_handlers() -> dict[str, Any]:
         RecordHealingStatusHandler,
     )
 
+    from assurance_healing.operations.workflow_state import (
+        REPAIR_ROUND_ADVANCE_ID,
+        HealingRepairRoundAdvanceHandler,
+    )
+
     return {
+        REPAIR_ROUND_ADVANCE_ID: HealingRepairRoundAdvanceHandler(),
         "assurance.healing.allocate-coverage-repair-attempt": AllocateCoverageRepairAttemptHandler(),
         "assurance.healing.allocate-healing-attempt": AllocateHealingAttemptHandler(),
         "assurance.healing.combine-fixer-safety": CombineFixerSafetyHandler(),

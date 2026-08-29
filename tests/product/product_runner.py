@@ -231,11 +231,14 @@ class _ScriptedTaskHost:
             "evidence_refs": [],
             "fix_eligible": True,
             "human_review_required": False,
+            "kind": "failure",
             "lifecycle_state": "proposed",
             "needs_fix": False,
             "outcome": "applied",
             "receipt_refs": [],
             "report_refs": [],
+            "rounds_budget": 1,
+            "rounds_used": 0,
             "status": self._last_status,
         }
         if extra:
@@ -244,12 +247,31 @@ class _ScriptedTaskHost:
 
     def _outcome(self, capability_id: str, request_input: object = None) -> TaskOutcome:
         change_id = "CH-DEMO-001"
-        if isinstance(request_input, Mapping) and isinstance(request_input.get("change_id"), str):
-            change_id = request_input["change_id"]
+        echoed: dict[str, object] = {}
+        if isinstance(request_input, Mapping):
+            if isinstance(request_input.get("change_id"), str):
+                change_id = request_input["change_id"]
+            if isinstance(request_input.get("kind"), str):
+                echoed["kind"] = request_input["kind"]
+            if isinstance(request_input.get("rounds_used"), int):
+                echoed["rounds_used"] = request_input["rounds_used"]
+            if isinstance(request_input.get("rounds_budget"), int):
+                echoed["rounds_budget"] = request_input["rounds_budget"]
+        if capability_id.endswith("repair-round.advance"):
+            payload = request_input if isinstance(request_input, Mapping) else {}
+            return TaskOutcome.succeeded(
+                {
+                    "kind": payload.get("kind", "failure"),
+                    "rounds_used": int(payload.get("rounds_used", 0)) + 1,
+                    "rounds_budget": payload.get("rounds_budget", 1),
+                }
+            )
         if capability_id in _EXECUTION_FINALIZE:
             status = self._next_execution()
             self._last_status = status
-            return TaskOutcome.succeeded(self._public_fields({"status": status, "change_id": change_id}))
+            return TaskOutcome.succeeded(
+                self._public_fields({"status": status, "change_id": change_id, **echoed})
+            )
         if capability_id == _INSPECT_FINALIZE:
             measured = self._next_coverage()
             rounds_used = self._inspect_count
@@ -323,7 +345,7 @@ class _ScriptedTaskHost:
             )
         if capability_id == _FIX_PROPOSAL_FINALIZE and self._healing_decision == "disallowed":
             return TaskOutcome.stopped("healing_disallowed")
-        return TaskOutcome.succeeded(self._public_fields({"change_id": change_id}))
+        return TaskOutcome.succeeded(self._public_fields({"change_id": change_id, **echoed}))
 
     def _next_execution(self) -> str:
         if self._execution_index < len(self._execution_sequence):

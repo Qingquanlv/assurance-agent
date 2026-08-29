@@ -228,34 +228,21 @@ graphs:
       execute:
         kind: subgraph
         graph_import: execution.execute
-        input_projection: &execution_input
+        input_projection: &execution_seed
           type: object
           fields:
             capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
             change_id: {type: graph_input_pointer, pointer: /change_id}
+            rounds_budget: {type: graph_input_pointer, pointer: /budgets/healing_rounds}
+            rounds_used: {type: literal, value: 0}
             selected_test_families: {type: graph_input_pointer, pointer: /selected_test_families}
-        routing: {mode: fanout, min_matches: 3}
-      execution-pass-gate:
-        kind: gate
-        expression: "status == 'passed'"
-        input_projection: &execution_status
-          type: object
-          fields:
-            status:
-              type: predecessor_pointer
-              predecessor: execute
-              pointer: /status
-      execution-issue-gate:
-        kind: gate
-        expression: "status == 'failed' or status == 'product_issue'"
-        input_projection: *execution_status
-      execution-infra-gate:
-        kind: gate
-        expression: "status == 'infrastructure_failure'"
-        input_projection: *execution_status
-      issue-triage:
+        routing: {mode: exclusive}
+      failed-join:
+        kind: join
+        join: any
+      issue-analysis:
         kind: subgraph
-        graph_import: quality.issue-review
+        graph_import: quality.issue-analyze
         input:
           evidence_refs: []
           execution_status: failed
@@ -268,16 +255,20 @@ graphs:
             change_id: {type: graph_input_pointer, pointer: /change_id}
             evidence_refs: {type: config_pointer, pointer: /evidence_refs}
             execution_status: {type: config_pointer, pointer: /execution_status}
-      issue-analysis:
-        kind: subgraph
-        graph_import: quality.issue-analyze
-        input:
-          evidence_refs: []
-          execution_status: failed
-        input_projection: *issue_input
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: failed-join
+              pointer: /tokens/0/rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: failed-join
+              pointer: /tokens/0/rounds_used
+        routing: {mode: exclusive}
       fix-proposal:
         kind: subgraph
         graph_import: healing.repair-failure
+        input:
+          kind: failure
         input_projection: &repair_failure_input
           type: object
           fields:
@@ -293,10 +284,33 @@ graphs:
               type: predecessor_pointer
               predecessor: issue-analysis
               pointer: /fix_eligible
+            kind: {type: config_pointer, pointer: /kind}
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: issue-analysis
+              pointer: /rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: issue-analysis
+              pointer: /rounds_used
       run:
         kind: subgraph
         graph_import: execution.rerun
-        input_projection: *execution_input
+        input_projection:
+          type: object
+          fields:
+            capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
+            change_id: {type: graph_input_pointer, pointer: /change_id}
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: fix-proposal
+              pointer: /rounds_budget
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: fix-proposal
+              pointer: /rounds_used
+            selected_test_families: {type: graph_input_pointer, pointer: /selected_test_families}
+        routing: {mode: exclusive}
       quality:
         kind: subgraph
         graph_import: quality.assess
@@ -312,6 +326,8 @@ graphs:
             change_id: {type: graph_input_pointer, pointer: /change_id}
             evidence_refs: {type: config_pointer, pointer: /evidence_refs}
             execution_status: {type: config_pointer, pointer: /execution_status}
+            rounds_budget: {type: graph_input_pointer, pointer: /budgets/healing_rounds}
+            rounds_used: {type: literal, value: 0}
       coverage-policy-gate:
         kind: gate
         expression: "coverage_state == 'repair_required'"
@@ -329,6 +345,7 @@ graphs:
         input:
           classification: repair_required
           fix_eligible: true
+          kind: coverage
         input_projection:
           type: object
           fields:
@@ -338,13 +355,16 @@ graphs:
             change_id: {type: graph_input_pointer, pointer: /change_id}
             classification: {type: config_pointer, pointer: /classification}
             fix_eligible: {type: config_pointer, pointer: /fix_eligible}
+            kind: {type: config_pointer, pointer: /kind}
+            rounds_budget: {type: graph_input_pointer, pointer: /budgets/coverage_rounds}
+            rounds_used: {type: literal, value: 0}
       report:
         kind: subgraph
         graph_import: quality.report
         input:
           evidence_refs: []
           execution_status: passed
-        input_projection:
+        input_projection: &report_input
           type: object
           fields:
             allowed_artifact_paths: {type: graph_input_pointer, pointer: /allowed_artifact_paths}
@@ -353,20 +373,25 @@ graphs:
             change_id: {type: graph_input_pointer, pointer: /change_id}
             evidence_refs: {type: config_pointer, pointer: /evidence_refs}
             execution_status: {type: config_pointer, pointer: /execution_status}
+            rounds_budget: {type: graph_input_pointer, pointer: /budgets/healing_rounds}
+            rounds_used: {type: literal, value: 0}
+      not-achieved:
+        kind: end
       done:
         kind: end
     edges:
       - {from: generation, to: execute}
-      - {from: execute, to: execution-pass-gate}
-      - {from: execute, to: execution-issue-gate}
-      - {from: execute, to: execution-infra-gate}
-      - {from: execution-pass-gate, to: quality, condition: "output.value == true"}
-      - {from: execution-issue-gate, to: issue-triage, condition: "output.value == true"}
-      - {from: execution-infra-gate, to: report, condition: "output.value == true"}
-      - {from: issue-triage, to: issue-analysis}
-      - {from: issue-analysis, to: fix-proposal}
+      - {from: execute, to: quality, condition: "output.status == 'passed'"}
+      - {from: execute, to: failed-join, condition: "output.status == 'failed'"}
+      - {from: execute, to: not-achieved, otherwise: true}
+      - {from: run, to: quality, condition: "output.status == 'passed'"}
+      - {from: run, to: failed-join, condition: "output.status == 'failed'"}
+      - {from: run, to: not-achieved, otherwise: true}
+      - {from: failed-join, to: issue-analysis}
+      - {from: issue-analysis, to: fix-proposal, condition: "(output.classification == 'test' or output.classification == 'test-data') and output.fix_eligible == true and input.rounds_used < input.rounds_budget"}
+      - {from: issue-analysis, to: report, condition: "output.classification == 'product_bug' or output.classification == 'environment_failure' or output.classification == 'infrastructure_failure'"}
+      - {from: issue-analysis, to: not-achieved, otherwise: true}
       - {from: fix-proposal, to: run}
-      - {from: run, to: quality}
       - {from: quality, to: coverage-policy-gate}
       - {from: coverage-policy-gate, to: coverage-repair, condition: "output.value == true"}
       - {from: coverage-policy-gate, to: report, condition: "output.value == false"}
@@ -441,6 +466,8 @@ graphs:
             change_id: {type: graph_input_pointer, pointer: /change_id}
             evidence_refs: {type: config_pointer, pointer: /evidence_refs}
             execution_status: {type: config_pointer, pointer: /execution_status}
+            rounds_budget: {type: graph_input_pointer, pointer: /budgets/healing_rounds}
+            rounds_used: {type: literal, value: 0}
       done: {kind: end}
     edges:
       - {from: run, to: done}

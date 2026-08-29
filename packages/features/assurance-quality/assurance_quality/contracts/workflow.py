@@ -2,9 +2,36 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import MappingProxyType
+from typing import Literal, Self
 
 from agent_runtime_contracts import AgentExecutionContract
 from graph_engine.plugin_api import ResourceClaimTemplate
+from pydantic import BaseModel, ConfigDict, model_validator
+
+FailureClassification = Literal[
+    "environment_failure",
+    "failed",
+    "infrastructure_failure",
+    "pending",
+    "product_bug",
+    "test",
+    "test-data",
+    "unknown",
+]
+FIX_ELIGIBLE_CLASSIFICATIONS: frozenset[str] = frozenset({"test", "test-data"})
+
+
+class IssueAnalysisPublicV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    classification: FailureClassification
+    fix_eligible: bool
+
+    @model_validator(mode="after")
+    def _fix_eligible_only_for_test_kinds(self) -> Self:
+        if self.fix_eligible and self.classification not in FIX_ELIGIBLE_CLASSIFICATIONS:
+            raise ValueError("fix_eligible is only valid for test or test-data classification")
+        return self
 
 WORKFLOW_MODULE_ID = "assurance.quality.workflow"
 WORKFLOW_RESOURCE_ID = "assurance.quality.workflow.module.v1"
@@ -57,6 +84,9 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
 __all__ = [
     "AGENT_JOB_CONTRACTS",
     "AGENT_SLOT_PHASES",
+    "FIX_ELIGIBLE_CLASSIFICATIONS",
+    "FailureClassification",
+    "IssueAnalysisPublicV1",
     "OUTPUT_ROUTE_TEMPLATES",
     "WORKFLOW_EXPORTS",
     "WORKFLOW_MODULE_ID",

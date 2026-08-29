@@ -30,7 +30,8 @@
       "assurance.healing.record-codegen-fix-apply",
       "assurance.healing.record-coverage-repair-status",
       "assurance.healing.record-fixer-approval",
-      "assurance.healing.record-healing-status"
+      "assurance.healing.record-healing-status",
+      "assurance.healing.repair-round.advance"
     ],
     "commit_validators": [
       "assurance.healing.validator.override.v1",

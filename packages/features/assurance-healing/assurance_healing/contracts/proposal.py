@@ -17,6 +17,7 @@ from assurance_healing.contracts.wire import (
 from assurance_intake.contracts import NonEmptyStr
 
 Undetermined = Literal["undetermined"]
+RepairRoundKind = Literal["failure", "coverage"]
 
 
 class FixProposalSummary(FrozenContract):

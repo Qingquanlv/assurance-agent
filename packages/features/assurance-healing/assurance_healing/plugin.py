@@ -87,6 +87,7 @@ HEALING_HANDLER_IDS: tuple[str, ...] = (
     "assurance.healing.record-coverage-repair-status",
     "assurance.healing.record-fixer-approval",
     "assurance.healing.record-healing-status",
+    "assurance.healing.repair-round.advance",
 )
 
 HEALING_VALIDATOR_IDS: tuple[str, ...] = (

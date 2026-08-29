@@ -9,6 +9,8 @@ from pydantic import Field
 from assurance_healing.contracts.wire import FrozenContract, HexDigest
 from assurance_intake.contracts import NonEmptyStr
 
+RepairRoundKind = Literal["failure", "coverage"]
+
 HealingStatusValue = Literal[
     "pending",
     "allocated",

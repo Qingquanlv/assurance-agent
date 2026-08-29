@@ -13,6 +13,8 @@ _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
 GateStatus = Literal["PASS", "PASS_WITH_WARNINGS", "FAIL", "SKIPPED"]
 ExecutionStatus = Literal["passed", "failed", "skipped"]
+ExecutionVerdict = Literal["passed", "failed"]
+EXECUTION_VERDICTS: tuple[ExecutionVerdict, ...] = ("failed", "passed")
 
 
 class ExecutionManifest(BaseModel):

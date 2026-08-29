@@ -86,6 +86,9 @@ _FAILURE_INPUT = {
     "allowed_artifact_paths": ["qa/changes"],
     "classification": "test",
     "fix_eligible": True,
+    "kind": "failure",
+    "rounds_budget": 2,
+    "rounds_used": 0,
     "budgets": {"coverage_rounds": 2, "failure_rounds": 1},
     "leak_token": "must-not-cross-failure-boundary",
 }
@@ -95,8 +98,21 @@ _COVERAGE_INPUT = {
     "allowed_artifact_paths": ["qa/archive"],
     "classification": "repair_required",
     "fix_eligible": True,
+    "kind": "coverage",
+    "rounds_budget": 4,
+    "rounds_used": 1,
     "budgets": {"coverage_rounds": 9, "failure_rounds": 4},
     "leak_token": "must-not-cross-coverage-boundary",
+}
+_OWNED_NODES = {
+    "admit",
+    "done",
+    "execute",
+    "exhausted",
+    "finalize",
+    "not-eligible",
+    "prepare",
+    "repair-round-advance",
 }
 
 
@@ -287,6 +303,9 @@ def test_repair_inputs_receive_quality_classification_and_inventory_refs() -> No
         "change_id",
         "classification",
         "fix_eligible",
+        "kind",
+        "rounds_budget",
+        "rounds_used",
     }
     enums = {
         "repair-failure": list(_FAILURE_CLASSIFICATIONS),
@@ -326,16 +345,29 @@ def test_healing_exports_are_independent_and_do_not_import_quality() -> None:
         ("healing-coverage-repair", "healing-fix-proposal"),
     ):
         graph = module.graphs[graph_id]
-        assert set(graph.nodes) == {"prepare", "execute", "finalize", "done"}
-        assert graph.start == "prepare"
+        assert set(graph.nodes) == _OWNED_NODES
+        assert graph.start == "admit"
+        assert graph.nodes["admit"].kind == "gate"
+        assert graph.nodes["admit"].routing is not None
+        assert graph.nodes["admit"].routing.mode == "exclusive"
+        assert graph.nodes["repair-round-advance"].capability == "assurance.healing.repair-round.advance"
         assert graph.nodes["done"].kind == "end"
+        assert graph.nodes["exhausted"].kind == "end"
+        assert graph.nodes["not-eligible"].kind == "end"
         assert all(node.kind != "subgraph" for node in graph.nodes.values())
         assert all(getattr(node, "graph", None) != other for node in graph.nodes.values())
         assert {_edge_record(edge) for edge in graph.edges} == {
+            ("admit", "repair-round-advance", "output.value == true"),
+            ("admit", "exhausted", "input.rounds_used >= input.rounds_budget"),
+            ("admit", "not-eligible", None),
+            ("repair-round-advance", "prepare", None),
             ("prepare", "execute", None),
             ("execute", "finalize", None),
             ("finalize", "done", None),
         }
+        otherwise = [edge for edge in graph.edges if edge.to == "not-eligible"]
+        assert len(otherwise) == 1
+        assert otherwise[0].otherwise is True
 
 
 def test_each_export_projects_classification_budget_and_change_refs_from_graph_input() -> None:
@@ -355,14 +387,19 @@ def test_each_export_projects_classification_budget_and_change_refs_from_graph_i
     projected: dict[str, Mapping[str, object]] = {}
     for export, (graph_input, foreign) in samples.items():
         graph = module.graphs[_GRAPH_BY_EXPORT[export]]
+        kind = "failure" if export == "repair-failure" else "coverage"
+        advance = {"kind": kind, "rounds_used": 1, "rounds_budget": graph_input["rounds_budget"]}
         for node_id in ("prepare", "finalize"):
+            predecessors = {"repair-round-advance": advance}
+            if node_id == "finalize":
+                predecessors["execute"] = {**advance, "status": "repaired"}
             payload = _as_mapping(
                 project_task_input(
                     _require_projection(graph.nodes[node_id].input_projection),
                     root_input=foreign,
                     graph_input=graph_input,
                     node_config={},
-                    predecessor_tokens={"execute": {"status": "repaired"}} if node_id == "finalize" else {},
+                    predecessor_tokens=predecessors,
                 )
             )
             assert payload["change_id"] == graph_input["change_id"]
@@ -371,8 +408,14 @@ def test_each_export_projects_classification_budget_and_change_refs_from_graph_i
             assert payload["classification"] == graph_input["classification"]
             assert payload["fix_eligible"] == graph_input["fix_eligible"]
             assert payload["budgets"] == graph_input["budgets"]
+            assert payload["kind"] == kind
+            assert payload["rounds_used"] == 1
+            assert payload["rounds_budget"] == graph_input["rounds_budget"]
             assert "leak_token" not in payload
-            assert set(_graph_input_fields(graph.nodes[node_id])) == expected_fields
+            fields = set(expected_fields)
+            if node_id == "finalize":
+                fields.add("kind")
+            assert set(_graph_input_fields(graph.nodes[node_id])) == fields
             if node_id == "prepare":
                 projected[export] = payload
     assert projected["repair-failure"]["change_id"] != projected["repair-coverage"]["change_id"]
@@ -398,15 +441,36 @@ def test_public_repair_outcome_vocabulary_is_closed() -> None:
     for export in _EXPORTS:
         projection = module.exports[export].output_projection
         assert isinstance(projection, OutputObjectProjection)
-        assert set(projection.fields) == {"change_id", "effect_refs", "status"}
+        assert set(projection.fields) == {
+            "change_id",
+            "effect_refs",
+            "kind",
+            "rounds_budget",
+            "rounds_used",
+            "status",
+        }
         for field in projection.fields.values():
             assert isinstance(field, ChildOutputPointerProjection)
         assert isinstance(projection.fields["status"], ChildOutputPointerProjection)
         assert projection.fields["status"].pointer == "/status"
         schema = json.loads(_schema(_io_schema_id(export, "output")).content)
         assert schema["properties"]["status"]["enum"] == list(_REPAIR_STATUSES)
-        assert set(schema["properties"]) == {"change_id", "effect_refs", "status"}
-        assert schema["required"] == ["change_id", "effect_refs", "status"]
+        assert set(schema["properties"]) == {
+            "change_id",
+            "effect_refs",
+            "kind",
+            "rounds_budget",
+            "rounds_used",
+            "status",
+        }
+        assert set(schema["required"]) == {
+            "change_id",
+            "effect_refs",
+            "kind",
+            "rounds_budget",
+            "rounds_used",
+            "status",
+        }
 
 
 def test_fake_slot_bindings_compile_each_export_without_an_agent_server() -> None:

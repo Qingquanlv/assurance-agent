@@ -40,6 +40,12 @@ exports:
         fix_eligible:
           type: child_output_pointer
           pointer: /fix_eligible
+        rounds_budget:
+          type: child_output_pointer
+          pointer: /rounds_budget
+        rounds_used:
+          type: child_output_pointer
+          pointer: /rounds_used
   issue-analyze:
     graph: issue-analyze
     input_schema: assurance.quality.workflow.issue-analyze.input.v1
@@ -142,6 +148,12 @@ graphs:
             execution_status:
               type: graph_input_pointer
               pointer: /execution_status
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
       inspect:
         kind: subgraph
         graph: quality-inspect
@@ -181,6 +193,12 @@ graphs:
             execution_status:
               type: graph_input_pointer
               pointer: /execution_status
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
         retry: once
         timeout: short
       execute:
@@ -219,6 +237,12 @@ graphs:
             execution_status:
               type: graph_input_pointer
               pointer: /execution_status
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
         retry: once
         timeout: short
       done:
@@ -362,7 +386,33 @@ graphs:
       review:
         kind: subgraph
         graph: quality-issue-triage
-        input_projection: *child-input
+        input_projection: &issue-child-input
+          type: object
+          fields:
+            allowed_artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            budgets:
+              type: graph_input_pointer
+              pointer: /budgets
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            evidence_refs:
+              type: graph_input_pointer
+              pointer: /evidence_refs
+            execution_status:
+              type: graph_input_pointer
+              pointer: /execution_status
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
       done:
         kind: end
     edges:
@@ -374,7 +424,7 @@ graphs:
       analyze:
         kind: subgraph
         graph: quality-issue-analysis
-        input_projection: *child-input
+        input_projection: *issue-child-input
       done:
         kind: end
     edges:
@@ -386,7 +436,7 @@ graphs:
       analyze:
         kind: subgraph
         graph: quality-issue-analysis
-        input_projection: *child-input
+        input_projection: *issue-child-input
       done:
         kind: end
     edges:

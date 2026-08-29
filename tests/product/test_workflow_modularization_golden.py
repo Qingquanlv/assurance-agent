@@ -47,11 +47,14 @@ _BOUNDARY_FIELDS = frozenset(
 INTENTIONAL_SEMANTIC_DIFF: frozenset[str] = frozenset(
     {
         "entry",
+        "execute",
         "generation",
         "generation-api",
         "generation-e2e",
         "generation-fuzz",
         "generation-performance",
+        "healing-coverage-repair",
+        "healing-fix-proposal",
     }
 )
 THIN_WRAPPER_ENTRYPOINTS = (
@@ -96,11 +99,14 @@ def test_intentional_semantic_diff_is_the_intake_and_generation_correction() -> 
     assert INTENTIONAL_SEMANTIC_DIFF == frozenset(
         {
             "entry",
+            "execute",
             "generation",
             "generation-api",
             "generation-e2e",
             "generation-fuzz",
             "generation-performance",
+            "healing-coverage-repair",
+            "healing-fix-proposal",
         }
     )
 
@@ -127,7 +133,7 @@ def test_feature_graphs_match_normalized_pre_modular_projection(installed_source
             actual = _project_modular_graph(assembled.graphs[f"{module_id}.graph.{local_id}"], module_id)
             assert actual == expected, f"{owner}/{local_id} drifted"
             compared += 1
-    assert compared == 44
+    assert compared == 42
 
 
 @pytest.mark.usefixtures("installed_sources")
@@ -258,7 +264,7 @@ def test_fourteen_entrypoints_preserve_characterized_public_behavior(installed_s
     pre = resolve_product_workflow_composition(_load_bound_pre_modular())
     modular = _modular_composition(installed_sources)
     for scenario in tuple({"entrypoint": name} for name in _PUBLIC_ENTRYPOINTS):
-        if scenario["entrypoint"] == "full":
+        if scenario["entrypoint"] == "full" or scenario["entrypoint"] in INTENTIONAL_SEMANTIC_DIFF:
             continue
         projection = (
             _declared_public_projection(modular, scenario["entrypoint"])

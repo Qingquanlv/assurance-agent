@@ -61,6 +61,8 @@ _EXECUTE_INPUT = {
     "capability_leafs": ["entities.item.create"],
     "allowed_artifact_paths": ["qa/changes"],
     "budgets": {"coverage_rounds": 2, "review_rounds": 1},
+    "rounds_budget": 2,
+    "rounds_used": 0,
     "leak_token": "must-not-cross-execute-boundary",
 }
 _RERUN_INPUT = {
@@ -69,6 +71,8 @@ _RERUN_INPUT = {
     "capability_leafs": ["auth.session.create"],
     "allowed_artifact_paths": ["qa/archive"],
     "budgets": {"coverage_rounds": 9, "review_rounds": 4},
+    "rounds_budget": 3,
+    "rounds_used": 1,
     "leak_token": "must-not-cross-rerun-boundary",
 }
 
@@ -256,7 +260,13 @@ def test_execute_and_rerun_inputs_carry_closed_policy_and_inventory_refs() -> No
         assert pointers == {"/capability_leafs", "/change_id", "/selected_test_families"}
         schema = json.loads(_schema(_io_schema_id(export, "input")).content)
         required = set(schema["required"])
-        assert required == {"capability_leafs", "change_id", "selected_test_families"}
+        assert required == {
+            "capability_leafs",
+            "change_id",
+            "rounds_budget",
+            "rounds_used",
+            "selected_test_families",
+        }
         families = schema["properties"]["selected_test_families"]
         assert families["type"] == "array"
         assert families["minItems"] == 1
@@ -308,6 +318,8 @@ def test_each_export_reads_policy_and_refs_from_its_own_graph_input() -> None:
             assert payload["change_id"] == graph_input["change_id"]
             assert payload["selected_test_families"] == graph_input["selected_test_families"]
             assert payload["capability_leafs"] == graph_input["capability_leafs"]
+            assert payload["rounds_budget"] == graph_input["rounds_budget"]
+            assert payload["rounds_used"] == graph_input["rounds_used"]
             assert "leak_token" not in payload
             assert "budgets" not in payload
             assert "allowed_artifact_paths" not in payload
@@ -316,6 +328,8 @@ def test_each_export_reads_policy_and_refs_from_its_own_graph_input() -> None:
                 assert set(_graph_input_fields(graph.nodes[node_id])) == {
                     "capability_leafs",
                     "change_id",
+                    "rounds_budget",
+                    "rounds_used",
                     "selected_test_families",
                 }
     assert projected["execute"]["change_id"] != projected["rerun"]["change_id"]
@@ -340,14 +354,14 @@ def test_public_verdict_schema_is_exactly_passed_or_failed() -> None:
     for export in _EXPORTS:
         projection = module.exports[export].output_projection
         assert isinstance(projection, OutputObjectProjection)
-        assert set(projection.fields) == {"status"}
+        assert set(projection.fields) == {"rounds_budget", "rounds_used", "status"}
         assert isinstance(projection.fields["status"], ChildOutputPointerProjection)
         schema = json.loads(_schema(_io_schema_id(export, "output")).content)
         dumped = json.dumps(schema)
         for invented in _PRODUCT_STATUSES:
             assert invented not in dumped
         assert schema["properties"]["status"]["enum"] == ["failed", "passed"]
-        assert set(schema["properties"]) == {"status"}
+        assert set(schema["properties"]) == {"rounds_budget", "rounds_used", "status"}
 
 
 def test_fake_slot_bindings_compile_each_export_without_an_agent_server() -> None:
