@@ -42,7 +42,7 @@ def _projection(*, state: str = "approved", delivery: str = "memory_patch") -> d
     return improvement_projection(state=state, delivery=delivery)
 
 
-def _eval_receipt(**overrides: object) -> dict[str, object]:
+def _eval_receipt(projection: dict[str, object] | None = None, **overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "eval_run_id": "eval-1",
         "outcome": "passed",
@@ -50,6 +50,13 @@ def _eval_receipt(**overrides: object) -> dict[str, object]:
         "staged_sha256": "s",
         "baseline_sha256": None,
     }
+    if projection is not None:
+        from assurance_improvement.contracts.delivery import artifact_digest
+        from assurance_improvement.contracts.improvements import ImprovementProjection
+
+        model = ImprovementProjection.model_validate(projection)
+        payload["approved_state_digest"] = artifact_digest(model)
+        payload["approved_version"] = model.version
     payload.update(overrides)
     return payload
 
@@ -146,6 +153,31 @@ def test_authenticated_approved_and_current_eval_applies() -> None:
     assert result.effect_intents != ()
 
 
+def test_apply_proof_rejects_missing_and_stale_evaluation_binding() -> None:
+    from pydantic import ValidationError
+
+    from assurance_improvement.contracts.delivery import ImprovementApplyProof, MemoryEvalReceipt
+
+    current = "sha256:" + ("a" * 64)
+    other = "sha256:" + ("d" * 64)
+    bound = MemoryEvalReceipt.model_validate(_eval_receipt(approved_state_digest=current, approved_version=1))
+    ImprovementApplyProof(approved_state_digest=current, approved_version=1, evaluation=bound)
+    with pytest.raises(ValidationError, match="missing"):
+        ImprovementApplyProof(
+            approved_state_digest=current,
+            approved_version=1,
+            evaluation=MemoryEvalReceipt.model_validate(_eval_receipt()),
+        )
+    with pytest.raises(ValidationError, match="stale"):
+        ImprovementApplyProof(
+            approved_state_digest=current,
+            approved_version=1,
+            evaluation=MemoryEvalReceipt.model_validate(
+                _eval_receipt(approved_state_digest=other, approved_version=1)
+            ),
+        )
+
+
 @pytest.mark.asyncio
 async def test_apply_memory_requires_passed_eval(tmp_path: Path) -> None:
     eval_receipt = {**_eval_receipt(), "outcome": "regressed"}
@@ -171,6 +203,90 @@ async def test_apply_memory_requires_passed_eval(tmp_path: Path) -> None:
     )
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_stamps_current_approved_state(tmp_path: Path) -> None:
+    from assurance_improvement.contracts.delivery import artifact_digest
+    from assurance_improvement.contracts.improvements import ImprovementProjection
+
+    projection = _projection()
+    outcome = await execute_task(
+        EvaluateMemoryImprovementHandler(),
+        json_value(
+            {
+                "projection": projection,
+                "eval_run_id": "eval-1",
+                "outcome": "passed",
+                "report_sha256": "r",
+                "staged_sha256": "s",
+                "target_digest": HEX_A,
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.status == "succeeded"
+    payload = as_object(outcome.output)
+    model = ImprovementProjection.model_validate(projection)
+    assert payload["approved_state_digest"] == artifact_digest(model)
+    assert payload["approved_version"] == model.version
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_eval_bound_to_other_approved_state(tmp_path: Path) -> None:
+    from assurance_improvement.contracts.delivery import artifact_digest
+    from assurance_improvement.contracts.improvements import ImprovementProjection
+
+    projection = _projection()
+    outcome = await execute_task(
+        ApplyMemoryImprovementHandler(),
+        json_value(
+            {
+                "projection": projection,
+                "eval_receipt": _eval_receipt(
+                    approved_state_digest="sha256:" + ("d" * 64),
+                    approved_version=1,
+                ),
+                "approved_state_digest": artifact_digest(ImprovementProjection.model_validate(projection)),
+                "approved_version": 1,
+                "before_sha256": "b",
+                "after_sha256": "a",
+                "receipt_sha256": "r",
+                "target_digest": HEX_A,
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert outcome.effects == ()
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_eval_missing_approved_binding(tmp_path: Path) -> None:
+    from assurance_improvement.contracts.delivery import artifact_digest
+    from assurance_improvement.contracts.improvements import ImprovementProjection
+
+    projection = _projection()
+    outcome = await execute_task(
+        ApplyMemoryImprovementHandler(),
+        json_value(
+            {
+                "projection": projection,
+                "eval_receipt": _eval_receipt(),
+                "approved_state_digest": artifact_digest(ImprovementProjection.model_validate(projection)),
+                "approved_version": 1,
+                "before_sha256": "b",
+                "after_sha256": "a",
+                "receipt_sha256": "r",
+                "target_digest": HEX_A,
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert outcome.effects == ()
 
 
 @pytest.mark.asyncio
@@ -447,7 +563,7 @@ def test_delivery_validator_accepts_approved_injected_document() -> None:
             "improvement_id": IMPROVEMENT_ID,
             "expected_improvement_version": 1,
             "delivery": "memory_patch",
-            "memory_eval": _eval_receipt(),
+            "memory_eval": _eval_receipt(_projection()),
         }
     ).model_dump(mode="json")
     projection = ImprovementProjection.model_validate(_projection())
@@ -473,6 +589,55 @@ def test_delivery_validator_accepts_approved_injected_document() -> None:
         projection=projection,
     ).validate(write, validation_context())
     assert result.accepted is True
+
+
+def test_delivery_validator_rejects_missing_and_stale_evaluation() -> None:
+    import hashlib
+    import json
+
+    from assurance_improvement.contracts.delivery import ImprovementDeliveryDocument
+    from assurance_improvement.contracts.improvements import ImprovementProjection
+
+    projection = _projection()
+
+    def _result(eval_receipt: dict[str, object]):
+        document = ImprovementDeliveryDocument.model_validate(
+            {
+                "schema_version": "1",
+                "improvement_id": IMPROVEMENT_ID,
+                "expected_improvement_version": 1,
+                "delivery": "memory_patch",
+                "memory_eval": eval_receipt,
+            }
+        ).model_dump(mode="json")
+        files = {
+            "improvements/delivery.json": json.dumps(document, sort_keys=True).encode(),
+            "improvements/target-digest": HEX_A.encode(),
+        }
+        listed = {path: hashlib.sha256(raw).hexdigest() for path, raw in files.items()}
+        write = write_set(*files).model_copy(
+            update={
+                "files": tuple(
+                    item.model_copy(update={"after_sha256": listed[item.path]})
+                    for item in write_set(*files).files
+                )
+            }
+        )
+        return DeliveryValidator(
+            expected={
+                "delivery": listed["improvements/delivery.json"],
+                "target": listed["improvements/target-digest"],
+            },
+            file_bytes=files,
+            projection=ImprovementProjection.model_validate(projection),
+        ).validate(write, validation_context())
+
+    missing = _result(_eval_receipt())
+    assert missing.accepted is False
+    assert "missing" in (missing.reason or "")
+    stale = _result(_eval_receipt(approved_state_digest="sha256:" + ("d" * 64), approved_version=1))
+    assert stale.accepted is False
+    assert "stale" in (stale.reason or "")
 
 
 def test_delivery_validator_default_fails_closed() -> None:

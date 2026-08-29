@@ -71,10 +71,12 @@ class ImprovementApplyProof(BaseModel):
     def validate_current_evaluation(self) -> Self:
         if self.evaluation.outcome != "passed":
             raise ValueError("apply proof requires a passed evaluation")
-        if self.evaluation.approved_version not in {None, self.approved_version}:
-            raise ValueError("evaluation receipt version is stale")
-        if self.evaluation.approved_state_digest not in {None, self.approved_state_digest}:
-            raise ValueError("evaluation receipt digest does not match approved state")
+        if self.evaluation.approved_version is None or self.evaluation.approved_state_digest is None:
+            raise ValueError("evaluation receipt is missing")
+        if self.evaluation.approved_version != self.approved_version:
+            raise ValueError("evaluation receipt is stale")
+        if not same_digest(self.evaluation.approved_state_digest, self.approved_state_digest):
+            raise ValueError("evaluation receipt is stale")
         return self
 
 

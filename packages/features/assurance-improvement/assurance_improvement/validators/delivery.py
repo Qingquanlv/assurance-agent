@@ -8,7 +8,11 @@ from pydantic import ValidationError
 
 from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationResult
 
-from assurance_improvement.contracts.delivery import ImprovementDeliveryDocument
+from assurance_improvement.contracts.delivery import (
+    ImprovementDeliveryDocument,
+    artifact_digest,
+    same_digest,
+)
 from assurance_improvement.contracts.improvements import ImprovementProjection, ImprovementState
 from assurance_improvement.validators.documents import bytes_match_digest, load_json, rejected
 from assurance_improvement.validators.paths import canonical_relative, under_root
@@ -92,13 +96,15 @@ class DeliveryValidator:
         if document.memory_eval is not None and document.memory_eval.outcome != "passed":
             return rejected("improvement delivery requires a passed evaluation")
         if document.memory_eval is not None:
-            if document.memory_eval.approved_version not in {None, projection.version}:
+            if (
+                document.memory_eval.approved_version is None
+                or document.memory_eval.approved_state_digest is None
+            ):
+                return rejected("improvement delivery evaluation is missing")
+            if document.memory_eval.approved_version != projection.version:
                 return rejected("improvement delivery evaluation is stale")
-            if document.memory_eval.approved_state_digest is not None:
-                from assurance_improvement.contracts.delivery import artifact_digest, same_digest
-
-                if not same_digest(document.memory_eval.approved_state_digest, artifact_digest(projection)):
-                    return rejected("improvement delivery evaluation digest does not match")
+            if not same_digest(document.memory_eval.approved_state_digest, artifact_digest(projection)):
+                return rejected("improvement delivery evaluation is stale")
         if (
             document.improvement_id != projection.improvement_id
             or document.delivery != projection.delivery

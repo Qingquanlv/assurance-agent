@@ -219,22 +219,26 @@ def attempt_apply(
     try:
         if state not in _ATTEMPT_STATES:
             raise InputError(f"unsupported apply state: {state}")
-        if evaluation == "missing":
-            raise InputError("evaluation receipt is missing")
         resolved = _ATTEMPT_STATES[state]
         projection = _attempt_projection(resolved)
-        if evaluation == "stale":
-            raise InputError("evaluation receipt is stale")
+        current_digest = artifact_digest(projection)
         receipt = MemoryEvalReceipt(
             eval_run_id="eval-1",
-            outcome="passed" if evaluation == "passed" else "regressed",
+            outcome="regressed" if evaluation == "failed" else "passed",
             report_sha256="r",
             staged_sha256="s",
             baseline_sha256=None,
-            approved_state_digest=artifact_digest(projection),
-            approved_version=projection.version,
+            approved_state_digest=None if evaluation == "missing" else current_digest,
+            approved_version=None if evaluation == "missing" else projection.version,
         )
-        digest = artifact_digest(projection)
+        if evaluation == "stale":
+            receipt = receipt.model_copy(
+                update={
+                    "approved_state_digest": "sha256:" + ("d" * 64),
+                    "approved_version": projection.version,
+                }
+            )
+        digest = current_digest
         if forge_state_digest:
             digest = "sha256:" + ("0" * 64)
         intent = _apply_memory(
@@ -406,6 +410,8 @@ class EvaluateMemoryImprovementHandler:
                 report_sha256=payload.report_sha256,
                 staged_sha256=payload.staged_sha256,
                 baseline_sha256=payload.baseline_sha256,
+                approved_state_digest=artifact_digest(payload.projection),
+                approved_version=payload.projection.version,
             )
             intent = _delivery_intent(
                 kind="memory_eval",
