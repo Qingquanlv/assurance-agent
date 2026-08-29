@@ -166,6 +166,19 @@ graphs:
         kind: subgraph
         graph: product-execute
         routing: {mode: exclusive}
+        output_schema: assurance.quality.workflow.report.output.v1
+        output_projection:
+          type: object
+          fields:
+            change_id:
+              type: child_output_pointer
+              pointer: /change_id
+            coverage_state:
+              type: child_output_pointer
+              pointer: /coverage_state
+            report_refs:
+              type: child_output_pointer
+              pointer: /report_refs
         input_projection: &execute_root_input
           type: object
           fields:
