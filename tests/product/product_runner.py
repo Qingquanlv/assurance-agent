@@ -426,8 +426,22 @@ class _ScriptedTaskHost:
                     {"change_id": change_id, "decision": self._review_decision, "needs_fix": False}
                 )
             )
-        if capability_id == _FIX_PROPOSAL_FINALIZE and self._healing_decision == "disallowed":
-            return TaskOutcome.stopped("healing_disallowed")
+        if capability_id.endswith("issue-analysis.finalize"):
+            return TaskOutcome.succeeded(
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "classification": "test",
+                        "fix_eligible": True,
+                        **echoed,
+                    }
+                )
+            )
+        if capability_id.endswith("fix-proposal.finalize") and self._healing_decision == "disallowed":
+            return TaskOutcome.stopped(
+                "healing_disallowed",
+                self._public_fields({"change_id": change_id, **echoed}),
+            )
         extra = {"change_id": change_id, **echoed}
         if capability_id.endswith("coverage-repair.finalize"):
             extra.setdefault("kind", "coverage")
@@ -789,7 +803,7 @@ def _flow_trace_from_result(
         node = compiled.nodes[activation.node_id]
         if node.definition.kind != "task" or node.definition.capability is None:
             continue
-        capability = node.definition.capability
+        capability = _product_alias(node.definition.capability)
         step = _logical_step(capability)
         if step is not None:
             logical_steps.append(step)
@@ -969,9 +983,15 @@ def resolve_product_workflow_composition(workflow: WorkflowDef) -> FrozenComposi
 
 @pytest.fixture
 def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
-    from tests.product.test_workflow_modularization_golden import _modular_composition
+    del installed_sources
+    from assurance_product.product import load_pre_modular_workflow
 
-    composition = _modular_composition(installed_sources)
+    workflow = load_pre_modular_workflow(
+        Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
+    )
+    composition = None
+    if "full" in workflow.entrypoints:
+        composition = resolve_product_workflow_composition(workflow)
     engine_root = tmp_path_factory.mktemp("generation-runner")
 
     def factory(
@@ -988,6 +1008,7 @@ def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
     ) -> ProductRun:
         from assurance_product.models import FAMILY_EMPTY_ENTRYPOINTS
 
+        assert composition is not None, "workflow stops after the intake/case slice"
         families = selected_test_families
         if families is None:
             families = () if entrypoint in FAMILY_EMPTY_ENTRYPOINTS else ("api",)
