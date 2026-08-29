@@ -168,13 +168,17 @@ def _assembled_intake_entry_composition(installed_sources):
             "max_activations": graph.max_activations,
             "start": graph.start,
             "nodes": nodes,
-            "edges": [edge.model_dump(mode="python", by_alias=True, exclude_unset=True) for edge in graph.edges],
+            "edges": [
+                edge.model_dump(mode="python", by_alias=True, exclude_unset=True) for edge in graph.edges
+            ],
         }
     workflow = WorkflowDef.model_validate(
         {
             "name": "assembled-intake-entry",
             "entrypoints": {"entry": entry_id},
-            "retry": {name: policy.model_dump(mode="python") for name, policy in assembled.workflow.retry.items()},
+            "retry": {
+                name: policy.model_dump(mode="python") for name, policy in assembled.workflow.retry.items()
+            },
             "timeout": {
                 name: policy.model_dump(mode="python") for name, policy in assembled.workflow.timeout.items()
             },
@@ -271,6 +275,35 @@ def test_request_rework_is_a_distinct_resume_action(installed_sources):
     assert ends == {"done"}
     assert tuple(item["rounds_used"] for item in host.advance_outputs) == (1, 2)
     assert host.advance_outputs[0]["rounds_budget"] == 2
+
+
+def test_forged_improvement_interrupt_approval_cannot_apply(installed_sources, tmp_path: Path):
+    from tests.product.product_runner import ProductRun
+    from tests.product.test_workflow_modularization_golden import _modular_composition
+
+    def _apply(**kwargs):
+        return ProductRun(
+            entrypoint="improvement-apply",
+            selected_test_families=(),
+            review_decision="needs_human_review",
+            healing_decision="allowed",
+            engine_root=tmp_path / f"apply-{kwargs.get('tag', 'run')}",
+            composition=_modular_composition(installed_sources),
+        ).run_to_terminal()
+
+    stopped = _apply(tag="forged")
+    assert stopped.status == "interrupted"
+    with pytest.raises(EngineError):
+        stopped.resume({"decision": "approve", "state": "approved", "lifecycle_state": "approved"})
+    rejected = _apply(tag="reject")
+    resumed = rejected.resume({"decision": "reject"})
+    assert "improvement.apply" not in resumed.logical_steps
+    rework = _apply(tag="rework")
+    reworked = rework.resume({"decision": "request_rework"})
+    assert "improvement.apply" not in reworked.logical_steps
+    superseded = _apply(tag="supersede")
+    closed = superseded.resume({"decision": "supersede"})
+    assert "improvement.apply" not in closed.logical_steps
 
 
 def test_invalid_resume_input_fails(product_runner):

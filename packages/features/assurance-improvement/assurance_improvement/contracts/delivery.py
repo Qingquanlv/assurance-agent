@@ -56,6 +56,34 @@ class MemoryEvalReceipt(BaseModel):
     report_sha256: NonEmptyStr
     staged_sha256: NonEmptyStr
     baseline_sha256: NonEmptyStr | None = None
+    approved_state_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    approved_version: int | None = Field(default=None, ge=1)
+
+
+class ImprovementApplyProof(BaseModel):
+    model_config = _FROZEN
+
+    approved_state_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    approved_version: int = Field(ge=1)
+    evaluation: MemoryEvalReceipt
+
+    @model_validator(mode="after")
+    def validate_current_evaluation(self) -> Self:
+        if self.evaluation.outcome != "passed":
+            raise ValueError("apply proof requires a passed evaluation")
+        if self.evaluation.approved_version not in {None, self.approved_version}:
+            raise ValueError("evaluation receipt version is stale")
+        if self.evaluation.approved_state_digest not in {None, self.approved_state_digest}:
+            raise ValueError("evaluation receipt digest does not match approved state")
+        return self
+
+
+class ApplyAttemptResult(BaseModel):
+    model_config = _FROZEN
+
+    applied: bool
+    effect_intents: tuple[object, ...] = ()
+    write_authorization: tuple[str, ...] = ()
 
 
 class MemoryApplyReceipt(BaseModel):

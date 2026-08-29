@@ -11,7 +11,9 @@ from assurance_improvement.contracts.declarations import (
     DeclarationProposalStatus,
 )
 from assurance_improvement.contracts.delivery import (
+    ApplyAttemptResult,
     ChangeExportReceipt,
+    ImprovementApplyProof,
     ImprovementDeliveryDocument,
     ImprovementOutboxEntry,
     KnowledgeExportReceipt,
@@ -82,6 +84,7 @@ from assurance_improvement.contracts.review import (
 
 __all__ = [
     "ALLOWED_DELIVERIES",
+    "ApplyAttemptResult",
     "DECLARATION_EVIDENCE_KIND_ORDER",
     "DECLARATION_PROPOSAL_DIR_REL",
     "DECLARATION_PROPOSAL_GLOB",
@@ -97,6 +100,7 @@ __all__ = [
     "DeliveryKind",
     "DomainAnalysisStatus",
     "DomainStatuses",
+    "ImprovementApplyProof",
     "ImprovementAutoReviewAssessment",
     "ImprovementAutoReviewAssessmentAuthoring",
     "ImprovementAutoReviewBatchSummary",

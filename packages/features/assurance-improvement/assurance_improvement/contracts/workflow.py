@@ -17,6 +17,9 @@ WORKFLOW_EXPORTS: tuple[str, ...] = (
     "apply",
     "rollback",
 )
+APPLY_HUMAN_ACTIONS: tuple[str, ...] = ("approve", "reject", "request_rework", "supersede")
+AUTO_REVIEW_DECISIONS: tuple[str, ...] = ("pass", "changes_requested", "needs_human_review", "reject")
+APPLY_EVALUATION_OUTCOMES: tuple[str, ...] = ("passed", "regressed", "awaiting_baseline", "error")
 AGENT_SLOT_PHASES: tuple[str, ...] = ("prepare", "execute", "finalize")
 
 _ARCHIVER = "assurance-v1-archiver"
@@ -66,6 +69,9 @@ __all__ = [
     "AGENT_JOB_CONTRACTS",
     "AGENT_SLOT_PHASES",
     "OUTPUT_ROUTE_TEMPLATES",
+    "APPLY_EVALUATION_OUTCOMES",
+    "APPLY_HUMAN_ACTIONS",
+    "AUTO_REVIEW_DECISIONS",
     "WORKFLOW_EXPORTS",
     "WORKFLOW_MODULE_ID",
     "WORKFLOW_RESOURCE_ID",

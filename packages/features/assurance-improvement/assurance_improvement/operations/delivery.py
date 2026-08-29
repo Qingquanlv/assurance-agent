@@ -9,12 +9,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from graph_engine.plugin_api import EffectIntent, TaskContext, TaskOutcome, TaskRequest
 
 from assurance_improvement.contracts.delivery import (
+    ApplyAttemptResult,
     ChangeExportReceipt,
+    ImprovementApplyProof,
     ImprovementDeliveryDocument,
     KnowledgeExportReceipt,
     MemoryApplyReceipt,
     MemoryEvalReceipt,
     MemoryRollbackReceipt,
+    artifact_digest,
+    same_digest,
 )
 from assurance_improvement.contracts.effects import ImprovementEffectIntentV1
 from assurance_improvement.contracts.improvements import (
@@ -89,6 +93,8 @@ class ApplyMemoryInput(BaseModel):
 
     projection: ImprovementProjection
     eval_receipt: MemoryEvalReceipt
+    approved_state_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    approved_version: int = Field(ge=1)
     before_sha256: str = Field(min_length=1)
     after_sha256: str = Field(min_length=1)
     receipt_sha256: str = Field(min_length=1)
@@ -161,6 +167,157 @@ def assert_delivery_gate(projection: ImprovementProjection, kind: DeliveryKind) 
         raise InputError(f"delivery requires {kind.value}")
     if not projection.target:
         raise InputError("delivery requires an exact target")
+
+
+def assert_authenticated_approval(projection: ImprovementProjection) -> None:
+    assert_delivery_gate(projection, projection.delivery)
+    if projection.approval_source not in {"human", "automatic"}:
+        raise InputError("apply requires authenticated approval")
+    if projection.approval_source == "automatic" and projection.last_auto_review is None:
+        raise InputError("apply requires an authenticated auto-review projection")
+
+
+def assert_apply_proof(
+    projection: ImprovementProjection,
+    eval_receipt: MemoryEvalReceipt,
+    *,
+    approved_state_digest: str,
+    approved_version: int,
+) -> ImprovementApplyProof:
+    assert_authenticated_approval(projection)
+    if approved_version != projection.version:
+        raise InputError("apply approved version is stale")
+    current_digest = artifact_digest(projection)
+    if not same_digest(approved_state_digest, current_digest):
+        raise InputError("apply approved state digest does not match")
+    try:
+        return ImprovementApplyProof(
+            approved_state_digest=current_digest,
+            approved_version=projection.version,
+            evaluation=eval_receipt,
+        )
+    except ValueError as error:
+        raise InputError(str(error)) from error
+
+
+_ATTEMPT_STATES: dict[str, ImprovementState] = {
+    "proposed": ImprovementState.PROPOSED,
+    "changes_requested": ImprovementState.NEEDS_REWORK,
+    "needs_rework": ImprovementState.NEEDS_REWORK,
+    "rejected": ImprovementState.REJECTED,
+    "superseded": ImprovementState.SUPERSEDED,
+    "approved": ImprovementState.APPROVED,
+}
+
+
+def attempt_apply(
+    *,
+    state: str,
+    evaluation: str = "passed",
+    forge_state_digest: bool = False,
+) -> ApplyAttemptResult:
+    try:
+        if state not in _ATTEMPT_STATES:
+            raise InputError(f"unsupported apply state: {state}")
+        if evaluation == "missing":
+            raise InputError("evaluation receipt is missing")
+        resolved = _ATTEMPT_STATES[state]
+        projection = _attempt_projection(resolved)
+        if evaluation == "stale":
+            raise InputError("evaluation receipt is stale")
+        receipt = MemoryEvalReceipt(
+            eval_run_id="eval-1",
+            outcome="passed" if evaluation == "passed" else "regressed",
+            report_sha256="r",
+            staged_sha256="s",
+            baseline_sha256=None,
+            approved_state_digest=artifact_digest(projection),
+            approved_version=projection.version,
+        )
+        digest = artifact_digest(projection)
+        if forge_state_digest:
+            digest = "sha256:" + ("0" * 64)
+        intent = _apply_memory(
+            projection=projection,
+            eval_receipt=receipt,
+            approved_state_digest=digest,
+            approved_version=projection.version,
+            before_sha256="b",
+            after_sha256="a",
+            receipt_sha256="r",
+            target_digest="a" * 64,
+        )
+        return ApplyAttemptResult(
+            applied=True,
+            effect_intents=(intent,),
+            write_authorization=(projection.target,),
+        )
+    except InputError:
+        return ApplyAttemptResult(applied=False, effect_intents=(), write_authorization=())
+
+
+def _attempt_projection(state: ImprovementState) -> ImprovementProjection:
+    payload: dict[str, object] = {
+        "improvement_id": "IMP-1",
+        "fingerprint": "f" * 64,
+        "kind": "prompt_improvement",
+        "delivery": "memory_patch",
+        "source_refs": {"problem_ids": ["PROB-1"], "occurrence_ids": ["OCC-1"]},
+        "target": ".aa/memory/aa-api-plan.md",
+        "rationale": "gap",
+        "proposed_change": "register adapters",
+        "verification": {"suites": [], "required_cases": [], "success_criteria": "review"},
+        "risk": "low",
+        "confidence": "high",
+        "state": state.value,
+        "version": 1,
+        "proposed_by_retro_ids": ["RET-1"],
+        "last_event_id": "IMPEVT-1",
+        "approval_source": "none",
+    }
+    if state is ImprovementState.APPROVED:
+        payload["approval_source"] = "automatic"
+        payload["last_auto_review"] = {
+            "review_id": "REV-1",
+            "subject_sha256": "sha256:" + ("a" * 64),
+            "assessment_sha256": "sha256:" + ("b" * 64),
+            "policy_version": "1",
+            "verdict": "auto_approved",
+        }
+    return ImprovementProjection.model_validate(payload)
+
+
+def _apply_memory(
+    *,
+    projection: ImprovementProjection,
+    eval_receipt: MemoryEvalReceipt,
+    approved_state_digest: str,
+    approved_version: int,
+    before_sha256: str,
+    after_sha256: str,
+    receipt_sha256: str,
+    target_digest: str,
+) -> EffectIntent:
+    assert_apply_proof(
+        projection,
+        eval_receipt,
+        approved_state_digest=approved_state_digest,
+        approved_version=approved_version,
+    )
+    receipt = MemoryApplyReceipt(
+        target=projection.target,
+        before_sha256=before_sha256,
+        after_sha256=after_sha256,
+        receipt_sha256=receipt_sha256,
+    )
+    return _delivery_intent(
+        kind="memory_apply",
+        projection=projection,
+        target_kind="memory_apply",
+        target_digest=target_digest,
+        target=projection.target,
+        receipt=receipt,
+    )
 
 
 def _delivery_intent(
@@ -268,22 +425,21 @@ class ApplyMemoryImprovementHandler:
         del context
         try:
             payload = validate_input(ApplyMemoryInput, request.input)
-            assert_delivery_gate(payload.projection, DeliveryKind.MEMORY_PATCH)
-            if payload.eval_receipt.outcome != "passed":
-                raise InputError("memory apply requires a passed evaluation")
+            intent = _apply_memory(
+                projection=payload.projection,
+                eval_receipt=payload.eval_receipt,
+                approved_state_digest=payload.approved_state_digest,
+                approved_version=payload.approved_version,
+                before_sha256=payload.before_sha256,
+                after_sha256=payload.after_sha256,
+                receipt_sha256=payload.receipt_sha256,
+                target_digest=payload.target_digest,
+            )
             receipt = MemoryApplyReceipt(
                 target=payload.projection.target,
                 before_sha256=payload.before_sha256,
                 after_sha256=payload.after_sha256,
                 receipt_sha256=payload.receipt_sha256,
-            )
-            intent = _delivery_intent(
-                kind="memory_apply",
-                projection=payload.projection,
-                target_kind="memory_apply",
-                target_digest=payload.target_digest,
-                target=payload.projection.target,
-                receipt=receipt,
             )
             return succeeded(cast(dict[str, object], receipt.model_dump(mode="json")), effects=(intent,))
         except InputError as error:
@@ -442,4 +598,7 @@ __all__ = [
     "RecordChangeImprovementAppliedHandler",
     "RecordKnowledgeImprovementAppliedHandler",
     "RollbackMemoryImprovementHandler",
+    "attempt_apply",
+    "assert_apply_proof",
+    "assert_authenticated_approval",
 ]

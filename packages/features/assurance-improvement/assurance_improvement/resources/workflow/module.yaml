@@ -504,39 +504,85 @@ graphs:
         kind: subgraph
         graph: improvement-review
         input_projection: *child-input
-        routing: {mode: fanout, min_matches: 2}
-      review-human-gate:
-        kind: gate
-        expression: "decision != 'pass' and decision != 'approved'"
-        input_projection: &apply-review-decision
-          type: object
-          fields:
-            decision:
-              type: predecessor_pointer
-              predecessor: review
-              pointer: /decision
-      review-pass-gate:
-        kind: gate
-        expression: "decision == 'pass' or decision == 'approved'"
-        input_projection: *apply-review-decision
+      apply-auto-review:
+        kind: task
+        capability: assurance.improvement.apply-improvement-auto-review
+        input_projection: *public-input
+        retry: once
+        timeout: short
+        routing: {mode: exclusive}
       human-review:
         kind: interrupt
         reason: needs_human_review
-        actions: [approve, reject]
+        actions: [approve, reject, request_rework, supersede]
+        routing: {mode: exclusive}
+      apply-human-review:
+        kind: task
+        capability: assurance.improvement.apply-improvement-review
+        input_projection:
+          type: object
+          fields:
+            action:
+              type: predecessor_pointer
+              predecessor: human-review
+              pointer: /action
+            allowed_artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            evidence_refs:
+              type: graph_input_pointer
+              pointer: /evidence_refs
+            lifecycle_state:
+              type: graph_input_pointer
+              pointer: /lifecycle_state
+        retry: once
+        timeout: short
+        routing: {mode: exclusive}
+      evaluate:
+        kind: task
+        capability: assurance.improvement.evaluate-memory-improvement
+        input_projection: *public-input
+        retry: once
+        timeout: short
+        routing: {mode: exclusive}
       apply:
         kind: task
         capability: assurance.improvement.apply-memory-improvement
         input_projection: *public-input
         retry: once
         timeout: short
+      rejected:
+        kind: end
+      rework:
+        kind: end
+      superseded:
+        kind: end
+      failed:
+        kind: end
       done:
         kind: end
     edges:
-      - {from: review, to: review-human-gate}
-      - {from: review, to: review-pass-gate}
-      - {from: review-human-gate, to: human-review, condition: 'output.value == true'}
-      - {from: review-pass-gate, to: apply, condition: 'output.value == true'}
-      - {from: human-review, to: apply}
+      - {from: review, to: apply-auto-review}
+      - {from: apply-auto-review, to: evaluate, condition: "output.lifecycle_state == 'approved'"}
+      - {from: apply-auto-review, to: rework, condition: "output.lifecycle_state == 'needs_rework'"}
+      - {from: apply-auto-review, to: rejected, condition: "output.lifecycle_state == 'rejected'"}
+      - {from: apply-auto-review, to: human-review, condition: "output.lifecycle_state == 'proposed'"}
+      - {from: apply-auto-review, to: failed, otherwise: true}
+      - {from: human-review, to: apply-human-review, condition: "output.action == 'approve' or output.action == 'reject' or output.action == 'request_rework' or output.action == 'supersede' or output.decision == 'approve' or output.decision == 'reject' or output.decision == 'request_rework' or output.decision == 'supersede'"}
+      - {from: human-review, to: failed, otherwise: true}
+      - {from: apply-human-review, to: evaluate, condition: "output.lifecycle_state == 'approved'"}
+      - {from: apply-human-review, to: rejected, condition: "output.lifecycle_state == 'rejected'"}
+      - {from: apply-human-review, to: rework, condition: "output.lifecycle_state == 'needs_rework'"}
+      - {from: apply-human-review, to: superseded, condition: "output.lifecycle_state == 'superseded'"}
+      - {from: apply-human-review, to: failed, otherwise: true}
+      - {from: evaluate, to: apply, condition: "output.outcome == 'passed'"}
+      - {from: evaluate, to: failed, otherwise: true}
       - {from: apply, to: done}
   improvement-rollback:
     max_activations: 4

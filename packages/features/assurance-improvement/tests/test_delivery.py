@@ -42,14 +42,29 @@ def _projection(*, state: str = "approved", delivery: str = "memory_patch") -> d
     return improvement_projection(state=state, delivery=delivery)
 
 
-def _eval_receipt() -> dict[str, object]:
-    return {
+def _eval_receipt(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
         "eval_run_id": "eval-1",
         "outcome": "passed",
         "report_sha256": "r",
         "staged_sha256": "s",
         "baseline_sha256": None,
     }
+    payload.update(overrides)
+    return payload
+
+
+def attempt_apply(*, state: str, evaluation: str = "passed"):
+    from assurance_improvement.operations.delivery import attempt_apply as _attempt_apply
+
+    return _attempt_apply(state=state, evaluation=evaluation)
+
+
+@pytest.mark.parametrize("state", ["proposed", "changes_requested", "rejected", "superseded"])
+def test_apply_requires_authenticated_approved_state(state: str) -> None:
+    result = attempt_apply(state=state, evaluation="passed")
+    assert result.applied is False
+    assert result.effect_intents == ()
 
 
 @pytest.mark.asyncio
@@ -108,15 +123,44 @@ async def test_rollback_emits_delivery_effect_with_memory_rollback(tmp_path: Pat
     assert as_object(outcome.effects[0].payload)["kind"] == "memory_rollback"
 
 
+@pytest.mark.parametrize("evaluation", ["failed", "missing", "stale"])
+def test_apply_rejects_unsuccessful_or_stale_evaluation(evaluation: str) -> None:
+    result = attempt_apply(state="approved", evaluation=evaluation)
+    assert result.applied is False
+    assert result.effect_intents == ()
+    assert result.write_authorization == ()
+
+
+def test_apply_rejects_forged_approved_proof() -> None:
+    from assurance_improvement.operations.delivery import attempt_apply as _attempt_apply
+
+    result = _attempt_apply(state="approved", evaluation="passed", forge_state_digest=True)
+    assert result.applied is False
+    assert result.effect_intents == ()
+    assert result.write_authorization == ()
+
+
+def test_authenticated_approved_and_current_eval_applies() -> None:
+    result = attempt_apply(state="approved", evaluation="passed")
+    assert result.applied is True
+    assert result.effect_intents != ()
+
+
 @pytest.mark.asyncio
 async def test_apply_memory_requires_passed_eval(tmp_path: Path) -> None:
     eval_receipt = {**_eval_receipt(), "outcome": "regressed"}
+    from assurance_improvement.contracts.delivery import artifact_digest
+    from assurance_improvement.contracts.improvements import ImprovementProjection
+
+    projection = _projection()
     outcome = await execute_task(
         ApplyMemoryImprovementHandler(),
         json_value(
             {
-                "projection": _projection(),
+                "projection": projection,
                 "eval_receipt": eval_receipt,
+                "approved_state_digest": artifact_digest(ImprovementProjection.model_validate(projection)),
+                "approved_version": 1,
                 "before_sha256": "b",
                 "after_sha256": "a",
                 "receipt_sha256": "r",
@@ -291,6 +335,8 @@ def test_archive_result_contract_bytes_equal_typed_model() -> None:
             {
                 "projection": _projection(state="proposed"),
                 "eval_receipt": _eval_receipt(),
+                "approved_state_digest": f"sha256:{HEX_A}",
+                "approved_version": 1,
                 "before_sha256": "b",
                 "after_sha256": "a",
                 "receipt_sha256": "r",

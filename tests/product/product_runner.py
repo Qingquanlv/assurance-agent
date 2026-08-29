@@ -348,6 +348,73 @@ class _ScriptedTaskHost:
                     }
                 )
             )
+        if capability_id.endswith("apply-improvement-auto-review"):
+            decision = self._review_decision
+            if isinstance(request_input, Mapping) and isinstance(request_input.get("decision"), str):
+                decision = request_input["decision"]
+            lifecycle = {
+                "pass": "approved",
+                "changes_requested": "needs_rework",
+                "reject": "rejected",
+            }.get(decision, "proposed")
+            return TaskOutcome.succeeded(
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "decision": decision,
+                        "lifecycle_state": lifecycle,
+                        "approval_source": "automatic" if lifecycle == "approved" else "none",
+                        "effect_intents": [],
+                        "write_authorization": [],
+                    }
+                )
+            )
+        if capability_id.endswith("apply-improvement-review"):
+            action = None
+            if isinstance(request_input, Mapping):
+                if isinstance(request_input.get("action"), str):
+                    action = request_input["action"]
+                elif isinstance(request_input.get("decision"), str):
+                    action = request_input["decision"]
+            if action is None:
+                return TaskOutcome.succeeded(
+                    self._public_fields(
+                        {
+                            "change_id": change_id,
+                            "lifecycle_state": "proposed",
+                            "effect_intents": [],
+                            "write_authorization": [],
+                        }
+                    )
+                )
+            lifecycle = {
+                "approve": "approved",
+                "reject": "rejected",
+                "request_rework": "needs_rework",
+                "supersede": "superseded",
+            }.get(action, "proposed")
+            return TaskOutcome.succeeded(
+                self._public_fields(
+                    {
+                        "action": action,
+                        "change_id": change_id,
+                        "lifecycle_state": lifecycle,
+                        "approval_source": "human" if lifecycle == "approved" else "none",
+                        "effect_intents": [],
+                        "write_authorization": [],
+                    }
+                )
+            )
+        if capability_id.endswith("evaluate-memory-improvement"):
+            return TaskOutcome.succeeded(
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "lifecycle_state": "evaluating",
+                        "outcome": "passed",
+                    }
+                )
+            )
         if capability_id in _REVIEW_FINALIZES:
             return TaskOutcome.succeeded(
                 self._public_fields(
@@ -619,13 +686,20 @@ def _product_input(
 
 
 def _logical_step(capability: str) -> str | None:
-    capability = _product_alias(capability)
-    operation = _OPERATION_LOGICAL_STEPS.get(capability)
+    aliased = _product_alias(capability)
+    unaliased = (
+        f"assurance.{aliased.removeprefix(_AGENT_PREFIX)}" if aliased.startswith(_AGENT_PREFIX) else aliased
+    )
+    operation = (
+        _OPERATION_LOGICAL_STEPS.get(capability)
+        or _OPERATION_LOGICAL_STEPS.get(aliased)
+        or _OPERATION_LOGICAL_STEPS.get(unaliased)
+    )
     if operation is not None:
         return operation
-    if not capability.startswith(_AGENT_PREFIX) or not capability.endswith(".finalize"):
+    if not aliased.startswith(_AGENT_PREFIX) or not aliased.endswith(".finalize"):
         return None
-    return capability.removeprefix(_AGENT_PREFIX).removesuffix(".finalize")
+    return aliased.removeprefix(_AGENT_PREFIX).removesuffix(".finalize")
 
 
 def _terminal_tail(steps: tuple[str, ...]) -> tuple[str, ...]:

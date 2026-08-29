@@ -55,6 +55,7 @@ INTENTIONAL_SEMANTIC_DIFF: frozenset[str] = frozenset(
         "generation-performance",
         "healing-coverage-repair",
         "healing-fix-proposal",
+        "improvement-apply",
     }
 )
 THIN_WRAPPER_ENTRYPOINTS = (
@@ -107,6 +108,7 @@ def test_intentional_semantic_diff_is_the_intake_and_generation_correction() -> 
             "generation-performance",
             "healing-coverage-repair",
             "healing-fix-proposal",
+            "improvement-apply",
         }
     )
 
@@ -133,7 +135,7 @@ def test_feature_graphs_match_normalized_pre_modular_projection(installed_source
             actual = _project_modular_graph(assembled.graphs[f"{module_id}.graph.{local_id}"], module_id)
             assert actual == expected, f"{owner}/{local_id} drifted"
             compared += 1
-    assert compared == 42
+    assert compared == 41
 
 
 @pytest.mark.usefixtures("installed_sources")

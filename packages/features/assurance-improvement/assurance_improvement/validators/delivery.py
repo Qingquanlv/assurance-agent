@@ -87,6 +87,18 @@ class DeliveryValidator:
                 return rejected(_APPROVED)
         if projection.state is not ImprovementState.APPROVED:
             return rejected(_APPROVED)
+        if projection.approval_source not in {"human", "automatic"}:
+            return rejected(_APPROVED)
+        if document.memory_eval is not None and document.memory_eval.outcome != "passed":
+            return rejected("improvement delivery requires a passed evaluation")
+        if document.memory_eval is not None:
+            if document.memory_eval.approved_version not in {None, projection.version}:
+                return rejected("improvement delivery evaluation is stale")
+            if document.memory_eval.approved_state_digest is not None:
+                from assurance_improvement.contracts.delivery import artifact_digest, same_digest
+
+                if not same_digest(document.memory_eval.approved_state_digest, artifact_digest(projection)):
+                    return rejected("improvement delivery evaluation digest does not match")
         if (
             document.improvement_id != projection.improvement_id
             or document.delivery != projection.delivery

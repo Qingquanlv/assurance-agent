@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import ast
 import json
+import uuid
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import cast
 
+import pytest
 import yaml
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
@@ -23,13 +27,27 @@ from graph_engine.graph.output_projection import (
     ObjectProjection as OutputObjectProjection,
 )
 from graph_engine.graph.schema import EdgeDef, NodeDef, WorkflowDef
+from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
+    InvocationWorkspaceBinding,
     ResourceContribution,
     SchemaContribution,
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
     TaskContext,
     TaskOutcome,
     TaskRequest,
 )
+from graph_engine.runtime.engine import Engine
+from graph_engine.runtime.host_protocol import (
+    TaskHostCallResult,
+    TaskHostCancelCall,
+    TaskHostExecuteCall,
+    TaskHostReconcileCall,
+    TaskHostTerminalReceipt,
+)
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.runtime.seed import empty_invocation_seed
 
 from assurance_improvement.contracts.workflow import AGENT_JOB_CONTRACTS
 from assurance_improvement.plugin import ImprovementPlugin
@@ -576,33 +594,44 @@ def test_public_outputs_expose_lifecycle_receipts_and_outcome_without_review_tok
         assert schema["properties"]["outcome"]["enum"] == list(_TERMINAL_OUTCOMES)
 
 
-def test_apply_preserves_current_review_gate_behavior() -> None:
+def test_apply_review_and_evaluation_routes_are_exclusive() -> None:
     module = _load_module()
     apply_graph = module.graphs["improvement-apply"]
     assert apply_graph.start == "review"
-    assert apply_graph.nodes["review"].kind == "subgraph"
-    assert apply_graph.nodes["review"].graph == "improvement-review"
-    human_gate = apply_graph.nodes["review-human-gate"]
-    pass_gate = apply_graph.nodes["review-pass-gate"]
-    assert human_gate.kind == "gate"
-    assert pass_gate.kind == "gate"
-    assert human_gate.expression == "decision != 'pass' and decision != 'approved'"
-    assert pass_gate.expression == "decision == 'pass' or decision == 'approved'"
-    interrupt = apply_graph.nodes["human-review"]
-    assert interrupt.kind == "interrupt"
-    assert interrupt.reason == "needs_human_review"
-    assert list(interrupt.actions) == ["approve", "reject"]
-    assert {_edge_record(edge) for edge in apply_graph.edges} == {
-        ("review", "review-human-gate", None),
-        ("review", "review-pass-gate", None),
-        ("review-human-gate", "human-review", "output.value == true"),
-        ("review-pass-gate", "apply", "output.value == true"),
-        ("human-review", "apply", None),
-        ("apply", "done", None),
-    }
+    review = apply_graph.nodes["review"]
+    assert review.kind == "subgraph"
+    assert review.graph == "improvement-review"
+    human = apply_graph.nodes["human-review"]
+    assert human.kind == "interrupt"
+    assert human.reason == "needs_human_review"
+    assert tuple(human.actions) == ("approve", "reject", "request_rework", "supersede")
+    assert human.routing is not None
+    assert human.routing.mode == "exclusive"
+    evaluate = apply_graph.nodes["evaluate"]
+    assert evaluate.routing is not None
+    assert evaluate.routing.mode == "exclusive"
+    assert apply_graph.nodes["apply-auto-review"].routing is not None
+    assert apply_graph.nodes["apply-auto-review"].routing.mode == "exclusive"
+    assert apply_graph.nodes["apply-auto-review"].capability == (
+        "assurance.improvement.apply-improvement-auto-review"
+    )
+    assert apply_graph.nodes["apply-human-review"].capability == (
+        "assurance.improvement.apply-improvement-review"
+    )
+    assert apply_graph.nodes["evaluate"].capability == ("assurance.improvement.evaluate-memory-improvement")
+    assert "review-pass-gate" not in apply_graph.nodes
+    assert "review-human-gate" not in apply_graph.nodes
     apply_output = json.dumps(module.exports["apply"].model_dump(mode="json", by_alias=True))
     assert "decision" not in apply_output
     assert "/decision" not in apply_output
+    otherwise = [edge for edge in apply_graph.edges if edge.otherwise]
+    assert {edge.from_ for edge in otherwise} == {
+        "human-review",
+        "apply-auto-review",
+        "apply-human-review",
+        "evaluate",
+    }
+    assert all(edge.to == "failed" for edge in otherwise)
 
 
 def test_fake_slot_bindings_compile_each_export_without_an_agent_server() -> None:
@@ -617,3 +646,234 @@ def test_fake_slot_bindings_compile_each_export_without_an_agent_server() -> Non
         assert set(compiled.graphs).isdisjoint(set(module.graphs) - set(_EXPORT_CLOSURES[export]))
         assert set(compiled.graphs).isdisjoint(_PRODUCT_GRAPHS)
         assert graph_id in compiled.graphs
+
+
+@dataclass(frozen=True)
+class ApplyDriveResult:
+    status: str
+    ends: frozenset[str]
+    applied: bool
+    capabilities: tuple[str, ...]
+
+
+class _ScriptedApplyHost:
+    def __init__(self, *, decision: str, evaluation: str = "passed") -> None:
+        self._decision = decision
+        self._evaluation = evaluation
+
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        capability_id = call.request.capability_id
+        request_input = call.request.input if isinstance(call.request.input, Mapping) else {}
+        if capability_id.endswith("improvement-review.finalize"):
+            return TaskHostCallResult(
+                operation="execute",
+                outcome=TaskOutcome.succeeded({"decision": self._decision, "lifecycle_state": "proposed"}),
+            )
+        if capability_id.endswith("apply-improvement-auto-review"):
+            lifecycle = {
+                "pass": "approved",
+                "changes_requested": "needs_rework",
+                "reject": "rejected",
+            }.get(self._decision, "proposed")
+            return TaskHostCallResult(
+                operation="execute",
+                outcome=TaskOutcome.succeeded(
+                    {
+                        "lifecycle_state": lifecycle,
+                        "decision": request_input.get("decision", self._decision),
+                        "effect_intents": [],
+                        "write_authorization": [],
+                    }
+                ),
+            )
+        if capability_id.endswith("apply-improvement-review"):
+            action = request_input.get("action") or request_input.get("decision")
+            lifecycle = {
+                "approve": "approved",
+                "reject": "rejected",
+                "request_rework": "needs_rework",
+                "supersede": "superseded",
+            }.get(str(action), "proposed")
+            return TaskHostCallResult(
+                operation="execute",
+                outcome=TaskOutcome.succeeded(
+                    {
+                        "lifecycle_state": lifecycle,
+                        "action": action,
+                        "effect_intents": [],
+                        "write_authorization": [],
+                    }
+                ),
+            )
+        if capability_id.endswith("evaluate-memory-improvement"):
+            return TaskHostCallResult(
+                operation="execute",
+                outcome=TaskOutcome.succeeded({"outcome": self._evaluation, "lifecycle_state": "evaluating"}),
+            )
+        if capability_id.endswith("apply-memory-improvement"):
+            return TaskHostCallResult(
+                operation="execute",
+                outcome=TaskOutcome.succeeded({"outcome": "applied", "lifecycle_state": "applied"}),
+            )
+        return TaskHostCallResult(
+            operation="execute",
+            outcome=TaskOutcome.succeeded(
+                {
+                    "change_id": "CH-APPLY-003",
+                    "decision": self._decision,
+                    "lifecycle_state": "proposed",
+                    "evidence_refs": [],
+                }
+            ),
+        )
+
+    async def reconcile(self, call: TaskHostReconcileCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="reconcile",
+            reconcile_result=TaskActivityReconcileResult(status="indeterminate", reason="scripted host"),
+        )
+
+    async def cancel(self, call: TaskHostCancelCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="cancel",
+            cancel_result=TaskActivityCancelResult(status="indeterminate", reason="scripted host"),
+        )
+
+    def read_terminal_receipts(self, identity) -> tuple[TaskHostTerminalReceipt, ...]:
+        del identity
+        return ()
+
+
+def _drive_node_payload(node: NodeDef) -> dict[str, object]:
+    payload = node.model_dump(mode="python", by_alias=True, exclude_unset=True)
+    slot = payload.pop("capability_slot", None)
+    if slot is not None:
+        payload["capability"] = f"assurance.improvement.slot.{slot}"
+    return payload
+
+
+def _drive_apply(
+    *,
+    decision: str,
+    evaluation: str = "passed",
+    resumes: tuple[str, ...] = (),
+) -> ApplyDriveResult:
+    from tests.product.runtime_composition import resolve_workflow_composition
+
+    module = _load_module()
+    workflow = WorkflowDef(
+        name="improvement-apply-drive",
+        entrypoints={"apply": "improvement-apply"},
+        retry=module.retry,
+        timeout=module.timeout,
+        graphs={
+            graph_id: module.graphs[graph_id].model_copy(
+                update={
+                    "nodes": {
+                        node_id: NodeDef.model_validate(_drive_node_payload(node))
+                        for node_id, node in module.graphs[graph_id].nodes.items()
+                    }
+                }
+            )
+            for graph_id in _EXPORT_CLOSURES["apply"]
+        },
+    )
+    handlers = {
+        node.capability: _FakeSlotHandler()
+        for graph in workflow.graphs.values()
+        for node in graph.nodes.values()
+        if node.capability
+    }
+    composition = resolve_workflow_composition(
+        workflow.model_dump(mode="json", by_alias=True, exclude_unset=True),
+        handlers,
+    )
+    host = _ScriptedApplyHost(decision=decision, evaluation=evaluation)
+    with TemporaryDirectory(prefix="improvement-apply-drive-") as raw:
+        root = Path(raw).resolve()
+        for path in ("project", "attempts", "receipts", "runtime"):
+            (root / path).mkdir()
+        (root / "runtime" / "invocations").mkdir()
+        engine = Engine(root / "runtime", host=host)
+        try:
+            handle = engine.start(
+                composition,
+                entrypoint="apply",
+                invocation_id=f"apply-{uuid.uuid4().hex}",
+                seed=empty_invocation_seed(root_input=cast(JSONValue, dict(_APPLY_INPUT))),
+                authorization=empty_runtime_authorization(),
+                workspace_binding=InvocationWorkspaceBinding(
+                    project_root=root / "project",
+                    attempts_root=root / "attempts",
+                    receipts_root=root / "receipts",
+                ),
+            )
+            result = engine.run_until_blocked(handle)
+            for action in resumes:
+                handle = engine.resume(handle, action=action, payload={"decision": action})
+                result = engine.run_until_blocked(handle)
+            ends = frozenset(
+                activation.node_id
+                for activation in result.projection.activations
+                if activation.node_id in {"done", "failed", "rejected", "rework", "superseded"}
+                and activation.status == "completed"
+            )
+            capabilities = tuple(
+                str(getattr(activation, "capability_id", "") or activation.node_id)
+                for activation in result.projection.activations
+                if activation.status == "completed"
+            )
+            applied = any(
+                activation.node_id == "apply" and activation.status == "completed"
+                for activation in result.projection.activations
+            )
+            return ApplyDriveResult(
+                status=result.status,
+                ends=ends,
+                applied=applied,
+                capabilities=capabilities,
+            )
+        finally:
+            engine.close()
+
+
+@pytest.mark.parametrize(
+    ("decision", "end", "applied"),
+    (
+        ("pass", "done", True),
+        ("changes_requested", "rework", False),
+        ("reject", "rejected", False),
+        ("needs_human_review", "failed", False),
+    ),
+)
+def test_apply_auto_review_routes_are_exclusive(decision: str, end: str, applied: bool) -> None:
+    result = _drive_apply(decision=decision)
+    if decision == "needs_human_review":
+        assert result.status == "interrupted"
+        assert result.applied is False
+        return
+    assert result.status == "succeeded"
+    assert end in result.ends
+    assert result.applied is applied
+
+
+@pytest.mark.parametrize(
+    ("action", "end"),
+    (("reject", "rejected"), ("request_rework", "rework"), ("supersede", "superseded")),
+)
+def test_human_non_approve_actions_do_not_apply(action: str, end: str) -> None:
+    result = _drive_apply(decision="needs_human_review", resumes=(action,))
+    assert result.status == "succeeded"
+    assert end in result.ends
+    assert result.applied is False
+
+
+def test_human_approve_applies_only_after_passed_evaluation() -> None:
+    passed = _drive_apply(decision="needs_human_review", evaluation="passed", resumes=("approve",))
+    failed = _drive_apply(decision="needs_human_review", evaluation="regressed", resumes=("approve",))
+    assert passed.applied is True
+    assert "done" in passed.ends
+    assert failed.applied is False
+    assert "failed" in failed.ends

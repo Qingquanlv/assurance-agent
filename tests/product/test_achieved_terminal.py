@@ -246,6 +246,41 @@ def test_finalize_achieved_rejects_unsatisfied_coverage_without_writing(
     assert not (change / "apply-manifest.json").exists()
 
 
+def test_finalize_achieved_rejects_failed_or_exhausted_invocation(tmp_path: Path):
+    from assurance_product.status import finalize_achieved
+
+    project = _ready_change(tmp_path)
+    with pytest.raises(ValueError, match="failed|exhausted"):
+        finalize_achieved(
+            project,
+            CHANGE_ID,
+            ("api",),
+            invocation=valid_status(terminal_reason="exhausted"),
+        )
+    change = project / "qa" / "changes" / CHANGE_ID
+    assert not (change / "status.json").exists()
+    assert not (change / "apply-manifest.json").exists()
+
+
+def test_finalize_achieved_rejects_missing_report_even_with_improvement_artifacts(tmp_path: Path):
+    from assurance_product.status import finalize_achieved
+
+    project = _ready_change(tmp_path)
+    (project / "qa" / "changes" / CHANGE_ID / "report" / "report.md").unlink()
+    _write(
+        project,
+        f"qa/changes/{CHANGE_ID}/improvements/delivery.json",
+        b'{"schema_version":"1","improvement_id":"IMP-1"}\n',
+    )
+
+    with pytest.raises(ValueError, match="quality|report"):
+        finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status())
+
+    change = project / "qa" / "changes" / CHANGE_ID
+    assert not (change / "status.json").exists()
+    assert not (change / "apply-manifest.json").exists()
+
+
 def test_finalize_achieved_requires_terminal_full_success(tmp_path: Path):
     from assurance_product.status import finalize_achieved
 

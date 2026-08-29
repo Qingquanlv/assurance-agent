@@ -395,6 +395,18 @@ def _require_terminal_full_success(invocation: Mapping[str, object] | StatusV1) 
         raise ValueError("achieved requires terminal workflow success")
     if payload.get("pending_interrupt") is not None:
         raise ValueError("achieved requires no pending interrupt")
+    reason = payload.get("terminal_reason")
+    if isinstance(reason, str) and reason in {"failed", "exhausted", "not_achieved"}:
+        raise ValueError(f"achieved rejects {reason} terminal state")
+    node_states = payload.get("node_states")
+    if isinstance(node_states, tuple | list):
+        for item in node_states:
+            if not isinstance(item, Mapping):
+                continue
+            status = item.get("status")
+            node_id = item.get("node_id")
+            if status in {"failed", "exhausted"} or node_id in {"failed", "exhausted", "not-achieved"}:
+                raise ValueError("achieved rejects failed or exhausted state")
 
 
 def _change_state(

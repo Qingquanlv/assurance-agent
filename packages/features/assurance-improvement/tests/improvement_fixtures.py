@@ -225,6 +225,16 @@ def improvement_projection(
         "version": version,
         "proposed_by_retro_ids": [RETRO_ID],
         "last_event_id": "IMPEVT-1",
+        "approval_source": "automatic" if state == "approved" else "none",
+        "last_auto_review": {
+            "review_id": "REV-1",
+            "subject_sha256": EVIDENCE_REF,
+            "assessment_sha256": EVIDENCE_REF,
+            "policy_version": "1",
+            "verdict": "auto_approved",
+        }
+        if state == "approved"
+        else None,
     }
 
 

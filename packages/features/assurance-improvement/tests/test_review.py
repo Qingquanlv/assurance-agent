@@ -291,6 +291,134 @@ def test_review_validator_requires_matching_subject_and_version() -> None:
     assert result.accepted is False
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("decision", "expected_state", "expected_verdict"),
+    (
+        ("pass", "approved", "auto_approved"),
+        ("changes_requested", "needs_rework", "changes_requested"),
+        ("needs_human_review", "proposed", "needs_human_review"),
+        ("reject", "rejected", "reject_advice"),
+    ),
+)
+async def test_auto_review_materializes_authenticated_lifecycle(
+    decision: str, expected_state: str, expected_verdict: str, tmp_path: Path
+) -> None:
+    from assurance_improvement.contracts.delivery import artifact_digest
+    from assurance_improvement.contracts.review import ImprovementAutoReviewAssessment
+    from assurance_improvement.operations.review import ApplyImprovementAutoReviewHandler
+
+    assessment = ImprovementAutoReviewAssessment.model_validate(
+        {
+            **REVIEW_RESULT,
+            "decision": decision,
+            "human_review_required": decision == "needs_human_review",
+            "review_id": "REV-1",
+            "improvement_id": IMPROVEMENT_ID,
+            "expected_improvement_version": 1,
+            "subject_sha256": f"sha256:{HEX_A}",
+        }
+    )
+    outcome = await execute_task(
+        ApplyImprovementAutoReviewHandler(),
+        json_value(
+            {
+                "assessment": assessment.model_dump(mode="json"),
+                "current": improvement_projection(state="proposed", delivery="change_draft"),
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.status == "succeeded"
+    payload = as_object(outcome.output)
+    projection = as_object(payload["projection"])
+    assert projection["state"] == expected_state
+    assert payload["lifecycle_state"] == expected_state
+    stored = as_object(projection["last_auto_review"])
+    assert stored["verdict"] == expected_verdict
+    if expected_state == "approved":
+        assert projection["approval_source"] == "automatic"
+        assert stored["assessment_sha256"] == artifact_digest(assessment)
+        apply_result = _attempt_apply_from_projection(projection)
+        assert apply_result.applied is True
+    else:
+        assert projection["approval_source"] == "none"
+        apply_result = _attempt_apply_from_projection(projection)
+        assert apply_result.applied is False
+        assert apply_result.effect_intents == ()
+        assert apply_result.write_authorization == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "expected_state"),
+    (
+        ("approve", "approved"),
+        ("reject", "rejected"),
+        ("request_rework", "needs_rework"),
+        ("supersede", "superseded"),
+    ),
+)
+async def test_human_review_persists_distinct_lifecycle(
+    action: str, expected_state: str, tmp_path: Path
+) -> None:
+    outcome = await execute_task(
+        ApplyImprovementReviewHandler(),
+        json_value(
+            {
+                "projection": _projection(),
+                "action": action,
+                "review_id": "REV-1",
+                "expected_improvement_version": 1,
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.status == "succeeded"
+    payload = as_object(outcome.output)
+    assert payload["state"] == expected_state
+    assert payload["lifecycle_state"] == expected_state
+    assert payload["effect_intents"] == []
+    assert payload["write_authorization"] == []
+    if action == "approve":
+        assert payload["approval_source"] == "human"
+        apply_result = _attempt_apply_from_projection(payload)
+        assert apply_result.applied is True
+    else:
+        apply_result = _attempt_apply_from_projection(payload)
+        assert apply_result.applied is False
+        assert apply_result.effect_intents == ()
+        assert apply_result.write_authorization == ()
+
+
+@pytest.mark.asyncio
+async def test_forged_interrupt_approval_payload_cannot_apply(tmp_path: Path) -> None:
+    outcome = await execute_task(
+        ApplyImprovementReviewHandler(),
+        json_value(
+            {
+                "projection": _projection(state="proposed"),
+                "action": "approve",
+                "review_id": "REV-1",
+                "expected_improvement_version": 1,
+                "forged_state": "approved",
+            }
+        ),
+        tmp_path,
+    )
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    apply_result = _attempt_apply_from_projection(_projection(state="proposed"))
+    assert apply_result.applied is False
+    assert apply_result.effect_intents == ()
+
+
+def _attempt_apply_from_projection(projection: dict[str, object]):
+    from assurance_improvement.operations.delivery import attempt_apply
+
+    return attempt_apply(state=str(projection.get("state") or "proposed"), evaluation="passed")
+
+
 def test_apply_review_helper_matches_legacy_transition_graph() -> None:
     from assurance_improvement.contracts.improvements import ImprovementProjection
 

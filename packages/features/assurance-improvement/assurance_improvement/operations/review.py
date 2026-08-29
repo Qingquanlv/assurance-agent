@@ -25,6 +25,7 @@ from assurance_improvement.contracts.review import (
     ImprovementReviewSubject,
 )
 from assurance_improvement.contracts.delivery import artifact_digest
+from assurance_improvement.contracts.workflow import AUTO_REVIEW_DECISIONS
 from assurance_improvement.operations.common import InputError, failed_input, succeeded, validate_input
 from assurance_improvement.operations.keys import improvement_event_id
 
@@ -36,6 +37,19 @@ _ACTION_TARGET: dict[str, ImprovementState] = {
     "reject": ImprovementState.REJECTED,
     "request_rework": ImprovementState.NEEDS_REWORK,
     "supersede": ImprovementState.SUPERSEDED,
+}
+_AUTO_REVIEW: dict[
+    str,
+    tuple[
+        Literal["approved", "escalated"],
+        ImprovementState | None,
+        Literal["auto_approved", "changes_requested", "needs_human_review", "reject_advice"],
+    ],
+] = {
+    "pass": ("approved", ImprovementState.APPROVED, "auto_approved"),
+    "changes_requested": ("escalated", ImprovementState.NEEDS_REWORK, "changes_requested"),
+    "needs_human_review": ("escalated", None, "needs_human_review"),
+    "reject": ("escalated", ImprovementState.REJECTED, "reject_advice"),
 }
 _ALLOWED: dict[ImprovementState, frozenset[ImprovementState]] = {
     ImprovementState.PROPOSED: frozenset(
@@ -166,7 +180,7 @@ def apply_review(payload: ApplyReviewInput) -> ImprovementProjection:
             "state": target,
             "version": payload.projection.version + 1,
             "last_event_id": event_id,
-            "approval_source": "human" if payload.action == "approve" else payload.projection.approval_source,
+            "approval_source": "human" if payload.action == "approve" else "none",
         }
     )
 
@@ -211,23 +225,23 @@ class ApplyImprovementAutoReviewHandler:
                 raise InputError("auto-review improvement_id does not match")
             if payload.assessment.expected_improvement_version != payload.current.version:
                 raise InputError("auto-review version does not match")
-            result = "approved" if payload.assessment.decision == "pass" else "escalated"
-            target = ImprovementState.APPROVED if result == "approved" else payload.current.state
-            if result == "approved":
-                assert_improvement_transition(payload.current.state, target)
+            if payload.assessment.decision not in AUTO_REVIEW_DECISIONS:
+                raise InputError(f"unsupported auto-review decision: {payload.assessment.decision}")
+            result, target, verdict = _AUTO_REVIEW[payload.assessment.decision]
+            next_state = target if target is not None else payload.current.state
+            if target is not None:
+                assert_improvement_transition(payload.current.state, next_state)
             updated = payload.current.model_copy(
                 update={
-                    "state": target,
-                    "version": payload.current.version + (1 if result == "approved" else 0),
-                    "approval_source": "automatic"
-                    if result == "approved"
-                    else payload.current.approval_source,
+                    "state": next_state,
+                    "version": payload.current.version + (1 if target is not None else 0),
+                    "approval_source": "automatic" if result == "approved" else "none",
                     "last_auto_review": LastAutoReview(
                         review_id=payload.assessment.review_id,
                         subject_sha256=payload.assessment.subject_sha256,
                         assessment_sha256=artifact_digest(payload.assessment),
                         policy_version="1",
-                        verdict="auto_approved" if result == "approved" else "needs_human_review",
+                        verdict=verdict,
                     ),
                 }
             )
@@ -236,10 +250,14 @@ class ApplyImprovementAutoReviewHandler:
                 improvement_id=payload.assessment.improvement_id,
                 result=result,
             )
+            dumped = updated.model_dump(mode="json")
             return succeeded(
                 {
                     "status": status.model_dump(mode="json"),
-                    "projection": updated.model_dump(mode="json"),
+                    "projection": dumped,
+                    "lifecycle_state": updated.state.value,
+                    "effect_intents": [],
+                    "write_authorization": [],
                 }
             )
         except InputError as error:
@@ -347,7 +365,15 @@ class ApplyImprovementReviewHandler:
         try:
             payload = validate_input(ApplyReviewInput, request.input)
             updated = apply_review(payload)
-            return succeeded(cast(dict[str, object], updated.model_dump(mode="json")))
+            dumped = updated.model_dump(mode="json")
+            return succeeded(
+                {
+                    **cast(dict[str, object], dumped),
+                    "lifecycle_state": updated.state.value,
+                    "effect_intents": [],
+                    "write_authorization": [],
+                }
+            )
         except InputError as error:
             return failed_input(error)
 
