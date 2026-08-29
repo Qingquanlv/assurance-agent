@@ -483,6 +483,12 @@ def _project_graph(graph: GraphDef, *, module_id: str | None) -> dict[str, Any]:
             payload["timeout"] = _unqualify(payload["timeout"], module_id)
         if payload.get("capability") is not None:
             payload["capability"] = _normalize_capability(payload["capability"])
+        if payload.get("retry") is not None:
+            payload["retry"] = _normalize_execute_retry(
+                payload["retry"],
+                capability=payload.get("capability"),
+                node_id=node_id,
+            )
         payload.pop("input_projection", None)
         payload.pop("input", None)
         payload.pop("resources", None)
@@ -528,6 +534,21 @@ def _unqualify(value: str, module_id: str | None) -> str:
     if ".graph." in value or ".retry." in value or ".timeout." in value:
         raise AssertionError(f"unknown qualified prefix: {value}")
     return value
+
+
+_EXECUTE_RETRY_ALIASES = frozenset({"once", "agent-transient"})
+
+
+def _is_execute_node(capability: object, node_id: str) -> bool:
+    if node_id == "execute":
+        return True
+    return isinstance(capability, str) and capability.endswith(".execute")
+
+
+def _normalize_execute_retry(retry: str, *, capability: object, node_id: str) -> str:
+    if retry in _EXECUTE_RETRY_ALIASES and _is_execute_node(capability, node_id):
+        return "once"
+    return retry
 
 
 def _normalize_capability(capability: str) -> str:
