@@ -5,7 +5,9 @@ import pytest
 from tests.product.execution_loop import (
     assert_each_coverage_repair_is_preceded_by_one_advance,
     bind_installed_sources,
+    completed_node_ids,
     drive_coverage_loop,
+    execute_tail_coverage_state,
 )
 
 pytestmark = pytest.mark.usefixtures("installed_sources", "product_runner")
@@ -162,3 +164,55 @@ def test_repaired_rounds_are_monotonic_and_never_exceed_budget() -> None:
     assert all(item["rounds_used"] <= item["rounds_budget"] == 2 for item in trace.advance_outputs)
     assert_each_coverage_repair_is_preceded_by_one_advance(trace.task_capabilities)
     assert "quality.report" in trace.public_exports
+
+
+@pytest.mark.parametrize(
+    ("coverage_states", "repair_statuses", "coverage_rounds", "terminal", "assess_state"),
+    [
+        (("satisfied",), (), 2, "achieved", "satisfied"),
+        (("repair_required", "satisfied"), ("repaired",), 2, "achieved", "satisfied"),
+        (("exhausted",), (), 0, "not-achieved", "exhausted"),
+        (("repair_required", "exhausted"), ("repaired",), 1, "not-achieved", "exhausted"),
+        (("inconclusive",), (), 1, "not-achieved", "inconclusive"),
+        (("repair_required",), ("failed",), 2, "not-achieved", "repair_required"),
+        (("repair_required",), ("not_eligible",), 2, "not-achieved", "repair_required"),
+        (("repair_required",), ("exhausted",), 2, "not-achieved", "repair_required"),
+    ],
+)
+def test_full_retro_and_achieved_require_fresh_assess_satisfied(
+    coverage_states: tuple[str, ...],
+    repair_statuses: tuple[str, ...],
+    coverage_rounds: int,
+    terminal: str,
+    assess_state: str,
+) -> None:
+    trace = drive_coverage_loop(
+        coverage_states=coverage_states,
+        repair_statuses=repair_statuses,
+        coverage_rounds=coverage_rounds,
+        measured_sequence=(0.40, 0.41, 0.91)[: max(len(coverage_states), 1)],
+        entrypoint="full",
+    )
+    nodes = completed_node_ids(trace.projection)
+    assert execute_tail_coverage_state(trace.projection) == assess_state
+    assert trace.terminal == terminal
+    if terminal == "achieved":
+        assert "retro" in nodes
+        assert "achieved" in nodes
+        return
+    assert "retro" not in nodes
+    assert "achieved" not in nodes
+
+
+def test_full_needs_human_does_not_reach_achieved() -> None:
+    trace = drive_coverage_loop(
+        coverage_states=("needs_human",),
+        measured_sequence=(0.40,),
+        entrypoint="full",
+    )
+    nodes = completed_node_ids(trace.projection)
+    assert trace.status == "interrupted"
+    assert trace.terminal != "achieved"
+    assert "retro" not in nodes
+    assert "achieved" not in nodes
+    assert execute_tail_coverage_state(trace.projection) is None

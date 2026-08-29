@@ -364,7 +364,36 @@ graphs:
         kind: task
         capability: assurance.quality.report.prepare
         input: *prepare-input
-        input_projection: *prepare-projection
+        input_projection:
+          type: object
+          fields:
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            budgets:
+              type: graph_input_pointer
+              pointer: /budgets
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            coverage_state:
+              type: graph_input_pointer
+              pointer: /coverage_state
+            evidence_refs:
+              type: graph_input_pointer
+              pointer: /evidence_refs
+            execution_status:
+              type: graph_input_pointer
+              pointer: /execution_status
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
         retry: once
         timeout: short
       execute:
@@ -379,7 +408,39 @@ graphs:
         kind: task
         capability: assurance.quality.report.finalize
         input: *prepare-input
-        input_projection: *finalize-projection
+        input_projection:
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            budgets:
+              type: graph_input_pointer
+              pointer: /budgets
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            coverage_state:
+              type: graph_input_pointer
+              pointer: /coverage_state
+            evidence_refs:
+              type: graph_input_pointer
+              pointer: /evidence_refs
+            execution_status:
+              type: graph_input_pointer
+              pointer: /execution_status
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
         retry: once
         timeout: short
       done:

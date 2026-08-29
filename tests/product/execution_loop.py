@@ -349,6 +349,16 @@ class _ExecutionLoopHost:
                     "status": status,
                 }
             )
+        if aliased.endswith("quality.report.finalize"):
+            output: dict[str, object] = {
+                "change_id": change_id,
+                "report_refs": [
+                    {"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _PUBLIC_DIGEST}
+                ],
+            }
+            if isinstance(request_input, Mapping) and isinstance(request_input.get("coverage_state"), str):
+                output["coverage_state"] = request_input["coverage_state"]
+            return TaskOutcome.succeeded(output)
         return TaskOutcome.succeeded(
             {
                 "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
@@ -356,7 +366,6 @@ class _ExecutionLoopHost:
                 "change_id": change_id,
                 "classification": "test",
                 "codegen_readiness": "ready",
-                "coverage_state": "satisfied",
                 "decision": "pass",
                 "effect_refs": [],
                 "evidence_refs": [],
@@ -447,6 +456,22 @@ def _terminal_name(projection: InvocationProjection, status: str) -> str:
     if ends:
         return ends[-1]
     return status
+
+
+def completed_node_ids(projection: InvocationProjection) -> frozenset[str]:
+    return frozenset(
+        activation.node_id for activation in projection.activations if activation.status == "completed"
+    )
+
+
+def execute_tail_coverage_state(projection: InvocationProjection) -> str | None:
+    for activation in projection.activations:
+        if activation.node_id != "execute-tail" or activation.status != "completed":
+            continue
+        payload = activation.output
+        if isinstance(payload, Mapping) and isinstance(payload.get("coverage_state"), str):
+            return payload["coverage_state"]
+    return None
 
 
 def assert_each_repair_is_preceded_by_one_advance(capabilities: tuple[str, ...]) -> None:

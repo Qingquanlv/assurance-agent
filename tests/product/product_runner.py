@@ -257,6 +257,8 @@ class _ScriptedTaskHost:
                 echoed["rounds_used"] = request_input["rounds_used"]
             if isinstance(request_input.get("rounds_budget"), int):
                 echoed["rounds_budget"] = request_input["rounds_budget"]
+            if isinstance(request_input.get("coverage_state"), str):
+                echoed["coverage_state"] = request_input["coverage_state"]
         if capability_id.endswith("repair-round.advance"):
             payload = request_input if isinstance(request_input, Mapping) else {}
             return TaskOutcome.succeeded(
@@ -306,15 +308,16 @@ class _ScriptedTaskHost:
                 )
             )
         if capability_id == _REPORT_FINALIZE:
-            output = cast(
-                JSONValue,
-                self._public_fields(
-                    {
-                        "change_id": change_id,
-                        "report": {"exists": True, "coverage": self._last_measured},
-                    }
-                ),
-            )
+            report_fields: dict[str, object] = {
+                "change_id": change_id,
+                "report": {"exists": True, "coverage": self._last_measured},
+            }
+            if "coverage_state" in echoed:
+                report_fields["coverage_state"] = echoed["coverage_state"]
+            payload = self._public_fields(report_fields)
+            if "coverage_state" not in echoed:
+                payload.pop("coverage_state", None)
+            output = cast(JSONValue, payload)
             if self._last_status == "infrastructure_failure":
                 return TaskOutcome.stopped("infrastructure_failure", output)
             if self._exhausted:

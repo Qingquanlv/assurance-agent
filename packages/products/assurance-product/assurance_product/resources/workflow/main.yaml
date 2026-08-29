@@ -390,30 +390,70 @@ graphs:
         kind: interrupt
         reason: coverage_needs_human
         actions: [approve, reject]
+      assess-satisfied:
+        kind: join
+        join: any
+      assess-unsatisfied:
+        kind: join
+        join: any
       report:
         kind: subgraph
         graph_import: quality.report
         input:
           evidence_refs: []
           execution_status: passed
-        input_projection: &report_input
+        input_projection:
           type: object
           fields:
-            allowed_artifact_paths: {type: graph_input_pointer, pointer: /allowed_artifact_paths}
-            budgets: {type: graph_input_pointer, pointer: /budgets}
-            capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
-            change_id: {type: graph_input_pointer, pointer: /change_id}
-            evidence_refs: {type: config_pointer, pointer: /evidence_refs}
-            execution_status: {type: config_pointer, pointer: /execution_status}
-            rounds_budget: {type: graph_input_pointer, pointer: /budgets/healing_rounds}
-            rounds_used: {type: literal, value: 0}
+            <<: &report_fields
+              allowed_artifact_paths: {type: graph_input_pointer, pointer: /allowed_artifact_paths}
+              budgets: {type: graph_input_pointer, pointer: /budgets}
+              capability_leafs: {type: graph_input_pointer, pointer: /capability_leafs}
+              change_id: {type: graph_input_pointer, pointer: /change_id}
+              evidence_refs: {type: config_pointer, pointer: /evidence_refs}
+              execution_status: {type: config_pointer, pointer: /execution_status}
+              rounds_budget: {type: graph_input_pointer, pointer: /budgets/healing_rounds}
+              rounds_used: {type: literal, value: 0}
+            coverage_state:
+              type: predecessor_pointer
+              predecessor: assess-satisfied
+              pointer: /tokens/0/coverage_state
       report-unsatisfied:
         kind: subgraph
         graph_import: quality.report
         input:
           evidence_refs: []
           execution_status: passed
-        input_projection: *report_input
+        input_projection:
+          type: object
+          fields:
+            <<: *report_fields
+            coverage_state:
+              type: predecessor_pointer
+              predecessor: assess-unsatisfied
+              pointer: /tokens/0/coverage_state
+      report-unsatisfied-repair:
+        kind: subgraph
+        graph_import: quality.report
+        input:
+          evidence_refs: []
+          execution_status: passed
+        input_projection:
+          type: object
+          fields:
+            <<: *report_fields
+            coverage_state: {type: literal, value: repair_required}
+      report-issue:
+        kind: subgraph
+        graph_import: quality.report
+        input:
+          evidence_refs: []
+          execution_status: passed
+        input_projection:
+          type: object
+          fields:
+            <<: *report_fields
+            coverage_state: {type: literal, value: inconclusive}
       not-achieved:
         kind: end
       done:
@@ -428,25 +468,29 @@ graphs:
       - {from: run, to: not-achieved, otherwise: true}
       - {from: failed-join, to: issue-analysis}
       - {from: issue-analysis, to: fix-proposal, condition: "(output.classification == 'test' or output.classification == 'test-data') and output.fix_eligible == true and input.rounds_used < input.rounds_budget"}
-      - {from: issue-analysis, to: report, condition: "output.classification == 'product_bug' or output.classification == 'environment_failure' or output.classification == 'infrastructure_failure'"}
+      - {from: issue-analysis, to: report-issue, condition: "output.classification == 'product_bug' or output.classification == 'environment_failure' or output.classification == 'infrastructure_failure'"}
       - {from: issue-analysis, to: not-achieved, otherwise: true}
       - {from: fix-proposal, to: run}
       - {from: quality, to: coverage-needed, condition: "output.coverage_state == 'repair_required' and input.rounds_used < input.rounds_budget"}
-      - {from: quality, to: report, condition: "output.coverage_state == 'satisfied'"}
-      - {from: quality, to: report-unsatisfied, condition: "output.coverage_state == 'exhausted' or output.coverage_state == 'inconclusive'"}
+      - {from: quality, to: assess-satisfied, condition: "output.coverage_state == 'satisfied'"}
+      - {from: quality, to: assess-unsatisfied, condition: "output.coverage_state == 'exhausted' or output.coverage_state == 'inconclusive'"}
       - {from: quality, to: coverage-human, condition: "output.coverage_state == 'needs_human'"}
       - {from: quality, to: not-achieved, otherwise: true}
       - {from: quality-recheck, to: coverage-needed, condition: "output.coverage_state == 'repair_required' and input.rounds_used < input.rounds_budget"}
-      - {from: quality-recheck, to: report, condition: "output.coverage_state == 'satisfied'"}
-      - {from: quality-recheck, to: report-unsatisfied, condition: "output.coverage_state == 'exhausted' or output.coverage_state == 'inconclusive'"}
+      - {from: quality-recheck, to: assess-satisfied, condition: "output.coverage_state == 'satisfied'"}
+      - {from: quality-recheck, to: assess-unsatisfied, condition: "output.coverage_state == 'exhausted' or output.coverage_state == 'inconclusive'"}
       - {from: quality-recheck, to: coverage-human, condition: "output.coverage_state == 'needs_human'"}
       - {from: quality-recheck, to: not-achieved, otherwise: true}
+      - {from: assess-satisfied, to: report}
+      - {from: assess-unsatisfied, to: report-unsatisfied}
       - {from: coverage-needed, to: coverage-repair}
       - {from: coverage-repair, to: quality-recheck, condition: "output.status == 'repaired'"}
-      - {from: coverage-repair, to: report-unsatisfied, condition: "output.status == 'exhausted' or output.status == 'not_eligible' or output.status == 'failed'"}
+      - {from: coverage-repair, to: report-unsatisfied-repair, condition: "output.status == 'exhausted' or output.status == 'not_eligible' or output.status == 'failed'"}
       - {from: coverage-repair, to: not-achieved, otherwise: true}
       - {from: report, to: done}
       - {from: report-unsatisfied, to: not-achieved}
+      - {from: report-unsatisfied-repair, to: not-achieved}
+      - {from: report-issue, to: done}
   product-intake:
     max_activations: 8
     start: run

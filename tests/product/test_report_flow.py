@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from tests.product.execution_loop import bind_installed_sources, drive_coverage_loop
+from tests.product.execution_loop import (
+    bind_installed_sources,
+    completed_node_ids,
+    drive_coverage_loop,
+    execute_tail_coverage_state,
+)
 
 pytestmark = pytest.mark.usefixtures("product_runner", "installed_sources")
 
@@ -65,14 +70,22 @@ def test_exhausted_and_inconclusive_reports_are_not_achieved() -> None:
         coverage_states=("exhausted",),
         measured_sequence=(0.10,),
         coverage_rounds=0,
+        entrypoint="full",
     )
     inconclusive = drive_coverage_loop(
         coverage_states=("inconclusive",),
         measured_sequence=(0.10,),
+        entrypoint="full",
     )
     assert "quality.report" in exhausted.public_exports
     assert "quality.report" in inconclusive.public_exports
-    assert exhausted.terminal != "achieved"
-    assert inconclusive.terminal != "achieved"
+    assert execute_tail_coverage_state(exhausted.projection) == "exhausted"
+    assert execute_tail_coverage_state(inconclusive.projection) == "inconclusive"
+    assert exhausted.terminal == "not-achieved"
+    assert inconclusive.terminal == "not-achieved"
+    assert "retro" not in completed_node_ids(exhausted.projection)
+    assert "retro" not in completed_node_ids(inconclusive.projection)
+    assert "achieved" not in completed_node_ids(exhausted.projection)
+    assert "achieved" not in completed_node_ids(inconclusive.projection)
     assert "healing.repair-coverage" not in exhausted.public_exports
     assert "healing.repair-coverage" not in inconclusive.public_exports
