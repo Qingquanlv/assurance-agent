@@ -43,8 +43,8 @@ RETAINED_COMPARISON_ASSERTIONS = {
     "healing": (
         "tests/product/test_issue_healing_flow.py",
         (
-            "test_issue_path_runs_triage_analysis_and_fix_before_rerun",
-            "test_product_issue_runs_the_same_healing_chain",
+            "test_issue_path_runs_analysis_and_fix_before_rerun",
+            "test_product_issue_never_runs_the_healing_chain",
         ),
     ),
     "report": (
