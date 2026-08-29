@@ -49,6 +49,10 @@ effects: []
 retry:
   once:
     max_attempts: 1
+  agent-transient:
+    max_attempts: 12
+    retry_on:
+      - transient
 timeout:
   short:
     run_seconds: 3600
@@ -88,7 +92,7 @@ graphs:
         input_projection:
           type: predecessor
           predecessor: prepare
-        retry: once
+        retry: agent-transient
         timeout: short
       finalize:
         kind: task
@@ -159,7 +163,7 @@ graphs:
         input_projection:
           type: predecessor
           predecessor: prepare
-        retry: once
+        retry: agent-transient
         timeout: short
       finalize:
         kind: task

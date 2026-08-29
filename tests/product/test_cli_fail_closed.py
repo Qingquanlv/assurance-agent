@@ -440,7 +440,11 @@ def test_modular_runner_rejects_legacy_lock_without_mutating_ledger(
     engine_root = _change_runtime(project_dir, change_id)
     engine_root.mkdir(parents=True, exist_ok=True)
     (engine_root / "invocations").mkdir(exist_ok=True)
-    legacy = resolve_product_workflow_composition(load_pre_modular_workflow())
+    legacy = resolve_product_workflow_composition(
+        load_pre_modular_workflow(
+            Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
+        )
+    )
     engine = Engine(engine_root)
     project = project_dir
     attempts = engine_root.parent / "attempts"

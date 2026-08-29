@@ -4,7 +4,7 @@ The writer may write only these two repository fixtures:
 - tests/product/goldens/assurance-full-pre-modular.json
 - tests/product/fixtures/workflow-module-ownership.yaml
 
-It regenerates the golden from ``load_canonical_workflow()``. The ownership
+It regenerates the golden from ``load_pre_modular_workflow()``. The ownership
 YAML is a reviewed inventory and is not generated here.
 """
 
@@ -15,10 +15,11 @@ from pathlib import Path
 
 from graph_engine.canonical import canonical_json_bytes
 
-from assurance_product.product import load_canonical_workflow
+from assurance_product.product import load_pre_modular_workflow
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_PATH = REPO_ROOT / "tests/product/goldens/assurance-full-pre-modular.json"
+FIXTURE_PATH = REPO_ROOT / "tests/product/fixtures/assurance-full-pre-modular.yaml"
 OWNERSHIP_PATH = REPO_ROOT / "tests/product/fixtures/workflow-module-ownership.yaml"
 ALLOWED_DESTINATIONS = frozenset({GOLDEN_PATH.resolve(), OWNERSHIP_PATH.resolve()})
 
@@ -40,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     destination = GOLDEN_PATH if not args else Path(args[0])
     if not destination.is_absolute():
         destination = (Path.cwd() / destination).resolve()
-    workflow = load_canonical_workflow()
+    workflow = load_pre_modular_workflow(FIXTURE_PATH)
     payload = canonical_json_bytes(workflow.model_dump(mode="json", by_alias=True, exclude_unset=True))
     write_allowed(destination, payload)
     return 0

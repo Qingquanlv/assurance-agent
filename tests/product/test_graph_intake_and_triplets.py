@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tests.product.composition_harness import request_for
@@ -119,6 +121,7 @@ _PUBLIC_ENTRYPOINTS = (
     "improvement-apply",
     "improvement-rollback",
 )
+_PRE_MODULAR_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
@@ -144,19 +147,19 @@ def _named_graph(compiled_product_workflow, local_id: str):
 
 
 def _compiled_pre_modular_workflow():
-    from assurance_product.product import load_canonical_workflow
+    from assurance_product.product import load_pre_modular_workflow
 
     from tests.product.product_runner import resolve_product_workflow_composition
 
-    return resolve_product_workflow_composition(load_canonical_workflow()).workflow
+    return resolve_product_workflow_composition(load_pre_modular_workflow(_PRE_MODULAR_FIXTURE)).workflow
 
 
 def test_canonical_workflow_is_loaded_from_yaml():
     from graph_engine.graph.input_projection import ObjectProjection, RootPointerProjection
 
-    from assurance_product.product import load_canonical_workflow
+    from assurance_product.product import load_pre_modular_workflow
 
-    workflow = load_canonical_workflow()
+    workflow = load_pre_modular_workflow(_PRE_MODULAR_FIXTURE)
     assert workflow.name == "assurance"
     assert "intake" in workflow.entrypoints
     assert "case" in workflow.entrypoints

@@ -81,20 +81,16 @@ _WORKFLOW_DIR = Path(__file__).resolve().parent / "resources" / "workflow"
 _PRE_MODULAR_RELATIVE = Path("tests/product/fixtures/assurance-full-pre-modular.yaml")
 
 
-def _resolve_pre_modular_workflow_path() -> Path:
-    seen: set[Path] = set()
-    for start in (Path(__file__).resolve(), Path.cwd().resolve()):
-        for parent in (start, *start.parents):
-            if parent in seen:
-                continue
-            seen.add(parent)
-            candidate = parent / _PRE_MODULAR_RELATIVE
-            if candidate.is_file():
-                return candidate
-    return Path(__file__).resolve().parents[4] / _PRE_MODULAR_RELATIVE
+def _resolve_pre_modular_workflow_path() -> Path | None:
+    start = Path(__file__).resolve()
+    for parent in (start, *start.parents):
+        candidate = parent / _PRE_MODULAR_RELATIVE
+        if candidate.is_file():
+            return candidate
+    return None
 
 
-_PRE_MODULAR_WORKFLOW_PATH = _resolve_pre_modular_workflow_path()
+_PRE_MODULAR_WORKFLOW_PATH: Path | None = _resolve_pre_modular_workflow_path()
 _PRODUCT_MODULE_PATH = _WORKFLOW_DIR / "main.yaml"
 
 
@@ -108,17 +104,16 @@ def reopen_change_workspace(project_root: Path, change_id: str) -> ChangeWorkspa
     return workspace
 
 
-def load_pre_modular_workflow() -> WorkflowDef:
-    workflow = parse_workflow(_PRE_MODULAR_WORKFLOW_PATH.read_text(encoding="utf-8"))
+def load_pre_modular_workflow(path: Path | None = None) -> WorkflowDef:
+    source = Path(path).expanduser().resolve() if path is not None else _PRE_MODULAR_WORKFLOW_PATH
+    if source is None or not source.is_file():
+        raise FileNotFoundError("pre-modular workflow fixture is not available; pass an explicit path")
+    workflow = parse_workflow(source.read_text(encoding="utf-8"))
     return bind_agent_execution_contracts(workflow)
 
 
 def load_product_workflow_module() -> WorkflowModuleDef:
     return parse_workflow_module(_PRODUCT_MODULE_PATH.read_text(encoding="utf-8"))
-
-
-def load_canonical_workflow() -> WorkflowDef:
-    return load_pre_modular_workflow()
 
 
 _PRODUCT_MODULE = load_product_workflow_module()

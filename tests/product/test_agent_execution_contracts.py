@@ -349,7 +349,7 @@ def test_all_agent_skills_have_one_bound_agent_and_execution_contract() -> None:
     from assurance_product.binding_builder import _binding_documents
     from assurance_product.models import DeploymentBindingsV1
     from assurance_product.models import PREPARE_IDS, alias_ids_for_prepare
-    from assurance_product.product import load_canonical_workflow
+    from assurance_product.product import load_pre_modular_workflow
 
     assert set(PREPARE_IDS) == set(EXPECTED_AGENT_PROFILES) == set(AGENT_EXECUTION_CONTRACTS)
     fixture = Path(__file__).parent / "fixtures" / "deployment" / "opencode.yaml"
@@ -357,7 +357,9 @@ def test_all_agent_skills_have_one_bound_agent_and_execution_contract() -> None:
     binding_documents = {
         str(document["capability_id"]): document for document in _binding_documents(bindings)
     }
-    workflow = load_canonical_workflow()
+    workflow = load_pre_modular_workflow(
+        Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
+    )
     assert workflow.retry["agent-transient"].max_attempts == 12
     assert workflow.retry["agent-transient"].retry_on == ("transient",)
     graph_nodes = {
@@ -450,7 +452,7 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     tmp_path: Path,
 ) -> None:
     from assurance_intake.operations import ExplorePrepareHandler
-    from assurance_product.product import load_canonical_workflow
+    from assurance_product.product import load_pre_modular_workflow
 
     project = tmp_path / "project"
     current_id = "CH-CURRENT-001"
@@ -468,7 +470,14 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     historical_link = sibling / ".runtime"
     historical_link.symlink_to(outside, target_is_directory=True)
 
-    resources = load_canonical_workflow().graphs["explore"].nodes["prepare"].resources
+    resources = (
+        load_pre_modular_workflow(
+            Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
+        )
+        .graphs["explore"]
+        .nodes["prepare"]
+        .resources
+    )
     assert isinstance(resources, ResourceClaimTemplate)
     assert resources.parameters == {"change_id": "/change_id"}
     assert resources.reads == ("qa",)
@@ -577,11 +586,18 @@ def test_transient_agent_provider_failure_retries_the_skill_node(
         installed_sources,
         invocation_id="inv-agent-transient-retry",
         drive=True,
-        require_succeeded=False,
+        require_succeeded=True,
         entrypoint="intake",
         host_factory=host_factory,
     )
     try:
-        assert host.target_attempts == 1
+        retries = {
+            node.definition.retry
+            for graph in invocation.composition.workflow.graphs.values()
+            for node in graph.nodes.values()
+            if node.definition.capability == target
+        }
+        assert any(retry is not None and retry.endswith("agent-transient") for retry in retries)
+        assert host.target_attempts == 2
     finally:
         invocation.engine.close()

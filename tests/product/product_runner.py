@@ -555,8 +555,11 @@ class ProductRun:
             full is not None
             and any(node_id in full.nodes for node_id in ("execute", "quality", "report"))
             and "quality-report" in graphs
+        ) or (
+            "full" in workflow.entrypoints
+            and any(graph_id.endswith(".quality-report") for graph_id in graphs)
         )
-        assert has_downstream, "canonical graph ends at the selected-family join"
+        assert has_downstream, "assembled graph has no quality-report downstream"
         projection, status = self._run_engine()
         assert status in {"succeeded", "stopped"}, status
         return _flow_trace_from_result(projection, self._composition)
@@ -966,13 +969,9 @@ def resolve_product_workflow_composition(workflow: WorkflowDef) -> FrozenComposi
 
 @pytest.fixture
 def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
-    del installed_sources
-    from assurance_product.product import load_canonical_workflow
+    from tests.product.test_workflow_modularization_golden import _modular_composition
 
-    workflow = load_canonical_workflow()
-    composition = None
-    if "full" in workflow.entrypoints:
-        composition = resolve_product_workflow_composition(workflow)
+    composition = _modular_composition(installed_sources)
     engine_root = tmp_path_factory.mktemp("generation-runner")
 
     def factory(
@@ -989,7 +988,6 @@ def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
     ) -> ProductRun:
         from assurance_product.models import FAMILY_EMPTY_ENTRYPOINTS
 
-        assert composition is not None, "workflow stops after the intake/case slice"
         families = selected_test_families
         if families is None:
             families = () if entrypoint in FAMILY_EMPTY_ENTRYPOINTS else ("api",)

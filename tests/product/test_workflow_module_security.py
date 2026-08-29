@@ -101,13 +101,52 @@ def test_product_package_excludes_monolith_and_keeps_main_workflow() -> None:
 
 
 def test_pre_modular_loader_reads_only_the_test_fixture() -> None:
+    import inspect
+
     from assurance_product import product as product_mod
 
-    assert product_mod._PRE_MODULAR_WORKFLOW_PATH == _PRE_MODULAR_FIXTURE
-    assert "resources/workflow/assurance-full.yaml" not in str(product_mod._PRE_MODULAR_WORKFLOW_PATH)
-    workflow = product_mod.load_pre_modular_workflow()
-    assert product_mod.load_canonical_workflow() is not workflow or workflow.name
+    source_text = (_REPO_ROOT / "packages/products/assurance-product/assurance_product/product.py").read_text(
+        encoding="utf-8"
+    )
+    assert "load_canonical_workflow" not in source_text
+    resolver_source = inspect.getsource(product_mod._resolve_pre_modular_workflow_path)
+    assert "cwd" not in resolver_source
+    assert "Path.cwd" not in resolver_source
+    assert product_mod._PRODUCT_MODULE_PATH.name == "main.yaml"
+    assert product_mod._PRODUCT_MODULE_PATH.is_file()
+    assert product_mod._PRODUCT_MODULE_PATH.resolve() != _PRE_MODULAR_FIXTURE.resolve()
+    resolved = product_mod._resolve_pre_modular_workflow_path()
+    if resolved is not None:
+        assert resolved == _PRE_MODULAR_FIXTURE
+        assert "resources/workflow/assurance-full.yaml" not in str(resolved)
+    workflow = product_mod.load_pre_modular_workflow(_PRE_MODULAR_FIXTURE)
+    module = product_mod.load_product_workflow_module()
+    assert workflow.name == "assurance"
+    assert module.module_id == "assurance.product.workflow"
+    assert module.role == "product"
+    assert product_mod._PRODUCT_MODULE_PATH.read_text(encoding="utf-8") != _PRE_MODULAR_FIXTURE.read_text(
+        encoding="utf-8"
+    )
+    assert not hasattr(product_mod, "load_canonical_workflow")
     assert len(workflow.entrypoints) == 14
+
+
+def test_pre_modular_loader_ignores_a_cwd_decoy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from assurance_product import product as product_mod
+
+    decoy = tmp_path / "tests/product/fixtures/assurance-full-pre-modular.yaml"
+    decoy.parent.mkdir(parents=True)
+    decoy.write_text("schema_version: '1'\nname: decoy\nentrypoints: {}\ngraphs: {}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    resolved = product_mod._resolve_pre_modular_workflow_path()
+    assert resolved != decoy.resolve()
+    if resolved is not None:
+        assert resolved == _PRE_MODULAR_FIXTURE
+        assert product_mod.load_pre_modular_workflow().name == "assurance"
+    else:
+        with pytest.raises(FileNotFoundError):
+            product_mod.load_pre_modular_workflow()
+    assert product_mod.load_pre_modular_workflow(_PRE_MODULAR_FIXTURE).name == "assurance"
 
 
 def test_release_identities_are_the_modular_0_2_0_cut() -> None:
@@ -233,7 +272,7 @@ def test_modular_runner_leaves_legacy_lock_ledger_unchanged(installed_sources, t
     from assurance_product.product import load_pre_modular_workflow
     from tests.product.test_workflow_modularization_golden import _modular_composition
 
-    legacy = resolve_product_workflow_composition(load_pre_modular_workflow())
+    legacy = resolve_product_workflow_composition(load_pre_modular_workflow(_PRE_MODULAR_FIXTURE))
     modular = _modular_composition(installed_sources)
     engine_root = tmp_path / "legacy-lock"
     engine_root.mkdir()
@@ -322,14 +361,14 @@ def test_public_boundary_enums_and_actions_reach_a_planned_outcome(installed_sou
             composition=composition,
         ).run_to_terminal()
         assert stopped.status == "interrupted"
-        try:
-            resumed = stopped.resume({"decision": action})
-        except EngineError:
-            continue
+        resumed = stopped.resume({"decision": action})
         assert resumed.status in _PLANNED_TERMINALS, (action, resumed.status)
         assert resumed.status != "running"
         seen.append(f"action:{action}")
-    assert len(seen) >= len(_PUBLIC_BOUNDARY_ENUMS)
+    assert {item for item in seen if item.startswith("action:")} == {
+        f"action:{action}" for action in _PUBLIC_BOUNDARY_ACTIONS
+    }
+    assert set(seen) >= {f"{field}:{value}" for field, value in _PUBLIC_BOUNDARY_ENUMS}
 
 
 @pytest.mark.usefixtures("installed_sources")

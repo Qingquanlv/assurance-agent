@@ -18,13 +18,15 @@ from graph_engine.runtime.models import InvocationProjection
 from graph_engine.runtime.seed import empty_invocation_seed
 
 from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
-from assurance_product.product import load_canonical_workflow, prepare_change_workspace
+from assurance_product.product import load_pre_modular_workflow, prepare_change_workspace
 
 from tests.product.product_runner import (
     FAMILY_TERMINALS,
     _product_input,
     resolve_product_workflow_composition,
 )
+
+_PRE_MODULAR_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
 
 
 def _scripted_host():
@@ -131,7 +133,7 @@ def _run_execute(
     *,
     completion_order: Literal["forward", "reverse"] = "forward",
 ):
-    workflow = load_canonical_workflow()
+    workflow = load_pre_modular_workflow(_PRE_MODULAR_FIXTURE)
     composition = resolve_product_workflow_composition(workflow)
     seed_input = _seed_input(selected)
     with TemporaryDirectory(prefix="generation-product-") as tmp:
@@ -166,7 +168,7 @@ def _run_execute(
 
 
 def _start_execute_raw(selected: tuple[str, ...]) -> None:
-    workflow = load_canonical_workflow()
+    workflow = load_pre_modular_workflow(_PRE_MODULAR_FIXTURE)
     composition = resolve_product_workflow_composition(workflow)
     seed_input = _seed_input(selected, validate_product=False)
     with TemporaryDirectory(prefix="generation-invalid-") as tmp:

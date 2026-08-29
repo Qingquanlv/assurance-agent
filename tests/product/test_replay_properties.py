@@ -132,7 +132,11 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
     from tests.product.product_runner import resolve_product_workflow_composition
     from tests.product.test_workflow_modularization_golden import _modular_composition
 
-    legacy = resolve_product_workflow_composition(load_pre_modular_workflow())
+    legacy = resolve_product_workflow_composition(
+        load_pre_modular_workflow(
+            Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
+        )
+    )
     modular = _modular_composition(installed_sources)
     engine_root = tmp_path / "replay-legacy-lock"
     engine_root.mkdir()

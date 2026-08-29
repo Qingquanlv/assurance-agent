@@ -74,7 +74,7 @@ THIN_WRAPPER_ENTRYPOINTS = (
 def test_pre_modular_inventory_is_frozen() -> None:
     from assurance_product.product import load_pre_modular_workflow
 
-    workflow = load_pre_modular_workflow()
+    workflow = load_pre_modular_workflow(PRE_MODULAR_YAML)
     assert len(workflow.entrypoints) == 14
     assert len(workflow.graphs) == 52
     assert sum(len(graph.nodes) for graph in workflow.graphs.values()) == 265
@@ -327,7 +327,7 @@ def _modular_composition(installed_sources):
 def _load_bound_pre_modular() -> WorkflowDef:
     from assurance_product.product import load_pre_modular_workflow
 
-    return load_pre_modular_workflow()
+    return load_pre_modular_workflow(PRE_MODULAR_YAML)
 
 
 def _run_scenario(composition, engine_root: Path, scenario: dict[str, Any]):
