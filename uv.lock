@@ -34,7 +34,7 @@ source = { editable = "examples/minimal-product" }
 
 [[package]]
 name = "agent-runtime-contracts"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/clients/agent-runtime-contracts" }
 dependencies = [
     { name = "graph-engine" },
@@ -122,7 +122,7 @@ wheels = [
 
 [[package]]
 name = "assurance-execution"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/features/assurance-execution" }
 dependencies = [
     { name = "agent-runtime-contracts" },
@@ -145,7 +145,7 @@ requires-dist = [
 
 [[package]]
 name = "assurance-generation"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/features/assurance-generation" }
 dependencies = [
     { name = "agent-runtime-contracts" },
@@ -166,7 +166,7 @@ requires-dist = [
 
 [[package]]
 name = "assurance-healing"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/features/assurance-healing" }
 dependencies = [
     { name = "agent-runtime-contracts" },
@@ -189,7 +189,7 @@ requires-dist = [
 
 [[package]]
 name = "assurance-improvement"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/features/assurance-improvement" }
 dependencies = [
     { name = "agent-runtime-contracts" },
@@ -216,7 +216,7 @@ requires-dist = [
 
 [[package]]
 name = "assurance-intake"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/features/assurance-intake" }
 dependencies = [
     { name = "agent-runtime-contracts" },
@@ -235,7 +235,7 @@ requires-dist = [
 
 [[package]]
 name = "assurance-product"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/products/assurance-product" }
 dependencies = [
     { name = "assurance-execution" },
@@ -273,7 +273,7 @@ provides-extras = ["opencode", "cursor"]
 
 [[package]]
 name = "assurance-quality"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/features/assurance-quality" }
 dependencies = [
     { name = "agent-runtime-contracts" },
@@ -298,7 +298,7 @@ requires-dist = [
 
 [[package]]
 name = "assurance-workspace"
-version = "0.1.0"
+version = "0.2.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]
@@ -479,7 +479,7 @@ wheels = [
 
 [[package]]
 name = "graph-engine"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "packages/framework/graph-engine" }
 dependencies = [
     { name = "packaging" },

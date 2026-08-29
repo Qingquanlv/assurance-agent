@@ -33,6 +33,7 @@ from graph_engine.plugin_api import (
     ResourceContribution,
     SchemaContribution,
     TaskContext,
+    TaskHandler,
     TaskOutcome,
     TaskRequest,
 )
@@ -179,7 +180,7 @@ def test_intake_workflow_module_is_published() -> None:
     assert module.role == "feature"
     assert module.owner_id == "assurance.intake"
     assert module.module_id == _MODULE_ID
-    assert module.module_version == "0.1.0"
+    assert module.module_version == "0.2.0"
     assert "name" not in module.model_fields_set
     assert module.name is None
     assert module.entrypoints == {}
@@ -384,7 +385,7 @@ def test_export_output_projections_expose_review_outcome_and_artifact_refs() -> 
 
 def test_fake_slot_bindings_compile_without_an_agent_server() -> None:
     module = _load_module()
-    handlers: dict[str, object] = {}
+    handlers: dict[str, TaskHandler] = {}
     graphs = {}
     for graph_id, graph in module.graphs.items():
         nodes = {}
@@ -455,8 +456,8 @@ class _ScriptedIntakeHost:
             if isinstance(outcome.output, Mapping):
                 self.advance_outputs.append(
                     {
-                        "rounds_used": int(outcome.output["rounds_used"]),
-                        "rounds_budget": int(outcome.output["rounds_budget"]),
+                        "rounds_used": int(cast(int, outcome.output["rounds_used"])),
+                        "rounds_budget": int(cast(int, outcome.output["rounds_budget"])),
                     }
                 )
             return TaskHostCallResult(operation="execute", outcome=outcome)
@@ -534,7 +535,7 @@ class _ScriptedIntakeHost:
 
 def _compile_intake_workflow():
     module = _load_module()
-    handlers: dict[str, object] = {}
+    handlers: dict[str, TaskHandler] = {}
     graphs = {}
     for graph_id, graph in module.graphs.items():
         nodes = {}

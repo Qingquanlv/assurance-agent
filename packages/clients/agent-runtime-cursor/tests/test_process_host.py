@@ -65,7 +65,8 @@ def spawning_child_request(tmp_path: Path) -> ProcessLaunchRequest:
 async def no_recorded_pid_survives(receipt: object, *, host_root: Path) -> bool:
     from agent_runtime_cursor.process import CursorProcessReceipt, production_process_host
 
-    bound = CursorProcessReceipt.model_validate(receipt)
+    payload = receipt.model_dump() if hasattr(receipt, "model_dump") else receipt
+    bound = CursorProcessReceipt.model_validate(payload)
     host = production_process_host(host_root)
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:

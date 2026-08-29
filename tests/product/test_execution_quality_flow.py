@@ -28,7 +28,9 @@ def test_passed_verdict_reaches_quality_assessment_not_healing() -> None:
 
 
 def test_fix_eligible_test_failure_enters_healing() -> None:
-    trace = drive_failed_execution(classification="test", fix_eligible=True, execution_sequence=("failed", "passed"))
+    trace = drive_failed_execution(
+        classification="test", fix_eligible=True, execution_sequence=("failed", "passed")
+    )
     assert "quality.issue-analyze" in trace.public_exports
     assert "healing.repair-failure" in trace.public_exports
 

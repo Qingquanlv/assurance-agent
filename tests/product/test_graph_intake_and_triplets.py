@@ -255,18 +255,12 @@ def test_generation_plan_review_routes_before_codegen(compiled_product_workflow,
     # route gates. Keep the graph safety ceiling above the valid repair budget.
     assert graph.max_activations >= 64
     nodes = set(graph.nodes)
-    assert {
-        "plan-review-pass-gate",
-        "plan-review-fix-gate",
-        "plan-review-human-gate",
-        "plan-human-review",
-    }.issubset(nodes)
+    assert {"plan", "plan-review", "plan-human-review", "codegen"}.issubset(nodes)
     edges = {(edge.from_, edge.to) for edge in graph.edges}
-    assert ("plan-review", "codegen") not in edges
-    assert ("plan-review-pass-gate", "codegen") in edges
-    assert ("plan-review-fix-gate", "plan") in edges
-    assert ("plan-review-human-gate", "plan-human-review") in edges
+    assert ("plan-review", "codegen") in edges
+    assert ("plan-review", "plan-human-review") in edges
     assert ("plan-human-review", "codegen") in edges
+    assert ("plan-review", "rejected") in edges
 
 
 @pytest.mark.parametrize("family", ["api", "e2e"])
@@ -274,8 +268,8 @@ def test_successful_codegen_does_not_unconditionally_run_fixer(compiled_product_
     graph = _named_graph(compiled_product_workflow, f"generation-{family}")
     edges = {(edge.from_, edge.to) for edge in graph.edges}
     assert ("codegen", "codegen-fix") not in edges
-    assert ("codegen-pass-gate", "done") in edges
-    assert ("codegen-fix-gate", "codegen-fix") in edges
+    assert ("codegen", "done") in edges
+    assert ("codegen-round-advance", "codegen-fix") in edges
 
 
 @pytest.mark.parametrize("adapter", ["opencode", "cursor"])

@@ -25,9 +25,9 @@ def test_healing_descriptor_declares_exact_upstream_dependencies() -> None:
         "assurance.execution",
     )
     assert HealingPlugin.descriptor().dependencies == (
-        PluginDependency("assurance.intake", "==0.1.0"),
-        PluginDependency("assurance.generation", "==0.1.0"),
-        PluginDependency("assurance.execution", "==0.1.0"),
+        PluginDependency("assurance.intake", "==0.2.0"),
+        PluginDependency("assurance.generation", "==0.2.0"),
+        PluginDependency("assurance.execution", "==0.2.0"),
     )
 
 
@@ -55,7 +55,7 @@ def test_healing_source_identity() -> None:
     assert source == HEALING_SOURCE
     assert source == ProviderSource(
         distribution="assurance-healing",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="healing",
         entrypoint_value="assurance_healing.plugin:HealingPlugin",

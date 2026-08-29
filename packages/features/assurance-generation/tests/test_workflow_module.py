@@ -37,6 +37,7 @@ from graph_engine.plugin_api import (
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
     TaskContext,
+    TaskHandler,
     TaskOutcome,
     TaskRequest,
 )
@@ -188,7 +189,7 @@ def test_generation_workflow_module_is_published() -> None:
     assert module.role == "feature"
     assert module.owner_id == "assurance.generation"
     assert module.module_id == _MODULE_ID
-    assert module.module_version == "0.1.0"
+    assert module.module_version == "0.2.0"
     assert "name" not in module.model_fields_set
     assert module.name is None
     assert module.entrypoints == {}
@@ -639,7 +640,9 @@ class _ScriptedGenerationHost:
                     }
             else:
                 output = {"change_id": change_id, "needs_fix": False, "schema_version": "1"}
-            return TaskHostCallResult(operation="execute", outcome=TaskOutcome.succeeded(output))
+            return TaskHostCallResult(
+                operation="execute", outcome=TaskOutcome.succeeded(cast(JSONValue, output))
+            )
         return TaskHostCallResult(
             operation="execute",
             outcome=TaskOutcome.succeeded(
@@ -673,7 +676,7 @@ class _ScriptedGenerationHost:
 
 def _compile_generation_workflow():
     module = _load_module()
-    handlers: dict[str, object] = {}
+    handlers: dict[str, TaskHandler] = {}
     graphs = {}
     for graph_id, graph in module.graphs.items():
         nodes = {}
@@ -799,7 +802,7 @@ def _drive_generate(
                 skip_families=frozenset(skipped),
                 join_token_count=join_tokens,
                 advance_count=len(host.advance_outputs),
-                counters=tuple(int(item["rounds_used"]) for item in host.advance_outputs),
+                counters=tuple(int(cast(int, item["rounds_used"])) for item in host.advance_outputs),
                 end_nodes=frozenset(ends),
                 public_outcome=public,
             )
@@ -894,7 +897,7 @@ def _project_join_selected(
     *,
     order: tuple[str, ...],
     graph_input: Mapping[str, object],
-) -> object:
+) -> Mapping[str, JSONValue]:
     module = _load_module()
     graphs = {item.graph_instance_id: item for item in projection.graph_instances}
     join = next(
@@ -919,14 +922,17 @@ def _project_join_selected(
     predecessor_tokens = {source: raw[source] for source in order}
     compiled = module.graphs["generation"].nodes["join-selected"]
     assert compiled.input_projection is not None
-    return freeze_json(
-        project_task_input(
-            compiled.input_projection,
-            root_input=graph_input,
-            graph_input=graph_input,
-            node_config={},
-            predecessor_tokens=predecessor_tokens,
-        )
+    return cast(
+        Mapping[str, JSONValue],
+        freeze_json(
+            project_task_input(
+                compiled.input_projection,
+                root_input=graph_input,
+                graph_input=graph_input,
+                node_config={},
+                predecessor_tokens=predecessor_tokens,
+            )
+        ),
     )
 
 
@@ -981,7 +987,7 @@ def test_join_is_order_independent_for_all_four_lanes() -> None:
         projection, order=tuple(reversed(_FAMILY_TERMINALS)), graph_input=graph_input
     )
     assert forward == reverse
-    assert list(forward["selected_families"]) == list(GENERATION_FAMILIES)
+    assert list(cast(list[str], forward["selected_families"])) == list(GENERATION_FAMILIES)
     result = _drive_generate(selected=GENERATION_FAMILIES)
     assert result.join_token_count == 4
     assert result.dispatched_families == frozenset(GENERATION_FAMILIES)

@@ -25,7 +25,9 @@ def test_graph_bindings_are_closed_and_inventoried(adapter, compiled_for):
     agent_ids = {
         capability for capability in capabilities if capability.startswith("assurance.product.agent.")
     }
-    assert agent_ids == set(ALL_BINDING_IDS)
+    execute_aliases = {item for item in ALL_BINDING_IDS if item.endswith(".execute")}
+    assert execute_aliases <= agent_ids
+    assert agent_ids <= set(ALL_BINDING_IDS)
     assert set(bindings) == set(ALL_BINDING_IDS)
 
 

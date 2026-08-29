@@ -15,6 +15,7 @@ from graph_engine.plugin_api import (
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
     TaskContext,
+    TaskHandler,
     TaskOutcome,
 )
 from graph_engine.runtime.engine import Engine, EngineError
@@ -71,8 +72,8 @@ class _AssembledIntakeHost:
             if isinstance(outcome.output, Mapping):
                 self.advance_outputs.append(
                     {
-                        "rounds_used": int(outcome.output["rounds_used"]),
-                        "rounds_budget": int(outcome.output["rounds_budget"]),
+                        "rounds_used": int(cast(int, outcome.output["rounds_used"])),
+                        "rounds_budget": int(cast(int, outcome.output["rounds_budget"])),
                     }
                 )
             return TaskHostCallResult(operation="execute", outcome=outcome)
@@ -149,7 +150,7 @@ def _assembled_intake_entry_composition(installed_sources):
     assembled = resolve_assurance_composition(request_for("opencode", installed_sources))
     entry_id = "assurance.intake.workflow.graph.entry"
     assert entry_id in assembled.workflow.graphs
-    handlers: dict[str, object] = {}
+    handlers: dict[str, TaskHandler] = {}
     graphs: dict[str, object] = {}
     for graph_id, graph in assembled.workflow.graphs.items():
         if "assurance.intake.workflow.graph." not in graph_id:
@@ -162,7 +163,7 @@ def _assembled_intake_entry_composition(installed_sources):
             payload.pop("output_projection", None)
             capability = payload.get("capability")
             if isinstance(capability, str):
-                handlers[capability] = object()
+                handlers[capability] = cast(TaskHandler, object())
             nodes[node_id] = payload
         graphs[graph_id] = {
             "max_activations": graph.max_activations,

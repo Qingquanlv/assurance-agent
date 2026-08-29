@@ -66,7 +66,7 @@ def test_full_graph_has_no_orphans_or_forbidden_targets(compiled_product_workflo
         f"{graph_id}/{node_id}"
         for graph_id, graph in workflow.graphs.items()
         for node_id, node in graph.nodes.items()
-        if node.definition.kind != "end" and not node.outgoing
+        if node.definition.kind not in {"end", "interrupt"} and not node.outgoing
     }
     forbidden = [
         f"{graph_id}/{node_id}:{node.definition.capability}"

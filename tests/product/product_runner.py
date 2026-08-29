@@ -38,6 +38,8 @@ from graph_engine.runtime.secret_sources import (
 )
 from graph_engine.runtime.seed import empty_invocation_seed
 
+from assurance_product.models import ChangeProjectionV1
+
 GENERATION_FAMILIES = ("api", "e2e", "fuzz", "performance")
 FAMILY_TERMINALS = ("api-done", "e2e-done", "fuzz-done", "performance-done")
 _GENERATION_PREFIX = "assurance.product.agent.generation."
@@ -133,7 +135,7 @@ class TerminalResult:
     stop_reason: str | None
     has_nested_stop: bool
     report: ReportTrace
-    change: object
+    change: ChangeProjectionV1
     projection: InvocationProjection
     _engine: Engine
     _handle: InvocationHandle
@@ -219,8 +221,8 @@ class _ScriptedTaskHost:
             )
         return TaskHostCallResult(operation="execute", outcome=outcome)
 
-    def _public_fields(self, extra: Mapping[str, object] | None = None) -> dict[str, object]:
-        payload: dict[str, object] = {
+    def _public_fields(self, extra: Mapping[str, object] | None = None) -> dict[str, JSONValue]:
+        payload: dict[str, JSONValue] = {
             "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
             "auto_fix_allowed": False,
             "change_id": "CH-DEMO-001",
@@ -242,7 +244,7 @@ class _ScriptedTaskHost:
             "status": self._last_status,
         }
         if extra:
-            payload.update(dict(extra))
+            payload.update(cast(dict[str, JSONValue], dict(extra)))
         return payload
 
     def _outcome(self, capability_id: str, request_input: object = None) -> TaskOutcome:
@@ -262,11 +264,14 @@ class _ScriptedTaskHost:
         if capability_id.endswith("repair-round.advance"):
             payload = request_input if isinstance(request_input, Mapping) else {}
             return TaskOutcome.succeeded(
-                {
-                    "kind": payload.get("kind", "failure"),
-                    "rounds_used": int(payload.get("rounds_used", 0)) + 1,
-                    "rounds_budget": payload.get("rounds_budget", 1),
-                }
+                cast(
+                    JSONValue,
+                    {
+                        "kind": payload.get("kind", "failure"),
+                        "rounds_used": int(payload.get("rounds_used", 0)) + 1,
+                        "rounds_budget": payload.get("rounds_budget", 1),
+                    },
+                )
             )
         if capability_id in _EXECUTION_FINALIZE:
             status = self._next_execution()
@@ -276,8 +281,8 @@ class _ScriptedTaskHost:
             )
         if capability_id == _INSPECT_FINALIZE:
             measured = self._next_coverage()
-            rounds_used = int(echoed.get("rounds_used", self._inspect_count))
-            rounds_budget = int(echoed.get("rounds_budget", self._coverage_rounds))
+            rounds_used = int(cast(int, echoed.get("rounds_used", self._inspect_count)))
+            rounds_budget = int(cast(int, echoed.get("rounds_budget", self._coverage_rounds)))
             self._inspect_count += 1
             self._last_measured = measured
             from assurance_quality.contracts.coverage import classify_coverage_state
@@ -746,7 +751,7 @@ def _terminal_from_run(
     )
 
 
-def _change_projection(projection: InvocationProjection) -> object:
+def _change_projection(projection: InvocationProjection) -> ChangeProjectionV1:
     from graph_engine.canonical import canonical_digest
 
     from assurance_product.status import render_status
@@ -959,7 +964,7 @@ def resolve_product_workflow_composition(workflow: WorkflowDef) -> FrozenComposi
     return resolve_workflow_composition(document, handlers)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
     del installed_sources
     from assurance_product.product import load_canonical_workflow

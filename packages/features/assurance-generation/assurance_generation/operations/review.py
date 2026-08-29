@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from pydantic import ValidationError
 
+from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 
@@ -93,7 +96,7 @@ class PlanReviewFinalizeHandler:
                 "rounds_used": used if used is not None else 0,
                 "rounds_budget": budget if budget is not None else 2,
             }
-            return TaskOutcome.succeeded({**document.model_dump(mode="json"), **extra})
+            return TaskOutcome.succeeded(cast(JSONValue, {**document.model_dump(mode="json"), **extra}))
         except (InputError, ValidationError) as error:
             return failed_input(error)
         except OutputError as error:

@@ -61,12 +61,15 @@ def test_wrap_fails_closed_when_sandbox_unavailable(tmp_path: Path, monkeypatch:
 def test_wrap_authenticates_sandbox_executable_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from agent_runtime_cursor.filesystem_sandbox import FilesystemSandbox as LiveSandbox
+    import agent_runtime_cursor.filesystem_sandbox as sandbox_mod
+
     fake = tmp_path / "sandbox-exec"
     fake.write_bytes(b"not-sandbox")
     fake.chmod(0o755)
     monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr("agent_runtime_cursor.filesystem_sandbox.SANDBOX_EXEC", fake)
-    wrapped = FilesystemSandbox.wrap(_launch(tmp_path))
+    monkeypatch.setattr(sandbox_mod, "SANDBOX_EXEC", fake)
+    wrapped = LiveSandbox.wrap(_launch(tmp_path))
     assert Path(wrapped.argv[0]).resolve() == fake.resolve()
     assert not Path(wrapped.argv[0]).is_symlink()
     assert stat.S_ISREG(Path(wrapped.argv[0]).stat().st_mode)

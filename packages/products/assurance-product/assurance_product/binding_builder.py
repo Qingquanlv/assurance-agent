@@ -33,12 +33,12 @@ from assurance_product.models import (
 _WHEEL_EPOCH = (1980, 1, 1, 0, 0, 0)
 _FILE_MODE = 0o644
 _CAPABILITY_DEPENDENCIES: tuple[tuple[str, str], ...] = (
-    ("assurance.intake", "==0.1.0"),
-    ("assurance.generation", "==0.1.0"),
-    ("assurance.execution", "==0.1.0"),
-    ("assurance.healing", "==0.1.0"),
-    ("assurance.quality", "==0.1.0"),
-    ("assurance.improvement", "==0.1.0"),
+    ("assurance.intake", "==0.2.0"),
+    ("assurance.generation", "==0.2.0"),
+    ("assurance.execution", "==0.2.0"),
+    ("assurance.healing", "==0.2.0"),
+    ("assurance.quality", "==0.2.0"),
+    ("assurance.improvement", "==0.2.0"),
 )
 _CAPABILITY_PLUGIN_IMPORTS: tuple[tuple[str, str], ...] = (
     ("assurance_intake.plugin", "IntakePlugin"),
@@ -68,6 +68,8 @@ from graph_engine.plugin_api import (
     ResourceContribution,
     validate_contribution,
 )
+
+PLUGIN_VERSION = "1.1.0"
 
 
 def _document() -> dict[str, object]:
@@ -101,7 +103,7 @@ class DeploymentPlugin:
             schema_version="1",
             source=source,
             plugin_id="assurance.product.agent",
-            plugin_version="1.0.0",
+            plugin_version=PLUGIN_VERSION,
             engine_api=ENGINE_API_VERSION,
             task_handlers=(),
             commit_validators=(),
@@ -731,8 +733,8 @@ def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object
 
 def _metadata_bytes(distribution: str) -> bytes:
     requirements = [
-        "graph-engine==0.1.0",
-        *(f"{name}==0.1.0" for name, _ in _CAPABILITY_DEPENDENCIES),
+        "graph-engine==0.2.0",
+        *(f"{name}==0.2.0" for name, _ in _CAPABILITY_DEPENDENCIES),
     ]
     lines = [
         "Metadata-Version: 2.1",

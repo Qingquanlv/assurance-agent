@@ -21,6 +21,7 @@ from assurance_improvement.contracts import (
     SignalDocumentV3,
     TestPromotionManifest,
 )
+from assurance_improvement.contracts.retro import RetroSourceManifestV3
 from assurance_improvement.plugin import ImprovementPlugin
 
 _WHEEL_ROOT = Path(__file__).resolve().parent.parent
@@ -104,8 +105,6 @@ def candidate_with_unknown_source() -> dict[str, object]:
 
 
 def retro_manifest_context() -> dict[str, object]:
-    from assurance_improvement.contracts.retro import RetroSourceManifestV3
-
     return {"retro_manifest": RetroSourceManifestV3.model_validate(authenticated_manifest())}
 
 

@@ -267,3 +267,15 @@ def test_unknown_declared_resource_id_is_rejected(tmp_path):
     (tree / ".aa" / "extra.yaml").write_text("value: data\n", encoding="utf-8")
     with pytest.raises(ProjectConfigurationError, match="unknown|resource"):
         _load(tree)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["module", "distribution", "entrypoint", "path", "export", "capability", "schema", "implementation"],
+)
+def test_aa_cannot_select_module_or_schema_implementation(config_document, key):
+    from assurance_product.configuration import ProjectConfigurationError, parse_project_config
+
+    config_document[key] = "forged-source"
+    with pytest.raises(ProjectConfigurationError, match="unknown configuration|runtime authority"):
+        parse_project_config(config_document)

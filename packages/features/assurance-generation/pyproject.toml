@@ -1,11 +1,11 @@
 [project]
 name = "assurance-generation"
-version = "0.1.0"
+version = "0.2.0"
 description = "Assurance generation capability wheel"
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "agent-runtime-contracts",
-    "assurance-intake==0.1.0",
+    "assurance-intake==0.2.0",
     "graph-engine",
     "pydantic>=2.7",
     "pyyaml>=6.0",

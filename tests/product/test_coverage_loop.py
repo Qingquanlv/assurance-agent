@@ -100,7 +100,7 @@ def test_exhausted_budget_does_not_dispatch_another_repair() -> None:
     assert_each_coverage_repair_is_preceded_by_one_advance(trace.task_capabilities)
     assert tuple(item["rounds_used"] for item in trace.advance_outputs) == (1,)
     assert all(item["kind"] == "coverage" for item in trace.advance_outputs)
-    assert all(item["rounds_used"] <= item["rounds_budget"] for item in trace.advance_outputs)
+    assert all(int(item["rounds_used"]) <= int(item["rounds_budget"]) for item in trace.advance_outputs)
     assert trace.terminal != "achieved"
     assert "quality.report" in trace.public_exports
 
@@ -161,7 +161,7 @@ def test_repaired_rounds_are_monotonic_and_never_exceed_budget() -> None:
     assert used == (1, 2)
     assert used == tuple(sorted(used))
     assert all(item["kind"] == "coverage" for item in trace.advance_outputs)
-    assert all(item["rounds_used"] <= item["rounds_budget"] == 2 for item in trace.advance_outputs)
+    assert all(int(item["rounds_used"]) <= int(item["rounds_budget"]) == 2 for item in trace.advance_outputs)
     assert_each_coverage_repair_is_preceded_by_one_advance(trace.task_capabilities)
     assert "quality.report" in trace.public_exports
 

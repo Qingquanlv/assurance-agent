@@ -37,7 +37,7 @@ def test_intake_source_identity() -> None:
     assert source == INTAKE_SOURCE
     assert source == ProviderSource(
         distribution="assurance-intake",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="intake",
         entrypoint_value="assurance_intake.plugin:IntakePlugin",

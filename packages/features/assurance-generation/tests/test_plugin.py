@@ -23,7 +23,7 @@ from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
 
 def test_generation_descriptor_declares_only_intake_dependency() -> None:
     descriptor = GenerationPlugin.descriptor()
-    assert descriptor.dependencies == (PluginDependency("assurance.intake", "==0.1.0"),)
+    assert descriptor.dependencies == (PluginDependency("assurance.intake", "==0.2.0"),)
 
 
 def test_generation_plugin_conforms() -> None:
@@ -50,7 +50,7 @@ def test_generation_source_identity() -> None:
     assert source == GENERATION_SOURCE
     assert source == ProviderSource(
         distribution="assurance-generation",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="generation",
         entrypoint_value="assurance_generation.plugin:GenerationPlugin",

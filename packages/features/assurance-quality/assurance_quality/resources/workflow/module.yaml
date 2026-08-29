@@ -2,7 +2,7 @@ schema_version: "1"
 role: feature
 owner_id: assurance.quality
 module_id: assurance.quality.workflow
-module_version: 0.1.0
+module_version: 0.2.0
 imports: {}
 exports:
   assess:

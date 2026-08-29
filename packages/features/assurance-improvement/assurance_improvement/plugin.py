@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from graph_engine import ENGINE_API_VERSION
+from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import (
     EffectPolicy,
     EffectRegistration,
@@ -41,7 +44,7 @@ from assurance_improvement.validators.review import ReviewValidator
 
 IMPROVEMENT_SOURCE = ProviderSource(
     distribution="assurance-improvement",
-    version="0.1.0",
+    version="0.2.0",
     entrypoint_group="graph_engine.plugins",
     entrypoint_name="improvement",
     entrypoint_value="assurance_improvement.plugin:ImprovementPlugin",
@@ -50,11 +53,11 @@ IMPROVEMENT_SOURCE = ProviderSource(
 )
 
 IMPROVEMENT_DEPENDENCIES: tuple[PluginDependency, ...] = (
-    PluginDependency("assurance.intake", "==0.1.0"),
-    PluginDependency("assurance.generation", "==0.1.0"),
-    PluginDependency("assurance.execution", "==0.1.0"),
-    PluginDependency("assurance.healing", "==0.1.0"),
-    PluginDependency("assurance.quality", "==0.1.0"),
+    PluginDependency("assurance.intake", "==0.2.0"),
+    PluginDependency("assurance.generation", "==0.2.0"),
+    PluginDependency("assurance.execution", "==0.2.0"),
+    PluginDependency("assurance.healing", "==0.2.0"),
+    PluginDependency("assurance.quality", "==0.2.0"),
 )
 
 IMPROVEMENT_SCHEMA_IDS: tuple[str, ...] = (
@@ -169,7 +172,7 @@ def _schema_contributions() -> tuple[SchemaContribution, ...]:
         SchemaContribution(
             schema_id=schema_id,
             media_type="application/schema+json",
-            content=resource_bytes(_SCHEMA_FILES[schema_id]),
+            content=canonical_json_bytes(json.loads(resource_bytes(_SCHEMA_FILES[schema_id]))),
         )
         for schema_id in IMPROVEMENT_SCHEMA_IDS
     )
@@ -233,7 +236,7 @@ class ImprovementPlugin:
             schema_version="1",
             source=IMPROVEMENT_SOURCE,
             plugin_id="assurance.improvement",
-            plugin_version="0.1.0",
+            plugin_version="0.2.0",
             engine_api=ENGINE_API_VERSION,
             task_handlers=IMPROVEMENT_HANDLER_IDS,
             commit_validators=IMPROVEMENT_VALIDATOR_IDS,

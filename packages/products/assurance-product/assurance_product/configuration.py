@@ -40,12 +40,12 @@ _ALLOWED_DECLARED_RESOURCE_IDS = frozenset(
     {_POLICY_RESOURCE_ID, _KNOWLEDGE_RESOURCE_ID, _CATALOG_RESOURCE_ID, _ENVELOPE_RESOURCE_ID}
 )
 _REQUIRED_DEPENDENCIES = (
-    ("assurance.intake", "==0.1.0"),
-    ("assurance.generation", "==0.1.0"),
-    ("assurance.execution", "==0.1.0"),
-    ("assurance.healing", "==0.1.0"),
-    ("assurance.quality", "==0.1.0"),
-    ("assurance.improvement", "==0.1.0"),
+    ("assurance.intake", "==0.2.0"),
+    ("assurance.generation", "==0.2.0"),
+    ("assurance.execution", "==0.2.0"),
+    ("assurance.healing", "==0.2.0"),
+    ("assurance.quality", "==0.2.0"),
+    ("assurance.improvement", "==0.2.0"),
 )
 _AUTHORITY_KEYS = frozenset(
     {
@@ -55,8 +55,12 @@ _AUTHORITY_KEYS = frozenset(
         "callable",
         "command",
         "commit_validators",
+        "capability",
+        "distribution",
         "endpoint",
         "entrypoint",
+        "export",
+        "implementation",
         "entrypoint_group",
         "entrypoint_name",
         "entrypoint_value",
@@ -68,10 +72,12 @@ _AUTHORITY_KEYS = frozenset(
         "installer",
         "model",
         "module",
+        "path",
         "permission_grant",
         "permission_profile",
         "python",
         "resource_port",
+        "schema",
         "secret",
         "secret_handle",
         "secret_source",
@@ -139,6 +145,9 @@ def parse_project_config(document: Mapping[str, object] | object) -> ProjectConf
     try:
         parsed = ProjectConfigV1.model_validate(mapping)
     except ValidationError as error:
+        if any(item.get("type") == "extra_forbidden" for item in error.errors()):
+            extras = [str(item.get("loc", ("unknown",))[-1]) for item in error.errors()]
+            raise ProjectConfigurationError(f"unknown configuration: {', '.join(extras)}") from error
         raise ProjectConfigurationError(str(error)) from error
     if parsed.resources:
         raise ProjectConfigurationError("project configuration resources must be empty")
@@ -260,7 +269,7 @@ def _reject_authority_keys(value: object, label: str, seen: set[int] | None = No
         seen.add(identity)
         for key, child in value.items():
             if isinstance(key, str) and key.casefold() in _AUTHORITY_KEYS:
-                raise ProjectConfigurationError(f"{label} contains runtime authority: {key}")
+                raise ProjectConfigurationError(f"{label} contains unknown configuration: {key}")
             _reject_authority_keys(child, label, seen)
         return
     if isinstance(value, (list, tuple)):

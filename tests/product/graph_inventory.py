@@ -18,7 +18,7 @@ from graph_engine.graph.schema import WorkflowDef
 from tests.product.conformance import ALL_BINDING_IDS, load_yaml
 
 INVENTORY_PATH = Path(__file__).resolve().parents[2] / (
-    ".superpowers/sdd/2026-08-22-pure-graph-engine-phase5-assurance-product-assembly/graph-inventory.yaml"
+    "packages/products/assurance-product/assurance_product/resources/graph-inventory.yaml"
 )
 _AGENT_PREFIX = "assurance.product.agent."
 _FORBIDDEN_PREFIXES = (

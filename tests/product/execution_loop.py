@@ -61,7 +61,7 @@ class ExecutionLoopTrace:
     public_exports: tuple[str, ...]
     terminal: str
     status: str
-    advance_outputs: tuple[dict[str, object], ...]
+    advance_outputs: tuple[dict[str, int | str], ...]
     task_capabilities: tuple[str, ...]
     projection: InvocationProjection
 
@@ -214,7 +214,7 @@ class _ExecutionLoopHost:
         self._coverage_index = 0
         self._repair_index = 0
         self._advance = None
-        self.advance_outputs: list[dict[str, object]] = []
+        self.advance_outputs: list[dict[str, int | str]] = []
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
         capability_id = call.request.capability_id
@@ -233,7 +233,7 @@ class _ExecutionLoopHost:
             )
             outcome = await self._advance.execute(call.request, context)
             if isinstance(outcome.output, Mapping):
-                self.advance_outputs.append(dict(outcome.output))
+                self.advance_outputs.append(cast(dict[str, int | str], dict(outcome.output)))
             return TaskHostCallResult(operation="execute", outcome=outcome)
         outcome = self._scripted(capability_id, call.request.input)
         aliased = _product_alias(capability_id)
@@ -358,7 +358,43 @@ class _ExecutionLoopHost:
             }
             if isinstance(request_input, Mapping) and isinstance(request_input.get("coverage_state"), str):
                 output["coverage_state"] = request_input["coverage_state"]
-            return TaskOutcome.succeeded(output)
+            return TaskOutcome.succeeded(cast(JSONValue, output))
+        if aliased.endswith("apply-improvement-auto-review"):
+            decision = "pass"
+            if isinstance(request_input, Mapping) and isinstance(request_input.get("decision"), str):
+                decision = request_input["decision"]
+            lifecycle = {
+                "pass": "approved",
+                "changes_requested": "needs_rework",
+                "reject": "rejected",
+            }.get(decision, "proposed")
+            return TaskOutcome.succeeded(
+                cast(
+                    JSONValue,
+                    {
+                        "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                        "auto_fix_allowed": False,
+                        "change_id": change_id,
+                        "decision": decision,
+                        "effect_intents": [],
+                        "lifecycle_state": lifecycle,
+                        "approval_source": "automatic" if lifecycle == "approved" else "none",
+                        "write_authorization": [],
+                    },
+                )
+            )
+        if aliased.endswith("evaluate-memory-improvement"):
+            return TaskOutcome.succeeded(
+                cast(
+                    JSONValue,
+                    {
+                        "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                        "change_id": change_id,
+                        "lifecycle_state": "evaluating",
+                        "outcome": "passed",
+                    },
+                )
+            )
         return TaskOutcome.succeeded(
             {
                 "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
@@ -445,7 +481,9 @@ def _terminal_name(projection: InvocationProjection, status: str) -> str:
             continue
         graph = graphs[activation.graph_instance_id]
         graph_id = graph.graph_id
-        if graph.parent_graph_instance_id is None or graph_id.endswith("product-execute"):
+        if graph.parent_graph_instance_id is None or graph_id.endswith(
+            (".product-full", "product-full", ".product-execute", "product-execute")
+        ):
             ends.append(activation.node_id)
     if "achieved" in ends:
         return "achieved"

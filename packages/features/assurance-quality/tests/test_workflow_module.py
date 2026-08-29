@@ -258,7 +258,7 @@ def test_quality_workflow_module_is_published() -> None:
     assert module.role == "feature"
     assert module.owner_id == "assurance.quality"
     assert module.module_id == _MODULE_ID
-    assert module.module_version == "0.1.0"
+    assert module.module_version == "0.2.0"
     assert "name" not in module.model_fields_set
     assert module.name is None
     assert module.entrypoints == {}

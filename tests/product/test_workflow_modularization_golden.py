@@ -29,10 +29,7 @@ from tests.product.product_runner import (
 
 GOLDEN = Path(__file__).resolve().parent / "goldens" / "assurance-full-pre-modular.json"
 RELOCATION_DIFF = Path(__file__).resolve().parent / "fixtures" / "architectural-relocation-diff.yaml"
-PRE_MODULAR_YAML = (
-    Path(__file__).resolve().parents[2]
-    / "packages/products/assurance-product/assurance_product/resources/workflow/assurance-full.yaml"
-)
+PRE_MODULAR_YAML = Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
 _FEATURE_MODULE_IDS = {
     "intake": "assurance.intake.workflow",
     "generation": "assurance.generation.workflow",

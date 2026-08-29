@@ -153,7 +153,7 @@ def test_product_manifest_uses_only_the_modular_assembly_form(adapter, installed
     assert product_manifest.workflow_module is not None
     assert product_manifest.workflow_module.module_id == "assurance.product.workflow"
     assert product_manifest.workflow_module.owner_id == "assurance.product"
-    assert product_manifest.workflow_module.module_version == "0.1.0"
+    assert product_manifest.workflow_module.module_version == "0.2.0"
     assert product_manifest.workflow_module.name == "assurance"
     assert product_manifest.workflow_module.role == "product"
 

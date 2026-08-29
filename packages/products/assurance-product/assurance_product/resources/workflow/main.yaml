@@ -3,7 +3,7 @@ role: product
 name: assurance
 owner_id: assurance.product
 module_id: assurance.product.workflow
-module_version: 0.1.0
+module_version: 0.2.0
 entrypoints:
   intake: product-intake
   case: product-case

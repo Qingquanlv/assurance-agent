@@ -57,7 +57,7 @@ from assurance_product.source_catalog import (
     wheel_plugin_source,
 )
 
-_PRODUCT_VERSION = "0.1.0"
+_PRODUCT_VERSION = "0.2.0"
 _MANIFEST_PRODUCT_ID = "assurance.product"
 _CAPABILITY_PLUGIN_IDS: tuple[str, ...] = (
     "assurance.intake",
@@ -72,13 +72,29 @@ _RUNTIME_PLUGIN_IDS: dict[AdapterName, str] = {
     "cursor": "runtime.cursor",
 }
 _PLUGIN_VERSIONS: dict[str, str] = {
-    **{plugin_id: "==0.1.0" for plugin_id in _CAPABILITY_PLUGIN_IDS},
+    **{plugin_id: "==0.2.0" for plugin_id in _CAPABILITY_PLUGIN_IDS},
     **{plugin_id: "==0.1.0" for plugin_id in _RUNTIME_PLUGIN_IDS.values()},
     PLUGIN_ID: f"=={PLUGIN_VERSION}",
     CONFIGURATION_PLUGIN_ID: f"=={CONFIGURATION_PLUGIN_VERSION}",
 }
 _WORKFLOW_DIR = Path(__file__).resolve().parent / "resources" / "workflow"
-_PRE_MODULAR_WORKFLOW_PATH = _WORKFLOW_DIR / "assurance-full.yaml"
+_PRE_MODULAR_RELATIVE = Path("tests/product/fixtures/assurance-full-pre-modular.yaml")
+
+
+def _resolve_pre_modular_workflow_path() -> Path:
+    seen: set[Path] = set()
+    for start in (Path(__file__).resolve(), Path.cwd().resolve()):
+        for parent in (start, *start.parents):
+            if parent in seen:
+                continue
+            seen.add(parent)
+            candidate = parent / _PRE_MODULAR_RELATIVE
+            if candidate.is_file():
+                return candidate
+    return Path(__file__).resolve().parents[4] / _PRE_MODULAR_RELATIVE
+
+
+_PRE_MODULAR_WORKFLOW_PATH = _resolve_pre_modular_workflow_path()
 _PRODUCT_MODULE_PATH = _WORKFLOW_DIR / "main.yaml"
 
 
@@ -131,7 +147,7 @@ _FEATURE_CAPABILITY_PREFIXES = (
 )
 _TEST_ONLY_MARKERS = (".test.",)
 _INVENTORY_RELATIVE = Path(
-    ".superpowers/sdd/2026-08-22-pure-graph-engine-phase5-assurance-product-assembly/graph-inventory.yaml"
+    "packages/products/assurance-product/assurance_product/resources/graph-inventory.yaml"
 )
 
 
@@ -540,7 +556,7 @@ def audit_full_graph(workflow: CompiledWorkflow, composition: FrozenComposition)
             f"{graph.graph_id}/{node.node_id}"
             for graph in workflow.graphs.values()
             for node in graph.nodes.values()
-            if node.definition.kind != "end" and not node.outgoing
+            if node.definition.kind not in {"end", "interrupt"} and not node.outgoing
         )
     )
     return GraphAuditResult(

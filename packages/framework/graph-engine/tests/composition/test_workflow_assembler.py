@@ -1321,9 +1321,14 @@ def test_product_deployment_plugin_owner_is_product_owned() -> None:
 
 def test_product_owned_prefix_does_not_include_unrelated_descendants() -> None:
     feature = _slotted_feature()
+    capability_id = "toy.product.other.agent.worker.execute"
     manifest, descriptors, registries = _slot_assembly_inputs(
         feature=feature,
-        binding_registry=_binding_registry(binding_owner="toy.product.other"),
+        bindings=(_slot_binding(capability_id=capability_id),),
+        binding_registry=_binding_registry(
+            capability_id=capability_id,
+            binding_owner="toy.product.other",
+        ),
     )
     with pytest.raises(WorkflowAssemblyError, match="product-owned|owner"):
         assemble_product_workflow(manifest=manifest, descriptors=descriptors, registries=registries)

@@ -20,7 +20,7 @@ _RUNTIME_DISTRIBUTIONS = frozenset({"agent-runtime-opencode", "agent-runtime-cur
 _SIX_CAPABILITY_SOURCES = (
     ProviderSource(
         distribution="assurance-intake",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="intake",
         entrypoint_value="assurance_intake.plugin:IntakePlugin",
@@ -29,7 +29,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-generation",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="generation",
         entrypoint_value="assurance_generation.plugin:GenerationPlugin",
@@ -38,7 +38,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-execution",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="execution",
         entrypoint_value="assurance_execution.plugin:ExecutionPlugin",
@@ -47,7 +47,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-healing",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="healing",
         entrypoint_value="assurance_healing.plugin:HealingPlugin",
@@ -56,7 +56,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-quality",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="quality",
         entrypoint_value="assurance_quality.plugin:QualityPlugin",
@@ -65,7 +65,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-improvement",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="improvement",
         entrypoint_value="assurance_improvement.plugin:ImprovementPlugin",

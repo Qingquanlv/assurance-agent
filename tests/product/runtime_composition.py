@@ -109,9 +109,7 @@ def resolve_workflow_composition(
     product_declaration_path = f"{package_name}/product-declaration.json"
     grouped = _handlers_by_owner(handlers)
     schemas_by_owner = _schemas_by_owner(parsed_workflow)
-    owners = tuple(
-        owner for owner in _PLUGIN_OWNERS if owner in grouped or owner in schemas_by_owner
-    )
+    owners = tuple(owner for owner in _PLUGIN_OWNERS if owner in grouped or owner in schemas_by_owner)
     product_source = ProviderSource(
         distribution=distribution_name,
         version="1.0.0",

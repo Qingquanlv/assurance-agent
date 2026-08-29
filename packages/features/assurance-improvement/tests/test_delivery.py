@@ -9,6 +9,7 @@ from graph_engine.plugin_api import TaskHandler
 from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_improvement.contracts.agent import ArchiveResultV1
+from assurance_improvement.contracts.improvements import ImprovementProjection
 from assurance_improvement.operations.agent import ArchiveFinalizeHandler, ArchivePrepareHandler
 from assurance_improvement.operations.archive import ProjectArchiveHandler
 from assurance_improvement.operations.delivery import (
@@ -52,7 +53,6 @@ def _eval_receipt(projection: dict[str, object] | None = None, **overrides: obje
     }
     if projection is not None:
         from assurance_improvement.contracts.delivery import artifact_digest
-        from assurance_improvement.contracts.improvements import ImprovementProjection
 
         model = ImprovementProjection.model_validate(projection)
         payload["approved_state_digest"] = artifact_digest(model)
@@ -182,7 +182,6 @@ def test_apply_proof_rejects_missing_and_stale_evaluation_binding() -> None:
 async def test_apply_memory_requires_passed_eval(tmp_path: Path) -> None:
     eval_receipt = {**_eval_receipt(), "outcome": "regressed"}
     from assurance_improvement.contracts.delivery import artifact_digest
-    from assurance_improvement.contracts.improvements import ImprovementProjection
 
     projection = _projection()
     outcome = await execute_task(
@@ -208,7 +207,6 @@ async def test_apply_memory_requires_passed_eval(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_evaluate_stamps_current_approved_state(tmp_path: Path) -> None:
     from assurance_improvement.contracts.delivery import artifact_digest
-    from assurance_improvement.contracts.improvements import ImprovementProjection
 
     projection = _projection()
     outcome = await execute_task(
@@ -235,7 +233,6 @@ async def test_evaluate_stamps_current_approved_state(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_apply_rejects_eval_bound_to_other_approved_state(tmp_path: Path) -> None:
     from assurance_improvement.contracts.delivery import artifact_digest
-    from assurance_improvement.contracts.improvements import ImprovementProjection
 
     projection = _projection()
     outcome = await execute_task(
@@ -265,7 +262,6 @@ async def test_apply_rejects_eval_bound_to_other_approved_state(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_apply_rejects_eval_missing_approved_binding(tmp_path: Path) -> None:
     from assurance_improvement.contracts.delivery import artifact_digest
-    from assurance_improvement.contracts.improvements import ImprovementProjection
 
     projection = _projection()
     outcome = await execute_task(
@@ -513,7 +509,6 @@ def test_delivery_validator_rejects_proposed_injected_document() -> None:
     import json
 
     from assurance_improvement.contracts.delivery import ImprovementDeliveryDocument
-    from assurance_improvement.contracts.improvements import ImprovementProjection
 
     document = ImprovementDeliveryDocument.model_validate(
         {
@@ -555,7 +550,6 @@ def test_delivery_validator_accepts_approved_injected_document() -> None:
     import json
 
     from assurance_improvement.contracts.delivery import ImprovementDeliveryDocument
-    from assurance_improvement.contracts.improvements import ImprovementProjection
 
     document = ImprovementDeliveryDocument.model_validate(
         {
@@ -596,7 +590,6 @@ def test_delivery_validator_rejects_missing_and_stale_evaluation() -> None:
     import json
 
     from assurance_improvement.contracts.delivery import ImprovementDeliveryDocument
-    from assurance_improvement.contracts.improvements import ImprovementProjection
 
     projection = _projection()
 

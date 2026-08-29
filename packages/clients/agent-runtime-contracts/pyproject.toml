@@ -1,6 +1,6 @@
 [project]
 name = "agent-runtime-contracts"
-version = "0.1.0"
+version = "0.2.0"
 description = "Frozen provider-neutral AgentRun request/result contracts"
 requires-python = ">=3.11,<4.0"
 dependencies = ["graph-engine", "pydantic>=2.7"]

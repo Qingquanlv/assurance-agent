@@ -50,7 +50,7 @@ PUBLIC_WORKFLOW_IMPORT_ALIASES: tuple[str, ...] = (
 
 AdapterName = Literal["opencode", "cursor"]
 PLUGIN_ID = "assurance.product.agent"
-PLUGIN_VERSION = "1.0.0"
+PLUGIN_VERSION = "1.1.0"
 CONFIGURATION_PLUGIN_ID = "assurance.product.configuration"
 CONFIGURATION_PLUGIN_VERSION = "1.0.0"
 
@@ -391,7 +391,7 @@ class BuiltDeploymentWheel(FrozenModel):
     entry_point_value: str
     declaration_path: str
     plugin_id: Literal["assurance.product.agent"]
-    plugin_version: Literal["1.0.0"]
+    plugin_version: Literal["1.1.0"]
 
 
 def adapter_secret_handles(binding: OpenCodeBindingV1 | CursorBindingV1) -> tuple[str, ...]:

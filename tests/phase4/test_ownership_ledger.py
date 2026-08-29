@@ -217,9 +217,7 @@ VALIDATOR_VERIFICATION: dict[str, str] = {
     ),
 }
 
-EFFECT_VERIFICATION = (
-    "packages/features/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound"
-)
+EFFECT_VERIFICATION = "packages/features/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound"
 
 HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
     "load_product_code_roots": ("assurance.healing", "assurance.healing.validator.test-tree.v1"),
