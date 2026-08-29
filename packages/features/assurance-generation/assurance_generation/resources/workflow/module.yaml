@@ -13,11 +13,11 @@ exports:
       type: object
       fields:
         families:
-          type: literal
-          value: {api: {}, e2e: {}, fuzz: {}, performance: {}}
+          type: child_output_pointer
+          pointer: /completed
         selected_families:
-          type: literal
-          value: ["api"]
+          type: child_output_pointer
+          pointer: /selected_families
 capability_slots:
   api.codegen.prepare:
     contract_id: assurance.generation.agent.api.codegen.v1

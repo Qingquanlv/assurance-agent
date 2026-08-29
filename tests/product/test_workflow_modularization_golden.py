@@ -8,8 +8,9 @@ import yaml
 
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.composition.workflow_assembler import assemble_product_workflow
-from graph_engine.frozen_json import thaw_json
+from graph_engine.frozen_json import freeze_json, thaw_json
 from graph_engine.graph.input_projection import ObjectProjection, PredecessorPointerProjection
+from graph_engine.graph.output_projection import project_subgraph_output
 from graph_engine.graph.schema import GraphDef, WorkflowDef, parse_workflow
 from graph_engine.runtime.models import InvocationProjection
 
@@ -19,7 +20,12 @@ from tests.product.graph_inventory import (
     assert_workflow_module_ownership,
     load_workflow_module_ownership,
 )
-from tests.product.product_runner import ProductRun, _product_alias, resolve_product_workflow_composition
+from tests.product.product_runner import (
+    ProductRun,
+    _PUBLIC_DIGEST,
+    _product_alias,
+    resolve_product_workflow_composition,
+)
 
 GOLDEN = Path(__file__).resolve().parent / "goldens" / "assurance-full-pre-modular.json"
 RELOCATION_DIFF = Path(__file__).resolve().parent / "fixtures" / "architectural-relocation-diff.yaml"
@@ -201,24 +207,51 @@ def test_product_full_threads_prepare_output_into_generate() -> None:
 
 
 @pytest.mark.usefixtures("installed_sources")
+def test_product_full_consumes_prepare_handler_terminal(installed_sources, tmp_path) -> None:
+    modular = _modular_composition(installed_sources)
+    result = _run_scenario(modular, tmp_path / "consume-prepare", {"entrypoint": "full"})
+    generation = next(
+        item
+        for item in result.projection.graph_instances
+        if item.graph_id.endswith(".generation") or item.graph_id == "generation"
+    )
+    payload = thaw_json(generation.input)
+    assert isinstance(payload, dict)
+    assert payload["decision"] == "pass"
+    assert payload["artifacts"] == [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}]
+
+
+@pytest.mark.usefixtures("installed_sources")
 def test_product_roots_preserve_public_closure_behavior(installed_sources, tmp_path) -> None:
     pre = resolve_product_workflow_composition(_load_bound_pre_modular())
     modular = _modular_composition(installed_sources)
     for scenario in _ROOT_CHARACTERIZATION_SCENARIOS:
-        expected = _public_closure_trace(pre, tmp_path / "pre" / scenario["entrypoint"], scenario)
-        actual = _public_closure_trace(modular, tmp_path / "mod" / scenario["entrypoint"], scenario)
+        projection = _declared_public_projection(modular, scenario["entrypoint"])
+        expected = _public_closure_trace(
+            pre, tmp_path / "pre" / scenario["entrypoint"], scenario, public_projection=projection
+        )
+        actual = _public_closure_trace(
+            modular, tmp_path / "mod" / scenario["entrypoint"], scenario, public_projection=projection
+        )
         _assert_public_closure(actual, expected, require_terminal_output=True)
 
 
 @pytest.mark.usefixtures("installed_sources")
-def test_fourteen_entrypoints_preserve_characterized_public_behavior(
-    installed_sources, tmp_path
-) -> None:
+def test_fourteen_entrypoints_preserve_characterized_public_behavior(installed_sources, tmp_path) -> None:
     pre = resolve_product_workflow_composition(_load_bound_pre_modular())
     modular = _modular_composition(installed_sources)
     for scenario in tuple({"entrypoint": name} for name in _PUBLIC_ENTRYPOINTS):
-        expected = _public_closure_trace(pre, tmp_path / "pre" / scenario["entrypoint"], scenario)
-        actual = _public_closure_trace(modular, tmp_path / "mod" / scenario["entrypoint"], scenario)
+        projection = (
+            _declared_public_projection(modular, scenario["entrypoint"])
+            if scenario["entrypoint"] in {"full", "execute"}
+            else None
+        )
+        expected = _public_closure_trace(
+            pre, tmp_path / "pre" / scenario["entrypoint"], scenario, public_projection=projection
+        )
+        actual = _public_closure_trace(
+            modular, tmp_path / "mod" / scenario["entrypoint"], scenario, public_projection=projection
+        )
         _assert_public_closure(
             actual,
             expected,
@@ -304,27 +337,47 @@ def _assert_public_closure(
 
 
 def _assert_public_terminal(actual: object, expected: object) -> None:
-    if actual == expected:
-        return
-    assert isinstance(actual, dict) and isinstance(expected, dict)
-    assert actual
-    for key, value in actual.items():
-        assert key in expected
-        assert expected[key] == value
+    assert actual == expected
 
 
-def _public_closure_trace(composition, engine_root: Path, scenario: dict[str, Any]) -> dict[str, Any]:
+def _declared_public_projection(composition, entrypoint: str):
+    graph_id = composition.workflow.entrypoints[entrypoint]
+    graph = composition.workflow.graphs[graph_id]
+    ends = {node_id for node_id, node in graph.nodes.items() if node.definition.kind == "end"}
+    for edge in graph.edges:
+        if edge.to not in ends:
+            continue
+        predecessor = graph.nodes[edge.from_]
+        if predecessor.definition.kind == "subgraph" and predecessor.definition.output_projection is not None:
+            return predecessor.definition.output_projection
+    return None
+
+
+def _apply_public_projection(raw: object, public_projection) -> object:
+    if public_projection is None or raw is None:
+        return raw
+    return thaw_json(project_subgraph_output(public_projection, child_output=freeze_json(raw)))
+
+
+def _public_closure_trace(
+    composition,
+    engine_root: Path,
+    scenario: dict[str, Any],
+    *,
+    public_projection=None,
+) -> dict[str, Any]:
     engine_root.mkdir(parents=True, exist_ok=True)
     result = _run_scenario(composition, engine_root, scenario)
     projection = result.projection
+    raw_terminal = thaw_json(
+        next(item.output for item in projection.graph_instances if item.parent_graph_instance_id is None)
+    )
     return {
         "dispatches": _task_dispatches(projection, composition),
         "interrupts": _interrupts(projection),
         "effects": _effects(projection),
         "terminal": (result.status, result.stop_reason),
-        "terminal_output": thaw_json(
-            next(item.output for item in projection.graph_instances if item.parent_graph_instance_id is None)
-        ),
+        "terminal_output": _apply_public_projection(raw_terminal, public_projection),
     }
 
 

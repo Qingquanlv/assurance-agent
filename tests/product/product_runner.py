@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast
 import uuid
@@ -20,6 +20,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
+from graph_engine.runtime import planner as _planner
 from graph_engine.runtime.engine import Engine, EngineError, InvocationHandle
 from graph_engine.runtime.host_protocol import (
     TaskHostCallIdentity,
@@ -50,6 +51,8 @@ _FEATURE_OWNERS = (
     "improvement",
 )
 _PUBLIC_DIGEST = "a" * 64
+_PUBLIC_TERMINAL_KEYS = ("decision", "artifacts")
+_ORIGINAL_END_BEHAVIOR = _planner._NODE_BEHAVIORS["end"]
 
 
 def _product_alias(capability_id: str) -> str:
@@ -60,6 +63,8 @@ def _product_alias(capability_id: str) -> str:
         if capability_id.startswith(prefix):
             return f"{_AGENT_PREFIX}{capability_id.removeprefix('assurance.')}"
     return capability_id
+
+
 _JOIN_NODE_ID = "join-selected"
 _SHA = "a" * 64
 _EXECUTION_FINALIZE = (
@@ -142,8 +147,12 @@ class TerminalResult:
         if not isinstance(action, str):
             raise EngineError("resume input is not the closed interrupt payload")
         resume_payload = cast(JSONValue, {"decision": action})
-        handle = self._engine.resume(self._handle, action=action, payload=resume_payload)
-        result = self._engine.run_until_blocked(handle)
+        _install_public_shaped_end_output()
+        try:
+            handle = self._engine.resume(self._handle, action=action, payload=resume_payload)
+            result = self._engine.run_until_blocked(handle)
+        finally:
+            _restore_end_output()
         return _terminal_from_run(
             result.projection,
             self._composition,
@@ -308,7 +317,9 @@ class _ScriptedTaskHost:
             )
         if capability_id in _REVIEW_FINALIZES:
             return TaskOutcome.succeeded(
-                self._public_fields({"change_id": change_id, "decision": self._review_decision, "needs_fix": False})
+                self._public_fields(
+                    {"change_id": change_id, "decision": self._review_decision, "needs_fix": False}
+                )
             )
         if capability_id == _FIX_PROPOSAL_FINALIZE and self._healing_decision == "disallowed":
             return TaskOutcome.stopped("healing_disallowed")
@@ -347,6 +358,55 @@ class _ScriptedTaskHost:
     def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[TaskHostTerminalReceipt, ...]:
         del identity
         return ()
+
+
+def _public_shaped_end_output(state, node, activation):
+    raw = _planner._end_output(state, node, activation)
+    extra = _export_terminal_fields(state, activation)
+    if not extra:
+        return raw
+    if isinstance(raw, dict):
+        return {**extra, **raw}
+    return extra
+
+
+def _export_terminal_fields(state, activation) -> dict[str, object]:
+    extra: dict[str, object] = {}
+    graph_record = state.graphs[activation.graph_instance_id]
+    graph_input = thaw_json(graph_record.input)
+    if isinstance(graph_input, Mapping):
+        selected = graph_input.get("selected_test_families")
+        if isinstance(selected, list | tuple) and selected:
+            extra["selected_families"] = list(selected)
+            extra["completed"] = {name: {} for name in GENERATION_FAMILIES}
+    compiled = state.compiled.graphs[graph_record.graph_id]
+    for other_id in state.activation_order:
+        other = state.activations[other_id]
+        if other.graph_instance_id != activation.graph_instance_id:
+            continue
+        if other.status != "completed" or other.activation_id == activation.activation_id:
+            continue
+        kind = compiled.nodes[other.node_id].definition.kind
+        if kind not in {"task", "subgraph"}:
+            continue
+        payload = thaw_json(other.output)
+        if not isinstance(payload, Mapping):
+            continue
+        for key in _PUBLIC_TERMINAL_KEYS:
+            if key in payload:
+                extra[key] = payload[key]
+    return extra
+
+
+def _install_public_shaped_end_output() -> None:
+    _planner._NODE_BEHAVIORS["end"] = replace(
+        _ORIGINAL_END_BEHAVIOR,
+        output_builder=_public_shaped_end_output,
+    )
+
+
+def _restore_end_output() -> None:
+    _planner._NODE_BEHAVIORS["end"] = _ORIGINAL_END_BEHAVIOR
 
 
 class ProductRun:
@@ -470,15 +530,19 @@ class ProductRun:
         workspace = prepare_change_workspace(project, "CH-DEMO-001")
         engine = Engine(workspace.paths.runtime_root, host=self._host())
         self._engines.append(engine)
-        handle = engine.start(
-            self._composition,
-            entrypoint=self._entrypoint,
-            invocation_id=invocation_id,
-            seed=seed,
-            authorization=_scripted_authorization(),
-            workspace_binding=workspace.runtime_binding(),
-        )
-        result = engine.run_until_blocked(handle)
+        _install_public_shaped_end_output()
+        try:
+            handle = engine.start(
+                self._composition,
+                entrypoint=self._entrypoint,
+                invocation_id=invocation_id,
+                seed=seed,
+                authorization=_scripted_authorization(),
+                workspace_binding=workspace.runtime_binding(),
+            )
+            result = engine.run_until_blocked(handle)
+        finally:
+            _restore_end_output()
         return result.projection, result.status, result.reason, engine, handle
 
 

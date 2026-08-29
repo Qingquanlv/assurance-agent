@@ -9,20 +9,28 @@ exports:
     graph: entry
     input_schema: assurance.intake.workflow.prepare.input.v1
     output_schema: assurance.intake.workflow.prepare.output.v1
-    output_projection: &prepare-public-output
+    output_projection:
       type: object
       fields:
         artifacts:
-          type: literal
-          value: []
+          type: child_output_pointer
+          pointer: /artifacts
         decision:
-          type: literal
-          value: pass
+          type: child_output_pointer
+          pointer: /decision
   case:
     graph: case
     input_schema: assurance.intake.workflow.case.input.v1
     output_schema: assurance.intake.workflow.case.output.v1
-    output_projection: *prepare-public-output
+    output_projection:
+      type: object
+      fields:
+        artifacts:
+          type: child_output_pointer
+          pointer: /artifacts
+        decision:
+          type: child_output_pointer
+          pointer: /decision
 capability_slots:
   case-design.execute:
     contract_id: assurance.intake.agent.case-design.v1
