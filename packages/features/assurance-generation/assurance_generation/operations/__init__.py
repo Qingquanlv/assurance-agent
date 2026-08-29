@@ -26,6 +26,10 @@ from assurance_generation.operations.review import (
     review_finalize_handler,
     review_prepare_handler,
 )
+from assurance_generation.operations.workflow_state import (
+    REVIEW_ROUND_ADVANCE_ID,
+    GenerationReviewRoundAdvanceHandler,
+)
 
 
 def planning_handlers() -> Mapping[str, TaskHandler]:
@@ -50,12 +54,20 @@ def codegen_handlers() -> Mapping[str, TaskHandler]:
 
 
 def generation_handlers() -> Mapping[str, TaskHandler]:
-    return MappingProxyType({**planning_handlers(), **codegen_handlers()})
+    return MappingProxyType(
+        {
+            **planning_handlers(),
+            **codegen_handlers(),
+            REVIEW_ROUND_ADVANCE_ID: GenerationReviewRoundAdvanceHandler(),
+        }
+    )
 
 
 __all__ = [
     "FAMILIES",
     "FIX_FAMILIES",
+    "GenerationReviewRoundAdvanceHandler",
+    "REVIEW_ROUND_ADVANCE_ID",
     "CodegenFinalizeHandler",
     "CodegenFixFinalizeHandler",
     "CodegenFixPrepareHandler",

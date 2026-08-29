@@ -79,6 +79,24 @@ def test_four_families_keep_isolated_physical_namespaces_for_the_same_logical_ta
     assert not (project / "tests" / "api" / "test_users.py").exists()
 
 
+def test_two_lane_review_counters_are_order_independent() -> None:
+    import sys
+    from pathlib import Path as _Path
+
+    from assurance_generation.contracts.families import GENERATION_FAMILIES
+
+    feature_tests = _Path(__file__).resolve().parents[2] / "packages/features/assurance-generation/tests"
+    if str(feature_tests) not in sys.path:
+        sys.path.insert(0, str(feature_tests))
+    from test_workflow_module import _drive_generate
+
+    first = _drive_generate(selected=("api", "e2e"), reviews=("needs_fix", "pass"))
+    second = _drive_generate(selected=("e2e", "api"), reviews=("needs_fix", "pass"))
+    assert first.counters == second.counters == (1, 1)
+    assert first.dispatched_families == second.dispatched_families == {"api", "e2e"}
+    assert set(GENERATION_FAMILIES) - first.dispatched_families == first.skip_families
+
+
 def test_parallel_family_completion_order_does_not_change_merged_sources(tmp_path: Path) -> None:
     project = tmp_path / "project"
     (project / "qa" / "changes" / CHANGE_ID).mkdir(parents=True)

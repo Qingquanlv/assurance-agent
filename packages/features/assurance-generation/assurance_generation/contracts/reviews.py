@@ -9,7 +9,49 @@ from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator, mod
 from assurance_intake.contracts import NonEmptyStr, RiskTier
 
 ReviewDecision = Literal["pass", "approved", "needs_fix", "needs_human_review", "changes_requested", "reject"]
+PublicReviewOutcome = Literal["pass", "needs_fix", "needs_human", "reject"]
+PUBLIC_REVIEW_OUTCOMES: tuple[PublicReviewOutcome, ...] = ("pass", "needs_fix", "needs_human", "reject")
 FindingSeverity = Literal["low", "medium", "high", "critical", "blocking"]
+
+_PASS_DECISIONS = frozenset({"pass", "approved"})
+_FIX_DECISIONS = frozenset({"needs_fix", "changes_requested"})
+_HUMAN_DECISIONS = frozenset({"needs_human_review"})
+_REJECT_DECISIONS = frozenset({"reject"})
+
+
+def normalize_public_review_outcome(
+    decision: str,
+    auto_fix_allowed: bool,
+    human_review_required: bool,
+) -> PublicReviewOutcome:
+    if decision in _PASS_DECISIONS:
+        if auto_fix_allowed or human_review_required:
+            raise ValueError("pass review cannot request auto-fix or human review")
+        return "pass"
+    if decision in _FIX_DECISIONS:
+        if auto_fix_allowed and not human_review_required:
+            return "needs_fix"
+        if human_review_required and not auto_fix_allowed:
+            return "needs_human"
+        raise ValueError("needs_fix review must be either auto-fixable or human-required")
+    if decision in _HUMAN_DECISIONS:
+        if auto_fix_allowed or not human_review_required:
+            raise ValueError("needs_human_review must require human review and forbid auto-fix")
+        return "needs_human"
+    if decision in _REJECT_DECISIONS:
+        if auto_fix_allowed or human_review_required:
+            raise ValueError("reject review cannot request auto-fix or human review")
+        return "reject"
+    raise ValueError(f"unsupported review decision: {decision}")
+
+
+def public_review_outcome(
+    decision: str,
+    auto_fix_allowed: bool,
+    human_review_required: bool,
+) -> PublicReviewOutcome:
+    return normalize_public_review_outcome(decision, auto_fix_allowed, human_review_required)
+
 
 _CAPABILITY_GATED_REVIEW_TYPES = frozenset({"api-plan", "e2e-plan"})
 _PLAN_REVIEW_TYPES = frozenset({"api-plan", "e2e-plan", "fuzz-plan", "performance-plan"})
@@ -242,6 +284,9 @@ class PlanReviewAuthoring(BaseModel):
     codegen_readiness: Literal["ready", "ready_with_warnings", "not_ready"]
     risk_level: RiskTier
     required_capabilities: list[NonEmptyStr]
+    public_outcome: PublicReviewOutcome | None = None
+    rounds_used: int | None = None
+    rounds_budget: int | None = None
 
     @field_validator("findings")
     @classmethod
@@ -264,4 +309,14 @@ class PlanReviewAuthoring(BaseModel):
             auto_fix_allowed=self.auto_fix_allowed,
             human_review_required=self.human_review_required,
         )
-        return self
+        if self.decision in _PASS_DECISIONS:
+            outcome: PublicReviewOutcome = "pass"
+        else:
+            outcome = normalize_public_review_outcome(
+                self.decision,
+                self.auto_fix_allowed,
+                self.human_review_required,
+            )
+        if self.public_outcome is not None and self.public_outcome != outcome:
+            raise ValueError("public_outcome does not match the normalized review decision")
+        return self.model_copy(update={"public_outcome": outcome})

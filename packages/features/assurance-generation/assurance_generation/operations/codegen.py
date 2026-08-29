@@ -30,6 +30,7 @@ from assurance_generation.contracts.codegen import (
     CodegenGeneratedFileAuthoring,
     CodegenMapping,
     CodegenResultV1,
+    CodegenResultV2,
     family_allows_target,
     staged_generated_path,
 )
@@ -535,17 +536,38 @@ class CodegenFinalizeHandler:
                 family=family,
                 allowed_paths=allowed,
             )
-            result = CodegenResultV1.model_validate(
-                {
-                    "schema_version": "1",
-                    "change_id": document.change_id,
-                    "layer": document.layer,
-                    "files": [item.model_dump(mode="json") for item in files],
-                    "mapping": document.mapping.model_dump(mode="json"),
-                    "required_capabilities": list(document.required_capabilities),
-                },
-                context={"capability_leafs": leafs_of(payload.capability_leafs)},
-            )
+            if family in FIX_FAMILIES:
+                structured = _structured(payload)
+                verdict = "accepted"
+                repair = None
+                if isinstance(structured, dict) and structured.get("verdict") == "needs_fix":
+                    verdict = "needs_fix"
+                    repair = structured.get("repair")
+                result = CodegenResultV2.model_validate(
+                    {
+                        "schema_version": "2",
+                        "verdict": verdict,
+                        "change_id": document.change_id,
+                        "layer": document.layer,
+                        "files": [item.model_dump(mode="json") for item in files],
+                        "mapping": document.mapping.model_dump(mode="json"),
+                        "required_capabilities": list(document.required_capabilities),
+                        "repair": repair,
+                    },
+                    context={"capability_leafs": leafs_of(payload.capability_leafs)},
+                )
+            else:
+                result = CodegenResultV1.model_validate(
+                    {
+                        "schema_version": "1",
+                        "change_id": document.change_id,
+                        "layer": document.layer,
+                        "files": [item.model_dump(mode="json") for item in files],
+                        "mapping": document.mapping.model_dump(mode="json"),
+                        "required_capabilities": list(document.required_capabilities),
+                    },
+                    context={"capability_leafs": leafs_of(payload.capability_leafs)},
+                )
             _authenticate_manifest(
                 context.project_root,
                 document=document,

@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import ast
 import json
+import uuid
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import cast
 
+import pytest
 import yaml
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
+from graph_engine.canonical import JSONValue
 from graph_engine.graph import compile_workflow, parse_workflow_module, project_task_input
 from graph_engine.graph.input_projection import (
     GraphInputPointerProjection,
@@ -23,12 +29,28 @@ from graph_engine.graph.output_projection import (
 )
 from graph_engine.graph.schema import EdgeDef, NodeDef
 from graph_engine.plugin_api import (
+    InvocationWorkspaceBinding,
     ResourceContribution,
     SchemaContribution,
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
     TaskContext,
     TaskOutcome,
     TaskRequest,
 )
+from graph_engine.runtime.engine import Engine
+from graph_engine.runtime.host_protocol import (
+    TaskHostCallResult,
+    TaskHostCancelCall,
+    TaskHostExecuteCall,
+    TaskHostReconcileCall,
+    TaskHostTerminalReceipt,
+)
+from graph_engine.runtime.models import InvocationProjection
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.runtime.seed import empty_invocation_seed
+
+from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
 
 from assurance_generation.contracts.workflow import AGENT_JOB_CONTRACTS
 from assurance_generation.plugin import GenerationPlugin
@@ -233,7 +255,9 @@ def test_generate_input_carries_closed_nonempty_family_selection_and_root_depend
     families = schema["properties"]["selected_test_families"]
     assert families["type"] == "array"
     assert families["minItems"] == 1
+    assert families["uniqueItems"] is True
     assert families["items"]["enum"] == list(_FAMILIES)
+    validate_selected_families(tuple(_FAMILIES))
 
 
 def test_every_generation_local_subgraph_call_projects_child_required_fields() -> None:
@@ -363,32 +387,54 @@ def test_generation_keeps_four_fixed_lanes_and_structural_skip_join() -> None:
     assert sum(1 for node in root.nodes.values() if node.kind == "join") == 1
     actual_edges = {_edge_record(edge) for edge in root.edges}
     for family in _FAMILIES:
+        selector = root.nodes[f"select-{family}"]
+        assert selector.routing is not None
+        assert selector.routing.mode == "exclusive"
         assert (f"select-{family}", family, "output.value == true") in actual_edges
-        assert (f"select-{family}", f"{family}-skip", "output.value == false") in actual_edges
+        otherwise = [
+            edge for edge in root.edges if edge.from_ == f"select-{family}" and edge.to == f"{family}-skip"
+        ]
+        assert len(otherwise) == 1
+        assert otherwise[0].otherwise is True
+        assert otherwise[0].condition is None
         assert (family, f"{family}-done", None) in actual_edges
         assert (f"{family}-skip", f"{family}-done", None) in actual_edges
         assert (f"{family}-done", "join-selected", None) in actual_edges
     assert ("join-selected", "done", None) in actual_edges
+    assert root.nodes["fanout"].routing is not None
+    assert root.nodes["fanout"].routing.mode == "fanout"
+    assert root.nodes["fanout"].routing.min_matches == 4
 
 
-def test_review_and_codegen_outcomes_stay_on_the_legacy_expressions() -> None:
+def test_review_and_codegen_outcomes_use_exclusive_routes() -> None:
     module = _load_module()
     for family, has_fix in (("api", True), ("e2e", True), ("fuzz", False), ("performance", False)):
         lane = module.graphs[f"generation-{family}"]
-        golden = cast(dict[str, dict[str, object]], _GOLDEN["graphs"][f"generation-{family}"]["nodes"])
-        for node_id in ("plan-review-pass-gate", "plan-review-fix-gate", "plan-review-human-gate"):
-            assert lane.nodes[node_id].expression == golden[node_id]["expression"]
+        review = lane.nodes["plan-review"]
+        assert review.routing is not None
+        assert review.routing.mode == "exclusive"
         human = lane.nodes["plan-human-review"]
         assert human.kind == "interrupt"
-        assert human.reason == golden["plan-human-review"]["reason"]
-        assert tuple(human.actions) == tuple(cast(list[object], golden["plan-human-review"]["actions"]))
+        assert tuple(human.actions) == ("approve", "reject", "request_rework")
+        assert human.routing is not None
+        assert human.routing.mode == "exclusive"
+        assert lane.nodes["plan-review-round-advance"].capability == (
+            "assurance.generation.review-round.advance"
+        )
+        assert "rejected" in lane.nodes
+        assert "exhausted" in lane.nodes
+        assert "plan-review-pass-gate" not in lane.nodes
         if has_fix:
-            assert lane.nodes["codegen-pass-gate"].expression == golden["codegen-pass-gate"]["expression"]
-            assert lane.nodes["codegen-fix-gate"].expression == golden["codegen-fix-gate"]["expression"]
+            codegen = lane.nodes["codegen"]
+            assert codegen.routing is not None
+            assert codegen.routing.mode == "exclusive"
             assert "codegen-fix" in lane.nodes
+            assert lane.nodes["codegen-round-advance"].capability == (
+                "assurance.generation.review-round.advance"
+            )
         else:
             assert "codegen-fix" not in lane.nodes
-            assert "codegen-pass-gate" not in lane.nodes
+            assert "codegen-round-advance" not in lane.nodes
 
 
 def test_execute_nodes_use_slots_and_prepare_finalize_keep_feature_ids() -> None:
@@ -454,3 +500,371 @@ def test_fake_slot_bindings_compile_without_an_agent_server() -> None:
     payload = compiled.model_dump(mode="json", by_alias=True)
     assert "capability_slot" not in json.dumps(payload)
     assert "assurance.product.agent." not in json.dumps(payload)
+
+
+_REVIEW_ADVANCE = "assurance.generation.review-round.advance"
+_PUBLIC_DIGEST = "a" * 64
+
+
+@dataclass(frozen=True)
+class GenerationDriveResult:
+    status: str
+    selected: tuple[str, ...]
+    dispatched_families: frozenset[str]
+    skip_families: frozenset[str]
+    join_token_count: int
+    advance_count: int
+    counters: tuple[int, ...]
+    end_nodes: frozenset[str]
+    public_outcome: str
+
+
+class _ScriptedGenerationHost:
+    def __init__(
+        self,
+        *,
+        reviews: tuple[str, ...] = ("pass",),
+        codegen_verdicts: tuple[str, ...] = ("accepted",),
+    ) -> None:
+        self._reviews = reviews
+        self._codegen = codegen_verdicts
+        self._review_index = 0
+        self._review_index_by_family: dict[str, int] = {}
+        self._codegen_index = 0
+        self._codegen_index_by_family: dict[str, int] = {}
+        self._advance = None
+        self.advance_outputs: list[dict[str, object]] = []
+
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        capability_id = call.request.capability_id
+        if capability_id == _REVIEW_ADVANCE or capability_id.endswith("review-round.advance"):
+            if self._advance is None:
+                from assurance_generation.operations.workflow_state import (
+                    GenerationReviewRoundAdvanceHandler,
+                )
+
+                self._advance = GenerationReviewRoundAdvanceHandler()
+            context = TaskContext(
+                project_root=Path.cwd(),
+                write_root=Path.cwd(),
+                workspace_identity=call.attempt_root.workspace_identity,
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=call.request.invocation,
+            )
+            outcome = await self._advance.execute(call.request, context)
+            if isinstance(outcome.output, Mapping):
+                self.advance_outputs.append(dict(outcome.output))
+            return TaskHostCallResult(operation="execute", outcome=outcome)
+        request_input = call.request.input
+        change_id = "CH-DEMO-001"
+        rounds_used = 0
+        rounds_budget = 2
+        if isinstance(request_input, Mapping):
+            if isinstance(request_input.get("change_id"), str):
+                change_id = request_input["change_id"]
+            if isinstance(request_input.get("rounds_used"), int):
+                rounds_used = request_input["rounds_used"]
+            if isinstance(request_input.get("rounds_budget"), int):
+                rounds_budget = request_input["rounds_budget"]
+        if capability_id.endswith("plan-review.finalize"):
+            family = capability_id.split(".")[2] if capability_id.count(".") >= 3 else "api"
+            index = self._review_index_by_family.get(family, 0)
+            decision = self._reviews[min(index, len(self._reviews) - 1)]
+            self._review_index_by_family[family] = index + 1
+            self._review_index += 1
+            fixable = decision in {"needs_fix", "changes_requested"}
+            human = decision in {"needs_human_review"}
+            if decision == "reject":
+                fixable = False
+                human = False
+            public = {
+                "pass": "pass",
+                "approved": "pass",
+                "needs_fix": "needs_fix",
+                "changes_requested": "needs_fix",
+                "needs_human_review": "needs_human",
+                "reject": "reject",
+            }[decision]
+            if fixable:
+                public = "needs_fix"
+            elif human:
+                public = "needs_human"
+            if self.advance_outputs:
+                last = self.advance_outputs[-1]
+                rounds_used = int(last["rounds_used"])
+                rounds_budget = int(last["rounds_budget"])
+            return TaskHostCallResult(
+                operation="execute",
+                outcome=TaskOutcome.succeeded(
+                    {
+                        "auto_fix_allowed": fixable,
+                        "auto_fix_plan": ["FIX-1"] if fixable else [],
+                        "change_id": change_id,
+                        "codegen_readiness": "ready" if public == "pass" else "not_ready",
+                        "decision": decision,
+                        "human_review_required": human,
+                        "public_outcome": public,
+                        "rounds_budget": rounds_budget,
+                        "rounds_used": rounds_used,
+                    }
+                ),
+            )
+        if capability_id.endswith("codegen.finalize"):
+            family = capability_id.split(".")[2] if capability_id.count(".") >= 3 else "api"
+            index = self._codegen_index_by_family.get(family, 0)
+            verdict = self._codegen[min(index, len(self._codegen) - 1)]
+            self._codegen_index_by_family[family] = index + 1
+            self._codegen_index += 1
+            output: dict[str, object] = {
+                "change_id": change_id,
+                "needs_fix": verdict == "needs_fix",
+                "rounds_budget": rounds_budget,
+                "rounds_used": rounds_used,
+                "verdict": verdict,
+            }
+            if verdict == "needs_fix":
+                output["repair"] = {
+                    "allowed_paths": ["tests/api/test_users.py"],
+                    "summary": "repair generated assertion",
+                }
+            return TaskHostCallResult(operation="execute", outcome=TaskOutcome.succeeded(output))
+        return TaskHostCallResult(
+            operation="execute",
+            outcome=TaskOutcome.succeeded(
+                {
+                    "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                    "change_id": change_id,
+                    "rounds_budget": rounds_budget,
+                    "rounds_used": rounds_used,
+                }
+            ),
+        )
+
+    async def reconcile(self, call: TaskHostReconcileCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="reconcile",
+            reconcile_result=TaskActivityReconcileResult(status="indeterminate", reason="scripted host"),
+        )
+
+    async def cancel(self, call: TaskHostCancelCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="cancel",
+            cancel_result=TaskActivityCancelResult(status="indeterminate", reason="scripted host"),
+        )
+
+    def read_terminal_receipts(self, identity) -> tuple[TaskHostTerminalReceipt, ...]:
+        del identity
+        return ()
+
+
+def _compile_generation_workflow():
+    module = _load_module()
+    handlers: dict[str, object] = {}
+    graphs = {}
+    for graph_id, graph in module.graphs.items():
+        nodes = {}
+        for node_id, node in graph.nodes.items():
+            payload = node.model_dump(mode="python", by_alias=True, exclude_unset=True)
+            slot = payload.pop("capability_slot", None)
+            if slot is not None:
+                capability_id = f"assurance.generation.slot.{slot}"
+                payload["capability"] = capability_id
+                handlers[capability_id] = _FakeSlotHandler()
+            elif node.capability is not None:
+                handlers[node.capability] = _FakeSlotHandler()
+            nodes[node_id] = NodeDef.model_validate(payload)
+        graphs[graph_id] = graph.model_copy(update={"nodes": nodes})
+    from graph_engine.graph.schema import WorkflowDef
+
+    return WorkflowDef(
+        name="generation-isolation",
+        entrypoints={"generate": "generation"},
+        retry=module.retry,
+        timeout=module.timeout,
+        graphs=graphs,
+    ), handlers
+
+
+def _lane_end_nodes(projection: InvocationProjection, family: str) -> frozenset[str]:
+    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+    ends: set[str] = set()
+    lane_id = f"generation-{family}"
+    for activation in projection.activations:
+        graph = graphs[activation.graph_instance_id]
+        if graph.graph_id == lane_id or graph.graph_id.endswith(f".{lane_id}"):
+            if activation.node_id in {"done", "rejected", "exhausted"} and activation.status == "completed":
+                ends.add(activation.node_id)
+    return frozenset(ends)
+
+
+def _drive_generate(
+    *,
+    selected: tuple[str, ...],
+    reviews: tuple[str, ...] = ("pass",),
+    codegen_verdicts: tuple[str, ...] = ("accepted",),
+    resumes: tuple[str, ...] = (),
+) -> GenerationDriveResult:
+    from tests.product.runtime_composition import resolve_workflow_composition
+
+    validate_selected_families(selected)
+    workflow, handlers = _compile_generation_workflow()
+    document = workflow.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    composition = resolve_workflow_composition(document, handlers)
+    host = _ScriptedGenerationHost(reviews=reviews, codegen_verdicts=codegen_verdicts)
+    root_input = {
+        **_PUBLIC_INPUT,
+        "selected_test_families": list(selected),
+    }
+    with TemporaryDirectory(prefix="generation-drive-") as raw:
+        root = Path(raw).resolve()
+        project = root / "project"
+        attempts = root / "attempts"
+        receipts = root / "receipts"
+        runtime = root / "runtime"
+        for path in (project, attempts, receipts, runtime):
+            path.mkdir()
+        (runtime / "invocations").mkdir()
+        engine = Engine(runtime, host=host)
+        try:
+            handle = engine.start(
+                composition,
+                entrypoint="generate",
+                invocation_id=f"generation-{uuid.uuid4().hex}",
+                seed=empty_invocation_seed(root_input=cast(JSONValue, root_input)),
+                authorization=empty_runtime_authorization(),
+                workspace_binding=InvocationWorkspaceBinding(
+                    project_root=project,
+                    attempts_root=attempts,
+                    receipts_root=receipts,
+                ),
+            )
+            result = engine.run_until_blocked(handle)
+            for action in resumes:
+                if result.status != "interrupted":
+                    break
+                handle = engine.resume(handle, action=action, payload={"decision": action})
+                result = engine.run_until_blocked(handle)
+            projection = result.projection
+            graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+            dispatched: set[str] = set()
+            skipped: set[str] = set()
+            join_tokens = 0
+            for activation in projection.activations:
+                graph = graphs[activation.graph_instance_id]
+                if graph.graph_id.endswith(".generation") or graph.graph_id == "generation":
+                    if activation.node_id in _FAMILIES and activation.status == "completed":
+                        dispatched.add(activation.node_id)
+                    if activation.node_id.endswith("-skip") and activation.status == "completed":
+                        skipped.add(activation.node_id.removesuffix("-skip"))
+                    if activation.node_id == "join-selected" and activation.status == "completed":
+                        join_tokens = len(activation.token_ids)
+            ends: set[str] = set()
+            for family in selected:
+                ends.update(_lane_end_nodes(projection, family))
+            public = "passed"
+            if ends == {"rejected"}:
+                public = "rejected"
+            elif "exhausted" in ends:
+                public = "exhausted"
+            return GenerationDriveResult(
+                status=result.status,
+                selected=selected,
+                dispatched_families=frozenset(dispatched),
+                skip_families=frozenset(skipped),
+                join_token_count=join_tokens,
+                advance_count=len(host.advance_outputs),
+                counters=tuple(int(item["rounds_used"]) for item in host.advance_outputs),
+                end_nodes=frozenset(ends),
+                public_outcome=public,
+            )
+        finally:
+            engine.close()
+
+
+def _all_nonempty_subsets() -> tuple[tuple[str, ...], ...]:
+    return tuple(combo for size in range(1, 5) for combo in combinations(GENERATION_FAMILIES, size))
+
+
+@pytest.mark.parametrize("selected", _all_nonempty_subsets())
+def test_each_selected_family_dispatches_once_and_unselected_emit_skip_tokens(
+    selected: tuple[str, ...],
+) -> None:
+    result = _drive_generate(selected=selected)
+    assert result.dispatched_families == frozenset(selected)
+    assert result.skip_families == frozenset(GENERATION_FAMILIES) - frozenset(selected)
+    assert result.join_token_count == 4
+    assert result.status == "succeeded"
+
+
+@pytest.mark.parametrize("selected", [(), ("api", "api"), ("api", "mobile")])
+def test_empty_duplicate_and_unknown_families_fail_at_feature_input(
+    selected: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError):
+        validate_selected_families(selected)
+    with pytest.raises(Exception):
+        _drive_generate(selected=selected)
+
+
+@pytest.mark.parametrize("family", _FAMILIES)
+def test_plan_review_pass_completes_without_advance(family: str) -> None:
+    result = _drive_generate(selected=(family,), reviews=("pass",))
+    assert result.public_outcome == "passed"
+    assert result.advance_count == 0
+    assert result.end_nodes == {"done"}
+
+
+@pytest.mark.parametrize("family", _FAMILIES)
+def test_plan_review_auto_fix_advances_once_per_loop(family: str) -> None:
+    result = _drive_generate(selected=(family,), reviews=("needs_fix", "pass"))
+    assert result.public_outcome == "passed"
+    assert result.advance_count == 1
+    assert result.counters == (1,)
+
+
+@pytest.mark.parametrize("family", _FAMILIES)
+def test_plan_review_budget_exhaustion_is_explicit(family: str) -> None:
+    result = _drive_generate(selected=(family,), reviews=("needs_fix", "needs_fix", "needs_fix"))
+    assert result.public_outcome == "exhausted"
+    assert result.advance_count == 2
+    assert result.counters == (1, 2)
+    assert result.status == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [("approve", "passed"), ("reject", "rejected"), ("request_rework", "passed")],
+)
+@pytest.mark.parametrize("family", _FAMILIES)
+def test_plan_review_human_action_has_one_successor(family: str, action: str, expected: str) -> None:
+    reviews = ("needs_human_review", "pass") if action == "request_rework" else ("needs_human_review",)
+    result = _drive_generate(selected=(family,), reviews=reviews, resumes=(action,))
+    assert result.public_outcome == expected
+    if action == "request_rework":
+        assert result.advance_count == 1
+        assert result.counters == (1,)
+    else:
+        assert result.advance_count == 0
+
+
+@pytest.mark.parametrize("family", ("api", "e2e"))
+def test_api_e2e_codegen_needs_fix_reaches_fixer(family: str) -> None:
+    result = _drive_generate(
+        selected=(family,),
+        reviews=("pass",),
+        codegen_verdicts=("needs_fix",),
+    )
+    assert result.status == "succeeded"
+    assert result.advance_count == 1
+    assert result.counters == (1,)
+    assert result.end_nodes == {"done"}
+
+
+def test_join_is_order_independent_for_all_four_lanes() -> None:
+    forward = _drive_generate(selected=GENERATION_FAMILIES)
+    reverse = _drive_generate(selected=GENERATION_FAMILIES)
+    assert forward.join_token_count == reverse.join_token_count == 4
+    assert forward.dispatched_families == reverse.dispatched_families == frozenset(GENERATION_FAMILIES)

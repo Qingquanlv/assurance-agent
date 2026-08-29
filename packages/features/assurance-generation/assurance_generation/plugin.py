@@ -72,6 +72,7 @@ GENERATION_HANDLER_IDS: tuple[str, ...] = (
     "assurance.generation.performance.plan-review.prepare",
     "assurance.generation.performance.plan.finalize",
     "assurance.generation.performance.plan.prepare",
+    "assurance.generation.review-round.advance",
 )
 
 GENERATION_VALIDATOR_IDS: tuple[str, ...] = (

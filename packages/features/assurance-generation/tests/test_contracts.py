@@ -17,6 +17,8 @@ from assurance_generation.contracts import (
     PlanCheckDocument,
     PlanReviewAuthoring,
 )
+from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
+from assurance_generation.contracts.reviews import PUBLIC_REVIEW_OUTCOMES, public_review_outcome
 from assurance_generation.plugin import GenerationPlugin
 
 _TESTS_ROOT = Path(__file__).resolve().parent
@@ -101,6 +103,61 @@ def test_plan_review_rejects_prefix_leaf() -> None:
     raw = valid_plan_review(required_capabilities=["entities.item"])
     with pytest.raises(ValidationError, match="unknown capability leaf|canonical C4 leaf key"):
         PlanReviewAuthoring.model_validate(raw, context={"capability_leafs": VALID_LEAFS})
+
+
+@pytest.mark.parametrize(
+    ("decision", "auto_fix_allowed", "human_review_required", "expected"),
+    [
+        ("pass", False, False, "pass"),
+        ("approved", False, False, "pass"),
+        ("needs_fix", True, False, "needs_fix"),
+        ("changes_requested", True, False, "needs_fix"),
+        ("needs_fix", False, True, "needs_human"),
+        ("changes_requested", False, True, "needs_human"),
+        ("needs_human_review", False, True, "needs_human"),
+        ("reject", False, False, "reject"),
+    ],
+)
+def test_plan_review_normalizes_public_outcomes(
+    decision: str,
+    auto_fix_allowed: bool,
+    human_review_required: bool,
+    expected: str,
+) -> None:
+    assert public_review_outcome(decision, auto_fix_allowed, human_review_required) == expected
+    assert expected in PUBLIC_REVIEW_OUTCOMES
+
+
+@pytest.mark.parametrize(
+    ("decision", "auto_fix_allowed", "human_review_required"),
+    [
+        ("pass", True, False),
+        ("approved", False, True),
+        ("needs_fix", True, True),
+        ("needs_fix", False, False),
+        ("needs_human_review", True, True),
+        ("reject", True, False),
+        ("reject", False, True),
+    ],
+)
+def test_plan_review_rejects_contradictory_public_outcomes(
+    decision: str,
+    auto_fix_allowed: bool,
+    human_review_required: bool,
+) -> None:
+    with pytest.raises(ValueError):
+        public_review_outcome(decision, auto_fix_allowed, human_review_required)
+
+
+def test_selected_families_reject_empty_duplicate_and_unknown() -> None:
+    assert validate_selected_families(("api", "e2e")) == ("api", "e2e")
+    assert GENERATION_FAMILIES == ("api", "e2e", "fuzz", "performance")
+    with pytest.raises(ValueError, match="empty|non-empty"):
+        validate_selected_families(())
+    with pytest.raises(ValueError, match="duplicate"):
+        validate_selected_families(("api", "api"))
+    with pytest.raises(ValueError, match="unknown"):
+        validate_selected_families(("api", "mobile"))
 
 
 def test_plan_review_accepts_exact_typed_leaf() -> None:

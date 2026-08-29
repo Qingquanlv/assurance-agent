@@ -8,7 +8,7 @@ from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 
 from assurance_generation.contracts.agent import AgentBindingDataV1, AgentFinalizeInputV1
-from assurance_generation.contracts.reviews import PlanReviewAuthoring
+from assurance_generation.contracts.reviews import PlanReviewAuthoring, normalize_public_review_outcome
 from assurance_generation.operations.planning import (
     FAMILIES,
     PLAN_REVIEW_RESULT_ID,
@@ -82,7 +82,19 @@ class PlanReviewFinalizeHandler:
             expected = f"{family}-plan"
             if document.review_type != expected:
                 raise OutputError(f"review_type {document.review_type!r} does not match {expected}")
-            return TaskOutcome.succeeded(document.model_dump(mode="json"))
+            raw_input = request.input if isinstance(request.input, dict) else {}
+            used = raw_input.get("rounds_used")
+            budget = raw_input.get("rounds_budget")
+            extra: dict[str, object] = {
+                "public_outcome": normalize_public_review_outcome(
+                    document.decision,
+                    document.auto_fix_allowed,
+                    document.human_review_required,
+                ),
+                "rounds_used": used if isinstance(used, int) and used >= 0 else 0,
+                "rounds_budget": budget if isinstance(budget, int) and budget >= 1 else 2,
+            }
+            return TaskOutcome.succeeded({**document.model_dump(mode="json"), **extra})
         except (InputError, ValidationError) as error:
             return failed_input(error)
         except OutputError as error:

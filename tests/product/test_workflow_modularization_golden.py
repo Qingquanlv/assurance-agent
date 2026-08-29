@@ -44,7 +44,16 @@ _FEATURE_MODULE_IDS = {
 _BOUNDARY_FIELDS = frozenset(
     {"input_schema", "output_schema", "output_projection", "capability_slot", "graph_import"}
 )
-INTENTIONAL_SEMANTIC_DIFF: frozenset[str] = frozenset({"entry"})
+INTENTIONAL_SEMANTIC_DIFF: frozenset[str] = frozenset(
+    {
+        "entry",
+        "generation",
+        "generation-api",
+        "generation-e2e",
+        "generation-fuzz",
+        "generation-performance",
+    }
+)
 THIN_WRAPPER_ENTRYPOINTS = (
     "intake",
     "case",
@@ -81,10 +90,19 @@ def test_pre_modular_inventory_is_frozen() -> None:
     assert counts == EXPECTED_OWNER_COUNTS
 
 
-def test_intentional_semantic_diff_is_the_intake_review_correction() -> None:
+def test_intentional_semantic_diff_is_the_intake_and_generation_correction() -> None:
     document = yaml.safe_load(RELOCATION_DIFF.read_text(encoding="utf-8"))
     assert document["intentional_semantic_diff"] == []
-    assert INTENTIONAL_SEMANTIC_DIFF == frozenset({"entry"})
+    assert INTENTIONAL_SEMANTIC_DIFF == frozenset(
+        {
+            "entry",
+            "generation",
+            "generation-api",
+            "generation-e2e",
+            "generation-fuzz",
+            "generation-performance",
+        }
+    )
 
 
 def test_architectural_relocation_diff_records_standalone_intake() -> None:
@@ -109,7 +127,7 @@ def test_feature_graphs_match_normalized_pre_modular_projection(installed_source
             actual = _project_modular_graph(assembled.graphs[f"{module_id}.graph.{local_id}"], module_id)
             assert actual == expected, f"{owner}/{local_id} drifted"
             compared += 1
-    assert compared == 49
+    assert compared == 44
 
 
 @pytest.mark.usefixtures("installed_sources")

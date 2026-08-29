@@ -8,11 +8,13 @@ from typing import cast
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import canonical_json_bytes
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 
+from assurance_generation.contracts.codegen import CodegenResultV2
 from assurance_generation.operations.codegen import (
     CodegenFinalizeHandler,
     codegen_finalize_handler,
@@ -339,7 +341,11 @@ async def test_codegen_finalize_authenticates_workspace_bytes(family: str, tmp_p
     )
     assert executed.status == "succeeded"
     output = cast(dict[str, object], executed.output)
-    assert output["needs_fix"] is False
+    if family in {"api", "e2e"}:
+        assert output["verdict"] == "accepted"
+        assert "repair" not in output or output["repair"] is None
+    else:
+        assert output["needs_fix"] is False
     assert output["layer"] == family
     files = cast(list[dict[str, object]], output["files"])
     assert files[0]["repo_path"] == relative
@@ -573,6 +579,52 @@ async def test_codegen_finalize_rejects_target_outside_family_policy(family: str
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
+
+
+@pytest.mark.parametrize("family", ("api", "e2e"))
+def test_api_e2e_codegen_result_v2_needs_fix_requires_repair_payload(family: str) -> None:
+    payload = {
+        "schema_version": "2",
+        "verdict": "needs_fix",
+        "change_id": CHANGE_ID,
+        "layer": family,
+        "files": [
+            {
+                "repo_path": family_test_file(family),
+                "disposition": "generated",
+                "role": "test_entry",
+                "case_ids": [family_case_id(family)],
+                "content_sha256": "sha256:" + "a" * 64,
+            }
+        ],
+        "mapping": mapping_document(family),
+        "required_capabilities": ["entities.item.create"],
+    }
+    with pytest.raises(ValidationError, match="repair"):
+        CodegenResultV2.model_validate(payload, context={"capability_leafs": frozenset(VALID_LEAFS)})
+    payload["repair"] = {
+        "allowed_paths": [family_test_file(family)],
+        "summary": "repair the generated assertion",
+    }
+    model = CodegenResultV2.model_validate(payload, context={"capability_leafs": frozenset(VALID_LEAFS)})
+    assert model.verdict == "needs_fix"
+    assert model.repair is not None
+
+
+@pytest.mark.parametrize("family", ("fuzz", "performance"))
+def test_fuzz_performance_codegen_does_not_advertise_fixer_outcome(family: str) -> None:
+    from assurance_generation.contracts.codegen import CodegenResultV1
+
+    payload = {
+        "schema_version": "1",
+        "needs_fix": True,
+        "change_id": CHANGE_ID,
+        "layer": family,
+        "files": [],
+        "mapping": mapping_document(family),
+    }
+    with pytest.raises(ValidationError):
+        CodegenResultV1.model_validate(payload, context={"capability_leafs": frozenset(VALID_LEAFS)})
 
 
 @pytest.mark.asyncio

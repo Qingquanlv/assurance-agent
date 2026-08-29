@@ -93,7 +93,8 @@
       "assurance.generation.performance.plan-review.finalize",
       "assurance.generation.performance.plan-review.prepare",
       "assurance.generation.performance.plan.finalize",
-      "assurance.generation.performance.plan.prepare"
+      "assurance.generation.performance.plan.prepare",
+      "assurance.generation.review-round.advance"
     ]
   },
   "kind": "plugin",

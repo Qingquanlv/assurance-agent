@@ -473,7 +473,15 @@ class PlanFinalizeHandler:
                 raise OutputError(f"plan family {document.family!r} does not match {family}")
             if payload.artifact_paths:
                 _authenticate_files(context.project_root, document.output_files, payload.artifact_paths)
-            return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
+            dumped = document.model_dump(mode="json")
+            raw_input = request.input if isinstance(request.input, dict) else {}
+            used = raw_input.get("rounds_used")
+            budget = raw_input.get("rounds_budget")
+            if isinstance(used, int) and used >= 0:
+                dumped["rounds_used"] = used
+            if isinstance(budget, int) and budget >= 0:
+                dumped["rounds_budget"] = budget
+            return TaskOutcome.succeeded(cast(JSONValue, dumped))
         except (InputError, ValidationError) as error:
             return failed_input(error)
         except OutputError as error:
