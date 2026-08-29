@@ -177,13 +177,6 @@ graphs:
               pointer: /rounds_budget
         retry: once
         timeout: short
-      review-round-advance-rework:
-        kind: task
-        capability: assurance.intake.review-round.advance
-        input: *review_round_seed
-        input_projection: *advance_from_config
-        retry: once
-        timeout: short
       advance-join:
         kind: join
         join: any
@@ -276,8 +269,14 @@ graphs:
         input_projection:
           type: object
           fields:
-            rounds_used: {type: literal, value: 1}
-            rounds_budget: {type: literal, value: 2}
+            rounds_used:
+              type: predecessor_pointer
+              predecessor: case-review-retry
+              pointer: /rounds_used
+            rounds_budget:
+              type: predecessor_pointer
+              predecessor: case-review-retry
+              pointer: /rounds_budget
         routing: {mode: exclusive}
       review-round-advance-rework-retry:
         kind: task
@@ -286,16 +285,6 @@ graphs:
         input_projection: *advance_from_config
         retry: once
         timeout: short
-      case-design-rework:
-        kind: subgraph
-        graph: case-design
-        input_projection: *case_design_input
-      case-review-rework:
-        kind: subgraph
-        graph: case-review
-        input: {rounds_used: 1, rounds_budget: 2}
-        input_projection: *case_review_input
-        routing: {mode: exclusive}
       rejected:
         kind: end
       exhausted:
@@ -313,10 +302,11 @@ graphs:
       - {from: case-review, to: exhausted, otherwise: true}
       - {from: human-review, to: done, condition: "output.action == 'approve'"}
       - {from: human-review, to: rejected, condition: "output.action == 'reject'"}
-      - {from: human-review, to: review-round-advance-rework, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
+      - {from: human-review, to: review-round-advance, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
       - {from: human-review, to: exhausted, otherwise: true}
       - {from: review-round-advance, to: advance-join}
       - {from: review-round-advance-retry, to: advance-join}
+      - {from: review-round-advance-rework-retry, to: advance-join}
       - {from: advance-join, to: case-design-retry}
       - {from: case-design-retry, to: case-review-retry}
       - {from: case-review-retry, to: done, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.human_review_required == false"}
@@ -328,13 +318,6 @@ graphs:
       - {from: human-review-retry, to: rejected, condition: "output.action == 'reject'"}
       - {from: human-review-retry, to: review-round-advance-rework-retry, condition: "output.action == 'request_rework' and input.rounds_used < input.rounds_budget"}
       - {from: human-review-retry, to: exhausted, otherwise: true}
-      - {from: review-round-advance-rework, to: case-design-rework}
-      - {from: review-round-advance-rework-retry, to: case-design-rework}
-      - {from: case-design-rework, to: case-review-rework}
-      - {from: case-review-rework, to: done, condition: "(output.decision == 'pass' or output.decision == 'approved') and output.human_review_required == false"}
-      - {from: case-review-rework, to: rejected, condition: "output.decision == 'reject' and output.human_review_required == false"}
-      - {from: case-review-rework, to: human-review-retry, condition: "output.decision == 'needs_human_review' or output.human_review_required == true"}
-      - {from: case-review-rework, to: exhausted, otherwise: true}
   case:
     max_activations: 6
     start: case-design

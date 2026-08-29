@@ -579,35 +579,48 @@ def _successor_count(projection: InvocationProjection, node_id: str) -> int:
     return len(successors)
 
 
+def _interrupt_successor(projection: InvocationProjection, node_id: str) -> str | None:
+    targets = [
+        token.target
+        for token in projection.offered_tokens
+        if token.source == node_id and token.target is not None
+    ]
+    return targets[0] if targets else None
+
+
 def _public_outcome_from_run(
     *,
     status: str,
     projection: InvocationProjection,
     resume_action: str | None,
-    advance_count: int,
 ) -> str:
     ends = []
-    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
     for activation in projection.activations:
-        graph = graphs[activation.graph_instance_id]
-        del graph
         if activation.node_id in {"done", "rejected", "exhausted"} and activation.status == "completed":
             ends.append(activation.node_id)
-    if resume_action == "request_rework" and advance_count:
-        return "rework"
     if ends and ends[-1] == "rejected":
         return "rejected"
     if ends and ends[-1] == "exhausted":
         return "exhausted"
     if ends and ends[-1] == "done" and status == "succeeded":
         return "passed"
+    if resume_action is not None:
+        successor = _interrupt_successor(projection, "human-review")
+        if successor == "rejected":
+            return "rejected"
+        if successor == "done":
+            return "passed"
+        if successor == "exhausted":
+            return "exhausted"
+        if successor is not None and successor.startswith("review-round-advance"):
+            return "rework"
     if status == "succeeded":
         return "passed"
     return status
 
 
 def drive_case_review_interrupt(action: str) -> ReviewDriveResult:
-    return _drive_review(review_decision="needs_human_review", resume=action)
+    return _drive_review(review_decision="needs_human_review", resumes=(action,))
 
 
 def _drive_review(
@@ -615,6 +628,7 @@ def _drive_review(
     review_decision: str,
     reviews: tuple[str, ...] = (),
     resume: str | None = None,
+    resumes: tuple[str, ...] = (),
     entrypoint: str = "prepare",
 ) -> ReviewDriveResult:
     from tests.product.runtime_composition import resolve_workflow_composition
@@ -623,6 +637,7 @@ def _drive_review(
     document = workflow.model_dump(mode="json", by_alias=True, exclude_unset=True)
     composition = resolve_workflow_composition(document, handlers)
     host = _ScriptedIntakeHost(review_decision=review_decision, reviews=reviews)
+    actions = resumes if resumes else ((resume,) if resume is not None else ())
     with TemporaryDirectory(prefix="intake-review-drive-") as raw:
         root = Path(raw).resolve()
         project = root / "project"
@@ -647,9 +662,10 @@ def _drive_review(
                 ),
             )
             result = engine.run_until_blocked(handle)
-            if resume is not None:
-                assert result.status == "interrupted", result.status
-                handle = engine.resume(handle, action=resume, payload={"decision": resume})
+            for action in actions:
+                if result.status != "interrupted":
+                    break
+                handle = engine.resume(handle, action=action, payload={"decision": action})
                 result = engine.run_until_blocked(handle)
             projection = result.projection
             node_id = "human-review"
@@ -657,10 +673,9 @@ def _drive_review(
                 public_outcome=_public_outcome_from_run(
                     status=result.status,
                     projection=projection,
-                    resume_action=resume,
-                    advance_count=len(host.advance_outputs),
+                    resume_action=actions[0] if actions else None,
                 ),
-                successor_count=_successor_count(projection, node_id if resume else "case-review"),
+                successor_count=_successor_count(projection, node_id if actions else "case-review"),
                 advance_count=len(host.advance_outputs),
                 status=result.status,
                 counters=tuple(item["rounds_used"] for item in host.advance_outputs),
@@ -719,3 +734,37 @@ def test_review_budget_exhaustion_is_explicit_non_achieved() -> None:
     assert result.advance_count == 2
     assert result.counters == (1, 2)
     assert result.successor_count == 1
+
+
+def test_request_rework_advances_once_per_loop() -> None:
+    result = _drive_review(
+        review_decision="needs_human_review",
+        reviews=("needs_human_review", "pass"),
+        resumes=("request_rework",),
+    )
+    assert result.public_outcome == "passed"
+    assert result.advance_count == 1
+    assert result.counters == (1,)
+
+
+def test_request_rework_then_auto_fix_uses_advance_counters() -> None:
+    result = _drive_review(
+        review_decision="needs_human_review",
+        reviews=("needs_human_review", "needs_fix", "pass"),
+        resumes=("request_rework",),
+    )
+    assert result.public_outcome == "passed"
+    assert result.advance_count == 2
+    assert result.counters == (1, 2)
+
+
+def test_request_rework_exhausts_without_max_activations() -> None:
+    result = _drive_review(
+        review_decision="needs_human_review",
+        reviews=("needs_human_review", "needs_human_review", "needs_human_review"),
+        resumes=("request_rework", "request_rework", "request_rework"),
+    )
+    assert result.public_outcome == "exhausted"
+    assert result.advance_count == 2
+    assert result.counters == (1, 2)
+    assert result.status == "succeeded"

@@ -1,26 +1,242 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import cast
+import uuid
 
 import pytest
 
-from graph_engine.runtime.engine import EngineError
+from graph_engine.canonical import JSONValue
+from graph_engine.graph.schema import WorkflowDef
+from graph_engine.plugin_api import (
+    InvocationWorkspaceBinding,
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
+    TaskContext,
+    TaskOutcome,
+)
+from graph_engine.runtime.engine import Engine, EngineError
+from graph_engine.runtime.host_protocol import (
+    TaskHostCallResult,
+    TaskHostCancelCall,
+    TaskHostExecuteCall,
+    TaskHostReconcileCall,
+    TaskHostTerminalReceipt,
+)
+from graph_engine.runtime.models import InvocationProjection
+from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.runtime.seed import empty_invocation_seed
 
 from tests.product.composition_harness import request_for
 
 pytestmark = pytest.mark.usefixtures("product_runner")
 
 _FORBIDDEN_TREE_NAMES = frozenset({"workspace", "trees", "attempts", "HEAD.json"})
+_REVIEW_ADVANCE = "assurance.intake.review-round.advance"
+_INTAKE_ENTRY_INPUT = {
+    "change_id": "CH-DEMO-001",
+    "requirement": "Cover department CRUD.",
+    "selected_test_families": ["api"],
+    "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
+    "capability_leafs": ["entities.item.create"],
+    "allowed_artifact_paths": ["qa/changes"],
+}
 
 
-def _intake_entry_graph(installed_sources):
+class _AssembledIntakeHost:
+    def __init__(self, *, reviews: tuple[str, ...]) -> None:
+        self._reviews = reviews
+        self._index = 0
+        self._advance = None
+        self.advance_outputs: list[dict[str, int]] = []
+
+    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
+        capability_id = call.request.capability_id
+        if capability_id == _REVIEW_ADVANCE or capability_id.endswith("review-round.advance"):
+            if self._advance is None:
+                from assurance_intake.operations.workflow_state import ReviewRoundAdvanceHandler
+
+                self._advance = ReviewRoundAdvanceHandler()
+            context = TaskContext(
+                project_root=Path.cwd(),
+                write_root=Path.cwd(),
+                workspace_identity=call.attempt_root.workspace_identity,
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=call.request.invocation,
+            )
+            outcome = await self._advance.execute(call.request, context)
+            if isinstance(outcome.output, Mapping):
+                self.advance_outputs.append(
+                    {
+                        "rounds_used": int(outcome.output["rounds_used"]),
+                        "rounds_budget": int(outcome.output["rounds_budget"]),
+                    }
+                )
+            return TaskHostCallResult(operation="execute", outcome=outcome)
+        request_input = call.request.input
+        change_id = "CH-DEMO-001"
+        rounds_used = 0
+        rounds_budget = 2
+        if isinstance(request_input, Mapping):
+            if isinstance(request_input.get("change_id"), str):
+                change_id = request_input["change_id"]
+            if isinstance(request_input.get("rounds_used"), int):
+                rounds_used = request_input["rounds_used"]
+            if isinstance(request_input.get("rounds_budget"), int):
+                rounds_budget = request_input["rounds_budget"]
+        decision = self._reviews[min(self._index, len(self._reviews) - 1)]
+        if capability_id.endswith("case-review.finalize"):
+            self._index += 1
+            fixable = decision in {"needs_fix", "changes_requested"}
+            human = decision in {"needs_human_review"}
+            if decision == "reject":
+                fixable = False
+                human = False
+            return TaskHostCallResult(
+                operation="execute",
+                outcome=TaskOutcome.succeeded(
+                    {
+                        "artifacts": [{"path": "qa/changes", "digest": "a" * 64}],
+                        "auto_fix_allowed": fixable,
+                        "auto_fix_plan": [{"fix": "tighten assertion"}] if fixable else [],
+                        "change_id": change_id,
+                        "decision": decision,
+                        "human_review_required": human,
+                        "rounds_budget": rounds_budget,
+                        "rounds_used": rounds_used,
+                    }
+                ),
+            )
+        return TaskHostCallResult(
+            operation="execute",
+            outcome=TaskOutcome.succeeded(
+                {
+                    "artifacts": [{"path": "qa/changes", "digest": "a" * 64}],
+                    "change_id": change_id,
+                    "decision": "pass",
+                    "rounds_budget": rounds_budget,
+                    "rounds_used": rounds_used,
+                }
+            ),
+        )
+
+    async def reconcile(self, call: TaskHostReconcileCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="reconcile",
+            reconcile_result=TaskActivityReconcileResult(status="indeterminate", reason="scripted host"),
+        )
+
+    async def cancel(self, call: TaskHostCancelCall) -> TaskHostCallResult:
+        del call
+        return TaskHostCallResult(
+            operation="cancel",
+            cancel_result=TaskActivityCancelResult(status="indeterminate", reason="scripted host"),
+        )
+
+    def read_terminal_receipts(self, identity) -> tuple[TaskHostTerminalReceipt, ...]:
+        del identity
+        return ()
+
+
+def _assembled_intake_entry_composition(installed_sources):
     from assurance_product.product import resolve_assurance_composition
+    from tests.product.runtime_composition import resolve_workflow_composition
 
-    workflow = resolve_assurance_composition(request_for("opencode", installed_sources)).workflow
-    graph = workflow.graphs.get("assurance.intake.workflow.graph.entry")
-    if graph is None:
-        graph = workflow.graphs["full"]
-    return graph
+    assembled = resolve_assurance_composition(request_for("opencode", installed_sources))
+    entry_id = "assurance.intake.workflow.graph.entry"
+    assert entry_id in assembled.workflow.graphs
+    handlers: dict[str, object] = {}
+    graphs: dict[str, object] = {}
+    for graph_id, graph in assembled.workflow.graphs.items():
+        if "assurance.intake.workflow.graph." not in graph_id:
+            continue
+        nodes: dict[str, object] = {}
+        for node_id, node in graph.nodes.items():
+            payload = node.definition.model_dump(mode="python", by_alias=True, exclude_unset=True)
+            payload.pop("input_schema", None)
+            payload.pop("output_schema", None)
+            payload.pop("output_projection", None)
+            capability = payload.get("capability")
+            if isinstance(capability, str):
+                handlers[capability] = object()
+            nodes[node_id] = payload
+        graphs[graph_id] = {
+            "max_activations": graph.max_activations,
+            "start": graph.start,
+            "nodes": nodes,
+            "edges": [edge.model_dump(mode="python", by_alias=True, exclude_unset=True) for edge in graph.edges],
+        }
+    workflow = WorkflowDef.model_validate(
+        {
+            "name": "assembled-intake-entry",
+            "entrypoints": {"entry": entry_id},
+            "retry": {name: policy.model_dump(mode="python") for name, policy in assembled.workflow.retry.items()},
+            "timeout": {
+                name: policy.model_dump(mode="python") for name, policy in assembled.workflow.timeout.items()
+            },
+            "graphs": graphs,
+        }
+    )
+    return resolve_workflow_composition(
+        workflow.model_dump(mode="json", by_alias=True, exclude_unset=True),
+        handlers,
+    )
+
+
+def _entry_end_nodes(projection: InvocationProjection) -> set[str]:
+    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+    ends: set[str] = set()
+    for activation in projection.activations:
+        graph = graphs[activation.graph_instance_id]
+        if graph.graph_id.endswith(".entry") and activation.node_id in {"done", "rejected", "exhausted"}:
+            if activation.status == "completed":
+                ends.add(activation.node_id)
+    return ends
+
+
+def _drive_assembled_intake_entry(
+    installed_sources,
+    *,
+    reviews: tuple[str, ...],
+    resumes: tuple[str, ...],
+):
+    composition = _assembled_intake_entry_composition(installed_sources)
+    host = _AssembledIntakeHost(reviews=reviews)
+    with TemporaryDirectory(prefix="assembled-intake-entry-") as raw:
+        root = Path(raw).resolve()
+        project = root / "project"
+        attempts = root / "attempts"
+        receipts = root / "receipts"
+        runtime = root / "runtime"
+        for path in (project, attempts, receipts, runtime):
+            path.mkdir()
+        (runtime / "invocations").mkdir()
+        engine = Engine(runtime, host=host)
+        try:
+            handle = engine.start(
+                composition,
+                entrypoint="entry",
+                invocation_id=f"intake-entry-{uuid.uuid4().hex}",
+                seed=empty_invocation_seed(root_input=cast(JSONValue, dict(_INTAKE_ENTRY_INPUT))),
+                authorization=empty_runtime_authorization(),
+                workspace_binding=InvocationWorkspaceBinding(
+                    project_root=project,
+                    attempts_root=attempts,
+                    receipts_root=receipts,
+                ),
+            )
+            result = engine.run_until_blocked(handle)
+            for action in resumes:
+                assert result.status == "interrupted", result.status
+                handle = engine.resume(handle, action=action, payload={"decision": action})
+                result = engine.run_until_blocked(handle)
+            return result, host
+        finally:
+            engine.close()
 
 
 def test_business_stop_is_resumable_only_at_declared_interrupt(product_runner):
@@ -33,22 +249,28 @@ def test_business_stop_is_resumable_only_at_declared_interrupt(product_runner):
 
 
 def test_human_reject_terminates_rejected_not_completed(installed_sources):
-    graph = _intake_entry_graph(installed_sources)
-    edges = {(edge.from_, edge.to, edge.condition) for edge in graph.edges}
-    reject_edges = {item for item in edges if item[0] == "human-review" and item[1] == "rejected"}
-    assert reject_edges
-    assert all(item[2] is not None and "reject" in item[2] for item in reject_edges)
-    assert not any(item[0] == "human-review" and item[1] == "done" and item[2] is None for item in edges)
+    result, host = _drive_assembled_intake_entry(
+        installed_sources,
+        reviews=("needs_human_review",),
+        resumes=("reject",),
+    )
+    assert result.status == "succeeded"
+    ends = _entry_end_nodes(result.projection)
+    assert ends == {"rejected"}
+    assert host.advance_outputs == []
 
 
 def test_request_rework_is_a_distinct_resume_action(installed_sources):
-    graph = _intake_entry_graph(installed_sources)
-    human = graph.nodes["human-review"]
-    assert "request_rework" in human.definition.actions
-    assert "reject" in human.definition.actions
-    edges = {(edge.from_, edge.to) for edge in graph.edges}
-    assert ("human-review", "rejected") in edges
-    assert any(source == "human-review" and "review-round-advance" in target for source, target in edges)
+    result, host = _drive_assembled_intake_entry(
+        installed_sources,
+        reviews=("needs_human_review", "needs_fix", "pass"),
+        resumes=("request_rework",),
+    )
+    assert result.status == "succeeded"
+    ends = _entry_end_nodes(result.projection)
+    assert ends == {"done"}
+    assert tuple(item["rounds_used"] for item in host.advance_outputs) == (1, 2)
+    assert host.advance_outputs[0]["rounds_budget"] == 2
 
 
 def test_invalid_resume_input_fails(product_runner):
