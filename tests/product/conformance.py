@@ -219,14 +219,14 @@ SECURITY_GATE_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[hard-link-generation]",
             "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[path-swap-execution]",
             "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[undeclared-write-root-execution]",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_dual_root_workspace_identity_drift_is_fail_closed",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_bound_cancel_reconcile_rejects_live_root_drift_with_same_identity",
-            "packages/clients/agent-runtime-cursor/tests/test_process_host_security.py::test_spawn_rejects_workspace_identity_drift",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_dual_root_workspace_identity_drift_is_fail_closed",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_bound_cancel_reconcile_rejects_live_root_drift_with_same_identity",
+            "packages/adapters/agent-runtime-cursor/tests/test_process_host_security.py::test_spawn_rejects_workspace_identity_drift",
         ),
         "secret_redaction": (
-            "packages/clients/agent-runtime-opencode/tests/test_credentials.py::test_success_durable_outputs_and_workspace_have_no_canary",
-            "packages/clients/agent-runtime-opencode/tests/test_credentials.py::test_provider_error_redacts_canary_from_typed_failure",
-            "packages/clients/agent-runtime-contracts/tests/test_schema.py::test_bound_redacted_diagnostics_redact_before_limiting",
+            "packages/adapters/agent-runtime-opencode/tests/test_credentials.py::test_success_durable_outputs_and_workspace_have_no_canary",
+            "packages/adapters/agent-runtime-opencode/tests/test_credentials.py::test_provider_error_redacts_canary_from_typed_failure",
+            "packages/adapters/agent-runtime-contracts/tests/test_schema.py::test_bound_redacted_diagnostics_redact_before_limiting",
             "tests/product/test_binding_builder_security.py::test_built_wheel_contains_no_secret_bytes",
         ),
     }
@@ -235,24 +235,24 @@ SECURITY_GATE_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
 _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "provider_state_loss_replay": (
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_receipt_before_engine_ack_replays_without_provider",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_replay_without_provider",
-            "packages/clients/agent-runtime-cursor/tests/test_process_host.py::test_durable_terminal_survives_new_host_instance",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_receipt_before_engine_ack_replays_without_provider",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_replay_without_provider",
+            "packages/adapters/agent-runtime-cursor/tests/test_process_host.py::test_durable_terminal_survives_new_host_instance",
             "packages/framework/graph-engine/tests/runtime/test_staged_promotion_recovery.py::test_recovery_consumes_durable_promotion_without_reexecuting_handler",
             "tests/product/test_replay_properties.py::test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash_subset",
         ),
         "fault_crash_recovery": (
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[before_create]",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[after_create_before_response]",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[invalid_success_body]",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[proxy_reset]",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[before_prompt_post]",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_admission_before_response]",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_lost_success_response]",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[before_create]",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[after_create_before_response]",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[invalid_success_body]",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[proxy_reset]",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[before_prompt_post]",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_admission_before_response]",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_lost_success_response]",
             "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[prepared]",
             "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[replacing]",
             "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[committed]",
-            "packages/clients/agent-runtime-cursor/tests/test_process_host_faults.py::test_wait_before_durable_write_is_not_visible",
+            "packages/adapters/agent-runtime-cursor/tests/test_process_host_faults.py::test_wait_before_durable_write_is_not_visible",
         ),
         "stop_interrupt": (
             "tests/product/test_stop_and_interrupts.py::test_business_stop_is_resumable_only_at_declared_interrupt",
@@ -310,23 +310,23 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_worker_rejects_substituted_project_root_before_handler_execution",
             "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_receipt_store_rejects_partial_symlink_linked_changed_multiple_foreign_and_nonmonotonic",
             "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_production_host_rejects_forged_terminal_receipt",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_temporary_empty_discovery_stays_indeterminate",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_multiple_matches_fail_closed",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_lost_sse_authenticates_with_get",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_idle_with_open_tools_is_not_terminal",
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins",
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_confinement_unavailable_after_bind_is_indeterminate",
-            "packages/clients/agent-runtime-cursor/tests/test_process_launch.py::test_launch_rejects_digest_mismatch_before_spawn",
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_init_version_mismatch_is_indeterminate",
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_spawn_failure_proven_to_create_no_child",
-            "packages/clients/agent-runtime-cursor/tests/test_recovery.py::test_cursor_recovery_never_blindly_retries[after_spawn_before_bind-indeterminate]",
-            "packages/clients/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_enforces_remaining_bounds[truncated_line-truncated]",
-            "packages/clients/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_fails_closed[oversized_line-line byte limit]",
-            "packages/clients/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_fails_closed[exit_mismatch-exit status]",
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_unknown_exit_is_indeterminate_never_absent",
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_host_boot_change_is_indeterminate_never_absent",
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins",
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_cleanup_ambiguity_is_indeterminate",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_temporary_empty_discovery_stays_indeterminate",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_multiple_matches_fail_closed",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_lost_sse_authenticates_with_get",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_idle_with_open_tools_is_not_terminal",
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins",
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_confinement_unavailable_after_bind_is_indeterminate",
+            "packages/adapters/agent-runtime-cursor/tests/test_process_launch.py::test_launch_rejects_digest_mismatch_before_spawn",
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_init_version_mismatch_is_indeterminate",
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_spawn_failure_proven_to_create_no_child",
+            "packages/adapters/agent-runtime-cursor/tests/test_recovery.py::test_cursor_recovery_never_blindly_retries[after_spawn_before_bind-indeterminate]",
+            "packages/adapters/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_enforces_remaining_bounds[truncated_line-truncated]",
+            "packages/adapters/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_fails_closed[oversized_line-line byte limit]",
+            "packages/adapters/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_fails_closed[exit_mismatch-exit status]",
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_unknown_exit_is_indeterminate_never_absent",
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_host_boot_change_is_indeterminate_never_absent",
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins",
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_cleanup_ambiguity_is_indeterminate",
             "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_mutation-assurance.improvement.effect.archive.v1]",
             "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_mutation-assurance.improvement.effect.archive.v1]",
             "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_receipt-assurance.improvement.effect.archive.v1]",
@@ -478,61 +478,61 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_production_host_rejects_forged_terminal_receipt"
         ),
         "opencode-ambiguous-session-create": (
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[after_create_before_response]"
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[after_create_before_response]"
         ),
         "opencode-empty-ambiguous-discovery": (
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_temporary_empty_discovery_stays_indeterminate"
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_temporary_empty_discovery_stays_indeterminate"
         ),
         "opencode-duplicate-metadata": (
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_multiple_matches_fail_closed"
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_multiple_matches_fail_closed"
         ),
         "opencode-prompt-admission-lost-response": (
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_lost_success_response]"
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_lost_success_response]"
         ),
         "opencode-sse-disconnect": (
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_lost_sse_authenticates_with_get"
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_lost_sse_authenticates_with_get"
         ),
         "opencode-transient-idle": (
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_idle_with_open_tools_is_not_terminal"
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_idle_with_open_tools_is_not_terminal"
         ),
         "opencode-cancel-result-race": (
-            "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins"
+            "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins"
         ),
         "cursor-confinement-unavailable": (
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_confinement_unavailable_after_bind_is_indeterminate"
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_confinement_unavailable_after_bind_is_indeterminate"
         ),
         "cursor-executable-drift": (
-            "packages/clients/agent-runtime-cursor/tests/test_process_launch.py::test_launch_rejects_digest_mismatch_before_spawn"
+            "packages/adapters/agent-runtime-cursor/tests/test_process_launch.py::test_launch_rejects_digest_mismatch_before_spawn"
         ),
         "cursor-version-drift": (
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_init_version_mismatch_is_indeterminate"
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_init_version_mismatch_is_indeterminate"
         ),
         "cursor-before-spawn": (
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_spawn_failure_proven_to_create_no_child"
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_spawn_failure_proven_to_create_no_child"
         ),
         "cursor-after-spawn": (
-            "packages/clients/agent-runtime-cursor/tests/test_recovery.py::test_cursor_recovery_never_blindly_retries[after_spawn_before_bind-indeterminate]"
+            "packages/adapters/agent-runtime-cursor/tests/test_recovery.py::test_cursor_recovery_never_blindly_retries[after_spawn_before_bind-indeterminate]"
         ),
         "cursor-partial-ndjson": (
-            "packages/clients/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_enforces_remaining_bounds[truncated_line-truncated]"
+            "packages/adapters/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_enforces_remaining_bounds[truncated_line-truncated]"
         ),
         "cursor-output-overflow": (
-            "packages/clients/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_fails_closed[oversized_line-line byte limit]"
+            "packages/adapters/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_fails_closed[oversized_line-line byte limit]"
         ),
         "cursor-terminal-exit-mismatch": (
-            "packages/clients/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_fails_closed[exit_mismatch-exit status]"
+            "packages/adapters/agent-runtime-cursor/tests/test_stream_parser.py::test_stream_parser_fails_closed[exit_mismatch-exit status]"
         ),
         "cursor-unknown-process-ownership": (
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_unknown_exit_is_indeterminate_never_absent"
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_unknown_exit_is_indeterminate_never_absent"
         ),
         "cursor-host-boot-change": (
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_host_boot_change_is_indeterminate_never_absent"
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_host_boot_change_is_indeterminate_never_absent"
         ),
         "cursor-cancel-race": (
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins"
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins"
         ),
         "cursor-descendant-cleanup-failure": (
-            "packages/clients/agent-runtime-cursor/tests/test_fault_matrix.py::test_cleanup_ambiguity_is_indeterminate"
+            "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_cleanup_ambiguity_is_indeterminate"
         ),
         "effect-before-intent": (
             "packages/framework/graph-engine/tests/runtime/test_scheduler.py::test_prepared_intent_cas_conflict_leaves_project_unchanged"
@@ -640,8 +640,8 @@ PHASE5_FAULT_EVIDENCE: Mapping[str, Phase5FaultEvidence] = MappingProxyType(
 
 _MISLEADING_PROVIDER_REPLAY_CHARACTERIZATIONS = frozenset(
     {
-        "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_receipt_before_engine_ack_replays_without_provider",
-        "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_replay_without_provider",
+        "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_receipt_before_engine_ack_replays_without_provider",
+        "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_replay_without_provider",
     }
 )
 _FAULT_SUPPORT_CATEGORIES: dict[str, tuple[str, ...]] = {
@@ -681,7 +681,7 @@ REPOSITORY_GATE_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "tests/product/test_full_graph_audit.py::test_full_graph_has_no_archive_branch_and_keeps_retro_improvement",
         ),
         "wheel_repository_isolation": (
-            "packages/clients/agent-runtime-contracts/tests/test_models.py::test_isolated_wheel_import_does_not_load_adapters_or_assurance",
+            "packages/adapters/agent-runtime-contracts/tests/test_models.py::test_isolated_wheel_import_does_not_load_adapters_or_assurance",
             "tests/phase4/test_six_wheel_composition.py::test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entrypoints",
             "tests/product/test_behavioral_projection.py::test_harness_modules_do_not_import_runtime_packages",
             "tests/product/test_product_packaging.py::test_wheels_omit_whole_tree_modules_and_result_export_schema",

@@ -32,6 +32,7 @@ from graph_engine.composition import (
     ResolutionRequest,
 )
 from graph_engine.plugin_api import InvocationWorkspaceBinding
+from graph_engine.runtime.driver import StartSpec, acquire_invocation
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.models import attempt_directory_id
 from graph_engine.runtime.planner import _start_token_id, activation_id, task_id
@@ -57,8 +58,8 @@ _CREDENTIAL_PATTERN = re.compile(
 )
 _WORKSPACE_PACKAGES = {
     "agent-runtime-fixture": ("examples/agent-runtime-fixture", "agent_runtime_fixture"),
-    "agent-runtime-opencode": ("packages/clients/agent-runtime-opencode", "agent_runtime_opencode"),
-    "agent-runtime-cursor": ("packages/clients/agent-runtime-cursor", "agent_runtime_cursor"),
+    "agent-runtime-opencode": ("packages/adapters/agent-runtime-opencode", "agent_runtime_opencode"),
+    "agent-runtime-cursor": ("packages/adapters/agent-runtime-cursor", "agent_runtime_cursor"),
 }
 
 
@@ -460,22 +461,16 @@ def _run_engine(
     engine_root: Path,
     invocation_id: str,
 ) -> Any:
-    engine = Engine.production(engine_root, authorization=authorization)
-    try:
-        handle = engine.start(
+    with Engine.production(engine_root, authorization=authorization) as engine:
+        with acquire_invocation(
+            engine,
             composition,
-            entrypoint="run",
             invocation_id=invocation_id,
-            seed=empty_invocation_seed(),
             authorization=authorization,
             workspace_binding=_workspace_binding(engine_root),
-        )
-        try:
+            start=StartSpec(entrypoint="run", seed=empty_invocation_seed()),
+        ) as handle:
             return engine.run_until_blocked(handle)
-        finally:
-            handle.close()
-    finally:
-        engine.close()
 
 
 def _attempt_write_root(output: Path, item: ManifestItem) -> Path:

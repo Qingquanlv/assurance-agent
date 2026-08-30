@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal, NoReturn, cast
 
@@ -16,7 +17,8 @@ from graph_engine.composition import (
     WheelPluginSource,
 )
 from graph_engine.errors import GraphEngineError
-from graph_engine.runtime.engine import Engine, EngineConflictError, EngineError, RunResult
+from graph_engine.runtime.driver import StartSpec, acquire_invocation
+from graph_engine.runtime.engine import Engine, EngineError, RunResult
 from graph_engine.runtime.events import InvocationStarted
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import InvocationProjection, fold_events
@@ -684,6 +686,47 @@ def _write_projections(
         raise CommandError(str(error)) from error
 
 
+def _publish_projections(
+    workspace: ChangeWorkspace,
+    invocation_root: Path,
+    projection: InvocationProjection | None = None,
+) -> tuple[InvocationProjection, dict[str, str]]:
+    envelopes = Ledger(invocation_root / "ledger").read_all()
+    identity = _start_identity(envelopes)
+    published = fold_events(envelopes) if projection is None else projection
+    _write_projections(
+        workspace,
+        published,
+        envelopes,
+        root_input_digest=identity["root_input_digest"],
+    )
+    return published, identity
+
+
+@contextmanager
+def _engine_failures() -> Iterator[None]:
+    try:
+        yield
+    except (EngineError, GraphEngineError, OSError, ValidationError) as error:
+        raise CommandError(str(error)) from error
+
+
+def _plan_start(
+    input_path: Path,
+    *,
+    entrypoint: str,
+    composition: FrozenComposition,
+    change_id: str,
+) -> StartSpec:
+    product_input = _load_product_input(input_path, entrypoint=entrypoint, composition=composition)
+    if product_input.change_id != change_id:
+        raise CommandError("change does not match product input change_id")
+    return StartSpec(
+        entrypoint=entrypoint,
+        seed=empty_invocation_seed(root_input=cast(JSONValue, product_input.model_dump(mode="json"))),
+    )
+
+
 def _start_invocation(
     *,
     project_dir: Path,
@@ -707,37 +750,31 @@ def _start_invocation(
         binding_declaration=binding_declaration,
         config_tree=config_tree,
     )
-    product_input = _load_product_input(input_path, entrypoint=entrypoint, composition=composition)
-    if product_input.change_id != change_id:
-        raise CommandError("change does not match product input change_id")
+    plan = _plan_start(
+        input_path,
+        entrypoint=entrypoint,
+        composition=composition,
+        change_id=change_id,
+    )
     authorization = _authorize_secrets(composition, secrets)
-    seed = empty_invocation_seed(root_input=cast(JSONValue, product_input.model_dump(mode="json")))
     workspace = _bind_workspace(project_dir, change_id, create=True)
-    try:
+    with _engine_failures():
         with create_engine(workspace.paths.runtime_root, authorization) as engine:
             with engine.start(
                 composition,
-                entrypoint=entrypoint,
+                entrypoint=plan.entrypoint,
                 invocation_id=invocation_id,
-                seed=seed,
+                seed=plan.seed,
                 authorization=authorization,
                 workspace_binding=workspace.runtime_binding(),
             ) as handle:
-                envelopes = Ledger(handle.invocation_root / "ledger").read_all()
-                _write_projections(
-                    workspace,
-                    fold_events(envelopes),
-                    envelopes,
-                    root_input_digest=seed.root_input_digest,
-                )
-    except (EngineError, GraphEngineError, OSError, ValidationError) as error:
-        raise CommandError(str(error)) from error
+                _publish_projections(workspace, handle.invocation_root)
     return {
         "invocation_id": invocation_id,
         "change_id": change_id,
         "lock_digest": composition.lock_digest,
         "composition_digest": composition.digest,
-        "root_input_digest": seed.root_input_digest,
+        "root_input_digest": plan.seed.root_input_digest,
     }
 
 
@@ -765,58 +802,30 @@ def _run_invocation(
     authorization = _authorize_secrets(composition, secrets)
     workspace = _bind_workspace(project_dir, change_id, create=True)
     binding = workspace.runtime_binding()
-    exists = (workspace.paths.runtime_root / "invocations" / invocation_id).is_dir()
-    try:
+    with _engine_failures():
         with create_engine(workspace.paths.runtime_root, authorization) as engine:
-            if exists:
-                with engine.open(
-                    invocation_id,
-                    composition,
-                    authorization=authorization,
-                    workspace_binding=binding,
-                ) as handle:
-                    result = engine.run_until_blocked(handle)
-                    envelopes = Ledger(handle.invocation_root / "ledger").read_all()
-                    identity = _start_identity(envelopes)
-                    _write_projections(
-                        workspace,
-                        result.projection,
-                        envelopes,
-                        root_input_digest=identity["root_input_digest"],
-                    )
-            else:
+            plan: StartSpec | None = None
+            if not engine.invocation_exists(invocation_id):
                 if entrypoint is None or input_path is None:
                     raise CommandError("first run requires --entrypoint and --input")
                 if entrypoint not in PRODUCT_ENTRYPOINTS:
                     raise CommandError(f"unknown product entrypoint: {entrypoint}")
-                product_input = _load_product_input(
-                    input_path, entrypoint=entrypoint, composition=composition
-                )
-                if product_input.change_id != change_id:
-                    raise CommandError("change does not match product input change_id")
-                seed = empty_invocation_seed(
-                    root_input=cast(JSONValue, product_input.model_dump(mode="json"))
-                )
-                with engine.start(
-                    composition,
+                plan = _plan_start(
+                    input_path,
                     entrypoint=entrypoint,
-                    invocation_id=invocation_id,
-                    seed=seed,
-                    authorization=authorization,
-                    workspace_binding=binding,
-                ) as handle:
-                    result = engine.run_until_blocked(handle)
-                    envelopes = Ledger(handle.invocation_root / "ledger").read_all()
-                    _write_projections(
-                        workspace,
-                        result.projection,
-                        envelopes,
-                        root_input_digest=seed.root_input_digest,
-                    )
-    except EngineConflictError as error:
-        raise CommandError(str(error)) from error
-    except (EngineError, GraphEngineError, OSError, ValidationError) as error:
-        raise CommandError(str(error)) from error
+                    composition=composition,
+                    change_id=change_id,
+                )
+            with acquire_invocation(
+                engine,
+                composition,
+                invocation_id=invocation_id,
+                authorization=authorization,
+                workspace_binding=binding,
+                start=plan,
+            ) as handle:
+                result = engine.run_until_blocked(handle)
+                _publish_projections(workspace, handle.invocation_root, result.projection)
     return result, _RUN_EXIT[result.status][1]
 
 
@@ -843,34 +852,22 @@ def _resume_invocation(
     )
     authorization = _authorize_secrets(composition, secrets)
     workspace = _bind_workspace(project_dir, change_id, create=False)
-    try:
+    with _engine_failures():
         with create_engine(workspace.paths.runtime_root, authorization) as engine:
-            opened = engine.open(
-                invocation_id,
+            with acquire_invocation(
+                engine,
                 composition,
+                invocation_id=invocation_id,
                 authorization=authorization,
                 workspace_binding=workspace.runtime_binding(),
-            )
-            try:
+                start=None,
+            ) as opened:
                 resumed = engine.resume(opened, action=action, payload={"reason": reason})
                 try:
                     result = engine.run_until_blocked(resumed)
-                    envelopes = Ledger(resumed.invocation_root / "ledger").read_all()
-                    identity = _start_identity(envelopes)
-                    _write_projections(
-                        workspace,
-                        result.projection,
-                        envelopes,
-                        root_input_digest=identity["root_input_digest"],
-                    )
+                    _publish_projections(workspace, resumed.invocation_root, result.projection)
                 finally:
                     resumed.close()
-            finally:
-                opened.close()
-    except EngineConflictError as error:
-        raise CommandError(str(error)) from error
-    except (EngineError, GraphEngineError, OSError, ValidationError) as error:
-        raise CommandError(str(error)) from error
     return result, _RUN_EXIT[result.status][1]
 
 
@@ -939,29 +936,17 @@ def _open_authenticated(
     )
     authorization = _authorize_secrets(composition, secrets)
     workspace = _bind_workspace(project_dir, change_id, create=False)
-    if not (workspace.paths.runtime_root / "invocations" / invocation_id).is_dir():
-        raise CommandError(f"invocation is missing: {invocation_id}")
-    try:
+    with _engine_failures():
         with create_engine(workspace.paths.runtime_root, authorization) as engine:
-            with engine.open(
-                invocation_id,
+            with acquire_invocation(
+                engine,
                 composition,
+                invocation_id=invocation_id,
                 authorization=authorization,
                 workspace_binding=workspace.runtime_binding(),
+                start=None,
             ) as handle:
-                envelopes = Ledger(handle.invocation_root / "ledger").read_all()
-                projection = fold_events(envelopes)
-                identity = _start_identity(envelopes)
-                _write_projections(
-                    workspace,
-                    projection,
-                    envelopes,
-                    root_input_digest=identity["root_input_digest"],
-                )
-    except EngineConflictError as error:
-        raise CommandError(str(error)) from error
-    except (EngineError, GraphEngineError, OSError, ValidationError) as error:
-        raise CommandError(str(error)) from error
+                projection, identity = _publish_projections(workspace, handle.invocation_root)
     return composition, projection, identity
 
 

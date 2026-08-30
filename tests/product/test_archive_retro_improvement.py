@@ -4,8 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.product.product_runner import ProductRun
-from tests.product.test_workflow_modularization_golden import _modular_composition
+from tests.product.product_runner import ProductRun, modular_product_composition
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
@@ -21,7 +20,7 @@ def _run(installed_sources, tmp_path: Path, entrypoint: str, **kwargs):
         threshold=float(kwargs.get("threshold", 0.90)),
         coverage_rounds=kwargs.get("coverage_rounds"),
         engine_root=tmp_path / entrypoint,
-        composition=_modular_composition(installed_sources),
+        composition=modular_product_composition(installed_sources),
     ).run_to_terminal()
 
 

@@ -27,9 +27,9 @@ CLIENT_DOWNWARD_FORBIDDEN = frozenset(
 )
 
 CLIENT_SOURCE_TREES = (
-    ("agent_runtime_contracts", "packages/clients/agent-runtime-contracts/agent_runtime_contracts"),
-    ("agent_runtime_opencode", "packages/clients/agent-runtime-opencode/agent_runtime_opencode"),
-    ("agent_runtime_cursor", "packages/clients/agent-runtime-cursor/agent_runtime_cursor"),
+    ("agent_runtime_contracts", "packages/adapters/agent-runtime-contracts/agent_runtime_contracts"),
+    ("agent_runtime_opencode", "packages/adapters/agent-runtime-opencode/agent_runtime_opencode"),
+    ("agent_runtime_cursor", "packages/adapters/agent-runtime-cursor/agent_runtime_cursor"),
 )
 
 ADAPTER_PEERS = {
@@ -47,12 +47,12 @@ FEATURE_DISTRIBUTIONS = (
 )
 
 FEATURE_SOURCE_TREES = (
-    ("assurance_intake", "packages/features/assurance-intake/assurance_intake"),
-    ("assurance_generation", "packages/features/assurance-generation/assurance_generation"),
-    ("assurance_execution", "packages/features/assurance-execution/assurance_execution"),
-    ("assurance_healing", "packages/features/assurance-healing/assurance_healing"),
-    ("assurance_quality", "packages/features/assurance-quality/assurance_quality"),
-    ("assurance_improvement", "packages/features/assurance-improvement/assurance_improvement"),
+    ("assurance_intake", "packages/capabilities/assurance-intake/assurance_intake"),
+    ("assurance_generation", "packages/capabilities/assurance-generation/assurance_generation"),
+    ("assurance_execution", "packages/capabilities/assurance-execution/assurance_execution"),
+    ("assurance_healing", "packages/capabilities/assurance-healing/assurance_healing"),
+    ("assurance_quality", "packages/capabilities/assurance-quality/assurance_quality"),
+    ("assurance_improvement", "packages/capabilities/assurance-improvement/assurance_improvement"),
 )
 
 FEATURE_DOWNWARD_FORBIDDEN = frozenset(
@@ -186,7 +186,7 @@ def test_all_capability_wheels_are_feature_subprojects(repo_root: Path) -> None:
         "assurance-quality",
         "assurance-improvement",
     }
-    assert {path.name for path in (repo_root / "packages/features").iterdir()} == expected
+    assert {path.name for path in (repo_root / "packages/capabilities").iterdir()} == expected
     for directory_name in FEATURE_DISTRIBUTIONS:
         target = repo_root / "packages" / "features" / directory_name
         assert target.is_dir()

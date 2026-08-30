@@ -344,12 +344,12 @@ def test_prepare_ids_are_derived_from_the_feature_job_union() -> None:
     assert set(PREPARE_IDS) == set(AGENT_EXECUTION_CONTRACTS) == set(EXPECTED_AGENT_PROFILES)
 
 
-def test_all_agent_skills_have_one_bound_agent_and_execution_contract() -> None:
+def test_all_agent_skills_have_one_bound_agent_and_execution_contract(installed_sources) -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
     from assurance_product.binding_builder import _binding_documents
     from assurance_product.models import DeploymentBindingsV1
     from assurance_product.models import PREPARE_IDS, alias_ids_for_prepare
-    from assurance_product.product import load_pre_modular_workflow
+    from tests.product.product_runner import assemble_bound_product_workflow
 
     assert set(PREPARE_IDS) == set(EXPECTED_AGENT_PROFILES) == set(AGENT_EXECUTION_CONTRACTS)
     fixture = Path(__file__).parent / "fixtures" / "deployment" / "opencode.yaml"
@@ -357,9 +357,7 @@ def test_all_agent_skills_have_one_bound_agent_and_execution_contract() -> None:
     binding_documents = {
         str(document["capability_id"]): document for document in _binding_documents(bindings)
     }
-    workflow = load_pre_modular_workflow(
-        Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
-    )
+    workflow = assemble_bound_product_workflow(installed_sources)
     assert workflow.retry["agent-transient"].max_attempts == 12
     assert workflow.retry["agent-transient"].retry_on == ("transient",)
     graph_nodes = {
@@ -450,9 +448,10 @@ def test_exact_current_change_claims_do_not_scan_a_symlinked_sibling_on_promotio
 
 def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     tmp_path: Path,
+    installed_sources,
 ) -> None:
     from assurance_intake.operations import ExplorePrepareHandler
-    from assurance_product.product import load_pre_modular_workflow
+    from tests.product.product_runner import assemble_bound_product_workflow, workflow_graph
 
     project = tmp_path / "project"
     current_id = "CH-CURRENT-001"
@@ -471,10 +470,7 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     historical_link.symlink_to(outside, target_is_directory=True)
 
     resources = (
-        load_pre_modular_workflow(
-            Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
-        )
-        .graphs["explore"]
+        workflow_graph(assemble_bound_product_workflow(installed_sources), "explore")
         .nodes["prepare"]
         .resources
     )

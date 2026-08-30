@@ -1,0 +1,371 @@
+{
+  "scenarios": [
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "intake"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.intake.intake.prepare",
+          "assurance.product.agent.intake.intake.execute",
+          "assurance.product.agent.intake.intake.finalize",
+          "assurance.product.agent.intake.explore.prepare",
+          "assurance.product.agent.intake.explore.execute",
+          "assurance.product.agent.intake.explore.finalize",
+          "assurance.product.agent.intake.case-design.prepare",
+          "assurance.product.agent.intake.case-design.execute",
+          "assurance.product.agent.intake.case-design.finalize",
+          "assurance.product.agent.intake.case-review.prepare",
+          "assurance.product.agent.intake.case-review.execute",
+          "assurance.product.agent.intake.case-review.finalize"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "artifacts": [
+            {
+              "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "path": "qa/changes"
+            }
+          ],
+          "decision": "pass"
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "case"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.intake.case-design.prepare",
+          "assurance.product.agent.intake.case-design.execute",
+          "assurance.product.agent.intake.case-design.finalize",
+          "assurance.product.agent.intake.case-review.prepare",
+          "assurance.product.agent.intake.case-review.execute",
+          "assurance.product.agent.intake.case-review.finalize"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "artifacts": [
+            {
+              "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "path": "qa/changes"
+            }
+          ],
+          "decision": "pass"
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "archive"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.improvement.archive.prepare",
+          "assurance.product.agent.improvement.archive.execute",
+          "assurance.product.agent.improvement.archive.finalize"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "change_id": "CH-DEMO-001",
+          "evidence_refs": [],
+          "lifecycle_state": "proposed"
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "retro"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.improvement.retro-collect-v3",
+          "assurance.product.agent.improvement.retro.prepare",
+          "assurance.product.agent.improvement.retro.execute",
+          "assurance.product.agent.improvement.retro.finalize",
+          "assurance.product.agent.improvement.retro-eval-analysis.prepare",
+          "assurance.product.agent.improvement.retro-eval-analysis.execute",
+          "assurance.product.agent.improvement.retro-eval-analysis.finalize",
+          "assurance.product.agent.improvement.retro-issue-analysis.prepare",
+          "assurance.product.agent.improvement.retro-issue-analysis.execute",
+          "assurance.product.agent.improvement.retro-issue-analysis.finalize",
+          "assurance.product.agent.improvement.retro-workflow-analysis.prepare",
+          "assurance.product.agent.improvement.retro-workflow-analysis.execute",
+          "assurance.product.agent.improvement.retro-workflow-analysis.finalize",
+          "assurance.product.agent.improvement.reconcile-improvements"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "change_id": "CH-DEMO-001",
+          "evidence_refs": [],
+          "lifecycle_state": "proposed"
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "issue-review"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.quality.issue-triage.prepare",
+          "assurance.product.agent.quality.issue-triage.execute",
+          "assurance.product.agent.quality.issue-triage.finalize"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "change_id": "CH-DEMO-001",
+          "classification": "failed",
+          "evidence_refs": [],
+          "fix_eligible": true,
+          "rounds_budget": 1,
+          "rounds_used": 0
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "issue-analyze"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.quality.issue-analysis.prepare",
+          "assurance.product.agent.quality.issue-analysis.execute",
+          "assurance.product.agent.quality.issue-analysis.finalize"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "change_id": "CH-DEMO-001",
+          "classification": "test",
+          "evidence_refs": [],
+          "fix_eligible": true,
+          "rounds_budget": 1,
+          "rounds_used": 0
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "issue-reconcile"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.quality.issue-analysis.prepare",
+          "assurance.product.agent.quality.issue-analysis.execute",
+          "assurance.product.agent.quality.issue-analysis.finalize"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "change_id": "CH-DEMO-001",
+          "classification": "test",
+          "evidence_refs": [],
+          "fix_eligible": true,
+          "rounds_budget": 1,
+          "rounds_used": 0
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "improvement-review"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.improvement.improvement-review.prepare",
+          "assurance.product.agent.improvement.improvement-review.execute",
+          "assurance.product.agent.improvement.improvement-review.finalize"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "change_id": "CH-DEMO-001",
+          "evidence_refs": [],
+          "lifecycle_state": "proposed"
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "improvement-evaluate"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.improvement.evaluate-memory-improvement"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "change_id": "CH-DEMO-001",
+          "lifecycle_state": "evaluating",
+          "receipt_refs": []
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "improvement-export"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.improvement.export-change-improvement"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "change_id": "CH-DEMO-001",
+          "lifecycle_state": "proposed",
+          "receipt_refs": []
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "improvement-apply"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.improvement.improvement-review.prepare",
+          "assurance.product.agent.improvement.improvement-review.execute",
+          "assurance.product.agent.improvement.improvement-review.finalize",
+          "assurance.product.agent.improvement.apply-improvement-auto-review",
+          "assurance.product.agent.improvement.evaluate-memory-improvement",
+          "assurance.product.agent.improvement.apply-memory-improvement"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "change_id": "CH-DEMO-001",
+          "lifecycle_state": "proposed",
+          "outcome": "applied",
+          "receipt_refs": []
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "improvement-rollback"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.improvement.rollback-memory-improvement"
+        ],
+        "effects": [],
+        "interrupts": [],
+        "terminal": [
+          "completed",
+          null
+        ],
+        "terminal_output": {
+          "change_id": "CH-DEMO-001",
+          "lifecycle_state": "proposed",
+          "outcome": "applied",
+          "receipt_refs": []
+        }
+      }
+    },
+    {
+      "require_terminal_output": false,
+      "scenario": {
+        "entrypoint": "intake",
+        "review_decision": "needs_human_review"
+      },
+      "trace": {
+        "dispatches": [
+          "assurance.product.agent.intake.intake.prepare",
+          "assurance.product.agent.intake.intake.execute",
+          "assurance.product.agent.intake.intake.finalize",
+          "assurance.product.agent.intake.explore.prepare",
+          "assurance.product.agent.intake.explore.execute",
+          "assurance.product.agent.intake.explore.finalize",
+          "assurance.product.agent.intake.case-design.prepare",
+          "assurance.product.agent.intake.case-design.execute",
+          "assurance.product.agent.intake.case-design.finalize",
+          "assurance.product.agent.intake.case-review.prepare",
+          "assurance.product.agent.intake.case-review.execute",
+          "assurance.product.agent.intake.case-review.finalize"
+        ],
+        "effects": [],
+        "interrupts": [
+          [
+            "needs_human_review",
+            [
+              "approve",
+              "reject",
+              "request_rework"
+            ]
+          ]
+        ],
+        "terminal": [
+          "interrupted",
+          "needs_human_review"
+        ],
+        "terminal_output": null
+      }
+    }
+  ],
+  "schema_version": "1"
+}

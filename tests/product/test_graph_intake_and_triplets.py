@@ -1,110 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from tests.product.composition_harness import request_for
 from tests.product.graph_inventory import (
     INVENTORY_PATH,
-    assert_closed_agent_aliases,
-    collect_agent_triplets,
-    expected_triplet_aliases,
     graph_capability_ids,
     load_graph_inventory,
 )
 
-_SLICE_GRAPHS = frozenset(
-    {
-        "entry",
-        "intake",
-        "explore",
-        "case-design",
-        "case-review",
-        "case",
-        "full",
-        "generation",
-        "generation-api",
-        "generation-api-plan",
-        "generation-api-plan-review",
-        "generation-api-codegen",
-        "generation-api-codegen-fix",
-        "generation-e2e",
-        "generation-e2e-plan",
-        "generation-e2e-plan-review",
-        "generation-e2e-codegen",
-        "generation-e2e-codegen-fix",
-        "generation-fuzz",
-        "generation-fuzz-plan",
-        "generation-fuzz-plan-review",
-        "generation-fuzz-codegen",
-        "generation-performance",
-        "generation-performance-plan",
-        "generation-performance-plan-review",
-        "generation-performance-codegen",
-        "execution-execute",
-        "execution-run",
-        "quality",
-        "quality-fact-baseline",
-        "quality-inspect",
-        "quality-issue-triage",
-        "quality-issue-analysis",
-        "healing-fix-proposal",
-        "healing-coverage-repair",
-        "quality-report",
-        "improvement-archive",
-        "improvement-retro",
-        "improvement-retro-eval-analysis",
-        "improvement-retro-issue-analysis",
-        "improvement-retro-workflow-analysis",
-        "improvement-review",
-        "retro",
-        "improvement-evaluate",
-        "improvement-export",
-        "improvement-apply",
-        "improvement-rollback",
-        "execute",
-        "archive",
-        "issue-review",
-        "issue-analyze",
-        "issue-reconcile",
-    }
-)
-_SLICE_PREPARE_IDS = (
-    "assurance.intake.intake.prepare",
-    "assurance.intake.explore.prepare",
-    "assurance.intake.case-review.prepare",
-    "assurance.intake.case-design.prepare",
-    "assurance.generation.api.codegen-fix.prepare",
-    "assurance.generation.api.codegen.prepare",
-    "assurance.generation.api.plan-review.prepare",
-    "assurance.generation.api.plan.prepare",
-    "assurance.generation.e2e.codegen-fix.prepare",
-    "assurance.generation.e2e.codegen.prepare",
-    "assurance.generation.e2e.plan-review.prepare",
-    "assurance.generation.e2e.plan.prepare",
-    "assurance.generation.fuzz.codegen.prepare",
-    "assurance.generation.fuzz.plan-review.prepare",
-    "assurance.generation.fuzz.plan.prepare",
-    "assurance.generation.performance.codegen.prepare",
-    "assurance.generation.performance.plan-review.prepare",
-    "assurance.generation.performance.plan.prepare",
-    "assurance.execution.execute.prepare",
-    "assurance.execution.run.prepare",
-    "assurance.healing.coverage-repair.prepare",
-    "assurance.healing.fix-proposal.prepare",
-    "assurance.quality.fact-baseline.prepare",
-    "assurance.quality.inspect.prepare",
-    "assurance.quality.issue-analysis.prepare",
-    "assurance.quality.issue-triage.prepare",
-    "assurance.quality.report.prepare",
-    "assurance.improvement.archive.prepare",
-    "assurance.improvement.improvement-review.prepare",
-    "assurance.improvement.retro-eval-analysis.prepare",
-    "assurance.improvement.retro-issue-analysis.prepare",
-    "assurance.improvement.retro-workflow-analysis.prepare",
-    "assurance.improvement.retro.prepare",
-)
 _PUBLIC_ENTRYPOINTS = (
     "intake",
     "case",
@@ -121,8 +25,6 @@ _PUBLIC_ENTRYPOINTS = (
     "improvement-apply",
     "improvement-rollback",
 )
-_PRE_MODULAR_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
-
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
@@ -146,66 +48,56 @@ def _named_graph(compiled_product_workflow, local_id: str):
     raise KeyError(local_id)
 
 
-def _compiled_pre_modular_workflow():
-    from assurance_product.product import load_pre_modular_workflow
+def test_canonical_workflow_is_loaded_from_yaml(compiled_product_workflow):
+    from graph_engine.graph.input_projection import (
+        GraphInputPointerProjection,
+        ObjectProjection,
+        RootPointerProjection,
+    )
 
-    from tests.product.product_runner import resolve_product_workflow_composition
-
-    return resolve_product_workflow_composition(load_pre_modular_workflow(_PRE_MODULAR_FIXTURE)).workflow
-
-
-def test_canonical_workflow_is_loaded_from_yaml():
-    from graph_engine.graph.input_projection import ObjectProjection, RootPointerProjection
-
-    from assurance_product.product import load_pre_modular_workflow
-
-    workflow = load_pre_modular_workflow(_PRE_MODULAR_FIXTURE)
+    workflow = compiled_product_workflow
     assert workflow.name == "assurance"
     assert "intake" in workflow.entrypoints
     assert "case" in workflow.entrypoints
     assert "full" in workflow.entrypoints
     assert set(workflow.entrypoints) >= set(_PUBLIC_ENTRYPOINTS)
-    assert set(workflow.graphs) >= _SLICE_GRAPHS
-    intake_prepare = workflow.graphs["intake"].nodes["prepare"].input_projection
-    explore_prepare = workflow.graphs["explore"].nodes["prepare"].input_projection
+    for local_id in ("intake", "explore", "case-design", "case-review"):
+        _named_graph(workflow, local_id)
+    _Pointer = (RootPointerProjection, GraphInputPointerProjection)
+    intake_prepare = _named_graph(workflow, "intake").nodes["prepare"].definition.input_projection
+    explore_prepare = _named_graph(workflow, "explore").nodes["prepare"].definition.input_projection
     assert isinstance(intake_prepare, ObjectProjection)
     assert isinstance(explore_prepare, ObjectProjection)
     requirement = intake_prepare.fields["requirement"]
-    assert isinstance(requirement, RootPointerProjection)
+    assert isinstance(requirement, _Pointer)
     assert requirement.pointer == "/requirement"
     assert "requirement" not in explore_prepare.fields
-    case_design = workflow.graphs["case-design"]
-    case_prepare = case_design.nodes["prepare"].input_projection
-    case_finalize = case_design.nodes["finalize"].input_projection
+    case_design = _named_graph(workflow, "case-design")
+    case_prepare = case_design.nodes["prepare"].definition.input_projection
+    case_finalize = case_design.nodes["finalize"].definition.input_projection
     assert isinstance(case_prepare, ObjectProjection)
     assert isinstance(case_finalize, ObjectProjection)
     finalize_change_id = case_finalize.fields["change_id"]
-    assert isinstance(finalize_change_id, RootPointerProjection)
+    assert isinstance(finalize_change_id, _Pointer)
     assert finalize_change_id.pointer == "/change_id"
     for projection in (case_prepare, case_finalize):
         selected = projection.fields["selected_test_families"]
-        assert isinstance(selected, RootPointerProjection)
+        assert isinstance(selected, _Pointer)
         assert selected.pointer == "/selected_test_families"
         case_delta_paths = projection.fields["case_delta_paths"]
-        assert isinstance(case_delta_paths, RootPointerProjection)
+        assert isinstance(case_delta_paths, _Pointer)
         assert case_delta_paths.pointer == "/case_delta_paths"
-    case_review_prepare = workflow.graphs["case-review"].nodes["prepare"].input_projection
+    case_review_prepare = _named_graph(workflow, "case-review").nodes["prepare"].definition.input_projection
     assert isinstance(case_review_prepare, ObjectProjection)
     review_case_paths = case_review_prepare.fields["case_delta_paths"]
-    assert isinstance(review_case_paths, RootPointerProjection)
+    assert isinstance(review_case_paths, _Pointer)
     assert review_case_paths.pointer == "/case_delta_paths"
 
 
-def test_every_agent_node_is_one_closed_triplet():
-    compiled = _compiled_pre_modular_workflow()
-    triplets = collect_agent_triplets(compiled)
-    assert triplets
-    assert {triplet.prepare_id for triplet in triplets} == set(_SLICE_PREPARE_IDS)
-    for triplet in triplets:
-        assert triplet.aliases == expected_triplet_aliases(triplet.prepare_id)
-        assert triplet.execute_input_from == triplet.prepare_node
-        assert triplet.finalize_input_from == triplet.execute_node
-    assert_closed_agent_aliases(compiled)
+def test_compiled_product_exposes_public_entrypoints(compiled_product_workflow):
+    assert set(compiled_product_workflow.entrypoints) >= set(_PUBLIC_ENTRYPOINTS)
+    for local_id in ("intake", "explore", "case-design", "case-review"):
+        _named_graph(compiled_product_workflow, local_id)
 
 
 def test_full_case_review_routes_fixable_findings_back_to_case_design(

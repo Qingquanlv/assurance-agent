@@ -28,11 +28,9 @@ from graph_engine.composition.sources import WheelProductDeclaration
 from graph_engine.frozen_json import thaw_json
 from graph_engine.graph.compiler import CompiledWorkflow
 from graph_engine.graph.module_schema import WorkflowModuleDef, parse_workflow_module
-from graph_engine.graph.schema import WorkflowDef, parse_workflow
 from graph_engine.plugin_api import FrozenModel, ProviderSource
 
 from assurance_product.agent_contracts import (
-    bind_agent_execution_contracts,
     product_workflow_module_requirements,
     product_workflow_slot_bindings,
 )
@@ -78,19 +76,6 @@ _PLUGIN_VERSIONS: dict[str, str] = {
     CONFIGURATION_PLUGIN_ID: f"=={CONFIGURATION_PLUGIN_VERSION}",
 }
 _WORKFLOW_DIR = Path(__file__).resolve().parent / "resources" / "workflow"
-_PRE_MODULAR_RELATIVE = Path("tests/product/fixtures/assurance-full-pre-modular.yaml")
-
-
-def _resolve_pre_modular_workflow_path() -> Path | None:
-    start = Path(__file__).resolve()
-    for parent in (start, *start.parents):
-        candidate = parent / _PRE_MODULAR_RELATIVE
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-_PRE_MODULAR_WORKFLOW_PATH: Path | None = _resolve_pre_modular_workflow_path()
 _PRODUCT_MODULE_PATH = _WORKFLOW_DIR / "main.yaml"
 
 
@@ -102,14 +87,6 @@ def reopen_change_workspace(project_root: Path, change_id: str) -> ChangeWorkspa
     workspace = ChangeWorkspace.open(Path(project_root).resolve(), change_id)
     workspace.initialize()
     return workspace
-
-
-def load_pre_modular_workflow(path: Path | None = None) -> WorkflowDef:
-    source = Path(path).expanduser().resolve() if path is not None else _PRE_MODULAR_WORKFLOW_PATH
-    if source is None or not source.is_file():
-        raise FileNotFoundError("pre-modular workflow fixture is not available; pass an explicit path")
-    workflow = parse_workflow(source.read_text(encoding="utf-8"))
-    return bind_agent_execution_contracts(workflow)
 
 
 def load_product_workflow_module() -> WorkflowModuleDef:

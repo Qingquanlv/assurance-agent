@@ -18,13 +18,16 @@ from graph_engine.runtime.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 
 from tests.product.composition_harness import request_for
-from tests.product.product_runner import ProductRun, resolve_product_workflow_composition
+from tests.product.product_runner import (
+    ProductRun,
+    adapter_product_composition,
+    modular_product_composition,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PRODUCT_WORKFLOW_DIR = (
     _REPO_ROOT / "packages/products/assurance-product/assurance_product/resources/workflow"
 )
-_PRE_MODULAR_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
 _RUNBOOK = _REPO_ROOT / "docs/runbooks/assurance-modular-workflow-rollout.md"
 _SOURCE_EXTENSION_KEYS = (
     "module",
@@ -97,56 +100,24 @@ def test_product_package_excludes_monolith_and_keeps_main_workflow() -> None:
     names = {item.name for item in workflow_root.iterdir() if item.is_file()}
     assert names == {"main.yaml"}
     assert not (_PRODUCT_WORKFLOW_DIR / "assurance-full.yaml").exists()
-    assert _PRE_MODULAR_FIXTURE.is_file()
-
-
-def test_pre_modular_loader_reads_only_the_test_fixture() -> None:
-    import inspect
-
-    from assurance_product import product as product_mod
-
     source_text = (_REPO_ROOT / "packages/products/assurance-product/assurance_product/product.py").read_text(
         encoding="utf-8"
     )
     assert "load_canonical_workflow" not in source_text
-    resolver_source = inspect.getsource(product_mod._resolve_pre_modular_workflow_path)
-    assert "cwd" not in resolver_source
-    assert "Path.cwd" not in resolver_source
-    assert product_mod._PRODUCT_MODULE_PATH.name == "main.yaml"
-    assert product_mod._PRODUCT_MODULE_PATH.is_file()
-    assert product_mod._PRODUCT_MODULE_PATH.resolve() != _PRE_MODULAR_FIXTURE.resolve()
-    resolved = product_mod._resolve_pre_modular_workflow_path()
-    if resolved is not None:
-        assert resolved == _PRE_MODULAR_FIXTURE
-        assert "resources/workflow/assurance-full.yaml" not in str(resolved)
-    workflow = product_mod.load_pre_modular_workflow(_PRE_MODULAR_FIXTURE)
-    module = product_mod.load_product_workflow_module()
-    assert workflow.name == "assurance"
-    assert module.module_id == "assurance.product.workflow"
-    assert module.role == "product"
-    assert product_mod._PRODUCT_MODULE_PATH.read_text(encoding="utf-8") != _PRE_MODULAR_FIXTURE.read_text(
-        encoding="utf-8"
-    )
-    assert not hasattr(product_mod, "load_canonical_workflow")
-    assert len(workflow.entrypoints) == 14
+    assert "load_pre_modular_workflow" not in source_text
 
 
-def test_pre_modular_loader_ignores_a_cwd_decoy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_product_workflow_module_is_the_canonical_source() -> None:
     from assurance_product import product as product_mod
 
-    decoy = tmp_path / "tests/product/fixtures/assurance-full-pre-modular.yaml"
-    decoy.parent.mkdir(parents=True)
-    decoy.write_text("schema_version: '1'\nname: decoy\nentrypoints: {}\ngraphs: {}\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    resolved = product_mod._resolve_pre_modular_workflow_path()
-    assert resolved != decoy.resolve()
-    if resolved is not None:
-        assert resolved == _PRE_MODULAR_FIXTURE
-        assert product_mod.load_pre_modular_workflow().name == "assurance"
-    else:
-        with pytest.raises(FileNotFoundError):
-            product_mod.load_pre_modular_workflow()
-    assert product_mod.load_pre_modular_workflow(_PRE_MODULAR_FIXTURE).name == "assurance"
+    module = product_mod.load_product_workflow_module()
+    assert product_mod._PRODUCT_MODULE_PATH.name == "main.yaml"
+    assert product_mod._PRODUCT_MODULE_PATH.is_file()
+    assert module.module_id == "assurance.product.workflow"
+    assert module.role == "product"
+    assert len(module.entrypoints) == 14
+    assert not hasattr(product_mod, "load_canonical_workflow")
+    assert not hasattr(product_mod, "load_pre_modular_workflow")
 
 
 def test_release_identities_are_the_modular_0_2_0_cut() -> None:
@@ -269,11 +240,8 @@ def test_nested_aa_source_extension_keys_are_unknown_configuration(key: str) -> 
 
 @pytest.mark.usefixtures("installed_sources")
 def test_modular_runner_leaves_legacy_lock_ledger_unchanged(installed_sources, tmp_path: Path) -> None:
-    from assurance_product.product import load_pre_modular_workflow
-    from tests.product.test_workflow_modularization_golden import _modular_composition
-
-    legacy = resolve_product_workflow_composition(load_pre_modular_workflow(_PRE_MODULAR_FIXTURE))
-    modular = _modular_composition(installed_sources)
+    legacy = adapter_product_composition(installed_sources, "cursor")
+    modular = modular_product_composition(installed_sources)
     engine_root = tmp_path / "legacy-lock"
     engine_root.mkdir()
     engine = Engine(engine_root)
@@ -300,9 +268,7 @@ def test_modular_runner_leaves_legacy_lock_ledger_unchanged(installed_sources, t
 
 @pytest.mark.usefixtures("installed_sources")
 def test_same_composition_resume_after_mismatch_probe_still_opens(installed_sources, tmp_path: Path) -> None:
-    from tests.product.test_workflow_modularization_golden import _modular_composition
-
-    modular = _modular_composition(installed_sources)
+    modular = modular_product_composition(installed_sources)
     engine_root = tmp_path / "same-composition"
     engine_root.mkdir()
     engine = Engine(engine_root)
@@ -326,9 +292,7 @@ def test_same_composition_resume_after_mismatch_probe_still_opens(installed_sour
 
 @pytest.mark.usefixtures("installed_sources")
 def test_public_boundary_enums_and_actions_reach_a_planned_outcome(installed_sources, tmp_path: Path) -> None:
-    from tests.product.test_workflow_modularization_golden import _modular_composition
-
-    composition = _modular_composition(installed_sources)
+    composition = modular_product_composition(installed_sources)
     seen: list[str] = []
     for field, value in _PUBLIC_BOUNDARY_ENUMS:
         kwargs: dict[str, object] = {"entrypoint": "full"}
