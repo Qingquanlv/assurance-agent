@@ -16,6 +16,29 @@ from graph_engine.composition.source_fs import SourceSnapshotError
 from tests.product.composition_harness import copy_config_tree, request_for
 
 
+def test_undeclared_installed_module_cannot_change_assembly(installed_sources, tmp_path: Path, monkeypatch):
+    from graph_engine.canonical import canonical_json_bytes
+    from graph_engine.composition.workflow_assembler import assemble_product_workflow
+
+    from assurance_product.product import resolve_assurance_composition
+
+    def _bytes():
+        composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+        assembled = assemble_product_workflow(
+            manifest=composition.manifest,
+            descriptors={item.plugin_id: item for item in composition.descriptors},
+            registries=composition.registries,
+        )
+        return canonical_json_bytes(assembled.model_dump(mode="json", by_alias=True, exclude_unset=True))
+
+    before = _bytes()
+    extra = tmp_path / "assurance_undeclared_feature"
+    extra.mkdir()
+    (extra / "__init__.py").write_text("PLUGIN = object()\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    assert _bytes() == before
+
+
 def test_unknown_product_entrypoint_is_rejected(installed_sources):
     from pydantic import ValidationError
 

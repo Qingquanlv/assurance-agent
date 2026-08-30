@@ -30,6 +30,7 @@ mkdir -p "$source_root" "$dist_root" "$bindings_root"
 ) | tar -x -C "$source_root"
 
 cd "$source_root"
+test -d "$source_root/packages/products/assurance-product/assurance_product"
 for package in \
   graph-engine \
   agent-runtime-contracts \

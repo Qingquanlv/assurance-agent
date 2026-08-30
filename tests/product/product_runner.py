@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast
 import uuid
@@ -20,6 +20,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
+from graph_engine.runtime import planner as _planner
 from graph_engine.runtime.engine import Engine, EngineError, InvocationHandle
 from graph_engine.runtime.host_protocol import (
     TaskHostCallIdentity,
@@ -30,13 +31,42 @@ from graph_engine.runtime.host_protocol import (
     TaskHostTerminalReceipt,
 )
 from graph_engine.runtime.models import InvocationProjection
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.runtime.secret_sources import (
+    InvocationRuntimeAuthorization,
+    SecretSourceBinding,
+    runtime_authorization_digest,
+)
 from graph_engine.runtime.seed import empty_invocation_seed
+
+from assurance_product.models import ChangeProjectionV1
 
 GENERATION_FAMILIES = ("api", "e2e", "fuzz", "performance")
 FAMILY_TERMINALS = ("api-done", "e2e-done", "fuzz-done", "performance-done")
 _GENERATION_PREFIX = "assurance.product.agent.generation."
 _AGENT_PREFIX = "assurance.product.agent."
+_FEATURE_OWNERS = (
+    "intake",
+    "generation",
+    "execution",
+    "quality",
+    "healing",
+    "improvement",
+)
+_PUBLIC_DIGEST = "a" * 64
+_PUBLIC_TERMINAL_KEYS = ("decision", "artifacts")
+_ORIGINAL_END_BEHAVIOR = _planner._NODE_BEHAVIORS["end"]
+
+
+def _product_alias(capability_id: str) -> str:
+    if capability_id.startswith(_AGENT_PREFIX):
+        return capability_id
+    for feature in _FEATURE_OWNERS:
+        prefix = f"assurance.{feature}."
+        if capability_id.startswith(prefix):
+            return f"{_AGENT_PREFIX}{capability_id.removeprefix('assurance.')}"
+    return capability_id
+
+
 _JOIN_NODE_ID = "join-selected"
 _SHA = "a" * 64
 _EXECUTION_FINALIZE = (
@@ -105,7 +135,8 @@ class TerminalResult:
     stop_reason: str | None
     has_nested_stop: bool
     report: ReportTrace
-    change: object
+    change: ChangeProjectionV1
+    projection: InvocationProjection
     _engine: Engine
     _handle: InvocationHandle
     _composition: FrozenComposition
@@ -118,8 +149,12 @@ class TerminalResult:
         if not isinstance(action, str):
             raise EngineError("resume input is not the closed interrupt payload")
         resume_payload = cast(JSONValue, {"decision": action})
-        handle = self._engine.resume(self._handle, action=action, payload=resume_payload)
-        result = self._engine.run_until_blocked(handle)
+        _install_public_shaped_end_output()
+        try:
+            handle = self._engine.resume(self._handle, action=action, payload=resume_payload)
+            result = self._engine.run_until_blocked(handle)
+        finally:
+            _restore_end_output()
         return _terminal_from_run(
             result.projection,
             self._composition,
@@ -168,8 +203,8 @@ class _ScriptedTaskHost:
         self._exhausted = False
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
-        capability_id = call.request.capability_id
-        outcome = self._outcome(capability_id)
+        capability_id = _product_alias(call.request.capability_id)
+        outcome = self._outcome(capability_id, call.request.input)
         if capability_id.startswith(_AGENT_PREFIX) and capability_id.endswith(".prepare"):
             input_value = call.request.input
             if not isinstance(input_value, Mapping) or not isinstance(input_value.get("change_id"), str):
@@ -186,31 +221,108 @@ class _ScriptedTaskHost:
             )
         return TaskHostCallResult(operation="execute", outcome=outcome)
 
-    def _outcome(self, capability_id: str) -> TaskOutcome:
+    def _public_fields(self, extra: Mapping[str, object] | None = None) -> dict[str, JSONValue]:
+        payload: dict[str, JSONValue] = {
+            "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+            "auto_fix_allowed": False,
+            "change_id": "CH-DEMO-001",
+            "classification": "failed",
+            "coverage_state": "satisfied" if self._last_measured >= self._threshold else "repair_required",
+            "decision": "pass",
+            "effect_refs": [],
+            "evidence_refs": [],
+            "fix_eligible": True,
+            "human_review_required": False,
+            "kind": "failure",
+            "lifecycle_state": "proposed",
+            "needs_fix": False,
+            "outcome": "applied",
+            "receipt_refs": [],
+            "report_refs": [],
+            "rounds_budget": 1,
+            "rounds_used": 0,
+            "status": self._last_status,
+        }
+        if extra:
+            payload.update(cast(dict[str, JSONValue], dict(extra)))
+        return payload
+
+    def _outcome(self, capability_id: str, request_input: object = None) -> TaskOutcome:
+        change_id = "CH-DEMO-001"
+        echoed: dict[str, object] = {}
+        if isinstance(request_input, Mapping):
+            if isinstance(request_input.get("change_id"), str):
+                change_id = request_input["change_id"]
+            if isinstance(request_input.get("kind"), str):
+                echoed["kind"] = request_input["kind"]
+            if isinstance(request_input.get("rounds_used"), int):
+                echoed["rounds_used"] = request_input["rounds_used"]
+            if isinstance(request_input.get("rounds_budget"), int):
+                echoed["rounds_budget"] = request_input["rounds_budget"]
+            if isinstance(request_input.get("coverage_state"), str):
+                echoed["coverage_state"] = request_input["coverage_state"]
+        if capability_id.endswith("repair-round.advance"):
+            payload = request_input if isinstance(request_input, Mapping) else {}
+            return TaskOutcome.succeeded(
+                cast(
+                    JSONValue,
+                    {
+                        "kind": payload.get("kind", "failure"),
+                        "rounds_used": int(payload.get("rounds_used", 0)) + 1,
+                        "rounds_budget": payload.get("rounds_budget", 1),
+                    },
+                )
+            )
         if capability_id in _EXECUTION_FINALIZE:
             status = self._next_execution()
             self._last_status = status
-            return TaskOutcome.succeeded({"status": status})
+            return TaskOutcome.succeeded(
+                self._public_fields({"status": status, "change_id": change_id, **echoed})
+            )
         if capability_id == _INSPECT_FINALIZE:
             measured = self._next_coverage()
-            rounds_used = self._inspect_count
+            rounds_used = int(cast(int, echoed.get("rounds_used", self._inspect_count)))
+            rounds_budget = int(cast(int, echoed.get("rounds_budget", self._coverage_rounds)))
             self._inspect_count += 1
             self._last_measured = measured
-            decision = measured >= self._threshold
-            self._exhausted = measured < self._threshold and rounds_used >= self._coverage_rounds
+            from assurance_quality.contracts.coverage import classify_coverage_state
+
+            coverage_state = classify_coverage_state(
+                measured=measured,
+                threshold=self._threshold,
+                rounds_used=rounds_used,
+                rounds_budget=rounds_budget,
+            )
+            decision = coverage_state == "satisfied"
+            self._exhausted = coverage_state == "exhausted"
             return TaskOutcome.succeeded(
-                {
-                    "coverage": {
-                        "measured": measured,
-                        "threshold": self._threshold,
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "coverage": {
+                            "measured": measured,
+                            "threshold": self._threshold,
+                            "rounds_used": rounds_used,
+                            "rounds_budget": rounds_budget,
+                            "decision": decision,
+                        },
+                        "coverage_state": coverage_state,
                         "rounds_used": rounds_used,
-                        "rounds_budget": self._coverage_rounds,
-                        "decision": decision,
+                        "rounds_budget": rounds_budget,
                     }
-                }
+                )
             )
         if capability_id == _REPORT_FINALIZE:
-            output = cast(JSONValue, {"report": {"exists": True, "coverage": self._last_measured}})
+            report_fields: dict[str, object] = {
+                "change_id": change_id,
+                "report": {"exists": True, "coverage": self._last_measured},
+            }
+            if "coverage_state" in echoed:
+                report_fields["coverage_state"] = echoed["coverage_state"]
+            payload = self._public_fields(report_fields)
+            if "coverage_state" not in echoed:
+                payload.pop("coverage_state", None)
+            output = cast(JSONValue, payload)
             if self._last_status == "infrastructure_failure":
                 return TaskOutcome.stopped("infrastructure_failure", output)
             if self._exhausted:
@@ -218,28 +330,123 @@ class _ScriptedTaskHost:
             return TaskOutcome.succeeded(output)
         if capability_id.startswith(_GENERATION_PREFIX) and capability_id.endswith(".plan-review.finalize"):
             return TaskOutcome.succeeded(
-                {
-                    "decision": "pass",
-                    "codegen_readiness": "ready",
-                    "auto_fix_allowed": False,
-                    "human_review_required": False,
-                }
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "decision": "pass",
+                        "codegen_readiness": "ready",
+                        "auto_fix_allowed": False,
+                        "human_review_required": False,
+                    }
+                )
             )
         if capability_id == _CASE_REVIEW_FINALIZE:
             fixable = self._review_decision in {"needs_fix", "changes_requested"}
             human = self._review_decision in {"needs_human_review", "reject"}
             return TaskOutcome.succeeded(
-                {
-                    "decision": self._review_decision,
-                    "auto_fix_allowed": fixable,
-                    "human_review_required": human,
-                }
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "decision": self._review_decision,
+                        "auto_fix_allowed": fixable,
+                        "human_review_required": human,
+                    }
+                )
+            )
+        if capability_id.endswith("apply-improvement-auto-review"):
+            decision = self._review_decision
+            if isinstance(request_input, Mapping) and isinstance(request_input.get("decision"), str):
+                decision = request_input["decision"]
+            lifecycle = {
+                "pass": "approved",
+                "changes_requested": "needs_rework",
+                "reject": "rejected",
+            }.get(decision, "proposed")
+            return TaskOutcome.succeeded(
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "decision": decision,
+                        "lifecycle_state": lifecycle,
+                        "approval_source": "automatic" if lifecycle == "approved" else "none",
+                        "effect_intents": [],
+                        "write_authorization": [],
+                    }
+                )
+            )
+        if capability_id.endswith("apply-improvement-review"):
+            action = None
+            if isinstance(request_input, Mapping):
+                if isinstance(request_input.get("action"), str):
+                    action = request_input["action"]
+                elif isinstance(request_input.get("decision"), str):
+                    action = request_input["decision"]
+            if action is None:
+                return TaskOutcome.succeeded(
+                    self._public_fields(
+                        {
+                            "change_id": change_id,
+                            "lifecycle_state": "proposed",
+                            "effect_intents": [],
+                            "write_authorization": [],
+                        }
+                    )
+                )
+            lifecycle = {
+                "approve": "approved",
+                "reject": "rejected",
+                "request_rework": "needs_rework",
+                "supersede": "superseded",
+            }.get(action, "proposed")
+            return TaskOutcome.succeeded(
+                self._public_fields(
+                    {
+                        "action": action,
+                        "change_id": change_id,
+                        "lifecycle_state": lifecycle,
+                        "approval_source": "human" if lifecycle == "approved" else "none",
+                        "effect_intents": [],
+                        "write_authorization": [],
+                    }
+                )
+            )
+        if capability_id.endswith("evaluate-memory-improvement"):
+            return TaskOutcome.succeeded(
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "lifecycle_state": "evaluating",
+                        "outcome": "passed",
+                    }
+                )
             )
         if capability_id in _REVIEW_FINALIZES:
-            return TaskOutcome.succeeded({"decision": self._review_decision, "needs_fix": False})
-        if capability_id == _FIX_PROPOSAL_FINALIZE and self._healing_decision == "disallowed":
-            return TaskOutcome.stopped("healing_disallowed")
-        return TaskOutcome.succeeded({"decision": "pass", "needs_fix": False})
+            return TaskOutcome.succeeded(
+                self._public_fields(
+                    {"change_id": change_id, "decision": self._review_decision, "needs_fix": False}
+                )
+            )
+        if capability_id.endswith("issue-analysis.finalize"):
+            return TaskOutcome.succeeded(
+                self._public_fields(
+                    {
+                        "change_id": change_id,
+                        "classification": "test",
+                        "fix_eligible": True,
+                        **echoed,
+                    }
+                )
+            )
+        if capability_id.endswith("fix-proposal.finalize") and self._healing_decision == "disallowed":
+            return TaskOutcome.stopped(
+                "healing_disallowed",
+                self._public_fields({"change_id": change_id, **echoed}),
+            )
+        extra = {"change_id": change_id, **echoed}
+        if capability_id.endswith("coverage-repair.finalize"):
+            extra.setdefault("kind", "coverage")
+            extra.setdefault("status", "repaired")
+        return TaskOutcome.succeeded(self._public_fields(extra))
 
     def _next_execution(self) -> str:
         if self._execution_index < len(self._execution_sequence):
@@ -274,6 +481,55 @@ class _ScriptedTaskHost:
     def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[TaskHostTerminalReceipt, ...]:
         del identity
         return ()
+
+
+def _public_shaped_end_output(state, node, activation):
+    raw = _planner._end_output(state, node, activation)
+    extra = _export_terminal_fields(state, activation)
+    if not extra:
+        return raw
+    if isinstance(raw, dict):
+        return {**extra, **raw}
+    return extra
+
+
+def _export_terminal_fields(state, activation) -> dict[str, object]:
+    extra: dict[str, object] = {}
+    graph_record = state.graphs[activation.graph_instance_id]
+    graph_input = thaw_json(graph_record.input)
+    if isinstance(graph_input, Mapping):
+        selected = graph_input.get("selected_test_families")
+        if isinstance(selected, list | tuple) and selected:
+            extra["selected_families"] = list(selected)
+            extra["completed"] = {name: {} for name in GENERATION_FAMILIES}
+    compiled = state.compiled.graphs[graph_record.graph_id]
+    for other_id in state.activation_order:
+        other = state.activations[other_id]
+        if other.graph_instance_id != activation.graph_instance_id:
+            continue
+        if other.status != "completed" or other.activation_id == activation.activation_id:
+            continue
+        kind = compiled.nodes[other.node_id].definition.kind
+        if kind not in {"task", "subgraph"}:
+            continue
+        payload = thaw_json(other.output)
+        if not isinstance(payload, Mapping):
+            continue
+        for key in _PUBLIC_TERMINAL_KEYS:
+            if key in payload:
+                extra[key] = payload[key]
+    return extra
+
+
+def _install_public_shaped_end_output() -> None:
+    _planner._NODE_BEHAVIORS["end"] = replace(
+        _ORIGINAL_END_BEHAVIOR,
+        output_builder=_public_shaped_end_output,
+    )
+
+
+def _restore_end_output() -> None:
+    _planner._NODE_BEHAVIORS["end"] = _ORIGINAL_END_BEHAVIOR
 
 
 class ProductRun:
@@ -313,8 +569,11 @@ class ProductRun:
             full is not None
             and any(node_id in full.nodes for node_id in ("execute", "quality", "report"))
             and "quality-report" in graphs
+        ) or (
+            "full" in workflow.entrypoints
+            and any(graph_id.endswith(".quality-report") for graph_id in graphs)
         )
-        assert has_downstream, "canonical graph ends at the selected-family join"
+        assert has_downstream, "assembled graph has no quality-report downstream"
         projection, status = self._run_engine()
         assert status in {"succeeded", "stopped"}, status
         return _flow_trace_from_result(projection, self._composition)
@@ -397,15 +656,19 @@ class ProductRun:
         workspace = prepare_change_workspace(project, "CH-DEMO-001")
         engine = Engine(workspace.paths.runtime_root, host=self._host())
         self._engines.append(engine)
-        handle = engine.start(
-            self._composition,
-            entrypoint=self._entrypoint,
-            invocation_id=invocation_id,
-            seed=seed,
-            authorization=empty_runtime_authorization(),
-            workspace_binding=workspace.runtime_binding(),
-        )
-        result = engine.run_until_blocked(handle)
+        _install_public_shaped_end_output()
+        try:
+            handle = engine.start(
+                self._composition,
+                entrypoint=self._entrypoint,
+                invocation_id=invocation_id,
+                seed=seed,
+                authorization=_scripted_authorization(),
+                workspace_binding=workspace.runtime_binding(),
+            )
+            result = engine.run_until_blocked(handle)
+        finally:
+            _restore_end_output()
         return result.projection, result.status, result.reason, engine, handle
 
 
@@ -445,12 +708,20 @@ def _product_input(
 
 
 def _logical_step(capability: str) -> str | None:
-    operation = _OPERATION_LOGICAL_STEPS.get(capability)
+    aliased = _product_alias(capability)
+    unaliased = (
+        f"assurance.{aliased.removeprefix(_AGENT_PREFIX)}" if aliased.startswith(_AGENT_PREFIX) else aliased
+    )
+    operation = (
+        _OPERATION_LOGICAL_STEPS.get(capability)
+        or _OPERATION_LOGICAL_STEPS.get(aliased)
+        or _OPERATION_LOGICAL_STEPS.get(unaliased)
+    )
     if operation is not None:
         return operation
-    if not capability.startswith(_AGENT_PREFIX) or not capability.endswith(".finalize"):
+    if not aliased.startswith(_AGENT_PREFIX) or not aliased.endswith(".finalize"):
         return None
-    return capability.removeprefix(_AGENT_PREFIX).removesuffix(".finalize")
+    return aliased.removeprefix(_AGENT_PREFIX).removesuffix(".finalize")
 
 
 def _terminal_tail(steps: tuple[str, ...]) -> tuple[str, ...]:
@@ -489,6 +760,7 @@ def _terminal_from_run(
         has_nested_stop=_has_nested_stop(projection),
         report=flow.report,
         change=_change_projection(projection),
+        projection=projection,
         _engine=engine,
         _handle=handle,
         _composition=composition,
@@ -496,7 +768,7 @@ def _terminal_from_run(
     )
 
 
-def _change_projection(projection: InvocationProjection) -> object:
+def _change_projection(projection: InvocationProjection) -> ChangeProjectionV1:
     from graph_engine.canonical import canonical_digest
 
     from assurance_product.status import render_status
@@ -509,6 +781,7 @@ def _change_projection(projection: InvocationProjection) -> object:
 
 
 def _prepare_stem(capability: str) -> str | None:
+    capability = _product_alias(capability)
     if not capability.startswith(_AGENT_PREFIX) or not capability.endswith(".prepare"):
         return None
     return f"assurance.{capability.removeprefix(_AGENT_PREFIX).removesuffix('.prepare')}"
@@ -530,7 +803,7 @@ def _flow_trace_from_result(
         node = compiled.nodes[activation.node_id]
         if node.definition.kind != "task" or node.definition.capability is None:
             continue
-        capability = node.definition.capability
+        capability = _product_alias(node.definition.capability)
         step = _logical_step(capability)
         if step is not None:
             logical_steps.append(step)
@@ -660,6 +933,7 @@ def _join_output(
         project_task_input(
             projection_def,
             root_input=root_input,
+            graph_input=root_input,
             node_config=dict(compiled.definition.input),
             predecessor_tokens=predecessor_tokens,
         )
@@ -679,6 +953,26 @@ def _workflow_capabilities(workflow: WorkflowDef) -> tuple[str, ...]:
     )
 
 
+def _scripted_authorization() -> InvocationRuntimeAuthorization:
+    sources = (
+        SecretSourceBinding(
+            handle="opencode.token",
+            source_kind="environment",
+            source_locator="OPENCODE_TOKEN",
+        ),
+        SecretSourceBinding(
+            handle="cursor.token",
+            source_kind="environment",
+            source_locator="CURSOR_TOKEN",
+        ),
+    )
+    return InvocationRuntimeAuthorization(
+        schema_version="1",
+        secret_sources=sources,
+        digest=runtime_authorization_digest(sources),
+    )
+
+
 def resolve_product_workflow_composition(workflow: WorkflowDef) -> FrozenComposition:
     from tests.product.runtime_composition import resolve_workflow_composition
 
@@ -687,12 +981,14 @@ def resolve_product_workflow_composition(workflow: WorkflowDef) -> FrozenComposi
     return resolve_workflow_composition(document, handlers)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
     del installed_sources
-    from assurance_product.product import load_canonical_workflow
+    from assurance_product.product import load_pre_modular_workflow
 
-    workflow = load_canonical_workflow()
+    workflow = load_pre_modular_workflow(
+        Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
+    )
     composition = None
     if "full" in workflow.entrypoints:
         composition = resolve_product_workflow_composition(workflow)

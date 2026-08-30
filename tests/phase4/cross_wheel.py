@@ -145,10 +145,23 @@ def catalog_leafs(catalog: object) -> frozenset[str]:
     raise TypeError("catalog must be a frozenset of typed leaves or the catalog document")
 
 
+def _package_source_root(package: str) -> Path:
+    name = package.replace("_", "-")
+    candidates = (
+        _WHEEL_ROOTS / "features" / name / package,
+        _WHEEL_ROOTS / "clients" / name / package,
+        _WHEEL_ROOTS / "products" / name / package,
+        _WHEEL_ROOTS / "framework" / name / package,
+        _WHEEL_ROOTS / name / package,
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    raise FileNotFoundError(f"package source is missing: {candidates[0]}")
+
+
 def forbidden_imports(package: str, prefix: str | None = None) -> set[str]:
-    root = _WHEEL_ROOTS / package.replace("_", "-") / package
-    if not root.is_dir():
-        raise FileNotFoundError(f"package source is missing: {root}")
+    root = _package_source_root(package)
     forbidden = {*_LEGACY_ROOTS}
     if prefix is not None:
         forbidden.add(prefix)

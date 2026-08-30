@@ -168,10 +168,11 @@ def test_finalize_achieved_writes_status_and_apply_manifest(tmp_path: Path):
     assert not (project / "qa" / "archive").exists()
 
 
-def test_finalize_achieved_rejects_failed_execution_without_writing(tmp_path: Path):
+@pytest.mark.parametrize("execution_status", ["failed", "product_issue", "infrastructure_failure"])
+def test_finalize_achieved_rejects_failed_execution_without_writing(tmp_path: Path, execution_status: str):
     from assurance_product.status import finalize_achieved
 
-    project = _ready_change(tmp_path, execution_status="failed")
+    project = _ready_change(tmp_path, execution_status=execution_status)
 
     with pytest.raises(ValueError, match="execution"):
         finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status())
@@ -189,6 +190,90 @@ def test_finalize_achieved_rejects_invalid_merge_without_writing(tmp_path: Path)
     _write(project, _staged_path("api", "tests/api/extra.py"), b"extra\n")
 
     with pytest.raises(ValueError, match="extra"):
+        finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status())
+
+    change = project / "qa" / "changes" / CHANGE_ID
+    assert not (change / "status.json").exists()
+    assert not (change / "apply-manifest.json").exists()
+
+
+@pytest.mark.parametrize(
+    "coverage",
+    [
+        {
+            "measured": 0.40,
+            "threshold": 0.9,
+            "rounds_used": 1,
+            "rounds_budget": 1,
+            "decision": False,
+            "coverage_state": "exhausted",
+        },
+        {
+            "measured": 0.40,
+            "threshold": 0.9,
+            "rounds_used": 0,
+            "rounds_budget": 1,
+            "decision": False,
+            "coverage_state": "inconclusive",
+        },
+        {
+            "measured": 0.95,
+            "threshold": 0.9,
+            "rounds_used": 0,
+            "rounds_budget": 1,
+            "decision": True,
+            "coverage_state": "needs_human",
+        },
+    ],
+)
+def test_finalize_achieved_rejects_unsatisfied_coverage_without_writing(
+    tmp_path: Path, coverage: dict[str, object]
+) -> None:
+    from assurance_product.status import finalize_achieved
+
+    project = _ready_change(tmp_path)
+    _write(
+        project,
+        f"qa/changes/{CHANGE_ID}/inspect/inspection.json",
+        json.dumps({"coverage": coverage, "coverage_state": coverage["coverage_state"]}).encode("utf-8"),
+    )
+
+    with pytest.raises(ValueError, match="quality"):
+        finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status())
+
+    change = project / "qa" / "changes" / CHANGE_ID
+    assert not (change / "status.json").exists()
+    assert not (change / "apply-manifest.json").exists()
+
+
+def test_finalize_achieved_rejects_failed_or_exhausted_invocation(tmp_path: Path):
+    from assurance_product.status import finalize_achieved
+
+    project = _ready_change(tmp_path)
+    with pytest.raises(ValueError, match="failed|exhausted"):
+        finalize_achieved(
+            project,
+            CHANGE_ID,
+            ("api",),
+            invocation=valid_status(terminal_reason="exhausted"),
+        )
+    change = project / "qa" / "changes" / CHANGE_ID
+    assert not (change / "status.json").exists()
+    assert not (change / "apply-manifest.json").exists()
+
+
+def test_finalize_achieved_rejects_missing_report_even_with_improvement_artifacts(tmp_path: Path):
+    from assurance_product.status import finalize_achieved
+
+    project = _ready_change(tmp_path)
+    (project / "qa" / "changes" / CHANGE_ID / "report" / "report.md").unlink()
+    _write(
+        project,
+        f"qa/changes/{CHANGE_ID}/improvements/delivery.json",
+        b'{"schema_version":"1","improvement_id":"IMP-1"}\n',
+    )
+
+    with pytest.raises(ValueError, match="quality|report"):
         finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status())
 
     change = project / "qa" / "changes" / CHANGE_ID

@@ -772,7 +772,17 @@ def _editable_wheel_plugins(workspace: Path) -> tuple[EditableWheelPluginSource,
     wheels = workspace / "wheels"
     wheels.mkdir(exist_ok=True)
     for distribution, package, entrypoint_name, declaration_path in WHEEL_PLUGINS:
-        source = REPO_ROOT / "packages" / distribution / package
+        if distribution.startswith("agent-runtime-"):
+            group = "clients"
+        elif distribution.startswith("assurance-"):
+            group = "features"
+        else:
+            group = None
+        source = (
+            REPO_ROOT / "packages" / group / distribution / package
+            if group is not None
+            else REPO_ROOT / "packages" / distribution / package
+        )
         dest = wheels / distribution
         if not dest.exists():
             shutil.copytree(source, dest / package, ignore=_IGNORE)

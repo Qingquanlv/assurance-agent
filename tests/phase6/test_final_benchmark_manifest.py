@@ -43,8 +43,8 @@ RETAINED_COMPARISON_ASSERTIONS = {
     "healing": (
         "tests/product/test_issue_healing_flow.py",
         (
-            "test_issue_path_runs_triage_analysis_and_fix_before_rerun",
-            "test_product_issue_runs_the_same_healing_chain",
+            "test_issue_path_runs_analysis_and_fix_before_rerun",
+            "test_product_issue_never_runs_the_healing_chain",
         ),
     ),
     "report": (
@@ -135,7 +135,7 @@ def test_cursor_live_entries_are_absent_while_adapter_packaging_remains(repo_roo
     items = document["items"]
     assert all(entry.get("adapter_binding", {}).get("protocol_profile") != "cursor" for entry in items)
     assert all("cursor" not in str(entry.get("id", "")).lower() for entry in items)
-    assert (repo_root / "packages/agent-runtime-cursor").is_dir()
+    assert (repo_root / "packages/clients/agent-runtime-cursor").is_dir()
     packaging = repo_root / "tests/product/test_product_packaging.py"
     providers = repo_root / "tests/product/test_product_providers.py"
     cursor_fixture = repo_root / "tests/product/fixtures/deployment/cursor.yaml"

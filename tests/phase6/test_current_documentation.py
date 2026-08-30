@@ -9,14 +9,14 @@ REPO = Path(__file__).resolve().parents[2]
 CURRENT_DOC_RELATIVES = (
     "README.md",
     "AGENTS.md",
-    "packages/graph-engine/README.md",
-    "packages/assurance-product/README.md",
+    "packages/framework/graph-engine/README.md",
+    "packages/products/assurance-product/README.md",
 )
 
 PRODUCT_DOC_RELATIVES = (
     "README.md",
     "AGENTS.md",
-    "packages/assurance-product/README.md",
+    "packages/products/assurance-product/README.md",
 )
 
 FORBIDDEN_FRAGMENTS = (
@@ -116,7 +116,7 @@ def test_workspace_readme_names_final_product_and_benchmark_paths(repo_root: Pat
 
 
 def test_graph_engine_readme_states_neutral_installed_product_ownership(repo_root: Path) -> None:
-    text = _folded(repo_root / "packages/graph-engine/README.md")
+    text = _folded(repo_root / "packages/framework/graph-engine/README.md")
     assert "business-neutral" in text
     assert "no default product" in text
     assert OWNERSHIP not in text

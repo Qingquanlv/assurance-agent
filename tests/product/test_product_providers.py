@@ -20,7 +20,7 @@ _RUNTIME_DISTRIBUTIONS = frozenset({"agent-runtime-opencode", "agent-runtime-cur
 _SIX_CAPABILITY_SOURCES = (
     ProviderSource(
         distribution="assurance-intake",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="intake",
         entrypoint_value="assurance_intake.plugin:IntakePlugin",
@@ -29,7 +29,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-generation",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="generation",
         entrypoint_value="assurance_generation.plugin:GenerationPlugin",
@@ -38,7 +38,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-execution",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="execution",
         entrypoint_value="assurance_execution.plugin:ExecutionPlugin",
@@ -47,7 +47,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-healing",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="healing",
         entrypoint_value="assurance_healing.plugin:HealingPlugin",
@@ -56,7 +56,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-quality",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="quality",
         entrypoint_value="assurance_quality.plugin:QualityPlugin",
@@ -65,7 +65,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-improvement",
-        version="0.1.0",
+        version="0.2.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="improvement",
         entrypoint_value="assurance_improvement.plugin:ImprovementPlugin",
@@ -155,7 +155,17 @@ def test_providers_return_one_minimal_manifest_per_adapter():
     assert opencode.entrypoints == cursor.entrypoints
     assert opencode.configuration == {}
     assert cursor.configuration == {}
-    assert opencode.workflow == cursor.workflow
+    assert opencode.workflow is None
+    assert cursor.workflow is None
+    assert opencode.workflow_resource_id is None
+    assert cursor.workflow_resource_id is None
+    assert opencode.workflow_module is not None
+    assert cursor.workflow_module is not None
+    assert opencode.workflow_module == cursor.workflow_module
+    assert opencode.workflow_module_resources == cursor.workflow_module_resources
+    assert opencode.workflow_slot_bindings == cursor.workflow_slot_bindings
+    assert len(opencode.workflow_module_resources) == 6
+    assert len(opencode.workflow_slot_bindings) == 99
 
 
 def test_committed_product_declaration_bytes_match_canonical_documents() -> None:
@@ -172,6 +182,7 @@ def test_committed_product_declaration_bytes_match_canonical_documents() -> None
 
 
 def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> None:
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
     from assurance_product.models import PREPARE_IDS, alias_ids_for_prepare
     from assurance_product.output_routes import OutputRouteCatalog, execute_alias_for_prepare
     from assurance_product.product import (
@@ -183,16 +194,16 @@ def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> N
     catalog = OutputRouteCatalog()
     for provider in (AssuranceOpenCodeProductProvider, AssuranceCursorProductProvider):
         manifest = provider.manifest()
-        assert manifest.workflow is not None
-        graph_nodes = {
-            node.capability: node
-            for graph in manifest.workflow.graphs.values()
-            for node in graph.nodes.values()
-            if node.capability is not None
-        }
+        assert manifest.workflow is None
+        assert manifest.workflow_module is not None
+        bound = {item.capability_id: item for item in manifest.workflow_slot_bindings}
         for prepare_id in PREPARE_IDS:
-            _, execute_capability, _ = alias_ids_for_prepare(prepare_id)
-            resources = graph_nodes[execute_capability].resources
+            prepare_alias, execute_capability, finalize_alias = alias_ids_for_prepare(prepare_id)
+            assert execute_capability in bound
+            assert bound[execute_capability].contract_id == AGENT_EXECUTION_CONTRACTS[prepare_id].contract_id
+            assert prepare_alias in bound
+            assert finalize_alias in bound
+            resources = AGENT_EXECUTION_CONTRACTS[prepare_id].resources
             assert isinstance(resources, ResourceClaimTemplate)
             assert resources.parameters == {"change_id": "/workspace/scope_id"}
             execute_alias = execute_alias_for_prepare(prepare_id)

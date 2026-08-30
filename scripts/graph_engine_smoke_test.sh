@@ -18,6 +18,7 @@ mkdir -p "$source_root" "$dist_root"
 git -C "$repo_root" archive HEAD | tar -x -C "$source_root"
 
 cd "$source_root"
+test -d "$source_root/packages/framework/graph-engine/graph_engine"
 uv build --offline --wheel --package graph-engine --out-dir "$dist_root"
 uv build --offline --wheel --package graph-engine-toy-a --out-dir "$dist_root"
 uv build --offline --wheel --package graph-engine-toy-b --out-dir "$dist_root"

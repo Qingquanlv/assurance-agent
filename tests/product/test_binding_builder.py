@@ -63,7 +63,7 @@ def test_binding_build_is_byte_deterministic(tmp_path, opencode_manifest):
     prefix = first.manifest_digest.removeprefix("sha256:")[:16]
     assert first.distribution == f"assurance-product-bindings-{prefix}"
     assert first.import_package == f"assurance_product_bindings_{prefix}"
-    assert first.wheel.name == canonical_wheel_filename(first.distribution, "1.0.0")
+    assert first.wheel.name == canonical_wheel_filename(first.distribution, "1.1.0")
 
 
 def test_success_leaves_only_the_final_wheel(tmp_path, opencode_manifest):
@@ -386,9 +386,9 @@ def test_generated_provider_contributes_exactly_99_aliases(tmp_path, opencode_ma
         evict_generated_binding_modules()
         sys.path.remove(str(installed))
     assert built.plugin_id == "assurance.product.agent"
-    assert built.plugin_version == "1.0.0"
+    assert built.plugin_version == "1.1.0"
     assert descriptor.plugin_id == "assurance.product.agent"
-    assert descriptor.plugin_version == "1.0.0"
+    assert descriptor.plugin_version == "1.1.0"
     assert descriptor.task_handlers == ()
     assert descriptor.commit_validators == ()
     assert descriptor.effects == ()
@@ -438,6 +438,9 @@ def test_alias_targets_and_binding_data_follow_section_14(tmp_path, opencode_man
         assert finalize.target_capability_id == f"{stem}.finalize"
         assert finalize.data is None
         assert finalize.secret_handles == ()
+        feature, _, base = key.partition(".")
+        expected_contract_id = f"assurance.{feature}.agent.{base}.v1"
+        assert prepare.contract_id == execute.contract_id == finalize.contract_id == expected_contract_id
 
 
 def test_cursor_wheel_keeps_confined_secret_handle(tmp_path, cursor_manifest):
@@ -482,7 +485,7 @@ def test_wheel_exposes_only_the_deployment_entry_point(tmp_path, opencode_manife
         parser = _EntryPointConfigParser(interpolation=None)
         parser.read_string(archive.read(entry_points_name).decode("utf-8"))
     assert metadata["Name"] == built.distribution
-    assert metadata["Version"] == "1.0.0"
+    assert metadata["Version"] == "1.1.0"
     assert parser.sections() == ["graph_engine.plugins"]
     assert dict(parser.items("graph_engine.plugins")) == {
         "deployment": built.entry_point_value,

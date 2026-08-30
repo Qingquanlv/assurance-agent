@@ -1,0 +1,201 @@
+schema_version: "1"
+role: feature
+owner_id: assurance.execution
+module_id: assurance.execution.workflow
+module_version: 0.2.0
+imports: {}
+exports:
+  execute:
+    graph: execution-execute
+    input_schema: assurance.execution.workflow.execute.input.v1
+    output_schema: assurance.execution.workflow.execute.output.v1
+    output_projection: &execution-output
+      type: object
+      fields:
+        rounds_budget:
+          type: child_output_pointer
+          pointer: /rounds_budget
+        rounds_used:
+          type: child_output_pointer
+          pointer: /rounds_used
+        status:
+          type: child_output_pointer
+          pointer: /status
+  rerun:
+    graph: execution-run
+    input_schema: assurance.execution.workflow.rerun.input.v1
+    output_schema: assurance.execution.workflow.rerun.output.v1
+    output_projection: *execution-output
+capability_slots:
+  execute.prepare:
+    contract_id: assurance.execution.agent.execute.v1
+  execute.execute:
+    contract_id: assurance.execution.agent.execute.v1
+  execute.finalize:
+    contract_id: assurance.execution.agent.execute.v1
+  run.prepare:
+    contract_id: assurance.execution.agent.run.v1
+  run.execute:
+    contract_id: assurance.execution.agent.run.v1
+  run.finalize:
+    contract_id: assurance.execution.agent.run.v1
+schemas:
+  - assurance.execution.workflow.execute.input.v1
+  - assurance.execution.workflow.execute.output.v1
+  - assurance.execution.workflow.rerun.input.v1
+  - assurance.execution.workflow.rerun.output.v1
+resources: []
+effects: []
+retry:
+  once:
+    max_attempts: 1
+  agent-transient:
+    max_attempts: 12
+    retry_on:
+      - transient
+timeout:
+  short:
+    run_seconds: 3600
+graphs:
+  execution-execute:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.execution.execute.prepare
+        input:
+          capability_leafs: []
+        input_projection:
+          type: object
+          fields:
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            selected_test_families:
+              type: graph_input_pointer
+              pointer: /selected_test_families
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: execute.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: agent-transient
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.execution.execute.finalize
+        input:
+          capability_leafs: []
+        input_projection:
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            selected_test_families:
+              type: graph_input_pointer
+              pointer: /selected_test_families
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}
+  execution-run:
+    max_activations: 8
+    start: prepare
+    nodes:
+      prepare:
+        kind: task
+        capability: assurance.execution.run.prepare
+        input:
+          capability_leafs: []
+        input_projection:
+          type: object
+          fields:
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            selected_test_families:
+              type: graph_input_pointer
+              pointer: /selected_test_families
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
+        retry: once
+        timeout: short
+      execute:
+        kind: task
+        capability_slot: run.execute
+        input_projection:
+          type: predecessor
+          predecessor: prepare
+        retry: agent-transient
+        timeout: short
+      finalize:
+        kind: task
+        capability: assurance.execution.run.finalize
+        input:
+          capability_leafs: []
+        input_projection:
+          type: object
+          fields:
+            agent_result:
+              type: predecessor
+              predecessor: execute
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            selected_test_families:
+              type: graph_input_pointer
+              pointer: /selected_test_families
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
+        retry: once
+        timeout: short
+      done:
+        kind: end
+    edges:
+      - {from: prepare, to: execute}
+      - {from: execute, to: finalize}
+      - {from: finalize, to: done}

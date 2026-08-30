@@ -1,0 +1,1 @@
+{"additionalProperties":false,"properties":{"rounds_budget":{"minimum":1,"type":"integer"},"rounds_used":{"minimum":0,"type":"integer"},"status":{"enum":["failed","passed"],"type":"string"}},"required":["rounds_budget","rounds_used","status"],"type":"object"}

@@ -115,22 +115,22 @@ EXPECTED_GAP_FAULT_IDS = (
 
 EXPECTED_FAULT_GATE_NODE_IDS = {
     "provider_state_loss_replay": (
-        "packages/agent-runtime-cursor/tests/test_process_host.py::test_durable_terminal_survives_new_host_instance",
-        "packages/graph-engine/tests/runtime/test_staged_promotion_recovery.py::test_recovery_consumes_durable_promotion_without_reexecuting_handler",
+        "packages/clients/agent-runtime-cursor/tests/test_process_host.py::test_durable_terminal_survives_new_host_instance",
+        "packages/framework/graph-engine/tests/runtime/test_staged_promotion_recovery.py::test_recovery_consumes_durable_promotion_without_reexecuting_handler",
         "tests/product/test_replay_properties.py::test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash_subset",
     ),
     "fault_crash_recovery": (
-        "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[before_create]",
-        "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[after_create_before_response]",
-        "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[invalid_success_body]",
-        "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[proxy_reset]",
-        "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[before_prompt_post]",
-        "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_admission_before_response]",
-        "packages/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_lost_success_response]",
+        "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[before_create]",
+        "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[after_create_before_response]",
+        "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[invalid_success_body]",
+        "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[proxy_reset]",
+        "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[before_prompt_post]",
+        "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_admission_before_response]",
+        "packages/clients/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_lost_success_response]",
         "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[prepared]",
         "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[replacing]",
         "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[committed]",
-        "packages/agent-runtime-cursor/tests/test_process_host_faults.py::test_wait_before_durable_write_is_not_visible",
+        "packages/clients/agent-runtime-cursor/tests/test_process_host_faults.py::test_wait_before_durable_write_is_not_visible",
     ),
     "stop_interrupt": (
         "tests/product/test_stop_and_interrupts.py::test_business_stop_is_resumable_only_at_declared_interrupt",
@@ -141,8 +141,8 @@ EXPECTED_FAULT_GATE_NODE_IDS = {
     "coverage_healing": (
         "tests/product/test_coverage_loop.py::test_low_coverage_reenters_generation_until_policy_passes",
         "tests/product/test_coverage_loop.py::test_coverage_repair_exhaustion_stops_with_a_report",
-        "tests/product/test_issue_healing_flow.py::test_issue_path_runs_triage_analysis_and_fix_before_rerun",
-        "tests/product/test_issue_healing_flow.py::test_product_issue_runs_the_same_healing_chain",
+        "tests/product/test_issue_healing_flow.py::test_issue_path_runs_analysis_and_fix_before_rerun",
+        "tests/product/test_issue_healing_flow.py::test_product_issue_never_runs_the_healing_chain",
     ),
 }
 

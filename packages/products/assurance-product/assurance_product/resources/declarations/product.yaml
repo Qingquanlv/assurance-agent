@@ -1,0 +1,94 @@
+schema_version: "1"
+kind: product
+product_id: assurance
+manifest_product_id: assurance.product
+product_version: "0.2.0"
+engine_api: "2.0"
+entrypoints:
+  run: root
+plugins:
+  - plugin_id: assurance.intake
+    version_specifier: "==0.2.0"
+  - plugin_id: assurance.generation
+    version_specifier: "==0.2.0"
+  - plugin_id: assurance.execution
+    version_specifier: "==0.2.0"
+  - plugin_id: assurance.healing
+    version_specifier: "==0.2.0"
+  - plugin_id: assurance.quality
+    version_specifier: "==0.2.0"
+  - plugin_id: assurance.improvement
+    version_specifier: "==0.2.0"
+runtime_plugins:
+  opencode: runtime.opencode
+  cursor: runtime.cursor
+sources:
+  capabilities:
+    - distribution: assurance-intake
+      version: "0.2.0"
+      entrypoint_group: graph_engine.plugins
+      entrypoint_name: intake
+      entrypoint_value: assurance_intake.plugin:IntakePlugin
+      declaration_path: assurance_intake/plugin-declaration.json
+      import_roots:
+        - ""
+    - distribution: assurance-generation
+      version: "0.2.0"
+      entrypoint_group: graph_engine.plugins
+      entrypoint_name: generation
+      entrypoint_value: assurance_generation.plugin:GenerationPlugin
+      declaration_path: assurance_generation/plugin-declaration.json
+      import_roots:
+        - ""
+    - distribution: assurance-execution
+      version: "0.2.0"
+      entrypoint_group: graph_engine.plugins
+      entrypoint_name: execution
+      entrypoint_value: assurance_execution.plugin:ExecutionPlugin
+      declaration_path: assurance_execution/plugin-declaration.json
+      import_roots:
+        - ""
+    - distribution: assurance-healing
+      version: "0.2.0"
+      entrypoint_group: graph_engine.plugins
+      entrypoint_name: healing
+      entrypoint_value: assurance_healing.plugin:HealingPlugin
+      declaration_path: assurance_healing/plugin-declaration.json
+      import_roots:
+        - ""
+    - distribution: assurance-quality
+      version: "0.2.0"
+      entrypoint_group: graph_engine.plugins
+      entrypoint_name: quality
+      entrypoint_value: assurance_quality.plugin:QualityPlugin
+      declaration_path: assurance_quality/plugin-declaration.json
+      import_roots:
+        - ""
+    - distribution: assurance-improvement
+      version: "0.2.0"
+      entrypoint_group: graph_engine.plugins
+      entrypoint_name: improvement
+      entrypoint_value: assurance_improvement.plugin:ImprovementPlugin
+      declaration_path: assurance_improvement/plugin-declaration.json
+      import_roots:
+        - ""
+  runtimes:
+    opencode:
+      distribution: agent-runtime-opencode
+      version: "0.1.0"
+      entrypoint_group: graph_engine.plugins
+      entrypoint_name: opencode
+      entrypoint_value: agent_runtime_opencode.plugin:OpenCodePlugin
+      declaration_path: agent_runtime_opencode/plugin-declaration.json
+      import_roots:
+        - ""
+    cursor:
+      distribution: agent-runtime-cursor
+      version: "0.1.0"
+      entrypoint_group: graph_engine.plugins
+      entrypoint_name: cursor
+      entrypoint_value: agent_runtime_cursor.plugin:CursorPlugin
+      declaration_path: agent_runtime_cursor/plugin-declaration.json
+      import_roots:
+        - ""
+

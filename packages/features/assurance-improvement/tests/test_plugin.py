@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+import json
+from importlib.resources import files
+
+import pytest
+
+from graph_engine import ENGINE_API_VERSION, RegistryPorts
+from graph_engine.plugin_api import PluginDependency, PluginDescriptor, ProviderSource
+
+from assurance_improvement.plugin import (
+    IMPROVEMENT_SCHEMA_IDS,
+    IMPROVEMENT_SOURCE,
+    ImprovementPlugin,
+)
+from assurance_improvement.resource_loader import resource_bytes
+from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
+
+
+def test_improvement_descriptor_declares_exact_dependency_versions() -> None:
+    assert ImprovementPlugin.descriptor().dependencies == (
+        PluginDependency("assurance.intake", "==0.2.0"),
+        PluginDependency("assurance.generation", "==0.2.0"),
+        PluginDependency("assurance.execution", "==0.2.0"),
+        PluginDependency("assurance.healing", "==0.2.0"),
+        PluginDependency("assurance.quality", "==0.2.0"),
+    )
+
+
+def test_improvement_plugin_conforms() -> None:
+    assert_plugin_conforms(
+        ImprovementPlugin(),
+        PluginExpectation(
+            plugin_id="assurance.improvement",
+            dependencies=(
+                "assurance.intake",
+                "assurance.generation",
+                "assurance.execution",
+                "assurance.healing",
+                "assurance.quality",
+            ),
+            id_prefix="assurance.improvement.",
+        ),
+    )
+
+
+def test_static_declaration_equals_live_descriptor() -> None:
+    static = json.loads(
+        files("assurance_improvement").joinpath("plugin-declaration.json").read_text(encoding="utf-8")
+    )
+    payload = static["descriptor"] if isinstance(static, dict) and "descriptor" in static else static
+    assert PluginDescriptor.model_validate(payload) == ImprovementPlugin.descriptor()
+
+
+def test_improvement_source_identity() -> None:
+    source = ImprovementPlugin.descriptor().source
+    assert source == IMPROVEMENT_SOURCE
+    assert source == ProviderSource(
+        distribution="assurance-improvement",
+        version="0.2.0",
+        entrypoint_group="graph_engine.plugins",
+        entrypoint_name="improvement",
+        entrypoint_value="assurance_improvement.plugin:ImprovementPlugin",
+        declaration_path="assurance_improvement/plugin-declaration.json",
+        import_roots=("",),
+    )
+    assert ImprovementPlugin.descriptor().engine_api == ENGINE_API_VERSION
+    assert ENGINE_API_VERSION == "2.0"
+    assert ImprovementPlugin.descriptor().schemas == IMPROVEMENT_SCHEMA_IDS
+    assert tuple(IMPROVEMENT_SCHEMA_IDS) == tuple(sorted(IMPROVEMENT_SCHEMA_IDS))
+    assert len(IMPROVEMENT_SCHEMA_IDS) == 23
+    from assurance_improvement.plugin import (
+        IMPROVEMENT_EFFECT_IDS,
+        IMPROVEMENT_HANDLER_IDS,
+        IMPROVEMENT_RESOURCE_IDS,
+        IMPROVEMENT_VALIDATOR_IDS,
+    )
+
+    assert ImprovementPlugin.descriptor().task_handlers == IMPROVEMENT_HANDLER_IDS
+    assert ImprovementPlugin.descriptor().commit_validators == IMPROVEMENT_VALIDATOR_IDS
+    assert ImprovementPlugin.descriptor().resources == IMPROVEMENT_RESOURCE_IDS
+    assert ImprovementPlugin.descriptor().effects == IMPROVEMENT_EFFECT_IDS
+    assert tuple(IMPROVEMENT_HANDLER_IDS) == tuple(sorted(IMPROVEMENT_HANDLER_IDS))
+    assert tuple(IMPROVEMENT_VALIDATOR_IDS) == tuple(sorted(IMPROVEMENT_VALIDATOR_IDS))
+    assert tuple(IMPROVEMENT_RESOURCE_IDS) == tuple(sorted(IMPROVEMENT_RESOURCE_IDS))
+    assert tuple(IMPROVEMENT_EFFECT_IDS) == tuple(sorted(IMPROVEMENT_EFFECT_IDS))
+    assert "assurance.improvement.retro.prepare" in IMPROVEMENT_HANDLER_IDS
+    assert "assurance.improvement.improvement-review.finalize" in IMPROVEMENT_HANDLER_IDS
+    assert "assurance.improvement.project-archive" in IMPROVEMENT_HANDLER_IDS
+    assert "assurance.improvement.assemble-retro-context-v3" in IMPROVEMENT_HANDLER_IDS
+    assert "assurance.improvement.rollback-memory-improvement" in IMPROVEMENT_HANDLER_IDS
+    assert "assurance.improvement.validator.archive-integrity.v1" in IMPROVEMENT_VALIDATOR_IDS
+    assert "assurance.improvement.effect.delivery.v1" in IMPROVEMENT_EFFECT_IDS
+    assert "assurance.improvement.persona.reviewer.v1" in IMPROVEMENT_RESOURCE_IDS
+    assert ImprovementPlugin.descriptor().bindings == ()
+
+
+def test_improvement_rejects_unsupported_engine_api() -> None:
+    with pytest.raises(ValueError, match="unsupported engine API"):
+        ImprovementPlugin.contribute(RegistryPorts(engine_api="1.0"))
+
+
+def test_resource_bytes_rejects_non_canonical_path() -> None:
+    with pytest.raises(ValueError, match="canonical and relative"):
+        resource_bytes("../secret")
+    with pytest.raises(ValueError, match="canonical and relative"):
+        resource_bytes("/schemas/retro-context.v3.schema.json")

@@ -118,37 +118,37 @@ ASSURANCE_SPECS = {
         "import_root": "assurance_intake",
         "entry_point": "intake",
         "contract": ("assurance_intake.contracts", "CaseYaml"),
-        "package_root": "packages/assurance-intake/assurance_intake",
+        "package_root": "packages/features/assurance-intake/assurance_intake",
     },
     "assurance-generation": {
         "import_root": "assurance_generation",
         "entry_point": "generation",
         "contract": ("assurance_generation.contracts", "PlanResultV1"),
-        "package_root": "packages/assurance-generation/assurance_generation",
+        "package_root": "packages/features/assurance-generation/assurance_generation",
     },
     "assurance-execution": {
         "import_root": "assurance_execution",
         "entry_point": "execution",
         "contract": ("assurance_execution.contracts", "ExecutionEvidenceV1"),
-        "package_root": "packages/assurance-execution/assurance_execution",
+        "package_root": "packages/features/assurance-execution/assurance_execution",
     },
     "assurance-healing": {
         "import_root": "assurance_healing",
         "entry_point": "healing",
         "contract": ("assurance_healing.contracts", "FixProposal"),
-        "package_root": "packages/assurance-healing/assurance_healing",
+        "package_root": "packages/features/assurance-healing/assurance_healing",
     },
     "assurance-quality": {
         "import_root": "assurance_quality",
         "entry_point": "quality",
         "contract": ("assurance_quality.contracts", "QualityReport"),
-        "package_root": "packages/assurance-quality/assurance_quality",
+        "package_root": "packages/features/assurance-quality/assurance_quality",
     },
     "assurance-improvement": {
         "import_root": "assurance_improvement",
         "entry_point": "improvement",
         "contract": ("assurance_improvement.contracts", "ImprovementCandidate"),
-        "package_root": "packages/assurance-improvement/assurance_improvement",
+        "package_root": "packages/features/assurance-improvement/assurance_improvement",
     },
 }
 

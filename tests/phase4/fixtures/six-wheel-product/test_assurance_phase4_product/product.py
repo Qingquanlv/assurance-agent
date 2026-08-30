@@ -14,12 +14,12 @@ _PRODUCT_ID = "test.assurance.phase4"
 _PRODUCT_VERSION = "1.0.0"
 _DISTRIBUTION = "test-assurance-phase4-product"
 _ASSURANCE_PLUGINS = (
-    PluginRequirement(plugin_id="assurance.execution", version_specifier="==0.1.0"),
-    PluginRequirement(plugin_id="assurance.generation", version_specifier="==0.1.0"),
-    PluginRequirement(plugin_id="assurance.healing", version_specifier="==0.1.0"),
-    PluginRequirement(plugin_id="assurance.improvement", version_specifier="==0.1.0"),
-    PluginRequirement(plugin_id="assurance.intake", version_specifier="==0.1.0"),
-    PluginRequirement(plugin_id="assurance.quality", version_specifier="==0.1.0"),
+    PluginRequirement(plugin_id="assurance.execution", version_specifier="==0.2.0"),
+    PluginRequirement(plugin_id="assurance.generation", version_specifier="==0.2.0"),
+    PluginRequirement(plugin_id="assurance.healing", version_specifier="==0.2.0"),
+    PluginRequirement(plugin_id="assurance.improvement", version_specifier="==0.2.0"),
+    PluginRequirement(plugin_id="assurance.intake", version_specifier="==0.2.0"),
+    PluginRequirement(plugin_id="assurance.quality", version_specifier="==0.2.0"),
 )
 
 

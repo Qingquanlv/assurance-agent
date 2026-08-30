@@ -193,33 +193,31 @@ def _operation_live_pointer(legacy_id: str) -> str:
 
 VALIDATOR_VERIFICATION: dict[str, str] = {
     "generated_files_candidate/v1": (
-        "packages/assurance-generation/tests/test_generated_files_validator.py"
+        "packages/features/assurance-generation/tests/test_generated_files_validator.py"
         "::test_plugin_contributed_codegen_validators_allowlist_registered_paths"
     ),
     "codegen_fix_candidate/v1": (
-        "packages/assurance-generation/tests/test_generated_files_validator.py"
+        "packages/features/assurance-generation/tests/test_generated_files_validator.py"
         "::test_fix_candidate_validator_authenticates_proposal_baseline_and_allowed_set"
     ),
     "plan_mechanical_candidate/v1": (
-        "packages/assurance-generation/tests/test_plan_validator.py"
+        "packages/features/assurance-generation/tests/test_plan_validator.py"
         "::test_plan_mechanical_dispatches_closed_family_table"
     ),
     "archive_integrity/v1": (
-        "packages/assurance-improvement/tests/test_delivery.py"
+        "packages/features/assurance-improvement/tests/test_delivery.py"
         "::test_archive_integrity_requires_all_four_authenticated_inputs"
     ),
     "problem_apply_candidate/v1": (
-        "packages/assurance-quality/tests/test_issues.py"
+        "packages/features/assurance-quality/tests/test_issues.py"
         "::test_problem_apply_validator_rejects_forged_review_id"
     ),
     "cross_artifact_invariants/v1": (
-        "packages/assurance-quality/tests/test_metrics.py::test_metrics_and_cross_artifact_validators"
+        "packages/features/assurance-quality/tests/test_metrics.py::test_metrics_and_cross_artifact_validators"
     ),
 }
 
-EFFECT_VERIFICATION = (
-    "packages/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound"
-)
+EFFECT_VERIFICATION = "packages/features/assurance-healing/tests/test_effects.py::test_effect_policies_are_frozen_and_identity_bound"
 
 HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
     "load_product_code_roots": ("assurance.healing", "assurance.healing.validator.test-tree.v1"),

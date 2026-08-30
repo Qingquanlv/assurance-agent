@@ -417,6 +417,78 @@ def test_secret_value_is_not_persisted_in_status_or_lock(
             assert SECRET_VALUE.encode() not in path.read_bytes()
 
 
+def test_modular_runner_rejects_legacy_lock_without_mutating_ledger(
+    cli_runner, installed_sources, tmp_path: Path, monkeypatch
+):
+    from assurance_product.cli import app
+    from assurance_product.product import load_pre_modular_workflow, resolve_assurance_composition
+    from graph_engine.plugin_api import InvocationWorkspaceBinding
+    from graph_engine.runtime.engine import Engine
+    from graph_engine.runtime.secret_sources import empty_runtime_authorization
+    from graph_engine.runtime.seed import empty_invocation_seed
+
+    from tests.product.product_runner import resolve_product_workflow_composition
+
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    args, project_dir, change_id = common_lifecycle_args(
+        tmp_path=tmp_path,
+        installed_sources=installed_sources,
+        composition=composition,
+        invocation_id="inv-legacy-lock-cli-001",
+    )
+    engine_root = _change_runtime(project_dir, change_id)
+    engine_root.mkdir(parents=True, exist_ok=True)
+    (engine_root / "invocations").mkdir(exist_ok=True)
+    legacy = resolve_product_workflow_composition(
+        load_pre_modular_workflow(
+            Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
+        )
+    )
+    engine = Engine(engine_root)
+    project = project_dir
+    attempts = engine_root.parent / "attempts"
+    receipts = engine_root.parent / "receipts"
+    for path in (attempts, receipts):
+        path.mkdir(parents=True, exist_ok=True)
+    handle = engine.start(
+        legacy,
+        entrypoint="intake",
+        invocation_id="inv-legacy-lock-cli-001",
+        seed=empty_invocation_seed(),
+        authorization=empty_runtime_authorization(),
+        workspace_binding=InvocationWorkspaceBinding(
+            project_root=project,
+            attempts_root=attempts,
+            receipts_root=receipts,
+        ),
+    )
+    handle.close()
+    engine.close()
+    ledger = engine_root / "invocations" / "inv-legacy-lock-cli-001" / "ledger"
+    before = tuple(sorted((path, path.read_bytes()) for path in ledger.rglob("*") if path.is_file()))
+    result = cli_runner.invoke(
+        app,
+        [
+            "resume",
+            *_existing_args(
+                project_dir=project_dir,
+                change_id=change_id,
+                invocation_id="inv-legacy-lock-cli-001",
+                installed_sources=installed_sources,
+                secret=args[args.index("--secret") + 1],
+            ),
+            "--action",
+            "approve",
+            "--reason",
+            "accepted",
+        ],
+    )
+    assert result.exit_code == 40, result.output
+    after = tuple(sorted((path, path.read_bytes()) for path in ledger.rglob("*") if path.is_file()))
+    assert after == before
+
+
 def test_binding_entrypoint_must_be_deployment(cli_runner, installed_sources):
     from assurance_product.cli import app
 

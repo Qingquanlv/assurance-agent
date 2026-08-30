@@ -79,6 +79,16 @@ def test_four_families_keep_isolated_physical_namespaces_for_the_same_logical_ta
     assert not (project / "tests" / "api" / "test_users.py").exists()
 
 
+def test_two_lane_review_counters_are_order_independent() -> None:
+    from tests.product.test_generation_branches import _run_execute
+
+    _status, first_dispatched, forward = _run_execute(("api", "e2e"), completion_order="forward")
+    _status, second_dispatched, reverse = _run_execute(("api", "e2e"), completion_order="reverse")
+    assert first_dispatched == second_dispatched == {"api", "e2e"}
+    assert forward == reverse
+    assert set(forward["selected_families"]) == {"api", "e2e"}  # type: ignore[index]
+
+
 def test_parallel_family_completion_order_does_not_change_merged_sources(tmp_path: Path) -> None:
     project = tmp_path / "project"
     (project / "qa" / "changes" / CHANGE_ID).mkdir(parents=True)

@@ -315,12 +315,41 @@ def test_opencode_agent_installation_rejects_conflicting_project_profile(tmp_pat
         install_opencode_agents(project)
 
 
+def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
+    from assurance_product.agent_contracts import FEATURE_AGENT_JOB_CATALOGS, expand_agent_job_slots
+    from assurance_product.models import all_binding_ids
+
+    all_contracts = [contract for catalog in FEATURE_AGENT_JOB_CATALOGS for contract in catalog.values()]
+    expanded = expand_agent_job_slots(FEATURE_AGENT_JOB_CATALOGS)
+    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 33
+    assert len(expand_agent_job_slots(FEATURE_AGENT_JOB_CATALOGS)) == 99
+    assert all("opencode" not in contract.model_dump_json().lower() for contract in all_contracts)
+    assert all("cursor" not in contract.model_dump_json().lower() for contract in all_contracts)
+    assert set(expanded) == set(all_binding_ids())
+    assert all(hasattr(contract, "contract_id") for contract in all_contracts)
+
+
+def test_prepare_ids_are_derived_from_the_feature_job_union() -> None:
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS, FEATURE_AGENT_JOB_CATALOGS
+    from assurance_product.models import PREPARE_IDS
+
+    derived = []
+    for catalog in FEATURE_AGENT_JOB_CATALOGS:
+        for contract in catalog.values():
+            body = contract.contract_id.removeprefix("assurance.").removesuffix(".v1")
+            feature, marker, base = body.partition(".agent.")
+            assert marker == ".agent."
+            derived.append(f"assurance.{feature}.{base}.prepare")
+    assert tuple(derived) == PREPARE_IDS
+    assert set(PREPARE_IDS) == set(AGENT_EXECUTION_CONTRACTS) == set(EXPECTED_AGENT_PROFILES)
+
+
 def test_all_agent_skills_have_one_bound_agent_and_execution_contract() -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
     from assurance_product.binding_builder import _binding_documents
     from assurance_product.models import DeploymentBindingsV1
     from assurance_product.models import PREPARE_IDS, alias_ids_for_prepare
-    from assurance_product.product import load_canonical_workflow
+    from assurance_product.product import load_pre_modular_workflow
 
     assert set(PREPARE_IDS) == set(EXPECTED_AGENT_PROFILES) == set(AGENT_EXECUTION_CONTRACTS)
     fixture = Path(__file__).parent / "fixtures" / "deployment" / "opencode.yaml"
@@ -328,7 +357,9 @@ def test_all_agent_skills_have_one_bound_agent_and_execution_contract() -> None:
     binding_documents = {
         str(document["capability_id"]): document for document in _binding_documents(bindings)
     }
-    workflow = load_canonical_workflow()
+    workflow = load_pre_modular_workflow(
+        Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
+    )
     assert workflow.retry["agent-transient"].max_attempts == 12
     assert workflow.retry["agent-transient"].retry_on == ("transient",)
     graph_nodes = {
@@ -363,12 +394,18 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
         "qa/archive",
         "qa/cases",
     )
+    extra_claims = {
+        "assurance.intake.case-design.prepare": (f"qa/changes/{change_id}/cases",),
+    }
     for prepare_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         execute_alias = execute_alias_for_prepare(prepare_id)
         assert isinstance(contract.resources, ResourceClaimTemplate)
         assert contract.resources.parameters == {"change_id": "/workspace/scope_id"}
         resolved = contract.resources.resolve({"workspace": {"scope_id": change_id}})
-        assert resolved.writes == catalog.resource_claims(execute_alias, change_id)
+        extra = extra_claims.get(prepare_id, ())
+        outputs = catalog.outputs(execute_alias, change_id)
+        assert outputs == tuple(path for path in resolved.writes if path not in extra)
+        assert extra == tuple(path for path in resolved.writes if path not in outputs)
         assert all(path.startswith(f"qa/changes/{change_id}/") for path in resolved.writes)
         assert all("/.runtime/" not in path and "/.staging/" not in path for path in resolved.writes)
         assert all(path not in forbidden_prefixes for path in resolved.writes)
@@ -415,7 +452,7 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     tmp_path: Path,
 ) -> None:
     from assurance_intake.operations import ExplorePrepareHandler
-    from assurance_product.product import load_canonical_workflow
+    from assurance_product.product import load_pre_modular_workflow
 
     project = tmp_path / "project"
     current_id = "CH-CURRENT-001"
@@ -433,7 +470,14 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     historical_link = sibling / ".runtime"
     historical_link.symlink_to(outside, target_is_directory=True)
 
-    resources = load_canonical_workflow().graphs["explore"].nodes["prepare"].resources
+    resources = (
+        load_pre_modular_workflow(
+            Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
+        )
+        .graphs["explore"]
+        .nodes["prepare"]
+        .resources
+    )
     assert isinstance(resources, ResourceClaimTemplate)
     assert resources.parameters == {"change_id": "/change_id"}
     assert resources.reads == ("qa",)
@@ -523,12 +567,12 @@ def test_transient_agent_provider_failure_retries_the_skill_node(
             )
             self.target_attempts = 0
 
-        def _outcome(self, capability_id: str) -> TaskOutcome:
+        def _outcome(self, capability_id: str, request_input: object = None) -> TaskOutcome:
             if capability_id == target:
                 self.target_attempts += 1
                 if self.target_attempts == 1:
                     return TaskOutcome.failed("transient", "provider TLS handshake failed")
-            return super()._outcome(capability_id)
+            return super()._outcome(capability_id, request_input)
 
     host = TransientOnceHost()
 
@@ -542,10 +586,18 @@ def test_transient_agent_provider_failure_retries_the_skill_node(
         installed_sources,
         invocation_id="inv-agent-transient-retry",
         drive=True,
+        require_succeeded=True,
         entrypoint="intake",
         host_factory=host_factory,
     )
     try:
+        retries = {
+            node.definition.retry
+            for graph in invocation.composition.workflow.graphs.values()
+            for node in graph.nodes.values()
+            if node.definition.capability == target
+        }
+        assert any(retry is not None and retry.endswith("agent-transient") for retry in retries)
         assert host.target_attempts == 2
     finally:
         invocation.engine.close()

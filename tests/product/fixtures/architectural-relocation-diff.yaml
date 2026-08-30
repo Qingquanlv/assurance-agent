@@ -1,0 +1,9 @@
+# Task 25 records the standalone-Intake ownership move only.
+# Task 26–30 business corrections must not be added here.
+relocation:
+  - id: standalone-intake-review-loop
+    entrypoint: intake
+    source: legacy standalone entry (no review gates)
+    destination: intake.prepare (Task 19 owns the legacy-full review prefix)
+    permitted_difference: non-pass branch follows the exact legacy-full review gates, expressions, and interrupt actions relocated in Task 19
+intentional_semantic_diff: []

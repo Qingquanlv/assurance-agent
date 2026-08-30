@@ -117,3 +117,60 @@ def test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash
         monkeypatch.setattr(export_mod, "_journal_cut", lambda _phase: None)
         recovered = export_mod.publish_achieved(project, CHANGE_ID)
         assert _terminal_projection(project, recovered) == expected, schedule
+
+
+def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
+    tmp_path: Path, installed_sources
+) -> None:
+    from assurance_product.product import load_pre_modular_workflow
+    from graph_engine.plugin_api import InvocationWorkspaceBinding
+    from graph_engine.runtime.engine import Engine, EngineError
+    from graph_engine.runtime.invocation_lock import InvocationDrift
+    from graph_engine.runtime.secret_sources import empty_runtime_authorization
+    from graph_engine.runtime.seed import empty_invocation_seed
+
+    from tests.product.product_runner import resolve_product_workflow_composition
+    from tests.product.test_workflow_modularization_golden import _modular_composition
+
+    legacy = resolve_product_workflow_composition(
+        load_pre_modular_workflow(
+            Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
+        )
+    )
+    modular = _modular_composition(installed_sources)
+    engine_root = tmp_path / "replay-legacy-lock"
+    engine_root.mkdir()
+    engine = Engine(engine_root)
+    project = engine_root / "project"
+    attempts = engine_root / "attempts"
+    receipts = engine_root / "receipts"
+    for path in (project, attempts, receipts):
+        path.mkdir(parents=True, exist_ok=True)
+    handle = engine.start(
+        legacy,
+        entrypoint="intake",
+        invocation_id="inv-replay-legacy-001",
+        seed=empty_invocation_seed(),
+        authorization=empty_runtime_authorization(),
+        workspace_binding=InvocationWorkspaceBinding(
+            project_root=project,
+            attempts_root=attempts,
+            receipts_root=receipts,
+        ),
+    )
+    handle.close()
+    ledger = engine_root / "invocations" / "inv-replay-legacy-001" / "ledger"
+    before = tuple(sorted((path, path.read_bytes()) for path in ledger.rglob("*") if path.is_file()))
+    with pytest.raises((InvocationDrift, EngineError)):
+        Engine(engine_root).open(
+            "inv-replay-legacy-001",
+            modular,
+            authorization=empty_runtime_authorization(),
+            workspace_binding=InvocationWorkspaceBinding(
+                project_root=project,
+                attempts_root=attempts,
+                receipts_root=receipts,
+            ),
+        )
+    after = tuple(sorted((path, path.read_bytes()) for path in ledger.rglob("*") if path.is_file()))
+    assert after == before
