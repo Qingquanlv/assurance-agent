@@ -17,7 +17,7 @@ from graph_engine.plugin_api import PluginDescriptor, RegistryPorts, validate_co
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "agent_runtime_cursor"
 _ENGINE_ROOT = _REPO_ROOT / "packages" / "framework" / "graph-engine" / "graph_engine"
-_OPENCODE_ROOT = _REPO_ROOT / "packages" / "clients" / "agent-runtime-opencode" / "agent_runtime_opencode"
+_OPENCODE_ROOT = _REPO_ROOT / "packages" / "adapters" / "agent-runtime-opencode" / "agent_runtime_opencode"
 _SHA = "a" * 64
 _CANARY = "canary-secret-value"
 

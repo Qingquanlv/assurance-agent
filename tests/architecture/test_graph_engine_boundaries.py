@@ -146,7 +146,7 @@ def test_framework_has_the_only_graph_engine_source_tree(repo_root: Path) -> Non
 
 def test_clients_have_the_only_agent_runtime_source_trees(repo_root: Path) -> None:
     for directory_name, project_name in CLIENT_DISTRIBUTIONS:
-        target = repo_root / "packages" / "clients" / directory_name
+        target = repo_root / "packages" / "adapters" / directory_name
         assert target.is_dir()
         assert not (repo_root / "packages" / directory_name).exists()
         pyproject = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))
@@ -188,7 +188,7 @@ def test_all_capability_wheels_are_feature_subprojects(repo_root: Path) -> None:
     }
     assert {path.name for path in (repo_root / "packages/capabilities").iterdir()} == expected
     for directory_name in FEATURE_DISTRIBUTIONS:
-        target = repo_root / "packages" / "features" / directory_name
+        target = repo_root / "packages" / "capabilities" / directory_name
         assert target.is_dir()
         assert not (repo_root / "packages" / directory_name).exists()
         pyproject = tomllib.loads((target / "pyproject.toml").read_text(encoding="utf-8"))

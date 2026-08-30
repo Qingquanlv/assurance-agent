@@ -148,6 +148,8 @@ def catalog_leafs(catalog: object) -> frozenset[str]:
 def _package_source_root(package: str) -> Path:
     name = package.replace("_", "-")
     candidates = (
+        _WHEEL_ROOTS / "capabilities" / name / package,
+        _WHEEL_ROOTS / "adapters" / name / package,
         _WHEEL_ROOTS / "features" / name / package,
         _WHEEL_ROOTS / "clients" / name / package,
         _WHEEL_ROOTS / "products" / name / package,

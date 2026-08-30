@@ -137,7 +137,7 @@ def test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entr
 
 
 def test_six_wheel_resolve_authenticates_committed_quality_and_restores_imports() -> None:
-    committed = REPO_ROOT / "packages" / "features" / "assurance-quality" / "assurance_quality"
+    committed = REPO_ROOT / "packages" / "capabilities" / "assurance-quality" / "assurance_quality"
     resolved = resolve_fixture("phase4-opencode")
     copied = resolved.workspace / "wheels" / "assurance-quality" / "assurance_quality"
     for path in committed.rglob("*.py"):

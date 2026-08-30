@@ -37,8 +37,12 @@ One test batch inside a Change.
 _Avoid_: Batch, Invocation, `aa run`
 
 **Capability**:
-One entry in the system-under-test capability catalog. Intake, Generation, Execution, Healing, Quality, and Improvement are used by those names and have no collective term.
-_Avoid_: wheel, feature, plugin (when meaning those six)
+One entry in the system-under-test capability catalog.
+_Avoid_: plugin (when meaning a catalog leaf)
+
+**Capability wheel**:
+One of the six installed Python packages that contribute handlers, validators, schemas, resources, and effects: Intake, Generation, Execution, Healing, Quality, and Improvement.
+_Avoid_: feature (as a package role), client (as a package role)
 
 **Ledger**:
 The append-only event log of an Invocation.

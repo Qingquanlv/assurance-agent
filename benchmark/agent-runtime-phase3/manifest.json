@@ -96,7 +96,7 @@
     "opencode": {
       "adapter_id": "runtime.opencode.execute",
       "source_root": "packages/adapters/agent-runtime-opencode/agent_runtime_opencode",
-      "source_digest": "0c4415d2a03da21d4bd0e4ffb700bb883582f107e1b7dd7a030ac87d1bc37d4b",
+      "source_digest": "348074b07c43be70d2f29b781749daf870477f9140dfec271b0fc9348578fbc8",
       "adapter_version": "0.1.0",
       "protocol_profile": "opencode-http-v1",
       "prompt_admission": "caller-message-id-v1",
@@ -110,7 +110,7 @@
     "cursor": {
       "adapter_id": "runtime.cursor.execute",
       "source_root": "packages/adapters/agent-runtime-cursor/agent_runtime_cursor",
-      "source_digest": "fd72c4b6689131a365bd7e8b6060eb1900b72128bd75f1681e53bc0f64b650bd",
+      "source_digest": "bafdf01f5e08ffd7754edd60357da1793af999340f149fcd9d2251532c95e144",
       "adapter_version": "0.1.0",
       "protocol_profile": "confined_process",
       "executable": "/Users/lvqingquan/.local/share/cursor-agent/versions/2026.08.11-e8db854/cursor-agent",

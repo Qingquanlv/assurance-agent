@@ -116,7 +116,7 @@ class _ActivityPort:
 
 
 def _load_adapter_test_module(package: str, module: str) -> Any:
-    tests_dir = _REPO / "packages" / "clients" / package / "tests"
+    tests_dir = _REPO / "packages" / "adapters" / package / "tests"
     path = str(tests_dir)
     if path not in sys.path:
         sys.path.insert(0, path)
@@ -134,11 +134,11 @@ def _manifest_name(target: str) -> str:
 _WORKSPACE_PACKAGES = {
     "agent-runtime-fixture": (_REPO / "examples" / "agent-runtime-fixture", "agent_runtime_fixture"),
     "agent-runtime-opencode": (
-        _REPO / "packages" / "clients" / "agent-runtime-opencode",
+        _REPO / "packages" / "adapters" / "agent-runtime-opencode",
         "agent_runtime_opencode",
     ),
     "agent-runtime-cursor": (
-        _REPO / "packages" / "clients" / "agent-runtime-cursor",
+        _REPO / "packages" / "adapters" / "agent-runtime-cursor",
         "agent_runtime_cursor",
     ),
 }

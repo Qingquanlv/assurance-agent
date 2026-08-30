@@ -6,17 +6,6 @@
 # =============================================================================
 
 version: 1
-test_runtime:
-  url_variables:
-    api_base:
-      variable: API_BASE_URL
-      default_url: http://127.0.0.1:9999
-    e2e_backend:
-      variable: E2E_BACKEND_URL
-      default_url: http://127.0.0.1:9999
-    e2e_frontend:
-      variable: E2E_FRONTEND_URL
-      default_url: http://127.0.0.1:3100
 accounts: {}
 auth:
   api_admin_token:
@@ -25,23 +14,10 @@ auth:
     acquire:
       operation: login_token
       path: /api/v1/base/access_token
-      credentials:
-        username_env: AA_ADMIN_USERNAME
-        password_env: AA_ADMIN_PASSWORD
     notes: 'header: token'
   api_limited_role_user_token:
     method: token
     symbol: tests.api.conftest.limited_role_user_token
-    acquire:
-      operation: seed_limited_role_user_then_login
-      credentials: generated_in_memory
-      api_infos: []
-      capabilities:
-        - capabilities.domain_factories.role.make_role
-        - capabilities.domain_factories.role.bind_role_apis
-        - capabilities.domain_factories.user.make_user
-        - capabilities.domain_factories.user.cleanup_user
-        - capabilities.domain_factories.role.cleanup_role
   api_no_role_superuser_token:
     method: token
     symbol: tests.api.conftest.no_role_superuser_token
@@ -56,18 +32,12 @@ auth:
     symbol: tests.e2e.conftest.e2e_login_admin
     acquire:
       path: /login
-      credentials:
-        username_env: AA_ADMIN_USERNAME
-        password_env: AA_ADMIN_PASSWORD
+      credentials: settings.admin_username/password
     notes: 'create-if-missing: true'
   e2e_limited_user_login:
     method: login
     symbol: tests.e2e.conftest.e2e_login_limited_user
-    acquire:
-      operation: seed_limited_user_then_login
-      seed_capability: capabilities.adapters.e2e.auth.seed_limited_user
-      credentials: generated_in_memory
-    notes: 'create-if-missing: true'
+    notes: 'depends_on: adapters.e2e.auth.seed_limited_user; create-if-missing: true'
 entities:
   dept:
     required_fields:
@@ -332,16 +302,8 @@ capabilities:
           kind: isolated_worker
           symbol: tests.e2e.adapters.auth.e2e_seed_limited_user
           create-if-missing: true
-          credentials: generated_in_memory
-          menu_components:
-            - Layout
-            - /system/dept
-          api_infos:
-            - method: GET
-              path: /api/v1/dept/list
-          notes: Creates a limited role and in-memory login identity, binds only
-            the system catalog and department page menus plus GET department-list,
-            and deliberately grants no department mutation APIs.
+          notes: Wraps factory_make_role + factory_bind_role_apis([]) + 
+            factory_make_user
         cleanup_limited_user:
           kind: isolated_worker
           symbol: tests.e2e.adapters.auth.e2e_cleanup_limited_user

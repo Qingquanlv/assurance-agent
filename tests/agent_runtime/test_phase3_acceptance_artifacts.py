@@ -58,6 +58,10 @@ def test_committed_live_manifest_pins_the_required_release_fields() -> None:
     assert document["success"]["status"] == "succeeded"
     items = document["items"]
     assert {item["adapter"] for item in items} == {"opencode", "cursor"}
+    driver = _load_run_item()
+    for adapter in ("opencode", "cursor"):
+        meta = adapters[adapter]
+        assert meta["source_digest"] == driver._tree_digest(_REPO / meta["source_root"])
 
 
 @pytest.mark.parametrize("name", ["run-opencode.sh", "run-cursor.sh"])
