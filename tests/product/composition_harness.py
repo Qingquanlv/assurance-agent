@@ -31,14 +31,14 @@ _CONFIG_FIXTURE = _FIXTURE_ROOT / "project-config"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _WORKSPACE_WHEELS: tuple[tuple[str, str], ...] = (
     ("assurance-product", "packages/products/assurance-product"),
-    ("assurance-intake", "packages/features/assurance-intake"),
-    ("assurance-generation", "packages/features/assurance-generation"),
-    ("assurance-execution", "packages/features/assurance-execution"),
-    ("assurance-healing", "packages/features/assurance-healing"),
-    ("assurance-quality", "packages/features/assurance-quality"),
-    ("assurance-improvement", "packages/features/assurance-improvement"),
-    ("agent-runtime-opencode", "packages/clients/agent-runtime-opencode"),
-    ("agent-runtime-cursor", "packages/clients/agent-runtime-cursor"),
+    ("assurance-intake", "packages/capabilities/assurance-intake"),
+    ("assurance-generation", "packages/capabilities/assurance-generation"),
+    ("assurance-execution", "packages/capabilities/assurance-execution"),
+    ("assurance-healing", "packages/capabilities/assurance-healing"),
+    ("assurance-quality", "packages/capabilities/assurance-quality"),
+    ("assurance-improvement", "packages/capabilities/assurance-improvement"),
+    ("agent-runtime-opencode", "packages/adapters/agent-runtime-opencode"),
+    ("agent-runtime-cursor", "packages/adapters/agent-runtime-cursor"),
 )
 COVERAGE_PATH = EVIDENCE_ROOT / "binding-coverage.json"
 

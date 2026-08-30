@@ -122,22 +122,16 @@ def test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash
 def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
     tmp_path: Path, installed_sources
 ) -> None:
-    from assurance_product.product import load_pre_modular_workflow
     from graph_engine.plugin_api import InvocationWorkspaceBinding
     from graph_engine.runtime.engine import Engine, EngineError
     from graph_engine.runtime.invocation_lock import InvocationDrift
     from graph_engine.runtime.secret_sources import empty_runtime_authorization
     from graph_engine.runtime.seed import empty_invocation_seed
 
-    from tests.product.product_runner import resolve_product_workflow_composition
-    from tests.product.test_workflow_modularization_golden import _modular_composition
+    from tests.product.product_runner import adapter_product_composition, modular_product_composition
 
-    legacy = resolve_product_workflow_composition(
-        load_pre_modular_workflow(
-            Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
-        )
-    )
-    modular = _modular_composition(installed_sources)
+    legacy = adapter_product_composition(installed_sources, "cursor")
+    modular = modular_product_composition(installed_sources)
     engine_root = tmp_path / "replay-legacy-lock"
     engine_root.mkdir()
     engine = Engine(engine_root)

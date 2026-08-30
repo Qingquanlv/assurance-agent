@@ -8,6 +8,7 @@ from graph_engine.runtime.activity import (
     TaskActivityReferenceInvalid,
 )
 from graph_engine.runtime.checkpoint import Checkpoint, load_checkpoint, write_checkpoint
+from graph_engine.runtime.driver import StartSpec, acquire_invocation
 from graph_engine.runtime.effects import (
     EffectExecutor,
     EffectPublicationIndeterminate,
@@ -192,6 +193,7 @@ __all__ = [
     "RuntimeFailure",
     "Scheduler",
     "SchedulerStateError",
+    "StartSpec",
     "SystemClock",
     "TaskActivityBound",
     "TaskActivityCancelRequested",
@@ -235,6 +237,7 @@ __all__ = [
     "EMPTY_RUNTIME_AUTHORIZATION_DIGEST",
     "InvocationSeed",
     "empty_invocation_seed",
+    "acquire_invocation",
     "activation_id",
     "authenticate_invocation_lock",
     "authorized_secret_port",

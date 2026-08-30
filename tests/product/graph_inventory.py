@@ -79,7 +79,11 @@ def expected_triplet_aliases(prepare_id: str) -> tuple[str, str, str]:
     return alias_ids_for_prepare(prepare_id)
 
 
-def collect_agent_triplets(compiled_product_workflow: CompiledWorkflow) -> tuple[AgentTriplet, ...]:
+def collect_agent_triplets(
+    compiled_product_workflow: CompiledWorkflow,
+    *,
+    require_complete: bool = True,
+) -> tuple[AgentTriplet, ...]:
     triplets: list[AgentTriplet] = []
     for graph_id, graph in compiled_product_workflow.graphs.items():
         grouped: dict[str, dict[str, CompiledNode]] = {}
@@ -101,9 +105,11 @@ def collect_agent_triplets(compiled_product_workflow: CompiledWorkflow) -> tuple
         for stem, parts in grouped.items():
             missing = {"prepare", "execute", "finalize"} - set(parts)
             if missing:
-                raise AssertionError(
-                    f"incomplete agent triplet {stem} in {graph_id}: missing {sorted(missing)}"
-                )
+                if require_complete:
+                    raise AssertionError(
+                        f"incomplete agent triplet {stem} in {graph_id}: missing {sorted(missing)}"
+                    )
+                continue
             prepare = parts["prepare"]
             execute = parts["execute"]
             finalize = parts["finalize"]

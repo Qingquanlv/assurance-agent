@@ -773,9 +773,9 @@ def _editable_wheel_plugins(workspace: Path) -> tuple[EditableWheelPluginSource,
     wheels.mkdir(exist_ok=True)
     for distribution, package, entrypoint_name, declaration_path in WHEEL_PLUGINS:
         if distribution.startswith("agent-runtime-"):
-            group = "clients"
+            group = "adapters"
         elif distribution.startswith("assurance-"):
-            group = "features"
+            group = "capabilities"
         else:
             group = None
         source = (

@@ -12,6 +12,7 @@ from graph_engine.canonical import JSONValue
 from graph_engine.composition import FrozenComposition
 from graph_engine.frozen_json import freeze_json, thaw_json
 from graph_engine.graph.input_projection import project_task_input
+from graph_engine.composition.workflow_assembler import assemble_product_workflow
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
     TaskActivityCancelResult,
@@ -981,17 +982,50 @@ def resolve_product_workflow_composition(workflow: WorkflowDef) -> FrozenComposi
     return resolve_workflow_composition(document, handlers)
 
 
+def assemble_bound_product_workflow(installed_sources) -> WorkflowDef:
+    from assurance_product.agent_contracts import bind_agent_execution_contracts
+    from assurance_product.product import resolve_assurance_composition
+    from tests.product.composition_harness import request_for
+
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    assembled = assemble_product_workflow(
+        manifest=composition.manifest,
+        descriptors={item.plugin_id: item for item in composition.descriptors},
+        registries=composition.registries,
+    )
+    try:
+        return bind_agent_execution_contracts(assembled)
+    except ValueError:
+        return assembled
+
+
+def modular_product_composition(installed_sources) -> FrozenComposition:
+    return resolve_product_workflow_composition(assemble_bound_product_workflow(installed_sources))
+
+
+def adapter_product_composition(installed_sources, adapter: str) -> FrozenComposition:
+    from assurance_product.product import resolve_assurance_composition
+    from tests.product.composition_harness import request_for
+
+    return resolve_assurance_composition(request_for(adapter, installed_sources))
+
+
+def workflow_graph(workflow: WorkflowDef, local_id: str):
+    if local_id in workflow.graphs:
+        return workflow.graphs[local_id]
+    matches = [
+        graph
+        for graph_id, graph in workflow.graphs.items()
+        if graph_id.endswith(f".{local_id}") or graph_id.endswith(f".graph.{local_id}")
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    raise KeyError(local_id)
+
+
 @pytest.fixture
 def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
-    del installed_sources
-    from assurance_product.product import load_pre_modular_workflow
-
-    workflow = load_pre_modular_workflow(
-        Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
-    )
-    composition = None
-    if "full" in workflow.entrypoints:
-        composition = resolve_product_workflow_composition(workflow)
+    composition = modular_product_composition(installed_sources)
     engine_root = tmp_path_factory.mktemp("generation-runner")
 
     def factory(

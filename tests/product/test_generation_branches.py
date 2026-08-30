@@ -18,15 +18,13 @@ from graph_engine.runtime.models import InvocationProjection
 from graph_engine.runtime.seed import empty_invocation_seed
 
 from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
-from assurance_product.product import load_pre_modular_workflow, prepare_change_workspace
+from assurance_product.product import prepare_change_workspace
 
 from tests.product.product_runner import (
     FAMILY_TERMINALS,
     _product_input,
-    resolve_product_workflow_composition,
+    modular_product_composition,
 )
-
-_PRE_MODULAR_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
 
 
 def _scripted_host():
@@ -130,46 +128,40 @@ def _join_output(
 
 def _run_execute(
     selected: tuple[str, ...],
+    installed_sources,
     *,
     completion_order: Literal["forward", "reverse"] = "forward",
 ):
-    workflow = load_pre_modular_workflow(_PRE_MODULAR_FIXTURE)
-    composition = resolve_product_workflow_composition(workflow)
+    from tests.product.product_runner import ProductRun
+
+    composition = modular_product_composition(installed_sources)
     seed_input = _seed_input(selected)
     with TemporaryDirectory(prefix="generation-product-") as tmp:
-        project = Path(tmp) / "project"
-        project.mkdir()
-        workspace = prepare_change_workspace(project, "CH-DEMO-001")
-        engine = Engine(workspace.paths.runtime_root, host=_scripted_host())
-        try:
-            handle = engine.start(
+        result = ProductRun(
+            entrypoint="execute",
+            selected_test_families=selected,
+            review_decision="pass",
+            healing_decision="allowed",
+            completion_order=completion_order,
+            engine_root=Path(tmp),
+            composition=composition,
+        ).run_to_terminal()
+        if result.status != "completed":
+            raise AssertionError(f"execute failed: {result.status} {result.stop_reason}")
+        return (
+            "succeeded",
+            _dispatched_families(result.projection),
+            _join_output(
+                result.projection,
                 composition,
-                entrypoint="execute",
-                invocation_id=f"generation-product-{uuid.uuid4().hex}",
-                seed=empty_invocation_seed(root_input=cast(JSONValue, seed_input)),
-                authorization=_authorization(),
-                workspace_binding=workspace.runtime_binding(),
-            )
-            result = engine.run_until_blocked(handle)
-            if result.status != "succeeded":
-                raise AssertionError(f"execute failed: {result.status} {result.reason}")
-            return (
-                result.status,
-                _dispatched_families(result.projection),
-                _join_output(
-                    result.projection,
-                    composition,
-                    seed_input,
-                    completion_order=completion_order,
-                ),
-            )
-        finally:
-            engine.close()
+                seed_input,
+                completion_order=completion_order,
+            ),
+        )
 
 
-def _start_execute_raw(selected: tuple[str, ...]) -> None:
-    workflow = load_pre_modular_workflow(_PRE_MODULAR_FIXTURE)
-    composition = resolve_product_workflow_composition(workflow)
+def _start_execute_raw(selected: tuple[str, ...], installed_sources) -> None:
+    composition = modular_product_composition(installed_sources)
     seed_input = _seed_input(selected, validate_product=False)
     with TemporaryDirectory(prefix="generation-invalid-") as tmp:
         project = Path(tmp) / "project"
@@ -194,8 +186,8 @@ def _start_execute_raw(selected: tuple[str, ...]) -> None:
 
 
 @pytest.mark.parametrize("family", list(GENERATION_FAMILIES))
-def test_single_family_runs_only_its_generation_branch(family: str) -> None:
-    status, dispatched, join_output = _run_execute((family,))
+def test_single_family_runs_only_its_generation_branch(family: str, installed_sources) -> None:
+    status, dispatched, join_output = _run_execute((family,), installed_sources)
     assert status == "succeeded"
     assert dispatched == {family}
     assert set(join_output["selected_families"]) == {family}  # type: ignore[index]
@@ -205,18 +197,20 @@ def test_single_family_runs_only_its_generation_branch(family: str) -> None:
     "families",
     [combo for size in range(1, 5) for combo in combinations(GENERATION_FAMILIES, size)],
 )
-def test_selected_subset_runs_exactly_those_families(families: tuple[str, ...]) -> None:
-    status, dispatched, join_output = _run_execute(families)
+def test_selected_subset_runs_exactly_those_families(families: tuple[str, ...], installed_sources) -> None:
+    status, dispatched, join_output = _run_execute(families, installed_sources)
     assert status == "succeeded"
     assert dispatched == set(families)
     assert set(join_output["selected_families"]) == set(families)  # type: ignore[index]
 
 
 @pytest.mark.parametrize("selected", [(), ("api", "api"), ("api", "mobile")])
-def test_invalid_family_selection_fails_at_feature_input(selected: tuple[str, ...]) -> None:
+def test_invalid_family_selection_fails_at_feature_input(
+    selected: tuple[str, ...], installed_sources
+) -> None:
     with pytest.raises(ValueError):
         validate_selected_families(selected)
     if selected == ("api", "api"):
         return
     with pytest.raises(Exception):
-        _start_execute_raw(selected)
+        _start_execute_raw(selected, installed_sources)

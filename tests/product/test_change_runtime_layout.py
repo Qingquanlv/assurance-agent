@@ -328,14 +328,12 @@ def test_failed_run_exposes_status_and_events_but_not_staged_files(
     assert _STAGED_MARKER.strip() not in status_path.read_text(encoding="utf-8")
 
 
-def test_loaded_canonical_workflow_binds_agent_execution_contracts() -> None:
+def test_loaded_canonical_workflow_binds_agent_execution_contracts(installed_sources) -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
     from assurance_product.models import alias_ids_for_prepare
-    from assurance_product.product import load_pre_modular_workflow
+    from tests.product.product_runner import assemble_bound_product_workflow
 
-    workflow = load_pre_modular_workflow(
-        Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
-    )
+    workflow = assemble_bound_product_workflow(installed_sources)
     graph_nodes = {
         node.capability: node
         for graph in workflow.graphs.values()

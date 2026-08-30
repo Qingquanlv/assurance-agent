@@ -421,13 +421,13 @@ def test_modular_runner_rejects_legacy_lock_without_mutating_ledger(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ):
     from assurance_product.cli import app
-    from assurance_product.product import load_pre_modular_workflow, resolve_assurance_composition
+    from assurance_product.product import resolve_assurance_composition
     from graph_engine.plugin_api import InvocationWorkspaceBinding
     from graph_engine.runtime.engine import Engine
     from graph_engine.runtime.secret_sources import empty_runtime_authorization
     from graph_engine.runtime.seed import empty_invocation_seed
 
-    from tests.product.product_runner import resolve_product_workflow_composition
+    from tests.product.product_runner import adapter_product_composition
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
@@ -440,11 +440,7 @@ def test_modular_runner_rejects_legacy_lock_without_mutating_ledger(
     engine_root = _change_runtime(project_dir, change_id)
     engine_root.mkdir(parents=True, exist_ok=True)
     (engine_root / "invocations").mkdir(exist_ok=True)
-    legacy = resolve_product_workflow_composition(
-        load_pre_modular_workflow(
-            Path(__file__).resolve().parent / "fixtures" / "assurance-full-pre-modular.yaml"
-        )
-    )
+    legacy = adapter_product_composition(installed_sources, "cursor")
     engine = Engine(engine_root)
     project = project_dir
     attempts = engine_root.parent / "attempts"

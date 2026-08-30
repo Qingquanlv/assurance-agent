@@ -36,37 +36,37 @@ ALLOWED_PACKAGES: Mapping[str, PackageSpec] = {
     "assurance-intake": PackageSpec(
         distribution="assurance-intake",
         entry_point="intake",
-        source_root=REPO_ROOT / "packages" / "features" / "assurance-intake",
+        source_root=REPO_ROOT / "packages" / "capabilities" / "assurance-intake",
         declaration_path="assurance_intake/plugin-declaration.json",
     ),
     "assurance-generation": PackageSpec(
         distribution="assurance-generation",
         entry_point="generation",
-        source_root=REPO_ROOT / "packages" / "features" / "assurance-generation",
+        source_root=REPO_ROOT / "packages" / "capabilities" / "assurance-generation",
         declaration_path="assurance_generation/plugin-declaration.json",
     ),
     "assurance-execution": PackageSpec(
         distribution="assurance-execution",
         entry_point="execution",
-        source_root=REPO_ROOT / "packages" / "features" / "assurance-execution",
+        source_root=REPO_ROOT / "packages" / "capabilities" / "assurance-execution",
         declaration_path="assurance_execution/plugin-declaration.json",
     ),
     "assurance-healing": PackageSpec(
         distribution="assurance-healing",
         entry_point="healing",
-        source_root=REPO_ROOT / "packages" / "features" / "assurance-healing",
+        source_root=REPO_ROOT / "packages" / "capabilities" / "assurance-healing",
         declaration_path="assurance_healing/plugin-declaration.json",
     ),
     "assurance-quality": PackageSpec(
         distribution="assurance-quality",
         entry_point="quality",
-        source_root=REPO_ROOT / "packages" / "features" / "assurance-quality",
+        source_root=REPO_ROOT / "packages" / "capabilities" / "assurance-quality",
         declaration_path="assurance_quality/plugin-declaration.json",
     ),
     "assurance-improvement": PackageSpec(
         distribution="assurance-improvement",
         entry_point="improvement",
-        source_root=REPO_ROOT / "packages" / "features" / "assurance-improvement",
+        source_root=REPO_ROOT / "packages" / "capabilities" / "assurance-improvement",
         declaration_path="assurance_improvement/plugin-declaration.json",
     ),
 }
@@ -74,7 +74,7 @@ ALLOWED_PACKAGES: Mapping[str, PackageSpec] = {
 _ALWAYS_BUILD: tuple[str, ...] = ("graph-engine", "agent-runtime-contracts")
 _LOCAL_SOURCE_ROOTS: Mapping[str, Path] = {
     "graph-engine": REPO_ROOT / "packages" / "framework" / "graph-engine",
-    "agent-runtime-contracts": REPO_ROOT / "packages" / "clients" / "agent-runtime-contracts",
+    "agent-runtime-contracts": REPO_ROOT / "packages" / "adapters" / "agent-runtime-contracts",
     **{name: spec.source_root for name, spec in ALLOWED_PACKAGES.items()},
 }
 _BUILD_ORDER: tuple[str, ...] = (

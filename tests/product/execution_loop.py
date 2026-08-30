@@ -32,8 +32,8 @@ from tests.product.product_runner import (
     _product_input,
     _restore_end_output,
     _scripted_authorization,
+    modular_product_composition,
 )
-from tests.product.test_workflow_modularization_golden import _modular_composition
 
 _ADVANCE_ID = "assurance.healing.repair-round.advance"
 _INSTALLED_SOURCES = None
@@ -118,7 +118,7 @@ def drive_execution_loop(
 ) -> ExecutionLoopTrace:
     if _INSTALLED_SOURCES is None:
         raise AssertionError("installed_sources fixture is not bound")
-    composition = _modular_composition(_INSTALLED_SOURCES)
+    composition = modular_product_composition(_INSTALLED_SOURCES)
     host = _ExecutionLoopHost(
         execution_sequence=execution_sequence,
         classifications=classifications,

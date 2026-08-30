@@ -10,12 +10,12 @@ from tests.phase4.ownership import OWNERSHIP_PATH, legacy_hook_fields, load_owne
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NEW_WHEEL_ROOTS: tuple[Path, ...] = (
-    REPO_ROOT / "packages" / "features" / "assurance-intake",
-    REPO_ROOT / "packages" / "features" / "assurance-generation",
-    REPO_ROOT / "packages" / "features" / "assurance-execution",
-    REPO_ROOT / "packages" / "features" / "assurance-healing",
-    REPO_ROOT / "packages" / "features" / "assurance-quality",
-    REPO_ROOT / "packages" / "features" / "assurance-improvement",
+    REPO_ROOT / "packages" / "capabilities" / "assurance-intake",
+    REPO_ROOT / "packages" / "capabilities" / "assurance-generation",
+    REPO_ROOT / "packages" / "capabilities" / "assurance-execution",
+    REPO_ROOT / "packages" / "capabilities" / "assurance-healing",
+    REPO_ROOT / "packages" / "capabilities" / "assurance-quality",
+    REPO_ROOT / "packages" / "capabilities" / "assurance-improvement",
 )
 CASES_PATH = Path(__file__).resolve().parent / "fixtures" / "product-hooks-cases.yaml"
 _FORBIDDEN_TYPE_NAMES = frozenset({"Hooks", "HookRegistry", "ProductRuntime", "SemanticPins"})
@@ -29,7 +29,14 @@ _REGISTRY_KINDS = frozenset(
 )
 
 
+def _require_wheel_roots(roots: Sequence[Path]) -> None:
+    missing = [str(root) for root in roots if not root.is_dir()]
+    if missing:
+        raise AssertionError(f"wheel scan roots are missing: {missing}")
+
+
 def forbidden_symbol_scan(roots: Sequence[Path], symbols: Sequence[str]) -> set[str]:
+    _require_wheel_roots(roots)
     wanted = frozenset(symbols)
     found: set[str] = set()
     for root in roots:
@@ -113,6 +120,7 @@ def test_no_hidden_catchall_hook_registry() -> None:
 
 
 def _catchall_scan(roots: Sequence[Path]) -> set[str]:
+    _require_wheel_roots(roots)
     hits: set[str] = set()
     for root in roots:
         package = root / root.name.replace("-", "_")

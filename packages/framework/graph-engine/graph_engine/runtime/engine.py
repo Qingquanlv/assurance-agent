@@ -268,6 +268,14 @@ class Engine:
         except BaseException:
             pass
 
+    def invocation_exists(self, invocation_id: str) -> bool:
+        """Report whether ``invocation_id`` already has an on-disk namespace.
+
+        Callers use this to decide open-vs-start without reaching into the
+        engine's directory layout themselves.
+        """
+        return self._invocation_root(invocation_id).is_dir()
+
     def start(
         self,
         composition: FrozenComposition,
