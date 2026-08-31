@@ -341,10 +341,10 @@ def test_execute_nodes_use_slots_and_prepare_finalize_keep_feature_ids() -> None
     module = _load_module()
     for graph_id, base in _BASE_BY_GRAPH.items():
         nodes = module.graphs[graph_id].nodes
-        assert nodes["prepare"].capability == f"assurance.execution.{base}.prepare"
-        assert nodes["prepare"].capability_slot is None
-        assert nodes["finalize"].capability == f"assurance.execution.{base}.finalize"
-        assert nodes["finalize"].capability_slot is None
+        assert nodes["prepare"].capability is None
+        assert nodes["prepare"].capability_slot == f"{base}.prepare"
+        assert nodes["finalize"].capability is None
+        assert nodes["finalize"].capability_slot == f"{base}.finalize"
         assert nodes["execute"].capability is None
         assert nodes["execute"].capability_slot == f"{base}.execute"
 
