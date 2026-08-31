@@ -47,9 +47,23 @@ from graph_engine.runtime.invocation_lock import (  # noqa: E402
     install_invocation_lock_at,
     read_invocation_lock_at,
 )
+from graph_engine.boot.graph_revision import (  # noqa: E402
+    BootArtifact,
+    EntrypointGraphContract,
+    FeatureFactoryRef,
+    GraphBuildManifest,
+    GraphRevision,
+)
+from graph_engine.composition.lock import ProductLock  # noqa: E402
 
 __all__ = [
     "ENGINE_API_VERSION",
+    "BootArtifact",
+    "EntrypointGraphContract",
+    "FeatureFactoryRef",
+    "GraphBuildManifest",
+    "GraphRevision",
+    "ProductLock",
     "Engine",
     "EngineConflictError",
     "EngineError",

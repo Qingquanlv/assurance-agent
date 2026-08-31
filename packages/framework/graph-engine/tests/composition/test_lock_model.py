@@ -26,6 +26,7 @@ from graph_engine.composition import (
     SourceKey,
     SourceRole,
 )
+from graph_engine.composition.lock import ProductLock
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
@@ -805,4 +806,48 @@ def test_lock_rejects_an_extra_unsupported_executable_projection_kind() -> None:
             lock,
             registry_projections=projections,
             registry_digests=digests,
+        )
+
+
+def _product_lock() -> ProductLock:
+    lock = _lock()
+    return ProductLock.create(
+        engine_api=lock.engine_api,
+        engine=lock.engine,
+        engine_digest=lock.engine_digest,
+        product=lock.product,
+        plugins=lock.plugins,
+        dependency_order=lock.dependency_order,
+        registry_projections=lock.registry_projections,
+        registry_digests=lock.registry_digests,
+        configuration=lock.configuration,
+        configuration_digest=lock.configuration_digest,
+        capability_bindings=lock.capability_bindings,
+        capability_bindings_digest=lock.capability_bindings_digest,
+    )
+
+
+def test_product_lock_v3_omits_compiled_workflow_and_execution_host() -> None:
+    lock = _product_lock()
+    document = lock.model_dump(mode="json")
+    assert document["schema_version"] == "3"
+    assert "compiled_workflow" not in document
+    assert "compiled_workflow_digest" not in document
+    assert "execution_host" not in document
+    assert "digest" in document
+    assert "canonical_bytes" not in document
+
+
+def test_product_lock_rejects_legacy_workflow_fields() -> None:
+    lock = _product_lock()
+    payload = lock.model_dump(exclude={"canonical_bytes"})
+    with pytest.raises(ValidationError):
+        ProductLock(
+            **{**payload, "compiled_workflow": {"name": "toy"}},
+            canonical_bytes=lock.canonical_bytes,
+        )
+    with pytest.raises(ValidationError):
+        ProductLock(
+            **{**payload, "execution_host": lock.model_dump()},
+            canonical_bytes=lock.canonical_bytes,
         )

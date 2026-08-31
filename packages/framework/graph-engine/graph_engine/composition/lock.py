@@ -492,6 +492,135 @@ class InvocationLock(FrozenModel):
             digest=hashlib.sha256(encoded).hexdigest(),
         )
 
+    def model_dump_json(self, *args: object, **kwargs: object) -> str:
+        del args, kwargs
+        return self.canonical_bytes.decode("utf-8") + "\n"
+
+
+class ProductLock(FrozenModel):
+    schema_version: Literal["3"] = "3"
+    digest_algorithm: Literal["graph-engine-source-v1"] = "graph-engine-source-v1"
+    engine_api: str
+    engine: LockedSource
+    engine_digest: str
+    product: LockedProduct
+    plugins: tuple[LockedPlugin, ...]
+    dependency_order: tuple[str, ...]
+    registry_projections: RegistryProjections
+    registry_digests: RegistryDigests
+    configuration: FrozenJSONValue
+    configuration_digest: str
+    capability_bindings: FrozenJSONValue
+    capability_bindings_digest: str
+    canonical_bytes: bytes = Field(exclude=True, repr=False)
+    digest: str
+
+    @field_validator(
+        "engine_digest",
+        "configuration_digest",
+        "capability_bindings_digest",
+        "digest",
+    )
+    @classmethod
+    def _validate_digest(cls, value: str) -> str:
+        return _sha256(value, "product lock")
+
+    @model_validator(mode="after")
+    def _authenticate_canonical_form(self) -> ProductLock:
+        expected = canonical_json_bytes(_product_lock_projection(self))
+        if self.canonical_bytes != expected:
+            raise ValueError("product lock canonical bytes disagree with its projection")
+        if hashlib.sha256(expected).hexdigest() != self.digest:
+            raise ValueError("product lock digest does not authenticate canonical bytes")
+        if self.engine.kind != SourceKind.ENGINE or self.engine.digest != self.engine_digest:
+            raise ValueError("product lock engine identity disagrees with its digest")
+        engine_identity = thaw_json(self.engine.identity)
+        if not isinstance(engine_identity, dict) or (
+            engine_identity.get("distribution") != "graph-engine"
+            or not isinstance(engine_identity.get("version"), str)
+            or engine_identity.get("installation") not in {"installed", "editable"}
+        ):
+            raise ValueError("product lock engine identity is incomplete")
+        if engine_identity["installation"] == "installed" and "root" in engine_identity:
+            raise ValueError("installed engine identity must be relocatable")
+        if engine_identity["installation"] == "editable" and not isinstance(engine_identity.get("root"), str):
+            raise ValueError("editable engine identity must retain its root")
+        plugin_ids = tuple(plugin.plugin_id for plugin in self.plugins)
+        if plugin_ids != tuple(sorted(plugin_ids)) or len(plugin_ids) != len(set(plugin_ids)):
+            raise ValueError("locked plugins must have unique canonical order")
+        if len(self.dependency_order) != len(set(self.dependency_order)):
+            raise ValueError("product lock dependency order must not repeat plugin ids")
+        if set(self.dependency_order) != set(plugin_ids):
+            raise ValueError("product lock dependency order disagrees with locked plugins")
+        try:
+            manifest = ProductManifest.model_validate(thaw_json(self.product.manifest))
+            expected_order = resolve_dependency_order(
+                {plugin.plugin_id: plugin.descriptor for plugin in self.plugins},
+                manifest.plugins,
+            )
+        except (ValueError, TypeError, DependencyConflict) as error:
+            raise ValueError("product lock dependency declarations are invalid") from error
+        if self.dependency_order != expected_order:
+            raise ValueError("product lock dependency order is not canonical")
+        _validate_locked_contribution_projection_set(self.plugins, self.registry_projections)
+        expected_registry_digests = _registry_digests_from_projections(self.registry_projections)
+        if self.registry_digests != expected_registry_digests:
+            raise ValueError("product lock registry digests do not authenticate their projections")
+        configuration = cast(JSONValue, thaw_json(self.configuration))
+        if canonical_digest(configuration) != self.configuration_digest:
+            raise ValueError("product lock configuration digest does not authenticate its projection")
+        bindings = cast(JSONValue, thaw_json(self.capability_bindings))
+        if not isinstance(bindings, list):
+            raise ValueError("product lock capability bindings must be a list")
+        expected_bindings = _binding_projection_from_capabilities(self.registry_projections.capabilities)
+        if bindings != expected_bindings:
+            raise ValueError("product lock capability bindings disagree with the capability registry")
+        if canonical_digest(bindings) != self.capability_bindings_digest:
+            raise ValueError("product lock binding digest does not authenticate its projection")
+        return self
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        engine_api: str,
+        engine: LockedSource,
+        engine_digest: str,
+        product: LockedProduct,
+        plugins: tuple[LockedPlugin, ...],
+        dependency_order: tuple[str, ...],
+        registry_projections: RegistryProjections,
+        registry_digests: RegistryDigests,
+        configuration: object,
+        configuration_digest: str,
+        capability_bindings: object,
+        capability_bindings_digest: str,
+    ) -> Self:
+        ordered_plugins = tuple(sorted(plugins, key=lambda plugin: plugin.plugin_id))
+        values = {
+            "schema_version": "3",
+            "digest_algorithm": "graph-engine-source-v1",
+            "engine_api": engine_api,
+            "engine": engine,
+            "engine_digest": engine_digest,
+            "product": product,
+            "plugins": ordered_plugins,
+            "dependency_order": tuple(dependency_order),
+            "registry_projections": registry_projections,
+            "registry_digests": registry_digests,
+            "configuration": configuration,
+            "configuration_digest": configuration_digest,
+            "capability_bindings": capability_bindings,
+            "capability_bindings_digest": capability_bindings_digest,
+        }
+        projection = _product_lock_values_projection(**values)
+        encoded = canonical_json_bytes(projection)
+        return cls(
+            **values,
+            canonical_bytes=encoded,
+            digest=hashlib.sha256(encoded).hexdigest(),
+        )
+
 
 def build_invocation_lock(
     *,
@@ -1051,6 +1180,72 @@ def _invocation_lock_values_projection(
     }
 
 
+def _product_lock_projection(lock: ProductLock) -> JSONValue:
+    return _product_lock_values_projection(
+        schema_version=lock.schema_version,
+        digest_algorithm=lock.digest_algorithm,
+        engine_api=lock.engine_api,
+        engine=lock.engine,
+        engine_digest=lock.engine_digest,
+        product=lock.product,
+        plugins=lock.plugins,
+        dependency_order=lock.dependency_order,
+        registry_projections=lock.registry_projections,
+        registry_digests=lock.registry_digests,
+        configuration=lock.configuration,
+        configuration_digest=lock.configuration_digest,
+        capability_bindings=lock.capability_bindings,
+        capability_bindings_digest=lock.capability_bindings_digest,
+    )
+
+
+def _product_lock_values_projection(
+    *,
+    schema_version: str,
+    digest_algorithm: str,
+    engine_api: str,
+    engine: LockedSource,
+    engine_digest: str,
+    product: LockedProduct,
+    plugins: tuple[LockedPlugin, ...],
+    dependency_order: tuple[str, ...],
+    registry_projections: RegistryProjections,
+    registry_digests: RegistryDigests,
+    configuration: object,
+    configuration_digest: str,
+    capability_bindings: object,
+    capability_bindings_digest: str,
+) -> JSONValue:
+    return {
+        "schema_version": schema_version,
+        "digest_algorithm": digest_algorithm,
+        "engine_api": engine_api,
+        "engine": _locked_source_projection(engine),
+        "engine_digest": engine_digest,
+        "product": _locked_product_projection(product),
+        "plugins": [_locked_plugin_projection(plugin) for plugin in plugins],
+        "dependency_order": list(dependency_order),
+        "registry_projections": {
+            "sources": cast(JSONValue, thaw_json(registry_projections.sources)),
+            "capabilities": cast(JSONValue, thaw_json(registry_projections.capabilities)),
+            "schemas": cast(JSONValue, thaw_json(registry_projections.schemas)),
+            "resources": cast(JSONValue, thaw_json(registry_projections.resources)),
+            "effects": cast(JSONValue, thaw_json(registry_projections.effects)),
+        },
+        "registry_digests": {
+            "sources": registry_digests.sources,
+            "capabilities": registry_digests.capabilities,
+            "schemas": registry_digests.schemas,
+            "resources": registry_digests.resources,
+            "effects": registry_digests.effects,
+        },
+        "configuration": cast(JSONValue, thaw_json(configuration)),
+        "configuration_digest": configuration_digest,
+        "capability_bindings": cast(JSONValue, thaw_json(capability_bindings)),
+        "capability_bindings_digest": capability_bindings_digest,
+    }
+
+
 def _registry_digests_from_projections(
     projections: RegistryProjections,
 ) -> RegistryDigests:
@@ -1156,6 +1351,7 @@ __all__ = [
     "LockedProduct",
     "LockedSource",
     "LockedSourceFile",
+    "ProductLock",
     "RegistryDigests",
     "RegistryProjections",
     "TASK_HOST_IMPLEMENTATION_ID",
