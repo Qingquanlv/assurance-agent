@@ -11,7 +11,14 @@ from typing import TYPE_CHECKING, Literal, NoReturn, TypeAlias, TypeVar, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
-from pydantic import Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    Field,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
@@ -486,6 +493,23 @@ class ExecutableAuthority:
             raise TypeError("executable authority requires typed provenance")
 
 
+class AttemptContractRef(FrozenModel):
+    """Data-only Attempt contract identity authenticated for one owner."""
+
+    contract_id: str
+    digest: str
+
+    @field_validator("contract_id")
+    @classmethod
+    def _validate_contract_id(cls, value: str) -> str:
+        return _validate_manifest_id(value, "attempt contract id")
+
+    @field_validator("digest")
+    @classmethod
+    def _validate_digest(cls, value: str) -> str:
+        return _validate_sha256(value, "attempt contract")
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class ContributionAuthority:
     """One immutable six-category contribution generation for a selected plugin."""
@@ -497,6 +521,7 @@ class ContributionAuthority:
     source_digest: str
     contribution: PluginContribution
     authorities: tuple[ExecutableAuthority, ...]
+    attempt_contracts: tuple[AttemptContractRef, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.descriptor) is not PluginDescriptor:
@@ -535,9 +560,21 @@ class ContributionAuthority:
         if self.source_key.role is SourceRole.CONFIG:
             if values or self.provider_binding is not None:
                 raise ValueError("config contribution cannot retain executable authority")
+            if self.attempt_contracts:
+                raise ValueError("configuration-tree contributions cannot declare attempt contracts")
         elif self.provider_binding is None:
             raise ValueError("wheel contribution requires an owning provider binding")
+        contracts = tuple(self.attempt_contracts)
+        if any(not isinstance(item, AttemptContractRef) for item in contracts):
+            raise TypeError("attempt contracts must contain AttemptContractRef values")
+        contract_ids = tuple(item.contract_id for item in contracts)
+        if contract_ids != tuple(sorted(contract_ids)) or len(contract_ids) != len(set(contract_ids)):
+            raise ValueError("attempt contracts require unique canonical order")
+        for item in contracts:
+            if not item.contract_id.startswith(f"{self.owner_id}."):
+                raise ValueError(f"attempt contract id is not owned by {self.owner_id}: {item.contract_id}")
         object.__setattr__(self, "authorities", values)
+        object.__setattr__(self, "attempt_contracts", contracts)
 
     @property
     def projection(self) -> FrozenJSONValue:
@@ -1388,6 +1425,7 @@ class ProductManifest(FrozenModel):
     workflow_module: WorkflowModuleDef | None = None
     workflow_module_resources: tuple[WorkflowModuleRequirement, ...] = ()
     workflow_slot_bindings: tuple[WorkflowSlotBinding, ...] = ()
+    graph_factory_symbol: str | None = None
 
     @field_validator("product_id")
     @classmethod
@@ -1464,11 +1502,18 @@ class ProductManifest(FrozenModel):
         if (
             sum(
                 value is not None
-                for value in (self.workflow, self.workflow_resource_id, self.workflow_module)
+                for value in (
+                    self.workflow,
+                    self.workflow_resource_id,
+                    self.workflow_module,
+                    self.graph_factory_symbol,
+                )
             )
             != 1
         ):
             raise ValueError("product manifest requires exactly one workflow form")
+        if self.graph_factory_symbol is not None:
+            _validate_product_graph_factory_symbol(self.graph_factory_symbol, self.source)
         if self.workflow_module is None:
             if self.workflow_module_resources:
                 raise ValueError("workflow module resources are allowed only on the modular product form")
@@ -1505,6 +1550,13 @@ class ProductManifest(FrozenModel):
             if Version(self.source.version) != Version(self.product_version):
                 raise ValueError("source version must equal product version")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_graph_factory_symbol(self, serializer: SerializerFunctionWrapHandler) -> object:
+        data = serializer(self)
+        if isinstance(data, dict) and data.get("graph_factory_symbol") is None:
+            data.pop("graph_factory_symbol", None)
+        return data
 
     @field_serializer("entrypoints")
     def _serialize_entrypoints(self, value: Mapping[str, str]) -> dict[str, str]:
@@ -1826,6 +1878,36 @@ def _snapshot_digest(identity: SourceIdentity, files: tuple[SourceFile, ...]) ->
     return canonical_digest({"identity": identity_document, "files": file_document})
 
 
+def _validate_product_graph_factory_symbol(symbol: str, source: ProviderSource | None) -> str:
+    if not isinstance(symbol, str) or symbol.count(":") != 1:
+        raise ValueError("graph factory symbol must be module:attribute")
+    module_name, attribute = symbol.split(":")
+    if (
+        not module_name
+        or module_name.startswith(".")
+        or any(not part.isidentifier() for part in module_name.split("."))
+    ):
+        raise ValueError("graph factory symbol module is not a public absolute import")
+    if not attribute.isidentifier() or attribute.startswith("_"):
+        raise ValueError("graph factory symbol attribute must be a public name")
+    if module_name == "config_tree" or module_name.startswith("config_tree."):
+        raise ValueError("graph factory symbol cannot come from configuration")
+    if source is None:
+        return symbol
+    if not _module_belongs_to_import_roots(module_name, source.import_roots):
+        raise ValueError("graph factory symbol is outside the authenticated Product import roots")
+    return symbol
+
+
+def _module_belongs_to_import_roots(module_name: str, import_roots: tuple[str, ...]) -> bool:
+    for import_root in import_roots:
+        if not import_root:
+            continue
+        if module_name == import_root or module_name.startswith(f"{import_root}."):
+            return True
+    return False
+
+
 def _validate_canonical_relative_path(value: str) -> str:
     if not isinstance(value, str):
         raise TypeError("source file path must be text")
@@ -1848,6 +1930,7 @@ def _validate_canonical_relative_path(value: str) -> str:
 
 
 __all__ = [
+    "AttemptContractRef",
     "CapabilityBindingEntry",
     "CapabilityEntry",
     "CapabilityRegistry",
