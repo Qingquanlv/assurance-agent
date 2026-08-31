@@ -70,13 +70,14 @@ Do not start the Feature migration against provisional Kernel or checkpointer AP
 - The SUT and `.aa/` remain closed data only. They cannot supply Python, module paths, factory symbols, Attempt contracts, handlers, validators, effects, or topology.
 - Product owns the fixed six authenticated factory references. A Capability graph may resolve only contracts authenticated for its own owner; Product is the only cross-Feature graph composer.
 - `graph-engine` must not import `agent_runtime_contracts`, concrete runtime adapters, Capability packages, or Product code.
-- The current validator baseline is 25 registered and zero bound. Every target contract declares `validators` explicitly, including `()`. A non-empty binding is a separately reviewed behavior change and is not introduced by this migration.
+- The production validator baseline is 25 registered and zero bound. Every shipped target contract declares `validators` explicitly, including `()`. A non-empty production binding is a separately reviewed behavior change and is not introduced by this migration. One authenticated test-only core contract clone reuses the resolved Execution executor, binds `assurance.execution.validator.evidence.v1`, and gives both legacy and LangGraph paths the identical `ResourceClaims(writes=("tests", "src"))` envelope solely to prove accept/reject parity; it creates no new runtime binding and never enters contributions, locks, manifests, wheels, or production counts.
 - Preserve all 99 legacy phase aliases and the old Runtime through shadow and rollback. Delete them only after the Phase 7 drain gate.
 - One production Invocation is permanently pinned to one runtime kind and that runtime's authenticated build identity: legacy uses its byte-exact `InvocationLock` v2 digest; LangGraph uses `GraphRevision` plus ProductLock v3 digest. It is never advanced by both runtimes or switched in place.
 - Preserve the exact 14 public entrypoint names: `intake`, `case`, `full`, `execute`, `archive`, `retro`, `issue-review`, `issue-analyze`, `issue-reconcile`, `improvement-review`, `improvement-evaluate`, `improvement-export`, `improvement-apply`, and `improvement-rollback`.
 - A compiled graph is never serialized. `aa compile` emits `GraphBuildManifest`; runtime Boot authenticates the same sources and recompiles roots with the real checkpointer into `BootArtifact`.
 - One Invocation has one runner lease and monotonically increasing fencing token. Checkpoint, journal, Kernel dispatch, promotion, effects, and receipt publication reject a stale token.
 - Checkpoint state contains control data and receipt references, not workspaces, project files, secrets, raw sessions, unbounded event history, or service objects.
+- A Feature-owned `join:any` current-trigger mismatch is a migration-stop defect with zero waivers. Keep production on its complete immutable `legacy-v2` runtime, but do not approve Feature freeze, enter Product cutover, drain legacy, embed a legacy join, or delete YAML/Runtime until the equivalent typed inbox/cursor passes.
 
 ## Program Baseline
 
@@ -119,9 +120,35 @@ git ls-files --error-unmatch \
 
 Expected: all six paths print and the command exits `0`. If not, stop; do not create a worktree from a base that cannot carry the plan.
 
-- [ ] The selected base reproduces 64 graphs, 325 nodes, 367 edges, 124 conditional edges, 50 nodes with `routing.mode: exclusive` (13 task, 20 subgraph, 11 interrupt, 6 gate), 12 joins (9 `any`, 3 `all`), three `min_matches`, 102 capability-slot occurrences, and 25 direct-task occurrences across 12 IDs.
+- [ ] The selected base reproduces 64 graphs, 325 nodes, 367 edges, 124 conditional edges, 50 nodes with `routing.mode: exclusive` (13 task, 20 subgraph, 11 interrupt, 6 gate), 12 joins (9 `any`, 3 `all`), the exact three `min_matches` rows and exact seven loop-SCC anchors below, 102 capability-slot occurrences, and 25 direct-task occurrences across 12 IDs.
 - [ ] Run all six Capability `test_workflow_module.py` suites. On the accepted working-tree snapshot the observed baseline is `4 failed, 118 passed`: Execution, Quality, Healing and Improvement tests still assert concrete prepare/finalize capabilities after those YAML nodes moved to `capability_slot`. Land the four test/contract alignments as a reviewed prerequisite commit; do not hide them with xfail or copy dirty files into the migration worktree.
 - [ ] Re-run the inventory and six suites after that prerequisite. The counts above remain exact and all legacy module tests pass before Foundation Task 1 begins.
+
+The preflight inventory imports the assembled legacy `CompiledWorkflow`, reads `CompiledGraph.sccs`, requires each loop SCC to contain exactly one `join:any`, and compares the legacy facts and anchors below by exact equality. Target implementation disposition is a separate Feature-stage assertion because it cannot be derived from the legacy compiler:
+
+```python
+EXPECTED_LEGACY_MIN_MATCHES = (
+    ("assurance.generation.workflow.graph.generation", "fanout", 4),
+    ("assurance.intake.workflow.graph.case-design", "prepare", 2),
+    ("assurance.intake.workflow.graph.case-design", "repair-prepare", 2),
+)
+
+TARGET_MIN_MATCHES_DISPOSITION = {
+    ("assurance.generation.workflow.graph.generation", "fanout"): "langgraph_send",
+    ("assurance.intake.workflow.graph.case-design", "prepare"): "composite_internal_dataflow",
+    ("assurance.intake.workflow.graph.case-design", "repair-prepare"): "composite_internal_dataflow",
+}
+
+EXPECTED_LOOP_SCC_ANCHORS = (
+    ("assurance.generation.workflow.graph.generation-api", "plan-round-join"),
+    ("assurance.generation.workflow.graph.generation-e2e", "plan-round-join"),
+    ("assurance.generation.workflow.graph.generation-fuzz", "plan-round-join"),
+    ("assurance.generation.workflow.graph.generation-performance", "plan-round-join"),
+    ("assurance.intake.workflow.graph.entry", "advance-join"),
+    ("assurance.product.workflow.graph.product-execute", "coverage-needed"),
+    ("assurance.product.workflow.graph.product-execute", "failed-join"),
+)
+```
 
 If the accepted working-tree changes have been landed but the four tests have not, make this one prerequisite commit before creating the migration worktree:
 
@@ -172,25 +199,30 @@ The old internal node count is not a target. Composite Agent Attempts intentiona
 
 - [ ] Each Capability exposes one typed bundle from `assurance_<feature>.graphs.factory` and compiles with `checkpointer=None`.
 - [ ] Spy build-context tests inventory the expected owner-scoped contract IDs and reject handler, validator, or runtime-binding injection at node sites.
-- [ ] The five Feature-owned `join:any` replacements preserve current-trigger identity; all five are looped and cover epoch, late arrival, replay, deduplication, and dispatch cursor behavior.
-- [ ] All 3 legacy `min_matches` sites are accounted for without partial behavior: Generation remains a typed four-way `Send` route that fails before dispatch; Intake's two prepare-phase fanouts disappear inside the composite Agent Attempt and tests prove both legacy data consumers still receive the prepared value/Agent result before finalize.
-- [ ] Retro and improvement-evaluate input/output contracts close end-to-end; Nightly remains out of scope and Eval remains a pure comparator.
+- [ ] The five Feature-owned `join:any` replacements preserve current-trigger identity; all five are looped and cover epoch, late arrival, replay, deduplication, and dispatch cursor behavior. Every row is green with zero waivers; one failure blocks Checkpoints C–E while production remains on `legacy-v2`.
+- [ ] The loop inventory is derived from assembled `CompiledGraph.sccs` and equals the exact seven `(graph_id, join:any node_id)` anchors; the five Feature rows link to green tests and the two Product rows remain explicit pending entries. Full SCC membership is retained in failure diagnostics but is not substituted for anchor equality.
+- [ ] Exactly `generation/fanout` becomes one typed four-value `Send` route that fails before dispatch. Exactly Intake `case-design/prepare` and `repair-prepare` disappear into Composite internal two-consumer dataflow. No other target `Send`, generic helper, or phase-fanout shim is allowed.
+- [ ] The authenticated test-only Execution clone binds `assurance.execution.validator.evidence.v1` and proves one accept/promote plus one reject/no-promote through the real LangGraph/Kernel path; all shipped contracts remain explicit `validators=()` and production stays 25 registered / 0 bound.
+- [ ] Retro and `improvement-evaluate` input/output contracts close end-to-end; the latter is an effectful `evaluate-memory-improvement` Attempt that settles `assurance.improvement.effect.delivery.v1` with payload discriminator `memory_eval`. Nightly remains out of scope, and only the separate offline benchmark Eval comparator remains pure.
 - [ ] The checked migration inventory accounts for all 50 legacy exclusive-routing nodes across task/subgraph/interrupt/gate kinds; every target route calls `select_exclusive_route(named_matches, otherwise=...)`, proves zero selects the declared fallback, and proves multiple matches fail instead of using priority `if/elif`.
 - [ ] Commit the six Feature bundles before Product root cutover work.
 
 ### Checkpoint D: Product cutover
 
 - [ ] Product imports exactly the six fixed factory symbols and builds exactly the 14 public roots.
-- [ ] Product's four `join:any` paths pass current-trigger characterization: the two looped sites cover late arrival/replay/cursor behavior, while the two assessment exits prove predecessor mutual exclusion and impossibility of late reactivation or use the inbox fallback.
-- [ ] Taken together, the Feature and Product gates account for all 9 legacy `join:any` sites.
+- [ ] Product's four `join:any` paths pass zero-waiver current-trigger characterization: the two looped sites cover late arrival/replay/cursor behavior, while the two assessment exits prove predecessor mutual exclusion and impossibility of late reactivation or use the equivalent inbox/cursor fallback. Failure keeps production wholly on `legacy-v2` and blocks cutover/drain/deletion.
+- [ ] Taken together, the Feature and Product gates account for all 9 legacy `join:any` sites, and the exact seven-anchor SCC inventory has no pending row.
+- [ ] A test-only validator shadow case proves the same authenticated validator accepts/promotes and rejects/blocks promotion on both runtimes; no shipped Feature contract gains a binding.
 - [ ] Product closes the shared 50-site exclusive-route inventory before YAML deletion; every entry points to a passing declared-fallback and multi-match-ambiguity test.
 - [ ] CLI start/run/resume/status use the revision-pinned Application; multiple interrupts resume by interrupt ID and ambiguous scalar resume is rejected.
 - [ ] Semantic shadow compares separate Invocations or scripted snapshots only; no production Invocation is dual-driven.
-- [ ] Each public entrypoint records a reviewed parity result before its cutover flag changes.
+- [ ] Each public entrypoint records a reviewed parity result referencing the zero-waiver 9-site join evidence before its cutover flag changes.
 
 ### Checkpoint E: Drain and delete
 
 - [ ] Creation of new legacy Invocations is disabled only after all 14 entrypoints pass cutover gates.
+- [ ] Drain authorization rejects any missing, failed, or waived join-parity row; there is no per-site legacy exception inside a LangGraph Invocation.
+- [ ] Drain authorization also rejects a changed seven-anchor SCC inventory, any deviation from the one-Generation-`Send`/two-Intake-Composite `min_matches` mapping, or missing cross-runtime test-only Validator accept/reject parity.
 - [ ] The registry proves there are no active resumable legacy Invocations; unresolved legacy Invocations have an explicit operator decision and receipt.
 - [ ] After the authenticated zero-active gate, atomically switch `aa compile` to ProductLock v3/`GraphBuildManifest` only and delete Workflow YAML/module packaging/phase aliases; then delete graph schema/compiler/projection DSL, old planner/token scheduler/subgraph loop, Workflow checkpoint authority, and engine settle loop in the exact order in the Product plan.
 - [ ] Remove temporary runtime-selection switches after the final legacy artifact drains.

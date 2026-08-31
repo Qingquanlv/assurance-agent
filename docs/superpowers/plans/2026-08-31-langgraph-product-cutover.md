@@ -25,6 +25,7 @@
 - A new entrypoint switch affects only future starts. Existing Invocations always reopen their recorded runtime/revision. Rollback is a new-start routing change, never an in-place engine change.
 - Current OpenCode prompt-only schema handling advertises `provider_schema=False`. A contract with `requires_provider_schema=True` cannot cut over until a pinned adapter/OpenCode integration test proves provider-side schema transport/enforcement. Do not work around this with a private source fork or a false capability flag.
 - SQLite is local single-host only. A multi-worker deployment requires a separately qualified transactional anchored backend, not SQLite mounted on shared storage.
+- The nine-site `join:any` migration has zero semantic waivers. A Feature current-trigger failure blocks this entire Product plan while production stays on the complete immutable `legacy-v2` runtime. Product's typed assessment-trigger optimization is accepted only after predecessor exclusion and no-late-reactivation are proven; falling back to the same typed inbox/cursor is an equivalent implementation, not an exception. Never embed a point-level legacy join, discard a late arrival, or substitute predecessor-map/last-write-wins state.
 - Legacy deletion starts only after all 14 cutover records pass, no active legacy Invocation can resume, original revision artifacts have satisfied retention policy, and replacement crash/interrupt/export/archive tests are green.
 
 ## Exact Product contract table
@@ -135,6 +136,8 @@ git commit -m "feat: define Product LangGraph entrypoints"
 - Create: `tests/product/test_stategraph_parallelism.py`
 - Modify: `tests/architecture/exclusive_route_inventory.py`
 - Modify: `tests/architecture/test_exclusive_route_migration.py`
+- Modify: `tests/architecture/loop_scc_inventory.py`
+- Modify: `tests/architecture/test_loop_scc_migration.py`
 
 **Interfaces:** explicit full/execute builders; failure/coverage flow-local inboxes; typed assessment trigger; Product coverage decision; parent/child adapters; entrypoint recursion configuration.
 
@@ -156,6 +159,8 @@ Incoming sources are `quality` and `quality-recheck`; downstream coverage repair
 
 Prove both required facts for `assess-satisfied` and `assess-unsatisfied`: satisfied/unsatisfied are mutually exclusive for each assessment, and the `quality` versus `quality-recheck` predecessors cannot both reach the same exit or arrive late after that exit has routed. Characterization must show that an initial satisfied/unsatisfied result terminates without scheduling repair, while `quality-recheck` is reachable only after an earlier `repair_required` result and its satisfied/unsatisfied exit schedules no later recheck. Then use one typed `AssessmentTrigger(source, coverage_state, rounds, evidence)` set by the current assessment and route immediately to report/report-unsatisfied. Tests prove exact trigger identity, at-most-one arrival, and fail closed if a crafted update claims both outcomes. If either predecessor-exclusion or late-reactivation characterization fails, use the same inbox/cursor pattern; do not silently choose one.
 
+All four Product rows are zero-waiver commit gates. A mismatch leaves Product and production on `legacy-v2` and blocks shadow approval, cutover, drain, and deletion. The inbox fallback is the specified equivalent implementation, not permission to weaken current-trigger behavior.
+
 - [ ] **Step 5: Test Product coverage interrupt and parent restart.**
 
 Coverage decision accepts only `approve | reject`. Multiple Feature/Product interrupts resume via interrupt-ID mapping. Scalar resume is rejected when more than one is pending. A schema-adapter node performs only deterministic input construction before invoking an interrupting child; restart cannot duplicate work.
@@ -166,6 +171,8 @@ Parallel Generation results/receipts merge order-independently with no concurren
 
 Complete the checked 50-site exclusive-route inventory for Product-owned routes. Every Product route computes its complete named-match mapping and calls `select_exclusive_route`; parameterized cases prove zero selects the exact recorded `otherwise` target and two matches fail with ambiguity. The inventory has no `pending` row before Task 8 deletes YAML characterization or Task 9 deletes the compiler.
 
+Close the two Product-owned loop-SCC rows, `product-execute/failed-join` and `product-execute/coverage-needed`, in the exact seven-anchor inventory. Each row must point to its passing current-trigger matrix; acceptance compares exact anchors derived from assembled `CompiledGraph.sccs`, not merely a count of seven, while full membership is retained as failure diagnostics.
+
 - [ ] **Step 7: Run RED, implement, and run Product flow suites.**
 
 ```bash
@@ -175,7 +182,8 @@ uv run pytest -q \
   tests/product/test_product_interrupts.py \
   tests/product/test_product_recursion_limit.py \
   tests/product/test_stategraph_parallelism.py \
-  tests/architecture/test_exclusive_route_migration.py
+  tests/architecture/test_exclusive_route_migration.py \
+  tests/architecture/test_loop_scc_migration.py
 ```
 
 Expected initially: missing `execute/full` builders; subsequent failures isolate inbox, interrupt and recursion behavior.
@@ -195,7 +203,9 @@ git add \
   tests/product/test_product_recursion_limit.py \
   tests/product/test_stategraph_parallelism.py \
   tests/architecture/exclusive_route_inventory.py \
-  tests/architecture/test_exclusive_route_migration.py
+  tests/architecture/test_exclusive_route_migration.py \
+  tests/architecture/loop_scc_inventory.py \
+  tests/architecture/test_loop_scc_migration.py
 git commit -m "feat: compose Product LangGraph workflows"
 ```
 
@@ -310,6 +320,8 @@ git commit -m "feat: add revision-pinned Product Application coexistence"
 - Create: `tests/product/shadow_harness.py`
 - Create: `tests/product/test_langgraph_shadow_parity.py`
 - Create: `tests/product/test_entrypoint_cutover.py`
+- Create: `tests/product/validator_parity_fixture.py`
+- Create: `tests/product/test_validator_shadow_parity.py`
 - Modify: `tests/product/product_runner.py`
 - Modify: `tests/product/composition_harness.py`
 - Modify: `tests/product/conformance.py`
@@ -318,7 +330,7 @@ git commit -m "feat: add revision-pinned Product Application coexistence"
 - Modify: `tests/product/test_full_graph_audit.py`
 - Modify: `tests/product/runtime_composition.py`
 
-**Interfaces:** `SemanticTrace` and normalized comparators for Attempt calls, pure transforms, route decisions, interrupts, receipts, terminal/output; separate Invocation identities; per-entrypoint parity record.
+**Interfaces:** `SemanticTrace` and normalized comparators for Attempt calls, pure transforms, route decisions, ordered validator calls, interrupts, receipts, terminal/output; separate Invocation identities; per-entrypoint parity record; test-only cloned legacy/new contracts binding the same authenticated validator.
 
 - [ ] **Step 1: Define the normalized trace.**
 
@@ -328,6 +340,7 @@ class SemanticTrace:
     entrypoint: str
     attempts: tuple[SemanticAttemptCall, ...]
     pure_decisions: tuple[SemanticDecision, ...]
+    validator_calls: tuple[SemanticValidatorCall, ...]
     interrupts: tuple[SemanticInterrupt, ...]
     receipts: tuple[SemanticReceipt, ...]
     terminal_status: str
@@ -342,29 +355,38 @@ Legacy and new traces use different Invocation IDs and isolated workspaces or a 
 
 - [ ] **Step 3: Parameterize all public roots and meaningful branches.**
 
-For all 14 names compare valid input/output/status plus failure and interrupt paths. For `execute/full`, cover generation family selection, execution failure/healing/rerun, coverage repair/human decision, report satisfied/unsatisfied, effect pending, and budget exhaustion. For looped joins compare downstream current-trigger inputs and repeat activation count.
+For all 14 names compare valid input/output/status plus failure and interrupt paths. For `execute/full`, cover generation family selection, execution failure/healing/rerun, coverage repair/human decision, report satisfied/unsatisfied, effect pending, and budget exhaustion. For looped joins compare downstream current-trigger inputs and repeat activation count. For standalone `improvement-evaluate` and the evaluate occurrence inside `improvement-apply`, compare the full effect kind `assurance.improvement.effect.delivery.v1`, payload discriminator `memory_eval`, and `MemoryEvalReceipt`. Standalone evaluate must cover committed, pending, and publication-indeterminate/recover traces; it cannot report success before effect settlement, and recovery cannot dispatch the evaluator twice.
 
-- [ ] **Step 4: Run RED then implement trace adapters.**
+- [ ] **Step 4: Prove one real test-only Validator binding on both runtimes.**
+
+`validator_parity_fixture.py` resolves the authenticated `assurance.execution.validator.evidence.v1` registry entry and Boot-resolved core contract for `assurance.execution.agent.execute.v1` once. For the legacy adapter, clone one test-owned task definition with `ResourceClaims(writes=("tests", "src"))` and bind that validator. For LangGraph, clone the resolved contract's data-only `TaskAttemptContract` as `test.assurance.execution.validator-parity.v1`, give it the identical resources and validator tuple, then construct a test-only `ResolvedAttemptContract` with the existing authenticated Execution executor. Neither clone may create a new Agent runtime binding or enter a contribution, production catalog, ProductLock, GraphBuildManifest, wheel, or production inventory.
+
+Run identical accepted and rejected candidates through the actual legacy commit path and actual LangGraph/Kernel path. `tests/test_validator_parity.py` and `src/validator_parity.py` must both pass resource/seal admission. The first calls the validator exactly once and promotes on both sides. The second calls it exactly once, returns the equivalent typed rejection, and performs zero durable commit-prepare (`workspace.prepare`/prepared journal event) plus zero canonical promotion on either side; Agent prepare/runtime/finalize needed to produce the sealed staged set may already have run. Assert afterward that all shipped contracts still declare `validators=()` and the authenticated production inventory remains exactly 25 registered / 0 bound.
+
+- [ ] **Step 5: Run RED then implement trace adapters.**
 
 ```bash
 uv run pytest -q \
   tests/product/test_langgraph_shadow_parity.py \
+  tests/product/test_validator_shadow_parity.py \
   tests/product/test_entrypoint_cutover.py
 ```
 
 Expected: missing shadow harness/parity records; mismatches are reported by semantic field, not raw event diff.
 
-- [ ] **Step 5: Port/freeze existing Product black-box cases.**
+- [ ] **Step 6: Port/freeze existing Product black-box cases.**
 
 Run current intake/triplet/generation/parallel/execution-quality/coverage/healing/interrupt/Retro/report/replay/terminal behavioral suites against both adapters where meaningful. Replace YAML structure expectations only after an equivalent behavior test exists.
 
-- [ ] **Step 6: Commit shadow parity.**
+- [ ] **Step 7: Commit shadow parity.**
 
 ```bash
 git add \
   tests/product/shadow_harness.py \
   tests/product/test_langgraph_shadow_parity.py \
   tests/product/test_entrypoint_cutover.py \
+  tests/product/validator_parity_fixture.py \
+  tests/product/test_validator_shadow_parity.py \
   tests/product/product_runner.py \
   tests/product/composition_harness.py \
   tests/product/conformance.py \
@@ -412,6 +434,8 @@ Wave C: full
 
 After each wave, run its public behavior, restart, interrupt and export/archive prerequisites. Rollback changes only the switch for future starts; already-started LangGraph Invocations remain on their revision.
 
+Every wave record must reference passing rows from the exact nine-site `join:any` inventory that the entrypoint can reach, with current-trigger evidence and no waiver field/value. A missing, failed, xfailed, or waived row blocks that wave. Wave A also requires the cross-runtime test-only Validator accept/reject parity record and the standalone/apply `evaluate-memory-improvement` committed/pending/publication-indeterminate evidence above; no production contract may gain a binding to satisfy it.
+
 - [ ] **Step 4: Track active revision retention.**
 
 Registry reports active Invocation counts by runtime/revision and refuses artifact retirement while a resumable Invocation exists. Initial implementation resumes old revisions using their original deployment artifact/container and never imports two versions of the same wheel in one process.
@@ -423,6 +447,7 @@ For each wave run:
 ```bash
 uv run pytest -q \
   tests/product/test_langgraph_shadow_parity.py \
+  tests/product/test_validator_shadow_parity.py \
   tests/product/test_entrypoint_cutover.py \
   tests/product/test_revision_retention.py \
   tests/product/test_runtime_selection_security.py
@@ -469,6 +494,8 @@ git diff --cached --name-only
 
 Deletion authorization fails when any legacy Invocation is running, blocked, interrupted, stopped-but-resumable, publication-indeterminate, or has unreadable identity. It succeeds only at zero active legacy, with every nonterminal old Invocation explicitly resumed to terminal or terminated by an authenticated operator record.
 
+Authorization also fails if any of the exact nine `join:any` rows is missing, failed, xfailed, or carries a semantic waiver; if the exact seven loop-SCC anchor inventory no longer matches; if any of the three `min_matches` sites is implemented outside the frozen one-`Send`/two-Composite mapping; or if cross-runtime test-only Validator accept/reject parity is absent. These are migration evidence gates even when active legacy count is zero.
+
 - [ ] **Step 2: Disable new legacy starts.**
 
 Set all 14 switches to `langgraph-v1`, remove rollback-to-legacy for new starts, and retain only legacy reopen/resume. Test a legacy-marked Invocation still opens with its old artifact while a new same-entrypoint Invocation always records LangGraph.
@@ -485,8 +512,10 @@ Before any Workflow declaration/compiler/runtime deletion, extract the minimum r
 uv run pytest -q \
   tests/product/test_legacy_drain_gate.py \
   tests/product/test_revision_retention.py \
+  tests/product/test_validator_shadow_parity.py \
   tests/product/test_publish_recovery.py \
   tests/product/test_archive_after_publish.py \
+  tests/architecture/test_loop_scc_migration.py \
   packages/framework/graph-engine/tests/evidence/test_legacy_v2_reader.py \
   tests/product/test_historical_v2_export_archive.py
 git add \
@@ -1068,6 +1097,11 @@ git commit -m "docs: make Python StateGraphs the sole workflow source"
 
 - [ ] Exactly 14 public roots compile from the authenticated Product/six Feature factory code and expose the exact public names.
 - [ ] Product's four former `join:any` sites preserve current-trigger behavior; looped failure/coverage inboxes cover same-epoch late arrivals and replay; assessment exits prove outcome and predecessor mutual exclusion plus no late reactivation, or use the inbox fallback.
+- [ ] All nine Feature/Product `join:any` rows are present and green with zero xfails or semantic waivers. Any failure blocks cutover/drain/deletion while production stays wholly on `legacy-v2`; the Product inbox fallback is an equivalent implementation, not an exception.
+- [ ] The loop inventory still equals the exact seven `(graph_id, join:any node_id)` anchors derived from assembled `CompiledGraph.sccs`, with passing current-trigger evidence attached and full SCC membership available in failure diagnostics.
+- [ ] Exactly one Generation `min_matches` site uses four-value `Send`; exactly two Intake sites are Composite internal two-consumer dataflow; no extra `Send`, generic fanout helper, or phase shim exists.
+- [ ] The authenticated test-only evidence Validator accepts/promotes and rejects/blocks promotion exactly once on both legacy and LangGraph paths, while shipped production contracts remain 25 registered / 0 bound.
+- [ ] Standalone `improvement-evaluate` and the evaluate occurrence inside apply both emit `assurance.improvement.effect.delivery.v1` with payload discriminator `memory_eval`; committed/pending/publication-indeterminate recovery parity proves no early success or duplicate evaluator dispatch.
 - [ ] The exact 50-site exclusive-route migration inventory is complete; every route's declared-fallback/multiple-match parameterization passes and no route uses first-match priority.
 - [ ] All 13 human interrupts and system interrupt replay pass restart tests; multiple pending human interrupts require ID mapping.
 - [ ] Structured-output capability is truthful and every `requires_provider_schema=True` contract has a qualifying pinned adapter/provider test before its entrypoint cutover.

@@ -25,8 +25,9 @@
 - Preserve business budgets explicitly. `recursion_limit` is a separate Application circuit breaker, not the loop counter.
 - Every `context.attempt` call supplies a required stable activation selector. One-shot nodes use an owner-local fixed activation; ordinary loops use their business round; join-driven nodes use `current_trigger.arrival_id`, so same-epoch late arrivals are distinct and replay is idempotent.
 - The seven looped `join:any` sites retain every distinct arrival. Flow-local inbox reducers de-duplicate identical arrival IDs and merge order-independently; a dispatch cursor selects one stable unconsumed trigger at a time. A second/late arrival for the same business epoch is not discarded and not treated as an aggregate map—it may re-activate the downstream path once, matching legacy residual-token behavior.
+- A Feature `join:any` parity failure is a migration-stop defect with zero waivers. Do not commit the failing Feature migration, freeze bundles, begin Product work, retain a point-level legacy subgraph, or authorize drain/deletion. Production continues on its complete immutable `legacy-v2` runtime until the typed inbox/cursor passes; any intentional semantic change must reopen the accepted spec.
 - The two nonloop Product `join:any` sites are handled in the Product plan. This plan handles Generation #1–4 and Intake #5.
-- Of three legacy `min_matches` sites, only Generation remains a target `Send` fanout. Intake's two phase-internal sites disappear inside `CompositeAttemptExecutor`; tests retain their two-consumer dataflow without phase nodes.
+- Exactly one legacy `min_matches` site, `assurance.generation.workflow.graph.generation/fanout`, becomes a target four-value `Send`. Exactly two, `assurance.intake.workflow.graph.case-design/prepare` and `/repair-prepare`, disappear inside `CompositeAttemptExecutor` while retaining fixed two-consumer dataflow. No other `Send`, generic helper or phase-fanout shim is allowed.
 - Four legacy direct handler IDs are proven pure because their implementations discard `TaskContext` and only validate/transform input: Generation complete, Generation review-round advance, Intake review-round advance, and Healing repair-round advance. Move their models/functions into contract/graph modules and call them as ordinary nodes. The eight Improvement direct contracts remain Kernel Attempts.
 
 ## Target bundles and source inventory
@@ -85,9 +86,11 @@ The 50 legacy Feature graphs characterize source behavior: Intake 6, Generation 
 - Create: `tests/architecture/test_python_graph_composition.py`
 - Create: `tests/architecture/exclusive_route_inventory.py`
 - Create: `tests/architecture/test_exclusive_route_migration.py`
+- Create: `tests/architecture/loop_scc_inventory.py`
+- Create: `tests/architecture/test_loop_scc_migration.py`
 - Modify: `.importlinter`
 
-**Interfaces:** `ScriptedAttempt`, `RecordingCapabilityBuildContext`, `GraphHarness`; `select_exclusive_route(named_matches, otherwise=...)` with typed `AmbiguousRouteMatch`; a test-owned 50-site migration inventory; semantic call/route/interrupt/receipt/terminal trace; no private LangGraph task IDs.
+**Interfaces:** `ScriptedAttempt`, `RecordingCapabilityBuildContext`, `GraphHarness`; `select_exclusive_route(named_matches, otherwise=...)` with typed `AmbiguousRouteMatch`; test-owned 50-site exclusive-route and seven-site loop-SCC inventories; semantic call/validator/route/interrupt/receipt/terminal trace; no private LangGraph task IDs.
 
 - [ ] **Step 1: Write the harness contract tests.**
 
@@ -122,6 +125,22 @@ Scan every `assurance_*/graphs/*.py` AST and reject imports of foreign `.graphs`
 
 While YAML remains, collect the exact 50 `(graph_id, node_id, node_kind, otherwise_target)` rows whose routing mode is `exclusive` into `EXCLUSIVE_ROUTE_INVENTORY`: 13 task, 20 subgraph, 11 interrupt and 6 gate nodes; 42 are Feature-owned and 8 Product-owned. Each row also names its target Python route test. `test_exclusive_route_migration.py` first proves set equality with the legacy compiler inventory, then requires each migrated row's parameterized test to exercise zero and two simultaneous named matches. Implement `select_exclusive_route()` as a small pure helper that evaluates the complete named-match mapping: exactly one returns its target, zero returns the explicit nonempty `otherwise`, and two or more raise `AmbiguousRouteMatch`. Route functions may not encode legacy exclusivity as priority `if/elif`.
 
+Build `LOOP_SCC_INVENTORY` from assembled `CompiledGraph.sccs`, not a second YAML graph algorithm. A loop is a component with more than one node or a single node with a self-edge; every accepted component must contain exactly one `join:any` anchor. Compare the sorted anchors exactly:
+
+```python
+EXPECTED_LOOP_SCC_ANCHORS = (
+    ("assurance.generation.workflow.graph.generation-api", "plan-round-join"),
+    ("assurance.generation.workflow.graph.generation-e2e", "plan-round-join"),
+    ("assurance.generation.workflow.graph.generation-fuzz", "plan-round-join"),
+    ("assurance.generation.workflow.graph.generation-performance", "plan-round-join"),
+    ("assurance.intake.workflow.graph.entry", "advance-join"),
+    ("assurance.product.workflow.graph.product-execute", "coverage-needed"),
+    ("assurance.product.workflow.graph.product-execute", "failed-join"),
+)
+```
+
+Each inventory row records its complete SCC membership for diagnostics plus its target current-trigger test. Acceptance compares the exact anchor tuple above; count equality alone is a failure.
+
 - [ ] **Step 3: Run the intended RED.**
 
 ```bash
@@ -129,14 +148,15 @@ uv run pytest -q \
   packages/framework/graph-engine/tests/testing/test_graph_harness.py \
   packages/framework/graph-engine/tests/stategraph/test_routing.py \
   tests/architecture/test_python_graph_composition.py \
-  tests/architecture/test_exclusive_route_migration.py
+  tests/architecture/test_exclusive_route_migration.py \
+  tests/architecture/test_loop_scc_migration.py
 ```
 
 Expected: missing testing helpers; architecture test initially has no Feature factory packages to validate.
 
 - [ ] **Step 4: Implement the scripted owner context and real compiled-graph harness.**
 
-Use the Foundation anchored memory test backend for interrupt/persistence cases. Script only `AttemptResolution` values; run actual StateGraphs/routes/reducers. Record `select` values, semantic node/contract IDs, published update, interrupt envelope and terminal. Provide no fake method that marks every route successful.
+Use the Foundation anchored memory test backend for interrupt/persistence cases. Script only `AttemptResolution` values; run actual StateGraphs/routes/reducers. Record `select` values, semantic node/contract IDs, ordered validator calls, promotion decision, published update, interrupt envelope and terminal. `RecordingCapabilityBuildContext.with_test_contract(...)` may install a cloned owner-local contract only inside `graph_engine.testing`; it must reuse authenticated registry entries and must never affect contribution/catalog/manifest projections. Provide no fake method that marks every route successful.
 
 - [ ] **Step 5: Keep `.workflow` and add `.graphs` prohibitions.**
 
@@ -147,7 +167,10 @@ During coexistence `.importlinter` forbids both suffixes across Features. Add ar
 ```bash
 uv run pytest -q \
   packages/framework/graph-engine/tests/testing/test_graph_harness.py \
-  tests/architecture/test_python_graph_composition.py
+  packages/framework/graph-engine/tests/stategraph/test_routing.py \
+  tests/architecture/test_python_graph_composition.py \
+  tests/architecture/test_exclusive_route_migration.py \
+  tests/architecture/test_loop_scc_migration.py
 uv run lint-imports
 git add \
   .importlinter \
@@ -159,6 +182,8 @@ git add \
   packages/framework/graph-engine/tests/stategraph/test_routing.py \
   tests/architecture/exclusive_route_inventory.py \
   tests/architecture/test_exclusive_route_migration.py \
+  tests/architecture/loop_scc_inventory.py \
+  tests/architecture/test_loop_scc_migration.py \
   tests/architecture/test_python_graph_composition.py
 git commit -m "test: add semantic StateGraph harness"
 ```
@@ -172,9 +197,10 @@ git commit -m "test: add semantic StateGraph harness"
 - Create: `packages/capabilities/assurance-execution/assurance_execution/graphs/nodes.py`
 - Create: `packages/capabilities/assurance-execution/assurance_execution/graphs/factory.py`
 - Create: `packages/capabilities/assurance-execution/tests/test_graph_factory.py`
+- Create: `packages/capabilities/assurance-execution/tests/test_graph_validator_binding.py`
 - Modify: `packages/capabilities/assurance-execution/assurance_execution/__init__.py`
 
-**Interfaces:** `build_execution_graphs(context) -> ExecutionGraphs`; two semantic Agent nodes for IDs `assurance.execution.agent.execute.v1` and `assurance.execution.agent.run.v1`.
+**Interfaces:** `build_execution_graphs(context) -> ExecutionGraphs`; two semantic Agent nodes for IDs `assurance.execution.agent.execute.v1` and `assurance.execution.agent.run.v1`; test-only core `TaskAttemptContract` clone resolved with the existing authenticated Execution executor as `test.assurance.execution.validator-parity.v1`, binding authenticated `assurance.execution.validator.evidence.v1` without a new runtime binding or shipped-catalog change.
 
 - [ ] **Step 1: Write the missing-factory RED.**
 
@@ -191,10 +217,14 @@ def test_execution_factory_exports_execute_and_rerun(recording_context) -> None:
 
 Add tests `test_execute_and_rerun_publish_typed_public_output` and `test_execution_graph_replays_committed_attempt_without_duplicate_dispatch`.
 
+In `test_graph_validator_binding.py`, obtain the real validator entry and the Boot-resolved core contract for `assurance.execution.agent.execute.v1`. Use `dataclasses.replace` on its data-only `TaskAttemptContract` component to set test ID `test.assurance.execution.validator-parity.v1`, `validators=("assurance.execution.validator.evidence.v1",)` and `ResourceClaims(writes=("tests", "src"))`; resolve that clone with the existing authenticated Execution executor and install only the resulting test-only `ResolvedAttemptContract` through `RecordingCapabilityBuildContext.with_test_contract`. This must not create a 34th Agent runtime binding. Candidate `tests/test_validator_parity.py` must pass resource/seal admission, invoke the validator exactly once and promote. Candidate `src/validator_parity.py` must also pass resource/seal admission, invoke the validator exactly once, return the typed rejection, and perform zero durable commit-prepare (`workspace.prepare`/prepared journal event) and zero canonical promotion. Agent prepare/runtime/finalize may already have produced the sealed staged set and are not what “zero durable commit-prepare” means. Assert the normal Execution contribution/catalog and both shipped graph contracts still expose `validators=()`.
+
 - [ ] **Step 2: Run RED.**
 
 ```bash
-uv run pytest -q packages/capabilities/assurance-execution/tests/test_graph_factory.py
+uv run pytest -q \
+  packages/capabilities/assurance-execution/tests/test_graph_factory.py \
+  packages/capabilities/assurance-execution/tests/test_graph_validator_binding.py
 ```
 
 Expected: `ModuleNotFoundError: assurance_execution.graphs`.
@@ -205,12 +235,14 @@ Define JSON-compatible `ExecutionState`, Feature-local `select_execute/select_re
 
 - [ ] **Step 4: Run through scripted then real Kernel.**
 
-First use `GraphHarness` with committed/rejected/pending scripts. Then use a temporary workspace plus real Kernel/fake authenticated executor and assert one workspace promotion/receipt. Crash after promotion and replay the node; executor/promotion call count stays one.
+First use `GraphHarness` with committed/rejected/pending scripts. Then use a temporary workspace plus real Kernel/fake authenticated executor and assert one workspace promotion/receipt. Crash after promotion and replay the node; executor/promotion call count stays one. Run the test-only validator clone through the same real Kernel path; do not special-case validation inside the graph harness.
 
 - [ ] **Step 5: Verify and commit.**
 
 ```bash
-uv run pytest -q packages/capabilities/assurance-execution/tests/test_graph_factory.py
+uv run pytest -q \
+  packages/capabilities/assurance-execution/tests/test_graph_factory.py \
+  packages/capabilities/assurance-execution/tests/test_graph_validator_binding.py
 uv run pytest -q packages/capabilities/assurance-execution/tests/test_contracts.py
 uv run lint-imports
 git add \
@@ -219,7 +251,8 @@ git add \
   packages/capabilities/assurance-execution/assurance_execution/graphs/state.py \
   packages/capabilities/assurance-execution/assurance_execution/graphs/nodes.py \
   packages/capabilities/assurance-execution/assurance_execution/graphs/factory.py \
-  packages/capabilities/assurance-execution/tests/test_graph_factory.py
+  packages/capabilities/assurance-execution/tests/test_graph_factory.py \
+  packages/capabilities/assurance-execution/tests/test_graph_validator_binding.py
 git commit -m "feat: migrate Execution to Python StateGraphs"
 ```
 
@@ -247,7 +280,7 @@ git commit -m "feat: migrate Execution to Python StateGraphs"
 
 - [ ] **Step 1: Freeze the two legacy phase-fanout facts while YAML remains.**
 
-Add passing characterization tests that `case-design/prepare` feeds both execute and finalize-inputs and repair-prepare feeds both repair-execute and repair-finalize-inputs, with `min_matches=2`. These tests prove the data obligation; they do not prescribe target nodes.
+Add passing characterization tests that `case-design/prepare` feeds both execute and finalize-inputs and `case-design/repair-prepare` feeds both repair-execute and repair-finalize-inputs, each with `min_matches=2`. Pin the target in the same test module: these are exactly the two `min_matches` sites absorbed into `CompositeAttemptExecutor` as fixed internal two-consumer dataflow, their phase nodes disappear, and neither site may emit `Send` or call a generic fanout shim.
 
 - [ ] **Step 2: Write factory and composite-Agent tests.**
 
@@ -268,6 +301,8 @@ downstream case-design-retry reads current_trigger.value only
 ```
 
 `CaseReviewArrival` contains business epoch, predecessor enum, stable source activation/sequence, value, and canonical arrival ID. `CaseReviewInbox` contains sorted arrivals, dispatched IDs, and current trigger. Do not expose a generic token queue from `graph-engine`.
+
+This full current-trigger matrix is a commit gate, not advisory coverage. Do not xfail, waive, approximate with predecessor-map/last-write-wins state, or commit the Intake migration if any row fails; keep the complete production runtime on `legacy-v2` and reopen the accepted spec if equivalent behavior cannot be implemented.
 
 - [ ] **Step 4: Write human action and business-route tests.**
 
@@ -335,7 +370,7 @@ git commit -m "feat: migrate Intake to typed StateGraphs"
 
 - [ ] **Step 1: Freeze the legacy four-match behavior.**
 
-Add a passing YAML characterization that root fanout has exactly four outgoing family selectors and `min_matches=4`, with no partial dispatch on insufficient selection.
+Add a passing YAML characterization that root fanout has exactly four outgoing family selectors and `min_matches=4`, with no partial dispatch on insufficient selection. Pin it as the only target `Send` implementation among the three legacy `min_matches` sites; any additional target `Send`, generic helper, or phase-fanout shim fails the migration inventory.
 
 - [ ] **Step 2: Write the target route tests.**
 
@@ -359,6 +394,8 @@ The reducer de-duplicates by family/receipt ID and is associative, commutative a
 - [ ] **Step 4: Parameterize all four `plan-round-join` behaviors.**
 
 For api/e2e/fuzz/performance, incoming primary and retry round-advance arrivals enter a family-specific inbox. Test first arrival, same-epoch late arrival, replay dedup, merge-order independence, repeated epochs, dispatch cursor, and exact current-trigger `rounds_used/rounds_budget`. Test API/E2E codegen-fix loops and Fuzz/Performance no-fix topology separately.
+
+All four matrices are zero-waiver commit gates. A current-trigger mismatch stops the Generation/Feature migration while production remains wholly on `legacy-v2`; do not retain a point-level legacy join, drop a late arrival, substitute predecessor-map/last-write-wins state, or continue to Product cutover.
 
 - [ ] **Step 5: Test eight pure human interrupt nodes.**
 
@@ -551,9 +588,9 @@ final retro Agent receives the reconciled typed value
 
 Every digest/reference originates from authenticated receipt/evidence state, not ambient filesystem scan.
 
-- [ ] **Step 3: Reproduce and close improvement-evaluate.**
+- [ ] **Step 3: Reproduce and close effectful improvement-evaluate.**
 
-The real handler requires projection, eval run ID, outcome, report/staged/baseline/target digests. Test that a lifecycle-only public payload is rejected, then build the complete typed selector and assert the real handler commits a receipt.
+The real `evaluate-memory-improvement` handler requires projection, eval run ID, outcome, report/staged/baseline/target digests. Test that a lifecycle-only public payload is rejected, then build the complete typed selector. The production handler must return `MemoryEvalReceipt` and one `EffectIntent(kind="assurance.improvement.effect.delivery.v1", payload={"kind": "memory_eval", ...})`; `memory_eval` is the delivery payload discriminator, not a seventh registered effect kind. Drive the real Kernel and prove that delivery settlement occurs inside the same Attempt before the committed receipt is published. Add pending and publication-indeterminate cases that system-interrupt/recover without marking the Attempt successful or dispatching the evaluator twice. The separate offline benchmark Eval comparator is not this graph and remains pure.
 
 - [ ] **Step 4: Run RED and make the smallest contract/operation repair.**
 
@@ -607,7 +644,7 @@ Trace collect → three analyses → reconcile → retro Agent with exact typed 
 
 - [ ] **Step 3: Test delivery graphs and the three Improvement effects.**
 
-Review, export, evaluate, apply and rollback route on typed results. Apply covers auto review, human review, evaluate, apply, reject, rework, supersede and failure. Assert graph names are not treated as effect kinds; receipt traces use only `assurance.improvement.effect.archive.v1`, `assurance.improvement.effect.delivery.v1`, or `assurance.improvement.effect.promotion.v1` as emitted by registered handlers.
+Review, export, evaluate, apply and rollback route on typed results. Apply covers auto review, human review, evaluate, apply, reject, rework, supersede and failure. Assert graph names are not treated as effect kinds; receipt traces use only `assurance.improvement.effect.archive.v1`, `assurance.improvement.effect.delivery.v1`, or `assurance.improvement.effect.promotion.v1` as emitted by registered handlers. Both standalone `improvement-evaluate` and the evaluate occurrence inside apply must execute `evaluate-memory-improvement` as an effectful Kernel Attempt, return `MemoryEvalReceipt`, and settle exactly one `assurance.improvement.effect.delivery.v1` intent whose payload discriminator is `memory_eval` before publishing the committed receipt.
 
 - [ ] **Step 4: Test the Improvement interrupt.**
 
@@ -682,14 +719,21 @@ Assert identical bundle/public contract digests, exact owner-scoped contract IDs
 ```bash
 uv run pytest -q \
   packages/capabilities/assurance-intake/tests/test_graph_factory.py \
+  packages/capabilities/assurance-intake/tests/test_graph_join_any.py \
   packages/capabilities/assurance-generation/tests/test_graph_factory.py \
+  packages/capabilities/assurance-generation/tests/test_graph_join_any.py \
   packages/capabilities/assurance-execution/tests/test_graph_factory.py \
+  packages/capabilities/assurance-execution/tests/test_graph_validator_binding.py \
   packages/capabilities/assurance-quality/tests/test_graph_factory.py \
   packages/capabilities/assurance-healing/tests/test_graph_factory.py \
   packages/capabilities/assurance-improvement/tests/test_graph_factory.py \
+  packages/capabilities/assurance-improvement/tests/test_evaluate_graph_contract.py \
+  packages/capabilities/assurance-improvement/tests/test_graph_delivery.py \
   tests/product/test_feature_graph_bundles.py \
   tests/product/test_feature_factory_allowlist.py \
-  tests/architecture/test_python_graph_composition.py
+  tests/architecture/test_python_graph_composition.py \
+  tests/architecture/test_exclusive_route_migration.py \
+  tests/architecture/test_loop_scc_migration.py
 uv run lint-imports
 uv run pyright
 ```
@@ -718,9 +762,11 @@ git commit -m "test: freeze authenticated Feature StateGraph bundles"
 - [ ] All six factory suites and existing Capability suites pass.
 - [ ] Bundle inventory is exact: Intake 2, Generation 1, Execution 2, Quality 5, Healing 2, Improvement 7.
 - [ ] Effectful graph inventory is exact: 33 Agent contracts at 34 occurrences plus eight Improvement Task contracts at nine occurrences. Four pure functions cover the other 16 legacy direct occurrences.
-- [ ] The five Feature-owned `join:any` sites pass first/late/replay/merge-order/repeated-epoch/current-trigger/dispatch-cursor tests; no generic token scheduler was added.
-- [ ] Generation emits four `Send` values only after count validation; Intake primary/repair composite tests cover the other two legacy `min_matches` obligations without phase nodes.
+- [ ] The five Feature-owned `join:any` sites pass first/late/replay/merge-order/repeated-epoch/current-trigger/dispatch-cursor tests with zero xfails, waivers, dropped arrivals, predecessor-map/LWW approximations, or embedded legacy joins. Any failure blocks Feature freeze, Product cutover, drain, and YAML/Runtime deletion while production remains wholly on `legacy-v2`.
+- [ ] Exactly `assurance.generation.workflow.graph.generation/fanout` emits four `Send` values after count validation. Exactly `assurance.intake.workflow.graph.case-design/prepare` and `/repair-prepare` disappear into Composite internal two-consumer dataflow. No other target `Send`, generic helper, phase node, or fanout shim exists.
+- [ ] The loop-SCC inventory was derived from assembled `CompiledGraph.sccs` and still equals the exact seven `(graph_id, join:any node_id)` anchors. All five Feature-owned rows point to passing current-trigger tests; the two Product-owned rows remain explicit pending entries rather than count-only omissions.
 - [ ] Every migrated Feature row in the exact 50-site exclusive-route inventory calls `select_exclusive_route`; zero selects its recorded `otherwise` target and multiple named matches fail closed. Remaining Product-owned rows are explicitly marked pending, never silently omitted.
 - [ ] All 12 Feature human interrupts validate exact action sets after restart.
-- [ ] Retro and improvement-evaluate pass real production-handler tests; Eval remains a pure offline comparator and Nightly remains outside Product graph exports.
+- [ ] The authenticated test-only Execution clone binds `assurance.execution.validator.evidence.v1` and proves one accept/promote plus one reject/no-promote through the real LangGraph/Kernel path; every shipped production contract remains explicit `validators=()` and the production inventory remains 25 registered / 0 bound.
+- [ ] Retro and improvement-evaluate pass real production-handler tests. `improvement-evaluate` is the effectful `evaluate-memory-improvement` Attempt that returns `MemoryEvalReceipt` and settles `assurance.improvement.effect.delivery.v1` with payload discriminator `memory_eval`; only the separate offline benchmark Eval comparator is pure. Nightly remains outside Product graph exports.
 - [ ] Run `uv run ruff check .`, `uv run ruff format --check .`, `uv run pyright`, `uv run lint-imports`, and focused Capability tests before requesting review.

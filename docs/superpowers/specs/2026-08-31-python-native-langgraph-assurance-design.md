@@ -331,7 +331,7 @@ class AgentExecutionContract(Generic[InputT, AgentResultT, OutputT]):
     validators: tuple[str, ...]
 ```
 
-The remaining 25 direct task-node occurrences initially present 12 distinct Feature-owned candidates. Characterization classifies four IDs—Generation complete, Generation review-round advance, Intake review-round advance and Healing repair-round advance—as deterministic pure functions with no filesystem, activity, effect or durable-evidence obligation. They account for 16 occurrences and become ordinary typed graph nodes. The other eight IDs are effectful Improvement contracts at nine occurrences and use the following core contract:
+The remaining 25 direct task-node occurrences initially present 12 distinct Feature-owned candidates. Characterization classifies four IDs—Generation complete, Generation review-round advance, Intake review-round advance and Healing repair-round advance—as deterministic pure functions with no filesystem, activity, effect or durable-evidence obligation. They account for 16 occurrences and become ordinary typed graph nodes. The other eight IDs are effectful Improvement contracts at nine occurrences and use the following core contract. In particular, `assurance.improvement.evaluate-memory-improvement` appears in both the standalone evaluate graph and the apply graph; it returns `MemoryEvalReceipt` and emits registered effect kind `assurance.improvement.effect.delivery.v1` with payload discriminator `memory_eval`.
 
 ```python
 @dataclass(frozen=True)
@@ -368,7 +368,9 @@ Boot requires exactly one Product runtime binding for each of the 33 Agent contr
 
 The dependency direction remains strict: `agent-runtime-contracts` depends on `graph-engine`; `graph-engine` never imports `agent-runtime-contracts`. The adapter layer constructs a `CompositeAttemptExecutor` from authenticated prepare, selected Agent runtime and finalize entries. Core sees only the generic resolved executor and contract. This preserves the existing boundary test that forbids a reverse dependency.
 
-There are currently 25 registered validators across the six Feature wheels: Execution 2, Generation 8, Healing 3, Improvement 4, Intake 2 and Quality 6. They are not one-to-one with the 41 effectful contracts, and registry membership proves availability rather than use. Current Workflow nodes bind zero validators. Any new non-empty binding is therefore an explicit behavior change, not preservation of an effective legacy attachment. Before such a binding is approved, its complete staged-set context and validator inputs must be demonstrated. Every target effectful contract still declares an ordered `validators` tuple, including an explicit empty tuple when appropriate. Contract closure does not require every registered validator to be used.
+There are currently 25 registered validators across the six Feature wheels: Execution 2, Generation 8, Healing 3, Improvement 4, Intake 2 and Quality 6. They are not one-to-one with the 41 effectful contracts, and registry membership proves availability rather than use. Current Workflow nodes bind zero validators. Any new non-empty production binding is therefore an explicit behavior change, not preservation of an effective legacy attachment. Before such a binding is approved, its complete staged-set context and validator inputs must be demonstrated. Every shipped effectful contract still declares an ordered `validators` tuple, including an explicit empty tuple when appropriate. Contract closure does not require every registered validator to be used.
+
+The migration nevertheless proves the binding machinery across both runtimes with one test-only parity fixture. Boot/test code starts from the authenticated resolved core contract for `assurance.execution.agent.execute.v1`, clones its data-only `TaskAttemptContract` with a test ID, `validators=("assurance.execution.validator.evidence.v1",)` and `ResourceClaims(writes=("tests", "src"))`, then constructs a test-only `ResolvedAttemptContract` with the existing authenticated Execution executor. The legacy fixture node uses the same test-only resource envelope and validator. Thus both `tests/test_validator_parity.py` and `src/validator_parity.py` pass resource/seal admission and reach the validator: the first must call it exactly once and promote on both sides; the second must call it exactly once, reject, perform zero durable commit-prepare and never promote. No 34th Agent runtime binding is created. This fixture is excluded from all Feature contributions, ProductLock/GraphBuildManifest digests, packaged declarations and production binding counts. The production invariant remains 25 registered and zero bound until a separate behavior-change decision explicitly approves otherwise.
 
 Prepare, runtime execution and finalize are one semantic Attempt and one commit. The composite executor retains the validated logical input, prepared value and validated Agent result and passes the typed bundle to finalize; phase-to-phase data does not leak back into graph projections. Phase receipts may remain internal Attempt evidence. If a prepare/finalize operation has independent business routing, approval, compensation or durable scheduling semantics, it receives its own explicit contract and LangGraph node; three generic phase aliases are not restored.
 
@@ -495,11 +497,13 @@ The migration rewrites each current behavior directly; it does not lower or inte
 
 The 9 current `join:any` sites are explicit migration items, not a fallback. Every replacement preserves the meaning of downstream `/tokens/0`: “the trigger that caused this activation,” not a predecessor-keyed aggregate with ambiguous ordering.
 
-The 7 looped sites carry a business `epoch`/round plus a typed trigger containing predecessor, stable arrival sequence and value. If a late predecessor can re-activate the legacy join, the Feature graph retains that observable behavior with a flow-specific pending-trigger inbox and dispatch cursor. This is local business state for that named flow, not a reusable token scheduler. Where characterization proves predecessors mutually exclusive and late reactivation impossible, the graph may use one typed `current_trigger` instead.
+All 7 looped sites carry a business `epoch`/round plus a typed trigger containing predecessor, stable arrival sequence and value, and all 7 use a flow-specific pending-trigger inbox plus dispatch cursor so late arrivals can re-activate downstream work exactly once. This is local business state for that named flow, not a reusable token scheduler. Only the two nonloop Product assessment exits—`assess-satisfied` and `assess-unsatisfied`—may use one typed `AssessmentTrigger`, and only after tests prove outcome/predecessor mutual exclusion plus no late reactivation; either failed proof requires the same equivalent inbox/cursor implementation.
+
+A Feature-owned `join:any` rewrite that fails any current-trigger, same-epoch late-arrival, replay, de-duplication or dispatch-cursor parity assertion is a migration-stop defect with zero waivers. This stops Feature acceptance, Product cutover, legacy drain and YAML/Runtime deletion; it does not terminate production Invocations, which remain on their immutable full `legacy-v2` runtime. A point exception, embedded legacy join, predecessor-map approximation, dropped late token or last-write-wins substitute is forbidden. Changing this behavior requires reopening this spec and the Runtime-deletion objective for explicit review.
 
 Generation plan-review loops additionally store `round_budget`, current plan and current review result. Intake case-design/rework stores its current case result. Product execution failure, coverage and assessment paths use typed branch outcomes. Tests cover first arrival, late arrival, repeated loop epochs, stable trigger selection and downstream input identity for all 9 sites before legacy deletion.
 
-The Generation four-family fanout raises `InsufficientRouteMatches` before returning any `Send` value. The two Intake `min_matches: 2` sites are prepare-to-runtime/finalize phase plumbing that disappear inside the composite Agent Attempt; primary and repair tests prove both consumers receive the prepared value and validated Agent result before finalize. Exclusive routes retain their required declared fallback: zero named matches selects `otherwise`, exactly one selects that target, and more than one fails with ambiguity. They do not become Python `if/elif` chains that silently choose the first match.
+Exactly one legacy `min_matches` site becomes a target LangGraph fanout: `assurance.generation.workflow.graph.generation/fanout` validates four matches and raises `InsufficientRouteMatches` before returning its four `Send` values. Exactly two sites—`assurance.intake.workflow.graph.case-design/prepare` and `/repair-prepare`, both with `min_matches: 2`—are eliminated as graph nodes and preserved only as fixed two-consumer dataflow inside `CompositeAttemptExecutor`; primary and repair tests prove both the prepared value and validated Agent result reach finalize. No second target `Send`, generic `min_matches` helper or phase-fanout compatibility shim is permitted. Exclusive routes retain their required declared fallback: zero named matches selects `otherwise`, exactly one selects that target, and more than one fails with ambiguity. They do not become Python `if/elif` chains that silently choose the first match.
 
 Business round and activation counters remain the authoritative domain limits. `AssuranceApplication` also supplies a pinned, entrypoint-specific `recursion_limit` as a top-level LangGraph config key, sized above the longest valid execution. `GraphRecursionError` is normalized as a runtime failure and tested independently from business-budget exhaustion.
 
@@ -522,7 +526,7 @@ The six registered effect kinds are:
 - `assurance.improvement.effect.delivery.v1`;
 - `assurance.improvement.effect.promotion.v1`.
 
-`improvement-evaluate`, `improvement-export`, `improvement-apply` and `improvement-rollback` are graph names, not effect kinds.
+`improvement-evaluate`, `improvement-export`, `improvement-apply` and `improvement-rollback` are graph names, not effect kinds. The first is still effectful: its `evaluate-memory-improvement` Attempt emits `assurance.improvement.effect.delivery.v1` with payload discriminator `memory_eval` and settles that intent before publishing its committed receipt. This is distinct from the out-of-scope offline benchmark comparator called Eval.
 
 Technical apply/reconcile states remain inside the Attempt Kernel transaction. An effect becomes a dedicated LangGraph node/subgraph only when it has independent business-visible routing, human approval, compensation or scheduling semantics. Discovery of an installed effect never makes it graph-reachable.
 
@@ -624,7 +628,21 @@ Checkpoint writes and canonical workspace promotion need not share one database 
 
 ## 22. Existing Workflow Coverage
 
-The accepted working-tree baseline is 64 graphs, 325 nodes, 367 edges, 124 conditional edges, 73 subgraph nodes, 12 joins (9 `any`, 3 `all`), 13 interrupts, 7 loop SCCs and a maximum nesting depth of 5. These numbers include the uncommitted Generation completion and Intake composite-dataflow changes present when this design was accepted. They are characterization inventory, not a target Python node count; composite Attempts and direct rewrites deliberately reduce the implementation surface. Implementation starts only from an explicit integration-base commit containing that baseline, or after the inventory/spec/plan are deliberately regenerated for a different base.
+The accepted working-tree baseline is 64 graphs, 325 nodes, 367 edges, 124 conditional edges, 73 subgraph nodes, 12 joins (9 `any`, 3 `all`), 13 interrupts, 7 loop SCCs and a maximum nesting depth of 5. The preflight derives loop components from assembled `CompiledGraph.sccs`, requires exactly one `join:any` anchor per loop SCC, records full SCC membership for diagnostics, and compares this canonical sorted anchor tuple by exact equality rather than checking only the count:
+
+```python
+EXPECTED_LOOP_SCC_ANCHORS = (
+    ("assurance.generation.workflow.graph.generation-api", "plan-round-join"),
+    ("assurance.generation.workflow.graph.generation-e2e", "plan-round-join"),
+    ("assurance.generation.workflow.graph.generation-fuzz", "plan-round-join"),
+    ("assurance.generation.workflow.graph.generation-performance", "plan-round-join"),
+    ("assurance.intake.workflow.graph.entry", "advance-join"),
+    ("assurance.product.workflow.graph.product-execute", "coverage-needed"),
+    ("assurance.product.workflow.graph.product-execute", "failed-join"),
+)
+```
+
+These numbers include the uncommitted Generation completion and Intake composite-dataflow changes present when this design was accepted. They are characterization inventory, not a target Python node count; composite Attempts and direct rewrites deliberately reduce the implementation surface. Implementation starts only from an explicit integration-base commit containing that baseline, or after the inventory/spec/plan are deliberately regenerated for a different base.
 
 All current topologies are representable directly:
 
@@ -636,7 +654,7 @@ All current topologies are representable directly:
 - **Improvement:** review/apply/rollback/archive are Python graphs; technical effects remain Kernel details.
 - **Product full/execute:** Product explicitly composes the above subgraphs and cross-Feature recovery routes.
 - **Retro:** topology is representable, but current production input/output contracts must be repaired before cutover.
-- **Eval:** the offline comparator remains a deterministic function; a multi-sample campaign may later receive a graph.
+- **Offline benchmark Eval:** its export comparator remains a deterministic function; a multi-sample campaign may later receive a graph. It is not the effectful `improvement-evaluate` Product entrypoint.
 - **Nightly:** current handlers are not a working Product graph/entrypoint and are not silently promoted during migration.
 
 ## 23. CLI Lifecycle
@@ -755,13 +773,15 @@ Migration is staged for review and rollback, but no production Invocation is adv
 
 - Implement the Execution Feature Python graph directly.
 - Run it with scripted Kernel resolutions and then the real Kernel.
+- Clone one test-only Execution contract that binds authenticated `assurance.execution.validator.evidence.v1`; prove accept/promote and reject/no-promote through the real LangGraph/Kernel path while all shipped contracts remain `validators=()`.
 - Do not route it through `GraphDef`, the old planner or an `AgentLeafSpec`.
 
 ### Phase 4: Feature graph migration
 
 - Implement Intake, Generation, Quality, Healing and Improvement Python graph bundles.
-- Rewrite the five Feature-owned any-join cases—including epoch/current-trigger and late-arrival behavior—and account for all three min-match obligations specifically.
-- Repair Retro and improvement-evaluate contracts before their graphs are accepted.
+- Rewrite the five Feature-owned any-join cases—including epoch/current-trigger and late-arrival behavior—with zero semantic waivers; any parity failure hard-stops later cutover/drain/deletion phases while production stays on `legacy-v2`.
+- Implement exactly one `min_matches` target `Send` at Generation `generation/fanout`; absorb exactly Intake `case-design/prepare` and `repair-prepare` into Composite internal two-consumer dataflow.
+- Repair Retro and the effectful `improvement-evaluate` contract before their graphs are accepted; the latter settles `assurance.improvement.effect.delivery.v1` with payload discriminator `memory_eval` inside the Attempt, while only offline benchmark Eval remains pure.
 
 ### Phase 5: Product entrypoints
 
@@ -774,6 +794,7 @@ Migration is staged for review and rollback, but no production Invocation is adv
 
 - Drive old and new runtimes only with scripted/snapshotted inputs or separate shadow Invocations.
 - Compare semantic decisions, Attempt calls, interrupts, receipts and terminals rather than internal IDs.
+- Run the same authenticated test-only evidence Validator against identical accepted/rejected candidate sets on both runtimes; require exactly-once calls and identical promotion blocking without changing the production 25/0 binding inventory.
 - Cut over a public entrypoint only when its new graph passes parity and crash tests.
 - One Invocation records one runtime-specific authenticated build identity at start and never switches in place: legacy retains its `InvocationLock` v2 digest, while LangGraph records GraphRevision/ProductLock v3.
 
@@ -796,6 +817,7 @@ Temporary entrypoint cutover switches must be deleted in the final Phase 7 clean
 - Assert public graph exports, typed inputs/outputs and route outcomes.
 - Test loops, budgets, fanout counts, ambiguity and interrupt action validation.
 - Test the five Feature-owned any-join rewrites for current-trigger identity, late arrival and repeated activation epochs.
+- Require all five rows green with zero waivers before Product graph work may begin.
 - Test only through the Feature graph bundle interface, not private node tables.
 - Use a spy owner-scoped build context to assert contract IDs and ensure graph code cannot inject handler/validator/runtime bindings.
 
@@ -807,12 +829,13 @@ Use compiled StateGraphs, the anchored in-memory checkpointer adapter and a scri
 
 - Test the two looped Product any-join rewrites for current-trigger identity, same-epoch late arrival, replay and dispatch cursor behavior.
 - Test both Product assessment exits for outcome/predecessor mutual exclusion and no late reactivation; if characterization fails, run the same inbox matrix.
-- Together with Feature tests, account for all nine legacy any-join sites before deletion.
+- Together with Feature tests, account for all nine legacy any-join sites before deletion with zero xfails or semantic waivers, and close all pending rows in the exact seven-anchor SCC inventory.
 
 ### Kernel tests
 
 - full staged write set and sealed bytes;
 - validator order, rejection and exceptions;
+- one test-only authenticated `assurance.execution.validator.evidence.v1` binding executes accepted/rejected candidate sets exactly once through both legacy and LangGraph paths without changing production binding counts;
 - resource conflicts;
 - OpenCode activity adopt/reconcile;
 - prepare/promote crash windows;
@@ -874,8 +897,8 @@ bash scripts/assurance_product_wheel_smoke_test.sh
 7. Product supplies exactly 33 runtime bindings and cannot change Feature validators/resources.
 8. Every effectful node uses the Attempt Kernel and stable Attempt key.
 9. Crash after promotion but before checkpoint never repeats canonical mutation.
-10. All 9 legacy any-join flows have specific typed Python rewrites, with no residual token scheduler.
-11. `min_matches`, exclusive ambiguity, loop budgets and interrupt action validation remain fail-closed.
+10. All 9 legacy any-join flows have specific typed Python rewrites, with no residual token scheduler and zero parity waivers; any Feature current-trigger mismatch blocks cutover, drain and deletion.
+11. Exactly one `min_matches` site becomes a four-value Generation `Send`, exactly two Intake sites become Composite internal two-consumer dataflow, and no compatibility shim exists; exclusive ambiguity, loop budgets and interrupt action validation remain fail-closed.
 12. A revision mismatch refuses resume instead of running the latest graph.
 13. No SUT executable graph code is imported.
 14. Retro is not cut over until its production contracts close.

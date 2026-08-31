@@ -18,7 +18,7 @@
 - Work in the clean isolated worktree created for the plan suite. Never stage unrelated Capability/OpenCode changes from the original dirty worktree.
 - Core must not import `agent_runtime_contracts`; the adapter constructs core `ResolvedAttemptContract` values.
 - Keep 99 alias IDs, `expand_agent_job_slots`, existing Product slot bindings, and the legacy scheduler operational through shadow. This plan adds semantic resolution beside them and deletes nothing needed for rollback.
-- Every contract has a required ordered `validators` tuple. The migration baseline is explicitly `()` for every contract because current Workflow nodes bind zero validators. Do not infer use from the 25-item registry and do not enable a validator in this plan.
+- Every shipped contract has a required ordered `validators` tuple. The migration baseline is explicitly `()` for every production contract because current Workflow nodes bind zero validators. Do not infer use from the 25-item registry and do not enable a production validator in this plan; the later Feature/Product test-only cloned-contract fixture is outside contributions and production counts.
 - A validator sees the complete sealed staged set and authenticated bytes/input/output/evidence. Validation precedes durable prepare and promotion.
 - The Kernel never selects the next graph node or sets Invocation terminal state.
 - The initial implementation preserves the Invocation-wide pending barrier. Sibling pending writes can be durable, but no later superstep starts until the interrupted superstep closes.
@@ -407,6 +407,8 @@ assurance.improvement.apply-improvement-review
 assurance.improvement.apply-memory-improvement
 assurance.improvement.rollback-memory-improvement
 ```
+
+`assurance.improvement.evaluate-memory-improvement` is not the pure offline benchmark Eval comparator. It occurs in both standalone `improvement-evaluate` and `improvement-apply`, returns `MemoryEvalReceipt`, and emits registered effect kind `assurance.improvement.effect.delivery.v1` with payload discriminator `memory_eval`; both occurrences therefore use the Kernel.
 
 Move the three sets of pure models/transforms into owner-local `contracts/decisions.py`; make the existing legacy `operations/workflow_state.py` handlers delegate to those functions while coexistence continues. Tests assert the pure functions reject invalid inputs and return the same canonical output as their legacy handlers without touching a spy `TaskContext`. Tests assert the other eight resolve as `TaskAttemptContract` values with `validators=()`.
 
