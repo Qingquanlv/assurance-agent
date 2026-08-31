@@ -66,6 +66,10 @@ Produce the **Explore** artifacts (Phase 0.5) from deterministic historical fact
 The deterministic prepare node has already written
 `qa/changes/<change-id>/explore/context.json`. Read that file directly with the native
 `read` tool. Do not run a command to recreate, validate, or replace it.
+Do not use glob to check either Explore path (`context.json` or `exploration.json`).
+Change-local files may be ignored by repository search even though an exact native
+read can access them. A glob result of `No files found` is not a missing-file result:
+perform the exact read. Likewise, verify the output with an exact read after writing.
 
 - Missing or unreadable context → fail the task. Do not return structured success,
   especially not `{"output_files":[]}`; without authenticated context there is no

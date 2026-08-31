@@ -108,7 +108,7 @@ graphs:
         timeout: short
       prepare:
         kind: task
-        capability: assurance.healing.fix-proposal.prepare
+        capability_slot: fix-proposal.prepare
         input:
           capability_leafs: []
         input_projection: &failure-prepare
@@ -156,7 +156,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.healing.fix-proposal.finalize
+        capability_slot: fix-proposal.finalize
         input:
           capability_leafs: []
         input_projection:
@@ -238,7 +238,7 @@ graphs:
         timeout: short
       prepare:
         kind: task
-        capability: assurance.healing.coverage-repair.prepare
+        capability_slot: coverage-repair.prepare
         input:
           capability_leafs: []
         input_projection:
@@ -286,7 +286,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.healing.coverage-repair.finalize
+        capability_slot: coverage-repair.finalize
         input:
           capability_leafs: []
         input_projection:

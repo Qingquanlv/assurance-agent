@@ -20,9 +20,21 @@ Do not rely on prior conversation context.
    authenticated case-design input set. Read every path exactly as provided with
    the native read tool. Do not discover these inputs with glob: ignored change
    files may be absent from search results. The set contains `.qa.yaml`,
-   `proposal.md`, `trace/minimum-coverage-matrix.json`, and every exact
+   `requirement.md`, `proposal.md`, `trace/minimum-coverage-matrix.json`, and every exact
    `cases/<module>/case.yaml` path locked by `case_delta_paths`.
 4. Independently read the relevant **product source code** for every product fact used in the verdict. At minimum inspect the implementation entry point plus the controller/service/schema/model or frontend component needed to verify the proposed scenarios. Do not treat proposal, case, Explore advisory, requirements, docs, or tests as product-fact evidence.
+   A glob result of `No files found` is not evidence that product source is absent.
+   Repository search may hide ignored product source even though exact reads and
+   path-scoped grep can access it. If the proposal or a prior review names product
+   source files, read those exact paths independently before attempting discovery.
+   Otherwise seed discovery from exact paths in the requirement and use path-scoped
+   grep under plausible source roots. Report source as unavailable only after exact
+   reads and path-scoped grep fail; never infer absence from glob alone.
+   For E2E cases, perform a path-scoped search for the exact component path and page or menu label under `app/` and `web/src/`,
+   even when those roots are ignored. Read matching menu-registration or dynamic-route
+   source before claiming the browser entry is unspecified. When that source proves
+   an exact route or navigation binding, do not escalate the E2E entry mechanism to human review;
+   route it as bounded `needs_fix` with the exact case precondition locator instead.
 5. Distinguish author-owned outputs from external evidence. A missing or invalid
    case-design output (`.qa.yaml`, `proposal.md`, case YAML, or MRC matrix) is a
    mechanically fixable authoring defect: return `needs_fix` with an exact locator
@@ -30,7 +42,15 @@ Do not rely on prior conversation context.
    normal pass/needs-fix verdict; do not invent product behavior. If the orchestrator
    requires a JSON artifact for that external-evidence failure, write
    `needs_human_review` with the missing evidence identified.
-6. Use files read in this invocation as the sole source of truth; do not rely on the case author's conclusions or prior conversation.
+6. Treat the locked `requirement.md` as authoritative owner scope evidence. In
+   particular, explicit numerical thresholds and load values in `requirement.md`
+   are already owner-confirmed; do not require a duplicate value in graph approval
+   metadata or product source. Requirements remain invalid as product-fact evidence.
+7. Use files read in this invocation as the sole source of truth; do not rely on the case author's conclusions or prior conversation.
+8. Exhaust the review in one pass: complete all review criteria before writing the verdict.
+   Do not stop after the first defect. Include every currently observable finding
+   and every bounded repair in the same review artifact so one defect does not
+   consume one graph review round.
 
 **After completing work:**
 
@@ -80,6 +100,7 @@ Expected input files:
 
 ```text
 qa/changes/<change-id>/proposal.md
+qa/changes/<change-id>/requirement.md
 qa/changes/<change-id>/cases/<locked-module>/case.yaml
 qa/changes/<change-id>/.qa.yaml
 ```
@@ -212,7 +233,17 @@ Violations:
 - e2e_if_enabled item is skipped without explicit skipped_by_scope + reason → `needs_fix`
   (the author must either cover it or add the explicit reason). Escalate to human
   only when an explicit reason exists and conflicts with another frozen scope input.
-- closed-category MRC key absent from `.aa/data-knowledge.yaml` / declared journey set **and** no matching `plans/data-knowledge.proposal.*.yaml` `discovered_candidates` entry → `needs_fix` (case-design must not invent MRC keys; unknown keys require a knowledge proposal)
+- closed-category MRC key absent from `.aa/data-knowledge.yaml` / declared journey set
+  **and** no already-existing matching
+  `plans/data-knowledge.proposal.*.yaml` `discovered_candidates` entry: follow the
+  same closed-key recipe as `aa-case-design`. When an explicit requirement or
+  resolved Explore assertion intent supplies the oracle, the row may remain
+  covered and `proposal.md` Data Needs records the missing vocabulary. Otherwise
+  return bounded `needs_fix` instructing `aa-case-design` to mark that exact
+  matrix row `skipped_by_scope`, clear `covered_by_cases`, add a precise
+  `skip_reason`, and narrow any unsupported case assertion. Do not instruct
+  `aa-case-design` to create a data-knowledge proposal; it is not an authorized
+  case-design output.
 
 Do not require or suggest `trace.minimum_required_coverage` in case YAML. Case
 `trace` is a separate capability proof map whose keys must be exact graph-provided
@@ -687,6 +718,28 @@ When `decision == "needs_fix"`, ALL of the following MUST hold — violating any
 - Findings with `severity == "critical"` MUST NOT be referenced in `auto_fix_plan`.
 - A `high` finding MAY be referenced only when requirement/product-source evidence proves one
   intended repair and the plan names a bounded artifact locator and exact fields or steps to edit.
+- Every automatic repair artifact must be an authorized case-design output:
+  `.qa.yaml`, `proposal.md`, `trace/minimum-coverage-matrix.json`, or one of the
+  graph-provided exact `case_delta_paths`. A file under `plans/`, `.aa/`, the
+  stable `qa/cases/` tree, or any other path cannot appear as an automatic
+  repair target. Route the repair through an authorized case/proposal/matrix
+  edit or do not classify it as mechanically auto-fixable.
+- Every `auto_fix_plan` item must use this exact shape; do not substitute
+  `action`, `instructions`, or a free-form `locator` for these fields:
+  `{"finding_id":"CR-001","artifact":"qa/changes/<change-id>/cases/<module>/case.yaml","case_id":"TC_001","edits":["one exact edit instruction"]}`.
+  Use `case_id: null` for a proposal, matrix, or `.qa.yaml` repair. The matching
+  finding locator's `key` is the exclusive field or section scope.
+- Each `auto_fix_plan[].artifact` MUST equal that finding's `locator.artifact`,
+  and each finding ID may appear in exactly one plan item. If one logical defect
+  requires edits to two artifacts, split it into one finding per artifact, give
+  each finding its own exact locator and unique ID, and reference each ID in one
+  matching plan item. Never reuse a case-file finding ID for a `proposal.md`
+  edit, or vice versa.
+- For a `case.yaml` finding, `locator.key` MUST contain only dotted field paths.
+  Use one path such as `"key":"automation.e2e.entry"`, or for multiple sibling
+  fields use `"key":"steps,assertions"` with a comma separator. The form
+  `"key":"steps/assertions"` is invalid; `/`, `|`, prose, JSONPath, and YAML
+  selectors are not accepted by the repair contract.
 
 ---
 

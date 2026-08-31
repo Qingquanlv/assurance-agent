@@ -227,6 +227,9 @@ def test_case_review_result_schema_exposes_typed_finding_locators() -> None:
     schema = CaseReviewResultV1.model_json_schema()
 
     assert schema["properties"]["findings"]["items"] == {"$ref": "#/$defs/CaseReviewFindingV1"}
+    assert any(
+        "comma-separated dotted field paths" in note for note in schema["prompt_notes"]
+    )
 
 
 def _review_payload(

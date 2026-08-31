@@ -19,6 +19,12 @@ value is byte-for-byte present in the enum.
 
 ## Inputs
 
+Read `proposal.md` first. When its `Product Source Verification` section lists
+exact product-source paths, read every listed path directly before any discovery.
+A glob result of `No files found` is not evidence that product source is absent;
+ignored source files remain exact-readable. Only declare source unavailable after
+those exact reads and a path-scoped grep both fail.
+
 ### required
 
 - `qa/changes/<change-id>/cases/**/case.yaml`
@@ -46,6 +52,20 @@ value is byte-for-byte present in the enum.
 - `qa/changes/<change-id>/plans/e2e-codegen-plan.md`
 - `qa/changes/<change-id>/plans/e2e-codegen-mapping.json`
 - `qa/changes/<change-id>/plans/m4-review-summary.md`
+
+## Closed Codegen Mapping Contract
+
+`e2e-codegen-mapping.json` must use this exact JSON shape:
+
+```json
+{"schema_version":"1","layer":"e2e","entries":[{"case_id":"TC_DEPT_E2E_001","symbol":"test_tc_dept_e2e_001__behavior","target_file":"tests/e2e/test_dept.py"}]}
+```
+
+Use `schema_version: "1"`, not `"1.0"`. The only top-level keys are
+`schema_version`, `layer`, `entries`, and optional `schema_case_ids`. Each entry
+has exactly `case_id`, `symbol`, and `target_file`. Do not emit `family`,
+`change_id`, `mappings`, or `test_function`. Map every selected E2E Case ID
+exactly once, and no other Case ID.
 
 ### conditional
 

@@ -94,6 +94,12 @@ def test_performance_plan_requires_source_backed_seed_lookup_and_runtime_host() 
     assert "literal character budget" in normalized
     assert "`p<uuid8>r`" in normalized
     assert "count every concrete root, child, and grandchild seed name" in normalized
+    assert "Never read `.env`, `*.env`, or credential-bearing benchmark environment files" in normalized
+    assert "Use environment variable names and non-secret defaults only" in normalized
+
+    codegen = " ".join(resource_text("skills/aa-performance-codegen/SKILL.md").split())
+    assert "Never read `.env`, `*.env`, or credential-bearing benchmark environment files" in codegen
+    assert "Use environment variable names and non-secret defaults only" in codegen
 
 
 def test_codegen_skills_freeze_inputs_and_require_every_mapping_target() -> None:
@@ -104,6 +110,15 @@ def test_codegen_skills_freeze_inputs_and_require_every_mapping_target() -> None
         assert "Plan, case, and review inputs are immutable" in normalized
         assert "Every closed-mapping target must appear in `files`" in normalized
         assert "Do not list plan, case, or review inputs in `files`" in normalized
+        assert (
+            "Read every exact product-source path cited by the approved plan before any discovery"
+            in normalized
+        )
+        assert "A glob result of `No files found` is not evidence that product source is absent" in normalized
+        assert "ignored source files remain exact-readable" in normalized
+        assert "runtime `allowed_outputs` list is the exact write whitelist" in normalized
+        assert "keep the fixture or helper inside an authorized mapped target" in normalized
+        assert "Never attempt or declare an unlisted support file" in normalized
 
 
 def test_all_plan_reviews_route_bounded_defects_to_replan() -> None:
@@ -111,6 +126,17 @@ def test_all_plan_reviews_route_bounded_defects_to_replan() -> None:
     assert "including fuzz and performance" in persona
     assert "Severity and a blocking impact do not by themselves require human review" in persona
     assert "Fuzz and performance reviews are human-only" not in persona
+
+
+def test_plan_reviews_do_not_block_codegen_on_a_source_proven_sut_defect() -> None:
+    for family in ("api", "e2e", "fuzz", "performance"):
+        reviewer = " ".join(
+            resource_text(f"skills/aa-{family}-plan-reviewer/SKILL.md").split()
+        )
+
+        assert "A source-proven SUT defect is test evidence, not a missing product decision" in reviewer
+        assert "Do not require the SUT defect to be corrected before codegen" in reviewer
+        assert "let execution and reporting record the failure" in reviewer
 
     for family in ("api", "e2e", "fuzz", "performance"):
         reviewer = " ".join(resource_text(f"skills/aa-{family}-plan-reviewer/SKILL.md").split())
@@ -125,6 +151,26 @@ def test_all_plan_reviews_route_bounded_defects_to_replan() -> None:
         review_path = f"review/{family}-plan-review.json"
         assert review_path in planner
         assert "apply only the findings named in `auto_fix_plan`" in planner
+
+
+def test_all_plan_reviewers_use_exact_locked_inputs_instead_of_change_globs() -> None:
+    for family in ("api", "e2e", "fuzz", "performance"):
+        reviewer = " ".join(resource_text(f"skills/aa-{family}-plan-reviewer/SKILL.md").split())
+
+        assert "`review_input_paths`" in reviewer
+        assert "read every listed path directly" in reviewer
+        assert "Do not use glob" in reviewer
+
+
+def test_all_planners_and_reviewers_read_attested_source_paths_before_discovery() -> None:
+    for family in ("api", "e2e", "fuzz", "performance"):
+        for role in ("plan", "plan-reviewer"):
+            skill = " ".join(resource_text(f"skills/aa-{family}-{role}/SKILL.md").split())
+
+            assert "Read `proposal.md` first" in skill
+            assert "read every listed path directly before any discovery" in skill
+            assert "A glob result of `No files found` is not evidence that product source is absent" in skill
+            assert "ignored source files remain exact-readable" in skill
 
 
 def test_fuzz_review_routes_source_backed_schema_loader_corrections_to_replan() -> None:

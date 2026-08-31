@@ -60,6 +60,48 @@ def test_composition_has_exact_provider_and_binding_closure(adapter, installed_s
 
 
 @pytest.mark.parametrize("adapter", ["opencode", "cursor"])
+def test_composition_graph_routes_every_agent_phase_through_deployment_alias(
+    adapter,
+    installed_sources,
+) -> None:
+    from assurance_product.product import resolve_assurance_composition
+
+    composition = resolve_assurance_composition(request_for(adapter, installed_sources))
+    graph_capabilities = {
+        node.definition.capability
+        for graph in composition.workflow.graphs.values()
+        for node in graph.nodes.values()
+        if node.definition.capability is not None
+    }
+
+    assert set(ALL_BINDING_IDS).issubset(graph_capabilities)
+
+
+@pytest.mark.parametrize("adapter", ["opencode", "cursor"])
+def test_composition_graph_applies_agent_execution_resource_contracts(
+    adapter,
+    installed_sources,
+) -> None:
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+    from assurance_product.models import alias_ids_for_prepare
+    from assurance_product.product import resolve_assurance_composition
+
+    composition = resolve_assurance_composition(request_for(adapter, installed_sources))
+    nodes_by_capability = {
+        node.definition.capability: node.definition
+        for graph in composition.workflow.graphs.values()
+        for node in graph.nodes.values()
+        if node.definition.capability is not None
+    }
+
+    for prepare_id, contract in AGENT_EXECUTION_CONTRACTS.items():
+        execute_alias = alias_ids_for_prepare(prepare_id)[1]
+        node = nodes_by_capability[execute_alias]
+        assert node.resources == contract.resources
+        assert node.retry == "agent-transient"
+
+
+@pytest.mark.parametrize("adapter", ["opencode", "cursor"])
 def test_composition_selects_exact_plugin_and_product_identity(adapter, installed_sources):
     from assurance_product.models import CONFIGURATION_PLUGIN_ID, PLUGIN_ID
     from assurance_product.product import resolve_assurance_composition

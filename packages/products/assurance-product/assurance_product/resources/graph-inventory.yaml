@@ -16,15 +16,20 @@ entrypoints:
     - assurance.improvement.workflow.graph.improvement-archive:prepare->execute
     - assurance.product.workflow.graph.product-archive:run->done
     aliases:
-    - assurance.improvement.archive.finalize
-    - assurance.improvement.archive.prepare
     - assurance.product.agent.improvement.archive.execute
+    - assurance.product.agent.improvement.archive.finalize
+    - assurance.product.agent.improvement.archive.prepare
   case:
     nodes:
     - assurance.intake.workflow.graph.case-design/done
     - assurance.intake.workflow.graph.case-design/execute
     - assurance.intake.workflow.graph.case-design/finalize
+    - assurance.intake.workflow.graph.case-design/finalize-inputs
     - assurance.intake.workflow.graph.case-design/prepare
+    - assurance.intake.workflow.graph.case-design/repair-execute
+    - assurance.intake.workflow.graph.case-design/repair-finalize
+    - assurance.intake.workflow.graph.case-design/repair-finalize-inputs
+    - assurance.intake.workflow.graph.case-design/repair-prepare
     - assurance.intake.workflow.graph.case-review/done
     - assurance.intake.workflow.graph.case-review/execute
     - assurance.intake.workflow.graph.case-review/finalize
@@ -35,9 +40,17 @@ entrypoints:
     - assurance.product.workflow.graph.product-case/done
     - assurance.product.workflow.graph.product-case/run
     edges:
-    - assurance.intake.workflow.graph.case-design:execute->finalize
+    - assurance.intake.workflow.graph.case-design:execute->finalize-inputs
     - assurance.intake.workflow.graph.case-design:finalize->done
+    - assurance.intake.workflow.graph.case-design:finalize->repair-prepare
+    - assurance.intake.workflow.graph.case-design:finalize-inputs->finalize
     - assurance.intake.workflow.graph.case-design:prepare->execute
+    - assurance.intake.workflow.graph.case-design:prepare->finalize-inputs
+    - assurance.intake.workflow.graph.case-design:repair-execute->repair-finalize-inputs
+    - assurance.intake.workflow.graph.case-design:repair-finalize->done
+    - assurance.intake.workflow.graph.case-design:repair-finalize-inputs->repair-finalize
+    - assurance.intake.workflow.graph.case-design:repair-prepare->repair-execute
+    - assurance.intake.workflow.graph.case-design:repair-prepare->repair-finalize-inputs
     - assurance.intake.workflow.graph.case-review:execute->finalize
     - assurance.intake.workflow.graph.case-review:finalize->done
     - assurance.intake.workflow.graph.case-review:prepare->execute
@@ -45,12 +58,12 @@ entrypoints:
     - assurance.intake.workflow.graph.case:case-review->done
     - assurance.product.workflow.graph.product-case:run->done
     aliases:
-    - assurance.intake.case-design.finalize
-    - assurance.intake.case-design.prepare
-    - assurance.intake.case-review.finalize
-    - assurance.intake.case-review.prepare
     - assurance.product.agent.intake.case-design.execute
+    - assurance.product.agent.intake.case-design.finalize
+    - assurance.product.agent.intake.case-design.prepare
     - assurance.product.agent.intake.case-review.execute
+    - assurance.product.agent.intake.case-review.finalize
+    - assurance.product.agent.intake.case-review.prepare
   execute:
     nodes:
     - assurance.execution.workflow.graph.execution-execute/done
@@ -176,6 +189,7 @@ entrypoints:
     - assurance.generation.workflow.graph.generation/api
     - assurance.generation.workflow.graph.generation/api-done
     - assurance.generation.workflow.graph.generation/api-skip
+    - assurance.generation.workflow.graph.generation/complete
     - assurance.generation.workflow.graph.generation/done
     - assurance.generation.workflow.graph.generation/e2e
     - assurance.generation.workflow.graph.generation/e2e-done
@@ -414,6 +428,7 @@ entrypoints:
     - assurance.generation.workflow.graph.generation:api->api-done
     - assurance.generation.workflow.graph.generation:api-done->join-selected
     - assurance.generation.workflow.graph.generation:api-skip->api-done
+    - assurance.generation.workflow.graph.generation:complete->done
     - assurance.generation.workflow.graph.generation:e2e->e2e-done
     - assurance.generation.workflow.graph.generation:e2e-done->join-selected
     - assurance.generation.workflow.graph.generation:e2e-skip->e2e-done
@@ -424,7 +439,7 @@ entrypoints:
     - assurance.generation.workflow.graph.generation:fuzz->fuzz-done
     - assurance.generation.workflow.graph.generation:fuzz-done->join-selected
     - assurance.generation.workflow.graph.generation:fuzz-skip->fuzz-done
-    - assurance.generation.workflow.graph.generation:join-selected->done
+    - assurance.generation.workflow.graph.generation:join-selected->complete
     - assurance.generation.workflow.graph.generation:performance->performance-done
     - assurance.generation.workflow.graph.generation:performance-done->join-selected
     - assurance.generation.workflow.graph.generation:performance-skip->performance-done
@@ -502,74 +517,75 @@ entrypoints:
     - assurance.quality.workflow.graph.quality:fact-baseline->inspect
     - assurance.quality.workflow.graph.quality:inspect->done
     aliases:
-    - assurance.execution.execute.finalize
-    - assurance.execution.execute.prepare
-    - assurance.execution.run.finalize
-    - assurance.execution.run.prepare
-    - assurance.generation.api.codegen-fix.finalize
-    - assurance.generation.api.codegen-fix.prepare
-    - assurance.generation.api.codegen.finalize
-    - assurance.generation.api.codegen.prepare
-    - assurance.generation.api.plan-review.finalize
-    - assurance.generation.api.plan-review.prepare
-    - assurance.generation.api.plan.finalize
-    - assurance.generation.api.plan.prepare
-    - assurance.generation.e2e.codegen-fix.finalize
-    - assurance.generation.e2e.codegen-fix.prepare
-    - assurance.generation.e2e.codegen.finalize
-    - assurance.generation.e2e.codegen.prepare
-    - assurance.generation.e2e.plan-review.finalize
-    - assurance.generation.e2e.plan-review.prepare
-    - assurance.generation.e2e.plan.finalize
-    - assurance.generation.e2e.plan.prepare
-    - assurance.generation.fuzz.codegen.finalize
-    - assurance.generation.fuzz.codegen.prepare
-    - assurance.generation.fuzz.plan-review.finalize
-    - assurance.generation.fuzz.plan-review.prepare
-    - assurance.generation.fuzz.plan.finalize
-    - assurance.generation.fuzz.plan.prepare
-    - assurance.generation.performance.codegen.finalize
-    - assurance.generation.performance.codegen.prepare
-    - assurance.generation.performance.plan-review.finalize
-    - assurance.generation.performance.plan-review.prepare
-    - assurance.generation.performance.plan.finalize
-    - assurance.generation.performance.plan.prepare
+    - assurance.generation.complete
     - assurance.generation.review-round.advance
-    - assurance.healing.coverage-repair.finalize
-    - assurance.healing.coverage-repair.prepare
-    - assurance.healing.fix-proposal.finalize
-    - assurance.healing.fix-proposal.prepare
     - assurance.healing.repair-round.advance
     - assurance.product.agent.execution.execute.execute
+    - assurance.product.agent.execution.execute.finalize
+    - assurance.product.agent.execution.execute.prepare
     - assurance.product.agent.execution.run.execute
+    - assurance.product.agent.execution.run.finalize
+    - assurance.product.agent.execution.run.prepare
     - assurance.product.agent.generation.api.codegen-fix.execute
+    - assurance.product.agent.generation.api.codegen-fix.finalize
+    - assurance.product.agent.generation.api.codegen-fix.prepare
     - assurance.product.agent.generation.api.codegen.execute
+    - assurance.product.agent.generation.api.codegen.finalize
+    - assurance.product.agent.generation.api.codegen.prepare
     - assurance.product.agent.generation.api.plan-review.execute
+    - assurance.product.agent.generation.api.plan-review.finalize
+    - assurance.product.agent.generation.api.plan-review.prepare
     - assurance.product.agent.generation.api.plan.execute
+    - assurance.product.agent.generation.api.plan.finalize
+    - assurance.product.agent.generation.api.plan.prepare
     - assurance.product.agent.generation.e2e.codegen-fix.execute
+    - assurance.product.agent.generation.e2e.codegen-fix.finalize
+    - assurance.product.agent.generation.e2e.codegen-fix.prepare
     - assurance.product.agent.generation.e2e.codegen.execute
+    - assurance.product.agent.generation.e2e.codegen.finalize
+    - assurance.product.agent.generation.e2e.codegen.prepare
     - assurance.product.agent.generation.e2e.plan-review.execute
+    - assurance.product.agent.generation.e2e.plan-review.finalize
+    - assurance.product.agent.generation.e2e.plan-review.prepare
     - assurance.product.agent.generation.e2e.plan.execute
+    - assurance.product.agent.generation.e2e.plan.finalize
+    - assurance.product.agent.generation.e2e.plan.prepare
     - assurance.product.agent.generation.fuzz.codegen.execute
+    - assurance.product.agent.generation.fuzz.codegen.finalize
+    - assurance.product.agent.generation.fuzz.codegen.prepare
     - assurance.product.agent.generation.fuzz.plan-review.execute
+    - assurance.product.agent.generation.fuzz.plan-review.finalize
+    - assurance.product.agent.generation.fuzz.plan-review.prepare
     - assurance.product.agent.generation.fuzz.plan.execute
+    - assurance.product.agent.generation.fuzz.plan.finalize
+    - assurance.product.agent.generation.fuzz.plan.prepare
     - assurance.product.agent.generation.performance.codegen.execute
+    - assurance.product.agent.generation.performance.codegen.finalize
+    - assurance.product.agent.generation.performance.codegen.prepare
     - assurance.product.agent.generation.performance.plan-review.execute
+    - assurance.product.agent.generation.performance.plan-review.finalize
+    - assurance.product.agent.generation.performance.plan-review.prepare
     - assurance.product.agent.generation.performance.plan.execute
+    - assurance.product.agent.generation.performance.plan.finalize
+    - assurance.product.agent.generation.performance.plan.prepare
     - assurance.product.agent.healing.coverage-repair.execute
+    - assurance.product.agent.healing.coverage-repair.finalize
+    - assurance.product.agent.healing.coverage-repair.prepare
     - assurance.product.agent.healing.fix-proposal.execute
+    - assurance.product.agent.healing.fix-proposal.finalize
+    - assurance.product.agent.healing.fix-proposal.prepare
     - assurance.product.agent.quality.fact-baseline.execute
+    - assurance.product.agent.quality.fact-baseline.finalize
+    - assurance.product.agent.quality.fact-baseline.prepare
     - assurance.product.agent.quality.inspect.execute
+    - assurance.product.agent.quality.inspect.finalize
+    - assurance.product.agent.quality.inspect.prepare
     - assurance.product.agent.quality.issue-analysis.execute
+    - assurance.product.agent.quality.issue-analysis.finalize
+    - assurance.product.agent.quality.issue-analysis.prepare
     - assurance.product.agent.quality.report.execute
-    - assurance.quality.fact-baseline.finalize
-    - assurance.quality.fact-baseline.prepare
-    - assurance.quality.inspect.finalize
-    - assurance.quality.inspect.prepare
-    - assurance.quality.issue-analysis.finalize
-    - assurance.quality.issue-analysis.prepare
-    - assurance.quality.report.finalize
-    - assurance.quality.report.prepare
+    - assurance.product.agent.quality.report.finalize
+    - assurance.product.agent.quality.report.prepare
   full:
     nodes:
     - assurance.execution.workflow.graph.execution-execute/done
@@ -695,6 +711,7 @@ entrypoints:
     - assurance.generation.workflow.graph.generation/api
     - assurance.generation.workflow.graph.generation/api-done
     - assurance.generation.workflow.graph.generation/api-skip
+    - assurance.generation.workflow.graph.generation/complete
     - assurance.generation.workflow.graph.generation/done
     - assurance.generation.workflow.graph.generation/e2e
     - assurance.generation.workflow.graph.generation/e2e-done
@@ -770,7 +787,12 @@ entrypoints:
     - assurance.intake.workflow.graph.case-design/done
     - assurance.intake.workflow.graph.case-design/execute
     - assurance.intake.workflow.graph.case-design/finalize
+    - assurance.intake.workflow.graph.case-design/finalize-inputs
     - assurance.intake.workflow.graph.case-design/prepare
+    - assurance.intake.workflow.graph.case-design/repair-execute
+    - assurance.intake.workflow.graph.case-design/repair-finalize
+    - assurance.intake.workflow.graph.case-design/repair-finalize-inputs
+    - assurance.intake.workflow.graph.case-design/repair-prepare
     - assurance.intake.workflow.graph.case-review/done
     - assurance.intake.workflow.graph.case-review/execute
     - assurance.intake.workflow.graph.case-review/finalize
@@ -1008,6 +1030,7 @@ entrypoints:
     - assurance.generation.workflow.graph.generation:api->api-done
     - assurance.generation.workflow.graph.generation:api-done->join-selected
     - assurance.generation.workflow.graph.generation:api-skip->api-done
+    - assurance.generation.workflow.graph.generation:complete->done
     - assurance.generation.workflow.graph.generation:e2e->e2e-done
     - assurance.generation.workflow.graph.generation:e2e-done->join-selected
     - assurance.generation.workflow.graph.generation:e2e-skip->e2e-done
@@ -1018,7 +1041,7 @@ entrypoints:
     - assurance.generation.workflow.graph.generation:fuzz->fuzz-done
     - assurance.generation.workflow.graph.generation:fuzz-done->join-selected
     - assurance.generation.workflow.graph.generation:fuzz-skip->fuzz-done
-    - assurance.generation.workflow.graph.generation:join-selected->done
+    - assurance.generation.workflow.graph.generation:join-selected->complete
     - assurance.generation.workflow.graph.generation:performance->performance-done
     - assurance.generation.workflow.graph.generation:performance-done->join-selected
     - assurance.generation.workflow.graph.generation:performance-skip->performance-done
@@ -1085,9 +1108,17 @@ entrypoints:
     - assurance.improvement.workflow.graph.retro:retro-eval-analysis->retro-issue-analysis
     - assurance.improvement.workflow.graph.retro:retro-issue-analysis->retro-workflow-analysis
     - assurance.improvement.workflow.graph.retro:retro-workflow-analysis->reconcile
-    - assurance.intake.workflow.graph.case-design:execute->finalize
+    - assurance.intake.workflow.graph.case-design:execute->finalize-inputs
     - assurance.intake.workflow.graph.case-design:finalize->done
+    - assurance.intake.workflow.graph.case-design:finalize->repair-prepare
+    - assurance.intake.workflow.graph.case-design:finalize-inputs->finalize
     - assurance.intake.workflow.graph.case-design:prepare->execute
+    - assurance.intake.workflow.graph.case-design:prepare->finalize-inputs
+    - assurance.intake.workflow.graph.case-design:repair-execute->repair-finalize-inputs
+    - assurance.intake.workflow.graph.case-design:repair-finalize->done
+    - assurance.intake.workflow.graph.case-design:repair-finalize-inputs->repair-finalize
+    - assurance.intake.workflow.graph.case-design:repair-prepare->repair-execute
+    - assurance.intake.workflow.graph.case-design:repair-prepare->repair-finalize-inputs
     - assurance.intake.workflow.graph.case-review:execute->finalize
     - assurance.intake.workflow.graph.case-review:finalize->done
     - assurance.intake.workflow.graph.case-review:prepare->execute
@@ -1159,6 +1190,7 @@ entrypoints:
     - assurance.product.workflow.graph.product-full:execute-tail->retro
     - assurance.product.workflow.graph.product-full:improvement->achieved
     - assurance.product.workflow.graph.product-full:prepare->execute-tail
+    - assurance.product.workflow.graph.product-full:prepare->not-achieved
     - assurance.product.workflow.graph.product-full:retro->improvement
     - assurance.quality.workflow.graph.issue-analyze:analyze->done
     - assurance.quality.workflow.graph.quality-fact-baseline:execute->finalize
@@ -1176,108 +1208,109 @@ entrypoints:
     - assurance.quality.workflow.graph.quality:fact-baseline->inspect
     - assurance.quality.workflow.graph.quality:inspect->done
     aliases:
-    - assurance.execution.execute.finalize
-    - assurance.execution.execute.prepare
-    - assurance.execution.run.finalize
-    - assurance.execution.run.prepare
-    - assurance.generation.api.codegen-fix.finalize
-    - assurance.generation.api.codegen-fix.prepare
-    - assurance.generation.api.codegen.finalize
-    - assurance.generation.api.codegen.prepare
-    - assurance.generation.api.plan-review.finalize
-    - assurance.generation.api.plan-review.prepare
-    - assurance.generation.api.plan.finalize
-    - assurance.generation.api.plan.prepare
-    - assurance.generation.e2e.codegen-fix.finalize
-    - assurance.generation.e2e.codegen-fix.prepare
-    - assurance.generation.e2e.codegen.finalize
-    - assurance.generation.e2e.codegen.prepare
-    - assurance.generation.e2e.plan-review.finalize
-    - assurance.generation.e2e.plan-review.prepare
-    - assurance.generation.e2e.plan.finalize
-    - assurance.generation.e2e.plan.prepare
-    - assurance.generation.fuzz.codegen.finalize
-    - assurance.generation.fuzz.codegen.prepare
-    - assurance.generation.fuzz.plan-review.finalize
-    - assurance.generation.fuzz.plan-review.prepare
-    - assurance.generation.fuzz.plan.finalize
-    - assurance.generation.fuzz.plan.prepare
-    - assurance.generation.performance.codegen.finalize
-    - assurance.generation.performance.codegen.prepare
-    - assurance.generation.performance.plan-review.finalize
-    - assurance.generation.performance.plan-review.prepare
-    - assurance.generation.performance.plan.finalize
-    - assurance.generation.performance.plan.prepare
+    - assurance.generation.complete
     - assurance.generation.review-round.advance
-    - assurance.healing.coverage-repair.finalize
-    - assurance.healing.coverage-repair.prepare
-    - assurance.healing.fix-proposal.finalize
-    - assurance.healing.fix-proposal.prepare
     - assurance.healing.repair-round.advance
     - assurance.improvement.apply-improvement-auto-review
     - assurance.improvement.apply-improvement-review
     - assurance.improvement.apply-memory-improvement
     - assurance.improvement.evaluate-memory-improvement
-    - assurance.improvement.improvement-review.finalize
-    - assurance.improvement.improvement-review.prepare
     - assurance.improvement.reconcile-improvements
     - assurance.improvement.retro-collect-v3
-    - assurance.improvement.retro-eval-analysis.finalize
-    - assurance.improvement.retro-eval-analysis.prepare
-    - assurance.improvement.retro-issue-analysis.finalize
-    - assurance.improvement.retro-issue-analysis.prepare
-    - assurance.improvement.retro-workflow-analysis.finalize
-    - assurance.improvement.retro-workflow-analysis.prepare
-    - assurance.improvement.retro.finalize
-    - assurance.improvement.retro.prepare
-    - assurance.intake.case-design.finalize
-    - assurance.intake.case-design.prepare
-    - assurance.intake.case-review.finalize
-    - assurance.intake.case-review.prepare
-    - assurance.intake.explore.finalize
-    - assurance.intake.explore.prepare
-    - assurance.intake.intake.finalize
-    - assurance.intake.intake.prepare
     - assurance.intake.review-round.advance
     - assurance.product.agent.execution.execute.execute
+    - assurance.product.agent.execution.execute.finalize
+    - assurance.product.agent.execution.execute.prepare
     - assurance.product.agent.execution.run.execute
+    - assurance.product.agent.execution.run.finalize
+    - assurance.product.agent.execution.run.prepare
     - assurance.product.agent.generation.api.codegen-fix.execute
+    - assurance.product.agent.generation.api.codegen-fix.finalize
+    - assurance.product.agent.generation.api.codegen-fix.prepare
     - assurance.product.agent.generation.api.codegen.execute
+    - assurance.product.agent.generation.api.codegen.finalize
+    - assurance.product.agent.generation.api.codegen.prepare
     - assurance.product.agent.generation.api.plan-review.execute
+    - assurance.product.agent.generation.api.plan-review.finalize
+    - assurance.product.agent.generation.api.plan-review.prepare
     - assurance.product.agent.generation.api.plan.execute
+    - assurance.product.agent.generation.api.plan.finalize
+    - assurance.product.agent.generation.api.plan.prepare
     - assurance.product.agent.generation.e2e.codegen-fix.execute
+    - assurance.product.agent.generation.e2e.codegen-fix.finalize
+    - assurance.product.agent.generation.e2e.codegen-fix.prepare
     - assurance.product.agent.generation.e2e.codegen.execute
+    - assurance.product.agent.generation.e2e.codegen.finalize
+    - assurance.product.agent.generation.e2e.codegen.prepare
     - assurance.product.agent.generation.e2e.plan-review.execute
+    - assurance.product.agent.generation.e2e.plan-review.finalize
+    - assurance.product.agent.generation.e2e.plan-review.prepare
     - assurance.product.agent.generation.e2e.plan.execute
+    - assurance.product.agent.generation.e2e.plan.finalize
+    - assurance.product.agent.generation.e2e.plan.prepare
     - assurance.product.agent.generation.fuzz.codegen.execute
+    - assurance.product.agent.generation.fuzz.codegen.finalize
+    - assurance.product.agent.generation.fuzz.codegen.prepare
     - assurance.product.agent.generation.fuzz.plan-review.execute
+    - assurance.product.agent.generation.fuzz.plan-review.finalize
+    - assurance.product.agent.generation.fuzz.plan-review.prepare
     - assurance.product.agent.generation.fuzz.plan.execute
+    - assurance.product.agent.generation.fuzz.plan.finalize
+    - assurance.product.agent.generation.fuzz.plan.prepare
     - assurance.product.agent.generation.performance.codegen.execute
+    - assurance.product.agent.generation.performance.codegen.finalize
+    - assurance.product.agent.generation.performance.codegen.prepare
     - assurance.product.agent.generation.performance.plan-review.execute
+    - assurance.product.agent.generation.performance.plan-review.finalize
+    - assurance.product.agent.generation.performance.plan-review.prepare
     - assurance.product.agent.generation.performance.plan.execute
+    - assurance.product.agent.generation.performance.plan.finalize
+    - assurance.product.agent.generation.performance.plan.prepare
     - assurance.product.agent.healing.coverage-repair.execute
+    - assurance.product.agent.healing.coverage-repair.finalize
+    - assurance.product.agent.healing.coverage-repair.prepare
     - assurance.product.agent.healing.fix-proposal.execute
+    - assurance.product.agent.healing.fix-proposal.finalize
+    - assurance.product.agent.healing.fix-proposal.prepare
     - assurance.product.agent.improvement.improvement-review.execute
+    - assurance.product.agent.improvement.improvement-review.finalize
+    - assurance.product.agent.improvement.improvement-review.prepare
     - assurance.product.agent.improvement.retro-eval-analysis.execute
+    - assurance.product.agent.improvement.retro-eval-analysis.finalize
+    - assurance.product.agent.improvement.retro-eval-analysis.prepare
     - assurance.product.agent.improvement.retro-issue-analysis.execute
+    - assurance.product.agent.improvement.retro-issue-analysis.finalize
+    - assurance.product.agent.improvement.retro-issue-analysis.prepare
     - assurance.product.agent.improvement.retro-workflow-analysis.execute
+    - assurance.product.agent.improvement.retro-workflow-analysis.finalize
+    - assurance.product.agent.improvement.retro-workflow-analysis.prepare
     - assurance.product.agent.improvement.retro.execute
+    - assurance.product.agent.improvement.retro.finalize
+    - assurance.product.agent.improvement.retro.prepare
     - assurance.product.agent.intake.case-design.execute
+    - assurance.product.agent.intake.case-design.finalize
+    - assurance.product.agent.intake.case-design.prepare
     - assurance.product.agent.intake.case-review.execute
+    - assurance.product.agent.intake.case-review.finalize
+    - assurance.product.agent.intake.case-review.prepare
     - assurance.product.agent.intake.explore.execute
+    - assurance.product.agent.intake.explore.finalize
+    - assurance.product.agent.intake.explore.prepare
     - assurance.product.agent.intake.intake.execute
+    - assurance.product.agent.intake.intake.finalize
+    - assurance.product.agent.intake.intake.prepare
     - assurance.product.agent.quality.fact-baseline.execute
+    - assurance.product.agent.quality.fact-baseline.finalize
+    - assurance.product.agent.quality.fact-baseline.prepare
     - assurance.product.agent.quality.inspect.execute
+    - assurance.product.agent.quality.inspect.finalize
+    - assurance.product.agent.quality.inspect.prepare
     - assurance.product.agent.quality.issue-analysis.execute
+    - assurance.product.agent.quality.issue-analysis.finalize
+    - assurance.product.agent.quality.issue-analysis.prepare
     - assurance.product.agent.quality.report.execute
-    - assurance.quality.fact-baseline.finalize
-    - assurance.quality.fact-baseline.prepare
-    - assurance.quality.inspect.finalize
-    - assurance.quality.inspect.prepare
-    - assurance.quality.issue-analysis.finalize
-    - assurance.quality.issue-analysis.prepare
-    - assurance.quality.report.finalize
-    - assurance.quality.report.prepare
+    - assurance.product.agent.quality.report.finalize
+    - assurance.product.agent.quality.report.prepare
   improvement-apply:
     nodes:
     - assurance.improvement.workflow.graph.improvement-apply/apply
@@ -1323,9 +1356,9 @@ entrypoints:
     - assurance.improvement.apply-improvement-review
     - assurance.improvement.apply-memory-improvement
     - assurance.improvement.evaluate-memory-improvement
-    - assurance.improvement.improvement-review.finalize
-    - assurance.improvement.improvement-review.prepare
     - assurance.product.agent.improvement.improvement-review.execute
+    - assurance.product.agent.improvement.improvement-review.finalize
+    - assurance.product.agent.improvement.improvement-review.prepare
   improvement-evaluate:
     nodes:
     - assurance.improvement.workflow.graph.improvement-evaluate/done
@@ -1362,9 +1395,9 @@ entrypoints:
     - assurance.improvement.workflow.graph.improvement-review:prepare->execute
     - assurance.product.workflow.graph.product-improvement-review:run->done
     aliases:
-    - assurance.improvement.improvement-review.finalize
-    - assurance.improvement.improvement-review.prepare
     - assurance.product.agent.improvement.improvement-review.execute
+    - assurance.product.agent.improvement.improvement-review.finalize
+    - assurance.product.agent.improvement.improvement-review.prepare
   improvement-rollback:
     nodes:
     - assurance.improvement.workflow.graph.improvement-rollback/done
@@ -1381,7 +1414,12 @@ entrypoints:
     - assurance.intake.workflow.graph.case-design/done
     - assurance.intake.workflow.graph.case-design/execute
     - assurance.intake.workflow.graph.case-design/finalize
+    - assurance.intake.workflow.graph.case-design/finalize-inputs
     - assurance.intake.workflow.graph.case-design/prepare
+    - assurance.intake.workflow.graph.case-design/repair-execute
+    - assurance.intake.workflow.graph.case-design/repair-finalize
+    - assurance.intake.workflow.graph.case-design/repair-finalize-inputs
+    - assurance.intake.workflow.graph.case-design/repair-prepare
     - assurance.intake.workflow.graph.case-review/done
     - assurance.intake.workflow.graph.case-review/execute
     - assurance.intake.workflow.graph.case-review/finalize
@@ -1412,9 +1450,17 @@ entrypoints:
     - assurance.product.workflow.graph.product-intake/done
     - assurance.product.workflow.graph.product-intake/run
     edges:
-    - assurance.intake.workflow.graph.case-design:execute->finalize
+    - assurance.intake.workflow.graph.case-design:execute->finalize-inputs
     - assurance.intake.workflow.graph.case-design:finalize->done
+    - assurance.intake.workflow.graph.case-design:finalize->repair-prepare
+    - assurance.intake.workflow.graph.case-design:finalize-inputs->finalize
     - assurance.intake.workflow.graph.case-design:prepare->execute
+    - assurance.intake.workflow.graph.case-design:prepare->finalize-inputs
+    - assurance.intake.workflow.graph.case-design:repair-execute->repair-finalize-inputs
+    - assurance.intake.workflow.graph.case-design:repair-finalize->done
+    - assurance.intake.workflow.graph.case-design:repair-finalize-inputs->repair-finalize
+    - assurance.intake.workflow.graph.case-design:repair-prepare->repair-execute
+    - assurance.intake.workflow.graph.case-design:repair-prepare->repair-finalize-inputs
     - assurance.intake.workflow.graph.case-review:execute->finalize
     - assurance.intake.workflow.graph.case-review:finalize->done
     - assurance.intake.workflow.graph.case-review:prepare->execute
@@ -1452,19 +1498,19 @@ entrypoints:
     - assurance.intake.workflow.graph.intake:prepare->execute
     - assurance.product.workflow.graph.product-intake:run->done
     aliases:
-    - assurance.intake.case-design.finalize
-    - assurance.intake.case-design.prepare
-    - assurance.intake.case-review.finalize
-    - assurance.intake.case-review.prepare
-    - assurance.intake.explore.finalize
-    - assurance.intake.explore.prepare
-    - assurance.intake.intake.finalize
-    - assurance.intake.intake.prepare
     - assurance.intake.review-round.advance
     - assurance.product.agent.intake.case-design.execute
+    - assurance.product.agent.intake.case-design.finalize
+    - assurance.product.agent.intake.case-design.prepare
     - assurance.product.agent.intake.case-review.execute
+    - assurance.product.agent.intake.case-review.finalize
+    - assurance.product.agent.intake.case-review.prepare
     - assurance.product.agent.intake.explore.execute
+    - assurance.product.agent.intake.explore.finalize
+    - assurance.product.agent.intake.explore.prepare
     - assurance.product.agent.intake.intake.execute
+    - assurance.product.agent.intake.intake.finalize
+    - assurance.product.agent.intake.intake.prepare
   issue-analyze:
     nodes:
     - assurance.product.workflow.graph.product-issue-analyze/done
@@ -1483,8 +1529,8 @@ entrypoints:
     - assurance.quality.workflow.graph.quality-issue-analysis:prepare->execute
     aliases:
     - assurance.product.agent.quality.issue-analysis.execute
-    - assurance.quality.issue-analysis.finalize
-    - assurance.quality.issue-analysis.prepare
+    - assurance.product.agent.quality.issue-analysis.finalize
+    - assurance.product.agent.quality.issue-analysis.prepare
   issue-reconcile:
     nodes:
     - assurance.product.workflow.graph.product-issue-reconcile/done
@@ -1503,8 +1549,8 @@ entrypoints:
     - assurance.quality.workflow.graph.quality-issue-analysis:prepare->execute
     aliases:
     - assurance.product.agent.quality.issue-analysis.execute
-    - assurance.quality.issue-analysis.finalize
-    - assurance.quality.issue-analysis.prepare
+    - assurance.product.agent.quality.issue-analysis.finalize
+    - assurance.product.agent.quality.issue-analysis.prepare
   issue-review:
     nodes:
     - assurance.product.workflow.graph.product-issue-review/done
@@ -1523,8 +1569,8 @@ entrypoints:
     - assurance.quality.workflow.graph.quality-issue-triage:prepare->execute
     aliases:
     - assurance.product.agent.quality.issue-triage.execute
-    - assurance.quality.issue-triage.finalize
-    - assurance.quality.issue-triage.prepare
+    - assurance.product.agent.quality.issue-triage.finalize
+    - assurance.product.agent.quality.issue-triage.prepare
   retro:
     nodes:
     - assurance.improvement.workflow.graph.improvement-retro-eval-analysis/done
@@ -1575,18 +1621,18 @@ entrypoints:
     aliases:
     - assurance.improvement.reconcile-improvements
     - assurance.improvement.retro-collect-v3
-    - assurance.improvement.retro-eval-analysis.finalize
-    - assurance.improvement.retro-eval-analysis.prepare
-    - assurance.improvement.retro-issue-analysis.finalize
-    - assurance.improvement.retro-issue-analysis.prepare
-    - assurance.improvement.retro-workflow-analysis.finalize
-    - assurance.improvement.retro-workflow-analysis.prepare
-    - assurance.improvement.retro.finalize
-    - assurance.improvement.retro.prepare
     - assurance.product.agent.improvement.retro-eval-analysis.execute
+    - assurance.product.agent.improvement.retro-eval-analysis.finalize
+    - assurance.product.agent.improvement.retro-eval-analysis.prepare
     - assurance.product.agent.improvement.retro-issue-analysis.execute
+    - assurance.product.agent.improvement.retro-issue-analysis.finalize
+    - assurance.product.agent.improvement.retro-issue-analysis.prepare
     - assurance.product.agent.improvement.retro-workflow-analysis.execute
+    - assurance.product.agent.improvement.retro-workflow-analysis.finalize
+    - assurance.product.agent.improvement.retro-workflow-analysis.prepare
     - assurance.product.agent.improvement.retro.execute
+    - assurance.product.agent.improvement.retro.finalize
+    - assurance.product.agent.improvement.retro.prepare
 nodes:
 - assurance.execution.workflow.graph.execution-execute/done
 - assurance.execution.workflow.graph.execution-execute/execute
@@ -1711,6 +1757,7 @@ nodes:
 - assurance.generation.workflow.graph.generation/api
 - assurance.generation.workflow.graph.generation/api-done
 - assurance.generation.workflow.graph.generation/api-skip
+- assurance.generation.workflow.graph.generation/complete
 - assurance.generation.workflow.graph.generation/done
 - assurance.generation.workflow.graph.generation/e2e
 - assurance.generation.workflow.graph.generation/e2e-done
@@ -1798,7 +1845,12 @@ nodes:
 - assurance.intake.workflow.graph.case-design/done
 - assurance.intake.workflow.graph.case-design/execute
 - assurance.intake.workflow.graph.case-design/finalize
+- assurance.intake.workflow.graph.case-design/finalize-inputs
 - assurance.intake.workflow.graph.case-design/prepare
+- assurance.intake.workflow.graph.case-design/repair-execute
+- assurance.intake.workflow.graph.case-design/repair-finalize
+- assurance.intake.workflow.graph.case-design/repair-finalize-inputs
+- assurance.intake.workflow.graph.case-design/repair-prepare
 - assurance.intake.workflow.graph.case-review/done
 - assurance.intake.workflow.graph.case-review/execute
 - assurance.intake.workflow.graph.case-review/finalize
@@ -2071,6 +2123,7 @@ edges:
 - assurance.generation.workflow.graph.generation:api->api-done
 - assurance.generation.workflow.graph.generation:api-done->join-selected
 - assurance.generation.workflow.graph.generation:api-skip->api-done
+- assurance.generation.workflow.graph.generation:complete->done
 - assurance.generation.workflow.graph.generation:e2e->e2e-done
 - assurance.generation.workflow.graph.generation:e2e-done->join-selected
 - assurance.generation.workflow.graph.generation:e2e-skip->e2e-done
@@ -2081,7 +2134,7 @@ edges:
 - assurance.generation.workflow.graph.generation:fuzz->fuzz-done
 - assurance.generation.workflow.graph.generation:fuzz-done->join-selected
 - assurance.generation.workflow.graph.generation:fuzz-skip->fuzz-done
-- assurance.generation.workflow.graph.generation:join-selected->done
+- assurance.generation.workflow.graph.generation:join-selected->complete
 - assurance.generation.workflow.graph.generation:performance->performance-done
 - assurance.generation.workflow.graph.generation:performance-done->join-selected
 - assurance.generation.workflow.graph.generation:performance-skip->performance-done
@@ -2155,9 +2208,17 @@ edges:
 - assurance.improvement.workflow.graph.retro:retro-eval-analysis->retro-issue-analysis
 - assurance.improvement.workflow.graph.retro:retro-issue-analysis->retro-workflow-analysis
 - assurance.improvement.workflow.graph.retro:retro-workflow-analysis->reconcile
-- assurance.intake.workflow.graph.case-design:execute->finalize
+- assurance.intake.workflow.graph.case-design:execute->finalize-inputs
 - assurance.intake.workflow.graph.case-design:finalize->done
+- assurance.intake.workflow.graph.case-design:finalize->repair-prepare
+- assurance.intake.workflow.graph.case-design:finalize-inputs->finalize
 - assurance.intake.workflow.graph.case-design:prepare->execute
+- assurance.intake.workflow.graph.case-design:prepare->finalize-inputs
+- assurance.intake.workflow.graph.case-design:repair-execute->repair-finalize-inputs
+- assurance.intake.workflow.graph.case-design:repair-finalize->done
+- assurance.intake.workflow.graph.case-design:repair-finalize-inputs->repair-finalize
+- assurance.intake.workflow.graph.case-design:repair-prepare->repair-execute
+- assurance.intake.workflow.graph.case-design:repair-prepare->repair-finalize-inputs
 - assurance.intake.workflow.graph.case-review:execute->finalize
 - assurance.intake.workflow.graph.case-review:finalize->done
 - assurance.intake.workflow.graph.case-review:prepare->execute
@@ -2233,6 +2294,7 @@ edges:
 - assurance.product.workflow.graph.product-full:execute-tail->retro
 - assurance.product.workflow.graph.product-full:improvement->achieved
 - assurance.product.workflow.graph.product-full:prepare->execute-tail
+- assurance.product.workflow.graph.product-full:prepare->not-achieved
 - assurance.product.workflow.graph.product-full:retro->improvement
 - assurance.product.workflow.graph.product-improvement-apply:run->done
 - assurance.product.workflow.graph.product-improvement-evaluate:run->done
@@ -2265,113 +2327,114 @@ edges:
 - assurance.quality.workflow.graph.quality:fact-baseline->inspect
 - assurance.quality.workflow.graph.quality:inspect->done
 aliases:
-- assurance.execution.execute.finalize
-- assurance.execution.execute.prepare
-- assurance.execution.run.finalize
-- assurance.execution.run.prepare
-- assurance.generation.api.codegen-fix.finalize
-- assurance.generation.api.codegen-fix.prepare
-- assurance.generation.api.codegen.finalize
-- assurance.generation.api.codegen.prepare
-- assurance.generation.api.plan-review.finalize
-- assurance.generation.api.plan-review.prepare
-- assurance.generation.api.plan.finalize
-- assurance.generation.api.plan.prepare
-- assurance.generation.e2e.codegen-fix.finalize
-- assurance.generation.e2e.codegen-fix.prepare
-- assurance.generation.e2e.codegen.finalize
-- assurance.generation.e2e.codegen.prepare
-- assurance.generation.e2e.plan-review.finalize
-- assurance.generation.e2e.plan-review.prepare
-- assurance.generation.e2e.plan.finalize
-- assurance.generation.e2e.plan.prepare
-- assurance.generation.fuzz.codegen.finalize
-- assurance.generation.fuzz.codegen.prepare
-- assurance.generation.fuzz.plan-review.finalize
-- assurance.generation.fuzz.plan-review.prepare
-- assurance.generation.fuzz.plan.finalize
-- assurance.generation.fuzz.plan.prepare
-- assurance.generation.performance.codegen.finalize
-- assurance.generation.performance.codegen.prepare
-- assurance.generation.performance.plan-review.finalize
-- assurance.generation.performance.plan-review.prepare
-- assurance.generation.performance.plan.finalize
-- assurance.generation.performance.plan.prepare
+- assurance.generation.complete
 - assurance.generation.review-round.advance
-- assurance.healing.coverage-repair.finalize
-- assurance.healing.coverage-repair.prepare
-- assurance.healing.fix-proposal.finalize
-- assurance.healing.fix-proposal.prepare
 - assurance.healing.repair-round.advance
 - assurance.improvement.apply-improvement-auto-review
 - assurance.improvement.apply-improvement-review
 - assurance.improvement.apply-memory-improvement
-- assurance.improvement.archive.finalize
-- assurance.improvement.archive.prepare
 - assurance.improvement.evaluate-memory-improvement
 - assurance.improvement.export-change-improvement
-- assurance.improvement.improvement-review.finalize
-- assurance.improvement.improvement-review.prepare
 - assurance.improvement.reconcile-improvements
 - assurance.improvement.retro-collect-v3
-- assurance.improvement.retro-eval-analysis.finalize
-- assurance.improvement.retro-eval-analysis.prepare
-- assurance.improvement.retro-issue-analysis.finalize
-- assurance.improvement.retro-issue-analysis.prepare
-- assurance.improvement.retro-workflow-analysis.finalize
-- assurance.improvement.retro-workflow-analysis.prepare
-- assurance.improvement.retro.finalize
-- assurance.improvement.retro.prepare
 - assurance.improvement.rollback-memory-improvement
-- assurance.intake.case-design.finalize
-- assurance.intake.case-design.prepare
-- assurance.intake.case-review.finalize
-- assurance.intake.case-review.prepare
-- assurance.intake.explore.finalize
-- assurance.intake.explore.prepare
-- assurance.intake.intake.finalize
-- assurance.intake.intake.prepare
 - assurance.intake.review-round.advance
 - assurance.product.agent.execution.execute.execute
+- assurance.product.agent.execution.execute.finalize
+- assurance.product.agent.execution.execute.prepare
 - assurance.product.agent.execution.run.execute
+- assurance.product.agent.execution.run.finalize
+- assurance.product.agent.execution.run.prepare
 - assurance.product.agent.generation.api.codegen-fix.execute
+- assurance.product.agent.generation.api.codegen-fix.finalize
+- assurance.product.agent.generation.api.codegen-fix.prepare
 - assurance.product.agent.generation.api.codegen.execute
+- assurance.product.agent.generation.api.codegen.finalize
+- assurance.product.agent.generation.api.codegen.prepare
 - assurance.product.agent.generation.api.plan-review.execute
+- assurance.product.agent.generation.api.plan-review.finalize
+- assurance.product.agent.generation.api.plan-review.prepare
 - assurance.product.agent.generation.api.plan.execute
+- assurance.product.agent.generation.api.plan.finalize
+- assurance.product.agent.generation.api.plan.prepare
 - assurance.product.agent.generation.e2e.codegen-fix.execute
+- assurance.product.agent.generation.e2e.codegen-fix.finalize
+- assurance.product.agent.generation.e2e.codegen-fix.prepare
 - assurance.product.agent.generation.e2e.codegen.execute
+- assurance.product.agent.generation.e2e.codegen.finalize
+- assurance.product.agent.generation.e2e.codegen.prepare
 - assurance.product.agent.generation.e2e.plan-review.execute
+- assurance.product.agent.generation.e2e.plan-review.finalize
+- assurance.product.agent.generation.e2e.plan-review.prepare
 - assurance.product.agent.generation.e2e.plan.execute
+- assurance.product.agent.generation.e2e.plan.finalize
+- assurance.product.agent.generation.e2e.plan.prepare
 - assurance.product.agent.generation.fuzz.codegen.execute
+- assurance.product.agent.generation.fuzz.codegen.finalize
+- assurance.product.agent.generation.fuzz.codegen.prepare
 - assurance.product.agent.generation.fuzz.plan-review.execute
+- assurance.product.agent.generation.fuzz.plan-review.finalize
+- assurance.product.agent.generation.fuzz.plan-review.prepare
 - assurance.product.agent.generation.fuzz.plan.execute
+- assurance.product.agent.generation.fuzz.plan.finalize
+- assurance.product.agent.generation.fuzz.plan.prepare
 - assurance.product.agent.generation.performance.codegen.execute
+- assurance.product.agent.generation.performance.codegen.finalize
+- assurance.product.agent.generation.performance.codegen.prepare
 - assurance.product.agent.generation.performance.plan-review.execute
+- assurance.product.agent.generation.performance.plan-review.finalize
+- assurance.product.agent.generation.performance.plan-review.prepare
 - assurance.product.agent.generation.performance.plan.execute
+- assurance.product.agent.generation.performance.plan.finalize
+- assurance.product.agent.generation.performance.plan.prepare
 - assurance.product.agent.healing.coverage-repair.execute
+- assurance.product.agent.healing.coverage-repair.finalize
+- assurance.product.agent.healing.coverage-repair.prepare
 - assurance.product.agent.healing.fix-proposal.execute
+- assurance.product.agent.healing.fix-proposal.finalize
+- assurance.product.agent.healing.fix-proposal.prepare
 - assurance.product.agent.improvement.archive.execute
+- assurance.product.agent.improvement.archive.finalize
+- assurance.product.agent.improvement.archive.prepare
 - assurance.product.agent.improvement.improvement-review.execute
+- assurance.product.agent.improvement.improvement-review.finalize
+- assurance.product.agent.improvement.improvement-review.prepare
 - assurance.product.agent.improvement.retro-eval-analysis.execute
+- assurance.product.agent.improvement.retro-eval-analysis.finalize
+- assurance.product.agent.improvement.retro-eval-analysis.prepare
 - assurance.product.agent.improvement.retro-issue-analysis.execute
+- assurance.product.agent.improvement.retro-issue-analysis.finalize
+- assurance.product.agent.improvement.retro-issue-analysis.prepare
 - assurance.product.agent.improvement.retro-workflow-analysis.execute
+- assurance.product.agent.improvement.retro-workflow-analysis.finalize
+- assurance.product.agent.improvement.retro-workflow-analysis.prepare
 - assurance.product.agent.improvement.retro.execute
+- assurance.product.agent.improvement.retro.finalize
+- assurance.product.agent.improvement.retro.prepare
 - assurance.product.agent.intake.case-design.execute
+- assurance.product.agent.intake.case-design.finalize
+- assurance.product.agent.intake.case-design.prepare
 - assurance.product.agent.intake.case-review.execute
+- assurance.product.agent.intake.case-review.finalize
+- assurance.product.agent.intake.case-review.prepare
 - assurance.product.agent.intake.explore.execute
+- assurance.product.agent.intake.explore.finalize
+- assurance.product.agent.intake.explore.prepare
 - assurance.product.agent.intake.intake.execute
+- assurance.product.agent.intake.intake.finalize
+- assurance.product.agent.intake.intake.prepare
 - assurance.product.agent.quality.fact-baseline.execute
+- assurance.product.agent.quality.fact-baseline.finalize
+- assurance.product.agent.quality.fact-baseline.prepare
 - assurance.product.agent.quality.inspect.execute
+- assurance.product.agent.quality.inspect.finalize
+- assurance.product.agent.quality.inspect.prepare
 - assurance.product.agent.quality.issue-analysis.execute
+- assurance.product.agent.quality.issue-analysis.finalize
+- assurance.product.agent.quality.issue-analysis.prepare
 - assurance.product.agent.quality.issue-triage.execute
+- assurance.product.agent.quality.issue-triage.finalize
+- assurance.product.agent.quality.issue-triage.prepare
 - assurance.product.agent.quality.report.execute
-- assurance.quality.fact-baseline.finalize
-- assurance.quality.fact-baseline.prepare
-- assurance.quality.inspect.finalize
-- assurance.quality.inspect.prepare
-- assurance.quality.issue-analysis.finalize
-- assurance.quality.issue-analysis.prepare
-- assurance.quality.issue-triage.finalize
-- assurance.quality.issue-triage.prepare
-- assurance.quality.report.finalize
-- assurance.quality.report.prepare
+- assurance.product.agent.quality.report.finalize
+- assurance.product.agent.quality.report.prepare

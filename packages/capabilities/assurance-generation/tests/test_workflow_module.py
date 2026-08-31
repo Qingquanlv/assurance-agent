@@ -391,6 +391,7 @@ def test_generation_keeps_four_fixed_lanes_and_structural_skip_join() -> None:
     join = root.nodes["join-selected"]
     assert join.kind == "join"
     assert join.join == "all"
+    assert root.nodes["complete"].capability == "assurance.generation.complete"
     assert sum(1 for node in root.nodes.values() if node.kind == "join") == 1
     actual_edges = {_edge_record(edge) for edge in root.edges}
     for family in _FAMILIES:
@@ -407,7 +408,8 @@ def test_generation_keeps_four_fixed_lanes_and_structural_skip_join() -> None:
         assert (family, f"{family}-done", None) in actual_edges
         assert (f"{family}-skip", f"{family}-done", None) in actual_edges
         assert (f"{family}-done", "join-selected", None) in actual_edges
-    assert ("join-selected", "done", None) in actual_edges
+    assert ("join-selected", "complete", None) in actual_edges
+    assert ("complete", "done", None) in actual_edges
     assert root.nodes["fanout"].routing is not None
     assert root.nodes["fanout"].routing.mode == "fanout"
     assert root.nodes["fanout"].routing.min_matches == 4
@@ -446,18 +448,15 @@ def test_review_and_codegen_outcomes_use_exclusive_routes() -> None:
             assert "codegen-round-advance" not in lane.nodes
 
 
-def test_execute_nodes_use_slots_and_prepare_finalize_keep_feature_ids() -> None:
+def test_every_agent_phase_uses_a_deployment_slot() -> None:
     module = _load_module()
     assert set(_LEAF_GRAPHS) == set(f"generation-{base.replace('.', '-')}" for base in _BASES)
     for graph_id in _LEAF_GRAPHS:
         nodes = module.graphs[graph_id].nodes
         base = _job_base(graph_id)
-        assert nodes["prepare"].capability == f"assurance.generation.{base}.prepare"
-        assert nodes["prepare"].capability_slot is None
-        assert nodes["finalize"].capability == f"assurance.generation.{base}.finalize"
-        assert nodes["finalize"].capability_slot is None
-        assert nodes["execute"].capability is None
-        assert nodes["execute"].capability_slot == f"{base}.execute"
+        for phase in _PHASES:
+            assert nodes[phase].capability is None
+            assert nodes[phase].capability_slot == f"{base}.{phase}"
 
 
 def test_export_output_projection_exposes_normalized_per_family_aggregate() -> None:
@@ -512,6 +511,7 @@ def test_fake_slot_bindings_compile_without_an_agent_server() -> None:
 
 
 _REVIEW_ADVANCE = "assurance.generation.review-round.advance"
+_GENERATION_COMPLETE = "assurance.generation.complete"
 _PUBLIC_DIGEST = "a" * 64
 
 
@@ -544,6 +544,7 @@ class _ScriptedGenerationHost:
         self._codegen_index = 0
         self._codegen_index_by_family: dict[str, int] = {}
         self._advance = None
+        self._complete = None
         self.advance_outputs: list[dict[str, object]] = []
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
@@ -567,6 +568,21 @@ class _ScriptedGenerationHost:
             if isinstance(outcome.output, Mapping):
                 self.advance_outputs.append(dict(outcome.output))
             return TaskHostCallResult(operation="execute", outcome=outcome)
+        if capability_id == _GENERATION_COMPLETE:
+            if self._complete is None:
+                from assurance_generation.operations.workflow_state import GenerationCompleteHandler
+
+                self._complete = GenerationCompleteHandler()
+            context = TaskContext(
+                project_root=Path.cwd(),
+                write_root=Path.cwd(),
+                workspace_identity=call.attempt_root.workspace_identity,
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=call.request.invocation,
+            )
+            outcome = await self._complete.execute(call.request, context)
+            return TaskHostCallResult(operation="execute", outcome=outcome)
         request_input = call.request.input
         change_id = "CH-DEMO-001"
         rounds_used = 0
@@ -579,7 +595,10 @@ class _ScriptedGenerationHost:
             if isinstance(request_input.get("rounds_budget"), int):
                 rounds_budget = request_input["rounds_budget"]
         if capability_id.endswith("plan-review.finalize"):
-            family = capability_id.split(".")[2] if capability_id.count(".") >= 3 else "api"
+            family = next(
+                (candidate for candidate in _FAMILIES if f".{candidate}." in capability_id),
+                "api",
+            )
             index = self._review_index_by_family.get(family, 0)
             decision = self._reviews[min(index, len(self._reviews) - 1)]
             self._review_index_by_family[family] = index + 1
@@ -618,7 +637,10 @@ class _ScriptedGenerationHost:
                 ),
             )
         if capability_id.endswith("codegen.finalize"):
-            family = capability_id.split(".")[2] if capability_id.count(".") >= 3 else "api"
+            family = next(
+                (candidate for candidate in _FAMILIES if f".{candidate}." in capability_id),
+                "api",
+            )
             index = self._codegen_index_by_family.get(family, 0)
             verdict = self._codegen[min(index, len(self._codegen) - 1)]
             self._codegen_index_by_family[family] = index + 1
@@ -987,6 +1009,22 @@ def test_join_is_order_independent_for_all_four_lanes() -> None:
     result = _drive_generate(selected=GENERATION_FAMILIES)
     assert result.join_token_count == 4
     assert result.dispatched_families == frozenset(GENERATION_FAMILIES)
+
+
+def test_generation_terminal_output_matches_its_export_contract() -> None:
+    selected = ("api", "e2e")
+    projection = _drive_generate_projection(selected=selected)
+    root = next(graph for graph in projection.graph_instances if graph.parent_graph_instance_id is None)
+    output = thaw_json(root.output)
+
+    validate_json_schema(output, _schema(_io_schema_id("generate", "output")).content)
+    assert output == {
+        "families": {
+            "api": {"completed": True},
+            "e2e": {"completed": True},
+        },
+        "selected_families": ["api", "e2e"],
+    }
 
 
 def test_two_lane_completions_in_scheduler_order_share_counters() -> None:

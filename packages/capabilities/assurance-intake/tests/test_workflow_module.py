@@ -19,7 +19,9 @@ from graph_engine.graph import compile_workflow, parse_workflow_module, project_
 from graph_engine.graph.input_projection import (
     GraphInputPointerProjection,
     InputProjectionDef,
+    LiteralProjection,
     ObjectProjection,
+    PredecessorPointerProjection,
     RootPointerProjection,
 )
 from graph_engine.graph.module_schema import WorkflowModuleDef
@@ -355,16 +357,88 @@ def test_prepare_to_intake_to_explore_keeps_identity_and_drops_undeclared_fields
     assert "requirement" not in explore_prepare
 
 
-def test_execute_nodes_use_slots_and_prepare_finalize_keep_feature_ids() -> None:
+def test_every_agent_phase_uses_a_deployment_slot() -> None:
     module = _load_module()
     for graph_id in ("intake", "explore", "case-design", "case-review"):
         nodes = module.graphs[graph_id].nodes
-        assert nodes["prepare"].capability == f"assurance.intake.{graph_id}.prepare"
-        assert nodes["prepare"].capability_slot is None
-        assert nodes["finalize"].capability == f"assurance.intake.{graph_id}.finalize"
-        assert nodes["finalize"].capability_slot is None
-        assert nodes["execute"].capability is None
-        assert nodes["execute"].capability_slot == f"{graph_id}.execute"
+        for phase in ("prepare", "execute", "finalize"):
+            assert nodes[phase].capability is None
+            assert nodes[phase].capability_slot == f"{graph_id}.{phase}"
+
+
+def test_case_review_finalize_receives_locked_repair_scope() -> None:
+    finalize = _load_module().graphs["case-review"].nodes["finalize"]
+    fields = cast(ObjectProjection, finalize.input_projection).fields
+
+    for name in ("change_id", "case_delta_paths"):
+        projection = fields[name]
+        assert isinstance(projection, GraphInputPointerProjection)
+        assert projection.pointer == f"/{name}"
+
+
+def test_case_design_has_one_internal_deterministic_validation_repair() -> None:
+    graph = _load_module().graphs["case-design"]
+    assert set(graph.nodes) == {
+        "prepare",
+        "execute",
+        "finalize-inputs",
+        "finalize",
+        "repair-prepare",
+        "repair-execute",
+        "repair-finalize-inputs",
+        "repair-finalize",
+        "done",
+    }
+    assert graph.nodes["finalize"].routing is not None
+    assert graph.nodes["finalize"].routing.mode == "exclusive"
+
+    first_fields = cast(ObjectProjection, graph.nodes["finalize"].input_projection).fields
+    first_attempt = first_fields["validation_attempt"]
+    assert isinstance(first_attempt, LiteralProjection)
+    assert first_attempt.value == 0
+    first_repair = first_fields["review_repair"]
+    assert isinstance(first_repair, PredecessorPointerProjection)
+    assert first_repair.predecessor == "finalize-inputs"
+    assert first_repair.pointer == "/tokens/0/instructions/2/json_content/review_repair"
+
+    repair_fields = cast(ObjectProjection, graph.nodes["repair-prepare"].input_projection).fields
+    validation_error = repair_fields["validation_error"]
+    assert isinstance(validation_error, PredecessorPointerProjection)
+    assert validation_error.predecessor == "finalize"
+    assert validation_error.pointer == "/validation_error"
+    repair_attempt = repair_fields["validation_attempt"]
+    assert isinstance(repair_attempt, PredecessorPointerProjection)
+    assert repair_attempt.predecessor == "finalize"
+    assert repair_attempt.pointer == "/validation_attempt"
+    preserved_repair = repair_fields["review_repair"]
+    assert isinstance(preserved_repair, PredecessorPointerProjection)
+    assert preserved_repair.predecessor == "finalize"
+    assert preserved_repair.pointer == "/review_repair"
+
+    final_fields = cast(ObjectProjection, graph.nodes["repair-finalize"].input_projection).fields
+    final_attempt = final_fields["validation_attempt"]
+    assert isinstance(final_attempt, LiteralProjection)
+    assert final_attempt.value == 1
+    final_repair = final_fields["review_repair"]
+    assert isinstance(final_repair, PredecessorPointerProjection)
+    assert final_repair.predecessor == "repair-finalize-inputs"
+    assert final_repair.pointer == "/tokens/0/instructions/2/json_content/review_repair"
+
+    edges = {_edge_record(edge) for edge in graph.edges}
+    assert ("finalize", "done", "output.validation_status == 'pass'") in edges
+    assert ("finalize", "repair-prepare", None) in edges
+    repair_route = next(
+        edge for edge in graph.edges if edge.from_ == "finalize" and edge.to == "repair-prepare"
+    )
+    assert repair_route.otherwise is True
+    assert ("prepare", "finalize-inputs", None) in edges
+    assert ("execute", "finalize-inputs", None) in edges
+    assert ("finalize-inputs", "finalize", None) in edges
+    assert ("repair-prepare", "repair-execute", None) in edges
+    assert ("repair-prepare", "repair-finalize-inputs", None) in edges
+    assert ("repair-execute", "repair-finalize-inputs", None) in edges
+    assert ("repair-finalize-inputs", "repair-finalize", None) in edges
+    assert ("repair-finalize", "done", None) in edges
 
 
 def test_export_output_projections_expose_review_outcome_and_artifact_refs() -> None:
@@ -498,6 +572,22 @@ class _ScriptedIntakeHost:
             if fixable:
                 output["public_outcome"] = "needs_fix"
             return TaskHostCallResult(operation="execute", outcome=TaskOutcome.succeeded(output))
+        if capability_id.endswith("case-design.prepare"):
+            return TaskHostCallResult(
+                operation="execute",
+                outcome=TaskOutcome.succeeded(
+                    {
+                        "instructions": [
+                            {"text_content": "skill"},
+                            {"text_content": "persona"},
+                            {"json_content": {"review_repair": None}},
+                        ]
+                    }
+                ),
+            )
+        validation_status = (
+            {"validation_status": "pass"} if capability_id.endswith("case-design.finalize") else {}
+        )
         return TaskHostCallResult(
             operation="execute",
             outcome=TaskOutcome.succeeded(
@@ -507,6 +597,7 @@ class _ScriptedIntakeHost:
                     "decision": "pass",
                     "rounds_budget": rounds_budget,
                     "rounds_used": rounds_used,
+                    **validation_status,
                 }
             ),
         )

@@ -197,6 +197,18 @@ class _CompletingScriptedHost(_ScriptedTaskHost):
                     "output": {
                         **outcome.output,
                         "workspace": {"scope_id": input_value["change_id"]},
+                        **(
+                            {
+                                "instructions": [
+                                    {"text_content": "skill"},
+                                    {"text_content": "persona"},
+                                    {"json_content": {"review_repair": None}},
+                                ]
+                            }
+                            if call.request.capability_id
+                            == "assurance.product.agent.intake.case-design.prepare"
+                            else {}
+                        ),
                     }
                 }
             )

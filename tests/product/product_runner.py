@@ -76,6 +76,8 @@ _EXECUTION_FINALIZE = (
 )
 _INSPECT_FINALIZE = f"{_AGENT_PREFIX}quality.inspect.finalize"
 _REPORT_FINALIZE = f"{_AGENT_PREFIX}quality.report.finalize"
+_CASE_DESIGN_PREPARE = f"{_AGENT_PREFIX}intake.case-design.prepare"
+_CASE_DESIGN_FINALIZE = f"{_AGENT_PREFIX}intake.case-design.finalize"
 _CASE_REVIEW_FINALIZE = f"{_AGENT_PREFIX}intake.case-review.finalize"
 _IMPROVEMENT_REVIEW_FINALIZE = f"{_AGENT_PREFIX}improvement.improvement-review.finalize"
 _FIX_PROPOSAL_FINALIZE = f"{_AGENT_PREFIX}healing.fix-proposal.finalize"
@@ -217,6 +219,17 @@ class _ScriptedTaskHost:
                     "output": {
                         **outcome.output,
                         "workspace": {"scope_id": input_value["change_id"]},
+                        **(
+                            {
+                                "instructions": [
+                                    {"text_content": "skill"},
+                                    {"text_content": "persona"},
+                                    {"json_content": {"review_repair": None}},
+                                ]
+                            }
+                            if capability_id == _CASE_DESIGN_PREPARE
+                            else {}
+                        ),
                     }
                 }
             )
@@ -340,6 +353,10 @@ class _ScriptedTaskHost:
                         "human_review_required": False,
                     }
                 )
+            )
+        if capability_id == _CASE_DESIGN_FINALIZE:
+            return TaskOutcome.succeeded(
+                self._public_fields({"change_id": change_id, "validation_status": "pass"})
             )
         if capability_id == _CASE_REVIEW_FINALIZE:
             fixable = self._review_decision in {"needs_fix", "changes_requested"}

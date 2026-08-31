@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
+import re
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
 from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
+from graph_engine.frozen_json import FrozenJSONValue
 
 from assurance_intake.contracts.explore import ExploreAdvisoryV1
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _FAMILY_ORDER = ("api", "e2e", "fuzz", "performance")
 TestFamily = Literal["api", "e2e", "fuzz", "performance"]
+_FIELD_PATH = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
 def _sorted_unique(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
@@ -110,10 +113,84 @@ class ExploreInputV1(_SkillInputV1):
     pass
 
 
+class ReviewRepairActionV1(FrozenModel):
+    finding_id: str = Field(min_length=1)
+    artifact: str = Field(min_length=1)
+    case_id: str | None = Field(default=None, min_length=1)
+    allowed_paths: tuple[str, ...] = Field(min_length=1)
+    instructions: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("artifact")
+    @classmethod
+    def _artifact(cls, value: str) -> str:
+        return _canonical_relative_paths((value,))[0]
+
+    @field_validator("allowed_paths")
+    @classmethod
+    def _allowed_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        cleaned = _sorted_unique(value, label="review repair allowed path")
+        if cleaned != value:
+            raise ValueError("review repair allowed_paths must be sorted and unique")
+        return cleaned
+
+    @field_validator("instructions")
+    @classmethod
+    def _instructions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        cleaned = tuple(item.strip() for item in value)
+        if any(not item for item in cleaned):
+            raise ValueError("review repair instructions must be non-empty strings")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _case_allowed_paths_are_fields(self) -> ReviewRepairActionV1:
+        if self.artifact.endswith("/case.yaml") and any(
+            _FIELD_PATH.fullmatch(path) is None for path in self.allowed_paths
+        ):
+            raise ValueError("case.yaml repair allowed_paths must be dotted field paths")
+        return self
+
+
+class ReviewRepairContractV1(FrozenModel):
+    review_path: str = Field(min_length=1)
+    review_sha256: str = Field(pattern=_SHA256)
+    baseline_file_digests: dict[str, str] = Field(min_length=1)
+    baseline_case_documents: FrozenJSONValue = Field(default_factory=dict)
+    actions: tuple[ReviewRepairActionV1, ...] = Field(min_length=1)
+
+    @field_validator("review_path")
+    @classmethod
+    def _review_path(cls, value: str) -> str:
+        return _canonical_relative_paths((value,))[0]
+
+    @field_validator("baseline_file_digests")
+    @classmethod
+    def _baseline_file_digests(cls, value: dict[str, str]) -> dict[str, str]:
+        canonical = _canonical_relative_paths(tuple(value))
+        if tuple(value) != canonical:
+            raise ValueError("baseline_file_digests keys must be sorted canonical paths")
+        if any(re.fullmatch(_SHA256, digest) is None for digest in value.values()):
+            raise ValueError("baseline_file_digests values must be sha256 digests")
+        return value
+
+    @model_validator(mode="after")
+    def _actions_match_baseline(self) -> ReviewRepairContractV1:
+        targets = {action.artifact for action in self.actions}
+        missing = targets.difference(self.baseline_file_digests)
+        if missing:
+            raise ValueError(f"review repair targets are missing baseline files: {sorted(missing)}")
+        identities = [(action.finding_id, action.artifact, action.case_id) for action in self.actions]
+        if len(identities) != len(set(identities)):
+            raise ValueError("review repair actions must be unique")
+        return self
+
+
 class CaseDesignInputV1(_SkillInputV1):
     selected_test_families: tuple[TestFamily, ...] = ()
     case_delta_paths: tuple[str, ...] = Field(min_length=1)
     exploration: ExploreAdvisoryV1 | None = None
+    validation_attempt: Literal[0, 1] = 0
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
+    review_repair: ReviewRepairContractV1 | None = None
 
     @field_validator("selected_test_families")
     @classmethod
@@ -131,6 +208,10 @@ class CaseDesignInputV1(_SkillInputV1):
     @model_validator(mode="after")
     def _case_delta_paths_match_change(self) -> CaseDesignInputV1:
         _validate_case_delta_paths(self.change_id, self.case_delta_paths)
+        if self.validation_attempt == 0 and self.validation_error is not None:
+            raise ValueError("validation_error is allowed only for the validation repair attempt")
+        if self.validation_attempt == 1 and self.validation_error is None:
+            raise ValueError("validation_error is required for the validation repair attempt")
         return self
 
 
@@ -157,6 +238,7 @@ class CaseReviewInputV1(_SkillInputV1):
                         f"{change_root}/.qa.yaml",
                         *self.case_delta_paths,
                         f"{change_root}/proposal.md",
+                        f"{change_root}/requirement.md",
                         f"{change_root}/trace/minimum-coverage-matrix.json",
                     )
                 )
@@ -182,6 +264,8 @@ class AgentFinalizeInputV1(FrozenModel):
     artifact_paths: tuple[str, ...]
     selected_test_families: tuple[TestFamily, ...] = ()
     case_delta_paths: tuple[str, ...] = ()
+    validation_attempt: Literal[0, 1] = 1
+    review_repair: ReviewRepairContractV1 | None = None
 
     @field_validator("capability_leafs")
     @classmethod

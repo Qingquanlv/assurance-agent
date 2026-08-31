@@ -23,6 +23,7 @@ from assurance_generation.contracts.agent import (
     PlanInputV1,
     under_write_root,
 )
+from assurance_generation.contracts.codegen import CodegenMapping, family_allows_target
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
 from assurance_generation.resource_loader import resource_bytes, resource_text
@@ -255,13 +256,13 @@ def _change_root(workspace: Path, change_id: str) -> Path:
     return root
 
 
-def _regular_input_file(workspace: Path, path: Path) -> Path:
+def _regular_input_file(workspace: Path, path: Path, *, label: str = "case input") -> Path:
     try:
         path.resolve().relative_to(workspace.resolve())
     except ValueError as error:
-        raise InputError("case input escapes the attempt workspace") from error
+        raise InputError(f"{label} escapes the attempt workspace") from error
     if not path.is_file() or path.is_symlink() or path.stat().st_nlink != 1:
-        raise InputError(f"case input is not a regular single-link file: {path}")
+        raise InputError(f"{label} is not a regular single-link file: {path}")
     return path
 
 
@@ -319,6 +320,41 @@ def load_family_cases(
         )
     except ValidationError as error:
         raise InputError(str(error)) from error
+
+
+def plan_review_input_paths(
+    workspace: Path,
+    *,
+    change_id: str,
+    family: Family,
+) -> tuple[str, ...]:
+    """Return the mechanically locked files a plan reviewer must read exactly."""
+    change_root = _change_root(workspace, change_id)
+    cases_root = change_root / "cases"
+    if not cases_root.is_dir() or cases_root.is_symlink():
+        raise InputError(f"reviewed case directory is missing: qa/changes/{change_id}/cases")
+    case_files = tuple(sorted(cases_root.glob("**/case.yaml"), key=lambda item: item.as_posix()))
+    if not case_files:
+        raise InputError(f"reviewed case files are missing: qa/changes/{change_id}/cases/**/case.yaml")
+
+    relative_paths = (
+        *plan_outputs(change_id, family),
+        f"qa/changes/{change_id}/proposal.md",
+        *(path.relative_to(workspace).as_posix() for path in case_files),
+    )
+    for relative in relative_paths:
+        if "/cases/" in relative:
+            label = "case input"
+        elif relative.endswith("/proposal.md"):
+            label = "proposal input"
+        else:
+            label = "plan input"
+        _regular_input_file(
+            workspace,
+            workspace.joinpath(*PurePosixPath(relative).parts),
+            label=label,
+        )
+    return tuple(sorted(relative_paths))
 
 
 def constraints_for_cases(*, family: Family, change_id: str, cases: CaseYamlAuthoring) -> FamilyConstraintsV1:
@@ -381,17 +417,24 @@ def prepare_plan_outcome(
     context: TaskContext,
     allowed_outputs: tuple[str, ...],
     close_result_capabilities: bool = False,
+    review_input_paths: tuple[str, ...] = (),
 ) -> TaskOutcome:
     del family
     if business.family_constraints is None:
         raise InputError("family_constraints were not materialized")
+    instructions = (
+        InstructionPart.text("text/plain", resource_text(skill_path)),
+        InstructionPart.text("text/plain", resource_text(persona_path)),
+        InstructionPart.from_json(cases.model_dump(mode="json")),
+        InstructionPart.from_json(business.family_constraints.model_dump(mode="json")),
+    )
+    if review_input_paths:
+        instructions = (
+            *instructions,
+            InstructionPart.from_json({"review_input_paths": list(review_input_paths)}),
+        )
     agent_request = AgentRunRequest(
-        instructions=(
-            InstructionPart.text("text/plain", resource_text(skill_path)),
-            InstructionPart.text("text/plain", resource_text(persona_path)),
-            InstructionPart.from_json(cases.model_dump(mode="json")),
-            InstructionPart.from_json(business.family_constraints.model_dump(mode="json")),
-        ),
+        instructions=instructions,
         result_contract=result_contract(
             result_schema_id,
             capability_leafs=business.capability_leafs if close_result_capabilities else None,
@@ -443,6 +486,34 @@ def _authenticate_files(
             raise OutputError(f"declared output file is missing: {relative}")
 
 
+def _authenticate_codegen_mapping(
+    workspace: Path,
+    *,
+    document: PlanResultV1,
+    family: Family,
+) -> None:
+    relative = f"qa/changes/{document.change_id}/plans/{family}-codegen-mapping.json"
+    path = _workspace_file(workspace, relative)
+    if not path.is_file() or path.is_symlink():
+        raise OutputError(f"closed codegen mapping is missing: {relative}")
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        mapping = CodegenMapping.model_validate(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError) as error:
+        raise OutputError(f"closed codegen mapping is invalid: {relative}: {error}") from error
+    if mapping.layer != family:
+        raise OutputError(f"closed mapping layer {mapping.layer!r} does not match {family}")
+    mapped_case_ids = tuple(sorted(item.case_id for item in mapping.entries))
+    if mapped_case_ids != document.case_ids:
+        raise OutputError(
+            "closed mapping case IDs must exactly match the typed plan case_ids: "
+            f"expected {list(document.case_ids)}, got {list(mapped_case_ids)}"
+        )
+    for entry in mapping.entries:
+        if not family_allows_target(family, entry.target_file):
+            raise OutputError(f"closed mapping target is outside {family} family policy: {entry.target_file}")
+
+
 class PlanPrepareHandler:
     def __init__(self, family: Family | None = None) -> None:
         self._family: Family | None = None if family is None else closed_family(family)
@@ -492,6 +563,7 @@ class PlanFinalizeHandler:
                 raise OutputError(f"plan family {document.family!r} does not match {family}")
             if payload.artifact_paths:
                 _authenticate_files(context.project_root, document.output_files, payload.artifact_paths)
+            _authenticate_codegen_mapping(context.project_root, document=document, family=family)
             dumped = document.model_dump(mode="json")
             used, budget = round_counters(request.input)
             if used is not None:
@@ -530,6 +602,7 @@ __all__ = [
     "failed_output",
     "leafs_of",
     "planning_handler",
+    "plan_review_input_paths",
     "prepare_plan_outcome",
     "request_family",
     "resolve_family",

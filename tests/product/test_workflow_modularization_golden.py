@@ -131,6 +131,26 @@ def test_product_full_threads_prepare_output_into_generate() -> None:
 
 
 @pytest.mark.usefixtures("installed_sources")
+def test_product_full_does_not_generate_from_non_passed_intake() -> None:
+    from assurance_product.product import load_product_workflow_module
+
+    root = load_product_workflow_module()
+    prepare = root.graphs["product-full"].nodes["prepare"]
+    edges = [edge for edge in root.graphs["product-full"].edges if edge.from_ == "prepare"]
+
+    assert prepare.routing is not None
+    assert prepare.routing.mode == "exclusive"
+    assert [(edge.to, edge.condition, edge.otherwise) for edge in edges] == [
+        (
+            "execute-tail",
+            "output.decision == 'pass' or output.decision == 'approved'",
+            False,
+        ),
+        ("not-achieved", None, True),
+    ]
+
+
+@pytest.mark.usefixtures("installed_sources")
 def test_product_full_consumes_prepare_handler_terminal(installed_sources, tmp_path) -> None:
     modular = modular_product_composition(installed_sources)
     result = ProductRun(

@@ -63,7 +63,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.execution.execute.prepare
+        capability_slot: execute.prepare
         input:
           capability_leafs: []
         input_projection:
@@ -96,7 +96,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.execution.execute.finalize
+        capability_slot: execute.finalize
         input:
           capability_leafs: []
         input_projection:
@@ -134,7 +134,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.execution.run.prepare
+        capability_slot: run.prepare
         input:
           capability_leafs: []
         input_projection:
@@ -167,7 +167,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.execution.run.finalize
+        capability_slot: run.finalize
         input:
           capability_leafs: []
         input_projection:

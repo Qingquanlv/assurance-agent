@@ -214,6 +214,21 @@ graphs:
               pointer: /selected_test_families
             completed:
               type: all_predecessor_tokens
+      complete:
+        kind: task
+        capability: assurance.generation.complete
+        input_projection:
+          type: object
+          fields:
+            completed:
+              type: predecessor_pointer
+              predecessor: join-selected
+              pointer: /tokens
+            selected_families:
+              type: graph_input_pointer
+              pointer: /selected_test_families
+        retry: once
+        timeout: short
       done:
         kind: end
     edges:
@@ -241,7 +256,8 @@ graphs:
       - {from: e2e-done, to: join-selected}
       - {from: fuzz-done, to: join-selected}
       - {from: performance-done, to: join-selected}
-      - {from: join-selected, to: done}
+      - {from: join-selected, to: complete}
+      - {from: complete, to: done}
   generation-api:
     max_activations: 64
     start: plan
@@ -459,7 +475,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.api.plan.prepare
+        capability_slot: api.plan.prepare
         input: &prepare-input
           capability_leafs: []
         input_projection: &prepare-projection
@@ -486,7 +502,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.api.plan.finalize
+        capability_slot: api.plan.finalize
         input: *prepare-input
         input_projection: &stateful-finalize-projection
           type: object
@@ -520,7 +536,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.api.plan-review.prepare
+        capability_slot: api.plan-review.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -535,7 +551,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.api.plan-review.finalize
+        capability_slot: api.plan-review.finalize
         input: *prepare-input
         input_projection: *stateful-finalize-projection
         retry: once
@@ -552,7 +568,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.api.codegen.prepare
+        capability_slot: api.codegen.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -567,7 +583,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.api.codegen.finalize
+        capability_slot: api.codegen.finalize
         input: *prepare-input
         input_projection: &finalize-projection
           type: object
@@ -595,7 +611,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.api.codegen-fix.prepare
+        capability_slot: api.codegen-fix.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -610,7 +626,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.api.codegen-fix.finalize
+        capability_slot: api.codegen-fix.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
@@ -748,7 +764,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.e2e.plan.prepare
+        capability_slot: e2e.plan.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -763,7 +779,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.e2e.plan.finalize
+        capability_slot: e2e.plan.finalize
         input: *prepare-input
         input_projection: *stateful-finalize-projection
         retry: once
@@ -780,7 +796,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.e2e.plan-review.prepare
+        capability_slot: e2e.plan-review.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -795,7 +811,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.e2e.plan-review.finalize
+        capability_slot: e2e.plan-review.finalize
         input: *prepare-input
         input_projection: *stateful-finalize-projection
         retry: once
@@ -812,7 +828,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.e2e.codegen.prepare
+        capability_slot: e2e.codegen.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -827,7 +843,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.e2e.codegen.finalize
+        capability_slot: e2e.codegen.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
@@ -844,7 +860,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.e2e.codegen-fix.prepare
+        capability_slot: e2e.codegen-fix.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -859,7 +875,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.e2e.codegen-fix.finalize
+        capability_slot: e2e.codegen-fix.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
@@ -977,7 +993,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.fuzz.plan.prepare
+        capability_slot: fuzz.plan.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -992,7 +1008,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.fuzz.plan.finalize
+        capability_slot: fuzz.plan.finalize
         input: *prepare-input
         input_projection: *stateful-finalize-projection
         retry: once
@@ -1009,7 +1025,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.fuzz.plan-review.prepare
+        capability_slot: fuzz.plan-review.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -1024,7 +1040,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.fuzz.plan-review.finalize
+        capability_slot: fuzz.plan-review.finalize
         input: *prepare-input
         input_projection: *stateful-finalize-projection
         retry: once
@@ -1041,7 +1057,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.fuzz.codegen.prepare
+        capability_slot: fuzz.codegen.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -1056,7 +1072,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.fuzz.codegen.finalize
+        capability_slot: fuzz.codegen.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
@@ -1174,7 +1190,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.performance.plan.prepare
+        capability_slot: performance.plan.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -1189,7 +1205,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.performance.plan.finalize
+        capability_slot: performance.plan.finalize
         input: *prepare-input
         input_projection: *stateful-finalize-projection
         retry: once
@@ -1206,7 +1222,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.performance.plan-review.prepare
+        capability_slot: performance.plan-review.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -1221,7 +1237,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.performance.plan-review.finalize
+        capability_slot: performance.plan-review.finalize
         input: *prepare-input
         input_projection: *stateful-finalize-projection
         retry: once
@@ -1238,7 +1254,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.generation.performance.codegen.prepare
+        capability_slot: performance.codegen.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -1253,7 +1269,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.generation.performance.codegen.finalize
+        capability_slot: performance.codegen.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once

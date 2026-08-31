@@ -27,7 +27,9 @@ from assurance_generation.operations.review import (
     review_prepare_handler,
 )
 from assurance_generation.operations.workflow_state import (
+    GENERATION_COMPLETE_ID,
     REVIEW_ROUND_ADVANCE_ID,
+    GenerationCompleteHandler,
     GenerationReviewRoundAdvanceHandler,
 )
 
@@ -58,6 +60,7 @@ def generation_handlers() -> Mapping[str, TaskHandler]:
         {
             **planning_handlers(),
             **codegen_handlers(),
+            GENERATION_COMPLETE_ID: GenerationCompleteHandler(),
             REVIEW_ROUND_ADVANCE_ID: GenerationReviewRoundAdvanceHandler(),
         }
     )
@@ -66,6 +69,8 @@ def generation_handlers() -> Mapping[str, TaskHandler]:
 __all__ = [
     "FAMILIES",
     "FIX_FAMILIES",
+    "GENERATION_COMPLETE_ID",
+    "GenerationCompleteHandler",
     "GenerationReviewRoundAdvanceHandler",
     "REVIEW_ROUND_ADVANCE_ID",
     "CodegenFinalizeHandler",

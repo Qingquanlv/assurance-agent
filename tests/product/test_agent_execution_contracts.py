@@ -401,6 +401,17 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
         assert contract.resources.parameters == {"change_id": "/workspace/scope_id"}
         resolved = contract.resources.resolve({"workspace": {"scope_id": change_id}})
         extra = extra_claims.get(prepare_id, ())
+        parts = prepare_id.split(".")
+        if (
+            len(parts) >= 5
+            and parts[1] == "generation"
+            and parts[3]
+            in {
+                "codegen",
+                "codegen-fix",
+            }
+        ):
+            extra = (*extra, f"qa/changes/{change_id}/generated/{parts[2]}/files")
         outputs = catalog.outputs(execute_alias, change_id)
         assert outputs == tuple(path for path in resolved.writes if path not in extra)
         assert extra == tuple(path for path in resolved.writes if path not in outputs)

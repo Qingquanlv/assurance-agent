@@ -66,6 +66,10 @@ def _codegen_outputs(family: str, *, fix: bool = False) -> tuple[str, ...]:
 
 
 def _job(base: str, skill_id: str, agent_profile: str, outputs: tuple[str, ...]) -> AgentExecutionContract:
+    family, _, stage = base.partition(".")
+    claim_outputs = outputs
+    if stage in {"codegen", "codegen-fix"}:
+        claim_outputs = (*outputs, f"generated/{family}/files")
     return AgentExecutionContract(
         contract_id=f"assurance.generation.agent.{base}.v1",
         skill_id=skill_id,
@@ -73,7 +77,7 @@ def _job(base: str, skill_id: str, agent_profile: str, outputs: tuple[str, ...])
         resources=ResourceClaimTemplate(
             parameters={"change_id": "/workspace/scope_id"},
             reads=("qa",),
-            writes=_paths(*outputs),
+            writes=_paths(*claim_outputs),
         ),
     )
 

@@ -25,12 +25,15 @@ from graph_engine.composition import (
     WheelProductSource,
 )
 from graph_engine.composition.sources import WheelProductDeclaration
+from graph_engine.composition.lock import build_invocation_lock
+from graph_engine.composition.workflow_assembler import assemble_product_workflow
 from graph_engine.frozen_json import thaw_json
-from graph_engine.graph.compiler import CompiledWorkflow
+from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
 from graph_engine.graph.module_schema import WorkflowModuleDef, parse_workflow_module
 from graph_engine.plugin_api import FrozenModel, ProviderSource
 
 from assurance_product.agent_contracts import (
+    bind_agent_execution_contracts,
     product_workflow_module_requirements,
     product_workflow_slot_bindings,
 )
@@ -324,16 +327,8 @@ def _authenticate_assurance_composition(
     slot_aliases = {item.capability_id for item in composition.manifest.workflow_slot_bindings}
     if slot_aliases != expected_bindings or len(slot_aliases) != 99:
         raise AssuranceCompositionError("workflow slot bindings are not the exact 99 aliases")
-    execute_aliases = {alias_ids_for_prepare(prepare_id)[1] for prepare_id in PREPARE_IDS}
-    feature_prepare_finalize = set(PREPARE_IDS) | {
-        prepare_id.removesuffix(".prepare") + ".finalize" for prepare_id in PREPARE_IDS
-    }
-    if not agent_bindings.issubset(expected_bindings):
-        raise AssuranceCompositionError("graph bindings must be a subset of the frozen 99 aliases")
-    if not execute_aliases.issubset(agent_bindings):
-        raise AssuranceCompositionError("graph is missing required agent execute aliases")
-    if not feature_prepare_finalize.issubset(graph_bindings):
-        raise AssuranceCompositionError("graph is missing required feature prepare/finalize capabilities")
+    if agent_bindings != expected_bindings:
+        raise AssuranceCompositionError("graph bindings are not the exact frozen 99 aliases")
     if any(capability.startswith(_FORBIDDEN_GRAPH_PREFIXES) for capability in graph_bindings):
         raise AssuranceCompositionError("graph referenced a direct runtime or Phase 4 capability")
     if any(not capability.startswith(_FEATURE_CAPABILITY_PREFIXES) for capability in feature_bindings):
@@ -419,6 +414,45 @@ def _authenticate_assurance_composition(
     return composition
 
 
+def _apply_agent_execution_contracts(composition: FrozenComposition) -> FrozenComposition:
+    descriptors = {descriptor.plugin_id: descriptor for descriptor in composition.descriptors}
+    assembled = assemble_product_workflow(
+        manifest=composition.manifest,
+        descriptors=descriptors,
+        registries=composition.registries,
+    )
+    workflow = compile_workflow(
+        bind_agent_execution_contracts(assembled),
+        composition.registries,
+    )
+    source_entries = composition.registries.sources.entries
+    engine_source = source_entries[SourceKey(SourceRole.ENGINE, "graph.engine")]
+    product_source = source_entries[SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)]
+    lock = build_invocation_lock(
+        manifest=composition.manifest,
+        product_snapshot=product_source.snapshot,
+        descriptors=descriptors,
+        dependency_order=composition.lock.dependency_order,
+        registries=composition.registries,
+        configuration=composition.configuration,
+        workflow=workflow,
+        engine_snapshot=engine_source.snapshot,
+        contribution_authorities=composition.contribution_authorities,
+    )
+    return FrozenComposition.freeze(
+        composition.manifest,
+        composition.registries,
+        workflow,
+        lock,
+        descriptors=composition.descriptors,
+        configuration=composition.configuration,
+        contribution_authorities=composition.contribution_authorities,
+        providers=composition.providers,
+        product_provider=composition.product_provider,
+        declarative_sources=composition.declarative_sources,
+    )
+
+
 def resolve_assurance_composition(request: AssuranceCompositionRequest) -> FrozenComposition:
     adapter = adapter_for_entrypoint(request.product_entrypoint)
     if not request.configuration_tree.path.is_dir():
@@ -433,6 +467,7 @@ def resolve_assurance_composition(request: AssuranceCompositionRequest) -> Froze
             ),
         )
     )
+    composition = _apply_agent_execution_contracts(composition)
     return _authenticate_assurance_composition(composition, adapter)
 
 

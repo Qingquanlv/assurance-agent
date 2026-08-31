@@ -346,7 +346,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.intake.intake.prepare
+        capability_slot: intake.prepare
         input:
           capability_leafs: []
         input_projection:
@@ -376,7 +376,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.intake.intake.finalize
+        capability_slot: intake.finalize
         input:
           capability_leafs: []
         input_projection:
@@ -385,6 +385,9 @@ graphs:
             agent_result:
               type: predecessor
               predecessor: execute
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
             capability_leafs:
               type: graph_input_pointer
               pointer: /capability_leafs
@@ -405,7 +408,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.intake.explore.prepare
+        capability_slot: explore.prepare
         input:
           capability_leafs: []
         input_projection:
@@ -439,7 +442,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.intake.explore.finalize
+        capability_slot: explore.finalize
         input:
           capability_leafs: []
         input_projection:
@@ -471,7 +474,8 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.intake.case-design.prepare
+        capability_slot: case-design.prepare
+        routing: {mode: fanout, min_matches: 2}
         input:
           capability_leafs: []
         input_projection:
@@ -502,17 +506,21 @@ graphs:
           predecessor: prepare
         retry: agent-transient
         timeout: short
+      finalize-inputs:
+        kind: join
+        join: all
       finalize:
         kind: task
-        capability: assurance.intake.case-design.finalize
+        capability_slot: case-design.finalize
         input:
           capability_leafs: []
         input_projection:
           type: object
           fields:
             agent_result:
-              type: predecessor
-              predecessor: execute
+              type: predecessor_pointer
+              predecessor: finalize-inputs
+              pointer: /tokens/1
             change_id:
               type: graph_input_pointer
               pointer: /change_id
@@ -528,27 +536,130 @@ graphs:
             artifact_paths:
               type: graph_input_pointer
               pointer: /allowed_artifact_paths
+            review_repair:
+              type: predecessor_pointer
+              predecessor: finalize-inputs
+              pointer: /tokens/0/instructions/2/json_content/review_repair
             rounds_used:
               type: graph_input_pointer
               pointer: /rounds_used
             rounds_budget:
               type: graph_input_pointer
               pointer: /rounds_budget
+            validation_attempt: {type: literal, value: 0}
+        routing: {mode: exclusive}
+        retry: once
+        timeout: short
+      repair-prepare:
+        kind: task
+        capability_slot: case-design.prepare
+        routing: {mode: fanout, min_matches: 2}
+        input:
+          capability_leafs: []
+        input_projection:
+          type: object
+          fields:
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            selected_test_families:
+              type: graph_input_pointer
+              pointer: /selected_test_families
+            case_delta_paths:
+              type: graph_input_pointer
+              pointer: /case_delta_paths
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            validation_attempt:
+              type: predecessor_pointer
+              predecessor: finalize
+              pointer: /validation_attempt
+            validation_error:
+              type: predecessor_pointer
+              predecessor: finalize
+              pointer: /validation_error
+            review_repair:
+              type: predecessor_pointer
+              predecessor: finalize
+              pointer: /review_repair
+        retry: once
+        timeout: short
+      repair-execute:
+        kind: task
+        capability_slot: case-design.execute
+        input_projection:
+          type: predecessor
+          predecessor: repair-prepare
+        retry: agent-transient
+        timeout: short
+      repair-finalize-inputs:
+        kind: join
+        join: all
+      repair-finalize:
+        kind: task
+        capability_slot: case-design.finalize
+        input:
+          capability_leafs: []
+        input_projection:
+          type: object
+          fields:
+            agent_result:
+              type: predecessor_pointer
+              predecessor: repair-finalize-inputs
+              pointer: /tokens/1
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            selected_test_families:
+              type: graph_input_pointer
+              pointer: /selected_test_families
+            case_delta_paths:
+              type: graph_input_pointer
+              pointer: /case_delta_paths
+            capability_leafs:
+              type: graph_input_pointer
+              pointer: /capability_leafs
+            artifact_paths:
+              type: graph_input_pointer
+              pointer: /allowed_artifact_paths
+            review_repair:
+              type: predecessor_pointer
+              predecessor: repair-finalize-inputs
+              pointer: /tokens/0/instructions/2/json_content/review_repair
+            rounds_used:
+              type: graph_input_pointer
+              pointer: /rounds_used
+            rounds_budget:
+              type: graph_input_pointer
+              pointer: /rounds_budget
+            validation_attempt: {type: literal, value: 1}
         retry: once
         timeout: short
       done:
         kind: end
     edges:
       - {from: prepare, to: execute}
-      - {from: execute, to: finalize}
-      - {from: finalize, to: done}
+      - {from: prepare, to: finalize-inputs}
+      - {from: execute, to: finalize-inputs}
+      - {from: finalize-inputs, to: finalize}
+      - {from: finalize, to: done, condition: "output.validation_status == 'pass'"}
+      - {from: finalize, to: repair-prepare, otherwise: true}
+      - {from: repair-prepare, to: repair-execute}
+      - {from: repair-prepare, to: repair-finalize-inputs}
+      - {from: repair-execute, to: repair-finalize-inputs}
+      - {from: repair-finalize-inputs, to: repair-finalize}
+      - {from: repair-finalize, to: done}
   case-review:
     max_activations: 8
     start: prepare
     nodes:
       prepare:
         kind: task
-        capability: assurance.intake.case-review.prepare
+        capability_slot: case-review.prepare
         input:
           capability_leafs: []
         input_projection:
@@ -578,7 +689,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.intake.case-review.finalize
+        capability_slot: case-review.finalize
         input:
           capability_leafs: []
         input_projection:
@@ -587,6 +698,12 @@ graphs:
             agent_result:
               type: predecessor
               predecessor: execute
+            change_id:
+              type: graph_input_pointer
+              pointer: /change_id
+            case_delta_paths:
+              type: graph_input_pointer
+              pointer: /case_delta_paths
             capability_leafs:
               type: graph_input_pointer
               pointer: /capability_leafs

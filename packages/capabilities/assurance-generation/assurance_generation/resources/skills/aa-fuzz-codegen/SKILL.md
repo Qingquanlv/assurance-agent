@@ -10,6 +10,11 @@ cases.
 
 ## Inputs
 
+Read every exact product-source path cited by the approved plan before any discovery.
+A glob result of `No files found` is not evidence that product source is absent;
+ignored source files remain exact-readable. Use path-scoped grep only after the
+exact reads, and never replace source-backed plan facts with guesses from naming.
+
 ### required
 
 - reviewed fuzz plan (`PlanResultV1`) including endpoint/property strategy
@@ -66,6 +71,12 @@ traceability exact. There is no fuzz codegen-fix handler in this phase.
 Plan, case, and review inputs are immutable. Read them as approved evidence;
 never rewrite, repair, or supersede them during codegen.
 
+The runtime `allowed_outputs` list is the exact write whitelist and overrides
+the wildcard-shaped output descriptions above. If a fixture or helper path is
+not listed, keep the fixture or helper inside an authorized mapped target.
+Never attempt or declare an unlisted support file, and never return a manifest
+entry for a write that the tool rejected or that you did not reopen.
+
 Every closed-mapping target must appear in `files` as a `test_entry` with the
 exact mapped Case IDs. Reopen every target before returning and verify that the
 mapped symbol exists in that file. Do not list plan, case, or review inputs in
@@ -76,8 +87,9 @@ mapped symbol exists in that file. Do not list plan, case, or review inputs in
 Before writing the manifest, verify every top-level `tests.*` import and every
 dynamic `*_MODULE = "tests...."` reference resolves to either a frozen
 repository file or a file generated in this candidate. A data-knowledge symbol
-is not proof that its Python module exists. Generate the authorized support
-module or use an existing resolvable implementation.
+is not proof that its Python module exists. Use an existing resolvable
+implementation, an explicitly listed support output, or define the required
+helper in the authorized mapped target.
 
 ## Generated-files Manifest Rules
 

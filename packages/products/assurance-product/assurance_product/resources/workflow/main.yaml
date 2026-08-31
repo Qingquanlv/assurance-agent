@@ -153,6 +153,7 @@ graphs:
       prepare:
         kind: subgraph
         graph_import: intake.prepare
+        routing: {mode: exclusive}
         input_projection: &prepare_input
           type: object
           fields:
@@ -221,7 +222,8 @@ graphs:
       not-achieved:
         kind: end
     edges:
-      - {from: prepare, to: execute-tail}
+      - {from: prepare, to: execute-tail, condition: "output.decision == 'pass' or output.decision == 'approved'"}
+      - {from: prepare, to: not-achieved, otherwise: true}
       - {from: execute-tail, to: retro, condition: "output.coverage_state == 'satisfied'"}
       - {from: execute-tail, to: not-achieved, otherwise: true}
       - {from: retro, to: improvement}

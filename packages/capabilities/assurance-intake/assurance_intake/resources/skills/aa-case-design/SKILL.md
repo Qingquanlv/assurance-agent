@@ -27,6 +27,18 @@ Do not rely on prior conversation context.
    Explore source evidence is not a substitute for this direct read. If the relevant
    product source cannot be located or read, **STOP** with `source_unavailable` rather
    than deriving executable cases from requirements, advisory, docs, or tests alone.
+   A glob result of `No files found` is not evidence that product source is absent.
+   Repository search may hide ignored product source even though exact reads and
+   path-scoped grep can access it. On review re-entry, when the prior review records
+   `source_verification.reviewed_source_files`, read every exact product-source path from that review before changing
+   `proposal.md` or attempting discovery. Otherwise start with exact source paths in
+   the requirement and existing proposal, then use path-scoped grep under plausible
+   source roots. Declare `source_unavailable` only after those exact reads and a
+   path-scoped grep fail; never infer absence from glob alone.
+   For every selected E2E family, perform a path-scoped search for the exact component path and page or menu label under `app/` and `web/src/`,
+   even when those roots are ignored. Read any matching route, menu-registration,
+   or dynamic-route source before choosing the browser entry precondition; a
+   component file alone is not complete entry evidence.
 4. Read **Optional** inputs (missing = warning, do **not** STOP):
    - existing `qa/cases/**`
    - existing `tests/api/**`
@@ -37,8 +49,27 @@ Do not rely on prior conversation context.
 5. If graph-owned skill-resolution status is `fail` → **STOP**.
 6. Use files as the sole source of truth.
 7. **Review re-entry:** If `review/case-review.json` exists with `decision: needs_fix`,
-   apply only findings that carry a `locator`. Do not rewrite cases or proposal
-   sections the findings do not name.
+   Apply every listed auto-fix finding in one pass, using only findings that carry a
+   `locator`. Do not rewrite cases or proposal sections the findings do not name.
+   For every existing graph-declared output, use `apply_patch` only. Never replace an
+   existing `case.yaml` as a whole. If a patch does not apply, read the file again and
+   retry with a smaller patch that changes only the finding's located field.
+   If no auto-fix finding names a case trace field, preserve every existing trace key and value byte-for-byte.
+   Do not add a family-matching adapter key while rewriting the case file; a case's
+   test family is never permission to derive an adapter capability. Immediately
+   before returning, compare the complete post-edit trace-key set with capability_leafs by exact string membership,
+   including keys on cases untouched by the findings, and repair any drift by restoring
+   the pre-edit trace entries rather than inventing a replacement.
+   After applying the fixes, re-run the complete self-review against the resulting files,
+   including MRC closed-key discipline and every matrix-to-case mapping; do not return
+   immediately after satisfying only the first finding.
+8. **Deterministic validation repair:** If graph input contains
+   `validation_attempt: 1`, read `validation_error` and repair exactly that rejected
+   field. This is the only validation repair attempt. Use `apply_patch` only for every
+   existing output, never replace an existing `case.yaml` as a whole, and preserve all
+   fields not named by the error. Re-read every output and run the complete self-review
+   before returning the locked receipt. Do not reinterpret the error as permission to
+   widen scope, derive a new capability key, or change a valid trace entry.
 
 **After completing work:**
 

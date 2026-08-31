@@ -23,6 +23,18 @@ in `next_action`. Use `"auto_fix_plan": []` for `pass` and
 
 ## Inputs
 
+Read `proposal.md` first from the locked inputs. When its `Product Source Verification`
+section lists exact product-source paths, read every listed path directly before any discovery.
+A glob result of `No files found` is not evidence that product source is absent;
+ignored source files remain exact-readable. Only declare source unavailable after
+those exact reads and a path-scoped grep both fail.
+
+The final JSON instruction part contains the mechanically locked
+`review_input_paths`. Use the native read tool to read every listed path
+directly before reviewing. Do not use glob, wildcard search, or ignore-aware
+file discovery under `qa/changes/` to decide whether an input exists. The host
+has already verified these exact paths as regular files.
+
 ### required
 
 - `qa/changes/<change-id>/plans/fuzz-plan.md`
@@ -52,6 +64,16 @@ plan artifact and bounded key/section that the planner can revise from observed
 source. A missing `fuzz-plan-checks.json` is not a stop condition; when present,
 consume it as deterministic evidence. The graph owns phase state. Do not write
 an orchestration state file.
+
+## Proven Product Defects
+
+A source-proven SUT defect is test evidence, not a missing product decision.
+When the approved requirement and expected assertion are clear, keep the test
+intent and let execution and reporting record the failure. Do not require the
+SUT defect to be corrected before codegen. Use `pass` with
+`ready_with_warnings` when the mapped test remains executable; reserve
+`needs_human_review` for a genuinely missing intent, product, policy,
+authorization, credential, or safety decision.
 
 ## Domain Notes
 

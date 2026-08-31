@@ -138,6 +138,7 @@ def test_explore_resources_require_complete_output_even_when_evidence_is_degrade
         assert "degraded" in content.lower()
         assert "no-source" in content.lower()
         assert "must still" in content.lower()
+        assert "Do not use glob to check either Explore path" in content
 
     skill = resources["skill"]
     assert "do not return structured success" in skill.lower()
@@ -180,6 +181,32 @@ def test_case_design_skill_spells_out_the_typed_trace_value_shape() -> None:
     assert "Do not\nput MRC IDs" in skill
 
 
+def test_case_design_review_reentry_preserves_unnamed_trace_keys() -> None:
+    skill = " ".join(resource_text("skills/aa-case-design/SKILL.md").split())
+
+    assert (
+        "If no auto-fix finding names a case trace field, preserve every existing trace key and value byte-for-byte"
+        in skill
+    )
+    assert "Do not add a family-matching adapter key while rewriting the case file" in skill
+    assert (
+        "compare the complete post-edit trace-key set with capability_leafs by exact string membership"
+        in skill
+    )
+    assert "use `apply_patch` only" in skill
+    assert "Never replace an existing `case.yaml` as a whole" in skill
+
+
+def test_case_repair_skill_is_locator_bounded() -> None:
+    skill = " ".join(resource_text("skills/aa-case-repair/SKILL.md").split())
+
+    assert "review_repair" in skill
+    assert "Only edit the exact artifact, case_id, and allowed_paths" in skill
+    assert "Do not add, remove, reorder, or rewrite any case" in skill
+    assert "Do not modify any non-target output file" in skill
+    assert "apply_patch" in skill
+
+
 def test_case_reviewer_treats_graph_invocation_as_phase_predecessor_proof() -> None:
     skill = resource_text("skills/aa-case-reviewer/SKILL.md")
     assert "authenticated predecessor proof" in skill
@@ -202,6 +229,11 @@ def test_case_reviewer_returns_complete_structured_result() -> None:
     assert "exactly the same object written to `case-review.json`" in skill
     assert "Do not return only the routing fields" in skill
     assert "Case review completed.\n\nDecision:" not in skill
+    assert '"edits":["one exact edit instruction"]' in skill
+    assert "split it into one finding per artifact" in skill
+    assert "`auto_fix_plan[].artifact` MUST equal that finding's `locator.artifact`" in skill
+    assert 'use `"key":"steps,assertions"`' in skill.lower()
+    assert '`"key":"steps/assertions"` is invalid' in skill
 
 
 def test_case_reviewer_routes_source_proven_case_defects_to_agent_fix_loop() -> None:
@@ -213,6 +245,49 @@ def test_case_reviewer_routes_source_proven_case_defects_to_agent_fix_loop() -> 
     assert "Risk level is high or critical" not in skill
 
 
+def test_case_reviewer_uses_locked_requirement_and_reports_findings_exhaustively() -> None:
+    resources = {
+        "skill": resource_text("skills/aa-case-reviewer/SKILL.md"),
+        "persona": resource_text("personas/reviewer.md"),
+        "prompt": resource_text("prompts/case-review.md"),
+    }
+
+    for content in resources.values():
+        assert "requirement.md" in content
+        assert "explicit numerical thresholds and load values" in content
+        assert "complete all review criteria before writing the verdict" in content
+
+    designer = resource_text("skills/aa-case-design/SKILL.md")
+    assert "Apply every listed auto-fix finding in one pass" in designer
+    assert "re-run the complete self-review against the resulting files" in designer
+
+
+def test_case_skills_do_not_treat_ignore_aware_search_as_source_absence() -> None:
+    designer = resource_text("skills/aa-case-design/SKILL.md")
+    reviewer = resource_text("skills/aa-case-reviewer/SKILL.md")
+
+    for skill in (designer, reviewer):
+        assert "A glob result of `No files found` is not evidence that product source is absent" in skill
+        assert "ignored product source" in skill
+        assert "path-scoped grep" in skill
+    assert "read every exact product-source path from that review before changing" in designer
+    assert "read those exact paths independently before attempting discovery" in reviewer
+
+
+def test_case_skills_resolve_e2e_entry_from_ignored_menu_source_before_human_review() -> None:
+    designer = " ".join(resource_text("skills/aa-case-design/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-case-reviewer/SKILL.md").split())
+
+    for skill in (designer, reviewer):
+        assert (
+            "path-scoped search for the exact component path and page or menu label under `app/` and `web/src/`"
+            in skill
+        )
+        assert "even when those roots are ignored" in skill
+    assert "do not escalate the E2E entry mechanism to human review" in reviewer
+    assert "route it as bounded `needs_fix`" in reviewer
+
+
 def test_case_skills_keep_advisory_mrc_complete_without_inventing_human_blockers() -> None:
     designer = " ".join(resource_text("skills/aa-case-design/SKILL.md").split())
     reviewer = " ".join(resource_text("skills/aa-case-reviewer/SKILL.md").split())
@@ -222,6 +297,17 @@ def test_case_skills_keep_advisory_mrc_complete_without_inventing_human_blockers
     assert "not as an implicit business oracle" in reviewer
     assert "Do not create a blocking `needs_review` item" in reviewer
     assert "Never require a proposed MRC key in case `trace`" in reviewer
+
+
+def test_case_reviewer_closed_key_repairs_stay_inside_case_design_write_set() -> None:
+    designer = " ".join(resource_text("skills/aa-case-design/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-case-reviewer/SKILL.md").split())
+
+    assert "Do not create a data-knowledge proposal file; it is not an authorized output" in designer
+    assert "Do not instruct `aa-case-design` to create a data-knowledge proposal" in reviewer
+    assert "mark that exact matrix row `skipped_by_scope`" in reviewer
+    assert "Every automatic repair artifact must be an authorized case-design output" in reviewer
+    assert "unknown keys require a knowledge proposal" not in reviewer
 
 
 @pytest.mark.asyncio
@@ -295,6 +381,111 @@ async def test_case_design_prepare_is_canonical_and_provider_neutral(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_case_design_prepare_includes_deterministic_validation_feedback(tmp_path: Path) -> None:
+    prepared = await run_prepare(
+        CaseDesignPrepareHandler(),
+        {
+            **CASE_INPUT,
+            "validation_attempt": 1,
+            "validation_error": (
+                "capability key is not a declared typed leaf: "
+                "entities.dept.constraints.unauthorized_user_management_api_access"
+            ),
+        },
+        BINDING,
+        tmp_path,
+    )
+
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    assert business["validation_attempt"] == 1
+    assert business["validation_error"] == (
+        "capability key is not a declared typed leaf: "
+        "entities.dept.constraints.unauthorized_user_management_api_access"
+    )
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_builds_a_deterministic_review_repair_contract(
+    tmp_path: Path,
+) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    outputs = _write_case_design_outputs(tmp_path, authored)
+    _write_fixable_case_review(tmp_path, allowed_key="title")
+
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    assert "Locator-bounded case repair" in (request.instructions[0].text_content or "")
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    repair = cast(Mapping[str, object], business["review_repair"])
+    actions = cast(tuple[object, ...], repair["actions"])
+    action = cast(Mapping[str, object], actions[0])
+    assert action["finding_id"] == "CR-001"
+    assert action["case_id"] == "TC_MENU_001"
+    assert action["allowed_paths"] == ("title",)
+    assert set(cast(Mapping[str, str], repair["baseline_file_digests"])) == set(outputs)
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_normalizes_single_action_repair_plan(tmp_path: Path) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    _write_case_design_outputs(tmp_path, authored)
+    _write_fixable_case_review(tmp_path, allowed_key="title")
+    review_path = tmp_path / "qa/changes/CH-DEMO-001/review/case-review.json"
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["auto_fix_plan"][0].pop("case_id")
+    review["auto_fix_plan"][0]["action"] = review["auto_fix_plan"][0].pop("edits")[0]
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    repair = cast(Mapping[str, object], business["review_repair"])
+    action = cast(Mapping[str, object], cast(tuple[object, ...], repair["actions"])[0])
+    assert action["case_id"] == "TC_MENU_001"
+    assert action["instructions"] == ("Update only title.",)
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_accepts_exact_document_section_repair_locator(
+    tmp_path: Path,
+) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    _write_case_design_outputs(tmp_path, authored)
+    _write_fixable_case_review(tmp_path, allowed_key="title")
+    review_path = tmp_path / "qa/changes/CH-DEMO-001/review/case-review.json"
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    artifact = "qa/changes/CH-DEMO-001/proposal.md"
+    review["findings"][0]["locator"] = {
+        "artifact": artifact,
+        "case_id": None,
+        "key": "Test Conditions",
+    }
+    review["auto_fix_plan"] = [
+        {
+            "finding_id": "CR-001",
+            "artifact": artifact,
+            "action": "Revise only the Test Conditions section.",
+        }
+    ]
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    repair = cast(Mapping[str, object], business["review_repair"])
+    action = cast(Mapping[str, object], cast(tuple[object, ...], repair["actions"])[0])
+    assert action["allowed_paths"] == ("Test Conditions",)
+
+
+@pytest.mark.asyncio
 async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp_path: Path) -> None:
     relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
     path = tmp_path / relative
@@ -350,6 +541,9 @@ async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: P
     (change_root / "trace").mkdir(parents=True)
     (change_root / "cases/menus").mkdir(parents=True)
     (change_root / ".qa.yaml").write_text("change_id: CH-DEMO-001\n", encoding="utf-8")
+    (change_root / "requirement.md").write_text(
+        "# Requirement\n\nP95 must be at most 500 ms.\n", encoding="utf-8"
+    )
     (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
     (change_root / "trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
     (change_root / "cases/menus/case.yaml").write_text(
@@ -367,6 +561,7 @@ async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: P
         "qa/changes/CH-DEMO-001/.qa.yaml",
         "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
         "qa/changes/CH-DEMO-001/proposal.md",
+        "qa/changes/CH-DEMO-001/requirement.md",
         "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
     )
 
@@ -529,6 +724,8 @@ async def _finalize_files(
     selected_test_families: list[str] | None = None,
     write_root: Path | None = None,
     case_delta_paths: list[str] | None = None,
+    validation_attempt: int | None = None,
+    review_repair: object | None = None,
 ) -> Any:
     result = fake_agent_result(structured_result)
     executed = await execute_task(
@@ -550,6 +747,8 @@ async def _finalize_files(
                     )
                 ),
                 **({"change_id": change_id} if change_id is not None else {}),
+                **({"validation_attempt": validation_attempt} if validation_attempt is not None else {}),
+                **({"review_repair": review_repair} if review_repair is not None else {}),
             },
         ),
         workspace,
@@ -598,6 +797,54 @@ def _write_case_design_outputs(workspace: Path, document: object) -> list[str]:
         matrix_relative,
         relative,
     ]
+
+
+def _write_fixable_case_review(workspace: Path, *, allowed_key: str) -> None:
+    document = cast(dict[str, Any], _case_review_document(missing=[]))
+    artifact = "qa/changes/CH-DEMO-001/cases/menus/case.yaml"
+    document.update(
+        {
+            "decision": "needs_fix",
+            "findings": [
+                {
+                    "id": "CR-001",
+                    "severity": "medium",
+                    "category": "case_quality",
+                    "message": "Apply one exact case-field repair.",
+                    "locator": {
+                        "artifact": artifact,
+                        "case_id": "TC_MENU_001",
+                        "key": allowed_key,
+                    },
+                    "auto_fix_allowed": True,
+                    "human_review_required": False,
+                }
+            ],
+            "auto_fix_plan": [
+                {
+                    "finding_id": "CR-001",
+                    "artifact": artifact,
+                    "case_id": "TC_MENU_001",
+                    "edits": [f"Update only {allowed_key}."],
+                }
+            ],
+            "next_action": "run_case_design",
+            "auto_fix_allowed": True,
+        }
+    )
+    path = workspace / "qa/changes/CH-DEMO-001/review/case-review.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+
+async def _prepared_review_repair(workspace: Path) -> Mapping[str, object]:
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, workspace)
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    dumped = request.model_dump(mode="json")
+    instructions = cast(list[dict[str, object]], dumped["instructions"])
+    business = cast(dict[str, object], instructions[2]["json_content"])
+    return cast(Mapping[str, object], business["review_repair"])
 
 
 def _with_performance_case(document: object) -> dict[str, Any]:
@@ -713,6 +960,29 @@ async def test_explore_finalize_rejects_placeholder_advisory(tmp_path: Path) -> 
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
     assert "exploration.json" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_a_declared_missing_advisory_as_invalid_output(
+    tmp_path: Path,
+) -> None:
+    project, write_root = dual_roots(tmp_path)
+    relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
+
+    executed = await _finalize_files(
+        ExploreFinalizeHandler(),
+        {"output_files": [relative]},
+        project,
+        [relative],
+        change_id="CH-DEMO-001",
+        write_root=write_root,
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert executed.failure.retryable is True
+    assert executed.failure.message == f"declared output file is missing: {relative}"
 
 
 @pytest.mark.asyncio
@@ -841,7 +1111,147 @@ async def test_case_design_finalize_accepts_typed_authoring(tmp_path: Path) -> N
         write_root=write_root,
     )
     assert executed.status == "succeeded"
+    assert executed.output["validation_status"] == "pass"
     assert executed.output["added"][0]["trace"] == {"entities.item.create": {"covered": True}}
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_accepts_only_the_review_locator_change(tmp_path: Path) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    project, write_root = dual_roots(tmp_path)
+    outputs = _write_case_design_outputs(project, authored)
+    _write_fixable_case_review(project, allowed_key="title")
+    repair = await _prepared_review_repair(project)
+    authored["added"][0]["title"] = "create menu with validated response"
+    _write_case_delta(project, authored)
+
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        ["qa/changes"],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        review_repair=repair,
+    )
+
+    assert executed.status == "succeeded"
+    assert executed.output["validation_status"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_accepts_exact_dotted_trace_leaf_repair(tmp_path: Path) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    authored["added"][0]["trace"]["auth.session.create"] = {"covered": True}
+    project, write_root = dual_roots(tmp_path)
+    outputs = _write_case_design_outputs(project, authored)
+    _write_fixable_case_review(project, allowed_key="trace.entities.item.create")
+    repair = await _prepared_review_repair(project)
+    authored["added"][0]["trace"].pop("entities.item.create")
+    _write_case_delta(project, authored)
+
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        ["qa/changes"],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        review_repair=repair,
+    )
+
+    assert executed.status == "succeeded"
+    assert executed.output["validation_status"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_rejects_review_repair_that_rewrites_non_target_output(
+    tmp_path: Path,
+) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    project, write_root = dual_roots(tmp_path)
+    outputs = _write_case_design_outputs(project, authored)
+    _write_fixable_case_review(project, allowed_key="title")
+    repair = await _prepared_review_repair(project)
+    authored["added"][0]["title"] = "create menu with validated response"
+    _write_case_delta(project, authored)
+    (project / "qa/changes/CH-DEMO-001/proposal.md").write_text("# Replanned proposal\n", encoding="utf-8")
+
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        ["qa/changes"],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        validation_attempt=1,
+        review_repair=repair,
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "non-target output changed" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_rejects_review_repair_outside_allowed_case_fields(
+    tmp_path: Path,
+) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    project, write_root = dual_roots(tmp_path)
+    outputs = _write_case_design_outputs(project, authored)
+    _write_fixable_case_review(project, allowed_key="title")
+    repair = await _prepared_review_repair(project)
+    authored["added"][0]["title"] = "create menu with validated response"
+    authored["added"][0]["objective"] = "unauthorized replanning"
+    _write_case_delta(project, authored)
+
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        ["qa/changes"],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        validation_attempt=1,
+        review_repair=repair,
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "outside allowed_paths" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_returns_one_bounded_repair_for_first_invalid_output(
+    tmp_path: Path,
+) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    authored["added"][0]["trace"] = {
+        "entities.dept.constraints.unauthorized_user_management_api_access": {"covered": True}
+    }
+    project, write_root = dual_roots(tmp_path)
+    outputs = _write_case_design_outputs(project, authored)
+
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        ["qa/changes"],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        validation_attempt=0,
+    )
+
+    assert executed.status == "succeeded"
+    assert executed.output["validation_status"] == "needs_fix"
+    assert executed.output["validation_attempt"] == 1
+    assert "capability key is not a declared typed leaf" in executed.output["validation_error"]
 
 
 @pytest.mark.asyncio
@@ -1017,6 +1427,82 @@ async def test_case_review_finalize_accepts_typed_review(tmp_path: Path) -> None
     coverage = output["minimum_coverage"]
     assert isinstance(coverage, dict)
     assert coverage["missing"] == []
+
+
+@pytest.mark.asyncio
+async def test_case_review_finalize_rejects_auto_fix_outside_case_design_write_set(
+    tmp_path: Path,
+) -> None:
+    _write_review_matrix(tmp_path, missing=[])
+    document = cast(dict[str, Any], _case_review_document(missing=[]))
+    document.update(
+        {
+            "decision": "needs_fix",
+            "findings": [
+                {
+                    "id": "CR-001",
+                    "severity": "medium",
+                    "category": "minimum_coverage",
+                    "message": "closed key needs a bounded repair",
+                    "locator": {"artifact": "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"},
+                    "auto_fix_allowed": True,
+                    "human_review_required": False,
+                }
+            ],
+            "auto_fix_plan": [
+                {
+                    "finding_id": "CR-001",
+                    "artifact": "plans/data-knowledge.proposal.dept.yaml",
+                    "instructions": "create a proposal",
+                }
+            ],
+            "next_action": "run_case_design",
+            "auto_fix_allowed": True,
+        }
+    )
+
+    executed = await _finalize_files(
+        CaseReviewFinalizeHandler(),
+        cast(JSONValue, document),
+        tmp_path,
+        [],
+        change_id="CH-DEMO-001",
+        case_delta_paths=["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "automatic repair artifact is outside the locked case-design write set" in (
+        executed.failure.message
+    )
+
+
+@pytest.mark.asyncio
+async def test_case_review_finalize_rejects_auto_fix_without_an_exact_field_locator(
+    tmp_path: Path,
+) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    _write_case_design_outputs(tmp_path, authored)
+    _write_review_matrix(tmp_path, missing=[])
+    _write_fixable_case_review(tmp_path, allowed_key="title")
+    document = json.loads(
+        (tmp_path / "qa/changes/CH-DEMO-001/review/case-review.json").read_text(encoding="utf-8")
+    )
+    document["findings"][0]["locator"]["key"] = None
+
+    executed = await _finalize_files(
+        CaseReviewFinalizeHandler(),
+        cast(JSONValue, document),
+        tmp_path,
+        [],
+        change_id="CH-DEMO-001",
+        case_delta_paths=["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "exact locator key" in executed.failure.message
 
 
 @pytest.mark.asyncio

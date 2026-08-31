@@ -4,6 +4,9 @@ Produce explore artifacts from requirement text and shallow product-structure ev
 
 Write the complete `explore/exploration.json`. Do not write `case.yaml`. Do not modify
 explore context owned by the deterministic context step.
+Do not use glob to check either Explore path (`context.json` or `exploration.json`).
+Ignored change-local files can be absent from repository search while exact native
+reads still work; read the prepared context and written output by their exact paths.
 
 Record source-structure evidence with medium confidence. Autonomous, degraded, and
 no-source runs must still write a complete valid `exploration.json`; use empty

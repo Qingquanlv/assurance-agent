@@ -190,7 +190,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.improvement.archive.prepare
+        capability_slot: archive.prepare
         input: &prepare-input
           capability_leafs: []
         input_projection: &prepare-projection
@@ -223,7 +223,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.improvement.archive.finalize
+        capability_slot: archive.finalize
         input: *prepare-input
         input_projection: &finalize-projection
           type: object
@@ -318,7 +318,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.improvement.retro.prepare
+        capability_slot: retro.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -333,7 +333,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.improvement.retro.finalize
+        capability_slot: retro.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
@@ -350,7 +350,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.improvement.retro-eval-analysis.prepare
+        capability_slot: retro-eval-analysis.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -365,7 +365,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.improvement.retro-eval-analysis.finalize
+        capability_slot: retro-eval-analysis.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
@@ -382,7 +382,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.improvement.retro-issue-analysis.prepare
+        capability_slot: retro-issue-analysis.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -397,7 +397,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.improvement.retro-issue-analysis.finalize
+        capability_slot: retro-issue-analysis.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
@@ -414,7 +414,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.improvement.retro-workflow-analysis.prepare
+        capability_slot: retro-workflow-analysis.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -429,7 +429,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.improvement.retro-workflow-analysis.finalize
+        capability_slot: retro-workflow-analysis.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
@@ -446,7 +446,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.improvement.improvement-review.prepare
+        capability_slot: improvement-review.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -461,7 +461,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.improvement.improvement-review.finalize
+        capability_slot: improvement-review.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once

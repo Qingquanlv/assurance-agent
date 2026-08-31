@@ -182,7 +182,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.quality.fact-baseline.prepare
+        capability_slot: fact-baseline.prepare
         input: &prepare-input
           capability_leafs: []
         input_projection: &prepare-projection
@@ -224,7 +224,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.quality.fact-baseline.finalize
+        capability_slot: fact-baseline.finalize
         input: *prepare-input
         input_projection: &finalize-projection
           type: object
@@ -270,7 +270,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.quality.inspect.prepare
+        capability_slot: inspect.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -285,7 +285,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.quality.inspect.finalize
+        capability_slot: inspect.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
@@ -302,7 +302,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.quality.issue-triage.prepare
+        capability_slot: issue-triage.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -317,7 +317,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.quality.issue-triage.finalize
+        capability_slot: issue-triage.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
@@ -334,7 +334,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.quality.issue-analysis.prepare
+        capability_slot: issue-analysis.prepare
         input: *prepare-input
         input_projection: *prepare-projection
         retry: once
@@ -349,7 +349,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.quality.issue-analysis.finalize
+        capability_slot: issue-analysis.finalize
         input: *prepare-input
         input_projection: *finalize-projection
         retry: once
@@ -366,7 +366,7 @@ graphs:
     nodes:
       prepare:
         kind: task
-        capability: assurance.quality.report.prepare
+        capability_slot: report.prepare
         input: *prepare-input
         input_projection:
           type: object
@@ -410,7 +410,7 @@ graphs:
         timeout: short
       finalize:
         kind: task
-        capability: assurance.quality.report.finalize
+        capability_slot: report.finalize
         input: *prepare-input
         input_projection:
           type: object

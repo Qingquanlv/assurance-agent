@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -17,6 +18,32 @@ _PASS_DECISIONS = frozenset({"pass", "approved"})
 _FIX_DECISIONS = frozenset({"needs_fix", "changes_requested"})
 _HUMAN_DECISIONS = frozenset({"needs_human_review"})
 _REJECT_DECISIONS = frozenset({"reject"})
+
+
+def normalized_auto_fix_case_id(item: Mapping[str, object], locator_case_id: str | None) -> str | None:
+    if "case_id" not in item:
+        return locator_case_id
+    value = item.get("case_id")
+    if value is not None and not isinstance(value, str):
+        raise ValueError("automatic repair case_id must be a string or null")
+    return value
+
+
+def normalized_auto_fix_edits(item: Mapping[str, object]) -> tuple[str, ...]:
+    raw = item.get("edits")
+    if isinstance(raw, list) and raw and all(isinstance(edit, str) and edit.strip() for edit in raw):
+        return tuple(edit.strip() for edit in raw)
+    for legacy_key in ("action", "instructions"):
+        legacy = item.get(legacy_key)
+        if isinstance(legacy, str) and legacy.strip():
+            return (legacy.strip(),)
+        if (
+            isinstance(legacy, list)
+            and legacy
+            and all(isinstance(edit, str) and edit.strip() for edit in legacy)
+        ):
+            return tuple(edit.strip() for edit in legacy)
+    raise ValueError("automatic repair edits must be a non-empty string list")
 
 
 class ReviewFindingLocator(BaseModel):
@@ -125,6 +152,8 @@ class CaseReviewResultV1(BaseModel):
                 "required rows; covered counts status=covered; skipped_by_scope and missing must list "
                 "every required skipped row in matrix order",
                 "each findings item requires id, severity, category, message, and locator",
+                "for case.yaml automatic repairs locator.key is one dotted field path or multiple "
+                "comma-separated dotted field paths; use steps,assertions, never steps/assertions",
             ]
         },
     )
