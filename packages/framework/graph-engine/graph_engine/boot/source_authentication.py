@@ -186,20 +186,20 @@ def _import_authenticated_factory(
             entrypoint,
             initial_modules=before_modules,
         )
-        _evict_mismatched_preloads(import_plan)
-        import_plan = build_import_provenance_plan(
-            provider_source,
-            snapshot,
-            entrypoint,
-            initial_modules=dict(sys.modules),
-        )
-        import_plan = extend_import_plan_with_quarantine(
-            import_plan,
-            provider_source,
-            snapshot,
-            dict(sys.modules),
-        )
         try:
+            _evict_mismatched_preloads(import_plan)
+            import_plan = build_import_provenance_plan(
+                provider_source,
+                snapshot,
+                entrypoint,
+                initial_modules=dict(sys.modules),
+            )
+            import_plan = extend_import_plan_with_quarantine(
+                import_plan,
+                provider_source,
+                snapshot,
+                dict(sys.modules),
+            )
             with ImportPlanSession(provider_source, snapshot, dict(sys.modules)) as session:
                 session.quarantine(import_plan)
                 session.preload(import_plan, _factory_module_authority)

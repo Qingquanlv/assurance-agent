@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from pydantic import ValidationError
@@ -14,6 +15,7 @@ from graph_engine.boot.source_authentication import (
     authenticated_editable_source,
 )
 from graph_engine.composition.models import ProductManifest
+from graph_engine.composition.source_fs import SourceSnapshotError
 from graph_engine.plugin_api import ProviderSource
 
 
@@ -118,6 +120,44 @@ def test_sut_and_cross_owner_symbols_fail_before_import(tmp_path: Path) -> None:
         assert "assurance_generation.graphs.factory" not in sys.modules
     finally:
         sys.path.remove(str(hostile))
+
+
+def test_planning_failure_after_preload_eviction_restores_sys_modules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = authenticated_editable_source(
+        owner_id="assurance.intake",
+        root=tmp_path / "wheel",
+        import_roots=("rollback_intake",),
+    )
+    preload_name = "rollback_intake"
+    preload = ModuleType(preload_name)
+    sys.modules[preload_name] = preload
+    evicted_before_planning_failure = False
+
+    def fail_after_eviction(*_args: object, **_kwargs: object) -> object:
+        nonlocal evicted_before_planning_failure
+        evicted_before_planning_failure = preload_name not in sys.modules
+        raise SourceSnapshotError("post-eviction planning failed")
+
+    monkeypatch.setattr(
+        "graph_engine.boot.source_authentication.extend_import_plan_with_quarantine",
+        fail_after_eviction,
+    )
+    try:
+        with pytest.raises(FactoryAuthenticationError, match="post-eviction planning failed"):
+            authenticate_factory_ref(
+                FeatureFactoryRef(
+                    owner_id="assurance.intake",
+                    symbol="rollback_intake.graphs.factory:build_intake_graphs",
+                ),
+                {"assurance.intake": source},
+            )
+        assert evicted_before_planning_failure
+        assert sys.modules.get(preload_name) is preload
+    finally:
+        if sys.modules.get(preload_name) is preload:
+            del sys.modules[preload_name]
 
 
 def test_product_factory_ref_authenticates_against_product_source(tmp_path: Path) -> None:
