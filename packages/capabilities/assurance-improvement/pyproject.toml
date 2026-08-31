@@ -11,6 +11,7 @@ dependencies = [
     "assurance-healing==0.2.0",
     "assurance-quality==0.2.0",
     "graph-engine",
+    "langgraph==1.2.11",
     "pydantic>=2.7",
 ]
 
