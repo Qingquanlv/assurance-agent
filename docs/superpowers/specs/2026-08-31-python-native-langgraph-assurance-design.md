@@ -1,8 +1,9 @@
 # Python-native LangGraph Assurance Runtime
 
-- **Status:** Proposed for review
+- **Status:** Accepted
 - **Date:** 2026-08-31
 - **Supersedes:** [LangGraph-first Assurance Boot Runtime](./2026-08-31-langgraph-assurance-boot-runtime-design.md)
+- **Implementation plan:** [Python-native LangGraph Migration Program](../plans/2026-08-31-python-native-langgraph-migration.md)
 - **Replaces plan:** [Assurance Baseline and Agent Leaf Tracer Implementation Plan](../plans/2026-08-31-assurance-baseline-and-agent-leaf-tracer.md)
 - **Scope:** Replace YAML-authored Workflow topology and the custom Graph Runtime with installed-wheel Python `StateGraph` factories, while retaining authenticated capability loading and reliable Attempt commit/recovery.
 
@@ -233,32 +234,47 @@ Improvement may expose multiple typed fields such as `retro`, `review`, `evaluat
 @dataclass(frozen=True)
 class ProductGraphs:
     entrypoints: Mapping[ProductEntrypoint, CompiledStateGraph]
+    contracts: Mapping[ProductEntrypoint, EntrypointGraphContract]
+
+
+@dataclass(frozen=True)
+class ProductFeatureBundles:
+    intake: IntakeGraphs
+    generation: GenerationGraphs
+    execution: ExecutionGraphs
+    quality: QualityGraphs
+    healing: HealingGraphs
+    improvement: ImprovementGraphs
 
 
 def build_product_graphs(
     *,
     context: GraphBuildContext,
-    intake: IntakeGraphs,
-    generation: GenerationGraphs,
-    execution: ExecutionGraphs,
-    quality: QualityGraphs,
-    healing: HealingGraphs,
-    improvement: ImprovementGraphs,
+    features: Mapping[str, object],
 ) -> ProductGraphs:
+    bundles = ProductFeatureBundles.from_owner_mapping(features)
     return ProductGraphs(
         entrypoints={
-            "full": build_full_graph(context, intake, generation, execution, quality, healing),
+            "full": build_full_graph(
+                context,
+                bundles.intake,
+                bundles.generation,
+                bundles.execution,
+                bundles.quality,
+                bundles.healing,
+            ),
             "execute": build_execute_graph(
                 context,
-                generation,
-                execution,
-                quality,
-                healing,
+                bundles.generation,
+                bundles.execution,
+                bundles.quality,
+                bundles.healing,
             ),
-            "retro": build_retro_graph(context, improvement),
-            "archive": build_archive_graph(context, improvement),
+            "retro": build_retro_graph(context, bundles.improvement),
+            "archive": build_archive_graph(context, bundles.improvement),
             # Remaining public entrypoints are equally explicit.
-        }
+        },
+        contracts=ENTRYPOINT_CONTRACTS,
     )
 ```
 
@@ -285,6 +301,8 @@ It must not contain:
 - external effect payloads that already have a durable receipt.
 
 Each Feature owns a typed state schema. Subgraphs sharing parent keys may be embedded directly and compile with `checkpointer=None`, inheriting the parent persistence configuration. When child and parent schemas differ, Product uses one explicit adapter node that constructs child input, invokes the subgraph and publishes a typed parent update. If that child interrupts, both the parent adapter node and the interrupted child node restart from their beginnings; adapter work before child invocation must therefore be pure or idempotent. Internal Feature projections never move to Product.
+
+Every Feature and Product state schema extends the framework `CheckpointBridgeState`, which reserves one bounded JSON-only last-write channel, `assurance_checkpoint_markers`. The channel carries only successful-resume completion markers emitted by `AttemptNodeFactory`; interrupt-issuance markers are read directly from LangGraph's persisted interrupt payloads. A completion batch contains one marker for every active generation/ordinal replayed by that node invocation, so pending → resume → pending → resume → commit retires the whole checked set atomically after anchoring. A fresh Attempt success writes an empty batch, and a later Attempt overwrites the prior batch; repeated observation of a retained batch is idempotent. The channel is excluded from public input/output adapters and semantic task-input digests, but included in checkpoint integrity. A fixed maximum active-generation count prevents unbounded state.
 
 Concurrent writes are permitted only on state keys with an explicit deterministic, associative reducer; reducers for unordered parallel results must also be commutative. Receipt reducers de-duplicate by receipt ID. Ordinary scalar decisions do not receive a reducer. Concurrent scalar updates raise `INVALID_CONCURRENT_GRAPH_UPDATE` at graph execution time, so fanout tests exercise every permitted concurrent write set before release.
 
@@ -313,7 +331,7 @@ class AgentExecutionContract(Generic[InputT, AgentResultT, OutputT]):
     validators: tuple[str, ...]
 ```
 
-The remaining 25 direct task-node occurrences use 12 distinct Feature-owned core contracts:
+The remaining 25 direct task-node occurrences initially present 12 distinct Feature-owned candidates. Characterization classifies four IDs—Generation complete, Generation review-round advance, Intake review-round advance and Healing repair-round advance—as deterministic pure functions with no filesystem, activity, effect or durable-evidence obligation. They account for 16 occurrences and become ordinary typed graph nodes. The other eight IDs are effectful Improvement contracts at nine occurrences and use the following core contract:
 
 ```python
 @dataclass(frozen=True)
@@ -329,7 +347,7 @@ class TaskAttemptContract(Generic[InputT, OutputT]):
     validators: tuple[str, ...]
 ```
 
-The topology therefore targets 45 distinct immutable contracts and approximately 59 bound Attempt-node occurrences: 34 Agent occurrences plus the existing 25 direct task occurrences. A direct task that proves pure and requires no filesystem, external activity, effect or durable evidence may instead become an ordinary LangGraph function after characterization.
+The topology therefore has 45 candidates before purity classification and targets 41 immutable effectful contracts at 43 Attempt-node occurrences: 33 Agent contracts at 34 occurrences plus eight direct Improvement contracts at nine occurrences. Four proven-pure functions cover the remaining 16 direct occurrences.
 
 `validators` is required and has no default. An empty tuple is valid only when explicitly declared. Validator registration never implies binding.
 
@@ -350,7 +368,7 @@ Boot requires exactly one Product runtime binding for each of the 33 Agent contr
 
 The dependency direction remains strict: `agent-runtime-contracts` depends on `graph-engine`; `graph-engine` never imports `agent-runtime-contracts`. The adapter layer constructs a `CompositeAttemptExecutor` from authenticated prepare, selected Agent runtime and finalize entries. Core sees only the generic resolved executor and contract. This preserves the existing boundary test that forbids a reverse dependency.
 
-There are currently 25 registered validators across the six Feature wheels: Execution 2, Generation 8, Healing 3, Improvement 4, Intake 2 and Quality 6. They are not one-to-one with the 33 Agent contracts: some belong to the 12 distinct direct task contracts, and registry membership proves availability rather than use. Current Workflow nodes bind zero validators. Any new non-empty binding is therefore an explicit behavior change, not preservation of an effective legacy attachment. Before such a binding is approved, its complete staged-set context and validator inputs must be demonstrated. Every target contract still declares an ordered `validators` tuple, including an explicit empty tuple when appropriate. Contract closure does not require every registered validator to be used.
+There are currently 25 registered validators across the six Feature wheels: Execution 2, Generation 8, Healing 3, Improvement 4, Intake 2 and Quality 6. They are not one-to-one with the 41 effectful contracts, and registry membership proves availability rather than use. Current Workflow nodes bind zero validators. Any new non-empty binding is therefore an explicit behavior change, not preservation of an effective legacy attachment. Before such a binding is approved, its complete staged-set context and validator inputs must be demonstrated. Every target effectful contract still declares an ordered `validators` tuple, including an explicit empty tuple when appropriate. Contract closure does not require every registered validator to be used.
 
 Prepare, runtime execution and finalize are one semantic Attempt and one commit. The composite executor retains the validated logical input, prepared value and validated Agent result and passes the typed bundle to finalize; phase-to-phase data does not leak back into graph projections. Phase receipts may remain internal Attempt evidence. If a prepare/finalize operation has independent business routing, approval, compensation or durable scheduling semantics, it receives its own explicit contract and LangGraph node; three generic phase aliases are not restored.
 
@@ -364,6 +382,8 @@ class AttemptNodeFactory:
         self,
         contract: ResolvedAttemptContract[InputT, OutputT],
         *,
+        semantic_node_id: str,
+        activation: Callable[[StateT], BusinessActivation],
         select: Callable[[StateT], InputT],
         publish: Callable[[StateT, OutputT, ReceiptRef], StateUpdate],
     ) -> StateNode[StateT]: ...
@@ -400,7 +420,9 @@ AttemptKey = digest(
 )
 ```
 
-`business_activation` is an explicit state counter for the relevant business loop. `select()` output is validated into `InputT` and canonically serialized before `task_input_digest` is computed. Technical retries and replay after interrupt reuse the same key. A new business repair/review round increments the counter and receives a new key.
+`business_activation` is an explicit stable identity for the relevant business occurrence. `select()` output is validated into `InputT` and canonically serialized before `task_input_digest` is computed. Technical retries and replay after interrupt reuse the same key. A new business repair/review round or a distinct late trigger receives a new key.
+
+Every effectful node supplies a required `activation(state) -> BusinessActivation` selector. `BusinessActivation` is a frozen validated value object with `kind: Literal["root", "round", "trigger"]` and a nonempty bounded canonical `value`. `one_shot()` returns the fixed root occurrence, `for_round(index)` represents an ordinary business loop, and `for_trigger(arrival_id)` represents the stable current-trigger arrival. Neither field may use LangGraph task/checkpoint IDs, time, randomness or process identity. This makes a same-epoch late arrival a distinct Attempt while replay of the same arrival reuses its key.
 
 ## 13. Attempt Kernel Transaction
 
@@ -433,7 +455,9 @@ The Kernel never chooses the next Workflow node and never writes an Invocation t
 
 Human decisions use separate pure interrupt nodes. System interrupts carry no human action and instead contain a typed reconciliation/wakeup reference.
 
-A stable Attempt key alone is not sufficient for a system interrupt. Once an adapter emits `interrupt()`, LangGraph requires that call to recur at the same ordinal whenever the node restarts. The Attempt journal therefore records a `pending_generation` and interrupt ordinal before emission. On resume/replay the adapter first replays every previously issued interrupt at the same ordinal, then re-enters `execute_or_recover`; it never conditionally skips or reorders an issued interrupt merely because the Kernel/effect state has since changed. The pending generation remains durable through the successful node checkpoint, so a crash after resume cannot turn the interrupt into an untracked side effect.
+A stable Attempt key alone is not sufficient for a system interrupt. Once an adapter emits `interrupt()`, LangGraph requires that call to recur at the same ordinal whenever the node restarts. The Attempt journal therefore records a `pending_generation` and interrupt ordinal before emission. On resume/replay the adapter first replays every previously issued interrupt at the same ordinal, then re-enters `execute_or_recover`; it never conditionally skips or reorders an issued interrupt merely because the Kernel/effect state has since changed.
+
+Checkpoint observation has two distinct phases. Anchoring the interrupt-bearing checkpoint records `SystemInterruptIssuanceAnchored` and permits the interrupt to be exposed, but does **not** retire the pending generation. After the resumed node has replayed the ordinal and obtained a non-pending Kernel resolution, its state update carries a completion marker for every active generation replayed during that invocation. `aput_writes` may persist that partial update, but it must never publish a completion observer notice. Only `aput` anchoring the merged successful resumed-node checkpoint records the checked `SystemInterruptCompletionCheckpointed` batch and retires that exact active set. Both marker deliveries are idempotent and digest/generation checked. Thus a crash after the pending write but before the successful checkpoint still replays every active ordinal, while a crash after that checkpoint only redelivers observer work and never re-enters the node.
 
 ## 15. Structured Agent Output
 
@@ -461,8 +485,8 @@ The migration rewrites each current behavior directly; it does not lower or inte
 | `join: all` | explicit multi-input barrier and reducer |
 | `join: any` | flow-specific typed activation inbox/current-trigger state and conditional edge |
 | fanout | `Send` with typed child input |
-| `min_matches` | route function asserts the selected count before returning `Send` values |
-| exclusive route | route function computes named matches and rejects zero or multiple matches |
+| `min_matches` | graph-visible fanout asserts the selected count before returning `Send`; phase-internal fanout is proven inside the composite Attempt |
+| exclusive route | route function computes all named matches; more than one is fatal, exactly one wins, and zero selects the declared `otherwise` target |
 | gate expression DSL | pure typed Python predicate |
 | input/output projection DSL | Feature-local `select` / `publish` functions |
 | `max_activations` | explicit business loop/budget counters |
@@ -475,7 +499,7 @@ The 7 looped sites carry a business `epoch`/round plus a typed trigger containin
 
 Generation plan-review loops additionally store `round_budget`, current plan and current review result. Intake case-design/rework stores its current case result. Product execution failure, coverage and assessment paths use typed branch outcomes. Tests cover first arrival, late arrival, repeated loop epochs, stable trigger selection and downstream input identity for all 9 sites before legacy deletion.
 
-The three current `min_matches` fanouts raise `InsufficientRouteMatches` before dispatch. Exclusive routes remain fail-closed on ambiguity instead of becoming Python `if/elif` chains that silently choose the first match.
+The Generation four-family fanout raises `InsufficientRouteMatches` before returning any `Send` value. The two Intake `min_matches: 2` sites are prepare-to-runtime/finalize phase plumbing that disappear inside the composite Agent Attempt; primary and repair tests prove both consumers receive the prepared value and validated Agent result before finalize. Exclusive routes retain their required declared fallback: zero named matches selects `otherwise`, exactly one selects that target, and more than one fails with ambiguity. They do not become Python `if/elif` chains that silently choose the first match.
 
 Business round and activation counters remain the authoritative domain limits. `AssuranceApplication` also supplies a pinned, entrypoint-specific `recursion_limit` as a top-level LangGraph config key, sized above the longest valid execution. `GraphRecursionError` is normalized as a runtime failure and tested independently from business-budget exhaustion.
 
@@ -590,6 +614,8 @@ Before `start`, `run` or `resume`, `AssuranceApplication` obtains one Invocation
 | during effect apply with unknown outcome | reconcile effect; never repeat workspace promotion |
 | after system-interrupt issuance, before resume | replay the same generation and ordinal |
 | after resume, before node checkpoint | replay the issued interrupt ordinal, then recover the same Attempt |
+| after interrupt-bearing checkpoint, before issuance-observer delivery | redeliver the issuance anchor; keep the generation pending |
+| after successful resumed-node checkpoint, before completion-observer delivery | redeliver the completion anchor; retire exactly the matching generation without rerunning the node |
 | runner loses lease during a superstep | fence checkpoint/new dispatch; successor reconciles Attempts before resume |
 | after LangGraph checkpoint | continue from checkpointed state |
 | installed revision differs from pinned revision | refuse resume; require original deployment artifact |
@@ -598,7 +624,7 @@ Checkpoint writes and canonical workspace promotion need not share one database 
 
 ## 22. Existing Workflow Coverage
 
-The migration baseline remains 64 graphs, 324 nodes, 366 edges, 124 conditional edges, 73 subgraph nodes, 12 joins (9 `any`, 3 `all`), 13 interrupts, 7 loop SCCs and a maximum nesting depth of 5. These numbers are characterization inventory, not a target Python node count; composite Attempts and direct rewrites deliberately reduce the implementation surface.
+The accepted working-tree baseline is 64 graphs, 325 nodes, 367 edges, 124 conditional edges, 73 subgraph nodes, 12 joins (9 `any`, 3 `all`), 13 interrupts, 7 loop SCCs and a maximum nesting depth of 5. These numbers include the uncommitted Generation completion and Intake composite-dataflow changes present when this design was accepted. They are characterization inventory, not a target Python node count; composite Attempts and direct rewrites deliberately reduce the implementation surface. Implementation starts only from an explicit integration-base commit containing that baseline, or after the inventory/spec/plan are deliberately regenerated for a different base.
 
 All current topologies are representable directly:
 
@@ -720,7 +746,7 @@ Migration is staged for review and rollback, but no production Invocation is adv
 
 ### Phase 2: Attempt Kernel
 
-- Resolve 33 distinct Agent contracts and 12 distinct direct task contracts alongside the legacy aliases; do not delete the 99 alias IDs while shadow/rollback still needs the old Runtime.
+- Resolve 33 distinct Agent contracts and eight distinct direct Improvement task contracts alongside the legacy aliases; freeze four characterized pure direct functions; do not delete the 99 alias IDs while shadow/rollback still needs the old Runtime.
 - Implement stable Attempt keys, resource arbitration, workspace commit/recovery, validators and effect settlement.
 - Extend validator context with immutable sealed candidate bytes plus authenticated task input/output/evidence before approving any non-empty target binding.
 - Implement the single `AttemptNodeFactory.attempt` interface.
@@ -734,12 +760,13 @@ Migration is staged for review and rollback, but no production Invocation is adv
 ### Phase 4: Feature graph migration
 
 - Implement Intake, Generation, Quality, Healing and Improvement Python graph bundles.
-- Rewrite the 9 any-join cases—including epoch/current-trigger and late-arrival behavior—and 3 min-match fanouts specifically.
+- Rewrite the five Feature-owned any-join cases—including epoch/current-trigger and late-arrival behavior—and account for all three min-match obligations specifically.
 - Repair Retro and improvement-evaluate contracts before their graphs are accepted.
 
 ### Phase 5: Product entrypoints
 
 - Implement the 14 Product root graph factories.
+- Rewrite the four Product-owned any-join cases; use inboxes for the two looped sites and prove predecessor exclusion/no late reactivation for the two assessment sites or use the inbox fallback.
 - Preserve public names and black-box behavior.
 - Add resource-aware parallel and effect-pending tests.
 
@@ -748,17 +775,18 @@ Migration is staged for review and rollback, but no production Invocation is adv
 - Drive old and new runtimes only with scripted/snapshotted inputs or separate shadow Invocations.
 - Compare semantic decisions, Attempt calls, interrupts, receipts and terminals rather than internal IDs.
 - Cut over a public entrypoint only when its new graph passes parity and crash tests.
-- One Invocation records one runtime/revision at start and never switches in place.
+- One Invocation records one runtime-specific authenticated build identity at start and never switches in place: legacy retains its `InvocationLock` v2 digest, while LangGraph records GraphRevision/ProductLock v3.
 
 ### Phase 7: Drain and delete
 
 - Stop new legacy Invocations.
 - Drain or explicitly terminate old Invocations.
-- Delete the 99 Product phase aliases and their 102 phase-slot projections only now.
-- Remove Workflow YAML, compiler, planner, token scheduler and compatibility tests.
+- Extract and test the read-only legacy-v2 evidence reader, migrate generic examples/CLI/smoke/benchmark and every retained consumer, and relocate reusable activity/workspace/host primitives while compatibility wrappers still exist.
+- After the authenticated zero-active gate and preparation commit are green, atomically switch `aa compile` from the coexistence bundle to ProductLock v3/`GraphBuildManifest` only, then delete Workflow YAML/module packaging, obsolete topology fixtures, the 99 Product phase aliases and their 102 phase-slot projections in that same commit.
+- Delete the mutually dependent Workflow compiler/assembler/projection DSL and planner/token scheduler/custom Runtime in one atomic commit; no intermediate commit removes graph types still imported by Runtime.
 - Update `AGENTS.md`, README, architecture docs and wheel smoke tests to the Python-native rule.
 
-Temporary entrypoint cutover switches must be deleted after Phase 7; they are migration controls, not a permanent runtime abstraction.
+Temporary entrypoint cutover switches must be deleted in the final Phase 7 cleanup commit; they are migration controls, not a permanent runtime abstraction.
 
 ## 28. Test Strategy
 
@@ -767,13 +795,19 @@ Temporary entrypoint cutover switches must be deleted after Phase 7; they are mi
 - Build each Feature graph from authenticated resolved contracts.
 - Assert public graph exports, typed inputs/outputs and route outcomes.
 - Test loops, budgets, fanout counts, ambiguity and interrupt action validation.
-- Test all 9 any-join rewrites for current-trigger identity, late arrival and repeated activation epochs.
+- Test the five Feature-owned any-join rewrites for current-trigger identity, late arrival and repeated activation epochs.
 - Test only through the Feature graph bundle interface, not private node tables.
 - Use a spy owner-scoped build context to assert contract IDs and ensure graph code cannot inject handler/validator/runtime bindings.
 
 ### Workflow harness
 
 Use compiled StateGraphs, the anchored in-memory checkpointer adapter and a scripted `AttemptNodeFactory`/Kernel. The harness records semantic node calls, input values, state updates, interrupts and terminals. It never invokes OpenCode or real promotion.
+
+### Product graph tests
+
+- Test the two looped Product any-join rewrites for current-trigger identity, same-epoch late arrival, replay and dispatch cursor behavior.
+- Test both Product assessment exits for outcome/predecessor mutual exclusion and no late reactivation; if characterization fails, run the same inbox matrix.
+- Together with Feature tests, account for all nine legacy any-join sites before deletion.
 
 ### Kernel tests
 
