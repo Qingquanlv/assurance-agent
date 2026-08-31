@@ -1,5 +1,13 @@
 # Assurance Baseline and Agent Leaf Tracer Implementation Plan
 
+> [!WARNING]
+> **SUPERSEDED — do not execute this plan.** It retains Workflow YAML and an
+> `AgentLeafSpec` compatibility layer, both of which were rejected. Review the
+> replacement
+> [Python-native LangGraph Assurance Runtime](../specs/2026-08-31-python-native-langgraph-assurance-design.md).
+
+**Status:** Superseded
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 修复 LangGraph 迁移前可独立落地的 Assurance 基线缺口，并在不引入 LangGraph 的前提下，把一个完全等价的四节点 Agent leaf 收敛为 `AgentLeafSpec` tracer。

@@ -1,6 +1,12 @@
 # LangGraph-first Assurance Boot Runtime
 
-- Status: Draft for review
+> [!WARNING]
+> **SUPERSEDED — do not implement this design.** The decision to retain and lower
+> Workflow YAML was reversed. The approved direction authors topology directly as
+> Python `StateGraph` code. Review the replacement
+> [Python-native LangGraph Assurance Runtime](./2026-08-31-python-native-langgraph-assurance-design.md).
+
+- Status: Superseded
 - Date: 2026-08-31
 - Scope: 将 LangGraph 设为唯一 Workflow 推进权威，将现有 Graph Runtime 重构为 Boot/装配层与单 Attempt 可靠提交内核
 - Decision: 保留受认证的 YAML Workflow 与 Capability wheel 装配；在启动阶段 lowering 为版本固定的 LangGraph
