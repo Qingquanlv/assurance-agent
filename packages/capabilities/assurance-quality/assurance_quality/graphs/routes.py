@@ -29,10 +29,14 @@ def failure_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
 
 
 def route_coverage(state: Mapping[str, object]) -> str:
+    if state.get("attempt_failure"):
+        return _COVERAGE_OTHERWISE
     return select_exclusive_route(coverage_named_matches(state), otherwise=_COVERAGE_OTHERWISE)
 
 
 def route_failure(state: Mapping[str, object]) -> str:
+    if state.get("attempt_failure"):
+        return _FAILURE_OTHERWISE
     return select_exclusive_route(failure_named_matches(state), otherwise=_FAILURE_OTHERWISE)
 
 

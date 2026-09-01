@@ -137,6 +137,27 @@ def test_unknown_failure_classification_fails_closed() -> None:
     assert all(target is None for target in matches.values())
 
 
+def test_attempt_failure_fails_closed_despite_leftover_successful_outcome() -> None:
+    failure = {
+        "resolution_kind": "rejected",
+        "reason": "kernel rejected",
+        "writes_promoted": False,
+    }
+    assess_recheck = {
+        "coverage_state": "satisfied",
+        "attempt_failure": failure,
+    }
+    issue_recheck = {
+        "classification": "test",
+        "fix_eligible": True,
+        "attempt_failure": failure,
+    }
+    assert route_coverage(assess_recheck) == _COVERAGE_OTHERWISE
+    assert route_failure(issue_recheck) == _FAILURE_OTHERWISE
+    assert route_coverage(assess_recheck) != "satisfied"
+    assert route_failure(issue_recheck) != "fix-eligible"
+
+
 def test_quality_graphs_do_not_import_healing_graphs_or_implementation() -> None:
     violations: list[str] = []
     healing_hits: list[str] = []
