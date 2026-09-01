@@ -26,6 +26,7 @@ from assurance_improvement.contracts.retro import (
     RetroContextV3,
     RetroIntegrity,
     RetroSourceManifestV3,
+    Signal,
     SignalDocumentV3,
 )
 
@@ -193,6 +194,18 @@ def _signal_document(
     }
 
 
+def _merge_domain_signals(domain: str, sources: tuple[tuple[Signal, ...], ...]) -> tuple[Signal, ...]:
+    ordered: dict[str, Signal] = {}
+    for source in sources:
+        for signal in source:
+            existing = ordered.get(signal.signal_id)
+            if existing is None:
+                ordered[signal.signal_id] = signal
+            elif existing.model_dump(mode="json") != signal.model_dump(mode="json"):
+                raise ValueError(f"conflicting signal_id {signal.signal_id!r} in {domain} signals")
+    return tuple(ordered.values())
+
+
 def assemble_analyses(state: Mapping[str, object]) -> dict[str, object]:
     eval_analysis = state.get("eval_analysis")
     issue_analysis = state.get("issue_analysis")
@@ -240,6 +253,8 @@ def assemble_analyses(state: Mapping[str, object]) -> dict[str, object]:
         )
         if slice_.window != collected.window or slice_.retro_id != signal_doc.retro_id:
             raise ValueError(f"{domain} assembly identity mismatch")
+        if getattr(slice_, "domain", domain) != domain or signal_doc.domain != domain:
+            raise ValueError(f"{domain} signal domain does not match")
         actual = artifact_digest(slice_)
         if not same_digest(actual, digest) or not same_digest(actual, signal_doc.slice_sha256):
             raise ValueError(f"{domain} slice digest is not authenticated")
@@ -249,10 +264,9 @@ def assemble_analyses(state: Mapping[str, object]) -> dict[str, object]:
             reasons.append(f"{domain}_signal_analysis_failed")
         else:
             statuses[domain] = DomainAnalysisStatus(status="ok")
-            merged: dict[str, object] = {signal.signal_id: signal for signal in slice_.deterministic_signals}
-            for signal in signal_doc.signals:
-                merged[signal.signal_id] = signal
-            signals[domain] = tuple(merged.values())
+            signals[domain] = _merge_domain_signals(
+                domain, (slice_.deterministic_signals, signal_doc.signals)
+            )
         for reason in slice_.integrity.reasons:
             if reason not in reasons:
                 reasons.append(reason)

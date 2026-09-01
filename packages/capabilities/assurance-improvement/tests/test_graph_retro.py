@@ -160,6 +160,21 @@ def analysis_agent_output(domain: Literal["issue", "workflow", "eval"]) -> dict[
     }
 
 
+def _task_failure_signal(*, signal_id: str, node_id: str) -> dict[str, object]:
+    return {
+        "signal_id": signal_id,
+        "summary": f"Task failed at {node_id}",
+        "occurrence_count": 1,
+        "recommended_change": "Investigate the failure",
+        "source_refs": {"problem_ids": ["PROB-1"], "occurrence_ids": ["OCC-1"]},
+        "confidence": "high",
+        "signal_type": "task_failure",
+        "node_id": node_id,
+        "error_kind": "timeout",
+        "message_fingerprint": "fp-1",
+    }
+
+
 def retro_agent_output() -> dict[str, object]:
     return {
         "schema_version": "3",
@@ -472,3 +487,35 @@ async def test_rejected_analysis_fail_closes_without_later_agents() -> None:
     terminal = result.terminal
     assert isinstance(terminal, dict)
     assert terminal["status"] == "failed"
+
+
+def test_assemble_fail_closes_on_wrong_analysis_domain() -> None:
+    from assurance_improvement.graphs.nodes import assemble_analyses
+
+    wrong_domain = analysis_agent_output("eval")
+    with pytest.raises(ValueError, match="issue signal domain does not match"):
+        assemble_analyses(
+            retro_graph_input(
+                eval_analysis=analysis_agent_output("eval"),
+                issue_analysis=wrong_domain,
+                workflow_analysis=analysis_agent_output("workflow"),
+            )
+        )
+
+
+def test_assemble_fail_closes_on_conflicting_signal_id() -> None:
+    from assurance_improvement.graphs.nodes import assemble_analyses
+
+    issue_slice = _empty_slice("issue")
+    issue_slice["deterministic_signals"] = [_task_failure_signal(signal_id="SIG-1", node_id="node-a")]
+    conflicting = analysis_agent_output("issue")
+    conflicting["signals"] = [_task_failure_signal(signal_id="SIG-1", node_id="node-b")]
+    with pytest.raises(ValueError, match="conflicting signal_id 'SIG-1' in issue signals"):
+        assemble_analyses(
+            retro_graph_input(
+                issue_slice=issue_slice,
+                eval_analysis=analysis_agent_output("eval"),
+                issue_analysis=conflicting,
+                workflow_analysis=analysis_agent_output("workflow"),
+            )
+        )
