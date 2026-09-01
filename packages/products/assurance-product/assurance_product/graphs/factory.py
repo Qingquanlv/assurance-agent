@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import cast
+from typing import Any, cast
 
+from langchain_core.runnables.config import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
 from assurance_execution.graphs.factory import ExecutionGraphs
@@ -26,9 +27,11 @@ from assurance_product.graphs.entrypoints import (
     build_issue_review_root,
     build_retro_root,
 )
-from assurance_product.models import FEATURE_WORKFLOW_OWNERS, THIN_ENTRYPOINTS
+from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS, ENTRYPOINT_RECURSION_LIMITS
+from assurance_product.models import FEATURE_WORKFLOW_OWNERS, PRODUCT_ENTRYPOINTS, THIN_ENTRYPOINTS
 from assurance_quality.graphs.factory import QualityGraphs
 from graph_engine.boot.boot import GraphBuildContext
+from graph_engine.boot.graph_revision import EntrypointGraphContract
 
 _BUNDLE_TYPES: Mapping[str, type] = {
     "assurance.intake": IntakeGraphs,
@@ -109,9 +112,83 @@ def build_thin_entrypoint_graphs(
     return ThinEntrypointGraphs(entrypoints=MappingProxyType(entrypoints))
 
 
+@dataclass(frozen=True, slots=True)
+class ProductGraphs:
+    entrypoints: Mapping[str, CompiledStateGraph]
+    contracts: Mapping[str, EntrypointGraphContract]
+
+
+def _closed_entrypoints(entrypoints: Mapping[str, CompiledStateGraph]) -> Mapping[str, CompiledStateGraph]:
+    names = tuple(entrypoints)
+    if len(names) != len(set(names)):
+        raise ValueError("duplicate product roots")
+    expected = set(PRODUCT_ENTRYPOINTS)
+    got = set(names)
+    missing = expected - got
+    extra = got - expected
+    if missing:
+        raise ValueError(f"missing product entrypoints: {sorted(missing)}")
+    if extra:
+        raise ValueError(f"extra product entrypoints: {sorted(extra)}")
+    if len(entrypoints) != 14:
+        raise ValueError("product roots must be the 14 declared entrypoints")
+    return MappingProxyType(dict(entrypoints))
+
+
+def build_product_graphs(
+    *,
+    context: GraphBuildContext,
+    features: Mapping[str, object],
+) -> ProductGraphs:
+    from assurance_product.graphs.execute import build_execute_graph, build_execute_root
+    from assurance_product.graphs.full import build_full_root
+
+    bundles = coerce_feature_bundles(features)
+    thin = build_thin_entrypoint_graphs(context=context, features=features)
+    thin_names = tuple(thin.entrypoints)
+    if len(thin_names) != len(set(thin_names)):
+        raise ValueError("duplicate product roots")
+    execute = build_execute_root(context, bundles)
+    execute_child = build_execute_graph(bundles, validate=False).compile(checkpointer=None)
+    full = build_full_root(context, bundles, execute_child)
+    entrypoints = {
+        **dict(thin.entrypoints),
+        "execute": execute,
+        "full": full,
+    }
+    return ProductGraphs(entrypoints=_closed_entrypoints(entrypoints), contracts=ENTRYPOINT_CONTRACTS)
+
+
+def product_invoke_config(name: str) -> RunnableConfig:
+    return {"recursion_limit": ENTRYPOINT_RECURSION_LIMITS[name]}
+
+
+def invoke_product_root(
+    graphs: ProductGraphs,
+    name: str,
+    payload: Mapping[str, object],
+    **kwargs: Any,
+) -> dict[str, object]:
+    config = dict(product_invoke_config(name))
+    extra = kwargs.pop("config", None)
+    if isinstance(extra, Mapping):
+        config.update(dict(extra))
+    result = graphs.entrypoints[name].invoke(payload, config=cast(RunnableConfig, config), **kwargs)
+    if not isinstance(result, dict):
+        raise TypeError("product root invoke must return a mapping")
+    return result
+
+
+invoke_product_root.config = product_invoke_config  # type: ignore[attr-defined]
+
+
 __all__ = [
     "ProductFeatureBundles",
+    "ProductGraphs",
     "ThinEntrypointGraphs",
+    "build_product_graphs",
     "build_thin_entrypoint_graphs",
     "coerce_feature_bundles",
+    "invoke_product_root",
+    "product_invoke_config",
 ]

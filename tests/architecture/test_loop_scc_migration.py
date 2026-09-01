@@ -17,6 +17,12 @@ def test_loop_scc_anchors_match_exactly() -> None:
     assert len(live_anchors) == 7
     assert {row.membership for row in live} == {row.membership for row in LOOP_SCC_INVENTORY}
     assert all(row.target_test for row in LOOP_SCC_INVENTORY)
+    product = [row for row in LOOP_SCC_INVENTORY if row.graph_id.endswith("product-execute")]
+    assert {row.anchor for row in product} == {
+        ("assurance.product.workflow.graph.product-execute", "coverage-needed"),
+        ("assurance.product.workflow.graph.product-execute", "failed-join"),
+    }
+    assert all("test_product_join_any.py::test_current_trigger" in row.target_test for row in product)
 
 
 def test_loop_scc_count_equality_alone_is_not_acceptance() -> None:

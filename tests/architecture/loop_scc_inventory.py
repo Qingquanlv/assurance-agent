@@ -33,7 +33,7 @@ def _target_test(graph_id: str, anchor_node_id: str) -> str:
     elif graph_id.startswith("assurance.intake."):
         path = "packages/capabilities/assurance-intake/tests/test_graph_join_any.py"
     else:
-        path = "tests/product/test_graph_join_any.py"
+        path = "tests/product/test_product_join_any.py"
     return f"{path}::test_current_trigger[{graph_id}/{anchor_node_id}]"
 
 

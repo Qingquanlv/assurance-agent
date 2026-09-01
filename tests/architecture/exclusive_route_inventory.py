@@ -96,7 +96,7 @@ def _row(
     owner: OwnerKind,
 ) -> ExclusiveRouteRow:
     if owner == "product":
-        package = "tests/product/test_graph_routes.py"
+        package = "tests/product/test_product_stategraph_flow.py"
     else:
         package = _FEATURE_ROUTE_TESTS[graph_id.split(".workflow.", 1)[0]]
     target_test = f"{package}::test_exclusive_route[{graph_id}/{node_id}]"
