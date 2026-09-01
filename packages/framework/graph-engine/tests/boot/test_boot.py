@@ -35,8 +35,8 @@ from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import ProductLock
 from graph_engine.composition.source_fs import DeclaredTreePolicy, capture_declared_tree
 from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
+from graph_engine.persistence.checkpoint_store import MemoryCheckpointStore
 from graph_engine.plugin_api import ProviderSource, ResourceClaims
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph
 
 
@@ -344,8 +344,22 @@ class RecordingFactories:
         monkeypatch.setattr(StateGraph, "compile", tracked)
 
 
-class _AnchoredSaver(InMemorySaver):
-    backend_id = "memory"
+def checkpoint_helpers() -> object:
+    path = Path(__file__).resolve().parents[1] / "persistence" / "test_checkpoint_store_contract.py"
+    spec = importlib.util.spec_from_file_location("graph_engine_checkpoint_store_helpers", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def real_anchored_checkpointer() -> AnchoredCheckpointer:
+    helpers = checkpoint_helpers()
+    return AnchoredCheckpointer(
+        store=MemoryCheckpointStore(),
+        journal=helpers.MemoryCheckpointAnchorJournal(),
+        identity=helpers.identity(),
+    )
 
 
 def make_boot_request(
@@ -381,6 +395,24 @@ def test_offline_compile_uses_no_saver_and_runtime_boot_matches_manifest(
     assert artifact.manifest == manifest
     assert set(artifact.entrypoints) == EXPECTED_ENTRYPOINTS
     assert artifact.checkpointer_backend_id == anchored_saver.backend_id
+
+
+def test_runtime_boot_accepts_real_anchored_checkpointer(
+    authenticator: SourceAuthenticator,
+    resolver: ContractResolverPort,
+    boot_request: BootRequest,
+    ports: RuntimePorts,
+) -> None:
+    request = boot_request
+    saver = real_anchored_checkpointer()
+    assert type(saver) is AnchoredCheckpointer
+    artifact = GraphEngineBoot(authenticator=authenticator, contract_resolver=resolver).boot(
+        request,
+        checkpointer=saver,
+        runtime_ports=ports,
+    )
+    assert artifact.checkpointer_backend_id == saver.backend_id
+    assert saver.backend_id
 
 
 def test_feature_context_rejects_foreign_contract(
@@ -436,7 +468,7 @@ def boot_request(tmp_path: Path) -> BootRequest:
 
 @pytest.fixture
 def anchored_saver() -> AnchoredCheckpointer:
-    return _AnchoredSaver()  # type: ignore[return-value]
+    return real_anchored_checkpointer()
 
 
 @pytest.fixture

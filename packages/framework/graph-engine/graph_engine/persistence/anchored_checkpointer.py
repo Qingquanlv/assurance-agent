@@ -47,6 +47,8 @@ _ASYNC_ONLY = "AnchoredCheckpointer is async-only; use the a-prefixed method"
 
 
 class AnchoredCheckpointer(BaseCheckpointSaver[int]):
+    backend_id = "anchored"
+
     def __init__(
         self,
         *,
