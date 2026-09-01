@@ -1,4 +1,8 @@
-"""Deterministic Healing workflow-state handlers."""
+"""Deterministic Healing workflow-state handlers.
+
+The typed graph calls ``advance_repair_round`` as an ordinary node. This
+handler remains the YAML adapter and discards ``TaskContext``.
+"""
 
 from __future__ import annotations
 
