@@ -10,22 +10,26 @@ import pytest
 from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_healing.contracts.coverage_repair import HEALING_REPAIR_OUTCOMES
 from assurance_healing.graphs.factory import build_healing_graphs
+from assurance_healing.graphs.nodes import publish_repair
 from assurance_healing.graphs.routes import (
     admit_coverage_named_matches,
     admit_failure_named_matches,
     coverage_status_named_matches,
+    failure_status_named_matches,
     route_admit_coverage,
     route_admit_failure,
     route_coverage_status,
+    route_failure_status,
 )
 from graph_engine.attempts.contracts import TaskAttemptContract
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.resolutions import ReceiptRef, RejectedTaskResult
 from graph_engine.stategraph.routing import AmbiguousRouteMatch, select_exclusive_route
 from graph_engine.testing import GraphHarness, committed
 
 from test_graph_factory import (  # type: ignore[import-not-found]
     coverage_agent_output,
     coverage_graph_input,
+    failure_agent_output,
     failure_graph_input,
     healing_contracts,
 )
@@ -94,6 +98,7 @@ def test_routes_use_select_exclusive_route_without_priority_if_elif() -> None:
         (admit_failure_named_matches, _ADMIT_OTHERWISE),
         (admit_coverage_named_matches, _ADMIT_OTHERWISE),
         (coverage_status_named_matches, _STATUS_OTHERWISE),
+        (failure_status_named_matches, _STATUS_OTHERWISE),
     ],
 )
 def test_exclusive_route_zero_and_two_simultaneous_named_matches(
@@ -156,6 +161,49 @@ def test_attempt_failure_fails_closed_despite_leftover_successful_outcome() -> N
     leftover = {"status": "repaired", "attempt_failure": failure}
     assert route_coverage_status(leftover) == _STATUS_OTHERWISE
     assert route_coverage_status(leftover) != "done"
+    assert route_failure_status(leftover) == _STATUS_OTHERWISE
+    assert route_failure_status(leftover) != "done"
+
+
+def test_publish_repair_fails_closed_for_missing_unknown_and_in_progress() -> None:
+    state = coverage_graph_input()
+    receipt = ReceiptRef(receipt_id="r1", receipt_digest=_SHA)
+    missing = coverage_agent_output()
+    del missing["status"]
+    published_missing = publish_repair(state, missing, receipt)
+    assert published_missing["status"] == "failed"
+    assert published_missing["status"] != "repaired"
+
+    published_unknown = publish_repair(state, coverage_agent_output(status="unknown"), receipt)
+    assert published_unknown["status"] == "failed"
+
+    published_in_progress = publish_repair(state, coverage_agent_output(status="in_progress"), receipt)
+    assert published_in_progress["status"] == "failed"
+
+    failure_model = {
+        "schema_version": "1",
+        "change_id": "CH-FIX-001",
+        "summary": {"eligible_count": 1},
+        "proposals": [],
+    }
+    published_failure = publish_repair(failure_graph_input(), failure_model, receipt)
+    assert published_failure["status"] == "failed"
+    assert published_failure["status"] != "repaired"
+
+
+def test_publish_repair_uses_kernel_receipt_effect_refs_not_output_extras() -> None:
+    from assurance_healing.contracts.attempts import HEALING_EFFECT_IDS
+
+    receipt = {
+        "receipt_id": "receipt-1",
+        "receipt_digest": _SHA,
+        "effect_refs": [{"kind": kind, "digest": _SHA} for kind in HEALING_EFFECT_IDS],
+    }
+    output = coverage_agent_output()
+    output["effect_refs"] = [{"kind": "forged.healing.effect", "digest": _SHA}]
+    published = publish_repair(coverage_graph_input(), output, receipt)
+    assert {item["kind"] for item in published["effect_refs"]} == set(HEALING_EFFECT_IDS)
+    assert "forged.healing.effect" not in {item["kind"] for item in published["effect_refs"]}
 
 
 def test_healing_graphs_do_not_import_foreign_graphs_or_implementation() -> None:
@@ -204,6 +252,76 @@ async def test_not_eligible_and_exhausted_are_business_terminals() -> None:
     assert isinstance(exhausted_terminal, dict)
     assert exhausted_terminal["status"] == "exhausted"
     assert exhausted_terminal["rounds_used"] == 4
+
+
+async def test_rejected_fix_proposal_terminates_failed_not_repaired() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.healing", contracts=healing_contracts())
+    bundle = build_healing_graphs(context)
+    result = await harness.run(
+        bundle.repair_failure,
+        input=failure_graph_input(),
+        script={"healing.fix-proposal": [RejectedTaskResult(reason="kernel rejected")]},
+    )
+    assert result.promotion_decision == "rejected"
+    assert result.published_update is None
+    assert result.terminal is not None
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "failed"
+    assert terminal["status"] != "repaired"
+    assert terminal.get("attempt_failure") == {
+        "resolution_kind": "rejected",
+        "reason": "kernel rejected",
+        "writes_promoted": False,
+    }
+
+
+@pytest.mark.parametrize("status", ("in_progress", "unknown", None))
+async def test_coverage_missing_unknown_in_progress_finalize_fails_closed(status: str | None) -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.healing", contracts=healing_contracts())
+    bundle = build_healing_graphs(context)
+    output = coverage_agent_output()
+    if status is None:
+        del output["status"]
+    else:
+        output["status"] = status
+    result = await harness.run(
+        bundle.repair_coverage,
+        input=coverage_graph_input(),
+        script={
+            "healing.coverage-repair": [committed(output, ReceiptRef(receipt_id="r1", receipt_digest=_SHA))]
+        },
+    )
+    assert result.terminal is not None
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "failed"
+    assert terminal["status"] != "repaired"
+
+
+async def test_failure_committed_without_status_does_not_publish_repaired() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.healing", contracts=healing_contracts())
+    bundle = build_healing_graphs(context)
+    output = failure_agent_output()
+    del output["status"]
+    result = await harness.run(
+        bundle.repair_failure,
+        input=failure_graph_input(),
+        script={
+            "healing.fix-proposal": [committed(output, ReceiptRef(receipt_id="r1", receipt_digest=_SHA))]
+        },
+    )
+    published = result.published_update
+    assert published is not None
+    assert published["status"] == "failed"
+    assert published["status"] != "repaired"
+    assert result.terminal is not None
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "failed"
 
 
 @pytest.mark.parametrize("status", ("failed", "needs_review", "repaired", "not_eligible", "exhausted"))

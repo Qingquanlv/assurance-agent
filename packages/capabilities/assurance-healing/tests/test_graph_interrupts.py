@@ -122,31 +122,63 @@ def test_interrupt_node_has_no_effect_kinds_or_pre_interrupt_side_effect() -> No
     assert "effect" not in source
 
 
-async def test_integration_receipts_use_exactly_the_three_healing_effect_ids() -> None:
+def test_kernel_protocol_receipts_use_exactly_the_three_healing_effect_ids() -> None:
+    from graph_engine import RegistryPorts
+    from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
+
+    from assurance_healing.contracts.attempts import HEALING_EFFECT_IDS
+    from assurance_healing.plugin import HealingPlugin
+
+    contribution = HealingPlugin.contribute(RegistryPorts(engine_api="2.0"))
+    protocol_kinds = tuple(sorted(item.kind for item in contribution.effects))
+    receipt_schemas = tuple(sorted(item.receipt_schema_id for item in contribution.effects))
+    kernel_healing = tuple(
+        sorted(kind for kind in EXPECTED_EFFECT_KINDS if kind.startswith("assurance.healing."))
+    )
+    expected = tuple(sorted(HEALING_EFFECT_IDS))
+    assert expected == (
+        "assurance.healing.effect.allocation.v2",
+        "assurance.healing.effect.heal-apply.v2",
+        "assurance.healing.effect.proposal-approved.v1",
+    )
+    assert protocol_kinds == expected
+    assert kernel_healing == expected
+    assert receipt_schemas == (
+        "assurance.healing.schema.allocation-receipt.v2",
+        "assurance.healing.schema.heal-apply-receipt.v2",
+        "assurance.healing.schema.proposal-approved-receipt.v1",
+    )
+    assert set(EFFECT_IDS) == set(expected)
+
+
+async def test_published_effect_refs_come_from_kernel_receipt_not_output_extras() -> None:
+    from graph_engine.attempts.resolutions import ReceiptRef
+
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.healing", contracts=healing_contracts())
     bundle = build_healing_graphs(context)
-    from graph_engine.attempts.resolutions import ReceiptRef
-
     receipt = ReceiptRef(receipt_id="receipt-1", receipt_digest=_SHA)
+    failure_output = failure_agent_output()
+    failure_output["effect_refs"] = [{"kind": "forged.failure.effect", "digest": _SHA}]
+    coverage_output = coverage_agent_output()
+    coverage_output["effect_refs"] = [{"kind": "forged.coverage.effect", "digest": _SHA}]
     failure = await harness.run(
         bundle.repair_failure,
         input=failure_graph_input(),
-        script={"healing.fix-proposal": [committed(failure_agent_output(), receipt)]},
+        script={"healing.fix-proposal": [committed(failure_output, receipt)]},
     )
     coverage = await harness.run(
         bundle.repair_coverage,
         input=coverage_graph_input(),
-        script={"healing.coverage-repair": [committed(coverage_agent_output(), receipt)]},
+        script={"healing.coverage-repair": [committed(coverage_output, receipt)]},
     )
-    kinds: set[str] = set()
     for result in (failure, coverage):
         published = result.published_update
         assert published is not None
         refs = published["effect_refs"]
         assert isinstance(refs, list)
-        kinds.update(item["kind"] for item in refs)
-    assert kinds == set(EFFECT_IDS)
+        assert refs == []
+        assert not any(item.get("kind", "").startswith("forged.") for item in refs)
 
 
 @pytest.mark.parametrize("action", ("approve", "reject"))

@@ -10,7 +10,7 @@ from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_healing.contracts.agent import CoverageRepairInputV1, FixProposalInputV1
-from assurance_healing.contracts.coverage_repair import HealingRepairOutcome
+from assurance_healing.contracts.coverage_repair import HEALING_REPAIR_OUTCOMES, HealingRepairOutcome
 from assurance_healing.contracts.decisions import advance_repair_round
 from assurance_healing.contracts.workflow import RepairRoundKind
 from assurance_healing.graphs.state import HealingRepairPublicV1, HealingState
@@ -53,6 +53,20 @@ def _as_effect_refs(value: object) -> list[dict[str, str]]:
             raise TypeError("effect ref requires kind and digest")
         refs.append({"kind": kind, "digest": digest})
     return refs
+
+
+def _receipt_payload(receipt: object) -> Mapping[str, object]:
+    if isinstance(receipt, BaseModel):
+        return receipt.model_dump(mode="json")
+    if isinstance(receipt, Mapping):
+        return receipt
+    return {}
+
+
+def _closed_repair_status(value: object) -> HealingRepairOutcome:
+    if value in HEALING_REPAIR_OUTCOMES:
+        return value  # type: ignore[return-value]
+    return "failed"
 
 
 def _require_kind(state: Mapping[str, object]) -> RepairRoundKind:
@@ -116,19 +130,15 @@ def publish_repair(
     output: object,
     receipt: object,
 ) -> dict[str, object]:
-    del receipt
     payload = _output_payload(output)
     change_id = state["change_id"]
     kind = _require_kind(state)
-    status = payload.get("status", "repaired")
-    if status not in {"exhausted", "failed", "needs_review", "not_eligible", "repaired"}:
-        raise ValueError("repair status is not canonical")
-    typed_status: HealingRepairOutcome = status  # type: ignore[assignment]
+    typed_status = _closed_repair_status(payload.get("status"))
     if not isinstance(change_id, str):
         raise TypeError("change_id must be a string")
     return HealingRepairPublicV1(
         change_id=change_id,
-        effect_refs=_as_effect_refs(payload.get("effect_refs")),
+        effect_refs=_as_effect_refs(_receipt_payload(receipt).get("effect_refs")),
         kind=kind,
         rounds_budget=_published_int(payload, "rounds_budget", state.get("rounds_budget")),
         rounds_used=_published_int(payload, "rounds_used", state.get("rounds_used")),
@@ -187,10 +197,7 @@ def _public_terminal(state: Mapping[str, object], status: HealingRepairOutcome) 
 
 
 def terminal_done(state: HealingState) -> dict[str, object]:
-    status = state.get("status", "repaired")
-    if status not in {"exhausted", "failed", "needs_review", "not_eligible", "repaired"}:
-        status = "repaired"
-    return _public_terminal(state, status)  # type: ignore[arg-type]
+    return _public_terminal(state, _closed_repair_status(state.get("status")))
 
 
 def terminal_exhausted(state: Mapping[str, object]) -> dict[str, object]:

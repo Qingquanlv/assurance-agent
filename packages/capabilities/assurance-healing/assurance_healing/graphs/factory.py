@@ -22,7 +22,12 @@ from assurance_healing.graphs.nodes import (
     terminal_failed,
     terminal_not_eligible,
 )
-from assurance_healing.graphs.routes import route_admit_coverage, route_admit_failure, route_coverage_status
+from assurance_healing.graphs.routes import (
+    route_admit_coverage,
+    route_admit_failure,
+    route_coverage_status,
+    route_failure_status,
+)
 from assurance_healing.graphs.state import HealingState
 
 _COVERAGE_ID = "assurance.healing.agent.coverage-repair.v1"
@@ -37,6 +42,10 @@ _COVERAGE_STATUS_PATHS: dict[Hashable, str] = {
     "needs-review": "needs-review",
     "exhausted": "exhausted",
     "not-eligible": "not-eligible",
+    "failed": "failed",
+}
+_FAILURE_STATUS_PATHS: dict[Hashable, str] = {
+    "done": "done",
     "failed": "failed",
 }
 
@@ -60,10 +69,12 @@ def _add_shared_terminals(builder: StateGraph[HealingState]) -> None:
     builder.add_node("done", cast(Callable[..., Any], terminal_done))
     builder.add_node("exhausted", cast(Callable[..., Any], terminal_exhausted))
     builder.add_node("not-eligible", cast(Callable[..., Any], terminal_not_eligible))
+    builder.add_node("failed", cast(Callable[..., Any], terminal_failed))
     builder.add_edge(START, "admit")
     builder.add_edge("done", END)
     builder.add_edge("exhausted", END)
     builder.add_edge("not-eligible", END)
+    builder.add_edge("failed", END)
 
 
 def _build_repair_failure_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
@@ -88,7 +99,11 @@ def _build_repair_failure_graph(context: CapabilityBuildContext) -> CompiledStat
         _ADMIT_PATHS,
     )
     builder.add_edge("repair-round-advance", "healing.fix-proposal")
-    builder.add_edge("healing.fix-proposal", "done")
+    builder.add_conditional_edges(
+        "healing.fix-proposal",
+        cast(Callable[..., Any], route_failure_status),
+        _FAILURE_STATUS_PATHS,
+    )
     return context.compile_subgraph(builder)
 
 
@@ -109,7 +124,6 @@ def _build_repair_coverage_graph(context: CapabilityBuildContext) -> CompiledSta
         ),
     )
     builder.add_node("needs-review", cast(Callable[..., Any], coverage_review))
-    builder.add_node("failed", cast(Callable[..., Any], terminal_failed))
     builder.add_conditional_edges(
         "admit",
         cast(Callable[..., Any], route_admit_coverage),
@@ -122,7 +136,6 @@ def _build_repair_coverage_graph(context: CapabilityBuildContext) -> CompiledSta
         _COVERAGE_STATUS_PATHS,
     )
     builder.add_edge("needs-review", END)
-    builder.add_edge("failed", END)
     return context.compile_subgraph(builder)
 
 

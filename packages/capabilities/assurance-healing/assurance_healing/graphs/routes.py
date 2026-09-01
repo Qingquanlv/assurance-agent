@@ -79,17 +79,30 @@ def route_admit_coverage(state: Mapping[str, object]) -> str:
     return select_exclusive_route(admit_coverage_named_matches(state), otherwise=_ADMIT_OTHERWISE)
 
 
+def failure_status_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
+    current = state.get("status")
+    return {"repaired": "done" if current == "repaired" else None}
+
+
 def route_coverage_status(state: Mapping[str, object]) -> str:
     if state.get("attempt_failure"):
         return _STATUS_OTHERWISE
     return select_exclusive_route(coverage_status_named_matches(state), otherwise=_STATUS_OTHERWISE)
 
 
+def route_failure_status(state: Mapping[str, object]) -> str:
+    if state.get("attempt_failure"):
+        return _STATUS_OTHERWISE
+    return select_exclusive_route(failure_status_named_matches(state), otherwise=_STATUS_OTHERWISE)
+
+
 __all__ = [
     "admit_coverage_named_matches",
     "admit_failure_named_matches",
     "coverage_status_named_matches",
+    "failure_status_named_matches",
     "route_admit_coverage",
     "route_admit_failure",
     "route_coverage_status",
+    "route_failure_status",
 ]

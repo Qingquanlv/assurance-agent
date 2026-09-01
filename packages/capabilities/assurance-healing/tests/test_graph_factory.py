@@ -275,7 +275,7 @@ async def test_repair_exports_run_independently_and_publish_typed_output() -> No
     assert published["rounds_budget"] == 2
     refs = published["effect_refs"]
     assert isinstance(refs, list)
-    assert {item["kind"] for item in refs} == set(EFFECT_IDS)
+    assert refs == []
     assert failure.terminal is not None
 
     coverage = await harness.run(
