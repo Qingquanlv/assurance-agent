@@ -416,6 +416,7 @@ class AttemptSnapshot:
     terminal: AttemptTerminated | None = None
     released: bool = False
     active_interrupt: ActiveSystemInterrupt | None = None
+    active_interrupts: tuple[ActiveSystemInterrupt, ...] = ()
     retired_generations: tuple[int, ...] = ()
 
 
@@ -460,6 +461,7 @@ def fold_attempt_events(
                 terminal=snapshot.terminal,
                 released=snapshot.released,
                 active_interrupt=snapshot.active_interrupt,
+                active_interrupts=snapshot.active_interrupts,
                 retired_generations=snapshot.retired_generations,
             )
             continue
@@ -541,45 +543,65 @@ def fold_attempt_events(
             )
             continue
         if isinstance(event, SystemInterruptIssued):
+            issued = ActiveSystemInterrupt(
+                generation=event.generation,
+                ordinal=event.ordinal,
+                envelope_digest=event.envelope_digest,
+            )
             snapshot = _replace(
                 snapshot,
-                active_interrupt=ActiveSystemInterrupt(
-                    generation=event.generation,
-                    ordinal=event.ordinal,
-                    envelope_digest=event.envelope_digest,
-                ),
+                active_interrupt=issued,
+                active_interrupts=_upsert_interrupt(snapshot.active_interrupts, issued),
             )
             continue
         if isinstance(event, SystemInterruptIssuanceAnchored):
-            current = snapshot.active_interrupt
-            if (
-                current is not None
-                and current.generation == event.generation
-                and current.ordinal == event.ordinal
-                and current.envelope_digest == event.envelope_digest
-            ):
+            current = _interrupt_at(
+                snapshot.active_interrupts, event.generation, event.ordinal, event.envelope_digest
+            )
+            if current is None and snapshot.active_interrupt is not None:
+                current = snapshot.active_interrupt
+                if (
+                    current.generation != event.generation
+                    or current.ordinal != event.ordinal
+                    or current.envelope_digest != event.envelope_digest
+                ):
+                    current = None
+            if current is not None:
+                anchored = ActiveSystemInterrupt(
+                    generation=current.generation,
+                    ordinal=current.ordinal,
+                    envelope_digest=current.envelope_digest,
+                    issuance_anchored=True,
+                )
                 snapshot = _replace(
                     snapshot,
-                    active_interrupt=ActiveSystemInterrupt(
-                        generation=current.generation,
-                        ordinal=current.ordinal,
-                        envelope_digest=current.envelope_digest,
-                        issuance_anchored=True,
-                    ),
+                    active_interrupt=anchored
+                    if snapshot.active_interrupt == current
+                    else snapshot.active_interrupt,
+                    active_interrupts=_upsert_interrupt(snapshot.active_interrupts, anchored),
                 )
             continue
         if isinstance(event, SystemInterruptCompletionCheckpointed):
-            current = snapshot.active_interrupt
-            if (
-                current is not None
-                and current.generation == event.generation
-                and current.ordinal == event.ordinal
-                and current.envelope_digest == event.envelope_digest
-            ):
+            current = _interrupt_at(
+                snapshot.active_interrupts, event.generation, event.ordinal, event.envelope_digest
+            )
+            if current is None and snapshot.active_interrupt is not None:
+                candidate = snapshot.active_interrupt
+                if (
+                    candidate.generation == event.generation
+                    and candidate.ordinal == event.ordinal
+                    and candidate.envelope_digest == event.envelope_digest
+                ):
+                    current = candidate
+            if current is not None:
                 retired.append(current.generation)
+                remaining = tuple(
+                    item for item in snapshot.active_interrupts if item.generation != current.generation
+                )
                 snapshot = _replace(
                     snapshot,
-                    active_interrupt=None,
+                    active_interrupt=remaining[-1] if remaining else None,
+                    active_interrupts=remaining,
                     retired_generations=tuple(retired),
                 )
             continue
@@ -590,6 +612,32 @@ def fold_attempt_events(
             snapshot = _replace(snapshot, released=True)
             continue
     return snapshot
+
+
+def _interrupt_at(
+    interrupts: tuple[ActiveSystemInterrupt, ...],
+    generation: int,
+    ordinal: int,
+    envelope_digest: str,
+) -> ActiveSystemInterrupt | None:
+    for item in interrupts:
+        if (
+            item.generation == generation
+            and item.ordinal == ordinal
+            and item.envelope_digest == envelope_digest
+        ):
+            return item
+    return None
+
+
+def _upsert_interrupt(
+    interrupts: tuple[ActiveSystemInterrupt, ...],
+    item: ActiveSystemInterrupt,
+) -> tuple[ActiveSystemInterrupt, ...]:
+    merged = [existing for existing in interrupts if existing.generation != item.generation]
+    merged.append(item)
+    merged.sort(key=lambda existing: (existing.ordinal, existing.generation))
+    return tuple(merged)
 
 
 def _effect_at(effects: tuple[AttemptEffectState, ...], ordinal: int) -> AttemptEffectState | None:
@@ -631,6 +679,7 @@ def _replace(snapshot: AttemptSnapshot, **changes: object) -> AttemptSnapshot:
         "terminal": snapshot.terminal,
         "released": snapshot.released,
         "active_interrupt": snapshot.active_interrupt,
+        "active_interrupts": snapshot.active_interrupts,
         "retired_generations": snapshot.retired_generations,
     }
     values.update(changes)

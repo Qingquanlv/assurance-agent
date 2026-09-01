@@ -18,6 +18,8 @@ from graph_engine.application.runtime_context import (
     WorkspaceProviderPort,
 )
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
+from graph_engine.attempts.node_factory import AttemptNodeFactory
+from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.boot.graph_revision import (
     BootArtifact,
     EntrypointGraphContract,
@@ -156,12 +158,16 @@ class EngineCapabilityBuildContext:
         owner_id: str,
         contracts: Mapping[str, TaskAttemptContract[Any, Any]],
         approved_source_roots: tuple[Path, ...],
+        attempt_factory: AttemptNodeFactory | None = None,
+        resolved_contracts: Mapping[str, ResolvedAttemptContract[Any, Any]] | None = None,
     ) -> None:
         if not owner_id:
             raise ValueError("capability owner id must be nonempty")
         self.owner_id = owner_id
         self._contracts = contracts
         self._approved_source_roots = approved_source_roots
+        self._attempt_factory = attempt_factory
+        self._resolved_contracts = resolved_contracts or {}
 
     def attempt(
         self,
@@ -172,16 +178,25 @@ class EngineCapabilityBuildContext:
         select: object,
         publish: object,
     ) -> object:
-        del activation, select, publish
         contract = self._contracts.get(contract_id)
         if contract is None or contract.owner_id != self.owner_id:
             raise ContractOwnershipError(f"contract {contract_id!r} is not owned by {self.owner_id!r}")
         if isinstance(contract, ResolvedAttemptContract):
             raise BootValidationError("resolved executor-bearing contracts cannot enter Feature graph code")
-        return BoundAttemptNode(
-            contract_id=contract.contract_id,
+        if self._attempt_factory is None:
+            del activation, select, publish
+            return BoundAttemptNode(
+                contract_id=contract.contract_id,
+                semantic_node_id=semantic_node_id,
+                owner_id=self.owner_id,
+            )
+        bound = self._resolved_contracts.get(contract_id, contract)
+        return self._attempt_factory.attempt(
+            bound,
             semantic_node_id=semantic_node_id,
-            owner_id=self.owner_id,
+            activation=activation,
+            select=select,
+            publish=publish,
         )
 
     def compile_subgraph(self, builder: StateGraph[Any]) -> CompiledStateGraph:
@@ -203,16 +218,22 @@ class EngineGraphBuildContext:
         contracts: Mapping[str, TaskAttemptContract[Any, Any]],
         checkpointer: Checkpointer,
         approved_source_roots: tuple[Path, ...],
+        attempt_factory: AttemptNodeFactory | None = None,
+        resolved_contracts: Mapping[str, ResolvedAttemptContract[Any, Any]] | None = None,
     ) -> None:
         self._contracts = contracts
         self._checkpointer = checkpointer
         self._approved_source_roots = approved_source_roots
+        self._attempt_factory = attempt_factory
+        self._resolved_contracts = resolved_contracts or {}
 
     def for_capability(self, owner_id: str) -> CapabilityBuildContext:
         return EngineCapabilityBuildContext(
             owner_id=owner_id,
             contracts=self._contracts,
             approved_source_roots=self._approved_source_roots,
+            attempt_factory=self._attempt_factory,
+            resolved_contracts=self._resolved_contracts,
         )
 
     def compile_root(self, builder: StateGraph[Any]) -> CompiledStateGraph:
@@ -243,7 +264,7 @@ class GraphEngineBoot:
     ) -> BootArtifact:
         if runtime_ports is None:
             raise BootValidationError("runtime ports are required")
-        assembled = self._assemble(request, checkpointer=checkpointer)
+        assembled = self._assemble(request, checkpointer=checkpointer, runtime_ports=runtime_ports)
         if request.expected_manifest is not None and assembled.manifest != request.expected_manifest:
             raise BootValidationError("revision mismatch")
         backend_id = getattr(checkpointer, "backend_id", "")
@@ -256,7 +277,13 @@ class GraphEngineBoot:
             checkpointer_backend_id=backend_id,
         )
 
-    def _assemble(self, request: BootRequest, *, checkpointer: Checkpointer) -> _AssembledGraphs:
+    def _assemble(
+        self,
+        request: BootRequest,
+        *,
+        checkpointer: Checkpointer,
+        runtime_ports: RuntimePorts | None = None,
+    ) -> _AssembledGraphs:
         _reject_organization_overrides(request.organization_root)
         refs = _factory_refs(request)
         sources = _authenticated_sources(request, refs)
@@ -269,10 +296,25 @@ class GraphEngineBoot:
         data_contracts = dict(self._resolver.resolve_data_contracts())
         _assert_data_only_contracts(data_contracts)
         approved_roots = tuple(source.snapshot.identity.root for source in sources.values())
+        resolved_contracts: dict[str, ResolvedAttemptContract[Any, Any]] = {}
+        kernel = None
+        journal = None
+        if runtime_ports is not None:
+            kernel = runtime_ports.attempt_kernel
+            journal = getattr(kernel, "journal", None)
+            for contract_id, resolved in self._resolver.resolve_executors().items():
+                if isinstance(resolved, ResolvedAttemptContract):
+                    resolved_contracts[str(contract_id)] = resolved
+        factory = AttemptNodeFactory(
+            journal=journal if journal is not None else MemoryAttemptJournal(),
+            kernel=kernel,
+        )
         context = EngineGraphBuildContext(
             contracts=data_contracts,
             checkpointer=checkpointer,
             approved_source_roots=approved_roots,
+            attempt_factory=factory,
+            resolved_contracts=resolved_contracts,
         )
         features: dict[str, object] = {}
         for ref in request.feature_factories:

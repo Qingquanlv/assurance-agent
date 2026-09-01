@@ -18,6 +18,7 @@ from graph_engine.attempts.events import (
     CommitPrepared,
     ResourcesAuthorized,
     ResourcesReleased,
+    SystemInterruptIssued,
     WorkspacePromoted,
 )
 from graph_engine.attempts.keys import AttemptKey
@@ -152,6 +153,20 @@ class AssuranceAttemptKernel:
                     fencing_token=context.fencing_token,
                 )
         return snapshot
+
+    async def record_system_interrupt_issued(
+        self,
+        attempt_key: AttemptKey,
+        event: SystemInterruptIssued,
+        context: AttemptExecutionContext,
+    ) -> AttemptSnapshot:
+        snapshot = await self.journal.load(attempt_key)
+        return await self.journal.append(
+            attempt_key,
+            (event,),
+            expected_revision=0 if snapshot is None else snapshot.revision,
+            fencing_token=context.fencing_token,
+        )
 
     async def observe_activity_completion(
         self,
