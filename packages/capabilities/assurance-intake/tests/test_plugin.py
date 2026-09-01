@@ -59,3 +59,15 @@ def test_resource_bytes_rejects_non_canonical_path() -> None:
         resource_bytes("../secret")
     with pytest.raises(ValueError, match="canonical and relative"):
         resource_bytes("/schemas/case.v1.schema.json")
+
+
+def test_intake_plugin_does_not_discover_graph_factory() -> None:
+    descriptor = IntakePlugin.descriptor()
+    contribution = IntakePlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
+    assert descriptor.source is not None
+    assert descriptor.source.entrypoint_value == "assurance_intake.plugin:IntakePlugin"
+    assert "graphs.factory" not in descriptor.source.entrypoint_value
+    assert "assurance.intake.workflow.module.v1" in descriptor.resources
+    assert not hasattr(contribution, "graph_factories")
+    assert contribution.attempt_contracts
+    assert all("graphs.factory" not in ref.contract_id for ref in contribution.attempt_contracts)

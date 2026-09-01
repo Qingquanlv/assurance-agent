@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 from importlib import metadata
 import sys
 from pathlib import Path
 
+import pytest
+
+from graph_engine.boot.boot import BootRequest, GraphEngineBoot, OrganizationOverrideError
 from graph_engine.boot.graph_revision import FeatureFactoryRef
+from graph_engine.boot.source_authentication import (
+    FactoryAuthenticationError,
+    ProductFactoryRef,
+    authenticate_factory_ref,
+    authenticated_editable_source,
+)
 
 from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
 
@@ -79,3 +89,93 @@ def test_importing_the_allowlist_does_not_import_feature_factory_modules() -> No
     importlib.reload(sys.modules["assurance_product.graph_factories"])
     loaded = {name for name in sys.modules if name.endswith(".graphs.factory")}
     assert loaded == set()
+
+
+def _boot_helpers():
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "packages"
+        / "framework"
+        / "graph-engine"
+        / "tests"
+        / "boot"
+        / "test_boot.py"
+    )
+    spec = importlib.util.spec_from_file_location("feature_factory_allowlist_boot_helpers", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_allowlist_rejects_missing_extra_and_duplicate_owners() -> None:
+    expected_owners = tuple(item.owner_id for item in EXPECTED_FEATURE_GRAPH_FACTORIES)
+    assert expected_owners == (
+        "assurance.intake",
+        "assurance.generation",
+        "assurance.execution",
+        "assurance.quality",
+        "assurance.healing",
+        "assurance.improvement",
+    )
+    assert len(expected_owners) == len(set(expected_owners)) == 6
+    missing = FEATURE_GRAPH_FACTORIES[1:]
+    extra = FEATURE_GRAPH_FACTORIES + (
+        FeatureFactoryRef("assurance.rogue", "rogue.graphs.factory:build_rogue_graphs"),
+    )
+    duplicate = FEATURE_GRAPH_FACTORIES + FEATURE_GRAPH_FACTORIES[:1]
+    assert FEATURE_GRAPH_FACTORIES != missing
+    assert FEATURE_GRAPH_FACTORIES != extra
+    assert {item.owner_id for item in missing} != set(expected_owners)
+    assert any(item.owner_id == "assurance.rogue" for item in extra)
+    helpers = _boot_helpers()
+    with pytest.raises(ValueError, match="unique"):
+        BootRequest(
+            product_factory=ProductFactoryRef(
+                "assurance.product",
+                "assurance_product.graphs.factory:build_product_graphs",
+            ),
+            feature_factories=duplicate,
+            sources={},
+            product_lock=helpers.product_lock(),
+        )
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "assurance_generation.graphs.factory:build_generation_graphs",
+        "assurance_intake.graphs.factory:_private",
+        "sut_graphs:build",
+        "tmp.sut:build",
+    ],
+)
+def test_allowlist_rejects_wrong_origin_private_symbol_and_sut_path(symbol: str, tmp_path: Path) -> None:
+    source = authenticated_editable_source(
+        owner_id="assurance.intake",
+        root=tmp_path / "wheel",
+        import_roots=("assurance_intake",),
+    )
+    with pytest.raises(FactoryAuthenticationError):
+        authenticate_factory_ref(
+            FeatureFactoryRef(owner_id="assurance.intake", symbol=symbol),
+            {"assurance.intake": source},
+        )
+
+
+def test_allowlist_rejects_config_supplied_factory_symbol(tmp_path: Path) -> None:
+    helpers = _boot_helpers()
+    organization_root = tmp_path / "project"
+    (organization_root / ".aa").mkdir(parents=True)
+    (organization_root / ".aa" / "factory.py").write_text(
+        "def build_override():\n    return {}\n",
+        encoding="utf-8",
+    )
+    request = helpers.make_boot_request(tmp_path / "wheels", organization_root=organization_root)
+    assert request.feature_factories == FEATURE_GRAPH_FACTORIES
+    boot = GraphEngineBoot(
+        authenticator=helpers.FactoryAuthenticator(),
+        contract_resolver=helpers.FakeContractResolver(),
+    )
+    with pytest.raises(OrganizationOverrideError, match=r"\.aa/"):
+        boot.compile_manifest(request)

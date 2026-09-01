@@ -26,9 +26,18 @@ EXPECTED_FEATURE_FACTORY_MODULES = (
     "assurance_intake.graphs.factory",
     "assurance_generation.graphs.factory",
     "assurance_execution.graphs.factory",
-    "assurance_healing.graphs.factory",
     "assurance_quality.graphs.factory",
+    "assurance_healing.graphs.factory",
     "assurance_improvement.graphs.factory",
+)
+
+EXPECTED_FEATURE_FACTORY_SYMBOLS = (
+    "assurance_intake.graphs.factory:build_intake_graphs",
+    "assurance_generation.graphs.factory:build_generation_graphs",
+    "assurance_execution.graphs.factory:build_execution_graphs",
+    "assurance_quality.graphs.factory:build_quality_graphs",
+    "assurance_healing.graphs.factory:build_healing_graphs",
+    "assurance_improvement.graphs.factory:build_improvement_graphs",
 )
 
 FORBIDDEN_FEATURE_IMPLEMENTATION = (
@@ -164,9 +173,17 @@ def test_fixed_factory_modules_are_the_only_capability_public_graph_surface() ->
         "assurance_intake.graphs.factory",
         "assurance_generation.graphs.factory",
         "assurance_execution.graphs.factory",
-        "assurance_healing.graphs.factory",
         "assurance_quality.graphs.factory",
+        "assurance_healing.graphs.factory",
         "assurance_improvement.graphs.factory",
+    )
+    assert EXPECTED_FEATURE_FACTORY_SYMBOLS == (
+        "assurance_intake.graphs.factory:build_intake_graphs",
+        "assurance_generation.graphs.factory:build_generation_graphs",
+        "assurance_execution.graphs.factory:build_execution_graphs",
+        "assurance_quality.graphs.factory:build_quality_graphs",
+        "assurance_healing.graphs.factory:build_healing_graphs",
+        "assurance_improvement.graphs.factory:build_improvement_graphs",
     )
     root = _repo_root()
     public: list[str] = []
@@ -252,3 +269,31 @@ def test_importlinter_keeps_workflow_and_graphs_during_coexistence() -> None:
         for package_name, suffixes in suffixes_by_package.items():
             for suffix in COEXISTENCE_SUFFIXES:
                 assert suffix in suffixes, f"{section}:{package_name}.{suffix}"
+
+
+def test_authenticated_factory_symbols_exist_as_public_callables() -> None:
+    import importlib
+
+    from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
+
+    assert tuple(item.symbol for item in FEATURE_GRAPH_FACTORIES) == EXPECTED_FEATURE_FACTORY_SYMBOLS
+    for symbol, module_name in zip(
+        EXPECTED_FEATURE_FACTORY_SYMBOLS, EXPECTED_FEATURE_FACTORY_MODULES, strict=True
+    ):
+        module_from_symbol, attribute = symbol.split(":")
+        assert module_from_symbol == module_name
+        assert not attribute.startswith("_")
+        module = importlib.import_module(module_name)
+        factory = getattr(module, attribute)
+        assert callable(factory)
+        assert factory.__name__ == attribute
+
+
+def test_yaml_workflow_modules_remain_for_legacy_coexistence() -> None:
+    root = _repo_root()
+    for _package_name, relative in FEATURE_SOURCE_TREES:
+        module_yaml = root / relative / "resources" / "workflow" / "module.yaml"
+        factory = root / relative / "graphs" / "factory.py"
+        assert module_yaml.is_file(), module_yaml
+        assert factory.is_file(), factory
+        assert module_yaml.stat().st_size > 0
