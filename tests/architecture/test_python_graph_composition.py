@@ -55,15 +55,93 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _imported_modules(path: Path) -> tuple[tuple[int, str], ...]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+def _graph_module_identity(path: Path) -> tuple[str, str]:
+    resolved = path.resolve()
+    root = _repo_root()
+    for package_name, relative in FEATURE_SOURCE_TREES:
+        package_root = (root / relative).resolve()
+        try:
+            rel = resolved.relative_to(package_root)
+        except ValueError:
+            continue
+        parts = list(rel.with_suffix("").parts)
+        if parts and parts[-1] == "__init__":
+            parts = parts[:-1]
+        return package_name, ".".join((package_name, *parts))
+    raise ValueError(f"not a feature package path: {path}")
+
+
+def _resolve_import_from(node: ast.ImportFrom, module_name: str, *, is_package: bool) -> tuple[str, ...]:
+    parts = module_name.split(".")
+    package_parts = parts if is_package else parts[:-1]
+    if node.level:
+        drop = node.level - 1
+        base_parts = package_parts[: max(0, len(package_parts) - drop)]
+        parent_parts = [*base_parts, *([node.module] if node.module else [])]
+        parent = ".".join(part for part in parent_parts if part)
+    else:
+        parent = node.module or ""
+    names: list[str] = []
+    if parent:
+        names.append(parent)
+    for alias in node.names:
+        if alias.name == "*":
+            continue
+        names.append(f"{parent}.{alias.name}" if parent else alias.name)
+    return tuple(names)
+
+
+def _imported_names(source: str, module_name: str, *, is_package: bool = False) -> tuple[str, ...]:
+    return tuple(name for _lineno, name in _walk_imported_names(source, module_name, is_package=is_package))
+
+
+def _walk_imported_names(
+    source: str,
+    module_name: str,
+    *,
+    is_package: bool,
+    filename: str = "<graph>",
+) -> tuple[tuple[int, str], ...]:
+    tree = ast.parse(source, filename=filename)
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found.extend((node.lineno, alias.name) for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None:
-            found.append((node.lineno, node.module))
+        elif isinstance(node, ast.ImportFrom):
+            found.extend(
+                (node.lineno, imported)
+                for imported in _resolve_import_from(node, module_name, is_package=is_package)
+            )
     return tuple(found)
+
+
+def _imported_modules(path: Path, *, module_name: str | None = None) -> tuple[tuple[int, str], ...]:
+    is_package = path.name == "__init__.py"
+    if module_name is None:
+        try:
+            _owner, module_name = _graph_module_identity(path)
+        except ValueError:
+            module_name = path.stem
+            is_package = False
+    return _walk_imported_names(
+        path.read_text(encoding="utf-8"),
+        module_name,
+        is_package=is_package,
+        filename=str(path),
+    )
+
+
+def _is_forbidden_graph_import(imported: str, owner: str) -> bool:
+    parts = imported.split(".")
+    root_name = parts[0]
+    if root_name in FORBIDDEN_ADAPTERS:
+        return True
+    if root_name not in FEATURE_PACKAGES:
+        return False
+    rest = parts[1:]
+    if any(part in FORBIDDEN_FEATURE_IMPLEMENTATION for part in rest):
+        return True
+    return root_name != owner and "graphs" in rest
 
 
 def _graph_python_files() -> tuple[Path, ...]:
@@ -97,7 +175,7 @@ def test_fixed_factory_modules_are_the_only_capability_public_graph_surface() ->
         for path in package_root.rglob("*.py"):
             if "__pycache__" in path.parts or "graphs" not in path.parts:
                 continue
-            for _lineno, imported in _imported_modules(path):
+            for _lineno, imported in _imported_modules(path, module_name=_graph_module_identity(path)[1]):
                 if imported.endswith(".graphs") or imported.endswith(".graphs.factory"):
                     continue
                 if any(
@@ -117,29 +195,35 @@ def test_fixed_factory_modules_are_the_only_capability_public_graph_surface() ->
     assert public == []
 
 
+def test_architecture_scan_rejects_relative_and_from_import_forms() -> None:
+    owner = "assurance_intake"
+    module_name = "assurance_intake.graphs.nodes"
+    cases = (
+        ("from ..operations import prepare", "assurance_intake.operations"),
+        ("from ..validators import check", "assurance_intake.validators"),
+        ("from ..effects import apply", "assurance_intake.effects"),
+        ("from . import operations", "assurance_intake.graphs.operations"),
+        ("from assurance_generation import graphs", "assurance_generation.graphs"),
+        ("from assurance_generation.graphs import factory", "assurance_generation.graphs"),
+        ("from assurance_product import cli", "assurance_product"),
+        ("from agent_runtime_opencode import client", "agent_runtime_opencode"),
+        ("from agent_runtime_cursor import client", "agent_runtime_cursor"),
+    )
+    for source, expected in cases:
+        imported = _imported_names(source, module_name)
+        violations = [name for name in imported if _is_forbidden_graph_import(name, owner)]
+        assert any(name == expected or name.startswith(f"{expected}.") for name in violations), (
+            f"{source!r} resolved {imported!r}, expected a violation of {expected!r}"
+        )
+
+
 def test_feature_graph_modules_reject_foreign_and_implementation_imports() -> None:
     violations: list[str] = []
     for path in _graph_python_files():
-        owner = next(
-            package_name
-            for package_name, relative in FEATURE_SOURCE_TREES
-            if Path(relative) in path.parents or str(path).find(f"/{package_name}/") != -1
-        )
-        for lineno, imported in _imported_modules(path):
-            root_name = imported.split(".", 1)[0]
-            if root_name in FORBIDDEN_ADAPTERS:
+        owner, module_name = _graph_module_identity(path)
+        for lineno, imported in _imported_modules(path, module_name=module_name):
+            if _is_forbidden_graph_import(imported, owner):
                 violations.append(f"{path}:{lineno}:{imported}")
-                continue
-            if imported.startswith(f"{owner}."):
-                suffix = imported[len(owner) + 1 :].split(".", 1)[0]
-                if suffix in FORBIDDEN_FEATURE_IMPLEMENTATION:
-                    violations.append(f"{path}:{lineno}:{imported}")
-                continue
-            if root_name in FEATURE_PACKAGES and root_name != owner:
-                remainder = imported[len(root_name) + 1 :] if "." in imported else ""
-                first = remainder.split(".", 1)[0]
-                if first in {"graphs", *FORBIDDEN_FEATURE_IMPLEMENTATION}:
-                    violations.append(f"{path}:{lineno}:{imported}")
     assert violations == []
 
 

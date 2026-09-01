@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import pytest
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 from pydantic import BaseModel
 
 from graph_engine.attempts.contracts import (
@@ -14,14 +15,19 @@ from graph_engine.attempts.contracts import (
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.boot.boot import ContractOwnershipError
+from graph_engine.boot.graph_revision import GraphBuildManifest, GraphRevision
 from graph_engine.canonical import canonical_digest
-from graph_engine.plugin_api import ResourceClaims
+from graph_engine.composition.models import AttemptContractClaim
+from graph_engine.composition.registries import build_attempt_registry
+from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
+from graph_engine.plugin_api import AttemptContractRef, PluginContribution, ResourceClaims
 from graph_engine.testing import (
     GraphHarness,
     RecordingCapabilityBuildContext,
     SemanticAttemptCall,
     committed,
 )
+from graph_engine.testing.graph_harness import _foundation_checkpoint_helpers
 
 
 class RunInput(BaseModel):
@@ -144,12 +150,43 @@ def test_recording_context_rejects_foreign_contract_and_root_saver() -> None:
     assert not hasattr(intake_context, "checkpointer")
 
 
-def test_with_test_contract_stays_owner_local_and_does_not_touch_catalog() -> None:
-    catalog: dict[str, object] = {}
+def test_with_test_contract_reuses_registry_and_does_not_touch_projections() -> None:
     own = _intake_contract()
+    handler = object()
+    catalog = build_attempt_registry(
+        [
+            AttemptContractClaim(
+                contract=cast(TaskAttemptContract[BaseModel, BaseModel], own),
+                available_handlers={own.handler_id: own.owner_id},
+                handler=handler,
+            )
+        ]
+    )
+    digest = canonical_digest(own.canonical_projection())
+    contribution = PluginContribution(
+        attempt_contracts=(AttemptContractRef(contract_id=own.contract_id, digest=digest),)
+    )
+    manifest = GraphBuildManifest(
+        revision=GraphRevision.build(
+            product_lock_digest="a" * 64,
+            wheel_source_digests={"assurance.intake": "b" * 64},
+            factory_symbols=("assurance_intake.graphs.factory:build_intake_graphs",),
+            state_schema_versions={"intake": "1"},
+            langgraph_version="1.2.11",
+            checkpoint_contract_version="1",
+        ),
+        entrypoint_contract_digests={"intake": "d" * 64},
+        attempt_contract_digests={own.contract_id: digest},
+    )
+    catalog_before = catalog.projection()
+    contribution_before = contribution
+    manifest_before = manifest.model_dump(mode="json")
     intake_context = RecordingCapabilityBuildContext(
         owner_id="assurance.intake",
         contracts={own.contract_id: own},
+        catalog=catalog,
+        contribution=contribution,
+        manifest=manifest,
     )
     clone = TaskAttemptContract(
         contract_id="test.assurance.intake.prepare.v1",
@@ -170,7 +207,47 @@ def test_with_test_contract_stays_owner_local_and_does_not_touch_catalog() -> No
         select=select_probe,
         publish=publish_probe,
     )
-    assert clone.contract_id not in catalog
-    assert catalog == {}
+    assert installed.reused_registry_handler(clone.contract_id) is handler
+    assert clone.contract_id not in catalog.entries
+    assert catalog.projection() == catalog_before
+    assert intake_context.contribution is contribution_before
+    assert contribution is contribution_before
+    assert manifest.model_dump(mode="json") == manifest_before
     assert "mark_routes_successful" not in dir(intake_context)
     assert not hasattr(intake_context, "succeed_all_routes")
+
+
+async def test_run_records_interrupt_envelope_through_anchored_memory_backend() -> None:
+    helpers = _foundation_checkpoint_helpers()
+    harness = GraphHarness()
+
+    def wait_node(state: RunState) -> RunState:
+        interrupt({"kind": "wait", "change_id": state["change_id"]})
+        return state
+
+    builder: StateGraph[RunState] = StateGraph(RunState)
+    builder.add_node("wait", wait_node)
+    builder.add_edge(START, "wait")
+    builder.add_edge("wait", END)
+    result = await harness.run(
+        builder,
+        input={"change_id": "chg-1", "status": ""},
+        script={},
+    )
+    assert result.interrupt_envelope == {"kind": "wait", "change_id": "chg-1"}
+    assert result.terminal is None
+    backend = harness.prepared_checkpointer
+    assert isinstance(backend, AnchoredCheckpointer)
+    assert type(backend._journal) is helpers.MemoryCheckpointAnchorJournal
+    snapshot = await backend.aget_tuple(
+        {
+            "configurable": {
+                "thread_id": "inv-1",
+                "assurance_revision_id": "a" * 64,
+                "assurance_product_lock_digest": "b" * 64,
+                "assurance_root_input_digest": "c" * 64,
+                "assurance_fencing_token": 1,
+            }
+        }
+    )
+    assert snapshot is not None

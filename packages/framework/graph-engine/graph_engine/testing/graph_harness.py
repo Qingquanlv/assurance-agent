@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+import importlib.util
 import json
-from typing import Any
+from pathlib import Path
+from typing import Any, Protocol, cast
 
 from langgraph.errors import GraphInterrupt
+from langgraph.graph import StateGraph
 from pydantic import BaseModel
 
 from graph_engine.attempts.context import AttemptExecutionContext
@@ -27,16 +30,37 @@ from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.checkpoint_store import MemoryCheckpointStore
-from graph_engine.persistence.journal import (
-    CheckpointAnchor,
-    CheckpointAnchorState,
-    CheckpointIntegrityError,
-    InvocationStarted,
-)
+from graph_engine.persistence.journal import CheckpointAnchorState, InvocationStarted
 from graph_engine.testing.recording_build_context import (
     RecordingCapabilityBuildContext,
     _TraceRecorder,
 )
+
+
+class _FoundationCheckpointHelpers(Protocol):
+    MemoryCheckpointAnchorJournal: type[Any]
+
+
+_FOUNDATION_HELPERS: _FoundationCheckpointHelpers | None = None
+
+
+def _foundation_checkpoint_helpers() -> _FoundationCheckpointHelpers:
+    global _FOUNDATION_HELPERS
+    if _FOUNDATION_HELPERS is None:
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "tests"
+            / "persistence"
+            / "test_checkpoint_store_contract.py"
+        )
+        spec = importlib.util.spec_from_file_location("graph_engine_checkpoint_store_helpers", path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Foundation checkpoint test helpers are missing")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _FOUNDATION_HELPERS = cast(_FoundationCheckpointHelpers, module)
+    return _FOUNDATION_HELPERS
+
 
 _REVISION = "a" * 64
 _LOCK = "b" * 64
@@ -138,48 +162,6 @@ class ScriptedAttempt:
         )
 
 
-class MemoryCheckpointAnchorJournal:
-    def __init__(self) -> None:
-        self._started: dict[str, InvocationStarted] = {}
-        self._anchors: dict[tuple[str, str], CheckpointAnchor] = {}
-
-    async def start_invocation(self, record: InvocationStarted, *, fencing_token: int) -> None:
-        await self.assert_current_fence(record.invocation_id, fencing_token)
-        existing = self._started.get(record.invocation_id)
-        if existing is None:
-            self._started[record.invocation_id] = record
-            return
-        if existing != record:
-            raise CheckpointIntegrityError("invocation identity drifted")
-
-    async def append_checkpoint_anchor(self, anchor: CheckpointAnchor, *, fencing_token: int) -> None:
-        await self.assert_current_fence(anchor.invocation_id, fencing_token)
-        started_record = self._started.get(anchor.invocation_id)
-        if started_record is None:
-            raise CheckpointIntegrityError("invocation has not started")
-        if anchor.anchor_state() != started_record.anchor_state():
-            raise CheckpointIntegrityError("checkpoint identity drifted from invocation")
-        key = (anchor.thread_id, anchor.checkpoint_id)
-        existing = self._anchors.get(key)
-        if existing is None:
-            self._anchors[key] = anchor
-            return
-        if existing != anchor:
-            raise CheckpointIntegrityError("checkpoint identity drifted")
-
-    async def read_checkpoint_anchor(self, thread_id: str, checkpoint_id: str) -> CheckpointAnchor | None:
-        return self._anchors.get((thread_id, checkpoint_id))
-
-    async def assert_current_fence(self, invocation_id: str, fencing_token: int) -> None:
-        started_record = self._started.get(invocation_id)
-        if started_record is None:
-            if fencing_token < 1:
-                raise CheckpointIntegrityError("fencing token is stale")
-            return
-        if started_record.fencing_token != fencing_token:
-            raise CheckpointIntegrityError("fencing token is stale")
-
-
 class GraphHarness:
     def __init__(self) -> None:
         self._kernel = ScriptedAttempt()
@@ -188,6 +170,11 @@ class GraphHarness:
         self._factory = AttemptNodeFactory(journal=self._journal, kernel=self._kernel)
         self._recorder = _TraceRecorder()
         self._context: RecordingCapabilityBuildContext | None = None
+        self._prepared_checkpointer: AnchoredCheckpointer | None = None
+
+    @property
+    def prepared_checkpointer(self) -> AnchoredCheckpointer | None:
+        return self._prepared_checkpointer
 
     def recording_context(
         self,
@@ -210,8 +197,7 @@ class GraphHarness:
         invocation_id: str = "inv-1",
         fencing_token: int = 1,
     ) -> AnchoredCheckpointer:
-        store = MemoryCheckpointStore()
-        journal = MemoryCheckpointAnchorJournal()
+        helpers = _foundation_checkpoint_helpers()
         identity = CheckpointAnchorState(
             invocation_id=invocation_id,
             thread_id=invocation_id,
@@ -220,7 +206,11 @@ class GraphHarness:
             root_input_digest=_INPUT,
             fencing_token=fencing_token,
         )
-        return _AnchoredMemoryBackend(store=store, journal=journal, identity=identity)
+        return AnchoredCheckpointer(
+            store=MemoryCheckpointStore(),
+            journal=helpers.MemoryCheckpointAnchorJournal(),
+            identity=identity,
+        )
 
     async def run(
         self,
@@ -232,23 +222,32 @@ class GraphHarness:
         self._kernel.load_script(script)
         self._recorder.select_values.clear()
         self._recorder.published_updates.clear()
-        invoke = getattr(graph, "ainvoke")
+        backend = self.anchored_memory_checkpointer()
+        await _prepare_anchored_backend(backend)
+        self._prepared_checkpointer = backend
+        compiled = graph.compile(checkpointer=backend) if isinstance(graph, StateGraph) else graph
+        invoke = getattr(compiled, "ainvoke")
         interrupt_envelope: object | None = None
         terminal: object | None = None
+        config = {
+            "configurable": {
+                "thread_id": "inv-1",
+                "assurance_revision_id": _REVISION,
+                "assurance_product_lock_digest": _LOCK,
+                "assurance_root_input_digest": _INPUT,
+                "assurance_fencing_token": 1,
+                "assurance_entrypoint": "execute",
+            }
+        }
         try:
-            terminal = await invoke(
-                dict(input),
-                config={
-                    "configurable": {
-                        "thread_id": "inv-1",
-                        "assurance_revision_id": _REVISION,
-                        "assurance_fencing_token": 1,
-                        "assurance_entrypoint": "execute",
-                    }
-                },
-            )
+            terminal = await invoke(dict(input), config=config)
         except GraphInterrupt as error:
             interrupt_envelope = _interrupt_envelope(error)
+            terminal = None
+        else:
+            interrupt_envelope = _interrupt_from_result(terminal)
+            if interrupt_envelope is not None:
+                terminal = None
         published = self._recorder.published_updates[-1] if self._recorder.published_updates else None
         promotion = self._kernel.promotion_decisions[-1] if self._kernel.promotion_decisions else None
         return GraphHarnessResult(
@@ -259,33 +258,6 @@ class GraphHarness:
             published_update=published,
             interrupt_envelope=interrupt_envelope,
             terminal=terminal,
-        )
-
-
-class _AnchoredMemoryBackend(AnchoredCheckpointer):
-    def __init__(
-        self,
-        *,
-        store: MemoryCheckpointStore,
-        journal: MemoryCheckpointAnchorJournal,
-        identity: CheckpointAnchorState,
-    ) -> None:
-        super().__init__(store=store, journal=journal, identity=identity)
-        self.backend_id = "anchored-memory"
-        self._memory_journal = journal
-        self._identity = identity
-
-    async def prepare(self) -> None:
-        await self._memory_journal.start_invocation(
-            InvocationStarted(
-                invocation_id=self._identity.invocation_id,
-                thread_id=self._identity.thread_id,
-                graph_revision=self._identity.graph_revision,
-                product_lock_digest=self._identity.product_lock_digest,
-                root_input_digest=self._identity.root_input_digest,
-                fencing_token=self._identity.fencing_token,
-            ),
-            fencing_token=self._identity.fencing_token,
         )
 
 
@@ -313,6 +285,21 @@ def _promotion_decision(resolution: AttemptResolution) -> str:
     raise TypeError(f"unsupported attempt resolution: {type(resolution)!r}")
 
 
+async def _prepare_anchored_backend(backend: AnchoredCheckpointer) -> None:
+    identity = backend._identity
+    await backend._journal.start_invocation(
+        InvocationStarted(
+            invocation_id=identity.invocation_id,
+            thread_id=identity.thread_id,
+            graph_revision=identity.graph_revision,
+            product_lock_digest=identity.product_lock_digest,
+            root_input_digest=identity.root_input_digest,
+            fencing_token=identity.fencing_token,
+        ),
+        fencing_token=identity.fencing_token,
+    )
+
+
 def _interrupt_envelope(error: GraphInterrupt) -> object:
     interrupts = getattr(error, "args", ())
     if not interrupts:
@@ -324,10 +311,19 @@ def _interrupt_envelope(error: GraphInterrupt) -> object:
     return getattr(first, "value", first)
 
 
+def _interrupt_from_result(result: object) -> object | None:
+    if not isinstance(result, Mapping):
+        return None
+    interrupts = result.get("__interrupt__")
+    if not interrupts:
+        return None
+    first = interrupts[0]
+    return getattr(first, "value", first)
+
+
 __all__ = [
     "GraphHarness",
     "GraphHarnessResult",
-    "MemoryCheckpointAnchorJournal",
     "ScriptedAttempt",
     "SemanticAttemptCall",
     "committed",

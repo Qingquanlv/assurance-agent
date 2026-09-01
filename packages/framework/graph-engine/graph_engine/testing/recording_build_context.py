@@ -10,6 +10,9 @@ from pydantic import BaseModel
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.boot.boot import BoundAttemptNode, ContractOwnershipError
+from graph_engine.boot.graph_revision import GraphBuildManifest
+from graph_engine.composition.models import AttemptContractRegistry
+from graph_engine.plugin_api import PluginContribution
 
 
 def _owner_id(contract: object) -> str:
@@ -38,6 +41,9 @@ class RecordingCapabilityBuildContext:
         contracts: Mapping[str, TaskAttemptContract[Any, Any] | ResolvedAttemptContract[Any, Any]],
         attempt_factory: AttemptNodeFactory | None = None,
         recorder: _TraceRecorder | None = None,
+        catalog: AttemptContractRegistry | None = None,
+        contribution: PluginContribution | None = None,
+        manifest: GraphBuildManifest | None = None,
     ) -> None:
         if not owner_id:
             raise ValueError("capability owner id must be nonempty")
@@ -45,6 +51,10 @@ class RecordingCapabilityBuildContext:
         self._contracts = dict(contracts)
         self._attempt_factory = attempt_factory
         self._recorder = recorder
+        self.catalog = catalog
+        self.contribution = contribution
+        self.manifest = manifest
+        self._reused_handlers: dict[str, object] = {}
         self._bound_contract_ids: list[str] = []
         self._compiled_subgraph_checkpointers: list[None] = []
         self._select_values: list[object] = []
@@ -101,6 +111,9 @@ class RecordingCapabilityBuildContext:
         self._compiled_subgraph_checkpointers.append(None)
         return compiled
 
+    def reused_registry_handler(self, contract_id: str) -> object:
+        return self._reused_handlers[contract_id]
+
     def with_test_contract(
         self,
         contract: TaskAttemptContract[Any, Any] | ResolvedAttemptContract[Any, Any],
@@ -109,14 +122,41 @@ class RecordingCapabilityBuildContext:
             raise ContractOwnershipError(
                 f"contract {_contract_id(contract)!r} is not owned by {self.owner_id!r}"
             )
+        catalog = self.catalog
+        if catalog is None:
+            raise TypeError("with_test_contract requires an authenticated catalog")
+        task = contract.contract if isinstance(contract, ResolvedAttemptContract) else contract
+        entry = next(
+            (item for item in catalog.entries.values() if item.handler_id == task.handler_id),
+            None,
+        )
+        if entry is None:
+            raise ContractOwnershipError(
+                f"handler {task.handler_id!r} is not an authenticated registry entry"
+            )
+        authenticated_validators = {
+            validator_id for item in catalog.entries.values() for validator_id in item.validators
+        }
+        for validator_id in task.validators:
+            if validator_id not in authenticated_validators:
+                raise ContractOwnershipError(
+                    f"validator {validator_id!r} is not an authenticated registry entry"
+                )
         installed = dict(self._contracts)
-        installed[_contract_id(contract)] = contract
-        return RecordingCapabilityBuildContext(
+        contract_id = _contract_id(contract)
+        installed[contract_id] = contract
+        clone = RecordingCapabilityBuildContext(
             owner_id=self.owner_id,
             contracts=installed,
             attempt_factory=self._attempt_factory,
             recorder=self._recorder,
+            catalog=catalog,
+            contribution=self.contribution,
+            manifest=self.manifest,
         )
+        clone._reused_handlers = dict(self._reused_handlers)
+        clone._reused_handlers[contract_id] = entry.authority_handler
+        return clone
 
     def _record_select(self, select: object) -> Callable[..., object]:
         if not callable(select):
