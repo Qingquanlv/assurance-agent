@@ -316,15 +316,29 @@ def test_opencode_agent_installation_rejects_conflicting_project_profile(tmp_pat
 
 
 def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
-    from assurance_product.agent_contracts import FEATURE_AGENT_JOB_CATALOGS, expand_agent_job_slots
+    from assurance_product.agent_contracts import (
+        FEATURE_AGENT_JOB_CATALOGS,
+        LEGACY_AGENT_PHASE_ALIASES,
+        all_feature_agent_contracts,
+        expand_agent_job_slots,
+    )
     from assurance_product.models import all_binding_ids
+    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
 
     all_contracts = [contract for catalog in FEATURE_AGENT_JOB_CATALOGS for contract in catalog.values()]
     expanded = expand_agent_job_slots(FEATURE_AGENT_JOB_CATALOGS)
     assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 33
     assert len(expand_agent_job_slots(FEATURE_AGENT_JOB_CATALOGS)) == 99
-    assert all("opencode" not in contract.model_dump_json().lower() for contract in all_contracts)
-    assert all("cursor" not in contract.model_dump_json().lower() for contract in all_contracts)
+    assert len(LEGACY_AGENT_PHASE_ALIASES) == 99
+    assert set(LEGACY_AGENT_PHASE_ALIASES) == set(expanded) == set(all_binding_ids())
+    assert len(all_feature_agent_contracts()) == 33
+    assert set(AGENT_RUNTIME_BINDINGS) == set(all_feature_agent_contracts())
+    assert all(
+        "opencode" not in json.dumps(contract.canonical_projection()).lower() for contract in all_contracts
+    )
+    assert all(
+        "cursor" not in json.dumps(contract.canonical_projection()).lower() for contract in all_contracts
+    )
     assert set(expanded) == set(all_binding_ids())
     assert all(hasattr(contract, "contract_id") for contract in all_contracts)
 

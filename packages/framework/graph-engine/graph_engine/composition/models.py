@@ -550,7 +550,7 @@ class ContributionAuthority:
                 raise ValueError("configuration-tree contributions cannot declare attempt contracts")
         elif self.provider_binding is None:
             raise ValueError("wheel contribution requires an owning provider binding")
-        contracts = tuple(self.attempt_contracts)
+        contracts = tuple(self.attempt_contracts) or tuple(self.contribution.attempt_contracts)
         if any(not isinstance(item, AttemptContractRef) for item in contracts):
             raise TypeError("attempt contracts must contain AttemptContractRef values")
         contract_ids = tuple(item.contract_id for item in contracts)

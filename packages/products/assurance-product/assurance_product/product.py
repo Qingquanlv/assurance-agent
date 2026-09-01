@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
-from typing import Literal, cast
+from types import MappingProxyType
+from typing import Any, Literal, cast
 
 import yaml
 
+from graph_engine.attempts import ResolvedAttemptContract
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.composition import (
     CapabilityBindingEntry,
@@ -136,6 +139,11 @@ class GraphAuditResult(FrozenModel):
 
 class AssuranceCompositionError(ValueError):
     """Raised when an Assurance composition is incomplete, extra, or forged."""
+
+
+@dataclass(frozen=True, slots=True)
+class AssuranceComposition(FrozenComposition):
+    semantic_attempt_contracts: Mapping[str, ResolvedAttemptContract[Any, Any]]
 
 
 class AssuranceCompositionRequest(FrozenModel):
@@ -453,7 +461,29 @@ def _apply_agent_execution_contracts(composition: FrozenComposition) -> FrozenCo
     )
 
 
-def resolve_assurance_composition(request: AssuranceCompositionRequest) -> FrozenComposition:
+def _with_semantic_attempt_contracts(
+    composition: FrozenComposition,
+    contracts: Mapping[str, ResolvedAttemptContract[Any, Any]],
+) -> AssuranceComposition:
+    return AssuranceComposition(
+        manifest=composition.manifest,
+        descriptors=composition.descriptors,
+        registries=composition.registries,
+        workflow=composition.workflow,
+        configuration=composition.configuration,
+        contribution_authorities=composition.contribution_authorities,
+        providers=composition.providers,
+        product_provider=composition.product_provider,
+        declarative_sources=composition.declarative_sources,
+        lock=composition.lock,
+        digest=composition.digest,
+        semantic_attempt_contracts=MappingProxyType(dict(contracts)),
+    )
+
+
+def resolve_assurance_composition(request: AssuranceCompositionRequest) -> AssuranceComposition:
+    from assurance_product.runtime_bindings import boot_semantic_attempt_contracts
+
     adapter = adapter_for_entrypoint(request.product_entrypoint)
     if not request.configuration_tree.path.is_dir():
         raise AssuranceCompositionError("configuration tree is not an explicit existing path")
@@ -468,7 +498,11 @@ def resolve_assurance_composition(request: AssuranceCompositionRequest) -> Froze
         )
     )
     composition = _apply_agent_execution_contracts(composition)
-    return _authenticate_assurance_composition(composition, adapter)
+    composition = _authenticate_assurance_composition(composition, adapter)
+    return _with_semantic_attempt_contracts(
+        composition,
+        boot_semantic_attempt_contracts(composition),
+    )
 
 
 def _workflow_node_ids(workflow: CompiledWorkflow) -> set[str]:

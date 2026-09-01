@@ -12,7 +12,9 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 
 @pytest.mark.parametrize("adapter", ["opencode", "cursor"])
 def test_graph_bindings_are_closed_and_inventoried(adapter, compiled_for):
+    from assurance_product.agent_contracts import LEGACY_AGENT_PHASE_ALIASES
     from assurance_product.product import audit_full_graph
+    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
 
     compiled = compiled_for(adapter)
     audit = audit_full_graph(compiled.workflow, compiled.composition)
@@ -29,6 +31,9 @@ def test_graph_bindings_are_closed_and_inventoried(adapter, compiled_for):
     assert execute_aliases <= agent_ids
     assert agent_ids <= set(ALL_BINDING_IDS)
     assert set(bindings) == set(ALL_BINDING_IDS)
+    assert len(AGENT_RUNTIME_BINDINGS) == 33
+    assert len(compiled.composition.semantic_attempt_contracts) == 41
+    assert len(LEGACY_AGENT_PHASE_ALIASES) == 99
 
 
 @pytest.mark.parametrize("adapter", ["opencode", "cursor"])

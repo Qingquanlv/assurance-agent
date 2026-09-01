@@ -4,6 +4,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from agent_runtime_contracts import AgentExecutionContract, expand_agent_job_slots
+from graph_engine.attempts import TaskAttemptContract
 from graph_engine.composition.models import WorkflowModuleRequirement, WorkflowSlotBinding
 from graph_engine.graph.schema import RetryPolicyDef, WorkflowDef
 from graph_engine.plugin_api import ResourceClaims
@@ -11,6 +12,9 @@ from graph_engine.plugin_api import ResourceClaims
 from assurance_execution.contracts.workflow import AGENT_JOB_CONTRACTS as EXECUTION_AGENT_JOB_CONTRACTS
 from assurance_generation.contracts.workflow import AGENT_JOB_CONTRACTS as GENERATION_AGENT_JOB_CONTRACTS
 from assurance_healing.contracts.workflow import AGENT_JOB_CONTRACTS as HEALING_AGENT_JOB_CONTRACTS
+from assurance_improvement.contracts.attempts import (
+    TASK_ATTEMPT_CONTRACTS as IMPROVEMENT_TASK_ATTEMPT_CONTRACTS,
+)
 from assurance_improvement.contracts.workflow import AGENT_JOB_CONTRACTS as IMPROVEMENT_AGENT_JOB_CONTRACTS
 from assurance_intake.contracts.workflow import AGENT_JOB_CONTRACTS as INTAKE_AGENT_JOB_CONTRACTS
 from assurance_quality.contracts.workflow import AGENT_JOB_CONTRACTS as QUALITY_AGENT_JOB_CONTRACTS
@@ -41,6 +45,24 @@ AGENT_EXECUTION_CONTRACTS: Mapping[str, AgentExecutionContract] = MappingProxyTy
     }
 )
 PREPARE_IDS: tuple[str, ...] = tuple(AGENT_EXECUTION_CONTRACTS)
+LEGACY_AGENT_PHASE_ALIASES: Mapping[str, AgentExecutionContract] = expand_agent_job_slots(
+    FEATURE_AGENT_JOB_CATALOGS
+)
+FEATURE_TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract] = IMPROVEMENT_TASK_ATTEMPT_CONTRACTS
+
+
+def all_feature_agent_contracts() -> Mapping[str, AgentExecutionContract]:
+    return MappingProxyType(
+        {
+            contract.contract_id: contract
+            for catalog in FEATURE_AGENT_JOB_CATALOGS
+            for contract in catalog.values()
+        }
+    )
+
+
+def all_feature_task_contracts() -> Mapping[str, TaskAttemptContract]:
+    return FEATURE_TASK_ATTEMPT_CONTRACTS
 
 
 def _slot_parts(alias: str) -> tuple[str, str, str]:
@@ -143,8 +165,12 @@ def bind_agent_execution_contracts(workflow: WorkflowDef) -> WorkflowDef:
 __all__ = [
     "AGENT_EXECUTION_CONTRACTS",
     "FEATURE_AGENT_JOB_CATALOGS",
+    "FEATURE_TASK_ATTEMPT_CONTRACTS",
+    "LEGACY_AGENT_PHASE_ALIASES",
     "PREPARE_IDS",
     "AgentExecutionContract",
+    "all_feature_agent_contracts",
+    "all_feature_task_contracts",
     "bind_agent_execution_contracts",
     "expand_agent_job_slots",
     "product_workflow_module_requirements",
