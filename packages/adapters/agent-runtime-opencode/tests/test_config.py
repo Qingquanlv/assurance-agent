@@ -8,9 +8,10 @@ from urllib.parse import urlparse
 import pytest
 from pydantic import ValidationError
 
+from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
 from agent_runtime_opencode.config import OpenCodeAdapterConfig, endpoint_origin
 from agent_runtime_opencode.plugin import OpenCodePlugin
-from agent_runtime_opencode.protocol import canonical_json_text
+from agent_runtime_opencode.protocol import OPENCODE_RUNTIME_CAPABILITIES, canonical_json_text
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import PluginDescriptor, RegistryPorts, validate_contribution
 
@@ -114,6 +115,13 @@ def test_opencode_config_rejects_credentials_defaults_unknowns_and_unbounded_val
 ) -> None:
     with pytest.raises(ValidationError):
         OpenCodeAdapterConfig.model_validate(_valid_config_payload(**payload))
+
+
+def test_opencode_advertises_no_provider_schema_enforcement() -> None:
+    expected = AgentRuntimeCapabilities(provider_schema=False)
+    assert OPENCODE_RUNTIME_CAPABILITIES == expected
+    assert OpenCodePlugin.spec.capabilities == expected
+    assert OPENCODE_RUNTIME_CAPABILITIES.provider_schema is False
 
 
 def test_plugin_registers_only_execute_capability_and_request_result_schemas() -> None:

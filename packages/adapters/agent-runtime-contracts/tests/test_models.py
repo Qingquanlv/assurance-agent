@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from agent_runtime_contracts import (
     AgentRunRequest,
@@ -26,6 +26,14 @@ _SHA_A = "1" * 64
 _SHA_B = "2" * 64
 _SHA_C = "3" * 64
 _SHA_D = "4" * 64
+_ALLOWED_GRAPH_ENGINE_MODULES = (
+    "graph_engine.plugin_api",
+    "graph_engine.attempts",
+    "graph_engine.attempts.contracts",
+    "graph_engine.attempts.context",
+    "graph_engine.attempts.keys",
+    "graph_engine.identifiers",
+)
 _FORBIDDEN_GRAPH_ENGINE_PREFIXES = (
     "graph_engine.runtime",
     "graph_engine.composition",
@@ -33,7 +41,6 @@ _FORBIDDEN_GRAPH_ENGINE_PREFIXES = (
     "graph_engine.canonical",
     "graph_engine.frozen_json",
     "graph_engine.errors",
-    "graph_engine.identifiers",
 )
 _FORBIDDEN_PEER_PREFIXES = (
     "agent_runtime_opencode",
@@ -501,7 +508,7 @@ def test_contracts_source_imports_only_plugin_api_primitives() -> None:
             assert not module_name.startswith(_FORBIDDEN_PEER_PREFIXES), (path, module_name)
             assert not module_name.startswith(_FORBIDDEN_GRAPH_ENGINE_PREFIXES), (path, module_name)
             if module_name == "graph_engine" or module_name.startswith("graph_engine."):
-                assert module_name == "graph_engine.plugin_api", (path, module_name)
+                assert module_name in _ALLOWED_GRAPH_ENGINE_MODULES, (path, module_name)
 
 
 def test_graph_engine_does_not_import_agent_runtime_contracts() -> None:
@@ -540,10 +547,23 @@ def test_isolated_wheel_import_does_not_load_adapters_or_assurance(tmp_path: Pat
             "--offline",
             "--python",
             str(venv / "bin" / "python"),
-            "--find-links",
-            str(dist),
+            "--no-deps",
             str(engine_wheel),
             str(contracts_wheel),
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--offline",
+            "--python",
+            str(venv / "bin" / "python"),
+            "pydantic",
+            "packaging",
+            "pyyaml",
         ],
         check=True,
     )
@@ -576,22 +596,79 @@ for package in (
     assert "graph_engine.plugin_api" not in completed.stderr
 
 
+def test_agent_result_and_finalize_output_are_distinct_contracts() -> None:
+    from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy
+    from graph_engine.plugin_api import ResourceClaims
+
+    from agent_runtime_contracts import AgentExecutionContract
+
+    class CaseDesignInput(BaseModel):
+        change_id: str
+
+    class CaseDesignAgentResult(BaseModel):
+        output_files: tuple[str, ...]
+
+    class CaseDesignOutput(BaseModel):
+        status: str
+
+    claims = ResourceClaims()
+    retry = AttemptRetryPolicy(max_attempts=1)
+    timeout = AttemptTimeoutPolicy(seconds=60)
+    contract = AgentExecutionContract(
+        contract_id="assurance.intake.agent.case-design.v1",
+        owner_id="assurance.intake",
+        prepare_handler_id="assurance.intake.case-design.prepare",
+        finalize_handler_id="assurance.intake.case-design.finalize",
+        skill_id="aa-case-design",
+        agent_profile="assurance-v1-doc-author",
+        input_model=CaseDesignInput,
+        agent_result_model=CaseDesignAgentResult,
+        output_model=CaseDesignOutput,
+        requires_provider_schema=True,
+        resources=claims,
+        retry=retry,
+        timeout=timeout,
+        validators=(),
+    )
+    assert contract.agent_result_model is not contract.output_model
+
+
 def test_agent_execution_contract_is_provider_neutral() -> None:
+    from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy
     from graph_engine.plugin_api import ResourceClaimTemplate
 
     from agent_runtime_contracts import AgentExecutionContract
 
+    class IntakeInput(BaseModel):
+        change_id: str
+
+    class IntakeAgentResult(BaseModel):
+        output_files: tuple[str, ...]
+
+    class IntakeOutput(BaseModel):
+        status: str
+
     contract = AgentExecutionContract(
         contract_id="assurance.intake.agent.intake.v1",
+        owner_id="assurance.intake",
+        prepare_handler_id="assurance.intake.intake.prepare",
+        finalize_handler_id="assurance.intake.intake.finalize",
         skill_id="aa-intake",
         agent_profile="assurance-v1-doc-author",
+        input_model=IntakeInput,
+        agent_result_model=IntakeAgentResult,
+        output_model=IntakeOutput,
+        requires_provider_schema=False,
         resources=ResourceClaimTemplate(
             parameters={"change_id": "/workspace/scope_id"},
             reads=("qa",),
             writes=("qa/changes/{change_id}/requirement.md",),
         ),
+        retry=AttemptRetryPolicy(max_attempts=1),
+        timeout=AttemptTimeoutPolicy(seconds=60),
+        validators=(),
     )
-    dumped = contract.model_dump_json().lower()
+    dumped = str(contract.canonical_projection()).lower()
     assert contract.contract_id == "assurance.intake.agent.intake.v1"
     assert "opencode" not in dumped
     assert "cursor" not in dumped

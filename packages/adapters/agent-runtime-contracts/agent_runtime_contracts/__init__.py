@@ -1,3 +1,8 @@
+from agent_runtime_contracts.attempt_executor import (
+    CompositeAttemptExecutor,
+    StructuredOutputCapabilityError,
+    TypedPhaseBundle,
+)
 from agent_runtime_contracts.execution_contract import AgentExecutionContract, expand_agent_job_slots
 from agent_runtime_contracts.models import (
     AgentRunRequest,
@@ -6,6 +11,11 @@ from agent_runtime_contracts.models import (
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
+)
+from agent_runtime_contracts.runtime_binding import (
+    AgentRuntimeBinding,
+    AgentRuntimeCapabilities,
+    AgentRuntimePolicy,
 )
 from agent_runtime_contracts.schema import (
     bound_redacted_diagnostics,
@@ -19,10 +29,16 @@ __all__ = [
     "AgentExecutionContract",
     "AgentRunRequest",
     "AgentRunResult",
+    "AgentRuntimeBinding",
+    "AgentRuntimeCapabilities",
+    "AgentRuntimePolicy",
     "AgentWorkspaceV1",
+    "CompositeAttemptExecutor",
     "FrozenExecutionSelection",
     "InstructionPart",
     "ResultContract",
+    "StructuredOutputCapabilityError",
+    "TypedPhaseBundle",
     "bound_redacted_diagnostics",
     "canonical_digest",
     "canonical_json_bytes",

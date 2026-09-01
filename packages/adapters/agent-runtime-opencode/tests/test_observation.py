@@ -3,7 +3,9 @@ from __future__ import annotations
 import time
 
 from agent_runtime_contracts import InstructionPart
+from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
 from agent_runtime_opencode.observation import (
+    advertised_runtime_capabilities,
     classify_provider_state,
     provider_error_is_transient,
     provider_error_message,
@@ -19,6 +21,11 @@ def _message_gets(fixture: object, session_id: str) -> int:
         for item in fake.records
         if item.method == "GET" and item.path.startswith(f"/session/{session_id}/message")
     )
+
+
+def test_opencode_observation_advertises_local_schema_validation_only() -> None:
+    assert advertised_runtime_capabilities() == AgentRuntimeCapabilities(provider_schema=False)
+    assert advertised_runtime_capabilities().provider_schema is False
 
 
 def test_nested_opencode_provider_error_message_is_transient() -> None:

@@ -8,9 +8,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent_runtime_contracts import AgentRunRequest
+from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
 from agent_runtime_contracts.schema import thaw_json
 from graph_engine.plugin_api import FrozenModel
-from agent_runtime_opencode.protocol import canonical_json_text
+from agent_runtime_opencode.protocol import OPENCODE_RUNTIME_CAPABILITIES, canonical_json_text
+
+
+def advertised_runtime_capabilities() -> AgentRuntimeCapabilities:
+    return OPENCODE_RUNTIME_CAPABILITIES
 
 
 _IDENTITY_BEARING_TYPES = frozenset(

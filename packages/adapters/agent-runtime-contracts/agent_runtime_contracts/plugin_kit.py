@@ -17,7 +17,7 @@ convention, and knows nothing about any concrete adapter.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from graph_engine.plugin_api import (
@@ -29,9 +29,22 @@ from graph_engine.plugin_api import (
     TaskHandler,
 )
 
+from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
 from agent_runtime_contracts.schema import canonical_json_bytes
 
 _SCHEMA_MEDIA_TYPE = "application/schema+json"
+
+
+class StructuredOutputCapabilityError(ValueError):
+    """Raised when a contract requires provider schema the adapter does not advertise."""
+
+
+def negotiate_provider_schema(*, required: bool, capabilities: AgentRuntimeCapabilities) -> None:
+    if required and not capabilities.provider_schema:
+        raise StructuredOutputCapabilityError(
+            "adapter does not advertise provider-enforced structured output"
+        )
+
 
 RUNTIME_REQUEST_SCHEMA = canonical_json_bytes(
     {
@@ -76,6 +89,9 @@ class RuntimeAdapterSpec:
     engine_api: str
     source: ProviderSource
     handler: Callable[[], TaskHandler]
+    capabilities: AgentRuntimeCapabilities = field(
+        default_factory=lambda: AgentRuntimeCapabilities(provider_schema=False)
+    )
 
     @property
     def plugin_id(self) -> str:
@@ -141,4 +157,6 @@ __all__ = [
     "RUNTIME_RESULT_SCHEMA",
     "RuntimeAdapterPlugin",
     "RuntimeAdapterSpec",
+    "StructuredOutputCapabilityError",
+    "negotiate_provider_schema",
 ]
