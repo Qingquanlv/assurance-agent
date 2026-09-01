@@ -6,6 +6,8 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any, cast
 
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_JOBS
@@ -257,9 +259,40 @@ def test_spy_contexts_have_no_handler_validator_or_runtime_injection() -> None:
             assert not hasattr(context, name)
 
 
+def test_recording_context_records_the_compile_checkpointer(monkeypatch) -> None:
+    class Marker(dict):
+        pass
+
+    def noop(state: Marker) -> Marker:
+        return state
+
+    saver = InMemorySaver()
+    original = StateGraph.compile
+
+    def forced(graph: StateGraph[Any], checkpointer: object = None, **kwargs: object) -> object:
+        return original(graph, checkpointer=saver, **kwargs)
+
+    monkeypatch.setattr(StateGraph, "compile", forced)
+    context = RecordingCapabilityBuildContext(owner_id="assurance.intake", contracts={})
+    builder = StateGraph(Marker)
+    builder.add_node("noop", noop)
+    builder.add_edge(START, "noop")
+    builder.add_edge("noop", END)
+    compiled = context.compile_subgraph(builder)
+    assert compiled.checkpointer is saver
+    assert context.compiled_subgraph_checkpointers == (saver,)
+
+
 def test_every_child_checkpointer_is_none() -> None:
     for owner_id in PUBLIC_BUNDLE_FIELDS:
-        _bundle, context, _digest = _build_owner(owner_id)
+        bundle, context, _digest = _build_owner(owner_id)
+        graphs = [
+            getattr(bundle, name)
+            for name in _bundle_fields(bundle)
+            if isinstance(getattr(bundle, name), CompiledStateGraph)
+        ]
+        assert graphs
+        assert all(graph.checkpointer is None for graph in graphs)
         assert context.compiled_subgraph_checkpointers
         assert all(item is None for item in context.compiled_subgraph_checkpointers)
 

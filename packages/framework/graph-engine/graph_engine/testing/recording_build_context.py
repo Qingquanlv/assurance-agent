@@ -56,7 +56,7 @@ class RecordingCapabilityBuildContext:
         self.manifest = manifest
         self._reused_handlers: dict[str, object] = {}
         self._bound_contract_ids: list[str] = []
-        self._compiled_subgraph_checkpointers: list[None] = []
+        self._compiled_subgraph_checkpointers: list[object] = []
         self._select_values: list[object] = []
         self._published_updates: list[Mapping[str, object]] = []
 
@@ -65,7 +65,7 @@ class RecordingCapabilityBuildContext:
         return tuple(self._bound_contract_ids)
 
     @property
-    def compiled_subgraph_checkpointers(self) -> tuple[None, ...]:
+    def compiled_subgraph_checkpointers(self) -> tuple[object, ...]:
         return tuple(self._compiled_subgraph_checkpointers)
 
     @property
@@ -108,7 +108,7 @@ class RecordingCapabilityBuildContext:
 
     def compile_subgraph(self, builder: StateGraph[Any]) -> CompiledStateGraph:
         compiled = builder.compile(checkpointer=None)
-        self._compiled_subgraph_checkpointers.append(None)
+        self._compiled_subgraph_checkpointers.append(compiled.checkpointer)
         return compiled
 
     def reused_registry_handler(self, contract_id: str) -> object:

@@ -8,7 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from graph_engine.boot.boot import BootRequest, GraphEngineBoot, OrganizationOverrideError
+from graph_engine.boot.boot import (
+    BootRequest,
+    BootValidationError,
+    GraphEngineBoot,
+    OrganizationOverrideError,
+    RuntimePorts,
+)
 from graph_engine.boot.graph_revision import FeatureFactoryRef
 from graph_engine.boot.source_authentication import (
     FactoryAuthenticationError,
@@ -108,27 +114,15 @@ def _boot_helpers():
     return module
 
 
-def test_allowlist_rejects_missing_extra_and_duplicate_owners() -> None:
-    expected_owners = tuple(item.owner_id for item in EXPECTED_FEATURE_GRAPH_FACTORIES)
-    assert expected_owners == (
-        "assurance.intake",
-        "assurance.generation",
-        "assurance.execution",
-        "assurance.quality",
-        "assurance.healing",
-        "assurance.improvement",
-    )
-    assert len(expected_owners) == len(set(expected_owners)) == 6
+def test_allowlist_rejects_missing_extra_and_duplicate_owners(tmp_path: Path) -> None:
+    helpers = _boot_helpers()
     missing = FEATURE_GRAPH_FACTORIES[1:]
     extra = FEATURE_GRAPH_FACTORIES + (
         FeatureFactoryRef("assurance.rogue", "rogue.graphs.factory:build_rogue_graphs"),
     )
     duplicate = FEATURE_GRAPH_FACTORIES + FEATURE_GRAPH_FACTORIES[:1]
-    assert FEATURE_GRAPH_FACTORIES != missing
-    assert FEATURE_GRAPH_FACTORIES != extra
-    assert {item.owner_id for item in missing} != set(expected_owners)
-    assert any(item.owner_id == "assurance.rogue" for item in extra)
-    helpers = _boot_helpers()
+    assert len(missing) == 5
+    assert len(extra) == 7
     with pytest.raises(ValueError, match="unique"):
         BootRequest(
             product_factory=ProductFactoryRef(
@@ -138,6 +132,38 @@ def test_allowlist_rejects_missing_extra_and_duplicate_owners() -> None:
             feature_factories=duplicate,
             sources={},
             product_lock=helpers.product_lock(),
+        )
+
+    baseline = helpers.make_boot_request(tmp_path / "wheels")
+    boot = GraphEngineBoot(
+        authenticator=helpers.FactoryAuthenticator(),
+        contract_resolver=helpers.FakeContractResolver(),
+    )
+    extra_request = BootRequest(
+        product_factory=baseline.product_factory,
+        feature_factories=extra,
+        sources=baseline.sources,
+        product_lock=baseline.product_lock,
+    )
+    with pytest.raises(BootValidationError, match="authenticated source"):
+        boot.compile_manifest(extra_request)
+
+    missing_request = BootRequest(
+        product_factory=baseline.product_factory,
+        feature_factories=missing,
+        sources=baseline.sources,
+        product_lock=baseline.product_lock,
+        expected_manifest=boot.compile_manifest(baseline),
+    )
+    with pytest.raises(BootValidationError, match="revision"):
+        boot.boot(
+            missing_request,
+            checkpointer=helpers.real_anchored_checkpointer(),
+            runtime_ports=RuntimePorts(
+                attempt_kernel=object(),
+                secret_resolver=object(),
+                workspace_provider=object(),
+            ),
         )
 
 
