@@ -56,4 +56,4 @@ def test_cutover_records_do_not_switch_production_starts() -> None:
     assert isinstance(ENTRYPOINT_RUNTIME_CUTOVER["full"], str)
     frozen: dict[str, RuntimeKind] = dict(ENTRYPOINT_RUNTIME_CUTOVER)
     assert frozen == {name: "legacy-v2" for name in PRODUCT_ENTRYPOINTS}
-    assert all(record.passed for record in PARITY_RECORDS.values()) or True
+    assert all(record.passed for record in PARITY_RECORDS.values())

@@ -60,7 +60,6 @@ EVIDENCE_VALIDATOR_ID = "assurance.execution.validator.evidence.v1"
 ACCEPT_PATH = "tests/test_validator_parity.py"
 REJECT_PATH = "src/validator_parity.py"
 _EXECUTE_ID = "assurance.execution.agent.execute.v1"
-_OUTSIDE_REASON = "execution candidate may write only tests and change execution paths"
 _HANDLER_ID = "assurance.execution.validator-parity"
 
 
@@ -394,7 +393,9 @@ async def _run_langgraph_candidate(tmp_path: Path, *, relative: str) -> Validato
     rejection = None
     if isinstance(terminal, dict) and "attempt_failure" in terminal:
         failure = cast(dict[str, object], terminal["attempt_failure"])
-        rejection = RejectedTaskResult(reason=str(failure.get("reason") or _OUTSIDE_REASON))
+        reason = failure.get("reason")
+        if isinstance(reason, str) and reason:
+            rejection = RejectedTaskResult(reason=_validator_reason_text(reason))
     return ValidatorRuntimeResult(
         validator_calls=counter.calls,
         prepare_calls=workspace.prepare_calls,
@@ -445,29 +446,10 @@ def _run_legacy_candidate(tmp_path: Path, *, relative: str) -> ValidatorRuntimeR
         bindings.append(binding)
         return binding
 
-    original_promote = EngineStore.promote
-    promote_calls = {"n": 0}
-
-    def _promote(self: EngineStore, *args: object, **kwargs: object) -> object:
-        promote_calls["n"] += 1
-        return original_promote(self, *args, **kwargs)
-
-    original_prepare = getattr(EngineStore, "prepare_sealed", None)
-    prepare_calls = {"n": 0}
-    if original_prepare is not None:
-
-        def _prepare(self: EngineStore, *args: object, **kwargs: object) -> object:
-            prepare_calls["n"] += 1
-            return original_prepare(self, *args, **kwargs)
-
-        EngineStore.prepare_sealed = _prepare  # type: ignore[method-assign]
     EngineStore.begin = _begin  # type: ignore[method-assign]
-    EngineStore.promote = _promote  # type: ignore[method-assign]
     host = _WritingHost(relative, bindings)
     project = tmp_path / "legacy-project"
     project.mkdir(parents=True)
-    runtime_root = tmp_path / "legacy-runtime"
-    runtime_root.mkdir(parents=True)
     composition = resolve_workflow_composition(
         _legacy_workflow(),
         {_HANDLER_ID: _LegacyHandler()},
@@ -487,27 +469,20 @@ def _run_legacy_candidate(tmp_path: Path, *, relative: str) -> ValidatorRuntimeR
             workspace_binding=workspace.runtime_binding(),
         )
         result = engine.run_until_blocked(handle)
+        journal_prepare = _legacy_prepare_events(handle)
+        journal_promote = _legacy_promote_events(handle)
+        reason = _legacy_rejection_reason(result)
         handle.close()
     finally:
         engine.close()
         EngineStore.begin = original_begin  # type: ignore[method-assign]
-        EngineStore.promote = original_promote  # type: ignore[method-assign]
-        if original_prepare is not None:
-            EngineStore.prepare_sealed = original_prepare  # type: ignore[method-assign]
     rejected = result.status != "succeeded"
-    reason = _OUTSIDE_REASON if rejected else None
-    journal_prepare = _legacy_prepare_events(handle) if False else prepare_calls["n"]
-    if rejected:
-        journal_prepare = 0
-        promote_calls["n"] = 0
-    else:
-        journal_prepare = max(journal_prepare, 1)
     return ValidatorRuntimeResult(
         validator_calls=counter.calls,
         prepare_calls=journal_prepare,
-        promoted=promote_calls["n"] > 0 and not rejected,
+        promoted=journal_promote > 0,
         rejection=RejectedTaskResult(reason=reason) if rejected and reason else None,
-        durable_commit_prepare=journal_prepare > 0 and not rejected,
+        durable_commit_prepare=journal_prepare > 0,
     )
 
 
@@ -518,8 +493,39 @@ class _LegacyHandler:
 
 
 def _legacy_prepare_events(handle: object) -> int:
-    del handle
-    return 0
+    ledger = getattr(handle, "ledger")
+    return sum(1 for envelope in ledger.read_all() if envelope.event.kind == "task_commit_prepared")
+
+
+def _legacy_promote_events(handle: object) -> int:
+    ledger = getattr(handle, "ledger")
+    return sum(1 for envelope in ledger.read_all() if envelope.event.kind == "task_promotion_completed")
+
+
+def _legacy_rejection_reason(result: object) -> str | None:
+    projection = getattr(result, "projection", None)
+    activations = getattr(projection, "activations", ()) if projection is not None else ()
+    for activation in activations:
+        failure = getattr(activation, "failure", None)
+        if failure is not None and getattr(failure, "message", None):
+            return _validator_reason_text(str(failure.message))
+        for attempt in getattr(activation, "attempts", ()):
+            attempt_failure = getattr(attempt, "failure", None)
+            if attempt_failure is not None and getattr(attempt_failure, "message", None):
+                return _validator_reason_text(str(attempt_failure.message))
+    reason = getattr(result, "reason", None)
+    if isinstance(reason, str) and reason:
+        return _validator_reason_text(reason)
+    return None
+
+
+def _validator_reason_text(message: str) -> str:
+    marker = "commit validation rejected: "
+    if message.startswith(marker):
+        rest = message[len(marker) :]
+        _validator_id, separator, reason = rest.partition(": ")
+        return reason if separator else rest
+    return message
 
 
 def run_validator_parity_candidate(tmp_path: Path, *, relative: str) -> ValidatorParityResult:

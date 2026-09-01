@@ -8,6 +8,7 @@ from assurance_improvement.contracts.delivery import MemoryEvalReceipt
 from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS
 from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
 
+from tests.product.conformance import SEMANTIC_TRACE_IGNORED_FIELDS
 from tests.product.shadow_harness import (
     DualDriverError,
     SemanticMismatch,
@@ -78,6 +79,32 @@ def test_no_external_effect_is_applied_twice(tmp_path) -> None:
     compare_semantic_traces(pair.legacy.trace, pair.langgraph.trace)
 
 
+def test_shadow_runners_bind_invocation_and_collect_independent_traces(product_runner, tmp_path) -> None:
+    record = prove_entrypoint_parity(
+        tmp_path,
+        product_runner=product_runner,
+        entrypoint="intake",
+        scenario="valid",
+    )
+    assert record.legacy.trace is not record.langgraph.trace
+    assert record.legacy.workspace_root != record.langgraph.workspace_root
+    legacy_text = " ".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in record.legacy.workspace_root.rglob("*")
+        if path.is_file()
+    )
+    assert record.legacy.invocation_id in legacy_text
+    assert record.legacy.invocation_id in str(record.legacy.workspace_root)
+    langgraph_text = " ".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in record.langgraph.workspace_root.rglob("*")
+        if path.is_file()
+    )
+    assert record.langgraph.invocation_id in langgraph_text or record.langgraph.invocation_id in str(
+        record.langgraph.workspace_root
+    )
+
+
 @pytest.mark.parametrize("entrypoint", _PUBLIC_ENTRYPOINTS)
 def test_every_public_root_has_valid_failure_and_interrupt_parity(
     product_runner, tmp_path, entrypoint: str
@@ -134,6 +161,9 @@ def test_evaluate_inside_apply_uses_the_same_delivery_effect(tmp_path) -> None:
     _assert_evaluate_effect(pair.langgraph.trace)
     compare_semantic_traces(pair.legacy.trace, pair.langgraph.trace)
     assert pair.evaluator_dispatch_count == 1
+    assert pair.public_entrypoint == "improvement-apply"
+    assert pair.legacy.trace.entrypoint == "improvement-apply"
+    assert pair.langgraph.trace.entrypoint == "improvement-apply"
 
 
 def test_evaluate_recovery_does_not_dispatch_twice(tmp_path) -> None:
@@ -141,6 +171,50 @@ def test_evaluate_recovery_does_not_dispatch_twice(tmp_path) -> None:
     assert pair.evaluator_dispatch_count == 1
     assert pair.effect_apply_calls == 1
     assert pair.success_before_settlement is False
+
+
+def test_evaluate_dispatches_once_per_isolated_invocation(tmp_path, monkeypatch) -> None:
+    from assurance_improvement.operations.delivery import EvaluateMemoryImprovementHandler
+
+    seen: list[str] = []
+    original = EvaluateMemoryImprovementHandler.execute
+
+    async def _counted(self, request, context):
+        seen.append(request.invocation_id)
+        return await original(self, request, context)
+
+    monkeypatch.setattr(EvaluateMemoryImprovementHandler, "execute", _counted)
+    pair = run_evaluate_shadow(tmp_path, scenario="committed")
+    assert pair.public_entrypoint == "improvement-evaluate"
+    assert set(seen) == {pair.legacy.invocation_id, pair.langgraph.invocation_id}
+    assert len(seen) == 2
+    assert pair.evaluator_dispatch_count == 1
+    assert pair.success_before_settlement is False
+
+
+def test_compare_applies_semantic_trace_ignored_fields() -> None:
+    left = SemanticTrace(
+        entrypoint="intake",
+        attempts=(),
+        pure_decisions=(),
+        validator_calls=(),
+        interrupts=(),
+        receipts=(),
+        terminal_status="completed",
+        public_output={"decision": "pass", "activation_id": "left", "checkpoint_id": "c1"},
+    )
+    right = SemanticTrace(
+        entrypoint="intake",
+        attempts=(),
+        pure_decisions=(),
+        validator_calls=(),
+        interrupts=(),
+        receipts=(),
+        terminal_status="completed",
+        public_output={"decision": "pass", "activation_id": "right", "checkpoint_id": "c2"},
+    )
+    assert "activation_id" in SEMANTIC_TRACE_IGNORED_FIELDS
+    compare_semantic_traces(left, right)
 
 
 def test_mismatches_are_reported_by_semantic_field_not_raw_events() -> None:
@@ -184,7 +258,9 @@ def test_delivery_kind_is_not_a_seventh_effect() -> None:
 def _assert_evaluate_effect(trace: SemanticTrace) -> None:
     kinds = tuple(receipt.kind for receipt in trace.receipts)
     assert _DELIVERY_KIND in kinds
-    discriminators = tuple(receipt.payload_kind for receipt in trace.receipts if receipt.kind == _DELIVERY_KIND)
+    discriminators = tuple(
+        receipt.payload_kind for receipt in trace.receipts if receipt.kind == _DELIVERY_KIND
+    )
     assert "memory_eval" in discriminators
     outputs = trace.public_output
     if isinstance(outputs, Mapping) and trace.terminal_status == "completed":

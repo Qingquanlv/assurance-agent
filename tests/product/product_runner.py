@@ -593,6 +593,8 @@ class ProductRun:
         coverage_rounds: int | None = None,
         engine_root: Path,
         composition: FrozenComposition,
+        invocation_id: str | None = None,
+        workspace_root: Path | None = None,
     ) -> None:
         self._entrypoint = entrypoint
         self._selected_test_families = selected_test_families
@@ -605,6 +607,8 @@ class ProductRun:
         self._coverage_rounds = coverage_rounds
         self._engine_root = engine_root
         self._composition = composition
+        self._invocation_id = invocation_id
+        self._workspace_root = workspace_root
         self._engines: list[Engine] = []
 
     def run_to_report(self) -> FlowTrace:
@@ -696,9 +700,12 @@ class ProductRun:
 
         root_input = self._root_input()
         seed = empty_invocation_seed(root_input=cast(JSONValue, root_input))
-        invocation_id = f"assurance-{uuid.uuid4().hex}"
-        project = (self._engine_root / invocation_id / "project").resolve()
-        project.mkdir(parents=True)
+        invocation_id = self._invocation_id or f"assurance-{uuid.uuid4().hex}"
+        if self._workspace_root is not None:
+            project = (Path(self._workspace_root) / "project").resolve()
+        else:
+            project = (self._engine_root / invocation_id / "project").resolve()
+        project.mkdir(parents=True, exist_ok=True)
         workspace = prepare_change_workspace(project, "CH-DEMO-001")
         engine = Engine(workspace.paths.runtime_root, host=self._host())
         self._engines.append(engine)
@@ -1084,6 +1091,8 @@ def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
         coverage_sequence: tuple[float, ...] = (),
         threshold: float = 0.90,
         coverage_rounds: int | None = None,
+        invocation_id: str | None = None,
+        workspace_root: Path | None = None,
     ) -> ProductRun:
         from assurance_product.models import FAMILY_EMPTY_ENTRYPOINTS
 
@@ -1103,6 +1112,8 @@ def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
             coverage_rounds=coverage_rounds,
             engine_root=engine_root,
             composition=composition,
+            invocation_id=invocation_id,
+            workspace_root=workspace_root,
         )
 
     return factory

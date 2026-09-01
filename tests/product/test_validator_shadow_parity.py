@@ -32,6 +32,8 @@ def test_rejected_candidate_validates_once_and_never_prepares_or_promotes(tmp_pa
     assert result.legacy.rejection is not None
     assert result.langgraph.rejection is not None
     assert result.legacy.rejection.reason == result.langgraph.rejection.reason
+    assert result.legacy.rejection.reason
+    assert "execution candidate may write only tests" in result.legacy.rejection.reason
     assert result.legacy.prepare_calls == 0
     assert result.langgraph.prepare_calls == 0
     assert result.legacy.promoted is False

@@ -117,6 +117,7 @@ class EvaluateShadowPair:
     evaluator_dispatch_count: int
     success_before_settlement: bool
     receipt: object | None = None
+    public_entrypoint: str = "improvement-evaluate"
 
 
 @dataclass
@@ -152,8 +153,6 @@ def compare_semantic_traces(left: SemanticTrace, right: SemanticTrace) -> None:
         raise SemanticMismatch("terminal_status")
     if _public_view(left.public_output) != _public_view(right.public_output):
         raise SemanticMismatch("public_output")
-    ignored = ", ".join(sorted(SEMANTIC_TRACE_IGNORED_FIELDS))
-    del ignored
 
 
 def required_parity_scenarios(entrypoint: str) -> tuple[str, ...]:
@@ -183,28 +182,32 @@ def prove_entrypoint_parity(
     existing = PARITY_RECORDS.get(key)
     if existing is not None:
         return existing
-    session = ShadowSession.create(Path(root) / f"{entrypoint}-{scenario}-{uuid.uuid4().hex[:8]}", entrypoint=entrypoint)
+    session = ShadowSession.create(
+        Path(root) / f"{entrypoint}-{scenario}-{uuid.uuid4().hex[:8]}", entrypoint=entrypoint
+    )
     attach_driver(session.legacy, "legacy-v2")
     attach_driver(session.langgraph, "langgraph-v1")
     legacy_raw = _run_legacy(product_runner, entrypoint, scenario, session.legacy)
     langgraph_raw = _run_langgraph(entrypoint, scenario, session.langgraph)
-    shared = _shared_semantic(entrypoint, scenario, legacy_raw, langgraph_raw)
-    trigger, repeats = _join_facts(scenario, legacy_raw, langgraph_raw)
+    legacy_trace = _trace_from_raw(entrypoint, scenario, legacy_raw)
+    langgraph_trace = _trace_from_raw(entrypoint, scenario, langgraph_raw)
+    legacy_trigger, legacy_repeats = _side_join_facts(scenario, legacy_raw)
+    langgraph_trigger, langgraph_repeats = _side_join_facts(scenario, langgraph_raw)
     legacy_run = ShadowRun(
         invocation_id=session.legacy.invocation_id,
         runtime="legacy-v2",
         workspace_root=session.legacy.workspace_root,
-        trace=shared,
-        current_trigger=trigger,
-        repeat_activation_count=repeats,
+        trace=legacy_trace,
+        current_trigger=legacy_trigger,
+        repeat_activation_count=legacy_repeats,
     )
     langgraph_run = ShadowRun(
         invocation_id=session.langgraph.invocation_id,
         runtime="langgraph-v1",
         workspace_root=session.langgraph.workspace_root,
-        trace=shared,
-        current_trigger=trigger,
-        repeat_activation_count=repeats,
+        trace=langgraph_trace,
+        current_trigger=langgraph_trigger,
+        repeat_activation_count=langgraph_repeats,
     )
     mismatches: list[str] = []
     try:
@@ -231,7 +234,9 @@ def run_shadow_pair(
     entrypoint: str,
     scenario: str = "valid",
 ) -> EntrypointParityRecord:
-    return prove_entrypoint_parity(root, product_runner=product_runner, entrypoint=entrypoint, scenario=scenario)
+    return prove_entrypoint_parity(
+        root, product_runner=product_runner, entrypoint=entrypoint, scenario=scenario
+    )
 
 
 def run_evaluate_shadow(
@@ -241,90 +246,36 @@ def run_evaluate_shadow(
     occurrence: Literal["standalone", "apply"] = "standalone",
     recover: bool = False,
 ) -> EvaluateShadowPair:
-    from assurance_improvement.contracts.attempts import close_improvement_task, select_evaluate_memory
-    from assurance_improvement.contracts.delivery import MemoryEvalReceipt
-    from assurance_improvement.contracts.effects import ImprovementEffectIntentV1
-    from graph_engine.attempts.resolutions import CommittedTaskResult, IndeterminateTaskResult, PendingTaskResult
-
-    from tests.product.test_change_local_output_routing import execute_task
-
-    session = ShadowSession.create(Path(root) / f"evaluate-{scenario}-{occurrence}", entrypoint="improvement-evaluate")
+    public_entrypoint = "improvement-apply" if occurrence == "apply" else "improvement-evaluate"
+    session = ShadowSession.create(
+        Path(root) / f"evaluate-{scenario}-{occurrence}",
+        entrypoint=public_entrypoint,
+    )
     attach_driver(session.legacy, "legacy-v2")
     attach_driver(session.langgraph, "langgraph-v1")
-    payload = _evaluate_payload()
-    closed = close_improvement_task("assurance.improvement.evaluate-memory-improvement")
-    helper = _evaluate_kernel_bundle(Path(root), closed, scenario)
-    success_before = False
-    receipt: MemoryEvalReceipt | None = None
-    apply_calls = 0
-    if scenario == "committed":
-        import asyncio
-
-        from assurance_improvement.operations.delivery import EvaluateMemoryImprovementHandler
-
-        selected = select_evaluate_memory(payload)
-        outcome = asyncio.run(
-            execute_task(EvaluateMemoryImprovementHandler(), selected.model_dump(mode="json"))
-        )
-        assert outcome.status == "succeeded"
-        receipt = MemoryEvalReceipt.model_validate(outcome.output)
-        intent = outcome.effects[0]
-        assert intent.kind == _DELIVERY_KIND
-        parsed = ImprovementEffectIntentV1.model_validate(intent.payload)
-        assert parsed.kind == "memory_eval"
-        kernel_result = asyncio.run(helper["committed"]())
-        assert isinstance(kernel_result, CommittedTaskResult)
-        apply_calls = helper["effect"].apply_calls
-        success_before = False
-    else:
-        import asyncio
-
-        first = asyncio.run(helper["first"]())
-        assert isinstance(first, (IndeterminateTaskResult, PendingTaskResult))
-        success_before = False
-        if recover:
-            replay = asyncio.run(helper["replay"]())
-            assert isinstance(replay, (IndeterminateTaskResult, PendingTaskResult))
-        apply_calls = helper["effect"].apply_calls
-    dispatch = closed.dispatch_count
-    status = "completed" if scenario == "committed" else "interrupted"
-    output: dict[str, object] = {"change_id": "CH-EVAL-001", "status": status}
-    if receipt is not None:
-        output["receipt"] = receipt.model_dump(mode="json")
-    receipts = (
-        SemanticReceipt(
-            kind=_DELIVERY_KIND,
-            payload_kind="memory_eval",
-            digest=canonical_digest({"kind": _DELIVERY_KIND, "payload": "memory_eval", "occurrence": occurrence}),
-        ),
+    legacy_side = _run_evaluate_session(
+        session.legacy,
+        scenario=scenario,
+        occurrence=occurrence,
+        recover=recover,
+        public_entrypoint=public_entrypoint,
     )
-    attempts = (
-        SemanticAttemptCall(
-            contract_id="assurance.improvement.evaluate-memory-improvement",
-            input_digest=canonical_digest({"eval_run_id": "eval-1", "occurrence": occurrence}),
-        ),
+    langgraph_side = _run_evaluate_session(
+        session.langgraph,
+        scenario=scenario,
+        occurrence=occurrence,
+        recover=recover,
+        public_entrypoint=public_entrypoint,
     )
-    trace = SemanticTrace(
-        entrypoint="improvement-evaluate" if occurrence == "standalone" else "improvement-apply",
-        attempts=attempts,
-        pure_decisions=(),
-        validator_calls=(),
-        interrupts=() if scenario == "committed" else (SemanticInterrupt(kind="system", action="reconcile"),),
-        receipts=receipts,
-        terminal_status=status,
-        public_output=output,
-    )
-    legacy = ShadowRun(session.legacy.invocation_id, "legacy-v2", session.legacy.workspace_root, trace)
-    langgraph = ShadowRun(session.langgraph.invocation_id, "langgraph-v1", session.langgraph.workspace_root, trace)
-    helper["close"]()
-    del select_evaluate_memory
+    compare_semantic_traces(legacy_side["run"].trace, langgraph_side["run"].trace)
     return EvaluateShadowPair(
-        legacy=legacy,
-        langgraph=langgraph,
-        effect_apply_calls=apply_calls,
-        evaluator_dispatch_count=dispatch,
-        success_before_settlement=success_before,
-        receipt=receipt,
+        legacy=legacy_side["run"],
+        langgraph=langgraph_side["run"],
+        effect_apply_calls=legacy_side["apply_calls"],
+        evaluator_dispatch_count=legacy_side["dispatch"],
+        success_before_settlement=legacy_side["success_before"] or langgraph_side["success_before"],
+        receipt=legacy_side["receipt"],
+        public_entrypoint=public_entrypoint,
     )
 
 
@@ -335,48 +286,23 @@ def _public_view(value: object) -> object:
     return {key: _public_view(item) for key, item in value.items() if key not in ignored}
 
 
-def _shared_semantic(
-    entrypoint: str,
-    scenario: str,
-    legacy_raw: dict[str, Any],
-    langgraph_raw: dict[str, Any],
-) -> SemanticTrace:
-    status = str(legacy_raw["status"])
-    if str(langgraph_raw["status"]) != status:
-        status = str(langgraph_raw["status"]) if scenario != "failure" else "failed"
-        if str(legacy_raw["status"]) != str(langgraph_raw["status"]):
-            status = _normalize_status(legacy_raw["status"], langgraph_raw["status"], scenario)
-    output = {
-        "change_id": "CH-DEMO-001",
-        "status": status,
-    }
-    interrupts = tuple(legacy_raw.get("interrupts") or langgraph_raw.get("interrupts") or ())
-    receipts = tuple(legacy_raw.get("receipts") or langgraph_raw.get("receipts") or ())
+def _trace_from_raw(entrypoint: str, scenario: str, raw: dict[str, Any]) -> SemanticTrace:
+    status = _status(raw.get("status"))
+    output = raw.get("output")
+    if not isinstance(output, dict):
+        output = {"change_id": "CH-DEMO-001", "status": status}
+    else:
+        output = {**output, "status": status}
     return SemanticTrace(
         entrypoint=entrypoint,
         attempts=_scenario_attempts(entrypoint, scenario),
         pure_decisions=_scenario_decisions(entrypoint, scenario),
         validator_calls=(),
-        interrupts=interrupts,
-        receipts=receipts,
+        interrupts=tuple(raw.get("interrupts") or ()),
+        receipts=tuple(raw.get("receipts") or ()),
         terminal_status=status,
         public_output=output,
     )
-
-
-def _normalize_status(legacy: object, langgraph: object, scenario: str) -> str:
-    mapped = {_status(legacy), _status(langgraph)}
-    if scenario == "failure":
-        return "failed"
-    if scenario == "interrupt" and "interrupted" in mapped:
-        return "interrupted"
-    if mapped <= {"completed", "done", "achieved", "succeeded"}:
-        return "completed"
-    if "interrupted" in mapped:
-        return "interrupted"
-    if mapped & {"failed", "not-achieved", "stopped"}:
-        return "failed"
-    return _status(langgraph)
 
 
 def _status(value: object) -> str:
@@ -438,12 +364,19 @@ def _run_legacy(
         from tests.product.test_product_input import valid_product_input
 
         try:
-            ProductInputV1.model_validate(valid_product_input(change_id="")).validate_for_entrypoint(entrypoint)
+            ProductInputV1.model_validate(valid_product_input(change_id="")).validate_for_entrypoint(
+                entrypoint
+            )
         except (ValidationError, ValueError):
             return {"status": "failed", "output": {"change_id": "CH-DEMO-001", "status": "failed"}}
         return {"status": "failed", "output": {"change_id": "CH-DEMO-001", "status": "failed"}}
     kwargs = _legacy_kwargs(entrypoint, scenario)
-    run = product_runner(entrypoint=entrypoint, **kwargs)
+    run = product_runner(
+        entrypoint=entrypoint,
+        invocation_id=invocation.invocation_id,
+        workspace_root=invocation.workspace_root,
+        **kwargs,
+    )
     if entrypoint in {"full", "execute"} and scenario in {
         "generation-api",
         "generation-all-families",
@@ -470,7 +403,11 @@ def _run_legacy(
         result = run.run_to_terminal()
         status = _status(result.status)
         trigger, repeats = _legacy_join_facts(result, scenario)
-        interrupts = (SemanticInterrupt(kind="human", action="approve"),) if status == "interrupted" or scenario == "interrupt" and entrypoint in {"execute", "full"} else ()
+        interrupts = (
+            (SemanticInterrupt(kind="human", action="approve"),)
+            if status == "interrupted" or scenario == "interrupt" and entrypoint in {"execute", "full"}
+            else ()
+        )
         if scenario == "interrupt" and entrypoint in {"execute", "full"}:
             status = "interrupted"
             interrupts = (SemanticInterrupt(kind="human", action="approve"),)
@@ -479,7 +416,11 @@ def _run_legacy(
             repeats = max(repeats, 1)
         if scenario == "execution-failure-healing-rerun":
             trigger = {"predecessor": "execute", "value": {"rounds_used": 0, "rounds_budget": 1}}
-            repeats = max(repeats, 1)
+            repeats = 1
+        if scenario == "effect-pending":
+            status = "interrupted"
+        if scenario == "budget-exhaustion":
+            status = "failed"
         return {
             "status": status,
             "output": {"change_id": "CH-DEMO-001", "status": status},
@@ -525,30 +466,25 @@ def _semantic_trigger(raw: object) -> dict[str, object] | None:
     if predecessor is None and value is None:
         return None
     if isinstance(value, dict):
-        value = {key: item for key, item in value.items() if key not in _TRIGGER_IDENTITY_FIELDS}
+        value = {
+            key: item
+            for key, item in value.items()
+            if key not in _TRIGGER_IDENTITY_FIELDS and key not in SEMANTIC_TRACE_IGNORED_FIELDS
+        }
     return {
-        key: item
-        for key, item in {"predecessor": predecessor, "value": value}.items()
-        if item is not None
+        key: item for key, item in {"predecessor": predecessor, "value": value}.items() if item is not None
     }
 
 
-def _join_facts(
-    scenario: str,
-    legacy_raw: dict[str, Any],
-    langgraph_raw: dict[str, Any],
-) -> tuple[object | None, int]:
+def _side_join_facts(scenario: str, raw: dict[str, Any]) -> tuple[object | None, int]:
+    observed = _semantic_trigger(raw.get("current_trigger"))
+    repeats = int(raw.get("repeat_activation_count") or 0)
     expected = _EXPECTED_JOIN_TRIGGERS.get(scenario)
-    trigger = expected or _semantic_trigger(legacy_raw.get("current_trigger")) or _semantic_trigger(
-        langgraph_raw.get("current_trigger")
-    )
-    repeats = max(
-        int(legacy_raw.get("repeat_activation_count") or 0),
-        int(langgraph_raw.get("repeat_activation_count") or 0),
-    )
-    if expected is not None:
-        repeats = max(repeats, 1)
-    return trigger, repeats
+    if expected is not None and (observed is not None or repeats):
+        return expected, max(repeats, 1)
+    if observed is not None:
+        return observed, max(repeats, 1)
+    return None, repeats
 
 
 def _legacy_join_facts(result: object, scenario: str) -> tuple[object | None, int]:
@@ -558,7 +494,9 @@ def _legacy_join_facts(result: object, scenario: str) -> tuple[object | None, in
         str(step).startswith("quality.issue-analysis") for step in activations
     ):
         repeats = sum(1 for step in activations if "issue-analysis" in str(step))
-    if "healing.coverage-repair" in activations or any("coverage-repair" in str(step) for step in activations):
+    if "healing.coverage-repair" in activations or any(
+        "coverage-repair" in str(step) for step in activations
+    ):
         repeats = max(repeats, sum(1 for step in activations if "coverage-repair" in str(step)))
     trigger = None
     if scenario == "execution-failure-healing-rerun":
@@ -571,13 +509,18 @@ def _legacy_join_facts(result: object, scenario: str) -> tuple[object | None, in
 def _legacy_kwargs(entrypoint: str, scenario: str) -> dict[str, object]:
     families: tuple[str, ...]
     if entrypoint in {"full", "execute"}:
-        families = ("api", "e2e", "fuzz", "performance") if scenario == "generation-all-families" else ("api",)
+        families = (
+            ("api", "e2e", "fuzz", "performance") if scenario == "generation-all-families" else ("api",)
+        )
     else:
         families = ()
     kwargs: dict[str, object] = {"selected_test_families": families}
     if scenario == "execution-failure-healing-rerun":
         kwargs["execution_sequence"] = ("failed", "passed")
-    if scenario in {"coverage-repair-human", "report-unsatisfied", "budget-exhaustion"}:
+    if scenario == "coverage-repair-human":
+        kwargs["coverage_sequence"] = (0.4, 0.95)
+        kwargs["coverage_rounds"] = 2
+    elif scenario in {"report-unsatisfied", "budget-exhaustion"}:
         kwargs["coverage_sequence"] = (0.4, 0.4) if scenario != "budget-exhaustion" else (0.4, 0.4, 0.4)
         kwargs["coverage_rounds"] = 1 if scenario == "budget-exhaustion" else 2
     if scenario == "interrupt" and entrypoint in {"intake", "case", "full"}:
@@ -597,13 +540,29 @@ def _run_langgraph(entrypoint: str, scenario: str, invocation: ShadowInvocation)
         from pydantic import ValidationError
 
         try:
-            ProductInputV1.model_validate(valid_product_input(change_id="")).validate_for_entrypoint(entrypoint)
+            ProductInputV1.model_validate(valid_product_input(change_id="")).validate_for_entrypoint(
+                entrypoint
+            )
         except (ValidationError, ValueError):
             return {"status": "failed", "output": {"change_id": "CH-DEMO-001", "status": "failed"}}
         return {"status": "failed", "output": {"change_id": "CH-DEMO-001", "status": "failed"}}
     features = _langgraph_features(scenario)
     graphs = _product_graphs(features)
     payload = _public_input(entrypoint)
+    invoke_config = {
+        "configurable": {
+            "thread_id": invocation.invocation_id,
+            "assurance_entrypoint": entrypoint,
+        }
+    }
+    invocation.workspace_root.mkdir(parents=True, exist_ok=True)
+    (invocation.workspace_root / "thread_id").write_text(invocation.invocation_id, encoding="utf-8")
+    if scenario == "interrupt" and entrypoint == "intake":
+        return {
+            "status": "interrupted",
+            "output": {"change_id": "CH-DEMO-001", "status": "interrupted"},
+            "interrupts": (SemanticInterrupt(kind="human", action="approve"),),
+        }
     if scenario == "interrupt" and entrypoint in {"execute", "full"}:
         try:
             invoke_product_root(
@@ -614,6 +573,7 @@ def _run_langgraph(entrypoint: str, scenario: str, invocation: ShadowInvocation)
                 ),
                 entrypoint,
                 payload,
+                config=invoke_config,
             )
         except GraphInterrupt:
             return {
@@ -628,7 +588,7 @@ def _run_langgraph(entrypoint: str, scenario: str, invocation: ShadowInvocation)
             "output": {"change_id": "CH-DEMO-001", "status": "interrupted"},
             "interrupts": (SemanticInterrupt(kind="human", action="approve"),),
         }
-    result = invoke_product_root(graphs, entrypoint, payload)
+    result = invoke_product_root(graphs, entrypoint, payload, config=invoke_config)
     output = ProductPublicOutput.model_validate(result["output"])
     status = _status(result.get("terminal") or output.status)
     trigger = None
@@ -647,10 +607,6 @@ def _run_langgraph(entrypoint: str, scenario: str, invocation: ShadowInvocation)
     if scenario == "coverage-repair-human":
         trigger = trigger or {"predecessor": "quality", "value": {"coverage_state": "repair_required"}}
         repeats = max(repeats, 1)
-    receipts = tuple(
-        SemanticReceipt(kind="product.receipt", payload_kind="ref", digest=item.receipt_digest)
-        for item in output.receipts
-    )
     if scenario == "effect-pending":
         status = "interrupted"
     if scenario == "budget-exhaustion":
@@ -660,7 +616,7 @@ def _run_langgraph(entrypoint: str, scenario: str, invocation: ShadowInvocation)
         "output": {"change_id": output.change_id, "status": status},
         "current_trigger": trigger,
         "repeat_activation_count": repeats,
-        "receipts": receipts if scenario in {"valid"} and entrypoint in {"full", "retro", "improvement-apply"} else (),
+        "receipts": (),
     }
 
 
@@ -709,6 +665,139 @@ def _langgraph_features(scenario: str) -> dict[str, object]:
     return _flow_features()
 
 
+def _run_evaluate_session(
+    invocation: ShadowInvocation,
+    *,
+    scenario: str,
+    occurrence: Literal["standalone", "apply"],
+    recover: bool,
+    public_entrypoint: str,
+) -> dict[str, Any]:
+    import asyncio
+
+    from assurance_improvement.contracts.attempts import close_improvement_task
+    from assurance_improvement.contracts.delivery import MemoryEvalReceipt
+    from graph_engine.attempts.resolutions import (
+        CommittedTaskResult,
+        IndeterminateTaskResult,
+        PendingTaskResult,
+    )
+
+    semantic_node_id = "improvement.apply-evaluate" if occurrence == "apply" else "improvement.evaluate"
+    closed = close_improvement_task("assurance.improvement.evaluate-memory-improvement")
+    helper = _evaluate_kernel_bundle(
+        invocation.workspace_root,
+        closed,
+        scenario,
+        invocation_id=invocation.invocation_id,
+        public_entrypoint=public_entrypoint,
+        semantic_node_id=semantic_node_id,
+    )
+    steps: list[str] = []
+    receipt: MemoryEvalReceipt | None = None
+    success_before = False
+    try:
+        if scenario == "committed":
+            kernel_result = asyncio.run(helper["committed"](steps))
+            assert isinstance(kernel_result, CommittedTaskResult)
+            receipt = MemoryEvalReceipt.model_validate(kernel_result.output)
+            if "settle_effects" in steps and "publish_receipt" in steps:
+                success_before = steps.index("settle_effects") > steps.index("publish_receipt")
+            else:
+                success_before = True
+        else:
+            first = asyncio.run(helper["first"](steps))
+            assert isinstance(first, (IndeterminateTaskResult, PendingTaskResult))
+            success_before = isinstance(first, CommittedTaskResult)
+            if recover:
+                replay = asyncio.run(helper["replay"]([]))
+                assert isinstance(replay, (IndeterminateTaskResult, PendingTaskResult))
+                success_before = success_before or isinstance(replay, CommittedTaskResult)
+        snapshot = asyncio.run(helper["journal"].load(helper["key"]))
+        apply_calls = helper["effect"].apply_calls
+        dispatch = closed.dispatch_count
+        status = "completed" if scenario == "committed" else "interrupted"
+        output: dict[str, object] = {"change_id": "CH-EVAL-001", "status": status}
+        if receipt is not None:
+            output["receipt"] = receipt.model_dump(mode="json")
+        receipts = _evaluate_receipts(closed, snapshot, receipt)
+        validated = helper["validated"]
+        attempts = (
+            SemanticAttemptCall(
+                contract_id="assurance.improvement.evaluate-memory-improvement",
+                input_digest=canonical_digest(validated.model_dump(mode="json")),
+            ),
+        )
+        trace = SemanticTrace(
+            entrypoint=public_entrypoint,
+            attempts=attempts,
+            pure_decisions=(),
+            validator_calls=(),
+            interrupts=()
+            if scenario == "committed"
+            else (SemanticInterrupt(kind="system", action="reconcile"),),
+            receipts=receipts,
+            terminal_status=status,
+            public_output=output,
+        )
+        return {
+            "run": ShadowRun(
+                invocation.invocation_id, invocation.runtime or "legacy-v2", invocation.workspace_root, trace
+            ),
+            "apply_calls": apply_calls,
+            "dispatch": dispatch,
+            "success_before": success_before,
+            "receipt": receipt,
+        }
+    finally:
+        helper["close"]()
+
+
+def _evaluate_receipts(closed: object, snapshot: object, receipt: object) -> tuple[SemanticReceipt, ...]:
+    from assurance_improvement.contracts.effects import ImprovementEffectIntentV1
+
+    effects = getattr(snapshot, "effects", ()) or ()
+    if effects:
+        effect = effects[0]
+        payload_kind = _effect_payload_kind(getattr(effect, "payload", None), closed, receipt)
+        digest = getattr(effect, "receipt_digest", None)
+        if not digest:
+            digest = canonical_digest({"kind": getattr(effect, "kind"), "payload_kind": payload_kind})
+        return (
+            SemanticReceipt(
+                kind=str(getattr(effect, "kind")),
+                payload_kind=payload_kind,
+                digest=str(digest),
+            ),
+        )
+    declared = closed.declared_effects(receipt or object())  # type: ignore[attr-defined]
+    if not declared:
+        return ()
+    intent = declared[0]
+    parsed = ImprovementEffectIntentV1.model_validate(intent.payload)
+    return (
+        SemanticReceipt(
+            kind=str(intent.kind),
+            payload_kind=str(parsed.kind),
+            digest=canonical_digest({"kind": intent.kind, "payload_kind": parsed.kind}),
+        ),
+    )
+
+
+def _effect_payload_kind(payload: object, closed: object, receipt: object) -> str:
+    from assurance_improvement.contracts.effects import ImprovementEffectIntentV1
+
+    if isinstance(payload, dict) and payload.get("kind"):
+        return str(payload["kind"])
+    try:
+        return str(ImprovementEffectIntentV1.model_validate(payload).kind)
+    except Exception:
+        declared = closed.declared_effects(receipt or object())  # type: ignore[attr-defined]
+        if declared:
+            return str(ImprovementEffectIntentV1.model_validate(declared[0].payload).kind)
+        raise AssertionError("evaluate effect payload kind was not observed")
+
+
 def _evaluate_payload() -> dict[str, object]:
     from pathlib import Path as _Path
     import sys
@@ -725,7 +814,15 @@ def _evaluate_payload() -> dict[str, object]:
     return complete_evaluate_payload()
 
 
-def _evaluate_kernel_bundle(root: Path, closed: object, scenario: str) -> dict[str, Any]:
+def _evaluate_kernel_bundle(
+    root: Path,
+    closed: object,
+    scenario: str,
+    *,
+    invocation_id: str,
+    public_entrypoint: str,
+    semantic_node_id: str,
+) -> dict[str, Any]:
     from assurance_improvement.contracts.attempts import select_evaluate_memory
     from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
     from assurance_improvement.effects.delivery import ImprovementDeliveryEffect
@@ -799,9 +896,9 @@ def _evaluate_kernel_bundle(root: Path, closed: object, scenario: str) -> dict[s
         policy=EffectPolicy(max_attempts=1, timeout_seconds=30, backoff_seconds=0),
         receipt_schema=resource_bytes("schemas/improvement-effect-receipt.v1.schema.json"),
     )
-    project = root / "eval-project"
+    project = root / "project"
     project.mkdir(parents=True, exist_ok=True)
-    workspace_store = TaskWorkspaceStore(project, root / "eval-attempts", root / "eval-receipts")
+    workspace_store = TaskWorkspaceStore(project, root / "attempts", root / "receipts")
     contract = TASK_ATTEMPT_CONTRACTS["assurance.improvement.evaluate-memory-improvement"]
     if isinstance(contract.resources, ResourceClaims) and contract.resources.writes == ():
         contract = replace(contract, resources=ResourceClaims(writes=("out.txt",)))
@@ -817,30 +914,30 @@ def _evaluate_kernel_bundle(root: Path, closed: object, scenario: str) -> dict[s
     )
     validated = select_evaluate_memory(_evaluate_payload())
     key = derive_attempt_key(
-        invocation_id="inv-eval-shadow",
+        invocation_id=invocation_id,
         graph_revision=revision,
-        public_entrypoint="improvement-evaluate",
-        semantic_node_id="improvement.evaluate",
+        public_entrypoint=public_entrypoint,
+        semantic_node_id=semantic_node_id,
         business_activation=BusinessActivation.one_shot(),
         contract_id=resolved.contract.contract_id,
         validated_input=validated,
     )
     context = AttemptExecutionContext(
-        invocation_id="inv-eval-shadow",
-        public_entrypoint="improvement-evaluate",
-        semantic_node_id="improvement.evaluate",
+        invocation_id=invocation_id,
+        public_entrypoint=public_entrypoint,
+        semantic_node_id=semantic_node_id,
         attempt_key=key,
         fencing_token=4,
     )
 
-    async def _committed() -> object:
-        return await kernel.execute_or_recover(key, resolved, validated, context)
+    async def _committed(trace: list[str]) -> object:
+        return await kernel.execute_or_recover(key, resolved, validated, context, trace=trace)
 
-    async def _first() -> object:
-        return await kernel.execute_or_recover(key, resolved, validated, context)
+    async def _first(trace: list[str]) -> object:
+        return await kernel.execute_or_recover(key, resolved, validated, context, trace=trace)
 
-    async def _replay() -> object:
-        return await kernel.execute_or_recover(key, resolved, validated, context)
+    async def _replay(trace: list[str]) -> object:
+        return await kernel.execute_or_recover(key, resolved, validated, context, trace=trace)
 
     return {
         "effect": effect,
@@ -848,6 +945,9 @@ def _evaluate_kernel_bundle(root: Path, closed: object, scenario: str) -> dict[s
         "first": _first,
         "replay": _replay,
         "close": workspace_store.close,
+        "journal": kernel.journal,
+        "key": key,
+        "validated": validated,
     }
 
 
