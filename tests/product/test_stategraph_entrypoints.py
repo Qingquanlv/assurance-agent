@@ -354,20 +354,6 @@ def test_twelve_thin_roots_compile_dry_and_runtime_with_matching_projections(
         assert runtime_graph.checkpointer is saver
 
 
-def test_product_graphs_placeholder_is_not_introduced() -> None:
-    package = (
-        Path(__file__).resolve().parents[2] / "packages/products/assurance-product/assurance_product/graphs"
-    )
-    for path in package.glob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        assert "class ProductGraphs" not in text
-        assert "build_product_graphs" not in text
-    import assurance_product.graphs as graphs_pkg
-
-    assert not hasattr(graphs_pkg, "ProductGraphs")
-    assert not hasattr(graphs_pkg, "build_product_graphs")
-
-
 def test_thin_root_uses_schema_different_child_state() -> None:
     for _entrypoint, (owner_id, _export) in _THIN_EXPORTS.items():
         assert _CHILD_STATE[owner_id] is not ProductState

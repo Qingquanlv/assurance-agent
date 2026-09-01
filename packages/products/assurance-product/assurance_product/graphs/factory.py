@@ -140,7 +140,7 @@ def build_product_graphs(
     context: GraphBuildContext,
     features: Mapping[str, object],
 ) -> ProductGraphs:
-    from assurance_product.graphs.execute import build_execute_graph, build_execute_root
+    from assurance_product.graphs.execute import build_execute_root
     from assurance_product.graphs.full import build_full_root
 
     bundles = coerce_feature_bundles(features)
@@ -149,8 +149,8 @@ def build_product_graphs(
     if len(thin_names) != len(set(thin_names)):
         raise ValueError("duplicate product roots")
     execute = build_execute_root(context, bundles)
-    execute_child = build_execute_graph(bundles, validate=False).compile(checkpointer=None)
-    full = build_full_root(context, bundles, execute_child)
+    execute_tail = build_execute_root(context, bundles)
+    full = build_full_root(context, bundles, execute_tail)
     entrypoints = {
         **dict(thin.entrypoints),
         "execute": execute,
@@ -168,7 +168,7 @@ def invoke_product_root(
     name: str,
     payload: Mapping[str, object],
     **kwargs: Any,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     config = dict(product_invoke_config(name))
     extra = kwargs.pop("config", None)
     if isinstance(extra, Mapping):

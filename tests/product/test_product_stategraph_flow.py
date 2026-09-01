@@ -20,6 +20,7 @@ from assurance_product.graphs.factory import (
     ProductGraphs,
     build_product_graphs,
     build_thin_entrypoint_graphs,
+    invoke_product_root,
 )
 from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS, ENTRYPOINT_RECURSION_LIMITS
 from assurance_product.graphs.routes import (
@@ -122,7 +123,7 @@ def _flow_features(
     prepare: Mapping[str, object] | None = None,
     generation: Mapping[str, object] | None = None,
     execute: Mapping[str, object] | None = None,
-    run: Mapping[str, object] | None = None,
+    run: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
     assess: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
     issue_analyze: Mapping[str, object] | None = None,
     repair_failure: Mapping[str, object] | None = None,
@@ -148,9 +149,14 @@ def _flow_features(
         fuzz=_echo({"status": "skipped"}),
         performance=_echo({"status": "skipped"}),
     )
+    run_graph = (
+        _sequenced(run)
+        if isinstance(run, tuple)
+        else _echo(run or {"status": "passed", "rounds_used": 1, "rounds_budget": 1})
+    )
     features["assurance.execution"] = ExecutionGraphs(
         execute=_echo(execute or {"status": "passed", "rounds_used": 0, "rounds_budget": 1}),
-        rerun=_echo(run or {"status": "passed", "rounds_used": 1, "rounds_budget": 1}),
+        rerun=run_graph,
     )
     features["assurance.quality"] = QualityGraphs(
         assess=assess_graph,
@@ -256,7 +262,7 @@ def test_build_product_graphs_rejects_missing_duplicate_and_extra_before_return(
 
 def test_execute_composes_generation_execution_quality_and_report() -> None:
     graphs = _product_graphs()
-    result = graphs.entrypoints["execute"].invoke(_public_input("execute"))
+    result = invoke_product_root(graphs, "execute", _public_input("execute"))
     output = ProductPublicOutput.model_validate(result["output"])
     assert output.change_id == "CH-DEMO-001"
     assert output.status == "completed"
@@ -281,7 +287,7 @@ def test_execute_failed_join_drives_issue_analysis_healing_and_rerun() -> None:
             run={"status": "passed", "rounds_used": 1, "rounds_budget": 1},
         )
     )
-    result = graphs.entrypoints["execute"].invoke(_public_input("execute"))
+    result = invoke_product_root(graphs, "execute", _public_input("execute"))
     assert result["terminal"] == "done"
     assert result["coverage_state"] == "satisfied"
     current = result["failed_join_inbox"]["current_trigger"]
@@ -298,7 +304,7 @@ def test_execute_product_bug_reports_without_healing() -> None:
             report={"coverage_state": "inconclusive", "report_refs": [{"path": "report", "digest": _SHA}]},
         )
     )
-    result = graphs.entrypoints["execute"].invoke(_public_input("execute"))
+    result = invoke_product_root(graphs, "execute", _public_input("execute"))
     assert result["terminal"] == "done"
     assert result["coverage_state"] == "inconclusive"
     assert result.get("status") in {"completed", "failed", "passed"}
@@ -306,7 +312,7 @@ def test_execute_product_bug_reports_without_healing() -> None:
 
 def test_full_composes_intake_execute_retro_and_improvement() -> None:
     graphs = _product_graphs()
-    result = graphs.entrypoints["full"].invoke(_public_input("full"))
+    result = invoke_product_root(graphs, "full", _public_input("full"))
     output = ProductPublicOutput.model_validate(result["output"])
     assert output.change_id == "CH-DEMO-001"
     assert output.status == "completed"
@@ -319,10 +325,26 @@ def test_full_composes_intake_execute_retro_and_improvement() -> None:
 
 def test_full_prepare_rejection_is_not_achieved() -> None:
     graphs = _product_graphs(_flow_features(prepare={"decision": "reject"}))
-    result = graphs.entrypoints["full"].invoke(_public_input("full"))
+    result = invoke_product_root(graphs, "full", _public_input("full"))
     assert result["terminal"] == "not-achieved"
     output = ProductPublicOutput.model_validate(result["output"])
     assert output.status == "failed"
+
+
+def test_full_execute_tail_uses_compile_root_and_validates_execute_schema() -> None:
+    factory = (_GRAPHS_ROOT / "factory.py").read_text(encoding="utf-8")
+    assert "validate=False" not in factory
+    assert ".compile(checkpointer=None)" not in factory
+    graphs = _product_graphs()
+    assert "validate" in graphs.entrypoints["execute"].nodes
+    tail = graphs.entrypoints["full"].nodes["execute-tail"]
+    runnable = getattr(tail, "runnable", tail)
+    nested = getattr(runnable, "bound", runnable)
+    nested_nodes = getattr(nested, "nodes", None)
+    if nested_nodes is None:
+        inner = getattr(runnable, "afunc", None) or getattr(runnable, "func", None)
+        nested_nodes = getattr(inner, "nodes", {})
+    assert "validate" in set(nested_nodes)
 
 
 def test_dry_and_runtime_product_roots_share_nodes_and_attach_saver_only_at_runtime() -> None:

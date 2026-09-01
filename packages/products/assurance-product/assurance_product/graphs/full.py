@@ -17,6 +17,11 @@ from assurance_product.graphs.state import ProductState
 from graph_engine.boot.boot import GraphBuildContext
 
 
+def adapt_execute_tail(state: ProductState) -> dict[str, object]:
+    del state
+    return {"case_delta_paths": []}
+
+
 def _terminal_achieved(state: ProductState) -> dict[str, object]:
     published = publish_public_output(cast(ProductState, {**dict(state), "status": "completed"}))
     return {**published, "terminal": "achieved", "status": "completed"}
@@ -33,6 +38,7 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
     builder.add_node("validate", validate_public_input("full"))
     builder.add_node("adapt-prepare", cast(Any, adapt_intake))
     builder.add_node("prepare", typed.intake.prepare)
+    builder.add_node("adapt-execute-tail", cast(Any, adapt_execute_tail))
     builder.add_node("execute-tail", execute)
     builder.add_node("adapt-retro", cast(Any, adapt_improvement))
     builder.add_node("retro", typed.improvement.retro)
@@ -46,8 +52,9 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
     builder.add_conditional_edges(
         "prepare",
         cast(Callable[..., Any], route_prepare),
-        {"execute-tail": "execute-tail", "not-achieved": "not-achieved"},
+        {"execute-tail": "adapt-execute-tail", "not-achieved": "not-achieved"},
     )
+    builder.add_edge("adapt-execute-tail", "execute-tail")
     builder.add_conditional_edges(
         "execute-tail",
         cast(Callable[..., Any], route_execute_tail),
@@ -70,4 +77,4 @@ def build_full_root(
     return context.compile_root(build_full_graph(bundles, execute))
 
 
-__all__ = ["build_full_graph", "build_full_root"]
+__all__ = ["adapt_execute_tail", "build_full_graph", "build_full_root"]

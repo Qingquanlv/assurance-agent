@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -25,6 +27,28 @@ from tests.product.test_product_stategraph_flow import (
     _public_input,
 )
 from tests.product.test_stategraph_entrypoints import _real_features
+
+
+def test_product_root_tests_bind_declared_recursion_limits() -> None:
+    root = Path(__file__).resolve().parent
+    for path in (
+        root / "test_product_stategraph_flow.py",
+        root / "test_product_join_any.py",
+        root / "test_product_interrupts.py",
+    ):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        assert "invoke_product_root" in source
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr != "invoke":
+                continue
+            owner = node.func.value
+            if isinstance(owner, ast.Subscript) and isinstance(owner.value, ast.Attribute):
+                assert owner.value.attr != "entrypoints", (
+                    f"{path.name} must invoke Product roots via invoke_product_root"
+                )
 
 
 def test_every_product_root_uses_its_exact_declared_recursion_limit() -> None:

@@ -13,7 +13,7 @@ from assurance_product.graphs.execute import (
     coverage_needed_join,
     failed_join,
 )
-from assurance_product.graphs.factory import build_product_graphs
+from assurance_product.graphs.factory import build_product_graphs, invoke_product_root
 from assurance_product.graphs.state import (
     COVERAGE_NEEDED_PREDECESSORS,
     FAILED_JOIN_PREDECESSORS,
@@ -365,10 +365,10 @@ def test_compiled_coverage_needed_reads_inbox_cursor_not_lww() -> None:
 
 
 def test_initial_satisfied_or_unsatisfied_terminates_without_repair() -> None:
-    satisfied = (
-        build_product_graphs(context=_build_context(), features=_flow_features())
-        .entrypoints["execute"]
-        .invoke(_public_input("execute"))
+    satisfied = invoke_product_root(
+        build_product_graphs(context=_build_context(), features=_flow_features()),
+        "execute",
+        _public_input("execute"),
     )
     assert satisfied["terminal"] == "done"
     assert satisfied["assessment_trigger"]["source"] == "quality"
@@ -376,15 +376,15 @@ def test_initial_satisfied_or_unsatisfied_terminates_without_repair() -> None:
     inbox = satisfied.get("coverage_needed_inbox") or empty_coverage_needed_inbox()
     assert list(inbox.get("arrivals") or []) == []
 
-    unsatisfied = (
+    unsatisfied = invoke_product_root(
         build_product_graphs(
             context=_build_context(),
             features=_flow_features(
                 assess={"coverage_state": "exhausted", "rounds_used": 0, "rounds_budget": 0}
             ),
-        )
-        .entrypoints["execute"]
-        .invoke(_public_input("execute"))
+        ),
+        "execute",
+        _public_input("execute"),
     )
     assert unsatisfied["terminal"] == "not-achieved"
     assert unsatisfied["assessment_trigger"]["coverage_state"] == "exhausted"
@@ -403,7 +403,7 @@ def test_quality_recheck_is_only_after_repair_required_and_exit_schedules_no_lat
             repair_coverage={"status": "repaired", "kind": "coverage", "rounds_used": 1, "rounds_budget": 2},
         ),
     )
-    result = graphs.entrypoints["execute"].invoke(_public_input("execute"))
+    result = invoke_product_root(graphs, "execute", _public_input("execute"))
     trigger = result["assessment_trigger"]
     assert trigger["source"] == "quality-recheck"
     assert trigger["coverage_state"] == "satisfied"
@@ -449,7 +449,9 @@ def test_late_reactivation_after_assessment_exit_is_rejected() -> None:
         rounds={"rounds_used": 1, "rounds_budget": 2},
         evidence=[],
     )
-    with pytest.raises((ValueError, TypeError), match="exclusive|late|source|both"):
+    with pytest.raises(ValueError, match="late assessment reactivation"):
+        apply_assessment_trigger({"assessment_trigger": first}, late)
+    with pytest.raises(ValueError, match="late assessment reactivation"):
         apply_assessment_trigger({"assessment_trigger": first, "terminal": "not-achieved"}, late)
 
 
@@ -499,6 +501,67 @@ def test_assessment_trigger_identity_and_at_most_one_arrival() -> None:
     assert replayed["assessment_trigger"] == trigger
 
 
+def _compiled_execute_failed_join_second_visit() -> dict[str, Any]:
+    graphs = build_product_graphs(
+        context=_build_context(),
+        features=_flow_features(
+            execute={"status": "failed", "rounds_used": 0, "rounds_budget": 2},
+            issue_analyze={
+                "classification": "test",
+                "fix_eligible": True,
+                "rounds_used": 0,
+                "rounds_budget": 2,
+            },
+            repair_failure={"status": "repaired", "kind": "failure", "rounds_used": 1, "rounds_budget": 2},
+            run=(
+                {"status": "failed", "rounds_used": 1, "rounds_budget": 2},
+                {"status": "passed", "rounds_used": 2, "rounds_budget": 2},
+            ),
+        ),
+    )
+    return invoke_product_root(graphs, "execute", _public_input("execute"))
+
+
+def _compiled_execute_coverage_needed_second_visit() -> dict[str, Any]:
+    graphs = build_product_graphs(
+        context=_build_context(),
+        features=_flow_features(
+            assess=(
+                {"coverage_state": "repair_required", "rounds_used": 0, "rounds_budget": 2},
+                {"coverage_state": "repair_required", "rounds_used": 1, "rounds_budget": 2},
+                {"coverage_state": "satisfied", "rounds_used": 2, "rounds_budget": 2},
+            ),
+            repair_coverage={"status": "repaired", "kind": "coverage", "rounds_used": 1, "rounds_budget": 2},
+        ),
+    )
+    return invoke_product_root(graphs, "execute", _public_input("execute"))
+
+
+def test_compiled_execute_failed_join_second_visit_applies_run_trigger() -> None:
+    result = _compiled_execute_failed_join_second_visit()
+    current = result["current_trigger"]
+    inbox = result["failed_join_inbox"]
+    assert current["predecessor"] == "run"
+    assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
+    assert inbox["current_trigger"]["predecessor"] == "run"
+    assert any(item.startswith("execute.") for item in inbox["dispatched_ids"])
+    assert current["arrival_id"] not in inbox["dispatched_ids"]
+    assert result["terminal"] == "done"
+
+
+def test_compiled_execute_coverage_needed_second_visit_applies_recheck_trigger() -> None:
+    result = _compiled_execute_coverage_needed_second_visit()
+    current = result["current_trigger"]
+    inbox = result["coverage_needed_inbox"]
+    assert current["predecessor"] == "quality-recheck"
+    assert current["value"]["rounds_used"] == 1
+    assert inbox["current_trigger"]["predecessor"] == "quality-recheck"
+    assert any(item.startswith("quality.") for item in inbox["dispatched_ids"])
+    assert current["arrival_id"] not in inbox["dispatched_ids"]
+    assert result["assessment_trigger"]["source"] == "quality-recheck"
+    assert result["terminal"] == "done"
+
+
 @pytest.mark.parametrize(
     "row",
     _CURRENT_TRIGGER_ROWS,
@@ -521,6 +584,10 @@ def test_current_trigger(row: tuple[str, str]) -> None:
         assert applied["current_trigger"] == arrival
         assert applied["rounds_used"] == 1
         assert applied["rounds_budget"] == 2
+        compiled = _compiled_execute_failed_join_second_visit()
+        assert compiled["current_trigger"]["predecessor"] == "run"
+        assert compiled["failed_join_inbox"]["current_trigger"]["predecessor"] == "run"
+        assert any(item.startswith("execute.") for item in compiled["failed_join_inbox"]["dispatched_ids"])
         return
     arrival = _coverage_arrival("quality", used=1, budget=2)
     inbox = offer_coverage_needed_arrival(empty_coverage_needed_inbox(), arrival)
@@ -535,6 +602,10 @@ def test_current_trigger(row: tuple[str, str]) -> None:
     assert applied["current_trigger"] == arrival
     assert applied["rounds_used"] == 1
     assert applied["rounds_budget"] == 2
+    compiled = _compiled_execute_coverage_needed_second_visit()
+    assert compiled["current_trigger"]["predecessor"] == "quality-recheck"
+    assert compiled["coverage_needed_inbox"]["current_trigger"]["predecessor"] == "quality-recheck"
+    assert any(item.startswith("quality.") for item in compiled["coverage_needed_inbox"]["dispatched_ids"])
 
 
 def test_loop_scc_product_rows_point_to_this_current_trigger_matrix() -> None:

@@ -26,12 +26,13 @@ from assurance_product.graphs.state import (
     COVERAGE_DECISION_ACTIONS,
     AssessmentTrigger,
     ProductState,
+    consume_coverage_needed_trigger,
+    consume_failed_join_trigger,
     empty_coverage_needed_inbox,
     empty_failed_join_inbox,
     make_assessment_trigger,
     make_coverage_needed_arrival,
     make_failed_join_arrival,
-    merge_assessment_trigger,
     offer_coverage_needed_arrival,
     offer_failed_join_arrival,
 )
@@ -228,6 +229,8 @@ def _offer_failed(state: Mapping[str, object], predecessor: str) -> dict[str, ob
     inbox = state.get("failed_join_inbox") or empty_failed_join_inbox()
     if not isinstance(inbox, Mapping):
         inbox = empty_failed_join_inbox()
+    if inbox.get("current_trigger"):
+        inbox = consume_failed_join_trigger(inbox)
     used = _as_int(state.get("rounds_used", 0), name="rounds_used")
     arrival = make_failed_join_arrival(
         predecessor=predecessor,
@@ -253,6 +256,8 @@ def _offer_coverage(state: Mapping[str, object], predecessor: str) -> dict[str, 
     inbox = state.get("coverage_needed_inbox") or empty_coverage_needed_inbox()
     if not isinstance(inbox, Mapping):
         inbox = empty_coverage_needed_inbox()
+    if inbox.get("current_trigger"):
+        inbox = consume_coverage_needed_trigger(inbox)
     used = _as_int(state.get("rounds_used", 0), name="rounds_used")
     arrival = make_coverage_needed_arrival(
         predecessor=predecessor,
@@ -336,9 +341,7 @@ def apply_assessment_trigger(
         return {"assessment_trigger": incoming}
     if incoming == existing:
         return {"assessment_trigger": incoming}
-    if state.get("terminal"):
-        raise ValueError("late assessment reactivation")
-    return {"assessment_trigger": merge_assessment_trigger(existing, incoming)}
+    raise ValueError("late assessment reactivation")
 
 
 def _set_assessment(source: str):
@@ -497,7 +500,8 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder.add_node("assess-unsatisfied-quality", cast(Any, _set_assessment("quality")))
     builder.add_node("assess-satisfied-recheck", cast(Any, _set_assessment("quality-recheck")))
     builder.add_node("assess-unsatisfied-recheck", cast(Any, _set_assessment("quality-recheck")))
-    builder.add_node("coverage-human", cast(Any, coverage_human_interrupt))
+    builder.add_node("coverage-human-quality", cast(Any, coverage_human_interrupt))
+    builder.add_node("coverage-human-recheck", cast(Any, coverage_human_interrupt))
     builder.add_node("adapt-report", cast(Any, adapt_report))
     builder.add_node("report", typed.quality.report)
     builder.add_node("adapt-report-unsatisfied", cast(Any, adapt_report))
@@ -551,7 +555,7 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
             "coverage-needed": "offer-coverage-quality",
             "assess-satisfied": "assess-satisfied-quality",
             "assess-unsatisfied": "assess-unsatisfied-quality",
-            "coverage-human": "coverage-human",
+            "coverage-human": "coverage-human-quality",
             "not-achieved": "not-achieved",
         },
     )
@@ -576,7 +580,7 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
             "coverage-needed": "offer-coverage-recheck",
             "assess-satisfied": "assess-satisfied-recheck",
             "assess-unsatisfied": "assess-unsatisfied-recheck",
-            "coverage-human": "coverage-human",
+            "coverage-human": "coverage-human-recheck",
             "not-achieved": "not-achieved",
         },
     )
@@ -593,9 +597,14 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder.add_edge("adapt-report-issue", "report-issue")
     builder.add_edge("report-issue", "done")
     builder.add_conditional_edges(
-        "coverage-human",
+        "coverage-human-quality",
         cast(Callable[..., Any], route_coverage_decision),
         {"assess-satisfied": "assess-satisfied-quality", "not-achieved": "not-achieved"},
+    )
+    builder.add_conditional_edges(
+        "coverage-human-recheck",
+        cast(Callable[..., Any], route_coverage_decision),
+        {"assess-satisfied": "assess-satisfied-recheck", "not-achieved": "not-achieved"},
     )
     builder.add_edge("done", END)
     builder.add_edge("not-achieved", END)

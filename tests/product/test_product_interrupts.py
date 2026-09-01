@@ -17,7 +17,7 @@ from assurance_product.graphs.execute import (
     resume_product_interrupts,
     route_coverage_decision,
 )
-from assurance_product.graphs.factory import build_product_graphs
+from assurance_product.graphs.factory import build_product_graphs, invoke_product_root, product_invoke_config
 from assurance_product.graphs.state import COVERAGE_DECISION_ACTIONS, ProductState
 from graph_engine.boot.boot import EngineGraphBuildContext
 
@@ -182,6 +182,34 @@ def test_multiple_interrupts_resume_via_interrupt_id_mapping() -> None:
     assert resumed["feature_action"] == "reject"
 
 
+def test_recheck_human_approve_keeps_quality_recheck_trigger_identity() -> None:
+    graphs = build_product_graphs(
+        context=EngineGraphBuildContext(contracts={}, checkpointer=InMemorySaver(), approved_source_roots=()),
+        features=_flow_features(
+            assess=(
+                {"coverage_state": "repair_required", "rounds_used": 0, "rounds_budget": 2},
+                {"coverage_state": "needs_human", "rounds_used": 1, "rounds_budget": 2},
+            ),
+            repair_coverage={"status": "repaired", "kind": "coverage", "rounds_used": 1, "rounds_budget": 2},
+        ),
+    )
+    graph = graphs.entrypoints["execute"]
+    config = cast(RunnableConfig, {**product_invoke_config("execute"), **_config()})
+    try:
+        invoke_product_root(graphs, "execute", _public_input("execute"), config=config)
+    except GraphInterrupt:
+        pass
+    resumed = graph.invoke(
+        Command(resume={"action": "approve"}),
+        config=config,
+    )
+    trigger = resumed["assessment_trigger"]
+    assert trigger["source"] == "quality-recheck"
+    assert trigger["coverage_state"] == "satisfied"
+    assert resumed["coverage_decision"] == "approve"
+    assert resumed["terminal"] in {"done", "achieved"}
+
+
 def test_execute_coverage_human_resume_approve() -> None:
     graphs = build_product_graphs(
         context=EngineGraphBuildContext(contracts={}, checkpointer=InMemorySaver(), approved_source_roots=()),
@@ -190,9 +218,9 @@ def test_execute_coverage_human_resume_approve() -> None:
         ),
     )
     graph = graphs.entrypoints["execute"]
-    config = _config()
+    config = cast(RunnableConfig, {**product_invoke_config("execute"), **_config()})
     try:
-        graph.invoke(_public_input("execute"), config=config)
+        invoke_product_root(graphs, "execute", _public_input("execute"), config=config)
     except GraphInterrupt:
         pass
     resumed = graph.invoke(Command(resume={"action": "approve"}), config=config)
