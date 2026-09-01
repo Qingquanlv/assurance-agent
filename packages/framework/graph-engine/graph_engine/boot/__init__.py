@@ -1,3 +1,19 @@
+from graph_engine.boot.boot import (
+    BootRequest,
+    BootValidationError,
+    BoundAttemptNode,
+    CapabilityBuildContext,
+    ContractOwnershipError,
+    ContractResolverPort,
+    EngineCapabilityBuildContext,
+    EngineGraphBuildContext,
+    FactorySourcePolicyError,
+    GraphBuildContext,
+    GraphEngineBoot,
+    OrganizationOverrideError,
+    RuntimePorts,
+    SourceAuthenticator,
+)
 from graph_engine.boot.graph_revision import (
     BootArtifact,
     EntrypointGraphContract,
@@ -8,8 +24,22 @@ from graph_engine.boot.graph_revision import (
 
 __all__ = [
     "BootArtifact",
+    "BootRequest",
+    "BootValidationError",
+    "BoundAttemptNode",
+    "CapabilityBuildContext",
+    "ContractOwnershipError",
+    "ContractResolverPort",
+    "EngineCapabilityBuildContext",
+    "EngineGraphBuildContext",
     "EntrypointGraphContract",
+    "FactorySourcePolicyError",
     "FeatureFactoryRef",
+    "GraphBuildContext",
     "GraphBuildManifest",
+    "GraphEngineBoot",
     "GraphRevision",
+    "OrganizationOverrideError",
+    "RuntimePorts",
+    "SourceAuthenticator",
 ]
