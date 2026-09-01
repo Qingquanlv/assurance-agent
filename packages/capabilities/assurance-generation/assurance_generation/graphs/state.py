@@ -167,6 +167,10 @@ def merge_family_results(left: object, right: object) -> list[FamilyLaneResult]:
     )
 
 
+class FamilyLaneOutput(TypedDict, total=False):
+    family_results: Annotated[list[FamilyLaneResult], merge_family_results]
+
+
 class GenerationState(CheckpointBridgeState, total=False):
     change_id: str
     selected_test_families: list[str]
@@ -185,6 +189,11 @@ class GenerationState(CheckpointBridgeState, total=False):
     codegen_verdict: str
     needs_fix: bool
     repair_allowed_paths: list[str]
+    reviewed_plan: dict[str, object]
+    reviewed_cases: dict[str, object]
+    family_constraints: dict[str, object]
+    baseline_tree_id: str
+    approved_proposal: dict[str, object]
     artifacts: list[dict[str, object]]
     plan_round_inbox: Annotated[PlanRoundInbox, merge_plan_round_inbox]
     current_trigger: PlanRoundArrival | None
@@ -197,6 +206,7 @@ class GenerationState(CheckpointBridgeState, total=False):
 __all__ = [
     "GENERATION_FAMILIES",
     "PLAN_ROUND_PREDECESSORS",
+    "FamilyLaneOutput",
     "FamilyLaneResult",
     "GenerationState",
     "PlanRoundArrival",

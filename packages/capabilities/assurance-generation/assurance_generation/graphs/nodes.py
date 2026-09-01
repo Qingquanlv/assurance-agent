@@ -22,12 +22,6 @@ from graph_engine.plugin_api import FrozenModel
 
 HUMAN_REVIEW_ACTIONS = ("approve", "reject", "request_rework")
 activation_one_shot = BusinessActivation.one_shot()
-_WRITE_ROOTS = {
-    "api": ("tests/api/",),
-    "e2e": ("tests/e2e/",),
-    "fuzz": ("tests/fuzz/",),
-    "performance": ("tests/perf/",),
-}
 
 
 class HumanReviewDecision(FrozenModel):
@@ -89,24 +83,17 @@ def select_codegen(state: Mapping[str, object]) -> CodegenInputV1:
 
 
 def select_codegen_fix(state: Mapping[str, object]) -> CodegenFixInputV1:
-    family = str(state.get("family") or "api")
-    roots = _WRITE_ROOTS.get(family, ("tests/api/",))
-    allowed = state.get("repair_allowed_paths") or [f"{roots[0].rstrip('/')}/test_users.py"]
     return CodegenFixInputV1.model_validate(
         {
             "change_id": state["change_id"],
             "capability_leafs": state["capability_leafs"],
             "artifact_paths": state.get("allowed_artifact_paths") or (),
-            "reviewed_plan": state.get("reviewed_plan") or {"status": "reviewed"},
-            "reviewed_cases": state.get("reviewed_cases") or {"status": "reviewed"},
-            "family_constraints": {
-                "write_roots": list(roots),
-                "operations": ["read"],
-                "risks": ["low"],
-            },
-            "baseline_tree_id": state.get("baseline_tree_id") or "a" * 64,
-            "allowed_paths": allowed,
-            "approved_proposal": state.get("approved_proposal") or {"status": "approved"},
+            "reviewed_plan": state.get("reviewed_plan"),
+            "reviewed_cases": state.get("reviewed_cases"),
+            "family_constraints": state.get("family_constraints"),
+            "baseline_tree_id": state.get("baseline_tree_id"),
+            "allowed_paths": state.get("repair_allowed_paths"),
+            "approved_proposal": state.get("approved_proposal"),
         }
     )
 
@@ -284,7 +271,9 @@ def join_selected(state: Mapping[str, object]) -> dict[str, object]:
 
 
 def _family_result(state: Mapping[str, object], *, status: str, selected: bool) -> dict[str, object]:
-    family = str(state.get("family") or "api")
+    family = state.get("family")
+    if not isinstance(family, str) or not family:
+        raise ValueError("family lane result requires family")
     return {
         "family_results": [
             make_family_lane_result(
@@ -297,12 +286,19 @@ def _family_result(state: Mapping[str, object], *, status: str, selected: bool) 
     }
 
 
+def generation_done(state: Mapping[str, object]) -> dict[str, object]:
+    del state
+    return {"status": "passed"}
+
+
 def terminal_done(state: Mapping[str, object]) -> dict[str, object]:
-    return {
+    update: dict[str, object] = {
         "status": "passed",
         "decision": state.get("decision", "pass"),
-        **_family_result(state, status="passed", selected=True),
     }
+    if isinstance(state.get("family"), str) and state.get("family"):
+        update.update(_family_result(state, status="passed", selected=True))
+    return update
 
 
 def terminal_rejected(state: Mapping[str, object]) -> dict[str, object]:
@@ -374,6 +370,7 @@ __all__ = [
     "apply_current_trigger",
     "codegen_round_advance",
     "complete_generation_node",
+    "generation_done",
     "human_review",
     "human_review_retry",
     "join_selected",

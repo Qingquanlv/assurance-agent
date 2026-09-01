@@ -212,7 +212,7 @@ def test_generation_send_is_only_in_route_families_and_has_no_fanout_shim() -> N
 def test_exclusive_route(row: tuple[str, str, str]) -> None:
     _graph_id, node_id, otherwise = row
     builder = _named_matches_for(node_id)
-    empty = builder(_review_state(rounds_used=2, rounds_budget=2))
+    empty = builder(_review_state(rounds_used=3, rounds_budget=2))
     assert select_exclusive_route(empty, otherwise=otherwise) == otherwise
     with pytest.raises(AmbiguousRouteMatch):
         select_exclusive_route(
@@ -287,6 +287,15 @@ def test_codegen_routes_accepted_needs_fix_and_otherwise() -> None:
     assert route_codegen(_review_state(verdict="needs_fix")) == "codegen-round-advance"
     assert route_codegen(_review_state(needs_fix=True)) == "codegen-round-advance"
     assert route_codegen(_review_state()) == "exhausted"
+
+
+def test_last_budgeted_plan_advance_joins_after_increment() -> None:
+    from assurance_generation.graphs.routes import route_plan_advance, route_plan_advance_retry
+
+    assert route_plan_advance(_review_state(rounds_used=2, rounds_budget=2)) == "plan-round-join"
+    assert route_plan_advance_retry(_review_state(rounds_used=2, rounds_budget=2)) == "plan-round-join"
+    assert route_plan_advance(_review_state(rounds_used=1, rounds_budget=2)) == "plan-round-join"
+    assert route_plan_advance(_review_state(rounds_used=3, rounds_budget=2)) == "exhausted"
 
 
 @pytest.mark.parametrize("family", _FAMILIES)

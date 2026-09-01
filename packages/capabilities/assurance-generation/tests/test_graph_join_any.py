@@ -119,11 +119,12 @@ def _family_graph(bundle: object, family: str) -> object:
     return getattr(bundle, family)
 
 
-def _compile_join_graph() -> Any:
+def _compile_family_join_graph(family: str) -> Any:
     builder: StateGraph[GenerationState] = StateGraph(GenerationState)
-    builder.add_node("plan-round-join", cast(Callable[..., Any], plan_round_join))
-    builder.add_edge(START, "plan-round-join")
-    builder.add_edge("plan-round-join", END)
+    join_name = f"{family}-plan-round-join"
+    builder.add_node(join_name, cast(Callable[..., Any], plan_round_join))
+    builder.add_edge(START, join_name)
+    builder.add_edge(join_name, END)
     return builder.compile(checkpointer=None)
 
 
@@ -138,33 +139,36 @@ def _offer_node(arrival: PlanRoundArrival, *, poison_lww: bool) -> Callable[...,
     return _offer
 
 
-def _compile_two_predecessor_join(*, late_writes_lww: bool, first_added_first: bool) -> Any:
+def _compile_family_two_predecessor_join(
+    family: str, *, late_writes_lww: bool, first_added_first: bool
+) -> Any:
     first = _arrival("plan-review-round-advance", epoch=0, sequence=1, used=1)
     late = _arrival("plan-review-round-advance-retry", epoch=0, sequence=1, used=1)
+    join_name = f"{family}-plan-round-join"
     nodes = [
-        ("plan-review-round-advance", _offer_node(first, poison_lww=not late_writes_lww)),
-        ("plan-review-round-advance-retry", _offer_node(late, poison_lww=late_writes_lww)),
+        (f"{family}-plan-review-round-advance", _offer_node(first, poison_lww=not late_writes_lww)),
+        (f"{family}-plan-review-round-advance-retry", _offer_node(late, poison_lww=late_writes_lww)),
     ]
     ordered = nodes if first_added_first else list(reversed(nodes))
     builder: StateGraph[GenerationState] = StateGraph(GenerationState)
     for name, node in ordered:
         builder.add_node(name, cast(Callable[..., Any], node))
-    builder.add_node("plan-round-join", cast(Callable[..., Any], plan_round_join))
-    builder.add_edge(START, "plan-review-round-advance")
-    builder.add_edge(START, "plan-review-round-advance-retry")
-    builder.add_edge("plan-review-round-advance", "plan-round-join")
-    builder.add_edge("plan-review-round-advance-retry", "plan-round-join")
-    builder.add_edge("plan-round-join", END)
+    builder.add_node(join_name, cast(Callable[..., Any], plan_round_join))
+    builder.add_edge(START, f"{family}-plan-review-round-advance")
+    builder.add_edge(START, f"{family}-plan-review-round-advance-retry")
+    builder.add_edge(f"{family}-plan-review-round-advance", join_name)
+    builder.add_edge(f"{family}-plan-review-round-advance-retry", join_name)
+    builder.add_edge(join_name, END)
     return builder.compile(checkpointer=None)
 
 
-def _join_seed() -> dict[str, object]:
+def _join_seed(family: str) -> dict[str, object]:
     return {
         "change_id": "CH-DEMO-001",
-        "selected_test_families": ["api"],
+        "selected_test_families": [family],
         "capability_leafs": ["entities.item.create"],
         "allowed_artifact_paths": ["qa/changes"],
-        "family": "api",
+        "family": family,
         "rounds_used": 0,
         "rounds_budget": 2,
     }
@@ -367,20 +371,22 @@ def test_current_trigger(row: tuple[str, str]) -> None:
     assert applied["rounds_budget"] == 2
 
 
-async def test_compiled_join_reads_inbox_cursor_not_lww_shadow() -> None:
+@pytest.mark.parametrize("family", _FAMILIES)
+async def test_compiled_join_reads_inbox_cursor_not_lww_shadow(family: str) -> None:
     first = _arrival("plan-review-round-advance", epoch=0, sequence=1, used=1)
     late = _arrival("plan-review-round-advance-retry", epoch=0, sequence=2, used=9, budget=9)
     inbox = offer_plan_round_arrival(empty_plan_round_inbox(), first)
     inbox = offer_plan_round_arrival(inbox, late)
-    result = await _compile_join_graph().ainvoke(
+    result = await _compile_family_join_graph(family).ainvoke(
         {
-            **_join_seed(),
+            **_join_seed(family),
             "current_trigger": late,
             "plan_round_inbox": inbox,
             "rounds_used": 0,
             "rounds_budget": 2,
         }
     )
+    assert result["family"] == family
     assert result["current_trigger"] == first
     assert result["plan_round_inbox"]["current_trigger"] == first
     assert result["plan_round_inbox"]["arrivals"] == [first, late]
@@ -389,20 +395,25 @@ async def test_compiled_join_reads_inbox_cursor_not_lww_shadow() -> None:
     assert result["current_trigger"] != late
 
 
-async def test_compiled_graph_same_epoch_arrivals_retained_first_current_then_late_dispatched() -> None:
+@pytest.mark.parametrize("family", _FAMILIES)
+async def test_compiled_graph_same_epoch_arrivals_retained_first_current_then_late_dispatched(
+    family: str,
+) -> None:
     first = _arrival("plan-review-round-advance", epoch=0, sequence=1, used=1)
     late = _arrival("plan-review-round-advance-retry", epoch=0, sequence=1, used=1)
-    result = await _compile_two_predecessor_join(late_writes_lww=True, first_added_first=True).ainvoke(
-        _join_seed()
-    )
+    result = await _compile_family_two_predecessor_join(
+        family, late_writes_lww=True, first_added_first=True
+    ).ainvoke(_join_seed(family))
     inbox = result["plan_round_inbox"]
+    assert result["family"] == family
     assert [item["arrival_id"] for item in inbox["arrivals"]] == [first["arrival_id"], late["arrival_id"]]
     assert inbox["current_trigger"] == first
     assert result["current_trigger"] == first
     consumed = consume_plan_round_trigger(inbox)
-    late_result = await _compile_join_graph().ainvoke(
+    late_result = await _compile_family_join_graph(family).ainvoke(
         {**result, "current_trigger": first, "plan_round_inbox": consumed}
     )
+    assert late_result["family"] == family
     assert late_result["current_trigger"] == late
     finished = consume_plan_round_trigger(late_result["plan_round_inbox"])
     assert finished["current_trigger"] is None
@@ -410,46 +421,52 @@ async def test_compiled_graph_same_epoch_arrivals_retained_first_current_then_la
     assert replay["current_trigger"] is None
 
 
-async def test_compiled_graph_two_reducer_merge_orders_are_identical() -> None:
-    late_last = await _compile_two_predecessor_join(late_writes_lww=True, first_added_first=True).ainvoke(
-        _join_seed()
-    )
-    first_last = await _compile_two_predecessor_join(late_writes_lww=False, first_added_first=False).ainvoke(
-        _join_seed()
-    )
+@pytest.mark.parametrize("family", _FAMILIES)
+async def test_compiled_graph_two_reducer_merge_orders_are_identical(family: str) -> None:
+    late_last = await _compile_family_two_predecessor_join(
+        family, late_writes_lww=True, first_added_first=True
+    ).ainvoke(_join_seed(family))
+    first_last = await _compile_family_two_predecessor_join(
+        family, late_writes_lww=False, first_added_first=False
+    ).ainvoke(_join_seed(family))
+    assert late_last["family"] == first_last["family"] == family
     assert late_last["plan_round_inbox"] == first_last["plan_round_inbox"]
     assert late_last["current_trigger"] == first_last["current_trigger"]
     assert late_last["current_trigger"]["predecessor"] == "plan-review-round-advance"
 
 
-async def test_compiled_graph_replay_of_same_arrival_id_is_deduplicated() -> None:
+@pytest.mark.parametrize("family", _FAMILIES)
+async def test_compiled_graph_replay_of_same_arrival_id_is_deduplicated(family: str) -> None:
     arrival = _arrival("plan-review-round-advance-retry", sequence=4)
+    join_name = f"{family}-plan-round-join"
 
     def _offer(state: dict[str, Any]) -> dict[str, object]:
         inbox = offer_plan_round_arrival(state.get("plan_round_inbox") or empty_plan_round_inbox(), arrival)
         return {"plan_round_inbox": inbox, "current_trigger": arrival}
 
     builder: StateGraph[GenerationState] = StateGraph(GenerationState)
-    builder.add_node("offer", cast(Callable[..., Any], _offer))
-    builder.add_node("plan-round-join", cast(Callable[..., Any], plan_round_join))
-    builder.add_edge(START, "offer")
-    builder.add_edge("offer", "plan-round-join")
-    builder.add_edge("plan-round-join", END)
+    builder.add_node(f"{family}-offer", cast(Callable[..., Any], _offer))
+    builder.add_node(join_name, cast(Callable[..., Any], plan_round_join))
+    builder.add_edge(START, f"{family}-offer")
+    builder.add_edge(f"{family}-offer", join_name)
+    builder.add_edge(join_name, END)
     graph = builder.compile(checkpointer=None)
-    first = await graph.ainvoke(cast(Any, _join_seed()))
+    first = await graph.ainvoke(cast(Any, _join_seed(family)))
     replayed = await graph.ainvoke(cast(Any, first))
+    assert replayed["family"] == family
     assert replayed["plan_round_inbox"]["arrivals"] == [arrival]
     assert replayed["current_trigger"] == arrival
 
 
-async def test_compiled_graph_dispatch_cursor_never_reclaims_consumed_arrival() -> None:
+@pytest.mark.parametrize("family", _FAMILIES)
+async def test_compiled_graph_dispatch_cursor_never_reclaims_consumed_arrival(family: str) -> None:
     arrival = _arrival("plan-review-round-advance", sequence=1)
     consumed = consume_plan_round_trigger(offer_plan_round_arrival(empty_plan_round_inbox(), arrival))
     replayed = offer_plan_round_arrival(consumed, arrival)
     assert replayed["current_trigger"] is None
     with pytest.raises((ValueError, Exception), match="current_trigger.value"):
-        await _compile_join_graph().ainvoke(
-            {**_join_seed(), "current_trigger": arrival, "plan_round_inbox": replayed}
+        await _compile_family_join_graph(family).ainvoke(
+            {**_join_seed(family), "current_trigger": arrival, "plan_round_inbox": replayed}
         )
 
 
@@ -515,3 +532,42 @@ async def test_compiled_family_repeated_epochs_preserve_exact_rounds(family: str
     assert current["value"] != {"rounds_used": 3, "rounds_budget": 2}
     assert current["business_epoch"] == 1
     assert terminal["rounds_used"] == 2
+    assert [call.semantic_node_id for call in result.semantic_calls].count(f"generation.{family}.plan") == 3
+
+
+@pytest.mark.parametrize("family", _FAMILIES)
+async def test_last_budgeted_plan_retry_reaches_join(family: str) -> None:
+    harness = GraphHarness()
+    bundle = build_generation_graphs(
+        harness.recording_context(owner_id="assurance.generation", contracts=_contracts())
+    )
+    result = await harness.run(
+        _family_graph(bundle, family),
+        input=_family_input(family),
+        script={
+            f"generation.{family}.plan": [
+                committed(_plan(), _RECEIPT),
+                committed(_plan(), _RECEIPT),
+                committed(_plan(), _RECEIPT),
+            ],
+            f"generation.{family}.plan-review": [
+                committed(_review("needs_fix", auto_fix=True, used=0), _RECEIPT),
+                committed(_review("needs_fix", auto_fix=True, used=1), _RECEIPT),
+                committed(_review("pass", used=2), _RECEIPT),
+            ],
+            f"generation.{family}.codegen": [committed(_codegen(family), _RECEIPT)],
+        },
+    )
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    current = terminal["plan_round_inbox"]["current_trigger"]
+    assert current is not None
+    assert current["value"] == {"rounds_used": 2, "rounds_budget": 2}
+    assert current["predecessor"] == "plan-review-round-advance-retry"
+    assert terminal["current_trigger"] == current
+    assert terminal["rounds_used"] == 2
+    assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") in {"pass", "approved"}
+    assert [call.semantic_node_id for call in result.semantic_calls].count(f"generation.{family}.plan") == 3
+    assert [call.semantic_node_id for call in result.semantic_calls].count(
+        f"generation.{family}.plan-review"
+    ) == 3

@@ -367,6 +367,54 @@ async def test_human_action_on_family_graph(family: str, action: str) -> None:
         assert resumed.get("decision") == "reject" or resumed.get("status") == "rejected"
 
 
+async def test_root_fanout_surfaces_resumable_family_human_interrupt() -> None:
+    harness = GraphHarness()
+    backend = harness.anchored_memory_checkpointer()
+    await _prepare_anchored_backend(backend)
+    bundle = build_generation_graphs(
+        harness.recording_context(owner_id="assurance.generation", contracts=_contracts())
+    )
+    script: dict[str, list[AttemptResolution]] = {
+        "generation.api.plan": [committed(_plan(), _RECEIPT)],
+        "generation.api.plan-review": [committed(_review("needs_human_review", human=True), _RECEIPT)],
+        "generation.api.codegen": [committed(_codegen("api"), _RECEIPT)],
+    }
+    harness._kernel.load_script(script)
+    wrapper: StateGraph[GenerationState] = StateGraph(GenerationState)
+    wrapper.add_node("generation", cast(Any, bundle.generation))
+    wrapper.add_edge(START, "generation")
+    wrapper.add_edge("generation", END)
+    graph = wrapper.compile(checkpointer=backend)
+    config = _config("api")
+    payload = {
+        "change_id": "CH-DEMO-001",
+        "selected_test_families": ["api"],
+        "capability_leafs": ["entities.item.create"],
+        "allowed_artifact_paths": ["qa/changes"],
+        "rounds_used": 0,
+        "rounds_budget": 2,
+    }
+    interrupted: object | None
+    try:
+        interrupted = await graph.ainvoke(cast(Any, payload), config=config)
+    except GraphInterrupt as error:
+        interrupted = error
+    else:
+        assert _interrupt_value(interrupted) is not None
+    value = _interrupt_value(interrupted)
+    assert isinstance(value, dict)
+    assert value.get("interrupt_id") == "api-plan-human-review"
+    assert value.get("ordinal") == 0
+    resumed = await graph.ainvoke(Command(resume={"action": "approve"}), config=config)
+    assert _interrupt_value(resumed) is None
+    results = resumed.get("family_results") or []
+    by_family = {item["family"]: item for item in results if isinstance(item, dict)}
+    assert by_family["api"]["status"] == "passed"
+    assert by_family["e2e"]["status"] == "skipped"
+    assert by_family["fuzz"]["status"] == "skipped"
+    assert by_family["performance"]["status"] == "skipped"
+
+
 async def test_request_rework_validates_after_restart_and_advances_once() -> None:
     harness = GraphHarness()
     backend = harness.anchored_memory_checkpointer()

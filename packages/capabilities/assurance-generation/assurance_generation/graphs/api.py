@@ -38,7 +38,7 @@ from assurance_generation.graphs.routes import (
     route_plan_review,
     route_plan_review_retry,
 )
-from assurance_generation.graphs.state import GenerationState
+from assurance_generation.graphs.state import FamilyLaneOutput, GenerationState
 from graph_engine.boot.boot import CapabilityBuildContext
 
 _PLAN_REVIEW_PATHS: dict[Hashable, str] = {
@@ -116,51 +116,28 @@ def _compile_leaf(
     return context.compile_subgraph(builder)
 
 
-def compile_family_graph(
+def _assemble_family_graph(
     context: CapabilityBuildContext,
-    family: str,
     *,
     has_codegen_fix: bool,
+    plan: CompiledStateGraph,
+    plan_review: CompiledStateGraph,
+    codegen: CompiledStateGraph,
+    codegen_fix: CompiledStateGraph | None,
+    output_schema: type[FamilyLaneOutput] | type[GenerationState] | None,
 ) -> CompiledStateGraph:
-    plan = _compile_leaf(
-        context,
-        family=family,
-        stage="plan",
-        activation=activation_plan,
-        select=select_plan,
-        publish=publish_plan,
+    builder = (
+        StateGraph(GenerationState, output_schema=output_schema)
+        if output_schema is not None
+        else StateGraph(GenerationState)
     )
-    plan_review = _compile_leaf(
-        context,
-        family=family,
-        stage="plan-review",
-        activation=activation_plan_review,
-        select=select_plan_review,
-        publish=publish_plan_review,
-    )
-    codegen = _compile_leaf(
-        context,
-        family=family,
-        stage="codegen",
-        activation=activation_codegen,
-        select=select_codegen,
-        publish=publish_codegen,
-    )
-    builder: StateGraph[GenerationState] = StateGraph(GenerationState)
     builder.add_node("plan", plan)
     builder.add_node("plan-retry", plan)
     builder.add_node("plan-review", plan_review)
     builder.add_node("plan-review-retry", plan_review)
     builder.add_node("codegen", codegen)
     if has_codegen_fix:
-        codegen_fix = _compile_leaf(
-            context,
-            family=family,
-            stage="codegen-fix",
-            activation=activation_codegen,
-            select=select_codegen_fix,
-            publish=publish_codegen,
-        )
+        assert codegen_fix is not None
         builder.add_node("codegen-fix", codegen_fix)
         builder.add_node("codegen-round-advance", _node(codegen_round_advance))
     builder.add_node("plan-review-round-advance", _node(review_round_advance))
@@ -223,8 +200,69 @@ def compile_family_graph(
     return context.compile_subgraph(builder)
 
 
+def compile_family_pair(
+    context: CapabilityBuildContext,
+    family: str,
+    *,
+    has_codegen_fix: bool,
+) -> tuple[CompiledStateGraph, CompiledStateGraph]:
+    plan = _compile_leaf(
+        context,
+        family=family,
+        stage="plan",
+        activation=activation_plan,
+        select=select_plan,
+        publish=publish_plan,
+    )
+    plan_review = _compile_leaf(
+        context,
+        family=family,
+        stage="plan-review",
+        activation=activation_plan_review,
+        select=select_plan_review,
+        publish=publish_plan_review,
+    )
+    codegen = _compile_leaf(
+        context,
+        family=family,
+        stage="codegen",
+        activation=activation_codegen,
+        select=select_codegen,
+        publish=publish_codegen,
+    )
+    codegen_fix = None
+    if has_codegen_fix:
+        codegen_fix = _compile_leaf(
+            context,
+            family=family,
+            stage="codegen-fix",
+            activation=activation_codegen,
+            select=select_codegen_fix,
+            publish=publish_codegen,
+        )
+    leaves = {
+        "has_codegen_fix": has_codegen_fix,
+        "plan": plan,
+        "plan_review": plan_review,
+        "codegen": codegen,
+        "codegen_fix": codegen_fix,
+    }
+    standalone = _assemble_family_graph(context, output_schema=None, **leaves)
+    lane = _assemble_family_graph(context, output_schema=FamilyLaneOutput, **leaves)
+    return standalone, lane
+
+
+def compile_family_graph(
+    context: CapabilityBuildContext,
+    family: str,
+    *,
+    has_codegen_fix: bool,
+) -> CompiledStateGraph:
+    return compile_family_pair(context, family, has_codegen_fix=has_codegen_fix)[0]
+
+
 def build_api_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     return compile_family_graph(context, "api", has_codegen_fix=True)
 
 
-__all__ = ["build_api_graph", "compile_family_graph"]
+__all__ = ["build_api_graph", "compile_family_graph", "compile_family_pair"]

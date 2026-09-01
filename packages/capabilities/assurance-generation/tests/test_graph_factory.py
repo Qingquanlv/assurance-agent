@@ -7,8 +7,11 @@ from typing import Any
 
 import pytest
 
+from pydantic import ValidationError
+
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_generation.graphs.factory import GenerationGraphs, build_generation_graphs
+from assurance_generation.graphs.nodes import select_codegen_fix, terminal_done
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.testing import GraphHarness, committed
@@ -58,6 +61,23 @@ def family_graph_input(family: str, *, selected: bool = True) -> dict[str, objec
         "family": family,
         "lane_selected": selected,
         "review_stage": "plan",
+    }
+
+
+def _codegen_fix_published(family: str) -> dict[str, object]:
+    roots = {
+        "api": "tests/api/",
+        "e2e": "tests/e2e/",
+        "fuzz": "tests/fuzz/",
+        "performance": "tests/perf/",
+    }
+    root = roots[family]
+    return {
+        "reviewed_plan": {"status": "reviewed", "source": "graph"},
+        "reviewed_cases": {"status": "reviewed", "source": "graph"},
+        "family_constraints": {"write_roots": [root], "operations": ["read"], "risks": ["low"]},
+        "baseline_tree_id": "b" * 64,
+        "approved_proposal": {"status": "approved", "source": "graph"},
     }
 
 
@@ -118,9 +138,14 @@ def _node_names(graph: object) -> set[str]:
         nested = getattr(node, "nodes", None)
         if nested is not None:
             names.update(_node_names(node))
-        runnable = getattr(node, "runnable", None)
-        if runnable is not None:
-            names.update(_node_names(runnable))
+        for attr in ("runnable", "bound"):
+            child = getattr(node, attr, None)
+            if child is not None and child is not graph:
+                names.update(_node_names(child))
+        subgraphs = getattr(node, "subgraphs", None)
+        if isinstance(subgraphs, list):
+            for subgraph in subgraphs:
+                names.update(_node_names(subgraph))
     return names
 
 
@@ -165,6 +190,70 @@ def test_factory_binds_no_task_contract_for_pure_completion_or_round_advance(rec
     assert "assurance.generation.complete" not in recording_context.bound_contract_ids
     assert "assurance.generation.review-round.advance" not in recording_context.bound_contract_ids
     assert AGENT_JOB_CONTRACTS.keys().isdisjoint({"complete", "review-round.advance"})
+
+
+def test_root_factory_does_not_ainvoke_family_graphs(recording_context) -> None:
+    factory = _GRAPHS_ROOT / "factory.py"
+    source = factory.read_text(encoding="utf-8")
+    assert "ainvoke" not in source
+    assert "_family_result_only" not in source
+    bundle = build_generation_graphs(recording_context)
+    assert "api" in _node_names(bundle.generation)
+    assert "e2e" in _node_names(bundle.generation)
+    assert "fuzz" in _node_names(bundle.generation)
+    assert "performance" in _node_names(bundle.generation)
+    assert "plan-human-review" in _node_names(bundle.generation)
+    assert "plan-human-review-retry" in _node_names(bundle.generation)
+
+
+def test_terminal_done_without_family_does_not_write_api_lane() -> None:
+    skipped = {
+        "family": "api",
+        "receipt_id": "receipt-api",
+        "selected": False,
+        "status": "skipped",
+    }
+    update = terminal_done({"family_results": [skipped], "decision": "pass"})
+    assert "family_results" not in update
+    assert update.get("status") == "passed"
+
+
+def test_select_codegen_fix_fails_closed_without_published_fields() -> None:
+    with pytest.raises((ValidationError, ValueError, KeyError, TypeError)):
+        select_codegen_fix(
+            {
+                "change_id": "CH-DEMO-001",
+                "capability_leafs": ["entities.item.create"],
+                "allowed_artifact_paths": ["qa/changes"],
+                "family": "api",
+            }
+        )
+
+
+def test_select_codegen_fix_reads_only_graph_published_state() -> None:
+    selected = select_codegen_fix(
+        {
+            "change_id": "CH-DEMO-001",
+            "capability_leafs": ["entities.item.create"],
+            "allowed_artifact_paths": ["qa/changes"],
+            "reviewed_plan": {"status": "reviewed", "source": "graph"},
+            "reviewed_cases": {"status": "reviewed", "source": "graph"},
+            "family_constraints": {
+                "write_roots": ["tests/api/"],
+                "operations": ["read"],
+                "risks": ["low"],
+            },
+            "baseline_tree_id": "b" * 64,
+            "repair_allowed_paths": ["tests/api/test_items.py"],
+            "approved_proposal": {"status": "approved", "source": "graph"},
+        }
+    )
+    dumped = selected.model_dump(mode="json")
+    assert dumped["allowed_paths"] == ["tests/api/test_items.py"]
+    assert dumped["baseline_tree_id"] == "b" * 64
+    assert dumped["reviewed_plan"] == {"status": "reviewed", "source": "graph"}
+    assert "test_users.py" not in str(dumped)
+    assert dumped["baseline_tree_id"] != "a" * 64
 
 
 def test_target_graphs_contain_no_phase_nodes(recording_context) -> None:
@@ -285,7 +374,7 @@ async def test_codegen_fix_loop_reaches_fixer(family: str) -> None:
     graph = bundle.api if family == "api" else bundle.e2e
     result = await harness.run(
         graph,
-        input=family_graph_input(family),
+        input={**family_graph_input(family), **_codegen_fix_published(family)},
         script={
             _semantic(family, "plan"): [committed(_plan_output(), receipt)],
             _semantic(family, "plan-review"): [committed(_review_output(), receipt)],
@@ -298,3 +387,28 @@ async def test_codegen_fix_loop_reaches_fixer(family: str) -> None:
         _semantic(family, "codegen-fix"),
     ]
     assert result.terminal is not None
+
+
+async def test_root_done_does_not_overwrite_skipped_api_result() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.generation", contracts=generation_contracts())
+    bundle = build_generation_graphs(context)
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.generation,
+        input=generation_graph_input(selected=("e2e",)),
+        script={
+            _semantic("e2e", "plan"): [committed(_plan_output(), receipt)],
+            _semantic("e2e", "plan-review"): [committed(_review_output(), receipt)],
+            _semantic("e2e", "codegen"): [committed(_codegen_output(), receipt)],
+        },
+    )
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    results = terminal["family_results"]
+    by_family = {item["family"]: item for item in results}
+    assert by_family["api"]["status"] == "skipped"
+    assert by_family["api"]["selected"] is False
+    assert by_family["e2e"]["status"] == "passed"
+    assert by_family["fuzz"]["status"] == "skipped"
+    assert by_family["performance"]["status"] == "skipped"

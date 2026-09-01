@@ -25,6 +25,12 @@ def _has_budget(state: Mapping[str, object]) -> bool:
     return isinstance(used, int) and isinstance(budget, int) and used < budget
 
 
+def _within_spent_budget(state: Mapping[str, object]) -> bool:
+    used = state.get("rounds_used", 0)
+    budget = state.get("rounds_budget", 0)
+    return isinstance(used, int) and isinstance(budget, int) and used <= budget
+
+
 def _is_pass(state: Mapping[str, object]) -> bool:
     return (
         state.get("decision") in {"pass", "approved"}
@@ -88,7 +94,7 @@ def plan_human_review_retry_named_matches(state: Mapping[str, object]) -> dict[s
 
 
 def plan_advance_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    return {"continue": "plan-round-join" if _has_budget(state) else None}
+    return {"continue": "plan-round-join" if _within_spent_budget(state) else None}
 
 
 def plan_advance_retry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
