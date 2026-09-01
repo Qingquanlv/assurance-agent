@@ -591,9 +591,13 @@ class _JournalLinkedLease:
 
     async def acquire(self, invocation_id: str, *, owner_id: str) -> RunnerLease:
         record = await self._lease.acquire(invocation_id, owner_id=owner_id)
-        if self._recover_handshake is not None:
-            await self._recover_handshake(invocation_id)
-        await self._journal.advance_fence(invocation_id, record.fencing_token)
+        try:
+            if self._recover_handshake is not None:
+                await self._recover_handshake(invocation_id)
+            await self._journal.advance_fence(invocation_id, record.fencing_token)
+        except BaseException:
+            await self._lease.release(record)
+            raise
         return record
 
     async def release(self, lease: RunnerLease) -> None:

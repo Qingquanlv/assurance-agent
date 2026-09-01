@@ -331,3 +331,25 @@ async def _recover_handshake_refuses_after_newer_fence_instead_of_abandoning(tmp
         assert len(live) == 1
         assert live[0].abandoned_at is None
         assert await second.journal.read_checkpoint_anchor("inv-1", "cp-initial") is None
+
+
+def test_lease_acquire_after_fail_closed_recover_retries_integrity_error(tmp_path: Path) -> None:
+    asyncio.run(_lease_acquire_after_fail_closed_recover_retries_integrity_error(tmp_path))
+
+
+async def _lease_acquire_after_fail_closed_recover_retries_integrity_error(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    async with open_sqlite_checkpointer(workspace) as first:
+        await first.journal.start_invocation(_started(), fencing_token=FENCE)
+        await _put_initial_checkpoint(
+            first.store,
+            product_lock_digest="e" * 64,
+            root_input_digest="f" * 64,
+            graph_revision="d" * 64,
+        )
+
+    async with open_sqlite_checkpointer(workspace) as second:
+        with pytest.raises(CheckpointIntegrityError):
+            await second.lease.acquire("inv-1", owner_id="runner-b")
+        with pytest.raises(CheckpointIntegrityError):
+            await second.lease.acquire("inv-1", owner_id="runner-b")
