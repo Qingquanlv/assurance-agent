@@ -10,13 +10,19 @@ from pydantic import ValidationError
 
 from assurance_improvement.contracts.attempts import (
     TASK_ATTEMPT_CONTRACTS,
+    _coerce_output,
     close_improvement_task,
     select_evaluate_memory,
 )
 from assurance_improvement.contracts.delivery import MemoryEvalReceipt, artifact_digest
+from assurance_improvement.contracts.effects import ImprovementEffectIntentV1, ImprovementEffectReceiptV1
 from assurance_improvement.contracts.improvements import ImprovementProjection
+from assurance_improvement.effects.delivery import ImprovementDeliveryEffect
+from assurance_improvement.effects.store import InMemoryImprovementStore, StoreRecord
 from assurance_improvement.operations.delivery import EvaluateMemoryImprovementHandler, EvaluateMemoryInput
+from assurance_improvement.operations.keys import delivery_effect_key
 from assurance_improvement.plugin import ImprovementPlugin
+from assurance_improvement.resource_loader import resource_bytes
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import ResolvedAttemptContract, resolve_contract
@@ -39,13 +45,13 @@ from graph_engine.plugin_api import (
     EffectPolicy,
     EffectReconcileResult,
     ResourceClaims,
-    TaskFailure,
 )
 from graph_engine.runtime.task_workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from tests.product.test_change_local_output_routing import execute_task
 
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     HEX_A,
+    IMPROVEMENT_ID,
     as_object,
     improvement_projection,
     json_value,
@@ -136,6 +142,20 @@ def test_offline_benchmark_eval_comparator_is_not_this_handler() -> None:
     assert "assurance.improvement.evaluate-benchmark" not in TASK_ATTEMPT_CONTRACTS
 
 
+def test_coerce_output_rejects_field_subset_after_validation_fails() -> None:
+    with pytest.raises(ValidationError):
+        _coerce_output(
+            MemoryEvalReceipt,
+            {
+                "eval_run_id": "eval-1",
+                "outcome": "passed",
+                "report_sha256": "r",
+                "staged_sha256": "s",
+                "unexpected": "junk",
+            },
+        )
+
+
 class _RecordingWorkspace:
     def __init__(self, inner: TaskWorkspaceProvider) -> None:
         self.inner = inner
@@ -159,29 +179,39 @@ class _RecordingWorkspace:
         return await self.inner.recover_promotion(prepared)  # type: ignore[arg-type]
 
 
-class _RecordingDeliveryEffect:
-    def __init__(
-        self,
-        *,
-        apply_result: EffectApplyResult | None = None,
-        reconcile_result: EffectReconcileResult | object | None = None,
-    ) -> None:
+class _ObservedDeliveryEffect:
+    def __init__(self, inner: ImprovementDeliveryEffect) -> None:
+        self.inner = inner
         self.apply_calls = 0
         self.reconcile_calls = 0
-        self._apply_result = apply_result or EffectApplyResult.applied({"remote_id": "r1"})
-        self._reconcile_result = reconcile_result
 
     async def apply(self, intent: EffectIntent, idempotency_key: str) -> EffectApplyResult:
-        del intent, idempotency_key
         self.apply_calls += 1
-        return self._apply_result
+        return await self.inner.apply(intent, idempotency_key)
 
     async def reconcile(self, intent: EffectIntent, idempotency_key: str) -> EffectReconcileResult:
-        del intent, idempotency_key
         self.reconcile_calls += 1
-        if self._reconcile_result is None:
-            return {"status": "mystery"}  # type: ignore[return-value]
-        return self._reconcile_result  # type: ignore[return-value]
+        return await self.inner.reconcile(intent, idempotency_key)
+
+
+class _PendingDeliveryStore:
+    async def get(self, key: str) -> StoreRecord | None:
+        del key
+        return StoreRecord(status="pending")
+
+    async def commit(self, key: str, receipt: dict[str, object], payload: dict[str, object]) -> None:
+        del key, receipt, payload
+        raise AssertionError("pending delivery must not commit")
+
+
+class _PublicationIndeterminateStore:
+    async def get(self, key: str) -> StoreRecord | None:
+        del key
+        raise RuntimeError("publication pending")
+
+    async def commit(self, key: str, receipt: dict[str, object], payload: dict[str, object]) -> None:
+        del key, receipt, payload
+        raise RuntimeError("publication pending")
 
 
 def _revision() -> str:
@@ -203,7 +233,7 @@ def _kernel_effects_module() -> Any:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    setattr(module, "_INTENT_SCHEMA", b'{"type":"object"}')
+    setattr(module, "_INTENT_SCHEMA", resource_bytes("schemas/improvement-effect-intent.v1.schema.json"))
     return module
 
 
@@ -216,10 +246,14 @@ def _evaluate_contract(executor: Any) -> ResolvedAttemptContract[Any, Any]:
     return resolve_contract(contract, executor=executor)
 
 
+def _production_delivery(store: object) -> _ObservedDeliveryEffect:
+    return _ObservedDeliveryEffect(ImprovementDeliveryEffect(store=store))  # type: ignore[arg-type]
+
+
 def _make_kernel(
     tmp_path: Path,
     *,
-    effect: _RecordingDeliveryEffect,
+    effect: _ObservedDeliveryEffect,
     executor: Any,
 ) -> tuple[
     AssuranceAttemptKernel,
@@ -235,10 +269,7 @@ def _make_kernel(
         effect,
         kinds=(_DELIVERY_KIND,),
         policy=EffectPolicy(max_attempts=1, timeout_seconds=30, backoff_seconds=0),
-        receipt_schema=(
-            b'{"type":"object","properties":{"remote_id":{"type":"string"}},'
-            b'"required":["remote_id"],"additionalProperties":false}'
-        ),
+        receipt_schema=resource_bytes("schemas/improvement-effect-receipt.v1.schema.json"),
     )
     project = tmp_path / "project"
     project.mkdir()
@@ -276,7 +307,8 @@ def _make_kernel(
 @pytest.mark.asyncio
 async def test_kernel_settles_delivery_inside_same_attempt_before_receipt(tmp_path: Path) -> None:
     closed = close_improvement_task(_EVALUATE_ID)
-    effect = _RecordingDeliveryEffect(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
+    delivery_store = InMemoryImprovementStore()
+    effect = _production_delivery(delivery_store)
     kernel, key, validated, context, resolved, workspace, store = _make_kernel(
         tmp_path, effect=effect, executor=closed
     )
@@ -300,7 +332,18 @@ async def test_kernel_settles_delivery_inside_same_attempt_before_receipt(tmp_pa
         intents = closed.declared_effects(result.output)
         assert len(intents) == 1
         assert intents[0].kind == _DELIVERY_KIND
-        assert as_object(intents[0].payload)["kind"] == "memory_eval"
+        intent = ImprovementEffectIntentV1.model_validate(intents[0].payload)
+        assert intent.kind == "memory_eval"
+        assert intent.memory_eval is not None
+        assert intent.memory_eval.eval_run_id == "eval-1"
+        assert delivery_effect_key(intent) == f"{IMPROVEMENT_ID}:1:memory_eval:{HEX_A}"
+        assert delivery_store.delivery_count == 1
+        stored = next(iter(delivery_store.records.values()))
+        assert stored.receipt is not None
+        receipt = ImprovementEffectReceiptV1.model_validate(stored.receipt)
+        assert receipt.kind == "memory_eval"
+        assert receipt.memory_eval is not None
+        assert receipt.memory_eval.eval_run_id == "eval-1"
         assert workspace.promotions == 1
     finally:
         store.close()
@@ -321,13 +364,7 @@ async def test_pending_effect_system_interrupts_without_success_or_double_dispat
     tmp_path: Path,
 ) -> None:
     closed = close_improvement_task(_EVALUATE_ID)
-    effect = _RecordingDeliveryEffect(
-        apply_result=EffectApplyResult(
-            status="transient",
-            failure=TaskFailure(kind="transient", message="busy"),
-        ),
-        reconcile_result=EffectReconcileResult(status="pending"),
-    )
+    effect = _production_delivery(_PendingDeliveryStore())
     kernel, key, validated, context, resolved, workspace, store = _make_kernel(
         tmp_path, effect=effect, executor=closed
     )
@@ -383,12 +420,7 @@ async def test_publication_indeterminate_system_interrupts_without_success_or_do
     tmp_path: Path,
 ) -> None:
     closed = close_improvement_task(_EVALUATE_ID)
-    effect = _RecordingDeliveryEffect(
-        apply_result=EffectApplyResult(
-            status="transient",
-            failure=TaskFailure(kind="transient", message="publication pending"),
-        )
-    )
+    effect = _production_delivery(_PublicationIndeterminateStore())
     kernel, key, validated, context, resolved, workspace, store = _make_kernel(
         tmp_path, effect=effect, executor=closed
     )

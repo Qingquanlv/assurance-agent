@@ -358,8 +358,6 @@ def _coerce_output(model: type[BaseModel], payload: object) -> BaseModel:
                         return model.model_validate(nested)
                     except ValidationError:
                         continue
-            allowed = {key: payload[key] for key in model.model_fields if key in payload}
-            return model.model_validate(allowed)
         raise
 
 
