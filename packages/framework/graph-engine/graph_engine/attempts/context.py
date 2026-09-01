@@ -12,6 +12,7 @@ class AttemptExecutionContext(FrozenModel):
     semantic_node_id: str = Field(min_length=1)
     attempt_key: AttemptKey
     fencing_token: int = Field(ge=1)
+    authorization_id: str | None = Field(default=None, min_length=1)
 
 
 __all__ = ["AttemptExecutionContext"]
