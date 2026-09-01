@@ -382,7 +382,7 @@ def _validate_human(resume: object, item: object) -> str:
     )
     actions = _human_actions(item)
     if actions is not None and action not in actions:
-        HumanResumeAction.model_validate({"action": "not-an-action"})
+        raise InvalidResume(f"action {action!r} is not allowed for this interrupt")
     return action
 
 

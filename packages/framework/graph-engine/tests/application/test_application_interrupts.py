@@ -178,6 +178,27 @@ async def test_single_human_interrupt_rejects_invalid_scalar(application: Assura
         )
 
 
+async def test_disallowed_human_action_raises_with_actual_value(
+    application: AssuranceApplication,
+) -> None:
+    artifact = _artifact({"execute": _human_graph()})
+    context, _blocked = await _start_and_block(
+        application,
+        artifact,
+        invocation_id="inv-rework",
+        entrypoint="execute",
+        graph_input={"decision": ""},
+    )
+    with pytest.raises(InvalidResume, match="rework") as exc_info:
+        await application.resume(
+            artifact=artifact,
+            invocation_id="inv-rework",
+            runtime_context=context,
+            resume="rework",
+        )
+    assert "not-an-action" not in str(exc_info.value)
+
+
 async def test_multiple_interrupts_require_interrupt_id_mapping(application: AssuranceApplication) -> None:
     artifact = _artifact({"execute": _dual_human_graph()})
     context, blocked = await _start_and_block(
