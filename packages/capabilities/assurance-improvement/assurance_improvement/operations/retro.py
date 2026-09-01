@@ -141,6 +141,17 @@ class ReconcileInput(BaseModel):
     ts: str = Field(min_length=1)
 
 
+def analysis_slice(
+    collected: RetroCollectInput,
+    domain: Literal["issue", "workflow", "eval"],
+) -> IssueEvidenceSlice | WorkflowEvidenceSlice | EvalEvidenceSlice:
+    if domain == "issue":
+        return collected.issue_slice
+    if domain == "workflow":
+        return collected.workflow_slice
+    return collected.eval_slice
+
+
 def _merge_domain_signals(domain: str, sources: tuple[tuple[Signal, ...], ...]) -> tuple[Signal, ...]:
     ordered: dict[str, Signal] = {}
     for source in sources:
@@ -153,7 +164,7 @@ def _merge_domain_signals(domain: str, sources: tuple[tuple[Signal, ...], ...]) 
     return tuple(ordered.values())
 
 
-def _assert_collect_identity(payload: RetroCollectInput) -> None:
+def assert_collect_identity(payload: RetroCollectInput) -> None:
     slices = (
         payload.issue_slice,
         payload.workflow_slice,
@@ -415,7 +426,7 @@ class RetroCollectHandler:
         del context
         try:
             payload = validate_input(RetroCollectInput, request.input)
-            _assert_collect_identity(payload)
+            assert_collect_identity(payload)
             return succeeded(
                 {
                     "retro_id": payload.retro_id,
@@ -562,7 +573,9 @@ __all__ = [
     "RecordRetroPipelineFailureHandler",
     "RetroCollectHandler",
     "RetroEvidenceGapFallbackHandler",
+    "analysis_slice",
     "assemble_context",
+    "assert_collect_identity",
     "empty_analysis",
     "reconcile_improvements",
 ]

@@ -398,29 +398,33 @@ class LoadImprovementDeliveryHandler:
             return failed_input(error)
 
 
+def evaluate_memory(payload: EvaluateMemoryInput) -> tuple[MemoryEvalReceipt, EffectIntent]:
+    assert_delivery_gate(payload.projection, DeliveryKind.MEMORY_PATCH)
+    receipt = MemoryEvalReceipt(
+        eval_run_id=payload.eval_run_id,
+        outcome=payload.outcome,
+        report_sha256=payload.report_sha256,
+        staged_sha256=payload.staged_sha256,
+        baseline_sha256=payload.baseline_sha256,
+        approved_state_digest=artifact_digest(payload.projection),
+        approved_version=payload.projection.version,
+    )
+    intent = _delivery_intent(
+        kind="memory_eval",
+        projection=payload.projection,
+        target_kind="memory_eval",
+        target_digest=payload.target_digest,
+        target=payload.projection.target,
+        receipt=receipt,
+    )
+    return receipt, intent
+
+
 class EvaluateMemoryImprovementHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(EvaluateMemoryInput, request.input)
-            assert_delivery_gate(payload.projection, DeliveryKind.MEMORY_PATCH)
-            receipt = MemoryEvalReceipt(
-                eval_run_id=payload.eval_run_id,
-                outcome=payload.outcome,
-                report_sha256=payload.report_sha256,
-                staged_sha256=payload.staged_sha256,
-                baseline_sha256=payload.baseline_sha256,
-                approved_state_digest=artifact_digest(payload.projection),
-                approved_version=payload.projection.version,
-            )
-            intent = _delivery_intent(
-                kind="memory_eval",
-                projection=payload.projection,
-                target_kind="memory_eval",
-                target_digest=payload.target_digest,
-                target=payload.projection.target,
-                receipt=receipt,
-            )
+            receipt, intent = evaluate_memory(validate_input(EvaluateMemoryInput, request.input))
             return succeeded(cast(dict[str, object], receipt.model_dump(mode="json")), effects=(intent,))
         except InputError as error:
             return failed_input(error)
@@ -607,4 +611,5 @@ __all__ = [
     "attempt_apply",
     "assert_apply_proof",
     "assert_authenticated_approval",
+    "evaluate_memory",
 ]
