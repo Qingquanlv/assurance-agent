@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import get_type_hints
+from typing import Annotated, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
@@ -36,9 +36,44 @@ def _schema_digest(model: type[BaseModel]) -> str:
     return canonical_digest(model.model_json_schema())
 
 
+def _stable_type_name(hint: object) -> str:
+    if isinstance(hint, type):
+        if hint.__module__ == "builtins":
+            return hint.__qualname__
+        return f"{hint.__module__}.{hint.__qualname__}"
+    name = getattr(hint, "__name__", None)
+    if isinstance(name, str):
+        return name
+    raise TypeError(f"unsupported type hint: {type(hint).__name__}")
+
+
+def _stable_origin_type(hint: object) -> str:
+    origin = get_origin(hint)
+    if origin is None:
+        return _stable_type_name(hint)
+    rendered_args = [_stable_origin_type(arg) for arg in get_args(hint)]
+    rendered_origin = _stable_type_name(origin)
+    if not rendered_args:
+        return rendered_origin
+    return f"{rendered_origin}[{', '.join(rendered_args)}]"
+
+
+def _stable_hint_projection(hint: object) -> JSONValue:
+    origin = get_origin(hint)
+    if origin is Annotated:
+        annotated_origin, *metadata = get_args(hint)
+        reducers: list[JSONValue] = []
+        for extra in metadata:
+            if not callable(extra):
+                raise TypeError("ProductState annotated metadata must be a reducer")
+            reducers.append({"module": extra.__module__, "qualname": extra.__qualname__})
+        return {"origin": _stable_origin_type(annotated_origin), "reducers": reducers}
+    return {"origin": _stable_origin_type(hint), "reducers": []}
+
+
 def _product_state_schema_digest() -> str:
     hints = get_type_hints(ProductState, include_extras=True)
-    return canonical_digest({name: str(hints[name]) for name in sorted(hints)})
+    return canonical_digest({name: _stable_hint_projection(hints[name]) for name in sorted(hints)})
 
 
 _INPUT_MODEL = "assurance_product.models.ProductInputV1"

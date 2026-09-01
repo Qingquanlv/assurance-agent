@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import get_type_hints
+from typing import Annotated, get_args, get_origin, get_type_hints
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -15,9 +15,48 @@ from assurance_product.graphs.revisions import (
 from assurance_product.graphs.state import ProductState, ProductStateDocument
 from assurance_product.models import PRODUCT_ENTRYPOINTS, THIN_ENTRYPOINTS
 from graph_engine.boot.graph_revision import EntrypointGraphContract
-from graph_engine.canonical import canonical_digest
+from graph_engine.canonical import JSONValue, canonical_digest
 
 from tests.product.test_stategraph_entrypoints import _build_context, _real_features
+
+
+def _stable_type_name(hint: object) -> str:
+    if isinstance(hint, type):
+        if hint.__module__ == "builtins":
+            return hint.__qualname__
+        return f"{hint.__module__}.{hint.__qualname__}"
+    name = getattr(hint, "__name__", None)
+    if isinstance(name, str):
+        return name
+    raise TypeError(f"unsupported type hint: {hint!r}")
+
+
+def _stable_origin_type(hint: object) -> str:
+    origin = get_origin(hint)
+    if origin is None:
+        return _stable_type_name(hint)
+    rendered_args = [_stable_origin_type(arg) for arg in get_args(hint)]
+    rendered_origin = _stable_type_name(origin)
+    if not rendered_args:
+        return rendered_origin
+    return f"{rendered_origin}[{', '.join(rendered_args)}]"
+
+
+def _stable_hint_projection(hint: object) -> JSONValue:
+    origin = get_origin(hint)
+    if origin is Annotated:
+        annotated_origin, *metadata = get_args(hint)
+        return {
+            "origin": _stable_origin_type(annotated_origin),
+            "reducers": [{"module": extra.__module__, "qualname": extra.__qualname__} for extra in metadata],
+        }
+    return {"origin": _stable_origin_type(hint), "reducers": []}
+
+
+def _stable_product_state_projection() -> dict[str, JSONValue]:
+    hints = get_type_hints(ProductState, include_extras=True)
+    return {name: _stable_hint_projection(hints[name]) for name in sorted(hints)}
+
 
 EXPECTED_RECURSION_LIMITS = {
     "intake": 2048,
@@ -96,9 +135,33 @@ def test_state_schema_digest_tracks_product_state_runtime_schema() -> None:
         "receipt_refs",
     }
     assert feature_native <= set(hints)
-    runtime_digest = canonical_digest({name: str(hints[name]) for name in sorted(hints)})
+    runtime_digest = canonical_digest(_stable_product_state_projection())
     document_digest = canonical_digest(ProductStateDocument.model_json_schema())
     contract = ENTRYPOINT_CONTRACTS["intake"]
     assert contract.state_model == "assurance_product.graphs.state.ProductState"
     assert contract.state_schema_digest == runtime_digest
     assert contract.state_schema_digest != document_digest
+
+
+def test_state_schema_digest_excludes_function_addresses() -> None:
+    hints = get_type_hints(ProductState, include_extras=True)
+    leaked_projection: dict[str, JSONValue] = {name: str(hints[name]) for name in sorted(hints)}
+    assert any(isinstance(rendered, str) and "0x" in rendered for rendered in leaked_projection.values())
+
+    stable_projection = _stable_product_state_projection()
+    assert all("0x" not in rendered for rendered in _json_strings(stable_projection))
+
+    digest_value = ENTRYPOINT_CONTRACTS["intake"].state_schema_digest
+    assert "0x" not in digest_value
+    assert digest_value == canonical_digest(stable_projection)
+    assert digest_value != canonical_digest(leaked_projection)
+
+
+def _json_strings(value: JSONValue) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for child in value for item in _json_strings(child)]
+    if isinstance(value, dict):
+        return [item for child in value.values() for item in _json_strings(child)]
+    return []
