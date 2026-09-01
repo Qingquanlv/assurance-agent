@@ -15,6 +15,8 @@ root_packages =
     agent_runtime_fixture
     assurance_product
 
+# Coexistence: Features keep both .workflow (legacy YAML) and .graphs (Python
+# StateGraph) forbidden across peers. Do not drop .workflow until final deletion.
 [importlinter:contract:generation-intake-contracts-only]
 name = generation may import only intake contracts
 type = forbidden
