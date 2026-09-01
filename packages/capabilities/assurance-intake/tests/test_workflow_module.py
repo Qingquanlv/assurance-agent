@@ -441,6 +441,43 @@ def test_case_design_has_one_internal_deterministic_validation_repair() -> None:
     assert ("repair-finalize", "done", None) in edges
 
 
+def test_case_design_prepare_fanout_feeds_execute_and_finalize_inputs() -> None:
+    graph = _load_module().graphs["case-design"]
+    prepare = graph.nodes["prepare"]
+    assert prepare.routing is not None
+    assert prepare.routing.mode == "fanout"
+    assert prepare.routing.min_matches == 2
+    edges = {_edge_record(edge) for edge in graph.edges}
+    assert ("prepare", "execute", None) in edges
+    assert ("prepare", "finalize-inputs", None) in edges
+
+
+def test_case_design_repair_prepare_fanout_feeds_repair_execute_and_repair_finalize_inputs() -> None:
+    graph = _load_module().graphs["case-design"]
+    repair_prepare = graph.nodes["repair-prepare"]
+    assert repair_prepare.routing is not None
+    assert repair_prepare.routing.mode == "fanout"
+    assert repair_prepare.routing.min_matches == 2
+    edges = {_edge_record(edge) for edge in graph.edges}
+    assert ("repair-prepare", "repair-execute", None) in edges
+    assert ("repair-prepare", "repair-finalize-inputs", None) in edges
+
+
+def test_intake_min_matches_sites_are_exactly_the_two_composite_absorptions() -> None:
+    module = _load_module()
+    sites = [
+        (graph_id, node_id, node.routing.min_matches)
+        for graph_id, graph in module.graphs.items()
+        for node_id, node in graph.nodes.items()
+        if node.routing is not None and node.routing.mode == "fanout"
+    ]
+    assert sites == [
+        ("case-design", "prepare", 2),
+        ("case-design", "repair-prepare", 2),
+    ]
+    assert all(min_matches == 2 for _graph_id, _node_id, min_matches in sites)
+
+
 def test_export_output_projections_expose_review_outcome_and_artifact_refs() -> None:
     module = _load_module()
     for export_name in _EXPORTS:

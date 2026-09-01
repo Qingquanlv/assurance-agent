@@ -118,6 +118,19 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {base: _paths(*outputs) for base, _skill, _profile, _input, _result, _output, outputs, _extra in _JOBS}
 )
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
+INTAKE_GRAPH_CONTRACT_IDS: tuple[str, ...] = (
+    "assurance.intake.agent.intake.v1",
+    "assurance.intake.agent.explore.v1",
+    "assurance.intake.agent.case-design.v1",
+    "assurance.intake.agent.case-review.v1",
+)
+INTAKE_GRAPH_SEMANTIC_OCCURRENCES: tuple[tuple[str, str], ...] = (
+    ("intake.intake", "assurance.intake.agent.intake.v1"),
+    ("intake.explore", "assurance.intake.agent.explore.v1"),
+    ("intake.case-design", "assurance.intake.agent.case-design.v1"),
+    ("intake.case-design-repair", "assurance.intake.agent.case-design.v1"),
+    ("intake.case-review", "assurance.intake.agent.case-review.v1"),
+)
 
 
 def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
@@ -137,6 +150,8 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
+    "INTAKE_GRAPH_CONTRACT_IDS",
+    "INTAKE_GRAPH_SEMANTIC_OCCURRENCES",
     "OUTPUT_ROUTE_TEMPLATES",
     "TASK_ATTEMPT_CONTRACTS",
     "attempt_contract_refs",

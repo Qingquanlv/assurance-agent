@@ -1,4 +1,8 @@
-"""Deterministic Intake workflow-state handlers."""
+"""Deterministic Intake workflow-state handlers.
+
+The typed graph calls ``advance_review_round`` as an ordinary node. This
+handler remains the YAML adapter and discards ``TaskContext``.
+"""
 
 from __future__ import annotations
 
