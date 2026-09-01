@@ -12,7 +12,6 @@ from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
 from graph_engine.attempts.events import (
     ActiveSystemInterrupt,
-    AttemptOpened,
     AttemptSnapshot,
     SystemInterruptIssued,
 )
@@ -32,6 +31,7 @@ from graph_engine.stategraph.checkpoint_bridge import (
     CheckpointBridgeMarker,
     MAX_ACTIVE_GENERATIONS,
     omit_checkpoint_bridge_fields,
+    replace_checkpoint_marker_batch,
 )
 
 
@@ -124,10 +124,8 @@ class AttemptNodeFactory:
         if isinstance(resolution, (PendingTaskResult, IndeterminateTaskResult)):
             await self._issue_interrupt(
                 key,
-                contract=contract,
-                validated=validated,
+                kernel=kernel,
                 context=context,
-                revision=revision,
                 issued=issued,
                 resolution=resolution,
             )
@@ -137,15 +135,16 @@ class AttemptNodeFactory:
         self,
         key: AttemptKey,
         *,
-        contract: TaskAttemptContract[Any, Any] | ResolvedAttemptContract[Any, Any],
-        validated: BaseModel,
+        kernel: object,
         context: AttemptExecutionContext,
-        revision: str,
         issued: tuple[ActiveSystemInterrupt, ...],
         resolution: PendingTaskResult | IndeterminateTaskResult,
     ) -> None:
         if len(issued) >= MAX_ACTIVE_GENERATIONS:
             raise ValueError("checkpoint marker batch exceeds the active-generation bound")
+        record = getattr(kernel, "record_system_interrupt_issued", None)
+        if not callable(record):
+            raise TypeError("attempt kernel must record system interrupts")
         generation = max((item.generation for item in issued), default=0) + 1
         ordinal = max((item.ordinal for item in issued), default=-1) + 1
         kind = "system_wake" if isinstance(resolution, PendingTaskResult) else "system_block"
@@ -168,26 +167,7 @@ class AttemptNodeFactory:
             ordinal=ordinal,
             envelope_digest=envelope_digest,
         )
-        snapshot = await self._journal.load(key)
-        events: list[object] = []
-        if snapshot is None:
-            events.append(
-                AttemptOpened(
-                    contract_digest=_contract_digest(contract),
-                    input_digest=canonical_digest(validated.model_dump(mode="json")),
-                    graph_revision=revision,
-                    invocation_id=context.invocation_id,
-                    public_entrypoint=context.public_entrypoint,
-                    semantic_node_id=context.semantic_node_id,
-                )
-            )
-        events.append(event)
-        await self._journal.append(
-            key,
-            tuple(events),  # type: ignore[arg-type]
-            expected_revision=0 if snapshot is None else snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
+        await record(key, event, context)
         payload = _interrupt_payload(
             key,
             ActiveSystemInterrupt(generation=generation, ordinal=ordinal, envelope_digest=envelope_digest),
@@ -250,12 +230,6 @@ def _task_contract(
     if isinstance(contract, ResolvedAttemptContract):
         return contract.contract
     return contract
-
-
-def _contract_digest(contract: TaskAttemptContract[Any, Any] | ResolvedAttemptContract[Any, Any]) -> str:
-    if isinstance(contract, ResolvedAttemptContract):
-        return contract.contract_digest
-    return canonical_digest(contract.canonical_projection())
 
 
 def _resolve_activation(activation: object, state: object) -> BusinessActivation:
@@ -388,16 +362,20 @@ def _with_completion(
 ) -> dict[str, object]:
     if not issued:
         return update
-    update[CHECKPOINT_MARKERS_STATE_KEY] = [
-        CheckpointBridgeMarker(
-            kind="system_interrupt_completed",
-            attempt_key=key.digest,
-            generation=item.generation,
-            ordinal=item.ordinal,
-            envelope_digest=item.envelope_digest,
-        ).model_dump(mode="json")
-        for item in issued
-    ]
+    existing = update.get(CHECKPOINT_MARKERS_STATE_KEY)
+    update[CHECKPOINT_MARKERS_STATE_KEY] = replace_checkpoint_marker_batch(
+        existing if isinstance(existing, list) else None,
+        [
+            CheckpointBridgeMarker(
+                kind="system_interrupt_completed",
+                attempt_key=key.digest,
+                generation=item.generation,
+                ordinal=item.ordinal,
+                envelope_digest=item.envelope_digest,
+            )
+            for item in issued
+        ],
+    )
     return update
 
 

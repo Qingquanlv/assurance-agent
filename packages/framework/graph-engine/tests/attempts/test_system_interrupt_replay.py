@@ -50,6 +50,8 @@ class ScriptedKernel:
         self.resolutions: list[object] = []
         self.seen_key: AttemptKey | None = None
         self.calls = 0
+        self.journal: MemoryAttemptJournal | None = None
+        self.issued_events: list[SystemInterruptIssued] = []
 
     def push(self, resolution: object) -> None:
         self.resolutions.append(resolution)
@@ -63,6 +65,21 @@ class ScriptedKernel:
         if not self.resolutions:
             raise AssertionError("scripted kernel has no queued resolution")
         return self.resolutions.pop(0)
+
+    async def record_system_interrupt_issued(
+        self, attempt_key: AttemptKey, event: SystemInterruptIssued, context: object
+    ) -> object:
+        self.issued_events.append(event)
+        journal = self.journal
+        if journal is None:
+            raise TypeError("scripted kernel has no journal")
+        snapshot = await journal.load(attempt_key)
+        return await journal.append(
+            attempt_key,
+            (event,),
+            expected_revision=0 if snapshot is None else snapshot.revision,
+            fencing_token=context.fencing_token,
+        )
 
 
 class ScriptedJournal(MemoryAttemptJournal):
@@ -180,6 +197,7 @@ async def test_resume_replays_issued_interrupt_before_kernel_reentry(
 ) -> None:
     kernel = ScriptedKernel()
     journal = ScriptedJournal(kernel)
+    kernel.journal = journal
     trace: list[str] = []
     factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
     node = factory.attempt(
@@ -213,6 +231,7 @@ async def test_crash_after_resume_before_node_checkpoint_replays_same_ordinal(
 ) -> None:
     kernel = ScriptedKernel()
     journal = ScriptedJournal(kernel)
+    kernel.journal = journal
     trace: list[str] = []
     factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
     node = factory.attempt(
@@ -253,6 +272,7 @@ async def test_multiple_pending_generations_replay_every_ordinal_in_order(
 ) -> None:
     kernel = ScriptedKernel()
     journal = ScriptedJournal(kernel)
+    kernel.journal = journal
     trace: list[str] = []
     factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
     node = factory.attempt(
@@ -303,6 +323,7 @@ async def test_technical_retry_reuses_key_and_replays_issued_ordinals(
 ) -> None:
     kernel = ScriptedKernel()
     journal = ScriptedJournal(kernel)
+    kernel.journal = journal
     trace: list[str] = []
     factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
     node = factory.attempt(
@@ -333,6 +354,7 @@ async def test_replay_cannot_skip_issued_interrupt_when_external_state_changes(
 ) -> None:
     kernel = ScriptedKernel()
     journal = ScriptedJournal(kernel)
+    kernel.journal = journal
     trace: list[str] = []
     factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
     node = factory.attempt(
@@ -364,6 +386,7 @@ async def test_active_generation_bound_is_enforced_before_another_interrupt(
 ) -> None:
     kernel = ScriptedKernel()
     journal = ScriptedJournal(kernel)
+    kernel.journal = journal
     factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=[])
     node = factory.attempt(
         _resolved(),
@@ -405,6 +428,7 @@ async def test_active_generation_bound_is_enforced_before_another_interrupt(
 async def test_compiled_resume_replays_before_next_superstep() -> None:
     kernel = ScriptedKernel()
     journal = ScriptedJournal(kernel)
+    kernel.journal = journal
     factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=[])
     node = factory.attempt(
         _resolved(),

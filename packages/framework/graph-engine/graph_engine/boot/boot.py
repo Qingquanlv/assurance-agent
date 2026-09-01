@@ -18,8 +18,8 @@ from graph_engine.application.runtime_context import (
     WorkspaceProviderPort,
 )
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
+from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.node_factory import AttemptNodeFactory
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.boot.graph_revision import (
     BootArtifact,
     EntrypointGraphContract,
@@ -298,17 +298,14 @@ class GraphEngineBoot:
         approved_roots = tuple(source.snapshot.identity.root for source in sources.values())
         resolved_contracts: dict[str, ResolvedAttemptContract[Any, Any]] = {}
         kernel = None
-        journal = None
+        factory = None
         if runtime_ports is not None:
             kernel = runtime_ports.attempt_kernel
-            journal = getattr(kernel, "journal", None)
+            if isinstance(kernel, AssuranceAttemptKernel):
+                factory = bind_attempt_factory(kernel)
             for contract_id, resolved in self._resolver.resolve_executors().items():
                 if isinstance(resolved, ResolvedAttemptContract):
                     resolved_contracts[str(contract_id)] = resolved
-        factory = AttemptNodeFactory(
-            journal=journal if journal is not None else MemoryAttemptJournal(),
-            kernel=kernel,
-        )
         context = EngineGraphBuildContext(
             contracts=data_contracts,
             checkpointer=checkpointer,
@@ -471,6 +468,14 @@ def _reject_organization_overrides(root: Path | None) -> None:
             )
 
 
+def bind_attempt_factory(kernel: object | None) -> AttemptNodeFactory | None:
+    if kernel is None:
+        return None
+    if isinstance(kernel, AssuranceAttemptKernel):
+        return AttemptNodeFactory(journal=kernel.journal, kernel=kernel)
+    raise BootValidationError("attempt kernel must expose its journal")
+
+
 def _read_approved_source(path: Path, approved_source_roots: tuple[Path, ...]) -> bytes:
     resolved = path.expanduser()
     if not resolved.is_absolute():
@@ -501,4 +506,5 @@ __all__ = [
     "OrganizationOverrideError",
     "RuntimePorts",
     "SourceAuthenticator",
+    "bind_attempt_factory",
 ]

@@ -12,6 +12,8 @@ from graph_engine.attempts.contracts import (
     TaskAttemptContract,
     resolve_contract,
 )
+from graph_engine.attempts.events import AttemptOpened, SystemInterruptIssued
+from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import (
@@ -24,14 +26,23 @@ from graph_engine.attempts.resolutions import (
     RejectedTaskResult,
     SystemReference,
 )
-from graph_engine.boot.boot import ContractOwnershipError, EngineCapabilityBuildContext
+from graph_engine.boot.boot import (
+    BootValidationError,
+    ContractOwnershipError,
+    EngineCapabilityBuildContext,
+    bind_attempt_factory,
+)
+from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.plugin_api import ResourceClaims
 from graph_engine.stategraph.checkpoint_bridge import (
     CHECKPOINT_MARKERS_STATE_KEY,
+    CheckpointBridgeMarker,
     omit_checkpoint_bridge_fields,
+    replace_checkpoint_marker_batch,
 )
 from langgraph.errors import GraphInterrupt
+from langgraph.types import Interrupt
 
 
 class RunInput(BaseModel):
@@ -53,6 +64,8 @@ class ScriptedKernel:
         self.seen_key: AttemptKey | None = None
         self.calls = 0
         self.seen_inputs: list[RunInput] = []
+        self.journal: MemoryAttemptJournal | None = None
+        self.issued_events: list[SystemInterruptIssued] = []
 
     def push(self, resolution: object) -> None:
         self.resolutions.append(resolution)
@@ -68,6 +81,21 @@ class ScriptedKernel:
         if not self.resolutions:
             raise AssertionError("scripted kernel has no queued resolution")
         return self.resolutions.pop(0)
+
+    async def record_system_interrupt_issued(
+        self, attempt_key: AttemptKey, event: SystemInterruptIssued, context: object
+    ) -> object:
+        self.issued_events.append(event)
+        journal = self.journal
+        if journal is None:
+            raise TypeError("scripted kernel has no journal")
+        snapshot = await journal.load(attempt_key)
+        return await journal.append(
+            attempt_key,
+            (event,),
+            expected_revision=0 if snapshot is None else snapshot.revision,
+            fencing_token=context.fencing_token,
+        )
 
 
 class ScriptedJournal(MemoryAttemptJournal):
@@ -156,7 +184,20 @@ def _expected_key(*, change_id: str = "chg-1", activation: BusinessActivation | 
 
 def _factory(kernel: ScriptedKernel, *, trace: list[str] | None = None) -> AttemptNodeFactory:
     journal = ScriptedJournal(kernel=kernel)
+    kernel.journal = journal
     return AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
+
+
+class _ReplayThenRaise:
+    def __init__(self, replay_count: int) -> None:
+        self.replay_count = replay_count
+        self.calls = 0
+
+    def __call__(self, value: object) -> object:
+        self.calls += 1
+        if self.calls <= self.replay_count:
+            return {"resumed": True}
+        raise GraphInterrupt((Interrupt(value=value),))
 
 
 async def test_committed_resolution_publishes_typed_output_and_receipt() -> None:
@@ -385,3 +426,93 @@ async def test_fresh_success_omits_reserved_channel_from_public_output() -> None
 def test_observer_is_the_checkpoint_anchor_port() -> None:
     observer = AttemptCheckpointObserver(MemoryAttemptJournal())
     assert hasattr(observer, "on_anchored")
+
+
+async def test_factory_issues_interrupt_through_kernel_and_does_not_open_attempt() -> None:
+    kernel = ScriptedKernel(PendingTaskResult(wakeup=SystemReference(reference_id="wake-1")))
+    factory = _factory(kernel)
+    node = factory.attempt(
+        _resolved(),
+        semantic_node_id="execution.run",
+        activation=select_activation,
+        select=select_input,
+        publish=publish_output,
+    )
+    with pytest.raises(GraphInterrupt):
+        await node(_state(), runtime=_runtime(kernel))
+    assert len(kernel.issued_events) == 1
+    assert isinstance(kernel.issued_events[0], SystemInterruptIssued)
+    key = _expected_key()
+    records = factory._journal._logs[key.digest]
+    kinds = [type(event).__name__ for record in records for event in record.events]
+    assert kinds == ["SystemInterruptIssued"]
+    assert AttemptOpened not in {type(event) for record in records for event in record.events}
+
+
+async def test_completion_batch_goes_through_replace_checkpoint_marker_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel = ScriptedKernel()
+    factory = _factory(kernel)
+    key = _expected_key()
+    digest = canonical_digest({"generation": 1})
+    await factory._journal.append(
+        key,
+        (
+            AttemptOpened(
+                contract_digest=canonical_digest({"c": 1}),
+                input_digest=canonical_digest({"i": 1}),
+                graph_revision=REVISION,
+                invocation_id="inv-1",
+                public_entrypoint="execute",
+                semantic_node_id="execution.run",
+            ),
+            SystemInterruptIssued(generation=1, ordinal=0, envelope_digest=digest),
+        ),
+        expected_revision=0,
+        fencing_token=4,
+    )
+    kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
+    monkeypatch.setattr("graph_engine.attempts.node_factory.interrupt", _ReplayThenRaise(1))
+    node = factory.attempt(
+        _resolved(),
+        semantic_node_id="execution.run",
+        activation=select_activation,
+        select=select_input,
+        publish=publish_output,
+    )
+    update = await node(_state(), runtime=_runtime(kernel))
+    markers = update[CHECKPOINT_MARKERS_STATE_KEY]
+    expected = replace_checkpoint_marker_batch(
+        None,
+        [
+            CheckpointBridgeMarker(
+                kind="system_interrupt_completed",
+                attempt_key=key.digest,
+                generation=1,
+                ordinal=0,
+                envelope_digest=digest,
+            )
+        ],
+    )
+    assert markers == expected
+    assert all(isinstance(marker, CheckpointBridgeMarker) for marker in markers)
+
+
+def test_boot_binds_factory_to_kernel_journal() -> None:
+    journal = MemoryAttemptJournal()
+    kernel = AssuranceAttemptKernel(
+        journal=journal,
+        arbiter=object(),
+        workspace=object(),
+        graph_revision=REVISION,
+    )
+    factory = bind_attempt_factory(kernel)
+    assert factory is not None
+    assert factory._journal is journal
+
+
+def test_port_only_kernel_fails_closed_without_ephemeral_journal() -> None:
+    with pytest.raises(BootValidationError, match="journal"):
+        bind_attempt_factory(object())
+    assert bind_attempt_factory(None) is None
