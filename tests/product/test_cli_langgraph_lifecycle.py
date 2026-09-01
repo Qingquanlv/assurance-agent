@@ -52,12 +52,18 @@ def _load_selection(path: Path) -> dict[str, object]:
     return payload
 
 
-def test_entrypoint_runtime_cutover_is_all_legacy_v2() -> None:
+def test_entrypoint_runtime_cutover_flips_only_schema_green_wave_a() -> None:
     from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS
 
     assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
     assert len(ENTRYPOINT_RUNTIME_CUTOVER) == 14
-    assert all(kind == "legacy-v2" for kind in ENTRYPOINT_RUNTIME_CUTOVER.values())
+    flipped = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "langgraph-v1"}
+    assert flipped == {
+        "improvement-evaluate",
+        "improvement-export",
+        "improvement-apply",
+        "improvement-rollback",
+    }
 
 
 def test_cli_environment_and_config_cannot_override_cutover(

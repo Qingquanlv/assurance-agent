@@ -244,9 +244,17 @@ def test_mismatches_are_reported_by_semantic_field_not_raw_events() -> None:
     assert "activation_id" not in str(exc_info.value)
 
 
-def test_production_cutover_stays_all_legacy_during_shadow() -> None:
+def test_production_cutover_is_not_mutated_by_shadow() -> None:
     assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
-    assert all(kind == "legacy-v2" for kind in ENTRYPOINT_RUNTIME_CUTOVER.values())
+    frozen = dict(ENTRYPOINT_RUNTIME_CUTOVER)
+    flipped = {name for name, kind in frozen.items() if kind == "langgraph-v1"}
+    assert flipped == {
+        "improvement-evaluate",
+        "improvement-export",
+        "improvement-apply",
+        "improvement-rollback",
+    }
+    assert all(frozen[name] == "legacy-v2" for name in PRODUCT_ENTRYPOINTS - flipped)
 
 
 def test_delivery_kind_is_not_a_seventh_effect() -> None:

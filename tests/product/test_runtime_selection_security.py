@@ -363,3 +363,52 @@ def test_langgraph_initialized_record_disagrees_with_checkpoint_evidence(
         ],
     )
     assert status.exit_code == 40, status.output
+
+
+def test_cutover_missing_or_extra_keys_fail_boot() -> None:
+    from graph_engine.boot.boot import BootValidationError
+
+    from assurance_product.models import PRODUCT_ENTRYPOINTS
+    from assurance_product.runtime_selection import validate_entrypoint_runtime_cutover
+
+    complete = {name: "legacy-v2" for name in PRODUCT_ENTRYPOINTS}
+    missing = {name: kind for name, kind in complete.items() if name != "intake"}
+    extra = {**complete, "shadow": "langgraph-v1"}
+    with pytest.raises(BootValidationError, match="missing"):
+        validate_entrypoint_runtime_cutover(missing)
+    with pytest.raises(BootValidationError, match="extra"):
+        validate_entrypoint_runtime_cutover(extra)
+    validate_entrypoint_runtime_cutover(complete)
+
+
+def test_reopen_ignores_current_switch_during_initializing(
+    cli_runner, installed_sources, tmp_path: Path, monkeypatch
+) -> None:
+    from assurance_product import runtime_selection
+    from assurance_product.cli import app
+    from assurance_product.product import resolve_assurance_composition
+    from assurance_product.runtime_selection import use_test_runtime_selector
+
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
+    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    args, project_dir, change_id = common_lifecycle_args(
+        tmp_path=tmp_path,
+        installed_sources=installed_sources,
+        composition=composition,
+        invocation_id="inv-reopen-switch",
+        entrypoint="archive",
+    )
+    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", "after_initializing")
+    crashed = cli_runner.invoke(app, ["start", *args])
+    assert crashed.exit_code == 40, crashed.output
+    payload = json.loads(_selection_path(project_dir, change_id, "inv-reopen-switch").read_text())
+    assert payload["runtime"] == "langgraph-v1"
+    assert payload["phase"] == "initializing"
+    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", None)
+    use_test_runtime_selector(lambda _entrypoint: "legacy-v2")
+    restarted = cli_runner.invoke(app, ["start", *args])
+    assert restarted.exit_code == 0, restarted.output
+    completed = json.loads(_selection_path(project_dir, change_id, "inv-reopen-switch").read_text())
+    assert completed["runtime"] == "langgraph-v1"
+    assert completed["phase"] == "initialized"

@@ -3,17 +3,19 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
 from pydantic import Field
 
+from graph_engine.boot.boot import BootValidationError
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_product.change_workspace import ChangeWorkspace
-from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, RuntimeKind
+from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS, RuntimeKind
 
 _TEST_SELECTOR: Callable[[str], RuntimeKind] | None = None
 _TEST_CRASH_AT: str | None = None
@@ -61,9 +63,84 @@ def use_test_runtime_selector(selector: Callable[[str], RuntimeKind] | None) -> 
         _TEST_CRASH_AT = None
 
 
+ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "archive": ("assurance.improvement.agent.archive.v1",),
+        "case": (
+            "assurance.intake.agent.case-design.v1",
+            "assurance.intake.agent.case-review.v1",
+        ),
+        "execute": (
+            "assurance.execution.agent.execute.v1",
+            "assurance.execution.agent.run.v1",
+            "assurance.generation.agent.api.plan.v1",
+            "assurance.healing.agent.coverage-repair.v1",
+            "assurance.healing.agent.fix-proposal.v1",
+            "assurance.quality.agent.fact-baseline.v1",
+            "assurance.quality.agent.inspect.v1",
+            "assurance.quality.agent.report.v1",
+        ),
+        "full": (
+            "assurance.execution.agent.execute.v1",
+            "assurance.generation.agent.api.plan.v1",
+            "assurance.improvement.agent.archive.v1",
+            "assurance.intake.agent.intake.v1",
+            "assurance.quality.agent.report.v1",
+        ),
+        "improvement-apply": (),
+        "improvement-evaluate": (),
+        "improvement-export": (),
+        "improvement-review": ("assurance.improvement.agent.improvement-review.v1",),
+        "improvement-rollback": (),
+        "intake": (
+            "assurance.intake.agent.intake.v1",
+            "assurance.intake.agent.explore.v1",
+            "assurance.intake.agent.case-design.v1",
+            "assurance.intake.agent.case-review.v1",
+        ),
+        "issue-analyze": ("assurance.quality.agent.issue-analysis.v1",),
+        "issue-reconcile": ("assurance.quality.agent.issue-analysis.v1",),
+        "issue-review": ("assurance.quality.agent.issue-triage.v1",),
+        "retro": (
+            "assurance.improvement.agent.retro.v1",
+            "assurance.improvement.agent.retro-eval-analysis.v1",
+            "assurance.improvement.agent.retro-issue-analysis.v1",
+            "assurance.improvement.agent.retro-workflow-analysis.v1",
+        ),
+    }
+)
+
+
+def validate_entrypoint_runtime_cutover(mapping: Mapping[str, str]) -> None:
+    expected = set(PRODUCT_ENTRYPOINTS)
+    got = set(mapping)
+    missing = expected - got
+    extra = got - expected
+    if missing or extra:
+        raise BootValidationError(
+            "runtime cutover keys must be the exact 14 public names; "
+            f"missing={sorted(missing)} extra={sorted(extra)}"
+        )
+    invalid = {name: kind for name, kind in mapping.items() if kind not in {"legacy-v2", "langgraph-v1"}}
+    if invalid:
+        raise BootValidationError(f"runtime cutover values must be legacy-v2 or langgraph-v1: {invalid}")
+
+
+def entrypoint_requires_provider_schema(entrypoint: str) -> bool:
+    from assurance_product.agent_contracts import all_feature_agent_contracts
+
+    contracts = all_feature_agent_contracts()
+    for contract_id in ENTRYPOINT_AGENT_CONTRACT_IDS[entrypoint]:
+        contract = contracts.get(contract_id)
+        if contract is not None and contract.requires_provider_schema:
+            return True
+    return False
+
+
 def select_runtime(entrypoint: str) -> RuntimeKind:
     if _TEST_SELECTOR is not None:
         return _TEST_SELECTOR(entrypoint)
+    validate_entrypoint_runtime_cutover(ENTRYPOINT_RUNTIME_CUTOVER)
     try:
         return ENTRYPOINT_RUNTIME_CUTOVER[entrypoint]
     except KeyError as error:
@@ -228,7 +305,11 @@ def record_digest(record: SelectionRecord) -> str:
     return canonical_digest(record.model_dump(mode="json"))
 
 
+if set(ENTRYPOINT_AGENT_CONTRACT_IDS) != set(PRODUCT_ENTRYPOINTS):
+    raise RuntimeError("entrypoint Agent-contract inventory must cover the 14 public names")
+
 __all__ = [
+    "ENTRYPOINT_AGENT_CONTRACT_IDS",
     "LangGraphRuntimeRecord",
     "LegacyRuntimeRecord",
     "RuntimeSelectionError",
@@ -236,11 +317,13 @@ __all__ = [
     "SelectionRecord",
     "backfill_legacy",
     "complete_initialized",
+    "entrypoint_requires_provider_schema",
     "load_selection",
     "maybe_crash",
     "require_initialized",
     "select_runtime",
     "selection_path",
     "use_test_runtime_selector",
+    "validate_entrypoint_runtime_cutover",
     "write_initializing",
 ]

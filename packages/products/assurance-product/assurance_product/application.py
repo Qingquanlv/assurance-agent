@@ -6,7 +6,7 @@ import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from agent_runtime_contracts import AgentRuntimeCapabilities
 from agent_runtime_contracts.plugin_kit import negotiate_provider_schema
@@ -23,14 +23,14 @@ from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
 from assurance_product.binding_builder import build_deployment_wheel
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.export import publish_achieved, select_publish_change
-from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1, StatusV1
+from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS, ProductInputV1, StatusV1
 from assurance_product.product import (
     GraphAuditResult,
     coexistence_graph_manifest,
     product_lock_from_composition,
     reject_organization_overrides,
 )
-from assurance_product.revision_registry import RevisionRegistry
+from assurance_product.revision_registry import RevisionRegistry, assert_recorded_revision
 from assurance_product.runtime_ports import ProductRuntimePorts
 from assurance_product.runtime_selection import (
     LangGraphRuntimeRecord,
@@ -43,6 +43,7 @@ from assurance_product.runtime_selection import (
     maybe_crash,
     require_initialized,
     select_runtime,
+    validate_entrypoint_runtime_cutover,
     write_initializing,
 )
 from assurance_product.status import (
@@ -174,13 +175,18 @@ def parse_resume_file(path: Path, pending_ids: Sequence[str] = ()) -> object:
 def assert_structured_output_capability(
     composition: object,
     *,
+    entrypoint: str | None = None,
     requires_provider_schema: bool | None = None,
 ) -> None:
-    required = (
-        _contracts_require_provider_schema(composition)
-        if requires_provider_schema is None
-        else requires_provider_schema
-    )
+    if requires_provider_schema is None:
+        if entrypoint is None:
+            required = _contracts_require_provider_schema(composition)
+        else:
+            from assurance_product.runtime_selection import entrypoint_requires_provider_schema
+
+            required = entrypoint_requires_provider_schema(entrypoint)
+    else:
+        required = requires_provider_schema
     negotiate_provider_schema(
         required=required,
         capabilities=_advertised_binding_capabilities(composition),
@@ -200,6 +206,7 @@ class AssuranceProductApplication:
         config_tree: str,
     ) -> dict[str, object]:
         reject_organization_overrides(Path(config_tree))
+        validate_entrypoint_runtime_cutover(ENTRYPOINT_RUNTIME_CUTOVER)
         product_lock = product_lock_from_composition(composition)
         manifest = coexistence_graph_manifest(composition, product_lock)
         bundle = CoexistenceBuildArtifacts(composition.lock, product_lock, manifest)
@@ -272,6 +279,14 @@ class AssuranceProductApplication:
                 build_identity=build_identity,
             )
         write_initializing(workspace, initializing)
+        _bind_revision(
+            workspace,
+            invocation_id=invocation_id,
+            runtime=runtime,
+            composition=composition,
+            product_lock=product_lock,
+            build_identity=build_identity,
+        )
         if runtime == "legacy-v2":
             identity_digest = self._start_legacy(
                 workspace=workspace,
@@ -733,6 +748,7 @@ class AssuranceProductApplication:
         root_input: Mapping[str, JSONValue],
         product_lock: ProductLock,
     ) -> str:
+        _assert_langgraph_revision(workspace, composition, invocation_id)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
             RevisionRegistry(workspace).remember(
                 coexistence_graph_manifest(composition, product_lock).revision
@@ -776,7 +792,8 @@ class AssuranceProductApplication:
         record: SelectionRecord,
     ) -> str:
         if ProductRuntimePorts.test_kernel_resolutions is None:
-            assert_structured_output_capability(composition)
+            assert_structured_output_capability(composition, entrypoint=record.entrypoint)
+        _assert_langgraph_revision(workspace, composition, invocation_id)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
             await ports.backend.recover_handshake(invocation_id)
             artifact = await ports.compile_roots(
@@ -810,7 +827,8 @@ class AssuranceProductApplication:
         resume: object,
     ) -> str:
         if ProductRuntimePorts.test_kernel_resolutions is None:
-            assert_structured_output_capability(composition)
+            assert_structured_output_capability(composition, entrypoint=record.entrypoint)
+        _assert_langgraph_revision(workspace, composition, invocation_id)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
             await ports.backend.recover_handshake(invocation_id)
             artifact = await ports.compile_roots(
@@ -842,6 +860,7 @@ class AssuranceProductApplication:
         invocation_id: str,
         record: SelectionRecord,
     ) -> tuple[str, object, tuple[object, ...]]:
+        _assert_langgraph_revision(workspace, composition, invocation_id)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
             artifact = await ports.compile_roots(
                 invocation_id=invocation_id,
@@ -1024,6 +1043,30 @@ def _contracts_require_provider_schema(composition: object) -> bool:
 
     del composition
     return any(contract.requires_provider_schema for contract in all_feature_agent_contracts().values())
+
+
+def _bind_revision(
+    workspace: ChangeWorkspace,
+    *,
+    invocation_id: str,
+    runtime: Literal["legacy-v2", "langgraph-v1"],
+    composition: Any,
+    product_lock: ProductLock,
+    build_identity: str,
+) -> None:
+    registry = RevisionRegistry(workspace)
+    if runtime == "langgraph-v1":
+        revision = coexistence_graph_manifest(composition, product_lock).revision
+        registry.remember(revision)
+        registry.bind(invocation_id, runtime="langgraph-v1", revision_id=revision.revision_id)
+        return
+    registry.bind(invocation_id, runtime="legacy-v2", revision_id=build_identity)
+
+
+def _assert_langgraph_revision(workspace: ChangeWorkspace, composition: Any, invocation_id: str) -> None:
+    product_lock = product_lock_from_composition(composition)
+    current = coexistence_graph_manifest(composition, product_lock).revision
+    assert_recorded_revision(workspace, invocation_id, current)
 
 
 async def _graph_snapshot(artifact: object, entrypoint: str, invocation_id: str) -> object:
