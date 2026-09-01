@@ -13,6 +13,7 @@ from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.resource_authorization import (
     MemoryResourceAuthorizationStore,
     ResourceAuthorizationError,
+    ResourceAuthorizationRecord,
 )
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import ResourceClaimTemplate, ResourceClaims
@@ -168,6 +169,60 @@ async def test_templates_resolve_only_from_validated_task_input(arbiter: Resourc
     assert granted.claims == writes("qa/a")
     with pytest.raises(ValueError, match="validated task input"):
         await arbiter.acquire(_attempt_key("missing-input"), template, fencing_token=4)
+
+
+async def test_acquire_retries_cas_conflict_on_fence_upgrade(
+    store: MemoryResourceAuthorizationStore,
+    attempt_key: AttemptKey,
+    claims: ResourceClaims,
+) -> None:
+    first = await ResourceArbiter(store).acquire(attempt_key, claims, fencing_token=4)
+    assert isinstance(first, ResourceAuthorization)
+    raced = False
+
+    class RacingStore:
+        async def read_records(self) -> tuple[ResourceAuthorizationRecord, ...]:
+            return await store.read_records()
+
+        async def assert_current_fence(self, authorization_id: str, fencing_token: int) -> None:
+            await store.assert_current_fence(authorization_id, fencing_token)
+
+        async def append(
+            self,
+            record: ResourceAuthorizationRecord,
+            *,
+            expected_revision: int,
+            fencing_token: int,
+        ) -> None:
+            nonlocal raced
+            if not raced:
+                raced = True
+                racer_key = _attempt_key("racer")
+                racer_claims = writes("qa/other")
+                await store.append(
+                    ResourceAuthorizationRecord.build(
+                        revision=expected_revision,
+                        action="acquire",
+                        authorization_id=canonical_digest(
+                            {
+                                "attempt_key": racer_key.digest,
+                                "claims": racer_claims.model_dump(mode="json"),
+                            }
+                        ),
+                        attempt_key_digest=racer_key.digest,
+                        fencing_token=4,
+                        claims=racer_claims,
+                    ),
+                    expected_revision=expected_revision,
+                    fencing_token=4,
+                )
+            await store.append(record, expected_revision=expected_revision, fencing_token=fencing_token)
+
+    upgraded = await ResourceArbiter(RacingStore()).acquire(attempt_key, claims, fencing_token=5)
+    assert isinstance(upgraded, ResourceAuthorization)
+    assert upgraded.authorization_id == first.authorization_id
+    assert upgraded.fencing_token == 5
+    assert raced is True
 
 
 async def test_restart_handoff_releases_once_then_unblocks_waiter() -> None:

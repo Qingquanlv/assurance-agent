@@ -85,14 +85,17 @@ class ResourceArbiter:
                     raise StaleFencingToken("fencing token is stale")
                 if fencing_token == existing.fencing_token:
                     return _authorization(attempt_key, existing)
-                return await self._cas_append(
-                    attempt_key,
-                    existing.claims,
-                    action="adopt",
-                    fencing_token=fencing_token,
-                    authorization_id=existing.authorization_id,
-                    expected_revision=len(records),
-                )
+                try:
+                    return await self._cas_append(
+                        attempt_key,
+                        existing.claims,
+                        action="adopt",
+                        fencing_token=fencing_token,
+                        authorization_id=existing.authorization_id,
+                        expected_revision=len(records),
+                    )
+                except ResourceAuthorizationIntegrityError:
+                    continue
             conflicting = [grant for grant in grants if self.claims_conflict(resolved, grant.claims)]
             if conflicting:
                 holder = min(conflicting, key=lambda grant: grant.authorization_id)
