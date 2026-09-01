@@ -554,10 +554,15 @@ class AssuranceProductApplication:
             if record.runtime == "langgraph-v1" and _legacy_invocation_exists(workspace, invocation_id):
                 raise RuntimeSelectionError("both-runtime artifacts are present")
             if record.runtime == "langgraph-v1" and record.phase == "initialized":
+                row = _langgraph_started_row(workspace, invocation_id)
                 identity = _langgraph_identity_digest(workspace, invocation_id)
-                if identity is None:
+                if row is None or identity is None:
                     raise RuntimeSelectionError("langgraph evidence is absent")
-                if record.identity_digest != identity:
+                if (
+                    record.identity_digest != identity
+                    or record.build_identity != row[2]
+                    or record.root_input_digest != row[3]
+                ):
                     raise RuntimeSelectionError("selection record disagrees with langgraph evidence")
             if record.runtime == "legacy-v2" and record.phase == "initialized":
                 identity = _legacy_lock_digest(workspace, invocation_id)

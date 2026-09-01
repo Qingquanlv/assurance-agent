@@ -312,8 +312,9 @@ def test_record_evidence_disagreement_fails_closed(
     assert status.exit_code == 40, status.output
 
 
+@pytest.mark.parametrize("field", ["identity_digest", "build_identity", "root_input_digest"])
 def test_langgraph_initialized_record_disagrees_with_checkpoint_evidence(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
+    cli_runner, installed_sources, tmp_path: Path, monkeypatch, field: str
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
@@ -322,18 +323,19 @@ def test_langgraph_initialized_record_disagrees_with_checkpoint_evidence(
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    invocation_id = f"inv-lg-disagree-{field}"
     args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
         composition=composition,
-        invocation_id="inv-lg-disagree-001",
+        invocation_id=invocation_id,
         entrypoint="archive",
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
-    path = _selection_path(project_dir, change_id, "inv-lg-disagree-001")
+    path = _selection_path(project_dir, change_id, invocation_id)
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["identity_digest"] = "0" * 64
+    payload[field] = "0" * 64
     path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     status = cli_runner.invoke(
         app,
@@ -345,7 +347,7 @@ def test_langgraph_initialized_record_disagrees_with_checkpoint_evidence(
             "--change",
             change_id,
             "--invocation-id",
-            "inv-lg-disagree-001",
+            invocation_id,
             "--product",
             args[args.index("--product") + 1],
             "--binding-dist",
