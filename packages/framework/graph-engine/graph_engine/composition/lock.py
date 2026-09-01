@@ -8,7 +8,7 @@ from typing import Literal, Self, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
@@ -274,11 +274,26 @@ class RegistryDigests(FrozenModel):
     schemas: str
     resources: str
     effects: str
+    attempt_contracts: str | None = None
 
     @field_validator("sources", "capabilities", "schemas", "resources", "effects")
     @classmethod
     def _validate_digest(cls, value: str) -> str:
         return _sha256(value, "registry")
+
+    @field_validator("attempt_contracts")
+    @classmethod
+    def _validate_attempt_contracts_digest(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _sha256(value, "attempt contract registry")
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_attempt_contracts(self, serializer: SerializerFunctionWrapHandler) -> object:
+        data = serializer(self)
+        if isinstance(data, dict) and not data.get("attempt_contracts"):
+            data.pop("attempt_contracts", None)
+        return data
 
 
 class RegistryProjections(FrozenModel):
@@ -289,13 +304,28 @@ class RegistryProjections(FrozenModel):
     schemas: FrozenJSONValue
     resources: FrozenJSONValue
     effects: FrozenJSONValue
+    attempt_contracts: FrozenJSONValue = ()
 
     @model_validator(mode="after")
     def _validate_projection_shapes(self) -> RegistryProjections:
-        for field_name in ("sources", "capabilities", "schemas", "resources", "effects"):
+        for field_name in (
+            "sources",
+            "capabilities",
+            "schemas",
+            "resources",
+            "effects",
+            "attempt_contracts",
+        ):
             if not isinstance(getattr(self, field_name), tuple):
                 raise ValueError(f"{field_name} registry projection must be a list")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_attempt_contracts(self, serializer: SerializerFunctionWrapHandler) -> object:
+        data = serializer(self)
+        if isinstance(data, dict) and not data.get("attempt_contracts"):
+            data.pop("attempt_contracts", None)
+        return data
 
 
 class ExecutionHostLock(FrozenModel):
@@ -1101,6 +1131,16 @@ def _descriptor_projection(descriptor: PluginDescriptor) -> JSONValue:
             "resources": sorted(descriptor.resources),
             "effects": sorted(descriptor.effects),
             "bindings": sorted(descriptor.bindings),
+            **(
+                {
+                    "attempt_contracts": [
+                        {"contract_id": item.contract_id, "digest": item.digest}
+                        for item in descriptor.attempt_contracts
+                    ]
+                }
+                if descriptor.attempt_contracts
+                else {}
+            ),
         },
     )
 
@@ -1225,20 +1265,10 @@ def _product_lock_values_projection(
         "product": _locked_product_projection(product),
         "plugins": [_locked_plugin_projection(plugin) for plugin in plugins],
         "dependency_order": list(dependency_order),
-        "registry_projections": {
-            "sources": cast(JSONValue, thaw_json(registry_projections.sources)),
-            "capabilities": cast(JSONValue, thaw_json(registry_projections.capabilities)),
-            "schemas": cast(JSONValue, thaw_json(registry_projections.schemas)),
-            "resources": cast(JSONValue, thaw_json(registry_projections.resources)),
-            "effects": cast(JSONValue, thaw_json(registry_projections.effects)),
-        },
-        "registry_digests": {
-            "sources": registry_digests.sources,
-            "capabilities": registry_digests.capabilities,
-            "schemas": registry_digests.schemas,
-            "resources": registry_digests.resources,
-            "effects": registry_digests.effects,
-        },
+        "registry_projections": _registry_projection_map(
+            registry_projections, include_attempt_contracts=True
+        ),
+        "registry_digests": _registry_digest_map(registry_digests, include_attempt_contracts=True),
         "configuration": cast(JSONValue, thaw_json(configuration)),
         "configuration_digest": configuration_digest,
         "capability_bindings": cast(JSONValue, thaw_json(capability_bindings)),
@@ -1246,15 +1276,52 @@ def _product_lock_values_projection(
     }
 
 
+def _registry_projection_map(
+    projections: RegistryProjections,
+    *,
+    include_attempt_contracts: bool,
+) -> dict[str, JSONValue]:
+    values: dict[str, JSONValue] = {
+        "sources": cast(JSONValue, thaw_json(projections.sources)),
+        "capabilities": cast(JSONValue, thaw_json(projections.capabilities)),
+        "schemas": cast(JSONValue, thaw_json(projections.schemas)),
+        "resources": cast(JSONValue, thaw_json(projections.resources)),
+        "effects": cast(JSONValue, thaw_json(projections.effects)),
+    }
+    contracts = cast(JSONValue, thaw_json(projections.attempt_contracts))
+    if include_attempt_contracts and contracts:
+        values["attempt_contracts"] = contracts
+    return values
+
+
+def _registry_digest_map(
+    registry_digests: RegistryDigests,
+    *,
+    include_attempt_contracts: bool,
+) -> dict[str, JSONValue]:
+    values: dict[str, JSONValue] = {
+        "sources": registry_digests.sources,
+        "capabilities": registry_digests.capabilities,
+        "schemas": registry_digests.schemas,
+        "resources": registry_digests.resources,
+        "effects": registry_digests.effects,
+    }
+    if include_attempt_contracts and registry_digests.attempt_contracts is not None:
+        values["attempt_contracts"] = registry_digests.attempt_contracts
+    return values
+
+
 def _registry_digests_from_projections(
     projections: RegistryProjections,
 ) -> RegistryDigests:
+    contracts = cast(JSONValue, thaw_json(projections.attempt_contracts))
     return RegistryDigests(
         sources=canonical_digest(cast(JSONValue, thaw_json(projections.sources))),
         capabilities=canonical_digest(cast(JSONValue, thaw_json(projections.capabilities))),
         schemas=canonical_digest(cast(JSONValue, thaw_json(projections.schemas))),
         resources=canonical_digest(cast(JSONValue, thaw_json(projections.resources))),
         effects=canonical_digest(cast(JSONValue, thaw_json(projections.effects))),
+        attempt_contracts=canonical_digest(contracts) if contracts else None,
     )
 
 

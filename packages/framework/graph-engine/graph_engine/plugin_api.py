@@ -17,6 +17,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    SerializerFunctionWrapHandler,
     field_serializer,
     field_validator,
     model_serializer,
@@ -61,6 +62,18 @@ ActivityState = Literal["prepared", "dispatch_started", "bound", "terminal_obser
 
 class FrozenModel(BaseModel):
     model_config = _FROZEN_MODEL_CONFIG
+
+
+class AttemptContractRef(FrozenModel):
+    """Data-only Attempt contract identity authenticated for one owner."""
+
+    contract_id: str
+    digest: str = Field(pattern=_SHA256_PATTERN)
+
+    @field_validator("contract_id")
+    @classmethod
+    def _validate_contract_id_field(cls, value: str) -> str:
+        return _validate_contract_id(value, "attempt contract id")
 
 
 class InvocationMetadata(FrozenModel):
@@ -1082,6 +1095,7 @@ class PluginContribution:
     resources: tuple[ResourceContribution, ...] = ()
     effects: tuple[EffectRegistration, ...] = ()
     bindings: tuple[CapabilityBindingContribution, ...] = ()
+    attempt_contracts: tuple[AttemptContractRef, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "task_handlers", _freeze_mapping(self.task_handlers, "task handler id"))
@@ -1094,6 +1108,7 @@ class PluginContribution:
         object.__setattr__(self, "resources", tuple(self.resources))
         object.__setattr__(self, "effects", tuple(self.effects))
         object.__setattr__(self, "bindings", tuple(self.bindings))
+        object.__setattr__(self, "attempt_contracts", _freeze_attempt_contracts(self.attempt_contracts))
 
     @classmethod
     def empty(cls) -> PluginContribution:
@@ -1186,6 +1201,7 @@ class PluginDescriptor(FrozenModel):
     resources: tuple[str, ...] = ()
     effects: tuple[str, ...] = ()
     bindings: tuple[str, ...] = ()
+    attempt_contracts: tuple[AttemptContractRef, ...] = ()
 
     @field_validator("plugin_id")
     @classmethod
@@ -1202,6 +1218,17 @@ class PluginDescriptor(FrozenModel):
     def _validate_descriptor_engine_api(cls, value: str) -> str:
         return _validate_engine_api(value)
 
+    @field_validator("attempt_contracts")
+    @classmethod
+    def _validate_attempt_contracts(
+        cls, values: tuple[AttemptContractRef, ...]
+    ) -> tuple[AttemptContractRef, ...]:
+        contracts = tuple(values)
+        contract_ids = tuple(item.contract_id for item in contracts)
+        if contract_ids != tuple(sorted(contract_ids)) or len(contract_ids) != len(set(contract_ids)):
+            raise ValueError("attempt contracts require unique canonical order")
+        return contracts
+
     @model_validator(mode="after")
     def _validate_source_expectation(self) -> PluginDescriptor:
         if self.source is None:
@@ -1211,6 +1238,13 @@ class PluginDescriptor(FrozenModel):
         if Version(self.source.version) != Version(self.plugin_version):
             raise ValueError("source version must equal plugin version")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_attempt_contracts(self, serializer: SerializerFunctionWrapHandler) -> object:
+        data = serializer(self)
+        if isinstance(data, dict) and not data.get("attempt_contracts"):
+            data.pop("attempt_contracts", None)
+        return data
 
 
 class PluginProvider(Protocol):
@@ -1273,6 +1307,19 @@ def _freeze_mapping(capabilities: Mapping[str, _Capability], kind: str) -> Mappi
     return MappingProxyType(dict(sorted(copied.items())))
 
 
+def _freeze_attempt_contracts(values: object) -> tuple[AttemptContractRef, ...]:
+    if not isinstance(values, tuple | list):
+        raise PluginContractError("attempt contracts must be a tuple")
+    contracts = tuple(
+        item if isinstance(item, AttemptContractRef) else AttemptContractRef.model_validate(item)
+        for item in values
+    )
+    contract_ids = tuple(item.contract_id for item in contracts)
+    if contract_ids != tuple(sorted(contract_ids)) or len(contract_ids) != len(set(contract_ids)):
+        raise PluginContractError("attempt contracts require unique canonical order")
+    return contracts
+
+
 def _contribution_ids(
     contribution: PluginContribution,
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
@@ -1283,6 +1330,7 @@ def _contribution_ids(
         ("resource", tuple(entry.resource_id for entry in contribution.resources)),
         ("effect", tuple(entry.kind for entry in contribution.effects)),
         ("binding", tuple(entry.capability_id for entry in contribution.bindings)),
+        ("attempt contract", tuple(item.contract_id for item in contribution.attempt_contracts)),
     )
 
 
@@ -1309,9 +1357,16 @@ def _validate_descriptor_ids(descriptor: PluginDescriptor) -> tuple[tuple[str, t
         ("resource", descriptor.resources),
         ("effect", descriptor.effects),
         ("binding", descriptor.bindings),
+        ("attempt contract", tuple(item.contract_id for item in descriptor.attempt_contracts)),
     )
     _validate_unique_contribution_ids(groups)
     return groups
+
+
+def _attempt_contract_pairs(
+    values: tuple[AttemptContractRef, ...],
+) -> tuple[tuple[str, str], ...]:
+    return tuple((item.contract_id, item.digest) for item in values)
 
 
 def validate_contribution(descriptor: PluginDescriptor, contribution: PluginContribution) -> None:
@@ -1327,10 +1382,22 @@ def validate_contribution(descriptor: PluginDescriptor, contribution: PluginCont
     for (kind, declared), (_, contributed) in zip(descriptor_groups, contribution_groups, strict=True):
         if set(declared) != set(contributed):
             raise PluginContractError(f"{kind} declarations disagree with contribution")
+    if _attempt_contract_pairs(descriptor.attempt_contracts) != _attempt_contract_pairs(
+        contribution.attempt_contracts
+    ):
+        raise PluginContractError("attempt contract declarations disagree with contribution")
+
+
+def realize_plugin(descriptor: PluginDescriptor, contribution: PluginContribution) -> PluginContribution:
+    """Authenticate a realized contribution against its descriptor, including Attempt contracts."""
+
+    validate_contribution(descriptor, contribution)
+    return contribution
 
 
 __all__ = [
     "ActivityState",
+    "AttemptContractRef",
     "CapabilityBindingContribution",
     "CandidateFile",
     "CandidateWriteSet",
@@ -1379,5 +1446,6 @@ __all__ = [
     "PromotionReceipt",
     "ValidationContext",
     "ValidationResult",
+    "realize_plugin",
     "validate_contribution",
 ]

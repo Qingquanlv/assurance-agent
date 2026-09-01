@@ -851,3 +851,145 @@ def test_product_lock_rejects_legacy_workflow_fields() -> None:
             **{**payload, "execution_host": lock.model_dump()},
             canonical_bytes=lock.canonical_bytes,
         )
+
+
+def test_product_lock_v3_and_attempt_registry_digests_change_with_contract_data() -> None:
+    from graph_engine.attempts.contracts import (
+        AttemptRetryPolicy,
+        AttemptTimeoutPolicy,
+        TaskAttemptContract,
+    )
+    from graph_engine.composition.models import AttemptContractClaim
+    from graph_engine.composition.registries import build_attempt_registry
+    from graph_engine.plugin_api import ResourceClaims
+    from pydantic import BaseModel
+
+    class RunInput(BaseModel):
+        change_id: str
+
+    class RunOutput(BaseModel):
+        status: str
+
+    def _make(timeout: float, validators: tuple[str, ...] = ()) -> TaskAttemptContract[RunInput, RunOutput]:
+        return TaskAttemptContract(
+            contract_id="assurance.intake.prepare.v1",
+            owner_id="assurance.intake",
+            handler_id="assurance.intake.prepare",
+            input_model=RunInput,
+            output_model=RunOutput,
+            resources=ResourceClaims(),
+            retry=AttemptRetryPolicy(max_attempts=1),
+            timeout=AttemptTimeoutPolicy(seconds=timeout),
+            validators=validators,
+        )
+
+    first = build_attempt_registry(
+        [
+            AttemptContractClaim(
+                contract=_make(30),
+                dependencies=(),
+                available_handlers={"assurance.intake.prepare": "assurance.intake"},
+                available_validators={},
+            )
+        ]
+    )
+    second = build_attempt_registry(
+        [
+            AttemptContractClaim(
+                contract=_make(45),
+                dependencies=(),
+                available_handlers={"assurance.intake.prepare": "assurance.intake"},
+                available_validators={},
+            )
+        ]
+    )
+    assert first.digest != second.digest
+
+    def _with_registry(registry: object) -> ProductLock:
+        lock = _product_lock()
+        projections = RegistryProjections(
+            sources=lock.registry_projections.sources,
+            capabilities=lock.registry_projections.capabilities,
+            schemas=lock.registry_projections.schemas,
+            resources=lock.registry_projections.resources,
+            effects=lock.registry_projections.effects,
+            attempt_contracts=registry.projection(),
+        )
+        digests = RegistryDigests(
+            sources=lock.registry_digests.sources,
+            capabilities=lock.registry_digests.capabilities,
+            schemas=lock.registry_digests.schemas,
+            resources=lock.registry_digests.resources,
+            effects=lock.registry_digests.effects,
+            attempt_contracts=registry.digest,
+        )
+        return ProductLock.create(
+            engine_api=lock.engine_api,
+            engine=lock.engine,
+            engine_digest=lock.engine_digest,
+            product=lock.product,
+            plugins=lock.plugins,
+            dependency_order=lock.dependency_order,
+            registry_projections=projections,
+            registry_digests=digests,
+            configuration=lock.configuration,
+            configuration_digest=lock.configuration_digest,
+            capability_bindings=lock.capability_bindings,
+            capability_bindings_digest=lock.capability_bindings_digest,
+        )
+
+    assert _with_registry(first).digest != _with_registry(second).digest
+
+
+def test_attempt_projection_stays_stable_when_only_callables_swap() -> None:
+    from graph_engine.attempts.contracts import (
+        AttemptRetryPolicy,
+        AttemptTimeoutPolicy,
+        TaskAttemptContract,
+    )
+    from graph_engine.composition.models import AttemptContractClaim
+    from graph_engine.composition.registries import build_attempt_registry
+    from graph_engine.plugin_api import ResourceClaims
+    from pydantic import BaseModel
+
+    class RunInput(BaseModel):
+        change_id: str
+
+    class RunOutput(BaseModel):
+        status: str
+
+    contract = TaskAttemptContract(
+        contract_id="assurance.intake.prepare.v1",
+        owner_id="assurance.intake",
+        handler_id="assurance.intake.prepare",
+        input_model=RunInput,
+        output_model=RunOutput,
+        resources=ResourceClaims(),
+        retry=AttemptRetryPolicy(max_attempts=1),
+        timeout=AttemptTimeoutPolicy(seconds=30),
+        validators=(),
+    )
+    first = build_attempt_registry(
+        [
+            AttemptContractClaim(
+                contract=contract,
+                dependencies=(),
+                available_handlers={"assurance.intake.prepare": "assurance.intake"},
+                available_validators={},
+                handler=object(),
+            )
+        ]
+    )
+    second = build_attempt_registry(
+        [
+            AttemptContractClaim(
+                contract=contract,
+                dependencies=(),
+                available_handlers={"assurance.intake.prepare": "assurance.intake"},
+                available_validators={},
+                handler=object(),
+            )
+        ]
+    )
+    assert first.digest == second.digest
+    assert first.projection() == second.projection()

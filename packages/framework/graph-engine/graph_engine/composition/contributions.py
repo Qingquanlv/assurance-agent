@@ -593,6 +593,7 @@ class ContributionProjection(FrozenModel):
             "resources": {item.resource_id for item in self.resources},
             "effects": {item.kind for item in self.effects},
             "bindings": {item.capability_id for item in self.bindings},
+            "attempt_contracts": {(item.contract_id, item.digest) for item in self.attempt_contracts},
         }
         expected = {
             "task_handlers": set(descriptor.task_handlers),
@@ -601,6 +602,7 @@ class ContributionProjection(FrozenModel):
             "resources": set(descriptor.resources),
             "effects": set(descriptor.effects),
             "bindings": set(descriptor.bindings),
+            "attempt_contracts": {(item.contract_id, item.digest) for item in descriptor.attempt_contracts},
         }
         if actual != expected:
             raise ValueError("contribution authority categories disagree with descriptor declarations")

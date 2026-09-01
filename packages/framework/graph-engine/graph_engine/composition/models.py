@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Literal, NoReturn, TypeAlias, TypeVar, cast
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 from pydantic import (
+    BaseModel,
     Field,
     SerializerFunctionWrapHandler,
     field_serializer,
@@ -20,6 +21,7 @@ from pydantic import (
     model_validator,
 )
 
+from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.graph.module_schema import WorkflowModuleDef
@@ -28,6 +30,7 @@ from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.json_schema import assert_closed_json_schema
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.plugin_api import (
+    AttemptContractRef,
     CommitValidator,
     DurableEffectHandler,
     EffectPolicy,
@@ -491,23 +494,6 @@ class ExecutableAuthority:
             raise TypeError("executable authority requires an exact Python function")
         if not isinstance(self.provenance, ExecutableProvenance):
             raise TypeError("executable authority requires typed provenance")
-
-
-class AttemptContractRef(FrozenModel):
-    """Data-only Attempt contract identity authenticated for one owner."""
-
-    contract_id: str
-    digest: str
-
-    @field_validator("contract_id")
-    @classmethod
-    def _validate_contract_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "attempt contract id")
-
-    @field_validator("digest")
-    @classmethod
-    def _validate_digest(cls, value: str) -> str:
-        return _validate_sha256(value, "attempt contract")
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -1234,6 +1220,66 @@ class EffectRegistry:
 
 
 @dataclass(frozen=True, slots=True)
+class AttemptContractClaim:
+    """One Feature-declared Attempt contract plus the owner/dependency closure used to resolve it."""
+
+    contract: TaskAttemptContract[BaseModel, BaseModel]
+    dependencies: tuple[str, ...] = ()
+    available_handlers: Mapping[str, str] = dataclass_field(default_factory=dict)
+    available_validators: Mapping[str, str] = dataclass_field(default_factory=dict)
+    source_role: SourceRole = SourceRole.PLUGIN
+    handler: object | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.contract, TaskAttemptContract):
+            raise TypeError("attempt contract claim requires a TaskAttemptContract")
+        if not isinstance(self.source_role, SourceRole):
+            raise TypeError("attempt contract claim source role must be a SourceRole")
+        object.__setattr__(self, "dependencies", tuple(self.dependencies))
+        object.__setattr__(self, "available_handlers", MappingProxyType(dict(self.available_handlers)))
+        object.__setattr__(self, "available_validators", MappingProxyType(dict(self.available_validators)))
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptContractEntry:
+    contract_id: str
+    owner_id: str
+    handler_id: str
+    digest: str
+    validators: tuple[str, ...]
+    projection: FrozenJSONValue
+    authority_handler: object | None = dataclass_field(default=None, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        _validate_owned_registry_id(self.contract_id, self.owner_id, "attempt contract")
+        _validate_registry_id(self.handler_id, "attempt contract handler id")
+        _validate_sha256(self.digest, "attempt contract")
+        object.__setattr__(self, "validators", tuple(self.validators))
+        object.__setattr__(self, "projection", freeze_json(self.projection))
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptContractRegistry:
+    entries: Mapping[str, AttemptContractEntry]
+
+    def __post_init__(self) -> None:
+        entries = _immutable_mapping(self.entries)
+        for contract_id, entry in entries.items():
+            if not isinstance(entry, AttemptContractEntry):
+                raise TypeError("attempt contract registry accepts only AttemptContractEntry values")
+            if contract_id != entry.contract_id:
+                raise ValueError(f"attempt contract registry key disagrees with entry: {contract_id}")
+        object.__setattr__(self, "entries", entries)
+
+    def projection(self) -> list[JSONValue]:
+        return [cast(JSONValue, thaw_json(entry.projection)) for entry in self.entries.values()]
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.projection())
+
+
+@dataclass(frozen=True, slots=True)
 class RegistrySet:
     sources: SourceRegistry
     capabilities: CapabilityRegistry
@@ -1930,7 +1976,10 @@ def _validate_canonical_relative_path(value: str) -> str:
 
 
 __all__ = [
+    "AttemptContractClaim",
+    "AttemptContractEntry",
     "AttemptContractRef",
+    "AttemptContractRegistry",
     "CapabilityBindingEntry",
     "CapabilityEntry",
     "CapabilityRegistry",
