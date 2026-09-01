@@ -15,7 +15,8 @@ from graph_engine.persistence.anchored_checkpointer import (
     AsyncOnlyCheckpointerError,
 )
 from graph_engine.persistence.checkpoint_store import CheckpointOutboxDraft, MemoryCheckpointStore
-from graph_engine.persistence.journal import CheckpointAnchorState
+from graph_engine.persistence.journal import CheckpointAnchorState, CheckpointIntegrityError
+from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease, StaleFencingToken
 
 _HELPERS_PATH = Path(__file__).with_name("test_checkpoint_store_contract.py")
 _HELPERS_SPEC = importlib.util.spec_from_file_location("checkpoint_store_contract_helpers", _HELPERS_PATH)
@@ -214,3 +215,103 @@ def test_identity_requires_thread_id_equal_to_invocation_id() -> None:
         fencing_token=FENCE,
     )
     assert state.thread_id == state.invocation_id
+
+
+class RecordingStore:
+    def __init__(self, inner: MemoryCheckpointStore) -> None:
+        self.inner = inner
+        self.mutations = 0
+
+    def __getattr__(self, name: str):
+        return getattr(self.inner, name)
+
+    async def put_checkpoint(self, *args, **kwargs):
+        self.mutations += 1
+        return await self.inner.put_checkpoint(*args, **kwargs)
+
+    async def put_pending_writes(self, *args, **kwargs):
+        self.mutations += 1
+        return await self.inner.put_pending_writes(*args, **kwargs)
+
+
+def _lease_config(*, fencing_token: int, checkpoint_id: str = "cp-1") -> RunnableConfig:
+    return {
+        "configurable": {
+            "thread_id": "inv-1",
+            "checkpoint_ns": "",
+            "checkpoint_id": checkpoint_id,
+            "assurance_revision_id": REVISION,
+            "assurance_product_lock_digest": LOCK,
+            "assurance_root_input_digest": INPUT,
+            "assurance_fencing_token": fencing_token,
+        }
+    }
+
+
+async def test_saver_write_requires_thread_id_and_assurance_fencing_token(
+    saver: AnchoredCheckpointer,
+) -> None:
+    missing_thread = {
+        "configurable": {
+            "assurance_revision_id": REVISION,
+            "assurance_product_lock_digest": LOCK,
+            "assurance_root_input_digest": INPUT,
+            "assurance_fencing_token": FENCE,
+        }
+    }
+    missing_token = {
+        "configurable": {
+            "thread_id": "inv-1",
+            "assurance_revision_id": REVISION,
+            "assurance_product_lock_digest": LOCK,
+            "assurance_root_input_digest": INPUT,
+        }
+    }
+    with pytest.raises(CheckpointIntegrityError, match="thread_id"):
+        await saver.aput(missing_thread, checkpoint, metadata, new_versions)
+    with pytest.raises(CheckpointIntegrityError, match="assurance_fencing_token"):
+        await saver.aput(missing_token, checkpoint, metadata, new_versions)
+    with pytest.raises(CheckpointIntegrityError, match="thread_id"):
+        await saver.aput_writes(missing_thread, [("result", {"ok": True})], "task-a", "push-0")
+    with pytest.raises(CheckpointIntegrityError, match="assurance_fencing_token"):
+        await saver.aput_writes(missing_token, [("result", {"ok": True})], "task-a", "push-0")
+
+
+async def test_reclaimed_predecessor_cannot_checkpoint(tmp_path: Path) -> None:
+    first_process = LocalInvocationRunnerLease(tmp_path)
+    first = await first_process.acquire("inv-1", owner_id="runner-a")
+    first_process.simulate_process_exit_for_test(first)
+
+    replacement_process = LocalInvocationRunnerLease(tmp_path)
+    second = await replacement_process.acquire("inv-1", owner_id="runner-b")
+    store = RecordingStore(MemoryCheckpointStore())
+    journal = MemoryCheckpointAnchorJournal()
+    await journal.start_invocation(
+        started(fencing_token=first.fencing_token), fencing_token=first.fencing_token
+    )
+    saver = AnchoredCheckpointer(
+        store=store,
+        journal=journal,
+        observers=(),
+        identity=identity(fencing_token=second.fencing_token),
+        lease=replacement_process,
+    )
+    try:
+        with pytest.raises(StaleFencingToken):
+            await saver.aput(
+                _lease_config(fencing_token=first.fencing_token),
+                sample_checkpoint(),
+                sample_metadata(),
+                {"result": 1},
+            )
+        assert store.mutations == 0
+        with pytest.raises(StaleFencingToken):
+            await saver.aput_writes(
+                _lease_config(fencing_token=first.fencing_token),
+                [("result", {"ok": True})],
+                "task-a",
+                "push-0",
+            )
+        assert store.mutations == 0
+    finally:
+        await replacement_process.release(second)

@@ -35,6 +35,7 @@ from graph_engine.persistence.journal import (
     CheckpointIntegrityError,
     strict_checkpoint_serializer,
 )
+from graph_engine.persistence.runner_lease import InvocationRunnerLeasePort
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeMarker
 
 
@@ -53,6 +54,7 @@ class AnchoredCheckpointer(BaseCheckpointSaver[int]):
         journal: CheckpointAnchorJournalPort,
         identity: CheckpointAnchorState,
         observers: Sequence[CheckpointAnchorObserverPort] = (),
+        lease: InvocationRunnerLeasePort | None = None,
         serde: SerializerProtocol | None = None,
     ) -> None:
         super().__init__(serde=serde or strict_checkpoint_serializer())
@@ -60,6 +62,7 @@ class AnchoredCheckpointer(BaseCheckpointSaver[int]):
         self._journal = journal
         self._identity = identity
         self._observers = tuple(observers)
+        self._lease = lease
 
     def put(
         self,
@@ -101,6 +104,7 @@ class AnchoredCheckpointer(BaseCheckpointSaver[int]):
     ) -> RunnableConfig:
         del new_versions
         state = self._state_for(config)
+        await self._assert_current_fence(state)
         checkpoint_type, checkpoint_bytes = self.serde.dumps_typed(checkpoint)
         metadata_type, metadata_bytes = self.serde.dumps_typed(get_checkpoint_metadata(config, metadata))
         draft = CheckpointOutboxDraft(
@@ -121,6 +125,7 @@ class AnchoredCheckpointer(BaseCheckpointSaver[int]):
         )
         stored_config, outbox_id = await self._store.put_checkpoint(config, checkpoint_bytes, draft)
         markers = extract_checkpoint_markers(checkpoint.get("channel_values", {}))
+        await self._assert_current_fence(state)
         await self._finish_write(
             outbox_id=outbox_id,
             draft=draft,
@@ -140,6 +145,7 @@ class AnchoredCheckpointer(BaseCheckpointSaver[int]):
         task_path: str = "",
     ) -> None:
         state = self._state_for(config)
+        await self._assert_current_fence(state)
         write_items: list[tuple[str, str, str, bytes, str]] = []
         write_bytes: list[bytes] = []
         markers: list[CheckpointBridgeMarker] = []
@@ -163,6 +169,7 @@ class AnchoredCheckpointer(BaseCheckpointSaver[int]):
             write_items=tuple(write_items),
         )
         outbox_id = await self._store.put_pending_writes(config, tuple(write_bytes), draft)
+        await self._assert_current_fence(state)
         await self._finish_write(
             outbox_id=outbox_id,
             draft=draft,
@@ -222,6 +229,10 @@ class AnchoredCheckpointer(BaseCheckpointSaver[int]):
 
     def _state_for(self, config: RunnableConfig) -> CheckpointAnchorState:
         configurable = _configurable(config)
+        if "thread_id" not in configurable:
+            raise CheckpointIntegrityError("checkpoint config is missing thread_id")
+        if "assurance_fencing_token" not in configurable:
+            raise CheckpointIntegrityError("checkpoint config is missing assurance_fencing_token")
         thread_id = str(configurable["thread_id"])
         if thread_id != self._identity.invocation_id:
             raise CheckpointIntegrityError("thread id must equal invocation id")
@@ -235,8 +246,13 @@ class AnchoredCheckpointer(BaseCheckpointSaver[int]):
             root_input_digest=str(
                 configurable.get("assurance_root_input_digest", self._identity.root_input_digest)
             ),
-            fencing_token=int(configurable.get("assurance_fencing_token", self._identity.fencing_token)),
+            fencing_token=int(configurable["assurance_fencing_token"]),
         )
+
+    async def _assert_current_fence(self, state: CheckpointAnchorState) -> None:
+        await self._journal.assert_current_fence(state.invocation_id, state.fencing_token)
+        if self._lease is not None:
+            await self._lease.assert_current(state.invocation_id, state.fencing_token)
 
     async def _finish_write(
         self,
