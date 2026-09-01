@@ -200,3 +200,134 @@ async def _reopen_never_exposes_resumable_checkpoint_with_divergent_identity(tmp
             observers=(),
         )
         assert await saver.aget_tuple(_config()) is None
+
+
+def test_remember_entrypoint_same_value_is_noop_different_value_fails_closed(tmp_path: Path) -> None:
+    asyncio.run(_remember_entrypoint_same_value_is_noop_different_value_fails_closed(tmp_path))
+
+
+async def _remember_entrypoint_same_value_is_noop_different_value_fails_closed(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    async with open_sqlite_checkpointer(workspace) as backend:
+        await backend.remember_entrypoint("inv-1", "execute")
+        await backend.remember_entrypoint("inv-1", "execute")
+        assert await backend.read_entrypoint("inv-1") == "execute"
+        with pytest.raises(CheckpointIntegrityError):
+            await backend.remember_entrypoint("inv-1", "other")
+        assert await backend.read_entrypoint("inv-1") == "execute"
+
+
+def test_start_invocation_refuses_second_start_that_rewrites_identity(tmp_path: Path) -> None:
+    asyncio.run(_start_invocation_refuses_second_start_that_rewrites_identity(tmp_path))
+
+
+async def _start_invocation_refuses_second_start_that_rewrites_identity(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    async with open_sqlite_checkpointer(workspace) as backend:
+        await backend.journal.start_invocation(_started(), fencing_token=FENCE)
+        await backend.journal.start_invocation(_started(), fencing_token=FENCE)
+        assert await backend.journal.read_invocation_started("inv-1") == _started()
+        with pytest.raises(CheckpointIntegrityError):
+            await backend.journal.start_invocation(
+                _started(product_lock_digest="e" * 64),
+                fencing_token=FENCE,
+            )
+        with pytest.raises(CheckpointIntegrityError):
+            await backend.journal.start_invocation(
+                _started(root_input_digest="f" * 64),
+                fencing_token=FENCE,
+            )
+        with pytest.raises(CheckpointIntegrityError):
+            await backend.journal.start_invocation(
+                _started(graph_revision="d" * 64),
+                fencing_token=FENCE,
+            )
+        assert await backend.journal.read_invocation_started("inv-1") == _started()
+
+
+def test_lease_acquire_before_arecover_does_not_abandon_initial_handshake(tmp_path: Path) -> None:
+    asyncio.run(_lease_acquire_before_arecover_does_not_abandon_initial_handshake(tmp_path))
+
+
+async def _lease_acquire_before_arecover_does_not_abandon_initial_handshake(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    async with open_sqlite_checkpointer(workspace) as first:
+        first_lease = await first.lease.acquire("inv-1", owner_id="runner-a")
+        await _put_initial_checkpoint(first.store)
+        await first.remember_entrypoint("inv-1", "execute")
+        await first.lease.release(first_lease)
+
+    async with open_sqlite_checkpointer(workspace) as second:
+        recovered = await second.recover_handshake("inv-1")
+        assert recovered is not None
+        lease = await second.lease.acquire("inv-1", owner_id="runner-b")
+        saver = second.checkpointer(recovered.anchor_state())
+        await saver.arecover(thread_id="inv-1")
+        loaded = await saver.aget_tuple(_config())
+        assert loaded is not None
+        assert loaded.checkpoint["id"] == "cp-initial"
+        live = [
+            record
+            for record in await second.store.list_outbox("inv-1")
+            if record.kind == "checkpoint" and record.checkpoint_id == "cp-initial"
+        ]
+        assert len(live) == 1
+        assert live[0].abandoned_at is None
+        assert await second.journal.read_checkpoint_anchor("inv-1", "cp-initial") is not None
+        await second.lease.release(lease)
+
+
+def test_held_lease_then_recover_does_not_abandon_unanchored_initial_outbox(tmp_path: Path) -> None:
+    asyncio.run(_held_lease_then_recover_does_not_abandon_unanchored_initial_outbox(tmp_path))
+
+
+async def _held_lease_then_recover_does_not_abandon_unanchored_initial_outbox(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    async with open_sqlite_checkpointer(workspace) as first:
+        first_lease = await first.lease.acquire("inv-1", owner_id="runner-a")
+        await first.journal.start_invocation(_started(), fencing_token=FENCE)
+        await _put_initial_checkpoint(first.store)
+        await first.remember_entrypoint("inv-1", "execute")
+        await first.lease.release(first_lease)
+
+    async with open_sqlite_checkpointer(workspace) as second:
+        lease = await second.lease.acquire("inv-1", owner_id="runner-b")
+        recovered = await second.recover_handshake("inv-1")
+        assert recovered is not None
+        saver = second.checkpointer(recovered.anchor_state())
+        await saver.arecover(thread_id="inv-1")
+        loaded = await saver.aget_tuple(_config())
+        assert loaded is not None
+        assert loaded.checkpoint["id"] == "cp-initial"
+        live = [
+            record
+            for record in await second.store.list_outbox("inv-1")
+            if record.kind == "checkpoint" and record.checkpoint_id == "cp-initial"
+        ]
+        assert len(live) == 1
+        assert live[0].abandoned_at is None
+        await second.lease.release(lease)
+
+
+def test_recover_handshake_refuses_after_newer_fence_instead_of_abandoning(tmp_path: Path) -> None:
+    asyncio.run(_recover_handshake_refuses_after_newer_fence_instead_of_abandoning(tmp_path))
+
+
+async def _recover_handshake_refuses_after_newer_fence_instead_of_abandoning(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    async with open_sqlite_checkpointer(workspace) as first:
+        await first.journal.start_invocation(_started(), fencing_token=FENCE)
+        await _put_initial_checkpoint(first.store)
+
+    async with open_sqlite_checkpointer(workspace) as second:
+        await second.journal.advance_fence("inv-1", 2)
+        with pytest.raises(CheckpointIntegrityError):
+            await second.recover_handshake("inv-1")
+        live = [
+            record
+            for record in await second.store.list_outbox("inv-1")
+            if record.kind == "checkpoint" and record.checkpoint_id == "cp-initial"
+        ]
+        assert len(live) == 1
+        assert live[0].abandoned_at is None
+        assert await second.journal.read_checkpoint_anchor("inv-1", "cp-initial") is None

@@ -25,6 +25,7 @@ from graph_engine.attempts.resolutions import IndeterminateTaskResult, PendingTa
 from graph_engine.boot.graph_revision import BootArtifact
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
+from graph_engine.persistence.journal import InvocationStarted
 from graph_engine.persistence.runner_lease import InvocationRunnerLeasePort, RunnerLease
 from graph_engine.plugin_api import FrozenModel
 
@@ -38,6 +39,16 @@ CONFIGURABLE_KEYS = (
     "assurance_fencing_token",
     "assurance_initial_checkpoint",
 )
+
+
+class InvocationStartPinPort(Protocol):
+    async def pin_start(
+        self,
+        record: InvocationStarted,
+        entrypoint: str,
+        *,
+        fencing_token: int,
+    ) -> None: ...
 
 
 class AmbiguousResume(GraphEngineError):
@@ -79,12 +90,14 @@ class AssuranceApplication:
         lease: InvocationRunnerLeasePort,
         owner_id: str,
         recursion_limits: Mapping[str, int] | None = None,
+        start_pins: InvocationStartPinPort | None = None,
     ) -> None:
         if not owner_id:
             raise ValueError("owner id must be nonempty")
         self._lease = lease
         self._owner_id = owner_id
         self._recursion_limits = dict(recursion_limits or {})
+        self._start_pins = start_pins
         self._started: dict[str, StartedInvocation] = {}
 
     async def start(
@@ -190,11 +203,25 @@ class AssuranceApplication:
     ) -> StartedInvocation:
         revision_id = _require_context_revision(artifact, runtime_context)
         graph = _graph(artifact, entrypoint)
+        root_input_digest = canonical_digest(dict(graph_input))
+        if self._start_pins is not None:
+            await self._start_pins.pin_start(
+                InvocationStarted(
+                    invocation_id=invocation_id,
+                    thread_id=invocation_id,
+                    graph_revision=revision_id,
+                    product_lock_digest=artifact.manifest.revision.product_lock_digest,
+                    root_input_digest=root_input_digest,
+                    fencing_token=lease.fencing_token,
+                ),
+                entrypoint,
+                fencing_token=lease.fencing_token,
+            )
         config = self._config(
             artifact,
             invocation_id=invocation_id,
             entrypoint=entrypoint,
-            root_input_digest=canonical_digest(dict(graph_input)),
+            root_input_digest=root_input_digest,
             fencing_token=lease.fencing_token,
             initial_checkpoint=True,
         )
@@ -415,5 +442,6 @@ __all__ = [
     "CONFIGURABLE_KEYS",
     "HumanResumeAction",
     "InvalidResume",
+    "InvocationStartPinPort",
     "StartedInvocation",
 ]

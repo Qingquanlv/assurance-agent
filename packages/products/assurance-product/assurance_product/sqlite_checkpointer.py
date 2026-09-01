@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -584,9 +584,15 @@ class _JournalLinkedLease:
     ) -> None:
         self._lease = lease
         self._journal = journal
+        self._recover_handshake: Callable[[str], Awaitable[InvocationStarted | None]] | None = None
+
+    def bind_recover(self, recover_handshake: Callable[[str], Awaitable[InvocationStarted | None]]) -> None:
+        self._recover_handshake = recover_handshake
 
     async def acquire(self, invocation_id: str, *, owner_id: str) -> RunnerLease:
         record = await self._lease.acquire(invocation_id, owner_id=owner_id)
+        if self._recover_handshake is not None:
+            await self._recover_handshake(invocation_id)
         await self._journal.advance_fence(invocation_id, record.fencing_token)
         return record
 
@@ -625,14 +631,32 @@ class AssuranceSqliteBackend:
         async with self.store._lock:
             await self._conn.execute("BEGIN IMMEDIATE")
             try:
-                await self._conn.execute(
-                    "INSERT OR REPLACE INTO assurance_entrypoints (invocation_id, entrypoint) VALUES (?, ?)",
-                    (invocation_id, entrypoint),
+                cursor = await self._conn.execute(
+                    "SELECT entrypoint FROM assurance_entrypoints WHERE invocation_id = ?",
+                    (invocation_id,),
                 )
+                row = await cursor.fetchone()
+                if row is None:
+                    await self._conn.execute(
+                        "INSERT INTO assurance_entrypoints (invocation_id, entrypoint) VALUES (?, ?)",
+                        (invocation_id, entrypoint),
+                    )
+                elif str(row[0]) != entrypoint:
+                    raise CheckpointIntegrityError("entrypoint identity drifted")
                 await self._conn.commit()
             except BaseException:
                 await self._conn.rollback()
                 raise
+
+    async def pin_start(
+        self,
+        record: InvocationStarted,
+        entrypoint: str,
+        *,
+        fencing_token: int,
+    ) -> None:
+        await self.journal.start_invocation(record, fencing_token=fencing_token)
+        await self.remember_entrypoint(record.invocation_id, entrypoint)
 
     async def read_entrypoint(self, invocation_id: str) -> str | None:
         async with self.store._lock:
@@ -676,7 +700,6 @@ class AssuranceSqliteBackend:
                 fencing_token=record.fencing_token,
             )
             await self.journal.start_invocation(started, fencing_token=started.fencing_token)
-            return started
         for record in live:
             if (
                 record.invocation_id != started.invocation_id
@@ -686,7 +709,39 @@ class AssuranceSqliteBackend:
                 or record.root_input_digest != started.root_input_digest
             ):
                 raise CheckpointIntegrityError("invocation identity drifted")
+        await self._anchor_unanchored_initial(live, started)
         return started
+
+    async def _anchor_unanchored_initial(
+        self,
+        live: Sequence[CheckpointOutboxRecord],
+        started: InvocationStarted,
+    ) -> None:
+        for record in live:
+            if record.kind != "checkpoint":
+                continue
+            existing = await self.journal.read_checkpoint_anchor(
+                record.thread_id,
+                record.journal_checkpoint_id,
+            )
+            if existing is not None:
+                continue
+            if record.fencing_token != started.fencing_token:
+                raise CheckpointIntegrityError("initial handshake fence advanced before recover")
+            anchor = CheckpointAnchor.build(
+                invocation_id=record.invocation_id,
+                thread_id=record.thread_id,
+                checkpoint_id=record.journal_checkpoint_id,
+                parent_checkpoint_id=record.parent_checkpoint_id,
+                checkpoint_bytes=record.checkpoint_bytes,
+                pending_write_bytes=record.pending_write_bytes,
+                task_identity=record.task_identity,
+                graph_revision=record.graph_revision,
+                product_lock_digest=record.product_lock_digest,
+                root_input_digest=record.root_input_digest,
+                fencing_token=record.fencing_token,
+            )
+            await self.journal.append_checkpoint_anchor(anchor, fencing_token=started.fencing_token)
 
 
 @asynccontextmanager
@@ -710,14 +765,17 @@ async def open_sqlite_checkpointer(
         store = SqliteCheckpointStoreTransaction(upstream.conn, lock)
         journal = SqliteCheckpointAnchorJournal(upstream.conn, lock)
         local_lease = LocalInvocationRunnerLease(paths.langgraph_leases)
-        yield AssuranceSqliteBackend(
+        linked_lease = _JournalLinkedLease(local_lease, journal)
+        backend = AssuranceSqliteBackend(
             store=store,
             journal=journal,
             serializer=strict_checkpoint_serializer(),
             observers=tuple(observers),
-            lease=_JournalLinkedLease(local_lease, journal),
+            lease=linked_lease,
             _conn=upstream.conn,
         )
+        linked_lease.bind_recover(backend.recover_handshake)
+        yield backend
 
 
 def _prepare_control_tree(paths: ChangePaths) -> None:

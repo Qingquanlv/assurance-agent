@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import TypedDict
 
+import pytest
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -13,7 +14,7 @@ from assurance_product.change_workspace import ChangeWorkspace
 from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext, InvocationStatus
 from graph_engine.boot.graph_revision import BootArtifact, GraphBuildManifest, GraphRevision
 from graph_engine.canonical import canonical_digest
-from graph_engine.persistence.journal import InvocationStarted
+from graph_engine.persistence.journal import CheckpointIntegrityError, InvocationStarted
 
 
 LOCK = "b" * 64
@@ -153,3 +154,128 @@ async def _process_reopen_resumes_same_invocation_without_duplicating_prepare(tm
         assert snapshot.values["phase"] == "done"
         assert snapshot.next == ()
         assert _thread_id(snapshot.config) == "inv-1"
+
+
+def _idle_graph(saver: BaseCheckpointSaver[int]):
+    def execute(state: InterruptState) -> InterruptState:
+        return state
+
+    builder = StateGraph(InterruptState)
+    builder.add_node("execute", execute)
+    builder.add_edge(START, "execute")
+    builder.add_edge("execute", END)
+    return builder.compile(checkpointer=saver)
+
+
+def _multi_revision(*, lock: str = LOCK) -> GraphRevision:
+    return GraphRevision.build(
+        product_lock_digest=lock,
+        wheel_source_digests={"assurance.product": "d" * 64},
+        factory_symbols=("assurance_product.graphs.factory:build_product_graphs",),
+        state_schema_versions={"execute": "1", "other": "1"},
+        langgraph_version="1.2.11",
+        checkpoint_contract_version="1",
+    )
+
+
+def _multi_artifact(
+    execute_graph: object,
+    other_graph: object,
+    *,
+    revision: GraphRevision | None = None,
+) -> BootArtifact:
+    revision = revision or _multi_revision()
+    return BootArtifact(
+        manifest=GraphBuildManifest(
+            revision=revision,
+            entrypoint_contract_digests={
+                "execute": canonical_digest({"entrypoint": "execute"}),
+                "other": canonical_digest({"entrypoint": "other"}),
+            },
+            attempt_contract_digests={},
+        ),
+        entrypoints={"execute": execute_graph, "other": other_graph},  # type: ignore[arg-type]
+        attempt_contracts={},
+        checkpointer_backend_id="anchored",
+    )
+
+
+def test_second_application_start_cannot_rewrite_lock_input_revision_or_entrypoint(
+    tmp_path: Path,
+) -> None:
+    asyncio.run(_second_application_start_cannot_rewrite_lock_input_revision_or_entrypoint(tmp_path))
+
+
+async def _second_application_start_cannot_rewrite_lock_input_revision_or_entrypoint(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    async with open_sqlite_checkpointer(workspace) as backend:
+        revision = _multi_revision()
+        started = InvocationStarted(
+            invocation_id="inv-1",
+            thread_id="inv-1",
+            graph_revision=revision.revision_id,
+            product_lock_digest=revision.product_lock_digest,
+            root_input_digest=INPUT_DIGEST,
+            fencing_token=1,
+        )
+        await backend.pin_start(started, "execute", fencing_token=1)
+        saver = backend.checkpointer(started.anchor_state())
+        artifact = _multi_artifact(_idle_graph(saver), _idle_graph(saver), revision=revision)
+        application = AssuranceApplication(
+            lease=backend.lease,
+            owner_id="runner-a",
+            start_pins=backend,
+        )
+        pinned = await application.start(
+            artifact=artifact,
+            invocation_id="inv-1",
+            entrypoint="execute",
+            graph_input={"change_id": "chg-1"},
+            runtime_context=_context(artifact),
+        )
+        assert pinned.entrypoint == "execute"
+        assert await backend.read_entrypoint("inv-1") == "execute"
+        stored = await backend.journal.read_invocation_started("inv-1")
+        assert stored is not None
+        assert stored.product_lock_digest == started.product_lock_digest
+        assert stored.root_input_digest == started.root_input_digest
+        assert stored.graph_revision == started.graph_revision
+
+        with pytest.raises(CheckpointIntegrityError):
+            await application.start(
+                artifact=artifact,
+                invocation_id="inv-1",
+                entrypoint="execute",
+                graph_input={"change_id": "chg-other"},
+                runtime_context=_context(artifact),
+            )
+        other_revision = _multi_revision(lock="e" * 64)
+        other_artifact = _multi_artifact(
+            artifact.entrypoints["execute"],
+            artifact.entrypoints["other"],
+            revision=other_revision,
+        )
+        with pytest.raises(CheckpointIntegrityError):
+            await application.start(
+                artifact=other_artifact,
+                invocation_id="inv-1",
+                entrypoint="execute",
+                graph_input={"change_id": "chg-1"},
+                runtime_context=_context(other_artifact),
+            )
+        with pytest.raises(CheckpointIntegrityError):
+            await application.start(
+                artifact=artifact,
+                invocation_id="inv-1",
+                entrypoint="other",
+                graph_input={"change_id": "chg-1"},
+                runtime_context=_context(artifact),
+            )
+        assert await backend.read_entrypoint("inv-1") == "execute"
+        stored = await backend.journal.read_invocation_started("inv-1")
+        assert stored is not None
+        assert stored.product_lock_digest == started.product_lock_digest
+        assert stored.root_input_digest == started.root_input_digest
+        assert stored.graph_revision == started.graph_revision
