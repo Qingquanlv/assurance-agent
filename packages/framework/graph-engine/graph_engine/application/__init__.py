@@ -1,3 +1,9 @@
+from graph_engine.application.application import (
+    AmbiguousResume,
+    AssuranceApplication,
+    InvalidResume,
+    StartedInvocation,
+)
 from graph_engine.application.revision_guard import RevisionMismatch, require_revision
 from graph_engine.application.runtime_context import (
     AssuranceRuntimeContext,
@@ -17,14 +23,18 @@ from graph_engine.application.status import (
 )
 
 __all__ = [
+    "AmbiguousResume",
+    "AssuranceApplication",
     "AssuranceRuntimeContext",
     "AttemptKernelPort",
     "GraphSnapshotEnvelope",
     "InterruptEnvelope",
+    "InvalidResume",
     "InvocationStatus",
     "InvocationStatusName",
     "RevisionMismatch",
     "SecretResolverPort",
+    "StartedInvocation",
     "TerminalEnvelope",
     "WorkspaceProviderPort",
     "normalize_graph_snapshot",
