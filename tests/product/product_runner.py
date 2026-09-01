@@ -58,6 +58,34 @@ _PUBLIC_TERMINAL_KEYS = ("decision", "artifacts")
 _ORIGINAL_END_BEHAVIOR = _planner._NODE_BEHAVIORS["end"]
 
 
+def semantic_contract_id_from_capability(capability_id: str) -> str | None:
+    aliased = _product_alias(capability_id)
+    unaliased = (
+        f"assurance.{aliased.removeprefix(_AGENT_PREFIX)}" if aliased.startswith(_AGENT_PREFIX) else aliased
+    )
+    if unaliased in _OPERATION_LOGICAL_STEPS:
+        return unaliased
+    for suffix in (".prepare", ".execute", ".finalize"):
+        if unaliased.endswith(suffix):
+            stem = unaliased.removesuffix(suffix)
+            feature, _, base = stem.removeprefix("assurance.").partition(".")
+            if feature and base:
+                return f"assurance.{feature}.agent.{base}.v1"
+    if unaliased in PURE_HANDLER_IDS:
+        return unaliased
+    return None
+
+
+PURE_HANDLER_IDS = frozenset(
+    {
+        "assurance.generation.complete",
+        "assurance.generation.review-round.advance",
+        "assurance.intake.review-round.advance",
+        "assurance.healing.repair-round.advance",
+    }
+)
+
+
 def _product_alias(capability_id: str) -> str:
     if capability_id.startswith(_AGENT_PREFIX):
         return capability_id

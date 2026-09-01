@@ -76,6 +76,23 @@ PREPARE_IDS = (
     "assurance.improvement.retro.prepare",
 )
 
+PURE_DECISION_IDS = (
+    "assurance.generation.complete",
+    "assurance.generation.review-round.advance",
+    "assurance.intake.review-round.advance",
+    "assurance.healing.repair-round.advance",
+)
+SEMANTIC_TRACE_IGNORED_FIELDS = frozenset(
+    {
+        "alias_id",
+        "activation_id",
+        "token_id",
+        "checkpoint_id",
+        "node_name",
+        "graph_count",
+    }
+)
+
 ALL_BINDING_IDS = tuple(
     alias
     for prepare_id in PREPARE_IDS

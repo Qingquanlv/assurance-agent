@@ -25,8 +25,11 @@ from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import PluginDescriptor, ProviderSource, TaskHandler
 
 _CALLBACK_REGISTRY_NAME = "_assurance_product_runtime_test_callbacks"
+_VALIDATOR_REGISTRY_NAME = "_assurance_product_runtime_test_validators"
 _CALLBACKS: dict[str, Mapping[str, TaskHandler]] = {}
+_VALIDATORS: dict[str, Mapping[str, object]] = {}
 setattr(builtins, _CALLBACK_REGISTRY_NAME, _CALLBACKS)
+setattr(builtins, _VALIDATOR_REGISTRY_NAME, _VALIDATORS)
 
 _PLUGIN_OWNERS = (
     "assurance.product.agent",
@@ -95,6 +98,8 @@ def _schemas_by_owner(workflow: WorkflowDef) -> dict[str, tuple[str, ...]]:
 def resolve_workflow_composition(
     workflow: dict[str, object],
     handlers: Mapping[str, TaskHandler],
+    *,
+    commit_validators: Mapping[str, object] | None = None,
 ) -> FrozenComposition:
     parsed_workflow = WorkflowDef.model_validate(workflow)
     identity = uuid.uuid4().hex
@@ -109,7 +114,16 @@ def resolve_workflow_composition(
     product_declaration_path = f"{package_name}/product-declaration.json"
     grouped = _handlers_by_owner(handlers)
     schemas_by_owner = _schemas_by_owner(parsed_workflow)
-    owners = tuple(owner for owner in _PLUGIN_OWNERS if owner in grouped or owner in schemas_by_owner)
+    validators = dict(commit_validators or {})
+    validator_owners = {
+        owner: {key: value for key, value in validators.items() if key.startswith(f"{owner}.")}
+        for owner in _PLUGIN_OWNERS
+    }
+    owners = tuple(
+        owner
+        for owner in _PLUGIN_OWNERS
+        if owner in grouped or owner in schemas_by_owner or validator_owners.get(owner)
+    )
     product_source = ProviderSource(
         distribution=distribution_name,
         version="1.0.0",
@@ -119,7 +133,9 @@ def resolve_workflow_composition(
         declaration_path=product_declaration_path,
         import_roots=("",),
     )
-    plugin_specs: list[tuple[str, str, str, PluginDescriptor, ProviderSource, dict[str, TaskHandler]]] = []
+    plugin_specs: list[
+        tuple[str, str, str, PluginDescriptor, ProviderSource, dict[str, TaskHandler], dict[str, object]]
+    ] = []
     for index, owner in enumerate(owners):
         plugin_entrypoint = f"plugin-{identity}-{index}"
         declaration_path = f"{package_name}/plugin-declaration-{index}.json"
@@ -140,7 +156,7 @@ def resolve_workflow_composition(
             plugin_version="1.0.0",
             engine_api=ENGINE_API_VERSION,
             task_handlers=tuple(sorted(grouped.get(owner, {}))),
-            commit_validators=(),
+            commit_validators=tuple(sorted(validator_owners.get(owner, {}))),
             schemas=schemas_by_owner.get(owner, ()),
         )
         plugin_specs.append(
@@ -151,6 +167,7 @@ def resolve_workflow_composition(
                 descriptor,
                 plugin_source,
                 grouped.get(owner, {}),
+                validator_owners.get(owner, {}),
             )
         )
     manifest = ProductManifest(
@@ -182,17 +199,24 @@ def resolve_workflow_composition(
     )
     callback_key = f"product-{identity}"
     _CALLBACKS[callback_key] = dict(handlers)
+    _VALIDATORS[callback_key] = dict(validators)
     provider_lines = [
         "import builtins",
         "import json",
         "from graph_engine.composition import ProductManifest",
         "from graph_engine.plugin_api import PluginContribution, PluginDescriptor, SchemaContribution",
         f"_all_callbacks = getattr(builtins, {_CALLBACK_REGISTRY_NAME!r})[{callback_key!r}]",
+        f"_all_validators = getattr(builtins, {_VALIDATOR_REGISTRY_NAME!r})[{callback_key!r}]",
         "class _DelegatingHandler:",
         "    def __init__(self, delegate):",
         "        self._delegate = delegate",
         "    async def execute(self, request, context):",
         "        return await self._delegate.execute(request, context)",
+        "class _DelegatingValidator:",
+        "    def __init__(self, delegate):",
+        "        self._delegate = delegate",
+        "    def validate(self, staged, context):",
+        "        return self._delegate.validate(staged, context)",
         "class RuntimeProduct:",
         "    @staticmethod",
         "    def manifest():",
@@ -206,6 +230,7 @@ def resolve_workflow_composition(
         descriptor,
         plugin_source,
         owner_handlers,
+        owner_validators,
     ) in plugin_specs:
         (source_root / declaration_path).write_bytes(
             canonical_json_bytes(
@@ -218,6 +243,7 @@ def resolve_workflow_composition(
             )
         )
         handler_keys = json.dumps(sorted(owner_handlers), sort_keys=True)
+        validator_keys = json.dumps(sorted(owner_validators), sort_keys=True)
         descriptor_json = json.dumps(descriptor.model_dump(mode="json"), sort_keys=True)
         owner_schema_ids = json.dumps(list(descriptor.schemas), sort_keys=True)
         provider_lines.extend(
@@ -229,9 +255,11 @@ def resolve_workflow_composition(
                 "    @staticmethod",
                 "    def contribute(_ports):",
                 f"        keys = {handler_keys}",
+                f"        validator_ids = {validator_keys}",
                 f"        schema_ids = {owner_schema_ids}",
                 "        return PluginContribution(",
                 "            task_handlers={key: _DelegatingHandler(_all_callbacks[key]) for key in keys},",
+                "            commit_validators={key: _DelegatingValidator(_all_validators[key]) for key in validator_ids},",
                 "            schemas=tuple(",
                 "                SchemaContribution(schema_id, 'application/schema+json', b'true')",
                 "                for schema_id in schema_ids",
@@ -281,7 +309,7 @@ def resolve_workflow_composition(
                     source_root=source_root,
                     source_files=source_files,
                 )
-                for plugin_entrypoint, declaration_path, _class_name, _descriptor, _source, _handlers in plugin_specs
+                for plugin_entrypoint, declaration_path, _class_name, _descriptor, _source, _handlers, _validators in plugin_specs
             ),
         )
     )

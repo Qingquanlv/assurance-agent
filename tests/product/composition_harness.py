@@ -25,6 +25,8 @@ from graph_engine.frozen_json import thaw_json
 
 from tests.product.conformance import ALL_BINDING_IDS, EVIDENCE_ROOT
 
+SHADOW_VALIDATOR_CLONE_ID = "test.assurance.execution.validator-parity.v1"
+
 _FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 _DEPLOYMENT_FIXTURES = _FIXTURE_ROOT / "deployment"
 _CONFIG_FIXTURE = _FIXTURE_ROOT / "project-config"

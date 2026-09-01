@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from tests.product.composition_harness import (
     COVERAGE_PATH,
+    SHADOW_VALIDATOR_CLONE_ID,
     coverage_bytes,
     evict_generated_binding_modules,
     project_binding_coverage,
@@ -70,3 +71,12 @@ def test_cursor_resolution_repeats_and_keeps_finalize_null(installed_sources):
     assert coverage_bytes(first) == coverage_bytes(second)
     assert all(first[item]["data"] is None for item in ALL_BINDING_IDS if item.endswith(".finalize"))
     assert all(first[item]["secret_handles"] == [] for item in ALL_BINDING_IDS if item.endswith(".finalize"))
+
+
+def test_shadow_validator_clone_is_absent_from_binding_coverage(installed_sources):
+    evict_generated_binding_modules()
+    from assurance_product.product import resolve_assurance_composition
+
+    projection = project_binding_coverage(resolve_assurance_composition(request_for("opencode", installed_sources)))
+    assert SHADOW_VALIDATOR_CLONE_ID not in projection
+    assert SHADOW_VALIDATOR_CLONE_ID not in ALL_BINDING_IDS

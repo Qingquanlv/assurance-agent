@@ -108,6 +108,15 @@ def test_full_graph_has_no_archive_branch_and_keeps_retro_improvement(compiled_p
     assert f"{_IMPROVEMENT_PREFIX}improvement-review" in _reachable_graphs(workflow, "improvement-review")
 
 
+def test_python_roots_coexist_with_yaml_assembly_without_shadow_clones(compiled_product_workflow):
+    from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS
+    from tests.product.composition_harness import SHADOW_VALIDATOR_CLONE_ID
+
+    assert set(ENTRYPOINT_CONTRACTS) == set(compiled_product_workflow.entrypoints)
+    assert len(ENTRYPOINT_CONTRACTS) == 14
+    assert SHADOW_VALIDATOR_CLONE_ID not in compiled_product_workflow.graphs
+
+
 def test_audit_result_fields_are_tuples(compiled_for):
     from assurance_product.product import audit_full_graph
 

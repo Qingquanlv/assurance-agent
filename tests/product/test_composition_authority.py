@@ -13,7 +13,7 @@ from graph_engine.composition.dependencies import DependencyConflict
 from graph_engine.composition.resolver import ResolutionError
 from graph_engine.composition.source_fs import SourceSnapshotError
 
-from tests.product.composition_harness import copy_config_tree, request_for
+from tests.product.composition_harness import SHADOW_VALIDATOR_CLONE_ID, copy_config_tree, request_for
 
 
 def test_undeclared_installed_module_cannot_change_assembly(installed_sources, tmp_path: Path, monkeypatch):
@@ -37,6 +37,14 @@ def test_undeclared_installed_module_cannot_change_assembly(installed_sources, t
     (extra / "__init__.py").write_text("PLUGIN = object()\n", encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
     assert _bytes() == before
+
+
+def test_shadow_validator_clone_is_absent_from_authenticated_composition(installed_sources):
+    from assurance_product.product import resolve_assurance_composition
+
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    assert SHADOW_VALIDATOR_CLONE_ID not in composition.registries.capabilities.entries
+    assert SHADOW_VALIDATOR_CLONE_ID not in json.dumps(composition.lock.model_dump(mode="json"))
 
 
 def test_unknown_product_entrypoint_is_rejected(installed_sources):
