@@ -33,6 +33,7 @@ from graph_engine.attempts.resource_arbiter import ResourceArbiterPort, Resource
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
+from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import (
     CommitValidator,
     PreparedWorkspaceRef,
@@ -164,6 +165,7 @@ class AssuranceAttemptKernel:
         snapshot = await self.adopt_or_create(attempt_key, contract, validated_input, context)
         trace.append("adopt_or_create")
         if snapshot.terminal is not None:
+            await self._release_if_held(attempt_key, context)
             return _resolution_from_terminal(snapshot.terminal, contract)
 
         claims = _resolved_claims(contract, validated_input)
@@ -254,7 +256,6 @@ class AssuranceAttemptKernel:
         await self._settle_effects()
         trace.append("settle_effects")
 
-        await self._assert_fence(attempt_key, context, "terminal_receipt", cut)
         snapshot = await self._terminate(
             attempt_key,
             context,
@@ -312,7 +313,10 @@ class AssuranceAttemptKernel:
     ) -> tuple[BaseModel | AttemptResolution, AttemptSnapshot]:
         activity_id = snapshot.activity_id or attempt_key.digest
         if attempt_activity_is_terminal(snapshot.activity_state) and snapshot.activity_outcome is not None:
-            return contract.contract.output_model.model_validate(snapshot.activity_outcome), snapshot
+            try:
+                return contract.contract.output_model.model_validate(snapshot.activity_outcome), snapshot
+            except ValidationError as error:
+                return PermanentTaskFailure(kind="invalid_output", message=str(error)), snapshot
         if attempt_activity_in_flight(snapshot.activity_state):
             await self._assert_fence(attempt_key, context, "external_dispatch", cut)
             reconcile = getattr(contract.executor, "reconcile", None)
@@ -438,7 +442,7 @@ class AssuranceAttemptKernel:
         terminal: AttemptTerminated,
         cut: Callable[[str], None],
     ) -> AttemptSnapshot:
-        del cut
+        await self._assert_fence(attempt_key, context, "terminal_receipt", cut)
         events: list[AttemptEvent] = [terminal]
         if not snapshot.released:
             events.append(ResourcesReleased(authorization_id=authorization.authorization_id))
@@ -483,6 +487,16 @@ class AssuranceAttemptKernel:
     ) -> None:
         cut(f"fence:{name}")
         await self.arbiter.assert_usable(attempt_key, fencing_token=context.fencing_token)
+
+    async def _release_if_held(
+        self,
+        attempt_key: AttemptKey,
+        context: AttemptExecutionContext,
+    ) -> None:
+        try:
+            await self.arbiter.release(attempt_key, fencing_token=context.fencing_token)
+        except StaleFencingToken:
+            return
 
 
 def _identity(
