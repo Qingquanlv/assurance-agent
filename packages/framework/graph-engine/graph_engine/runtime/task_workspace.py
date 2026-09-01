@@ -13,16 +13,21 @@ import os
 import stat
 import tempfile
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
 
+from graph_engine.attempts.keys import AttemptKey
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
     DirectoryIdentity,
+    PreparedWorkspaceRef,
     PromotionReceipt,
+    ResourceClaims,
+    SealedFile,
+    SealedWriteSet,
     StagedFile,
     StagedWriteSet,
     TaskWorkspaceBinding,
@@ -422,7 +427,20 @@ def _scan_directory_fd(
     prefix: str,
     excluded: frozenset[tuple[int, int]] = frozenset(),
 ) -> dict[str, tuple[str, int]]:
-    files: dict[str, tuple[str, int]] = {}
+    return {
+        path: (digest, mode)
+        for path, (_contents, digest, mode) in _scan_directory_fd_complete(
+            directory_fd, prefix, excluded
+        ).items()
+    }
+
+
+def _scan_directory_fd_complete(
+    directory_fd: int,
+    prefix: str,
+    excluded: frozenset[tuple[int, int]] = frozenset(),
+) -> dict[str, tuple[bytes, str, int]]:
+    files: dict[str, tuple[bytes, str, int]] = {}
     try:
         names = sorted(os.listdir(directory_fd), key=os.fsencode)
     except OSError as error:
@@ -437,15 +455,33 @@ def _scan_directory_fd(
         if stat.S_ISDIR(entry.st_mode):
             child = _open_directory_at(directory_fd, name, "directory entry")
             try:
-                files.update(_scan_directory_fd(child, logical_path, excluded))
+                files.update(_scan_directory_fd_complete(child, logical_path, excluded))
             finally:
                 os.close(child)
         elif stat.S_ISREG(entry.st_mode):
-            _contents, digest, mode = _read_regular_at(directory_fd, name, logical_path)
-            files[logical_path] = (digest, mode)
+            contents, digest, mode = _read_regular_at(directory_fd, name, logical_path)
+            files[logical_path] = (contents, digest, mode)
         else:
             raise TaskWorkspaceViolation(f"path is not a regular file: {logical_path}")
     return files
+
+
+def _sealed_digest(identity_digest: str, files: Sequence[SealedFile]) -> str:
+    return canonical_digest(
+        {
+            "identity_digest": identity_digest,
+            "files": [
+                {
+                    "path": item.path,
+                    "before_sha256": item.before_sha256,
+                    "before_mode": item.before_mode,
+                    "after_sha256": item.after_sha256,
+                    "after_mode": item.after_mode,
+                }
+                for item in files
+            ],
+        }
+    )
 
 
 def _manifest_for_claims_fd(
@@ -1027,25 +1063,38 @@ class TaskWorkspaceStore:
         self,
         identity: TaskWorkspaceIdentity,
         staged: StagedWriteSet,
+        *,
+        contents: Mapping[str, bytes] | None = None,
     ) -> None:
         prepared: list[_PreparedPromotionFile] = []
         created_directories: list[str] = []
-        task_fd, write_fd = self._open_write_root(identity)
+        task_fd: int | None = None
+        write_fd: int | None = None
+        if contents is None:
+            task_fd, write_fd = self._open_write_root(identity)
         try:
             try:
                 for index, file in enumerate(staged.files):
-                    source_parent, source_name = _open_parent_at(
-                        write_fd,
-                        file.path,
-                        create=False,
-                        label="staged parent",
-                    )
-                    try:
-                        contents, digest, mode = _read_regular_at(source_parent, source_name, file.path)
-                    finally:
-                        os.close(source_parent)
-                    if (digest, mode) != self._after_state(file):
-                        raise TaskWorkspaceViolation(f"staged file drifted before promotion: {file.path}")
+                    if contents is not None:
+                        file_bytes = contents[file.path]
+                        digest = hashlib.sha256(file_bytes).hexdigest()
+                        mode = self._after_state(file)[1]
+                        if (digest, mode) != self._after_state(file):
+                            raise TaskWorkspaceViolation(f"sealed file drifted before promotion: {file.path}")
+                    else:
+                        assert write_fd is not None
+                        source_parent, source_name = _open_parent_at(
+                            write_fd,
+                            file.path,
+                            create=False,
+                            label="staged parent",
+                        )
+                        try:
+                            file_bytes, digest, mode = _read_regular_at(source_parent, source_name, file.path)
+                        finally:
+                            os.close(source_parent)
+                        if (digest, mode) != self._after_state(file):
+                            raise TaskWorkspaceViolation(f"staged file drifted before promotion: {file.path}")
                     target_parent, target_name = _open_transaction_parent_at(
                         self._project_fd,
                         file.path,
@@ -1111,7 +1160,7 @@ class TaskWorkspaceStore:
                         self._ensure_named_file(
                             target_parent,
                             temporary_name,
-                            contents,
+                            file_bytes,
                             digest,
                             mode,
                             f"temporary:{file.path}",
@@ -1146,8 +1195,10 @@ class TaskWorkspaceStore:
         finally:
             for item in prepared:
                 os.close(item.parent_fd)
-            os.close(write_fd)
-            os.close(task_fd)
+            if write_fd is not None:
+                os.close(write_fd)
+            if task_fd is not None:
+                os.close(task_fd)
 
     def _target_state_at(self, parent_fd: int, name: str, logical_path: str) -> tuple[str, int] | None:
         try:
@@ -1465,7 +1516,27 @@ class TaskWorkspaceStore:
                 "promotion receipt publication is indeterminate"
             ) from error
 
-    def promote(self, identity: TaskWorkspaceIdentity, staged: StagedWriteSet) -> PromotionReceipt:
+    def _confirm_promotion_source(
+        self,
+        identity: TaskWorkspaceIdentity,
+        staged: StagedWriteSet,
+        contents: Mapping[str, bytes] | None,
+    ) -> None:
+        if contents is None:
+            self._staged_matches_root(identity, staged)
+            return
+        for file in staged.files:
+            digest = hashlib.sha256(contents[file.path]).hexdigest()
+            if file.after_sha256 is None or digest != file.after_sha256:
+                raise TaskWorkspaceViolation(f"sealed candidate bytes drifted after sealing: {file.path}")
+
+    def promote(
+        self,
+        identity: TaskWorkspaceIdentity,
+        staged: StagedWriteSet,
+        *,
+        contents: Mapping[str, bytes] | None = None,
+    ) -> PromotionReceipt:
         self._authenticate_roots_current()
         self._authenticate_identity(identity)
         self._authenticate_staged(identity, staged)
@@ -1479,7 +1550,7 @@ class TaskWorkspaceStore:
         if existing is not None:
             if existing != expected_receipt:
                 raise TaskWorkspaceViolation("existing promotion receipt conflicts with this replay")
-            self._staged_matches_root(identity, staged)
+            self._confirm_promotion_source(identity, staged, contents)
             if not self._targets_match_staged(staged):
                 raise TaskWorkspaceViolation("completed promotion replay does not match staged targets")
             try:
@@ -1503,7 +1574,7 @@ class TaskWorkspaceStore:
         if pending is not None:
             if pending != expected_receipt:
                 raise TaskWorkspaceViolation("existing pending promotion conflicts with this replay")
-            self._staged_matches_root(identity, staged)
+            self._confirm_promotion_source(identity, staged, contents)
             for file in staged.files:
                 state = self._target_state(file)
                 if state in {self._before_state(file), self._after_state(file)}:
@@ -1525,12 +1596,12 @@ class TaskWorkspaceStore:
                 return expected_receipt
         else:
             self._verify_target_baseline(identity)
-            self._staged_matches_root(identity, staged)
+            self._confirm_promotion_source(identity, staged, contents)
             self._install_pending_receipt(
                 expected_receipt,
                 pending_name=pending_name,
             )
-        self._execute_promotion_transaction(identity, staged)
+        self._execute_promotion_transaction(identity, staged, contents=contents)
         if not self._targets_match_staged(staged):
             raise PromotionPublicationIndeterminate(
                 "promotion targets cannot be proven to match the staged write set"
@@ -1546,3 +1617,159 @@ class TaskWorkspaceStore:
             pending_name=pending_name,
         )
         return expected_receipt
+
+    def seal_complete(self, binding: TaskWorkspaceBinding) -> SealedWriteSet:
+        self._binding_paths(binding.identity)
+        if binding.write_root_identity.identity_digest != binding.identity.write_root_digest:
+            raise TaskWorkspaceViolation("attempt write-root identity was replaced")
+        task_fd, write_fd = self._open_write_root(binding.identity)
+        try:
+            manifest = _scan_directory_fd_complete(write_fd, "")
+        finally:
+            os.close(write_fd)
+            os.close(task_fd)
+        for path in manifest:
+            if not _is_covered(path, binding.identity.output_paths):
+                raise TaskWorkspaceViolation(f"staged path is not covered by a write claim: {path}")
+        baseline = {
+            file.path: (file.before_sha256, file.before_mode) for file in binding.identity.baseline_files
+        }
+        files = tuple(
+            SealedFile(
+                path=path,
+                before_sha256=(baseline[path][0] if path in baseline else None),
+                before_mode=(baseline[path][1] if path in baseline else None),
+                after_sha256=digest,
+                after_mode=mode,
+                content=content,
+            )
+            for path, (content, digest, mode) in sorted(manifest.items())
+        )
+        return SealedWriteSet(
+            files=files, sealed_digest=_sealed_digest(binding.identity.identity_digest, files)
+        )
+
+    def _staged_from_sealed(self, identity: TaskWorkspaceIdentity, sealed: SealedWriteSet) -> StagedWriteSet:
+        files = tuple(
+            StagedFile(
+                path=item.path,
+                before_sha256=item.before_sha256,
+                before_mode=item.before_mode,
+                after_sha256=item.after_sha256,
+                after_mode=item.after_mode,
+            )
+            for item in sealed.files
+        )
+        payload = {
+            "identity_digest": identity.identity_digest,
+            "files": [file.model_dump(mode="json") for file in files],
+        }
+        return StagedWriteSet(staged_digest=canonical_digest(payload), **payload)
+
+    def _prepared_directory_name(self, identity: TaskWorkspaceIdentity, sealed: SealedWriteSet) -> str:
+        return f".{identity.identity_digest}.{sealed.sealed_digest}.prepared"
+
+    def _read_prepared_files(
+        self, identity: TaskWorkspaceIdentity, sealed: SealedWriteSet
+    ) -> dict[str, tuple[bytes, str, int]]:
+        name = self._prepared_directory_name(identity, sealed)
+        prepared_fd = _open_directory_at(self._receipts_fd, name, "prepared write set")
+        try:
+            return _scan_directory_fd_complete(prepared_fd, "")
+        finally:
+            os.close(prepared_fd)
+
+    def _persist_prepared(
+        self, identity: TaskWorkspaceIdentity, sealed: SealedWriteSet
+    ) -> dict[str, tuple[bytes, str, int]]:
+        name = self._prepared_directory_name(identity, sealed)
+        prepared_fd = _open_or_create_directory_at(self._receipts_fd, name, "prepared write set")
+        try:
+            for item in sealed.files:
+                parent_fd, basename = _open_parent_at(
+                    prepared_fd, item.path, create=True, label="prepared parent"
+                )
+                try:
+                    try:
+                        existing, digest, mode = _read_regular_at(parent_fd, basename, item.path)
+                    except FileNotFoundError:
+                        _write_named_file_at(parent_fd, basename, item.content, item.after_mode)
+                    else:
+                        if existing != item.content or digest != item.after_sha256 or mode != item.after_mode:
+                            raise TaskWorkspaceViolation(f"prepared write set conflicts: {item.path}")
+                finally:
+                    os.close(parent_fd)
+            persisted = _scan_directory_fd_complete(prepared_fd, "")
+        finally:
+            os.close(prepared_fd)
+        expected = {item.path: (item.content, item.after_sha256, item.after_mode) for item in sealed.files}
+        if persisted != expected:
+            raise TaskWorkspaceViolation("prepared write set failed authentication")
+        return persisted
+
+    def _prepared_digest(
+        self,
+        identity: TaskWorkspaceIdentity,
+        sealed: SealedWriteSet,
+        persisted: Mapping[str, tuple[bytes, str, int]],
+    ) -> str:
+        return canonical_digest(
+            {
+                "identity_digest": identity.identity_digest,
+                "sealed_digest": sealed.sealed_digest,
+                "files": [
+                    {"path": path, "after_sha256": digest, "after_mode": mode}
+                    for path, (_content, digest, mode) in sorted(persisted.items())
+                ],
+            }
+        )
+
+    def prepare_sealed(self, binding: TaskWorkspaceBinding, sealed: SealedWriteSet) -> PreparedWorkspaceRef:
+        current = self.seal_complete(binding)
+        if current != sealed:
+            raise TaskWorkspaceViolation("staged write root drifted after sealing")
+        persisted = self._persist_prepared(binding.identity, sealed)
+        return PreparedWorkspaceRef(
+            identity=binding.identity,
+            sealed=sealed,
+            prepared_digest=self._prepared_digest(binding.identity, sealed, persisted),
+        )
+
+    def promote_prepared(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt:
+        persisted = self._read_prepared_files(prepared.identity, prepared.sealed)
+        expected = {
+            item.path: (item.content, item.after_sha256, item.after_mode) for item in prepared.sealed.files
+        }
+        if persisted != expected:
+            raise TaskWorkspaceViolation("prepared write set failed authentication")
+        if self._prepared_digest(prepared.identity, prepared.sealed, persisted) != prepared.prepared_digest:
+            raise TaskWorkspaceViolation("prepared write-set digest is not canonical")
+        staged = self._staged_from_sealed(prepared.identity, prepared.sealed)
+        contents = {path: content for path, (content, _digest, _mode) in persisted.items()}
+        return self.promote(prepared.identity, staged, contents=contents)
+
+
+class TaskWorkspaceProvider:
+    """Descriptor-pinned WorkspaceProvider over a TaskWorkspaceStore."""
+
+    def __init__(self, store: TaskWorkspaceStore) -> None:
+        self.store = store
+
+    async def open_or_create(self, attempt_key: AttemptKey, claims: ResourceClaims) -> TaskWorkspaceBinding:
+        return self.store.begin(
+            task_id=attempt_key.digest,
+            attempt=1,
+            output_paths=claims.writes,
+        )
+
+    async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet:
+        return self.store.seal_complete(binding)
+
+    async def prepare(self, binding: TaskWorkspaceBinding, sealed: SealedWriteSet) -> PreparedWorkspaceRef:
+        return self.store.prepare_sealed(binding, sealed)
+
+    async def promote(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt:
+        return self.store.promote_prepared(prepared)
+
+    async def recover_promotion(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt:
+        return self.store.promote_prepared(prepared)

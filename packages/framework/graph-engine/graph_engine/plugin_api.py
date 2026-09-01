@@ -30,6 +30,8 @@ from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 
 if TYPE_CHECKING:
+    from graph_engine.attempts.keys import AttemptKey
+    from graph_engine.attempts.resolutions import PermanentTaskFailure, RejectedTaskResult
     from graph_engine.canonical import JSONValue
 else:
     JSONValue = JsonValue
@@ -937,6 +939,10 @@ class PromotionReceipt(FrozenModel):
             raise ValueError("promotion receipt digest is not canonical")
         return self
 
+    @property
+    def sealed_digest(self) -> str:
+        return self.staged_digest
+
 
 class CandidateFile(FrozenModel):
     path: str
@@ -950,12 +956,70 @@ class CandidateWriteSet(FrozenModel):
     files: tuple[CandidateFile, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SealedFile:
+    path: str
+    before_sha256: str | None
+    before_mode: int | None
+    after_sha256: str
+    after_mode: int
+    content: bytes
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "content", bytes(self.content))
+
+
+@dataclass(frozen=True, slots=True)
+class SealedWriteSet:
+    files: tuple[SealedFile, ...]
+    sealed_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedWorkspaceRef:
+    identity: TaskWorkspaceIdentity
+    sealed: SealedWriteSet
+    prepared_digest: str
+
+
+class WorkspaceProvider(Protocol):
+    async def open_or_create(
+        self, attempt_key: AttemptKey, claims: ResourceClaims
+    ) -> TaskWorkspaceBinding: ...
+    async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet: ...
+    async def prepare(
+        self, binding: TaskWorkspaceBinding, sealed: SealedWriteSet
+    ) -> PreparedWorkspaceRef: ...
+    async def promote(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt: ...
+    async def recover_promotion(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt: ...
+
+
 class ValidationContext(FrozenModel):
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        allow_inf_nan=False,
+        arbitrary_types_allowed=True,
+    )
+
     invocation_id: str
     task_id: str
     graph_instance_id: str
     node_id: str
     resources: ResourceClaims
+    task_input: JSONValue = None
+    task_output: JSONValue = None
+    evidence_refs: tuple[str, ...] = ()
+    write_set: SealedWriteSet | None = None
+
+    @field_validator("task_input", "task_output", mode="after")
+    @classmethod
+    def _freeze_semantic_json(cls, value: JSONValue) -> Any:
+        return freeze_json(value)
+
+    @field_serializer("task_input", "task_output")
+    def _serialize_semantic_json(self, value: object) -> Any:
+        return thaw_json(value)
 
 
 class ValidationResult(FrozenModel):
@@ -989,6 +1053,45 @@ class PathWriteSet(Protocol):
 
 class CommitValidator(Protocol):
     def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult: ...
+
+
+def run_validators(
+    validator_ids: tuple[str, ...],
+    registry: Mapping[str, CommitValidator],
+    write_set: PathWriteSet,
+    context: ValidationContext,
+) -> RejectedTaskResult | PermanentTaskFailure | None:
+    """Run contract validators in declared order. An empty tuple is an explicit no-op."""
+
+    from graph_engine.attempts.resolutions import PermanentTaskFailure, RejectedTaskResult
+
+    if validator_ids == ():
+        return None
+    for validator_id in validator_ids:
+        try:
+            validator = registry[validator_id]
+        except KeyError:
+            return PermanentTaskFailure(
+                kind="configuration",
+                message=f"validator {validator_id} is not registered",
+            )
+        try:
+            result = validator.validate(write_set, context)
+        except Exception as error:
+            return PermanentTaskFailure(
+                kind="internal",
+                message=f"validator {validator_id} failed: {error}",
+            )
+        if not isinstance(result, ValidationResult):
+            return PermanentTaskFailure(
+                kind="internal",
+                message=(
+                    f"validator {validator_id} returned {type(result).__name__}, expected ValidationResult"
+                ),
+            )
+        if not result.accepted:
+            return RejectedTaskResult(reason=result.reason or validator_id)
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1420,6 +1523,8 @@ __all__ = [
     "PathBearingFile",
     "PathWriteSet",
     "PluginProvider",
+    "PreparedWorkspaceRef",
+    "PromotionReceipt",
     "ProviderSource",
     "RecoverableTaskHandler",
     "RegistryPorts",
@@ -1427,8 +1532,12 @@ __all__ = [
     "ResourceClaims",
     "ResourceClaimTemplate",
     "SchemaContribution",
+    "SealedFile",
+    "SealedWriteSet",
     "SecretHandleUnauthorized",
     "SecretPort",
+    "StagedFile",
+    "StagedWriteSet",
     "TaskActivityCancelResult",
     "TaskActivityPort",
     "TaskActivityReconcileResult",
@@ -1441,11 +1550,10 @@ __all__ = [
     "TaskStatus",
     "TaskWorkspaceBinding",
     "TaskWorkspaceIdentity",
-    "StagedFile",
-    "StagedWriteSet",
-    "PromotionReceipt",
     "ValidationContext",
     "ValidationResult",
+    "WorkspaceProvider",
     "realize_plugin",
+    "run_validators",
     "validate_contribution",
 ]

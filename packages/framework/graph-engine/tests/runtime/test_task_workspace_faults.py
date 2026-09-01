@@ -11,6 +11,7 @@ from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import StagedWriteSet, TaskWorkspaceBinding
 from graph_engine.runtime.task_workspace import (
     PromotionPublicationIndeterminate,
+    TaskWorkspaceProvider,
     TaskWorkspaceStore,
     TaskWorkspaceViolation,
 )
@@ -80,6 +81,20 @@ def _crash_while_writing_receipt_file(
         os._exit(92)
     _child, status = os.waitpid(process_id, 0)
     return os.waitstatus_to_exitcode(status)
+
+
+async def test_prepare_rejects_live_stage_drift_without_touching_canonical_targets(tmp_path: Path) -> None:
+    store, binding, staged, project = _single_file_promotion(tmp_path)
+    del staged
+    provider = TaskWorkspaceProvider(store)
+    sealed = await provider.seal(binding)
+    (binding.write_root / "out.txt").write_bytes(b"mutated after seal")
+
+    with pytest.raises(TaskWorkspaceViolation, match="drifted after sealing"):
+        await provider.prepare(binding, sealed)
+
+    assert (project / "out.txt").read_bytes() == b"before"
+    assert tuple(store.receipts_root.glob("*.prepared*")) == ()
 
 
 def test_second_file_replace_failure_rolls_back_the_whole_promotion_and_can_replay(
