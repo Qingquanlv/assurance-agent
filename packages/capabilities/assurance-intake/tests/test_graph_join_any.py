@@ -33,6 +33,7 @@ _PREDECESSORS = (
     "review-round-advance-retry",
     "review-round-advance-rework-retry",
 )
+_CURRENT_TRIGGER_ROWS = (("assurance.intake.workflow.graph.entry", "advance-join"),)
 
 
 def _arrival(
@@ -55,6 +56,37 @@ def _arrival(
 def test_join_predecessors_are_the_three_advance_sites() -> None:
     assert CASE_REVIEW_PREDECESSORS == _PREDECESSORS
     assert set(CASE_REVIEW_PREDECESSORS) == set(_PREDECESSORS)
+
+
+@pytest.mark.parametrize(
+    "row",
+    _CURRENT_TRIGGER_ROWS,
+    ids=lambda row: f"{row[0]}/{row[1]}",
+)
+def test_current_trigger(row: tuple[str, str]) -> None:
+    graph_id, anchor = row
+    assert graph_id == "assurance.intake.workflow.graph.entry"
+    assert anchor == "advance-join"
+    arrival = _arrival("review-round-advance", used=1, budget=2)
+    inbox = offer_case_review_arrival(empty_case_review_inbox(), arrival)
+    applied = apply_current_trigger(
+        {
+            "change_id": "CH-DEMO-001",
+            "selected_test_families": ["api"],
+            "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
+            "capability_leafs": ["entities.item.create"],
+            "allowed_artifact_paths": ["qa/changes"],
+            "rounds_used": 0,
+            "rounds_budget": 2,
+            "current_trigger": _arrival("review-round-advance-retry", used=9, budget=9),
+            "predecessor_tokens": {"advance-join": {"tokens": [{"rounds_used": 9, "rounds_budget": 9}]}},
+            "case_review_inbox": inbox,
+        }
+    )
+    assert applied["current_trigger"] == arrival
+    assert applied["rounds_used"] == 1
+    assert applied["rounds_budget"] == 2
+    assert applied["current_trigger"] != applied.get("predecessor_tokens")
 
 
 def test_first_arrival_becomes_exact_current_trigger() -> None:
