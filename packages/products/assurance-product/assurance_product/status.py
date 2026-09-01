@@ -114,11 +114,14 @@ def render_status_from_langgraph(
     entrypoint: str,
     change_id: str,
     status: str,
+    snapshot: object | None = None,
+    journal_events: Sequence[object] = (),
 ) -> StatusV1:
     mapped = "completed" if status in {"succeeded", "completed"} else status
     if mapped not in {"running", "blocked", "interrupted", "stopped", "failed", "completed"}:
         mapped = "failed"
     change_state = "achieved" if mapped == "completed" else mapped
+    hierarchy, nodes, pending = _langgraph_snapshot_fields(invocation_id, snapshot)
     return StatusV1.model_validate(
         {
             "schema_version": "1",
@@ -127,19 +130,90 @@ def render_status_from_langgraph(
             "root_input_digest": root_input_digest,
             "status": mapped,
             "entrypoint": entrypoint,
-            "graph_hierarchy": (),
-            "node_states": (),
+            "graph_hierarchy": hierarchy,
+            "node_states": nodes,
             "selected_test_families": (),
             "coverage_progress": None,
             "durable_effects": (),
-            "adapter_evidence": (),
-            "pending_interrupt": None,
+            "adapter_evidence": _journal_adapter_evidence(journal_events),
+            "pending_interrupt": pending,
             "terminal_reason": None,
             "change": {"change_id": change_id, "state": change_state},
             "apply": {"manifest_digest": None, "file_count": 0},
             "publication": {"status": "not_ready"},
         }
     )
+
+
+def _langgraph_snapshot_fields(
+    invocation_id: str, snapshot: object | None
+) -> tuple[tuple[GraphStatusV1, ...], tuple[NodeStatusV1, ...], PendingInterruptStatusV1 | None]:
+    if snapshot is None:
+        return (), (), None
+    nxt = tuple(getattr(snapshot, "next", ()) or ())
+    hierarchy = tuple(
+        GraphStatusV1(
+            graph_instance_id=invocation_id,
+            graph_id=str(node),
+            parent_graph_instance_id=None,
+            state="running",
+        )
+        for node in nxt
+    )
+    nodes = tuple(
+        NodeStatusV1(
+            graph_instance_id=invocation_id,
+            node_id=str(node),
+            state="running",
+            attempt=None,
+            lease_state=None,
+            failure_category=None,
+            activity_reference_digest=None,
+        )
+        for node in nxt
+    )
+    interrupts = tuple(getattr(snapshot, "interrupts", ()) or ())
+    pending = None
+    if interrupts:
+        first = interrupts[0]
+        value = getattr(first, "value", first)
+        node_id = getattr(first, "id", None)
+        actions: tuple[str, ...] = ()
+        reason = "system"
+        if isinstance(value, Mapping):
+            if not node_id:
+                raw_node = value.get("node_id")
+                if isinstance(raw_node, str) and raw_node:
+                    node_id = raw_node
+            raw_actions = value.get("actions")
+            if isinstance(raw_actions, list | tuple):
+                actions = tuple(str(item) for item in raw_actions)
+            raw_reason = value.get("reason") or value.get("kind")
+            if isinstance(raw_reason, str) and raw_reason:
+                reason = raw_reason
+        pending = PendingInterruptStatusV1(
+            node_id=str(node_id or (nxt[0] if nxt else "interrupt")),
+            actions=actions,
+            reason_category=reason,
+        )
+    return hierarchy, nodes, pending
+
+
+def _journal_adapter_evidence(events: Sequence[object]) -> tuple[AdapterEvidenceRefV1, ...]:
+    refs: list[AdapterEvidenceRefV1] = []
+    for event in events:
+        digest = getattr(event, "receipt_digest", None) or getattr(event, "envelope_digest", None)
+        if not isinstance(digest, str) or len(digest) != 64:
+            continue
+        refs.append(
+            AdapterEvidenceRefV1(
+                activation_id=str(getattr(event, "generation", "journal")),
+                activity_id=str(getattr(event, "ordinal", "0")),
+                reference_digest=digest,
+                terminal_receipt_digest=digest if "Completion" in type(event).__name__ else None,
+            )
+        )
+    return tuple(refs)
 
 
 def render_status(

@@ -92,6 +92,17 @@ def test_cli_sqlite_system_interrupt_survives_reopen_and_replays_ordinal(
     )
     assert first.exit_code in {20, 30}, first.output
     assert parse_json_output(first.stdout)["status"] in {"blocked", "interrupted"}
+    pending_status = cli_runner.invoke(
+        app, ["status", *_existing_args(project_dir, change_id, "inv-sqlite-interrupt", args)]
+    )
+    assert pending_status.exit_code == 0, pending_status.output
+    pending_document = parse_json_output(pending_status.stdout)
+    assert pending_document["pending_interrupt"] is not None or pending_document["status"] in {
+        "blocked",
+        "interrupted",
+    }
+    assert isinstance(pending_document["graph_hierarchy"], list)
+    assert isinstance(pending_document["adapter_evidence"], list)
     resume_file = tmp_path / "resume.json"
     resume_file.write_text(
         json.dumps({"wakeup": {"reference_id": "wake-1"}}, sort_keys=True) + "\n",

@@ -41,6 +41,7 @@ async def _register_observer(installed_sources, tmp_path: Path) -> None:
         artifact = await ports.compile_roots()
         assert artifact.checkpointer_backend_id
         assert set(artifact.entrypoints) >= {"archive", "intake"}
+        assert ports.observer_registered_before_compile is True
 
 
 def test_production_observer_registry_rejects_empty_and_fake_only(installed_sources, tmp_path: Path) -> None:
@@ -82,8 +83,10 @@ async def _shutdown_order(installed_sources, tmp_path: Path) -> None:
     project = write_project_dir(tmp_path / "project")
     workspace = prepare_change_workspace(project, "CH-PORTS-003")
     async with ProductRuntimePorts.open(workspace, composition) as ports:
-        order = ports.shutdown_order()
-        assert order[0] == "observer_outbox_recovery"
-        assert order[-1] == "sqlite"
-        assert "attempt_journal" in order
-        assert "kernel" in order
+        assert ports.shutdown_order() == ()
+        held = ports
+    order = held.shutdown_order()
+    assert order[0] == "observer_outbox_recovery"
+    assert order[-1] == "sqlite"
+    assert "attempt_journal" in order
+    assert "kernel" in order

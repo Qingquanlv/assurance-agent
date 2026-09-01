@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -173,12 +174,16 @@ def parse_resume_file(path: Path, pending_ids: Sequence[str] = ()) -> object:
 def assert_structured_output_capability(
     composition: object,
     *,
-    requires_provider_schema: bool,
+    requires_provider_schema: bool | None = None,
 ) -> None:
-    del composition
+    required = (
+        _contracts_require_provider_schema(composition)
+        if requires_provider_schema is None
+        else requires_provider_schema
+    )
     negotiate_provider_schema(
-        required=requires_provider_schema,
-        capabilities=AgentRuntimeCapabilities(provider_schema=False),
+        required=required,
+        capabilities=_advertised_binding_capabilities(composition),
     )
 
 
@@ -334,8 +339,12 @@ class AssuranceProductApplication:
     ) -> tuple[object, str, int]:
         del project_dir, secrets
         existing = load_selection(workspace, invocation_id)
-        if existing is None and not _legacy_invocation_exists(workspace, invocation_id):
+        needs_handshake = existing is None and not _legacy_invocation_exists(workspace, invocation_id)
+        needs_finish = existing is not None and existing.phase != "initialized"
+        if needs_handshake or needs_finish:
             if entrypoint is None or input_path is None:
+                if needs_finish:
+                    raise RuntimeSelectionError("only an initialized selection record is resumable")
                 raise ValueError("first run requires --entrypoint and --input")
             document = self.start(
                 project_dir=workspace.paths.project_root,
@@ -348,12 +357,13 @@ class AssuranceProductApplication:
                 workspace=workspace,
             )
             del document
-            existing = load_selection(workspace, invocation_id)
-        record = self._resolve_existing(
-            workspace,
-            invocation_id,
-            composition=composition,
-            authorization=authorization,
+        record = require_initialized(
+            self._resolve_existing(
+                workspace,
+                invocation_id,
+                composition=composition,
+                authorization=authorization,
+            )
         )
         if record.runtime == "legacy-v2":
             return self._run_legacy(
@@ -409,7 +419,15 @@ class AssuranceProductApplication:
             )
         resume_payload: object
         if resume_file is not None:
-            resume_payload = parse_resume_file(resume_file)
+            pending_ids = asyncio.run(
+                self._pending_interrupt_ids(
+                    workspace=workspace,
+                    composition=composition,
+                    invocation_id=invocation_id,
+                    record=record,
+                )
+            )
+            resume_payload = parse_resume_file(resume_file, pending_ids=pending_ids)
         else:
             resume_payload = {"action": action, "reason": reason}
         if isinstance(resume_payload, dict) and "wakeup" in resume_payload:
@@ -456,7 +474,9 @@ class AssuranceProductApplication:
                 root_input_digest=identity["root_input_digest"],
                 change_id=change_id,
             )
-        status_name = asyncio.run(self._status_langgraph(workspace, composition, invocation_id, record))
+        status_name, snapshot, journal_events = asyncio.run(
+            self._status_langgraph(workspace, composition, invocation_id, record)
+        )
         return render_status_from_langgraph(
             invocation_id=invocation_id,
             lock_digest=record.build_identity,
@@ -464,6 +484,8 @@ class AssuranceProductApplication:
             entrypoint=record.entrypoint,
             change_id=change_id,
             status=status_name,
+            snapshot=snapshot,
+            journal_events=journal_events,
         )
 
     def lock_show(
@@ -531,6 +553,12 @@ class AssuranceProductApplication:
         if record is not None:
             if record.runtime == "langgraph-v1" and _legacy_invocation_exists(workspace, invocation_id):
                 raise RuntimeSelectionError("both-runtime artifacts are present")
+            if record.runtime == "langgraph-v1" and record.phase == "initialized":
+                identity = _langgraph_identity_digest(workspace, invocation_id)
+                if identity is None:
+                    raise RuntimeSelectionError("langgraph evidence is absent")
+                if record.identity_digest != identity:
+                    raise RuntimeSelectionError("selection record disagrees with langgraph evidence")
             if record.runtime == "legacy-v2" and record.phase == "initialized":
                 identity = _legacy_lock_digest(workspace, invocation_id)
                 if identity is None:
@@ -742,6 +770,8 @@ class AssuranceProductApplication:
         invocation_id: str,
         record: SelectionRecord,
     ) -> str:
+        if ProductRuntimePorts.test_kernel_resolutions is None:
+            assert_structured_output_capability(composition)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
             await ports.backend.recover_handshake(invocation_id)
             artifact = await ports.compile_roots(
@@ -758,14 +788,11 @@ class AssuranceProductApplication:
                 (),
                 {"entrypoint": record.entrypoint, "invocation_id": invocation_id, "thread_id": invocation_id},
             )()
-            try:
-                result = await application.run(
-                    artifact=artifact,
-                    invocation_id=invocation_id,
-                    runtime_context=_context(ports, artifact),
-                )
-            except Exception:
-                return "failed"
+            result = await application.run(
+                artifact=artifact,
+                invocation_id=invocation_id,
+                runtime_context=_context(ports, artifact),
+            )
             return result.status
 
     async def _resume_langgraph(
@@ -777,6 +804,8 @@ class AssuranceProductApplication:
         record: SelectionRecord,
         resume: object,
     ) -> str:
+        if ProductRuntimePorts.test_kernel_resolutions is None:
+            assert_structured_output_capability(composition)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
             await ports.backend.recover_handshake(invocation_id)
             artifact = await ports.compile_roots(
@@ -807,7 +836,7 @@ class AssuranceProductApplication:
         composition: Any,
         invocation_id: str,
         record: SelectionRecord,
-    ) -> str:
+    ) -> tuple[str, object, tuple[object, ...]]:
         async with ProductRuntimePorts.open(workspace, composition) as ports:
             artifact = await ports.compile_roots(
                 invocation_id=invocation_id,
@@ -827,7 +856,29 @@ class AssuranceProductApplication:
                 invocation_id=invocation_id,
                 runtime_context=_context(ports, artifact),
             )
-            return result.status
+            snapshot = await _graph_snapshot(artifact, record.entrypoint, invocation_id)
+            ports._publish_journal_snapshot()
+            return result.status, snapshot, ProductRuntimePorts.last_journal_events()
+
+    async def _pending_interrupt_ids(
+        self,
+        *,
+        workspace: ChangeWorkspace,
+        composition: Any,
+        invocation_id: str,
+        record: SelectionRecord,
+    ) -> tuple[str, ...]:
+        async with ProductRuntimePorts.open(workspace, composition) as ports:
+            artifact = await ports.compile_roots(
+                invocation_id=invocation_id,
+                root_input_digest=record.root_input_digest,
+            )
+            snapshot = await _graph_snapshot(artifact, record.entrypoint, invocation_id)
+        return tuple(
+            str(getattr(item, "id"))
+            for item in getattr(snapshot, "interrupts", ())
+            if getattr(item, "id", None)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -905,9 +956,74 @@ def _legacy_lock_digest(workspace: ChangeWorkspace, invocation_id: str) -> str |
 
 
 def _langgraph_db_has_invocation(workspace: ChangeWorkspace, invocation_id: str) -> bool:
-    del invocation_id
+    return _langgraph_started_row(workspace, invocation_id) is not None
+
+
+def _langgraph_started_row(
+    workspace: ChangeWorkspace, invocation_id: str
+) -> tuple[str, str, str, str] | None:
     db = workspace.paths.langgraph_checkpoints
-    return db.is_file() and db.stat().st_size > 0
+    if not db.is_file() or db.is_symlink():
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        try:
+            row = connection.execute(
+                "SELECT invocation_id, graph_revision, product_lock_digest, root_input_digest "
+                "FROM assurance_invocations WHERE invocation_id = ?",
+                (invocation_id,),
+            ).fetchone()
+        except sqlite3.Error:
+            return None
+    finally:
+        connection.close()
+    if row is None:
+        return None
+    return (str(row[0]), str(row[1]), str(row[2]), str(row[3]))
+
+
+def _langgraph_identity_digest(workspace: ChangeWorkspace, invocation_id: str) -> str | None:
+    row = _langgraph_started_row(workspace, invocation_id)
+    if row is None:
+        return None
+    return canonical_digest(
+        {
+            "invocation_id": row[0],
+            "graph_revision": row[1],
+            "product_lock_digest": row[2],
+            "root_input_digest": row[3],
+        }
+    )
+
+
+def _advertised_binding_capabilities(composition: object) -> AgentRuntimeCapabilities:
+    from assurance_product.source_catalog import adapter_for_entrypoint
+
+    source = getattr(getattr(composition, "manifest", None), "source", None)
+    name = getattr(source, "entrypoint_name", None)
+    adapter = adapter_for_entrypoint(name) if isinstance(name, str) else "opencode"
+    if adapter == "opencode":
+        from agent_runtime_opencode.observation import advertised_runtime_capabilities
+
+        return advertised_runtime_capabilities()
+    from agent_runtime_cursor.plugin import CursorPlugin
+
+    return CursorPlugin.spec.capabilities
+
+
+def _contracts_require_provider_schema(composition: object) -> bool:
+    from assurance_product.agent_contracts import all_feature_agent_contracts
+
+    del composition
+    return any(contract.requires_provider_schema for contract in all_feature_agent_contracts().values())
+
+
+async def _graph_snapshot(artifact: object, entrypoint: str, invocation_id: str) -> object:
+    graph = getattr(artifact, "entrypoints", {})[entrypoint]
+    return await graph.aget_state({"configurable": {"thread_id": invocation_id}})
 
 
 __all__ = [

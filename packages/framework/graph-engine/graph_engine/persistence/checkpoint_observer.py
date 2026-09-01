@@ -27,12 +27,22 @@ class CheckpointAnchorObserverPort(Protocol):
 
 
 def extract_checkpoint_markers(payload: object) -> tuple[CheckpointBridgeMarker, ...]:
+    nested = getattr(payload, "value", None)
+    if nested is not None and nested is not payload:
+        found = extract_checkpoint_markers(nested)
+        if found:
+            return found
     if isinstance(payload, Mapping):
         raw = payload.get(CHECKPOINT_MARKERS_STATE_KEY)
         if raw is None:
             return ()
         return tuple(replace_checkpoint_marker_batch(None, raw))
     if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)):
+        collected: list[CheckpointBridgeMarker] = []
+        for item in payload:
+            collected.extend(extract_checkpoint_markers(item))
+        if collected:
+            return tuple(collected)
         try:
             return tuple(replace_checkpoint_marker_batch(None, payload))
         except (TypeError, ValueError):

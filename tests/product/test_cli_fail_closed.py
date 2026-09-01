@@ -20,6 +20,20 @@ from tests.product.composition_harness import copy_config_tree, request_for
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
+@pytest.fixture(autouse=True)
+def _reset_runtime_selector() -> None:
+    yield
+    try:
+        from assurance_product.runtime_ports import ProductRuntimePorts
+        from assurance_product.runtime_selection import use_test_runtime_selector
+
+        use_test_runtime_selector(None)
+        ProductRuntimePorts.test_kernel_resolutions = None
+        ProductRuntimePorts._last_scripted_committed = None
+    except ImportError:
+        return
+
+
 def _existing_args(
     *,
     project_dir: Path,
@@ -528,13 +542,138 @@ def test_resume_file_rejects_unknown_and_duplicate_ids(cli_runner, tmp_path: Pat
         parse_resume_file(scalar, pending_ids=("a", "b"))
 
 
+def test_application_resume_file_rejects_unknown_interrupt_id(
+    cli_runner, installed_sources, tmp_path: Path, monkeypatch
+) -> None:
+    from assurance_product.cli import app
+    from assurance_product.product import resolve_assurance_composition
+    from assurance_product.runtime_ports import ProductRuntimePorts
+    from assurance_product.runtime_selection import use_test_runtime_selector
+    from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
+
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
+    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
+    ProductRuntimePorts.test_kernel_resolutions = [
+        PendingTaskResult(wakeup=SystemReference(reference_id="wake-unknown")),
+    ]
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    args, project_dir, change_id = common_lifecycle_args(
+        tmp_path=tmp_path,
+        installed_sources=installed_sources,
+        composition=composition,
+        invocation_id="inv-resume-unknown",
+        entrypoint="archive",
+    )
+    started = cli_runner.invoke(app, ["start", *args])
+    assert started.exit_code == 0, started.output
+    blocked = cli_runner.invoke(
+        app,
+        [
+            "run",
+            "--json",
+            "--project-dir",
+            str(project_dir),
+            "--change",
+            change_id,
+            "--invocation-id",
+            "inv-resume-unknown",
+            "--product",
+            args[args.index("--product") + 1],
+            "--binding-dist",
+            args[args.index("--binding-dist") + 1],
+            "--binding-entrypoint",
+            "deployment",
+            "--binding-declaration",
+            args[args.index("--binding-declaration") + 1],
+            "--config-tree",
+            args[args.index("--config-tree") + 1],
+            "--secret",
+            args[args.index("--secret") + 1],
+        ],
+    )
+    assert blocked.exit_code in {20, 30}, blocked.output
+    resume_file = tmp_path / "unknown-resume.json"
+    resume_file.write_text('{"interrupt_id":"unknown","action":"approve"}\n', encoding="utf-8")
+    resumed = cli_runner.invoke(
+        app,
+        [
+            "resume",
+            "--json",
+            "--project-dir",
+            str(project_dir),
+            "--change",
+            change_id,
+            "--invocation-id",
+            "inv-resume-unknown",
+            "--product",
+            args[args.index("--product") + 1],
+            "--binding-dist",
+            args[args.index("--binding-dist") + 1],
+            "--binding-entrypoint",
+            "deployment",
+            "--binding-declaration",
+            args[args.index("--binding-declaration") + 1],
+            "--config-tree",
+            args[args.index("--config-tree") + 1],
+            "--secret",
+            args[args.index("--secret") + 1],
+            "--resume-file",
+            str(resume_file),
+        ],
+    )
+    assert resumed.exit_code == 40, resumed.output
+    assert "unknown" in resumed.output.lower() or "missing" in resumed.output.lower()
+
+
 def test_requires_provider_schema_is_refused_when_binding_advertises_false(
-    installed_sources,
+    cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
     from agent_runtime_contracts.plugin_kit import StructuredOutputCapabilityError
     from assurance_product.application import assert_structured_output_capability
+    from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
+    from assurance_product.runtime_selection import use_test_runtime_selector
 
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     with pytest.raises(StructuredOutputCapabilityError):
-        assert_structured_output_capability(composition, requires_provider_schema=True)
+        assert_structured_output_capability(composition)
+    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
+    args, _project_dir, _change_id = common_lifecycle_args(
+        tmp_path=tmp_path,
+        installed_sources=installed_sources,
+        composition=composition,
+        invocation_id="inv-provider-schema-001",
+        entrypoint="intake",
+    )
+    started = cli_runner.invoke(app, ["start", *args])
+    assert started.exit_code == 0, started.output
+    ran = cli_runner.invoke(
+        app,
+        [
+            "run",
+            "--json",
+            "--project-dir",
+            args[args.index("--project-dir") + 1],
+            "--change",
+            args[args.index("--change") + 1],
+            "--invocation-id",
+            "inv-provider-schema-001",
+            "--product",
+            args[args.index("--product") + 1],
+            "--binding-dist",
+            args[args.index("--binding-dist") + 1],
+            "--binding-entrypoint",
+            "deployment",
+            "--binding-declaration",
+            args[args.index("--binding-declaration") + 1],
+            "--config-tree",
+            args[args.index("--config-tree") + 1],
+            "--secret",
+            args[args.index("--secret") + 1],
+        ],
+    )
+    assert ran.exit_code == 40, ran.output
+    assert (
+        "StructuredOutputCapabilityError" in ran.output or "provider-enforced structured output" in ran.output
+    )

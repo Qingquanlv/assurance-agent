@@ -310,3 +310,54 @@ def test_record_evidence_disagreement_fails_closed(
         ],
     )
     assert status.exit_code == 40, status.output
+
+
+def test_langgraph_initialized_record_disagrees_with_checkpoint_evidence(
+    cli_runner, installed_sources, tmp_path: Path, monkeypatch
+) -> None:
+    from assurance_product.cli import app
+    from assurance_product.product import resolve_assurance_composition
+    from assurance_product.runtime_selection import use_test_runtime_selector
+
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
+    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    args, project_dir, change_id = common_lifecycle_args(
+        tmp_path=tmp_path,
+        installed_sources=installed_sources,
+        composition=composition,
+        invocation_id="inv-lg-disagree-001",
+        entrypoint="archive",
+    )
+    started = cli_runner.invoke(app, ["start", *args])
+    assert started.exit_code == 0, started.output
+    path = _selection_path(project_dir, change_id, "inv-lg-disagree-001")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["identity_digest"] = "0" * 64
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    status = cli_runner.invoke(
+        app,
+        [
+            "status",
+            "--json",
+            "--project-dir",
+            str(project_dir),
+            "--change",
+            change_id,
+            "--invocation-id",
+            "inv-lg-disagree-001",
+            "--product",
+            args[args.index("--product") + 1],
+            "--binding-dist",
+            args[args.index("--binding-dist") + 1],
+            "--binding-entrypoint",
+            "deployment",
+            "--binding-declaration",
+            args[args.index("--binding-declaration") + 1],
+            "--config-tree",
+            args[args.index("--config-tree") + 1],
+            "--secret",
+            args[args.index("--secret") + 1],
+        ],
+    )
+    assert status.exit_code == 40, status.output

@@ -205,7 +205,7 @@ class ProductRuntimePorts:
         self.kernel = kernel
         self.product_lock_digest = product_lock_digest
         self.revision_id = revision_id
-        self.observer_registered_before_compile = True
+        self.observer_registered_before_compile = False
         self._artifact: BootArtifact | None = None
         self._close_log: list[str] = []
 
@@ -265,6 +265,9 @@ class ProductRuntimePorts:
                 product_lock_digest=product_lock.digest,
                 revision_id=manifest.revision.revision_id,
             )
+            ports.observer_registered_before_compile = any(
+                isinstance(item, AttemptCheckpointObserver) for item in backend.observers
+            )
             try:
                 yield ports
             finally:
@@ -274,9 +277,7 @@ class ProductRuntimePorts:
                 ports._close_log.extend(("kernel", "attempt_journal", "sqlite"))
 
     def shutdown_order(self) -> tuple[str, ...]:
-        if self._close_log:
-            return tuple(self._close_log)
-        return ("observer_outbox_recovery", "kernel", "attempt_journal", "sqlite")
+        return tuple(self._close_log)
 
     def checkpointer_for(
         self,
@@ -387,10 +388,7 @@ class ProductRuntimePorts:
         return artifact
 
     def _publish_journal_snapshot(self) -> None:
-        from graph_engine.attempts.events import (
-            SystemInterruptIssuanceAnchored,
-            SystemInterruptIssued,
-        )
+        from graph_engine.attempts.events import SystemInterruptIssued
 
         events: list[object] = []
         replayed: list[int] = []
@@ -404,20 +402,14 @@ class ProductRuntimePorts:
                 )
             del digest
         issued = [event for event in events if isinstance(event, SystemInterruptIssued)]
-        anchored = [event for event in events if isinstance(event, SystemInterruptIssuanceAnchored)]
-        if issued and not anchored:
-            for event in issued:
-                events.append(
-                    SystemInterruptIssuanceAnchored(
-                        generation=event.generation,
-                        ordinal=event.ordinal,
-                        envelope_digest=event.envelope_digest,
-                        checkpoint_id="observer-pending",
-                    )
-                )
+        completed = {
+            getattr(event, "generation", None)
+            for event in events
+            if type(event).__name__ == "SystemInterruptCompletionCheckpointed"
+        }
         type(self)._last_events = tuple(events)
-        type(self)._last_active = 0
-        type(self)._last_replayed = tuple(replayed) if replayed else ((0,) if issued else ())
+        type(self)._last_active = len({getattr(event, "generation", None) for event in issued} - completed)
+        type(self)._last_replayed = tuple(replayed)
 
     @classmethod
     def last_journal_events(cls) -> tuple[object, ...]:
