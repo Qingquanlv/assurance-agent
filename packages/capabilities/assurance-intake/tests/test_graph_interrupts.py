@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from assurance_intake.contracts.agent import ArtifactListResultV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_intake.contracts.decisions import ReviewRoundAdvanceOutput, advance_review_round
+from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.graphs.factory import build_intake_graphs
 
 from assurance_intake.graphs.nodes import (
@@ -21,6 +22,7 @@ from assurance_intake.graphs.nodes import (
     advance_review_round_node,
     human_review,
     human_review_retry,
+    publish_case_review,
 )
 from assurance_intake.graphs.state import IntakeState
 from graph_engine.attempts.contracts import TaskAttemptContract
@@ -79,6 +81,39 @@ def _review(
     }
 
 
+def _review_result_v1(
+    decision: str,
+    *,
+    auto_fix: bool = False,
+    human: bool = False,
+) -> CaseReviewResultV1:
+    return CaseReviewResultV1.model_validate(
+        {
+            "schema_version": "1.0",
+            "review_type": "case",
+            "change_id": "CH-DEMO-001",
+            "decision": decision,
+            "findings": [],
+            "auto_fix_plan": [],
+            "next_action": "continue",
+            "auto_fix_allowed": auto_fix,
+            "human_review_required": human,
+            "risk_level": "low",
+            "minimum_coverage": {
+                "total_required": 0,
+                "covered": 0,
+                "skipped_by_scope": 0,
+                "missing": [],
+            },
+            "source_verification": {
+                "independent": True,
+                "reviewed_source_files": ["src/app.py"],
+                "verified_claims": [{"claim": "create item persists", "evidence_files": ["src/app.py"]}],
+            },
+        }
+    )
+
+
 def _config() -> RunnableConfig:
     return {
         "configurable": {
@@ -90,6 +125,25 @@ def _config() -> RunnableConfig:
             "assurance_entrypoint": "prepare",
         }
     }
+
+
+def test_publish_case_review_keeps_graph_rounds_when_result_omits_or_nulls_them() -> None:
+    state = {"rounds_used": 0, "rounds_budget": 2}
+    result = _review_result_v1("needs_fix", auto_fix=True)
+    dumped = result.model_dump(mode="json")
+    assert dumped["rounds_used"] is None
+    assert dumped["rounds_budget"] is None
+    published = publish_case_review(state, result, None)
+    assert published["rounds_used"] == 0
+    assert published["rounds_budget"] == 2
+    omitted = {key: value for key, value in dumped.items() if key not in {"rounds_used", "rounds_budget"}}
+    published_omitted = publish_case_review(state, omitted, None)
+    assert published_omitted["rounds_used"] == 0
+    assert published_omitted["rounds_budget"] == 2
+    authored = {**dumped, "rounds_used": 1, "rounds_budget": 3}
+    published_authored = publish_case_review(state, authored, None)
+    assert published_authored["rounds_used"] == 1
+    assert published_authored["rounds_budget"] == 3
 
 
 def test_both_interrupt_sites_accept_only_approve_reject_request_rework() -> None:
@@ -174,6 +228,33 @@ async def test_automatic_fix_advances_exactly_once() -> None:
             "intake.case-review": [
                 committed(_review("needs_fix", auto_fix=True, used=0), _RECEIPT),
                 committed(_review("pass", used=1), _RECEIPT),
+            ],
+        },
+    )
+    terminal = cast(dict[str, object], result.terminal)
+    assert terminal.get("rounds_used") == 1
+    assert terminal.get("decision") in {"pass", "approved"}
+    assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 2
+
+
+async def test_automatic_fix_advances_when_review_result_nulls_rounds() -> None:
+    harness = GraphHarness()
+    bundle = build_intake_graphs(
+        harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
+    )
+    result = await harness.run(
+        bundle.prepare,
+        input=_input(),
+        script={
+            "intake.intake": [committed(_artifact(), _RECEIPT)],
+            "intake.explore": [committed(_artifact(), _RECEIPT)],
+            "intake.case-design": [
+                committed(_design(), _RECEIPT),
+                committed(_design(), _RECEIPT),
+            ],
+            "intake.case-review": [
+                committed(_review_result_v1("needs_fix", auto_fix=True), _RECEIPT),
+                committed(_review_result_v1("pass"), _RECEIPT),
             ],
         },
     )
@@ -280,6 +361,49 @@ async def test_request_rework_on_prepare_graph_advances_once_through_inbox() -> 
     assert current["predecessor"] == "review-round-advance"
     assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
     assert resumed["current_trigger"] == current
+    assert [call.semantic_node_id for call in harness._kernel.semantic_calls].count("intake.case-design") == 2
+    assert resumed.get("decision") in {"pass", "approved"}
+
+
+async def test_request_rework_advances_when_review_result_nulls_rounds() -> None:
+    harness = GraphHarness()
+    backend = harness.anchored_memory_checkpointer()
+    await _prepare_anchored_backend(backend)
+    bundle = build_intake_graphs(
+        harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
+    )
+    harness._kernel.load_script(
+        {
+            "intake.intake": [committed(_artifact(), _RECEIPT)],
+            "intake.explore": [committed(_artifact(), _RECEIPT)],
+            "intake.case-design": [committed(_design(), _RECEIPT), committed(_design(), _RECEIPT)],
+            "intake.case-review": [
+                committed(_review_result_v1("needs_human_review", human=True), _RECEIPT),
+                committed(_review_result_v1("pass"), _RECEIPT),
+            ],
+        }
+    )
+    wrapper: StateGraph[IntakeState] = StateGraph(IntakeState)
+    wrapper.add_node("prepare", bundle.prepare)
+    wrapper.add_edge(START, "prepare")
+    wrapper.add_edge("prepare", END)
+    graph = wrapper.compile(checkpointer=backend)
+    config = _config()
+    interrupted: object | None
+    try:
+        interrupted = await graph.ainvoke(_input(), config=config)
+    except GraphInterrupt as error:
+        interrupted = error
+    else:
+        assert _interrupt_value(interrupted) is not None
+    resumed = await graph.ainvoke(Command(resume={"action": "request_rework"}), config=config)
+    assert resumed["human_action"] == "request_rework"
+    assert resumed["rounds_used"] == 1
+    inbox = resumed["case_review_inbox"]
+    current = inbox["current_trigger"]
+    assert current is not None
+    assert current["predecessor"] == "review-round-advance"
+    assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
     assert [call.semantic_node_id for call in harness._kernel.semantic_calls].count("intake.case-design") == 2
     assert resumed.get("decision") in {"pass", "approved"}
 

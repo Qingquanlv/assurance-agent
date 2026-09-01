@@ -150,6 +150,13 @@ def publish_case_design(state: Mapping[str, object], output: object, receipt: ob
     }
 
 
+def _published_int(payload: Mapping[str, object], key: str, fallback: object) -> object:
+    value = payload.get(key, fallback)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return fallback
+    return value
+
+
 def publish_case_review(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
     del receipt
     payload = _output_payload(output)
@@ -158,8 +165,8 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
         "auto_fix_allowed": bool(payload.get("auto_fix_allowed", False)),
         "human_review_required": bool(payload.get("human_review_required", False)),
         "artifacts": payload.get("artifacts") or [],
-        "rounds_used": payload.get("rounds_used", state.get("rounds_used", 0)),
-        "rounds_budget": payload.get("rounds_budget", state.get("rounds_budget", 2)),
+        "rounds_used": _published_int(payload, "rounds_used", state.get("rounds_used", 0)),
+        "rounds_budget": _published_int(payload, "rounds_budget", state.get("rounds_budget", 2)),
     }
 
 
