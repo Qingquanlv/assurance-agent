@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import (
     EffectPolicy,
     EffectRegistration,
+    PluginContribution,
     PluginDependency,
+    PluginDescriptor,
     ProviderSource,
+    RegistryPorts,
 )
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
+
+from assurance_healing.contracts.attempts import attempt_contract_refs
 
 from assurance_healing.effects.allocation import (
     ALLOCATION_INTENT_SCHEMA,
@@ -143,3 +150,11 @@ class HealingPlugin(CapabilityPlugin):
         dependencies=HEALING_DEPENDENCIES,
         effects=_effect_registrations,
     )
+
+    @classmethod
+    def descriptor(cls) -> PluginDescriptor:
+        return cls.spec.descriptor().model_copy(update={"attempt_contracts": attempt_contract_refs()})
+
+    @classmethod
+    def contribute(cls, ports: RegistryPorts) -> PluginContribution:
+        return replace(cls.spec.contribution(ports), attempt_contracts=attempt_contract_refs())
