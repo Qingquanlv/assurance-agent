@@ -15,6 +15,22 @@ _ADVANCE_ID = "assurance.generation.review-round.advance"
 _COMPLETE_ID = "assurance.generation.complete"
 
 
+def test_generation_handlers_are_yaml_adapters_for_pure_functions() -> None:
+    import inspect
+
+    from assurance_generation.operations.workflow_state import (
+        GenerationCompleteHandler,
+        GenerationReviewRoundAdvanceHandler,
+    )
+
+    complete_source = inspect.getsource(GenerationCompleteHandler.execute)
+    advance_source = inspect.getsource(GenerationReviewRoundAdvanceHandler.execute)
+    assert "complete_generation" in complete_source
+    assert "advance_review_round" in advance_source
+    assert "del context" in complete_source
+    assert "del context" in advance_source
+
+
 def _handler():
     from assurance_generation.operations.workflow_state import GenerationReviewRoundAdvanceHandler
 

@@ -1,4 +1,9 @@
-"""Deterministic Generation workflow-state handlers."""
+"""Deterministic Generation workflow-state handlers.
+
+The typed graph calls ``complete_generation`` and ``advance_review_round`` as
+ordinary nodes. These handlers remain the YAML adapters and discard
+``TaskContext``.
+"""
 
 from __future__ import annotations
 

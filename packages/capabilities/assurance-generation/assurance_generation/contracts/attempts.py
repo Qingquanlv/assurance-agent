@@ -178,6 +178,9 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {base: _paths(*outputs) for base, _skill, _profile, _input, _result, outputs in _JOBS}
 )
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
+GENERATION_GRAPH_CONTRACT_IDS: tuple[str, ...] = tuple(
+    contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()
+)
 
 
 def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
@@ -197,6 +200,7 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
+    "GENERATION_GRAPH_CONTRACT_IDS",
     "OUTPUT_ROUTE_TEMPLATES",
     "TASK_ATTEMPT_CONTRACTS",
     "attempt_contract_refs",

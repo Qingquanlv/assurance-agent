@@ -415,6 +415,42 @@ def test_generation_keeps_four_fixed_lanes_and_structural_skip_join() -> None:
     assert root.nodes["fanout"].routing.min_matches == 4
 
 
+def test_generation_fanout_has_exactly_four_outgoing_family_selectors() -> None:
+    module = _load_module()
+    root = module.graphs["generation"]
+    fanout = root.nodes["fanout"]
+    assert fanout.routing is not None
+    assert fanout.routing.mode == "fanout"
+    assert fanout.routing.min_matches == 4
+    outgoing = [edge.to for edge in root.edges if edge.from_ == "fanout"]
+    assert outgoing == ["select-api", "select-e2e", "select-fuzz", "select-performance"]
+    assert len(outgoing) == 4
+    assert len(set(outgoing)) == 4
+
+
+def test_generation_fanout_is_the_only_legacy_min_matches_target_send() -> None:
+    module = _load_module()
+    sites = [
+        (graph_id, node_id, node.routing.min_matches)
+        for graph_id, graph in module.graphs.items()
+        for node_id, node in graph.nodes.items()
+        if node.routing is not None and node.routing.mode == "fanout"
+    ]
+    assert sites == [("generation", "fanout", 4)]
+    assert all(min_matches == 4 for _graph_id, _node_id, min_matches in sites)
+
+
+def test_generation_fanout_has_no_partial_dispatch_on_insufficient_selection() -> None:
+    module = _load_module()
+    root = module.graphs["generation"]
+    fanout = root.nodes["fanout"]
+    assert fanout.routing is not None
+    assert fanout.routing.min_matches == 4
+    outgoing = [edge.to for edge in root.edges if edge.from_ == "fanout"]
+    assert len(outgoing) == fanout.routing.min_matches
+    assert not (len(outgoing) < fanout.routing.min_matches)
+
+
 def test_review_and_codegen_outcomes_use_exclusive_routes() -> None:
     module = _load_module()
     for family, has_fix in (("api", True), ("e2e", True), ("fuzz", False), ("performance", False)):
