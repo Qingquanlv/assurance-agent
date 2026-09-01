@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -23,7 +23,9 @@ from graph_engine.attempts.events import (
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.resolutions import (
     AttemptResolution,
+    CommittedEffectFailure,
     CommittedTaskResult,
+    IndeterminateTaskResult,
     PendingTaskResult,
     PermanentTaskFailure,
     ReceiptRef,
@@ -34,8 +36,11 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
 from graph_engine.persistence.runner_lease import StaleFencingToken
+from graph_engine.composition.models import EffectRegistry, SchemaRegistry
+from graph_engine.effects.apply import AttemptEffectSettler
 from graph_engine.plugin_api import (
     CommitValidator,
+    EffectIntent,
     PreparedWorkspaceRef,
     PromotionReceipt,
     ResourceClaims,
@@ -71,6 +76,8 @@ class AssuranceAttemptKernel:
         workspace: WorkspaceProvider,
         graph_revision: str,
         validators: Mapping[str, CommitValidator] | None = None,
+        effects: EffectRegistry | None = None,
+        schemas: SchemaRegistry | None = None,
         transaction_cut: Callable[[str], None] | None = None,
     ) -> None:
         self.journal = journal
@@ -78,6 +85,8 @@ class AssuranceAttemptKernel:
         self.workspace = workspace
         self.graph_revision = graph_revision
         self.validators = dict(validators or {})
+        self.effects = effects
+        self.schemas = schemas
         self._transaction_cut = transaction_cut or _noop_cut
 
     async def execute_or_recover(
@@ -253,8 +262,34 @@ class AssuranceAttemptKernel:
         cut("after_promotion_before_receipt")
 
         await self._assert_fence(attempt_key, context, "effect_application", cut)
-        await self._settle_effects()
+        settled, snapshot = await self._settle_effects(
+            attempt_key,
+            contract,
+            context,
+            snapshot,
+            receipt,
+            validated_output,
+            cut,
+        )
         trace.append("settle_effects")
+        if isinstance(settled, (PendingTaskResult, IndeterminateTaskResult)):
+            return settled
+        if isinstance(settled, CommittedEffectFailure):
+            snapshot = await self._terminate(
+                attempt_key,
+                context,
+                snapshot,
+                authorization,
+                AttemptTerminated(
+                    resolution_kind="committed_effect_failure",
+                    receipt_id=receipt.identity_digest,
+                    receipt_digest=receipt.receipt_digest,
+                    reason=settled.reason,
+                ),
+                cut,
+            )
+            assert snapshot.terminal is not None
+            return _resolution_from_terminal(snapshot.terminal, contract)
 
         snapshot = await self._terminate(
             attempt_key,
@@ -430,8 +465,31 @@ class AssuranceAttemptKernel:
             raise AttemptIdentityDrift("prepared digest drifted")
         return prepared
 
-    async def _settle_effects(self) -> None:
-        return None
+    async def _settle_effects(
+        self,
+        attempt_key: AttemptKey,
+        contract: ResolvedAttemptContract[Any, Any],
+        context: AttemptExecutionContext,
+        snapshot: AttemptSnapshot,
+        receipt: PromotionReceipt,
+        validated_output: BaseModel,
+        cut: Callable[[str], None],
+    ) -> tuple[AttemptResolution | None, AttemptSnapshot]:
+        intents = _declared_intents(snapshot, contract.executor, validated_output)
+        if not intents:
+            return None, snapshot
+        if self.effects is None or self.schemas is None:
+            raise AttemptIdentityDrift("declared effects require an effect and schema registry")
+        settler = AttemptEffectSettler(self.effects, self.schemas)
+        return await settler.settle(
+            attempt_key=attempt_key,
+            snapshot=snapshot,
+            journal=self.journal,
+            context=context,
+            intents=intents,
+            promotion=receipt,
+            cut=cut,
+        )
 
     async def _terminate(
         self,
@@ -523,6 +581,19 @@ def _assert_identity(snapshot: AttemptSnapshot, identity: Mapping[str, str]) -> 
         raise AttemptIdentityDrift("revision digest drifted")
 
 
+def _declared_intents(
+    snapshot: AttemptSnapshot,
+    executor: object,
+    validated_output: BaseModel,
+) -> tuple[EffectIntent, ...]:
+    if snapshot.effects:
+        return tuple(EffectIntent(kind=item.kind, payload=item.payload) for item in snapshot.effects)
+    declared = getattr(executor, "declared_effects", ())
+    if callable(declared):
+        return tuple(cast(Sequence[EffectIntent], declared(validated_output)))
+    return tuple(cast(Sequence[EffectIntent], declared))
+
+
 def _resolved_claims(
     contract: ResolvedAttemptContract[Any, Any], validated_input: BaseModel
 ) -> ResourceClaims:
@@ -563,6 +634,15 @@ def _resolution_from_terminal(
 ) -> AttemptResolution:
     if terminal.resolution_kind == "committed":
         return _committed_from_terminal(terminal, contract)
+    if terminal.resolution_kind == "committed_effect_failure":
+        return CommittedEffectFailure(
+            writes_promoted=True,
+            promotion_receipt=ReceiptRef(
+                receipt_id=terminal.receipt_id,
+                receipt_digest=terminal.receipt_digest,
+            ),
+            reason=terminal.reason or "effect permanently failed",
+        )
     if terminal.resolution_kind == "rejected":
         return RejectedTaskResult(reason=terminal.reason or "rejected")
     if terminal.resolution_kind == "permanent":

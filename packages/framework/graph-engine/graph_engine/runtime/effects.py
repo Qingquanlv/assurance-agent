@@ -5,8 +5,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TypeVar
 
+from graph_engine.attempts.events import AttemptSnapshot
 from graph_engine.composition.models import EffectEntry, EffectRegistry, SchemaRegistry
+from graph_engine.effects.contracts import refuse_legacy_settlement
 from graph_engine.errors import GraphEngineError
+from graph_engine.json_schema import validate_json_schema
 from graph_engine.plugin_api import (
     EffectApplyResult,
     EffectIntent,
@@ -21,7 +24,6 @@ from graph_engine.runtime.events import (
     TaskAttemptSucceeded,
 )
 from graph_engine.runtime.frozen_json import thaw_json
-from graph_engine.runtime.json_schema import validate_json_schema
 from graph_engine.runtime.ledger import Ledger, append_validated_batch
 from graph_engine.runtime.models import (
     AttemptRecord,
@@ -83,6 +85,10 @@ class EffectExecutor:
         self._schemas = schemas
         self._ledger = ledger
         self._transition_guard = transition_guard
+
+    def settle_attempt(self, snapshot: AttemptSnapshot) -> EffectSettlement:
+        del snapshot
+        refuse_legacy_settlement()
 
     async def settle_next(self, projection: InvocationProjection) -> EffectSettlement:
         effect = _next_effect(projection)
