@@ -626,6 +626,10 @@ def _remove_created_directories(root_fd: int, created_directories: Sequence[str]
             os.close(parent_fd)
 
 
+def _promotion_transaction_cut(name: str) -> None:
+    del name
+
+
 @dataclass(slots=True)
 class _PreparedPromotionFile:
     file: StagedFile
@@ -1181,6 +1185,8 @@ class TaskWorkspaceStore:
                         dst_dir_fd=item.parent_fd,
                     )
                     os.fsync(item.parent_fd)
+                    if item is prepared[0] and len(prepared) > 1:
+                        _promotion_transaction_cut("during_multi_file_promotion")
             except BaseException as error:
                 try:
                     self._rollback_transaction(prepared, created_directories)

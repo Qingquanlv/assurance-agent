@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Protocol
+from typing import Any, Protocol
 
+from pydantic import BaseModel
+
+from graph_engine.attempts.context import AttemptExecutionContext
+from graph_engine.attempts.contracts import ResolvedAttemptContract
+from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.resolutions import AttemptResolution
 from graph_engine.canonical import JSONValue
 
 
@@ -12,6 +18,14 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 class AttemptKernelPort(Protocol):
     """Per-invocation Kernel handle. Held by reference; never checkpointed."""
+
+    async def execute_or_recover(
+        self,
+        attempt_key: AttemptKey,
+        contract: ResolvedAttemptContract[Any, Any],
+        validated_input: BaseModel,
+        context: AttemptExecutionContext,
+    ) -> AttemptResolution: ...
 
 
 class SecretResolverPort(Protocol):

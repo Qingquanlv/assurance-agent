@@ -45,6 +45,14 @@ def recovery_decision_for_status(status: ReconcileStatus) -> RecoveryDecisionKin
     return _RECOVERY_DECISIONS[status]
 
 
+def attempt_activity_in_flight(state: str | None) -> bool:
+    return state in {"prepared", "dispatch_started", "bound"}
+
+
+def attempt_activity_is_terminal(state: str | None) -> bool:
+    return state == "terminal_observed"
+
+
 class TaskActivityConflict(GraphEngineError):
     """Raised for an illegal or competing activity transition."""
 
@@ -297,6 +305,8 @@ __all__ = [
     "TaskActivityProtocolViolation",
     "TaskActivityRecoveryUnsupported",
     "TaskActivityReferenceInvalid",
+    "attempt_activity_in_flight",
+    "attempt_activity_is_terminal",
     "bounded_canonical_json",
     "recovery_decision_for_status",
 ]
