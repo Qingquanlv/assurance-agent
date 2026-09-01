@@ -42,6 +42,13 @@ class ProductStateDocument(FrozenModel):
     receipts: list[dict[str, str]]
     output: dict[str, Any]
     status: str
+    feature_input: dict[str, Any]
+    feature_output: dict[str, Any]
+    rounds_budget: int
+    rounds_used: int
+    artifact_paths: list[str]
+    evidence_refs: list[dict[str, str]]
+    receipt_refs: list[dict[str, str]]
 
 
 class ProductState(CheckpointBridgeState, total=False):

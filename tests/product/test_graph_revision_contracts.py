@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import get_type_hints
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -11,6 +12,7 @@ from assurance_product.graphs.revisions import (
     canonical_contract_projection,
     digest,
 )
+from assurance_product.graphs.state import ProductState, ProductStateDocument
 from assurance_product.models import PRODUCT_ENTRYPOINTS, THIN_ENTRYPOINTS
 from graph_engine.boot.graph_revision import EntrypointGraphContract
 from graph_engine.canonical import canonical_digest
@@ -80,3 +82,23 @@ def test_dry_and_runtime_contract_projections_match() -> None:
         assert dry.entrypoints[name].checkpointer is None
         assert runtime.entrypoints[name].checkpointer is not None
         assert "CompiledStateGraph" not in repr(dry_projection[name])
+
+
+def test_state_schema_digest_tracks_product_state_runtime_schema() -> None:
+    hints = get_type_hints(ProductState, include_extras=True)
+    feature_native = {
+        "feature_input",
+        "feature_output",
+        "rounds_budget",
+        "rounds_used",
+        "artifact_paths",
+        "evidence_refs",
+        "receipt_refs",
+    }
+    assert feature_native <= set(hints)
+    runtime_digest = canonical_digest({name: str(hints[name]) for name in sorted(hints)})
+    document_digest = canonical_digest(ProductStateDocument.model_json_schema())
+    contract = ENTRYPOINT_CONTRACTS["intake"]
+    assert contract.state_model == "assurance_product.graphs.state.ProductState"
+    assert contract.state_schema_digest == runtime_digest
+    assert contract.state_schema_digest != document_digest

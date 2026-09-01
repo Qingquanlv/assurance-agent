@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from types import MappingProxyType
+from typing import get_type_hints
 
 from pydantic import BaseModel
 
 from graph_engine.boot.graph_revision import EntrypointGraphContract
 from graph_engine.canonical import JSONValue, canonical_digest
 
-from assurance_product.graphs.state import ProductStateDocument
+from assurance_product.graphs.state import ProductState
 from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1, ProductPublicOutput
 
 STATE_SCHEMA_VERSION = "1"
@@ -35,12 +36,17 @@ def _schema_digest(model: type[BaseModel]) -> str:
     return canonical_digest(model.model_json_schema())
 
 
+def _product_state_schema_digest() -> str:
+    hints = get_type_hints(ProductState, include_extras=True)
+    return canonical_digest({name: str(hints[name]) for name in sorted(hints)})
+
+
 _INPUT_MODEL = "assurance_product.models.ProductInputV1"
 _OUTPUT_MODEL = "assurance_product.models.ProductPublicOutput"
 _STATE_MODEL = "assurance_product.graphs.state.ProductState"
 _INPUT_DIGEST = _schema_digest(ProductInputV1)
 _OUTPUT_DIGEST = _schema_digest(ProductPublicOutput)
-_STATE_DIGEST = _schema_digest(ProductStateDocument)
+_STATE_DIGEST = _product_state_schema_digest()
 
 
 def _contract(name: str) -> EntrypointGraphContract:

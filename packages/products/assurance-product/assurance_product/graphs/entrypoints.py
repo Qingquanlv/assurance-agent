@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -11,6 +11,18 @@ from graph_engine.stategraph.checkpoint_bridge import omit_checkpoint_bridge_fie
 
 from assurance_product.graphs.state import ProductState
 from assurance_product.models import ProductInputV1, ProductPublicOutput, ProductReceiptRefV1
+
+ProductStatus = Literal["completed", "failed"]
+_FEATURE_STATUS_TO_PRODUCT: Mapping[str, ProductStatus] = {
+    "completed": "completed",
+    "passed": "completed",
+    "done": "completed",
+    "failed": "failed",
+    "rejected": "failed",
+    "exhausted": "failed",
+    "rework": "failed",
+    "superseded": "failed",
+}
 
 _INPUT_KEYS = (
     "schema_version",
@@ -94,33 +106,38 @@ def adapt_improvement(state: ProductState) -> dict[str, object]:
     return {**feature_input, "feature_input": feature_input}
 
 
+def adapt_feature_status(status: object) -> ProductStatus:
+    if status is None or status == "":
+        return "completed"
+    if not isinstance(status, str):
+        raise TypeError("feature status must be a string")
+    try:
+        return _FEATURE_STATUS_TO_PRODUCT[status]
+    except KeyError:
+        raise ValueError(f"unsupported feature terminal status: {status!r}") from None
+
+
 def _receipt_items(state: Mapping[str, object]) -> list[dict[str, object]]:
+    receipts: list[dict[str, object]] = []
     for key in ("receipts", "receipt_refs"):
         raw = state.get(key)
-        if isinstance(raw, list) and raw:
-            return [dict(item) for item in raw if isinstance(item, Mapping)]
-    for key in ("artifacts", "evidence_refs"):
-        raw = state.get(key)
-        if not isinstance(raw, list) or not raw:
+        if not isinstance(raw, list):
             continue
-        receipts: list[dict[str, object]] = []
         for item in raw:
             if not isinstance(item, Mapping):
                 continue
-            receipt_id = item.get("receipt_id") or item.get("path")
-            digest = item.get("receipt_digest") or item.get("digest")
+            receipt_id = item.get("receipt_id")
+            digest = item.get("receipt_digest")
             if isinstance(receipt_id, str) and isinstance(digest, str):
                 receipts.append({"receipt_id": receipt_id, "receipt_digest": digest})
-        if receipts:
-            return receipts
-    return []
+    return receipts
 
 
 def publish_public_output(state: ProductState) -> dict[str, object]:
     cleaned = _as_mapping(state)
     output = ProductPublicOutput(
         change_id=str(cleaned["change_id"]),
-        status=cast(Any, cleaned.get("status") or "completed"),
+        status=adapt_feature_status(cleaned.get("status")),
         receipts=tuple(ProductReceiptRefV1.model_validate(item) for item in _receipt_items(cleaned)),
     )
     dumped = output.model_dump(mode="json")
@@ -204,6 +221,7 @@ def build_improvement_rollback_root(
 
 
 __all__ = [
+    "adapt_feature_status",
     "adapt_improvement",
     "adapt_intake",
     "adapt_quality",
