@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_healing.contracts.coverage_repair import HEALING_REPAIR_OUTCOMES
 from assurance_healing.graphs.factory import build_healing_graphs
@@ -180,15 +181,14 @@ def test_publish_repair_fails_closed_for_missing_unknown_and_in_progress() -> No
     published_in_progress = publish_repair(state, coverage_agent_output(status="in_progress"), receipt)
     assert published_in_progress["status"] == "failed"
 
-    failure_model = {
-        "schema_version": "1",
-        "change_id": "CH-FIX-001",
-        "summary": {"eligible_count": 1},
-        "proposals": [],
-    }
+    failure_model = FixProposalResultV1(
+        schema_version="1",
+        change_id="CH-FIX-001",
+        summary={"eligible_count": 1},
+    ).model_dump()
+    assert "status" not in failure_model
     published_failure = publish_repair(failure_graph_input(), failure_model, receipt)
-    assert published_failure["status"] == "failed"
-    assert published_failure["status"] != "repaired"
+    assert published_failure["status"] == "repaired"
 
 
 def test_publish_repair_uses_kernel_receipt_effect_refs_not_output_extras() -> None:
@@ -301,12 +301,16 @@ async def test_coverage_missing_unknown_in_progress_finalize_fails_closed(status
     assert terminal["status"] != "repaired"
 
 
-async def test_failure_committed_without_status_does_not_publish_repaired() -> None:
+async def test_committed_fix_proposal_without_status_terminates_repaired() -> None:
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.healing", contracts=healing_contracts())
     bundle = build_healing_graphs(context)
-    output = failure_agent_output()
-    del output["status"]
+    output = FixProposalResultV1(
+        schema_version="1",
+        change_id="CH-FIX-001",
+        summary={"eligible_count": 1},
+    ).model_dump()
+    assert "status" not in output
     result = await harness.run(
         bundle.repair_failure,
         input=failure_graph_input(),
@@ -316,12 +320,11 @@ async def test_failure_committed_without_status_does_not_publish_repaired() -> N
     )
     published = result.published_update
     assert published is not None
-    assert published["status"] == "failed"
-    assert published["status"] != "repaired"
+    assert published["status"] == "repaired"
     assert result.terminal is not None
     terminal = result.terminal
     assert isinstance(terminal, dict)
-    assert terminal["status"] == "failed"
+    assert terminal["status"] == "repaired"
 
 
 @pytest.mark.parametrize("status", ("failed", "needs_review", "repaired", "not_eligible", "exhausted"))

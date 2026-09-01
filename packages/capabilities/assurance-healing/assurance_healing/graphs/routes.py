@@ -81,7 +81,8 @@ def route_admit_coverage(state: Mapping[str, object]) -> str:
 
 def failure_status_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     current = state.get("status")
-    return {"repaired": "done" if current == "repaired" else None}
+    repaired = current == "repaired" or (current is None and state.get("kind") == "failure")
+    return {"repaired": "done" if repaired else None}
 
 
 def route_coverage_status(state: Mapping[str, object]) -> str:

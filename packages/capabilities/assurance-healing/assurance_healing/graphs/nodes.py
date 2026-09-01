@@ -63,9 +63,11 @@ def _receipt_payload(receipt: object) -> Mapping[str, object]:
     return {}
 
 
-def _closed_repair_status(value: object) -> HealingRepairOutcome:
+def _closed_repair_status(value: object, *, kind: object) -> HealingRepairOutcome:
     if value in HEALING_REPAIR_OUTCOMES:
         return value  # type: ignore[return-value]
+    if kind == "failure" and value is None:
+        return "repaired"
     return "failed"
 
 
@@ -133,7 +135,7 @@ def publish_repair(
     payload = _output_payload(output)
     change_id = state["change_id"]
     kind = _require_kind(state)
-    typed_status = _closed_repair_status(payload.get("status"))
+    typed_status = _closed_repair_status(payload.get("status"), kind=kind)
     if not isinstance(change_id, str):
         raise TypeError("change_id must be a string")
     return HealingRepairPublicV1(
@@ -197,7 +199,7 @@ def _public_terminal(state: Mapping[str, object], status: HealingRepairOutcome) 
 
 
 def terminal_done(state: HealingState) -> dict[str, object]:
-    return _public_terminal(state, _closed_repair_status(state.get("status")))
+    return _public_terminal(state, _closed_repair_status(state.get("status"), kind=state.get("kind")))
 
 
 def terminal_exhausted(state: Mapping[str, object]) -> dict[str, object]:
