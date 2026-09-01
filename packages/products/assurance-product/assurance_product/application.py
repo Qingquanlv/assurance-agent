@@ -30,7 +30,11 @@ from assurance_product.product import (
     product_lock_from_composition,
     reject_organization_overrides,
 )
-from assurance_product.revision_registry import RevisionRegistry, assert_recorded_revision
+from assurance_product.revision_registry import (
+    RevisionRegistry,
+    RevisionRegistryError,
+    assert_recorded_revision,
+)
 from assurance_product.runtime_ports import ProductRuntimePorts
 from assurance_product.runtime_selection import (
     LangGraphRuntimeRecord,
@@ -433,6 +437,7 @@ class AssuranceProductApplication:
                 reason=reason,
             )
         resume_payload: object
+        _assert_langgraph_revision(workspace, composition, invocation_id)
         if resume_file is not None:
             pending_ids = asyncio.run(
                 self._pending_interrupt_ids(
@@ -892,6 +897,7 @@ class AssuranceProductApplication:
         invocation_id: str,
         record: SelectionRecord,
     ) -> tuple[str, ...]:
+        _assert_langgraph_revision(workspace, composition, invocation_id)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
             artifact = await ports.compile_roots(
                 invocation_id=invocation_id,
@@ -1055,12 +1061,37 @@ def _bind_revision(
     build_identity: str,
 ) -> None:
     registry = RevisionRegistry(workspace)
-    if runtime == "langgraph-v1":
-        revision = coexistence_graph_manifest(composition, product_lock).revision
-        registry.remember(revision)
-        registry.bind(invocation_id, runtime="langgraph-v1", revision_id=revision.revision_id)
+    if runtime != "langgraph-v1":
+        registry.bind(invocation_id, runtime="legacy-v2", revision_id=build_identity)
         return
-    registry.bind(invocation_id, runtime="legacy-v2", revision_id=build_identity)
+    current = coexistence_graph_manifest(composition, product_lock).revision
+    try:
+        bound_runtime, bound_id = registry.revision_for(invocation_id)
+    except RevisionRegistryError as error:
+        if "missing" not in str(error):
+            raise
+        if current.product_lock_digest != build_identity:
+            raise RevisionRegistryError(
+                "required artifact: "
+                f"graph revision {build_identity} "
+                f"product lock {build_identity}"
+            ) from error
+        registry.remember(current)
+        registry.bind(invocation_id, runtime="langgraph-v1", revision_id=current.revision_id)
+        return
+    if bound_runtime != "langgraph-v1":
+        raise RevisionRegistryError(
+            "required artifact: "
+            f"graph revision {bound_id} "
+            f"product lock {build_identity}"
+        )
+    recorded = registry.get(bound_id)
+    if recorded.revision_id != current.revision_id:
+        raise RevisionRegistryError(
+            "required artifact: "
+            f"graph revision {recorded.revision_id} "
+            f"product lock {recorded.product_lock_digest}"
+        )
 
 
 def _assert_langgraph_revision(workspace: ChangeWorkspace, composition: Any, invocation_id: str) -> None:

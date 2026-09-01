@@ -145,3 +145,121 @@ def test_same_process_does_not_import_a_second_wheel_version_on_mismatch(tmp_pat
         live_registry.assert_recorded_revision(workspace, "inv-pin", current)
     assert not any("assurance_product" in name and name.endswith("whl") for name in imports)
     assert recorded.revision_id != current.revision_id
+
+
+def test_resume_file_asserts_revision_before_opening_ports(tmp_path: Path, monkeypatch) -> None:
+    from assurance_product.application import AssuranceProductApplication
+    from assurance_product.revision_registry import assert_recorded_revision as live_assert
+
+    workspace = _workspace(tmp_path)
+    recorded = _revision(lock="a" * 64)
+    record = LangGraphRuntimeRecord(
+        phase="initialized",
+        invocation_id="inv-resume-pin",
+        entrypoint="improvement-apply",
+        root_input_digest="f" * 64,
+        build_identity=recorded.product_lock_digest,
+        identity_digest="1" * 64,
+    )
+    write_initializing(
+        workspace,
+        LangGraphRuntimeRecord(
+            phase="initializing",
+            invocation_id=record.invocation_id,
+            entrypoint=record.entrypoint,
+            root_input_digest=record.root_input_digest,
+            build_identity=record.build_identity,
+        ),
+    )
+    complete_initialized(workspace, record)
+    RevisionRegistry(workspace).remember(recorded)
+    RevisionRegistry(workspace).bind(
+        record.invocation_id, runtime="langgraph-v1", revision_id=recorded.revision_id
+    )
+
+    current = _revision(lock="c" * 64)
+    order: list[str] = []
+
+    def _forbid_open(*_args: object, **_kwargs: object):
+        order.append("open")
+        raise AssertionError("checkpoint or Kernel opened before revision check")
+
+    def _assert(*_args: object, **_kwargs: object):
+        order.append("assert")
+        return live_assert(*_args, **_kwargs)
+
+    monkeypatch.setattr("assurance_product.application.assert_recorded_revision", _assert)
+    monkeypatch.setattr("assurance_product.application.ProductRuntimePorts.open", _forbid_open)
+    monkeypatch.setattr(
+        "assurance_product.application.product_lock_from_composition",
+        lambda _composition: type("Lock", (), {"digest": current.product_lock_digest})(),
+    )
+    monkeypatch.setattr(
+        "assurance_product.application.coexistence_graph_manifest",
+        lambda *_args, **_kwargs: type("Manifest", (), {"revision": current})(),
+    )
+    monkeypatch.setattr(
+        AssuranceProductApplication,
+        "_resolve_existing",
+        lambda *_args, **_kwargs: record,
+    )
+    resume_file = tmp_path / "resume.json"
+    resume_file.write_text('{"action": "approve", "reason": "accepted"}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="required artifact") as exc_info:
+        AssuranceProductApplication().resume(
+            workspace=workspace,
+            composition=object(),
+            authorization=object(),  # type: ignore[arg-type]
+            invocation_id=record.invocation_id,
+            action=None,
+            reason=None,
+            resume_file=resume_file,
+        )
+    assert recorded.revision_id in str(exc_info.value)
+    assert order == ["assert"]
+
+
+def test_reopen_bind_keeps_recorded_lock_instead_of_current_composition(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from assurance_product.application import _bind_revision
+
+    workspace = _workspace(tmp_path)
+    recorded = _revision(lock="a" * 64)
+    current = _revision(lock="c" * 64)
+    write_initializing(
+        workspace,
+        LangGraphRuntimeRecord(
+            phase="initializing",
+            invocation_id="inv-reopen-pin",
+            entrypoint="improvement-evaluate",
+            root_input_digest="f" * 64,
+            build_identity=recorded.product_lock_digest,
+        ),
+    )
+    opened = {"checkpoint": False}
+
+    def _forbid_open(*_args: object, **_kwargs: object):
+        opened["checkpoint"] = True
+        raise AssertionError("checkpoint or Kernel opened before revision check")
+
+    monkeypatch.setattr("assurance_product.application.ProductRuntimePorts.open", _forbid_open)
+    monkeypatch.setattr(
+        "assurance_product.application.coexistence_graph_manifest",
+        lambda *_args, **_kwargs: type("Manifest", (), {"revision": current})(),
+    )
+
+    with pytest.raises(ValueError, match="required artifact") as exc_info:
+        _bind_revision(
+            workspace,
+            invocation_id="inv-reopen-pin",
+            runtime="langgraph-v1",
+            composition=object(),
+            product_lock=object(),  # type: ignore[arg-type]
+            build_identity=recorded.product_lock_digest,
+        )
+    assert recorded.product_lock_digest in str(exc_info.value)
+    assert opened == {"checkpoint": False}
+    with pytest.raises(ValueError, match="missing"):
+        RevisionRegistry(workspace).revision_for("inv-reopen-pin")
