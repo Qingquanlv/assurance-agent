@@ -18,6 +18,10 @@ class ChangePaths:
     runtime_root: Path
     generated_root: Path
     apply_manifest: Path
+    langgraph_root: Path
+    langgraph_checkpoints: Path
+    langgraph_leases: Path
+    langgraph_selections: Path
 
 
 def safe_change_id(change_id: str) -> str:
@@ -61,6 +65,35 @@ def _ensure_real_directory(path: Path, created: list[Path]) -> None:
     created.append(path)
 
 
+_LANGGRAPH_SQLITE_NAMES = frozenset(
+    {
+        "checkpoints.sqlite3",
+        "checkpoints.sqlite3-wal",
+        "checkpoints.sqlite3-shm",
+        "checkpoints.sqlite3-journal",
+    }
+)
+_LANGGRAPH_DIRECTORY_NAMES = frozenset({"leases", "selections"})
+
+
+def _validate_langgraph_subtree(path: Path) -> None:
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError("runtime directory contains a non-directory path")
+    children = {child.name for child in path.iterdir()}
+    if not children.issubset(_LANGGRAPH_SQLITE_NAMES | _LANGGRAPH_DIRECTORY_NAMES):
+        raise ValueError("runtime directory has an incomplete layout")
+    for name in children:
+        child = path / name
+        if child.is_symlink():
+            raise ValueError("change workspace contains a symlink")
+        if name in _LANGGRAPH_DIRECTORY_NAMES:
+            if not child.is_dir():
+                raise ValueError("runtime directory contains a non-directory path")
+            continue
+        if not child.is_file():
+            raise ValueError("runtime directory contains a non-directory path")
+
+
 def require_descendant(project: Path, path: Path) -> Path:
     try:
         resolved = path.resolve(strict=True)
@@ -87,13 +120,19 @@ class ChangeWorkspace:
         if not qa.is_dir() or qa.is_symlink() or not changes.is_dir() or changes.is_symlink():
             raise ValueError("project must contain real qa/changes directories")
         change = require_descendant(project, changes / safe_change_id(change_id))
+        runtime_root = change / ".runtime"
+        langgraph_root = runtime_root / "langgraph"
         paths = ChangePaths(
             project_root=project,
             change_root=change,
             staging_root=change / ".staging",
-            runtime_root=change / ".runtime",
+            runtime_root=runtime_root,
             generated_root=change / "generated",
             apply_manifest=change / "apply-manifest.json",
+            langgraph_root=langgraph_root,
+            langgraph_checkpoints=langgraph_root / "checkpoints.sqlite3",
+            langgraph_leases=langgraph_root / "leases",
+            langgraph_selections=langgraph_root / "selections",
         )
         return cls(paths)
 
@@ -124,7 +163,7 @@ class ChangeWorkspace:
         runtime = self.paths.runtime_root
         staging = self.paths.staging_root
         required_runtime = {"activities", "receipts"}
-        allowed_runtime = required_runtime | {"invocations", "ledger"}
+        allowed_runtime = required_runtime | {"invocations", "ledger", "langgraph"}
         runtime_exists = runtime.exists()
         staging_exists = staging.exists()
         if runtime_exists != staging_exists:
@@ -139,6 +178,8 @@ class ChangeWorkspace:
                 raise ValueError("runtime directory has an incomplete layout")
             if any((runtime / name).is_symlink() or not (runtime / name).is_dir() for name in children):
                 raise ValueError("runtime directory contains a non-directory path")
+            if "langgraph" in children:
+                _validate_langgraph_subtree(runtime / "langgraph")
             return
 
         created: list[Path] = []

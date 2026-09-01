@@ -372,6 +372,7 @@ def test_start_does_not_create_tree_store_directories(
     runtime = change / ".runtime"
     assert runtime.is_dir()
     assert (runtime / "invocations" / "inv-layout-001").is_dir()
+    assert not (runtime / "langgraph").exists()
     assert (change / ".staging").is_dir()
     assert (change / "status.json").is_file()
     assert (change / "events.jsonl").is_file()

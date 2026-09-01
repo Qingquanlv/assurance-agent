@@ -29,10 +29,15 @@ def test_open_resolves_change_local_paths_without_creating_directories(
     assert workspace.paths.change_root == project / "qa" / "changes" / "BENCH-dept-001"
     assert workspace.paths.staging_root == workspace.paths.change_root / ".staging"
     assert workspace.paths.runtime_root == workspace.paths.change_root / ".runtime"
+    assert workspace.paths.langgraph_root == workspace.paths.runtime_root / "langgraph"
+    assert workspace.paths.langgraph_checkpoints == workspace.paths.langgraph_root / "checkpoints.sqlite3"
+    assert workspace.paths.langgraph_leases == workspace.paths.langgraph_root / "leases"
+    assert workspace.paths.langgraph_selections == workspace.paths.langgraph_root / "selections"
     assert workspace.paths.generated_root == workspace.paths.change_root / "generated"
     assert workspace.paths.apply_manifest == workspace.paths.change_root / "apply-manifest.json"
     assert not workspace.paths.staging_root.exists()
     assert not workspace.paths.runtime_root.exists()
+    assert not workspace.paths.langgraph_root.exists()
 
 
 def test_initialize_creates_only_the_exact_change_workspace_directories(
@@ -49,6 +54,7 @@ def test_initialize_creates_only_the_exact_change_workspace_directories(
         "receipts",
     }
     assert not (workspace.paths.runtime_root / "ledger").exists()
+    assert not workspace.paths.langgraph_root.exists()
     assert not workspace.paths.generated_root.exists()
 
 
@@ -67,6 +73,50 @@ def test_initialize_allows_leftover_ledger_and_engine_invocations(tmp_path: Path
         "invocations",
     }
     assert not (workspace.paths.runtime_root / "invocations" / "ledger").exists()
+
+
+def test_initialize_allows_langgraph_control_subtree(tmp_path: Path, change_workspace) -> None:
+    workspace = change_workspace.ChangeWorkspace.open(make_project(tmp_path), "BENCH-dept-001")
+    workspace.initialize()
+    workspace.paths.langgraph_root.mkdir()
+    workspace.paths.langgraph_leases.mkdir()
+    workspace.paths.langgraph_selections.mkdir()
+    workspace.paths.langgraph_checkpoints.write_bytes(b"")
+
+    workspace.initialize()
+
+    assert workspace.paths.langgraph_root.is_dir()
+    assert not workspace.paths.langgraph_root.is_symlink()
+    assert workspace.paths.langgraph_leases.is_dir()
+    assert workspace.paths.langgraph_selections.is_dir()
+    assert workspace.paths.langgraph_checkpoints.is_file()
+    assert not workspace.paths.langgraph_checkpoints.is_symlink()
+    assert {child.name for child in workspace.paths.runtime_root.iterdir()} == {
+        "activities",
+        "receipts",
+        "langgraph",
+    }
+
+
+def test_initialize_rejects_symlinked_langgraph_and_unexpected_types(
+    tmp_path: Path, change_workspace
+) -> None:
+    workspace = change_workspace.ChangeWorkspace.open(make_project(tmp_path), "BENCH-dept-001")
+    workspace.initialize()
+    target = tmp_path / "langgraph-target"
+    target.mkdir()
+    workspace.paths.langgraph_root.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ValueError):
+        workspace.initialize()
+
+    assert workspace.paths.langgraph_root.is_symlink()
+    workspace.paths.langgraph_root.unlink()
+    workspace.paths.langgraph_root.mkdir()
+    workspace.paths.langgraph_checkpoints.mkdir()
+
+    with pytest.raises(ValueError):
+        workspace.initialize()
 
 
 def test_initialize_cleans_up_directories_created_before_a_real_obstruction(
