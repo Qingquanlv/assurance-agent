@@ -351,3 +351,22 @@ def test_archive_returns_existing_archive_when_change_is_gone(tmp_path: Path) ->
     assert _tree_files(_archive_root(project)) == archived
     assert (project / TARGET_A).read_bytes() == published
     assert (project / TARGET_A).stat().st_mtime_ns == published_mtime
+
+
+def test_cli_archive_does_not_call_legacy_engine(cli_runner, tmp_path: Path, monkeypatch) -> None:
+    from assurance_product.cli import app
+    from assurance_product.export import publish_achieved
+    from graph_engine.runtime import driver, engine
+
+    def _forbid(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("archive must not call legacy Engine or driver")
+
+    project = write_achieved(tmp_path)
+    publish_achieved(project, CHANGE_ID)
+    monkeypatch.setattr(engine, "Engine", _forbid)
+    monkeypatch.setattr(driver, "acquire_invocation", _forbid)
+    result = cli_runner.invoke(
+        app,
+        ["archive", "--json", "--project-dir", str(project), "--change", CHANGE_ID],
+    )
+    assert result.exit_code == 0, result.output

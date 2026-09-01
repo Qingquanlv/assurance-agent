@@ -229,3 +229,37 @@ def test_status_after_run_is_authoritative_completed_projection(
     assert status.entrypoint == "intake"
     assert status.change.change_id == change_id
     assert status.pending_interrupt is None
+
+
+def test_lock_show_keeps_v2_for_legacy_records(cli_runner, installed_sources, tmp_path: Path, monkeypatch):
+    from assurance_product.cli import app
+    from assurance_product.product import resolve_assurance_composition
+
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    args, project_dir, change_id = common_lifecycle_args(
+        tmp_path=tmp_path,
+        installed_sources=installed_sources,
+        composition=composition,
+        invocation_id="inv-lock-legacy-v2",
+    )
+    started = cli_runner.invoke(app, ["start", *args])
+    assert started.exit_code == 0, started.output
+    result = cli_runner.invoke(
+        app,
+        [
+            "lock",
+            "show",
+            *_existing_args(
+                project_dir=project_dir,
+                change_id=change_id,
+                invocation_id="inv-lock-legacy-v2",
+                installed_sources=installed_sources,
+                secret=args[args.index("--secret") + 1],
+            ),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    document = parse_json_output(result.stdout)
+    assert document["lock"]["schema_version"] == "2"
+    assert document["lock"]["digest"] == composition.lock.digest

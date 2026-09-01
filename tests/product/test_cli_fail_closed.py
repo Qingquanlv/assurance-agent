@@ -492,3 +492,49 @@ def test_binding_entrypoint_must_be_deployment(cli_runner, installed_sources):
     args[args.index("--binding-entrypoint") + 1] = "wildcard"
     result = cli_runner.invoke(app, ["compile", "--json", *args])
     assert result.exit_code in {2, 40}, result.output
+
+
+def test_cli_rejects_graph_import_and_workflow_overrides(cli_runner, tmp_path: Path):
+    from assurance_product.cli import app
+
+    for extra in (
+        ["--graph", str(tmp_path / "graph.py")],
+        ["--workflow", str(tmp_path / "workflow.yaml")],
+        ["--execution-contracts", str(tmp_path / "execution-contracts.yaml")],
+        ["--python-import", "sut.graphs:build"],
+    ):
+        result = cli_runner.invoke(app, ["compile", "--json", *extra])
+        assert result.exit_code == 2, extra
+        assert "no such option" in result.output.lower() or "no such option" in str(result.exception).lower()
+
+
+def test_resume_file_rejects_unknown_and_duplicate_ids(cli_runner, tmp_path: Path):
+    from assurance_product.application import parse_resume_file
+
+    missing = tmp_path / "missing.json"
+    missing.write_text('{"interrupt_id":"unknown","action":"approve"}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="unknown|missing|duplicate"):
+        parse_resume_file(missing, pending_ids=("known",))
+    duplicates = tmp_path / "dup.json"
+    duplicates.write_text(
+        '{"interrupts":{"a":{"action":"approve"},"a":{"action":"reject"}}}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate|unknown|missing"):
+        parse_resume_file(duplicates, pending_ids=("a", "b"))
+    scalar = tmp_path / "scalar.json"
+    scalar.write_text('"approve"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="ambiguous"):
+        parse_resume_file(scalar, pending_ids=("a", "b"))
+
+
+def test_requires_provider_schema_is_refused_when_binding_advertises_false(
+    installed_sources,
+) -> None:
+    from agent_runtime_contracts.plugin_kit import StructuredOutputCapabilityError
+    from assurance_product.application import assert_structured_output_capability
+    from assurance_product.product import resolve_assurance_composition
+
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    with pytest.raises(StructuredOutputCapabilityError):
+        assert_structured_output_capability(composition, requires_provider_schema=True)

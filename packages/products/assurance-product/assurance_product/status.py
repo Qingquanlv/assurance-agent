@@ -106,6 +106,42 @@ def project_status_fields(
     }
 
 
+def render_status_from_langgraph(
+    *,
+    invocation_id: str,
+    lock_digest: str,
+    root_input_digest: str,
+    entrypoint: str,
+    change_id: str,
+    status: str,
+) -> StatusV1:
+    mapped = "completed" if status in {"succeeded", "completed"} else status
+    if mapped not in {"running", "blocked", "interrupted", "stopped", "failed", "completed"}:
+        mapped = "failed"
+    change_state = "achieved" if mapped == "completed" else mapped
+    return StatusV1.model_validate(
+        {
+            "schema_version": "1",
+            "invocation_id": invocation_id,
+            "lock_digest": lock_digest,
+            "root_input_digest": root_input_digest,
+            "status": mapped,
+            "entrypoint": entrypoint,
+            "graph_hierarchy": (),
+            "node_states": (),
+            "selected_test_families": (),
+            "coverage_progress": None,
+            "durable_effects": (),
+            "adapter_evidence": (),
+            "pending_interrupt": None,
+            "terminal_reason": None,
+            "change": {"change_id": change_id, "state": change_state},
+            "apply": {"manifest_digest": None, "file_count": 0},
+            "publication": {"status": "not_ready"},
+        }
+    )
+
+
 def render_status(
     projection: InvocationProjection,
     *,
@@ -249,6 +285,14 @@ def _authenticate_publish_receipt(workspace: ChangeWorkspace) -> PublishReceiptV
     source_digest = canonical_digest({item.target_path: item.source_sha256 for item in receipt.files})
     if receipt.source_digest != source_digest or receipt.final_digest != source_digest:
         raise ArchiveError("publish receipt does not match the apply manifest")
+    for item in receipt.files:
+        target = workspace.paths.project_root / item.target_path
+        if target.is_symlink() or not target.is_file():
+            raise ArchiveError("publish receipt is tampered")
+        actual = hashlib.sha256(target.read_bytes()).hexdigest()
+        recorded = item.final_sha256.removeprefix("sha256:")
+        if actual != recorded:
+            raise ArchiveError("publish receipt is tampered")
     return receipt
 
 

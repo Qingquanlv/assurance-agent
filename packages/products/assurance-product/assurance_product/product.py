@@ -28,7 +28,7 @@ from graph_engine.composition import (
     WheelProductSource,
 )
 from graph_engine.composition.sources import WheelProductDeclaration
-from graph_engine.composition.lock import build_invocation_lock
+from graph_engine.composition.lock import ProductLock, build_invocation_lock
 from graph_engine.composition.workflow_assembler import assemble_product_workflow
 from graph_engine.frozen_json import thaw_json
 from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
@@ -606,6 +606,93 @@ def audit_full_graph(workflow: CompiledWorkflow, composition: FrozenComposition)
         forbidden_direct_targets=tuple(sorted(forbidden)),
         missing_bindings=tuple(sorted(missing)),
         uninventoried_nodes=tuple(sorted(all_nodes if inventoried is None else all_nodes - inventoried)),
+    )
+
+
+def product_lock_from_composition(composition: FrozenComposition) -> ProductLock:
+    lock = composition.lock
+    return ProductLock.create(
+        engine_api=lock.engine_api,
+        engine=lock.engine,
+        engine_digest=lock.engine_digest,
+        product=lock.product,
+        plugins=lock.plugins,
+        dependency_order=lock.dependency_order,
+        registry_projections=lock.registry_projections,
+        registry_digests=lock.registry_digests,
+        configuration=thaw_json(lock.configuration),
+        configuration_digest=lock.configuration_digest,
+        capability_bindings=thaw_json(lock.capability_bindings),
+        capability_bindings_digest=lock.capability_bindings_digest,
+    )
+
+
+def reject_organization_overrides(organization_root: Path | None) -> None:
+    from graph_engine.boot.boot import OrganizationOverrideError, _reject_organization_overrides
+
+    try:
+        _reject_organization_overrides(organization_root)
+    except OrganizationOverrideError:
+        raise
+    except Exception as error:
+        raise OrganizationOverrideError(str(error)) from error
+
+
+def coexistence_graph_manifest(
+    composition: FrozenComposition,
+    product_lock: ProductLock,
+):
+    from importlib import metadata
+
+    from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
+    from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS
+    from graph_engine.boot.boot import CHECKPOINT_CONTRACT_VERSION
+    from graph_engine.boot.graph_revision import GraphBuildManifest, GraphRevision
+    from graph_engine.canonical import canonical_digest
+    from graph_engine.composition.models import SourceKey, SourceRole
+
+    sources = composition.registries.sources.entries
+    wheel_source_digests: dict[str, str] = {}
+    product_key = SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
+    if product_key in sources:
+        wheel_source_digests["assurance.product"] = sources[product_key].snapshot.digest
+    for owner in (
+        "assurance.intake",
+        "assurance.generation",
+        "assurance.execution",
+        "assurance.quality",
+        "assurance.healing",
+        "assurance.improvement",
+    ):
+        key = SourceKey(SourceRole.PLUGIN, owner)
+        if key in sources:
+            wheel_source_digests[owner] = sources[key].snapshot.digest
+    factory_symbols = (
+        "assurance_product.graphs.factory:build_product_graphs",
+        *(ref.symbol for ref in FEATURE_GRAPH_FACTORIES),
+    )
+    attempt_contract_digests = {
+        contract_id: canonical_digest(contract.canonical_projection())
+        for contract_id, contract in composition.semantic_attempt_contracts.items()
+        if hasattr(contract, "canonical_projection")
+    }
+    revision = GraphRevision.build(
+        product_lock_digest=product_lock.digest,
+        wheel_source_digests=wheel_source_digests,
+        factory_symbols=factory_symbols,
+        state_schema_versions={
+            name: contract.state_schema_version for name, contract in ENTRYPOINT_CONTRACTS.items()
+        },
+        langgraph_version=metadata.version("langgraph"),
+        checkpoint_contract_version=CHECKPOINT_CONTRACT_VERSION,
+    )
+    return GraphBuildManifest(
+        revision=revision,
+        entrypoint_contract_digests={
+            name: canonical_digest(contract.canonical_projection())
+            for name, contract in ENTRYPOINT_CONTRACTS.items()
+        },
+        attempt_contract_digests=attempt_contract_digests,
     )
 
 

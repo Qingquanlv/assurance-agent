@@ -112,3 +112,20 @@ def test_cli_export_explicit_change_wins(cli_runner, tmp_path: Path) -> None:
     assert (project / "tests/api/test_other.py").read_bytes() == b"generated-other\n"
     assert (project / TARGET_A).read_bytes() == b"original-a\n"
     assert not (project / "qa" / "changes" / CHANGE_ID / "publish-receipt.json").exists()
+
+
+def test_cli_export_does_not_import_legacy_engine(cli_runner, tmp_path: Path, monkeypatch) -> None:
+    from assurance_product.cli import app
+    from graph_engine.runtime import driver, engine
+
+    def _forbid(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("export must not call legacy Engine or driver")
+
+    monkeypatch.setattr(engine, "Engine", _forbid)
+    monkeypatch.setattr(driver, "acquire_invocation", _forbid)
+    project = write_achieved(tmp_path)
+    result = cli_runner.invoke(
+        app,
+        ["export", "--json", "--project-dir", str(project), "--change", CHANGE_ID],
+    )
+    assert result.exit_code == 0, result.output

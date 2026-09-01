@@ -166,3 +166,64 @@ def test_export_uses_project_dir_and_change(cli_runner, tmp_path: Path):
     document = parse_json_output(result.stdout)
     assert document["change_id"] == CHANGE_ID
     assert document["files"]
+
+
+def test_start_writes_legacy_selection_record_by_default(
+    cli_runner, installed_sources, tmp_path: Path, monkeypatch
+):
+    from assurance_product.cli import app
+    from assurance_product.product import resolve_assurance_composition
+
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    args, project_dir, change_id = common_lifecycle_args(
+        tmp_path=tmp_path,
+        installed_sources=installed_sources,
+        composition=composition,
+        invocation_id="inv-legacy-marker-001",
+    )
+    result = cli_runner.invoke(app, ["start", *args])
+    assert result.exit_code == 0, result.output
+    selection = (
+        _change_runtime(project_dir, change_id) / "langgraph" / "selections" / "inv-legacy-marker-001.json"
+    )
+    document = parse_json_output(selection.read_text(encoding="utf-8"))
+    assert document["runtime"] == "legacy-v2"
+    assert document["phase"] == "initialized"
+
+
+def test_resume_file_is_mutually_exclusive_with_action_reason(cli_runner, tmp_path: Path):
+    from assurance_product.cli import app
+
+    resume_file = tmp_path / "resume.json"
+    resume_file.write_text('{"action":"approve"}\n', encoding="utf-8")
+    result = cli_runner.invoke(
+        app,
+        [
+            "resume",
+            "--project-dir",
+            str(tmp_path),
+            "--change",
+            "CH-RESUME-FILE-001",
+            "--invocation-id",
+            "inv-resume-file-001",
+            "--product",
+            "assurance-opencode",
+            "--binding-dist",
+            "assurance-product-bindings",
+            "--binding-entrypoint",
+            "deployment",
+            "--binding-declaration",
+            "plugin.yaml",
+            "--config-tree",
+            str(tmp_path),
+            "--action",
+            "approve",
+            "--reason",
+            "accepted",
+            "--resume-file",
+            str(resume_file),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "resume-file" in result.output or "mutually" in result.output.lower()
