@@ -229,18 +229,14 @@ async def test_crash_windows_replay_same_receipt_without_repeating_mutation(
             transaction_cut=None,
         )
         assert isinstance(replay, CommittedTaskResult)
-        if fault == "after_receipt_before_graph_checkpoint":
-            assert first is not None
+        if first is not None:
             assert replay.receipt == first.receipt
-        if fault in {
-            "after_prepare_before_promotion",
-            "during_multi_file_promotion",
-            "after_promotion_before_receipt",
-            "after_receipt_before_graph_checkpoint",
-        }:
-            assert workspace.promotions == 1 or workspace.promotions == 2
         if fault != "before_durable_prepare":
             assert executor.calls == 1
+        if fault == "during_multi_file_promotion":
+            assert workspace.promotions == 2
+        else:
+            assert workspace.promotions == 1
         if writes == ("out.txt",):
             assert (project / "out.txt").read_bytes() == b"committed"
         else:
@@ -249,7 +245,8 @@ async def test_crash_windows_replay_same_receipt_without_repeating_mutation(
         second = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(second, CommittedTaskResult)
         assert second.receipt == replay.receipt
-        assert executor.calls == 1 or fault == "before_durable_prepare"
+        assert executor.calls == 1
+        assert workspace.promotions == (2 if fault == "during_multi_file_promotion" else 1)
         if writes == ("out.txt",):
             assert (project / "out.txt").read_bytes() == b"committed"
     finally:

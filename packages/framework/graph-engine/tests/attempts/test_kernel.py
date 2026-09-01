@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
+import pytest
 from pydantic import BaseModel
 
 from graph_engine.application.runtime_context import AttemptKernelPort
@@ -14,12 +17,20 @@ from graph_engine.attempts.contracts import (
 )
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
-from graph_engine.attempts.resolutions import CommittedTaskResult
+from graph_engine.attempts.resolutions import CommittedTaskResult, PermanentTaskFailure, RejectedTaskResult
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
-from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
-from graph_engine.plugin_api import ResourceClaims, TaskWorkspaceBinding
+from graph_engine.persistence.resource_authorization import (
+    MemoryResourceAuthorizationStore,
+    ResourceAuthorizationError,
+)
+from graph_engine.plugin_api import (
+    CommitValidator,
+    ResourceClaims,
+    TaskWorkspaceBinding,
+    ValidationResult,
+)
 from graph_engine.runtime.task_workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 
 
@@ -68,11 +79,57 @@ class _WritingExecutor:
         return RunOutput(status="ok")
 
 
+class _OtherOutput(BaseModel):
+    unexpected: str
+
+
+class _InvalidOutputExecutor:
+    def __init__(self) -> None:
+        self.workspace: _RecordingWorkspace | None = None
+        self.calls = 0
+
+    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> _OtherOutput:
+        del validated_input, context
+        self.calls += 1
+        assert self.workspace is not None
+        binding = self.workspace.binding
+        assert binding is not None
+        (binding.write_root / "out.txt").write_bytes(b"invalid")
+        return _OtherOutput(unexpected="nope")
+
+
+class _CrashWithoutReconcile:
+    def __init__(self) -> None:
+        self.workspace: _RecordingWorkspace | None = None
+        self.calls = 0
+
+    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> RunOutput:
+        del validated_input, context
+        self.calls += 1
+        assert self.workspace is not None
+        binding = self.workspace.binding
+        assert binding is not None
+        (binding.write_root / "out.txt").write_bytes(b"partial")
+        raise RuntimeError("in-flight activity")
+
+
+class _RejectingValidator:
+    def validate(self, staged: object, context: object) -> ValidationResult:
+        del staged, context
+        return ValidationResult(accepted=False, reason="policy rejected")
+
+
+class _ExplodingValidator:
+    def validate(self, staged: object, context: object) -> ValidationResult:
+        del staged, context
+        raise RuntimeError("validator crashed")
+
+
 def graph_revision() -> str:
     return canonical_digest({"revision": "kernel-test"})
 
 
-def contract() -> TaskAttemptContract[RunInput, RunOutput]:
+def contract(*, validators: tuple[str, ...] = ()) -> TaskAttemptContract[RunInput, RunOutput]:
     return TaskAttemptContract(
         contract_id="assurance.execution.run.v1",
         owner_id="assurance.execution",
@@ -82,15 +139,17 @@ def contract() -> TaskAttemptContract[RunInput, RunOutput]:
         resources=ResourceClaims(writes=("out.txt",)),
         retry=AttemptRetryPolicy(max_attempts=1),
         timeout=AttemptTimeoutPolicy(seconds=60),
-        validators=(),
+        validators=validators,
     )
 
 
 def make_kernel(
     tmp_path: Path,
     *,
-    executor: _WritingExecutor | None = None,
+    executor: Any = None,
     transaction_cut=None,
+    validators: Mapping[str, CommitValidator] | None = None,
+    validator_ids: tuple[str, ...] = (),
 ):
     project = tmp_path / "project"
     project.mkdir()
@@ -98,13 +157,13 @@ def make_kernel(
     workspace = _RecordingWorkspace(TaskWorkspaceProvider(store))
     writer = executor if executor is not None else _WritingExecutor(workspace)
     writer.workspace = workspace
-    resolved = resolve_contract(contract(), executor=writer)
+    resolved = resolve_contract(contract(validators=validator_ids), executor=writer)
     kernel = AssuranceAttemptKernel(
         journal=MemoryAttemptJournal(),
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
         workspace=workspace,
         graph_revision=graph_revision(),
-        validators={},
+        validators=validators or {},
         transaction_cut=transaction_cut,
     )
     validated = RunInput(change_id="chg-1")
@@ -172,3 +231,92 @@ def inspect_execute_or_recover() -> set[str]:
 
     signature = inspect.signature(AssuranceAttemptKernel.execute_or_recover)
     return set(signature.parameters)
+
+
+async def _assert_released(kernel: AssuranceAttemptKernel, key: AttemptKey, fencing_token: int) -> None:
+    snapshot = await kernel.journal.load(key)
+    assert snapshot is not None
+    assert snapshot.terminal is not None
+    assert snapshot.released is True
+    with pytest.raises(ResourceAuthorizationError, match="no active authorization"):
+        await kernel.arbiter.assert_usable(key, fencing_token=fencing_token)
+
+
+async def test_rejected_terminal_replay_returns_same_rejection(tmp_path: Path) -> None:
+    validator_id = "assurance.execution.validator.policy.v1"
+    kernel, key, resolved, validated, context, executor, _project, store = make_kernel(
+        tmp_path,
+        validators={validator_id: _RejectingValidator()},
+        validator_ids=(validator_id,),
+    )
+    try:
+        first = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(first, RejectedTaskResult)
+        assert first.reason == "policy rejected"
+        assert first.writes_promoted is False
+        await _assert_released(kernel, key, context.fencing_token)
+        replay = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert replay == first
+        assert isinstance(replay, RejectedTaskResult)
+        assert executor.calls == 1
+        await _assert_released(kernel, key, context.fencing_token)
+    finally:
+        store.close()
+
+
+async def test_permanent_validator_terminal_replay_returns_same_failure(tmp_path: Path) -> None:
+    validator_id = "assurance.execution.validator.boom.v1"
+    kernel, key, resolved, validated, context, executor, _project, store = make_kernel(
+        tmp_path,
+        validators={validator_id: _ExplodingValidator()},
+        validator_ids=(validator_id,),
+    )
+    try:
+        first = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(first, PermanentTaskFailure)
+        assert first.kind == "internal"
+        assert "validator crashed" in first.message
+        await _assert_released(kernel, key, context.fencing_token)
+        replay = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert replay == first
+        assert isinstance(replay, PermanentTaskFailure)
+        assert executor.calls == 1
+    finally:
+        store.close()
+
+
+async def test_invalid_output_terminates_releases_and_replays(tmp_path: Path) -> None:
+    kernel, key, resolved, validated, context, executor, _project, store = make_kernel(
+        tmp_path,
+        executor=_InvalidOutputExecutor(),
+    )
+    try:
+        first = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(first, PermanentTaskFailure)
+        assert first.kind == "invalid_output"
+        await _assert_released(kernel, key, context.fencing_token)
+        replay = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert replay == first
+        assert executor.calls == 1
+    finally:
+        store.close()
+
+
+async def test_unadoptable_in_flight_activity_terminates_releases_and_replays(tmp_path: Path) -> None:
+    kernel, key, resolved, validated, context, executor, _project, store = make_kernel(
+        tmp_path,
+        executor=_CrashWithoutReconcile(),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="in-flight activity"):
+            await kernel.execute_or_recover(key, resolved, validated, context)
+        first = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(first, PermanentTaskFailure)
+        assert first.kind == "internal"
+        assert "cannot be adopted" in first.message
+        await _assert_released(kernel, key, context.fencing_token)
+        replay = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert replay == first
+        assert executor.calls == 1
+    finally:
+        store.close()

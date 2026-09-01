@@ -314,6 +314,9 @@ class AttemptTerminated:
     output: JSONValue = None
     receipt_id: str = ""
     receipt_digest: str = ""
+    reason: str = ""
+    failure_kind: str = ""
+    message: str = ""
 
     def __post_init__(self) -> None:
         if not self.resolution_kind:
@@ -325,8 +328,11 @@ class AttemptTerminated:
 
     def canonical_projection(self) -> dict[str, JSONValue]:
         return {
+            "failure_kind": self.failure_kind,
             "kind": self.kind,
+            "message": self.message,
             "output": self.output,
+            "reason": self.reason,
             "receipt_digest": self.receipt_digest,
             "receipt_id": self.receipt_id,
             "resolution_kind": self.resolution_kind,
@@ -392,6 +398,7 @@ class AttemptSnapshot:
     prepared_digest: str | None = None
     promotion_receipt_id: str | None = None
     promotion_receipt_digest: str | None = None
+    promotion_staged_digest: str | None = None
     terminal: AttemptTerminated | None = None
     released: bool = False
     active_interrupt: ActiveSystemInterrupt | None = None
@@ -434,6 +441,7 @@ def fold_attempt_events(
                 prepared_digest=snapshot.prepared_digest,
                 promotion_receipt_id=snapshot.promotion_receipt_id,
                 promotion_receipt_digest=snapshot.promotion_receipt_digest,
+                promotion_staged_digest=snapshot.promotion_staged_digest,
                 terminal=snapshot.terminal,
                 released=snapshot.released,
                 active_interrupt=snapshot.active_interrupt,
@@ -464,6 +472,7 @@ def fold_attempt_events(
                 snapshot,
                 promotion_receipt_id=event.receipt_id,
                 promotion_receipt_digest=event.receipt_digest,
+                promotion_staged_digest=event.staged_digest,
             )
             continue
         if isinstance(event, SystemInterruptIssued):
@@ -536,6 +545,7 @@ def _replace(snapshot: AttemptSnapshot, **changes: object) -> AttemptSnapshot:
         "prepared_digest": snapshot.prepared_digest,
         "promotion_receipt_id": snapshot.promotion_receipt_id,
         "promotion_receipt_digest": snapshot.promotion_receipt_digest,
+        "promotion_staged_digest": snapshot.promotion_staged_digest,
         "terminal": snapshot.terminal,
         "released": snapshot.released,
         "active_interrupt": snapshot.active_interrupt,

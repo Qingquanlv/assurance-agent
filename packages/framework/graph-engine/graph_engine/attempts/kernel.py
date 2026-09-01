@@ -164,7 +164,7 @@ class AssuranceAttemptKernel:
         snapshot = await self.adopt_or_create(attempt_key, contract, validated_input, context)
         trace.append("adopt_or_create")
         if snapshot.terminal is not None:
-            return _committed_from_terminal(snapshot.terminal, contract)
+            return _resolution_from_terminal(snapshot.terminal, contract)
 
         claims = _resolved_claims(contract, validated_input)
         authorization, snapshot, context = await self._authorize(
@@ -180,6 +180,8 @@ class AssuranceAttemptKernel:
         output, snapshot = await self._execute_or_adopt(
             attempt_key, contract, validated_input, context, snapshot, cut
         )
+        if isinstance(output, (RejectedTaskResult, PermanentTaskFailure)):
+            return await self._fail_closed(attempt_key, context, snapshot, authorization, output, cut)
         if not isinstance(output, BaseModel):
             return output
         trace.append("execute")
@@ -189,7 +191,14 @@ class AssuranceAttemptKernel:
                 output.model_dump(mode="json") if isinstance(output, BaseModel) else output
             )
         except ValidationError as error:
-            return PermanentTaskFailure(kind="invalid_output", message=str(error))
+            return await self._fail_closed(
+                attempt_key,
+                context,
+                snapshot,
+                authorization,
+                PermanentTaskFailure(kind="invalid_output", message=str(error)),
+                cut,
+            )
         trace.append("validate_output")
 
         if snapshot.prepared_digest is None:
@@ -212,20 +221,15 @@ class AssuranceAttemptKernel:
             )
             trace.append("run_validators")
             if rejected is not None:
-                snapshot = await self._terminate(
+                return await self._fail_closed(
                     attempt_key,
                     context,
                     snapshot,
                     authorization,
-                    AttemptTerminated(
-                        resolution_kind="rejected"
-                        if isinstance(rejected, RejectedTaskResult)
-                        else "permanent",
-                        output=validated_output.model_dump(mode="json"),
-                    ),
+                    rejected,
                     cut,
+                    output=validated_output.model_dump(mode="json"),
                 )
-                return rejected
             cut("before_durable_prepare")
             await self._assert_fence(attempt_key, context, "durable_prepare", cut)
             prepared = await self.workspace.prepare(binding, sealed)
@@ -266,7 +270,7 @@ class AssuranceAttemptKernel:
         )
         trace.append("publish_receipt")
         assert snapshot.terminal is not None
-        return _committed_from_terminal(snapshot.terminal, contract)
+        return _resolution_from_terminal(snapshot.terminal, contract)
 
     async def _authorize(
         self,
@@ -377,13 +381,23 @@ class AssuranceAttemptKernel:
         cut: Callable[[str], None],
     ) -> tuple[PromotionReceipt, AttemptSnapshot]:
         await self._assert_fence(attempt_key, context, "promotion", cut)
+        if (
+            snapshot.promotion_receipt_id is not None
+            and snapshot.promotion_receipt_digest is not None
+            and snapshot.promotion_staged_digest is not None
+        ):
+            return (
+                PromotionReceipt(
+                    identity_digest=snapshot.promotion_receipt_id,
+                    staged_digest=snapshot.promotion_staged_digest,
+                    receipt_digest=snapshot.promotion_receipt_digest,
+                ),
+                snapshot,
+            )
         previous_cut = task_workspace_runtime._promotion_transaction_cut
         task_workspace_runtime._promotion_transaction_cut = cut
         try:
-            if snapshot.promotion_receipt_digest is not None:
-                receipt = await self.workspace.recover_promotion(prepared)
-            else:
-                receipt = await self.workspace.promote(prepared)
+            receipt = await self.workspace.promote(prepared)
         finally:
             task_workspace_runtime._promotion_transaction_cut = previous_cut
         if snapshot.promotion_receipt_digest is None:
@@ -438,6 +452,28 @@ class AssuranceAttemptKernel:
         await self.journal.ensure_durable(attempt_key)
         return snapshot
 
+    async def _fail_closed(
+        self,
+        attempt_key: AttemptKey,
+        context: AttemptExecutionContext,
+        snapshot: AttemptSnapshot,
+        authorization: ResourceAuthorization | PendingTaskResult,
+        resolution: RejectedTaskResult | PermanentTaskFailure,
+        cut: Callable[[str], None],
+        output: JSONValue = None,
+    ) -> AttemptResolution:
+        if isinstance(authorization, PendingTaskResult):
+            return resolution
+        await self._terminate(
+            attempt_key,
+            context,
+            snapshot,
+            authorization,
+            _terminal_for_resolution(resolution, output),
+            cut,
+        )
+        return resolution
+
     async def _assert_fence(
         self,
         attempt_key: AttemptKey,
@@ -480,6 +516,45 @@ def _resolved_claims(
     if isinstance(resources, ResourceClaims):
         return resources
     return resources.resolve(validated_input.model_dump(mode="json"))
+
+
+_FAILURE_KINDS = {
+    "transient",
+    "timeout",
+    "invalid_input",
+    "invalid_output",
+    "external_effect",
+    "internal",
+    "configuration",
+}
+
+
+def _terminal_for_resolution(
+    resolution: RejectedTaskResult | PermanentTaskFailure,
+    output: JSONValue = None,
+) -> AttemptTerminated:
+    if isinstance(resolution, RejectedTaskResult):
+        return AttemptTerminated(resolution_kind="rejected", output=output, reason=resolution.reason)
+    return AttemptTerminated(
+        resolution_kind="permanent",
+        output=output,
+        failure_kind=resolution.kind,
+        message=resolution.message,
+    )
+
+
+def _resolution_from_terminal(
+    terminal: AttemptTerminated,
+    contract: ResolvedAttemptContract[Any, Any],
+) -> AttemptResolution:
+    if terminal.resolution_kind == "committed":
+        return _committed_from_terminal(terminal, contract)
+    if terminal.resolution_kind == "rejected":
+        return RejectedTaskResult(reason=terminal.reason or "rejected")
+    if terminal.resolution_kind == "permanent":
+        kind = terminal.failure_kind if terminal.failure_kind in _FAILURE_KINDS else "internal"
+        return PermanentTaskFailure(kind=kind, message=terminal.message or "permanent")  # type: ignore[arg-type]
+    raise AttemptIdentityDrift(f"unknown resolution kind {terminal.resolution_kind}")
 
 
 def _committed_from_terminal(
