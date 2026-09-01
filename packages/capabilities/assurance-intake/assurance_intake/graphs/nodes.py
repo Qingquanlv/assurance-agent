@@ -81,9 +81,6 @@ def select_case_review(state: Mapping[str, object]) -> CaseReviewInputV1:
 
 
 def _trigger(state: Mapping[str, object]) -> Mapping[str, object] | None:
-    current = state.get("current_trigger")
-    if isinstance(current, Mapping):
-        return current
     inbox = state.get("case_review_inbox")
     if isinstance(inbox, Mapping):
         nested = inbox.get("current_trigger")
@@ -220,8 +217,7 @@ def offer_advance(state: Mapping[str, object], predecessor: str) -> dict[str, ob
         value={"rounds_used": used, "rounds_budget": _as_int(state["rounds_budget"], name="rounds_budget")},
     )
     merged = offer_case_review_arrival(inbox, arrival)
-    applied = apply_current_trigger({"case_review_inbox": merged})
-    return {"case_review_inbox": merged, **applied}
+    return {"case_review_inbox": merged}
 
 
 def advance_review_round_node(state: Mapping[str, object]) -> dict[str, object]:

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from langchain_core.runnables.config import RunnableConfig
+from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 from pydantic import ValidationError
@@ -14,6 +15,7 @@ from assurance_intake.contracts.agent import ArtifactListResultV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_intake.contracts.decisions import ReviewRoundAdvanceOutput, advance_review_round
 from assurance_intake.graphs.factory import build_intake_graphs
+
 from assurance_intake.graphs.nodes import (
     HUMAN_REVIEW_ACTIONS,
     advance_review_round_node,
@@ -226,6 +228,60 @@ async def test_budget_exhaustion_is_explicit_after_two_advances() -> None:
     terminal = cast(dict[str, object], result.terminal)
     assert terminal.get("decision") == "exhausted" or terminal.get("status") == "exhausted"
     assert terminal.get("rounds_used") == 2
+
+
+def _interrupt_value(result: object) -> object | None:
+    if not isinstance(result, dict):
+        return None
+    interrupts = result.get("__interrupt__")
+    if not interrupts:
+        return None
+    first = interrupts[0]
+    return getattr(first, "value", first)
+
+
+async def test_request_rework_on_prepare_graph_advances_once_through_inbox() -> None:
+    harness = GraphHarness()
+    backend = harness.anchored_memory_checkpointer()
+    await _prepare_anchored_backend(backend)
+    bundle = build_intake_graphs(
+        harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
+    )
+    harness._kernel.load_script(
+        {
+            "intake.intake": [committed(_artifact(), _RECEIPT)],
+            "intake.explore": [committed(_artifact(), _RECEIPT)],
+            "intake.case-design": [committed(_design(), _RECEIPT), committed(_design(), _RECEIPT)],
+            "intake.case-review": [
+                committed(_review("needs_human_review", human=True), _RECEIPT),
+                committed(_review("pass", used=1), _RECEIPT),
+            ],
+        }
+    )
+    wrapper: StateGraph[IntakeState] = StateGraph(IntakeState)
+    wrapper.add_node("prepare", bundle.prepare)
+    wrapper.add_edge(START, "prepare")
+    wrapper.add_edge("prepare", END)
+    graph = wrapper.compile(checkpointer=backend)
+    config = _config()
+    interrupted: object | None
+    try:
+        interrupted = await graph.ainvoke(_input(), config=config)
+    except GraphInterrupt as error:
+        interrupted = error
+    else:
+        assert _interrupt_value(interrupted) is not None
+    resumed = await graph.ainvoke(Command(resume={"action": "request_rework"}), config=config)
+    assert resumed["human_action"] == "request_rework"
+    assert resumed["rounds_used"] == 1
+    inbox = resumed["case_review_inbox"]
+    current = inbox["current_trigger"]
+    assert current is not None
+    assert current["predecessor"] == "review-round-advance"
+    assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
+    assert resumed["current_trigger"] == current
+    assert [call.semantic_node_id for call in harness._kernel.semantic_calls].count("intake.case-design") == 2
+    assert resumed.get("decision") in {"pass", "approved"}
 
 
 async def test_request_rework_validates_after_restart_and_advances_once() -> None:
