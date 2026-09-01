@@ -25,6 +25,7 @@ from assurance_improvement.graphs.state import (
     replace_issue_analysis,
     replace_workflow_analysis,
 )
+from graph_engine.attempts.resolutions import RejectedTaskResult
 from graph_engine.testing import GraphHarness, committed
 
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
@@ -153,6 +154,7 @@ def analysis_agent_output(domain: Literal["issue", "workflow", "eval"]) -> dict[
         "domain": domain,
         "analysis_status": "ok",
         "failure_reason": None,
+        "analyzer": f"aa-retro-{domain}-analysis",
         "signals": [],
         "candidates": [candidate_payload()] if domain == "issue" else [],
     }
@@ -352,3 +354,121 @@ async def test_archive_remains_an_independent_graph() -> None:
     assert all(call.semantic_node_id != "improvement.archive" for call in retro.semantic_calls)
     assert archive.terminal is not None
     assert retro.terminal is not None
+
+
+def _forged_caller_context() -> dict[str, object]:
+    forged = retro_context_payload()
+    forged["retro_id"] = "FORGED-CALLER-CONTEXT"
+    return forged
+
+
+def test_assemble_builds_repaired_context_from_collect_and_named_analyses() -> None:
+    from assurance_improvement.contracts.delivery import artifact_digest
+    from assurance_improvement.graphs.nodes import assemble_analyses
+
+    collected = select_retro_collect(complete_collect_payload())
+    issue = select_analysis_slice(collected, domain="issue")
+    workflow = select_analysis_slice(collected, domain="workflow")
+    evaluation = select_analysis_slice(collected, domain="eval")
+    assembled = assemble_analyses(
+        retro_graph_input(
+            context=_forged_caller_context(),
+            eval_analysis=analysis_agent_output("eval"),
+            issue_analysis=analysis_agent_output("issue"),
+            workflow_analysis=analysis_agent_output("workflow"),
+        )
+    )
+    context = RetroContextV3.model_validate(assembled["context"])
+    assert context.retro_id == RETRO_ID
+    assert context.retro_id != "FORGED-CALLER-CONTEXT"
+    assert context.source_manifest.issue_slice_sha256 == artifact_digest(issue)
+    assert context.source_manifest.workflow_slice_sha256 == artifact_digest(workflow)
+    assert context.source_manifest.eval_slice_sha256 == artifact_digest(evaluation)
+    assert assembled["candidates"] == [candidate_payload()]
+
+
+async def test_reconcile_receives_assembled_context_not_caller_supplied() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(
+        owner_id="assurance.improvement",
+        contracts=improvement_contracts(),
+    )
+    bundle = build_improvement_graphs(context)
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.retro,
+        input=retro_graph_input(context=_forged_caller_context()),
+        script={
+            "improvement.retro-collect": [committed(complete_collect_payload(), receipt)],
+            "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), receipt)],
+            "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
+            "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
+            "improvement.retro-reconcile": [committed(reconciled_ledger(), receipt)],
+            "improvement.retro": [committed(retro_agent_output(), receipt)],
+        },
+    )
+    reconcile_selected = result.select_values[4]
+    assert isinstance(reconcile_selected, dict)
+    assert reconcile_selected["context"]["retro_id"] == RETRO_ID
+    assert reconcile_selected["context"]["retro_id"] != "FORGED-CALLER-CONTEXT"
+    collected = select_retro_collect(complete_collect_payload())
+    from assurance_improvement.contracts.delivery import artifact_digest
+
+    assert reconcile_selected["context"]["source_manifest"]["issue_slice_sha256"] == artifact_digest(
+        select_analysis_slice(collected, domain="issue")
+    )
+
+
+async def test_rejected_collect_fail_closes_without_later_agents() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(
+        owner_id="assurance.improvement",
+        contracts=improvement_contracts(),
+    )
+    bundle = build_improvement_graphs(context)
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.retro,
+        input=retro_graph_input(),
+        script={
+            "improvement.retro-collect": [RejectedTaskResult(reason="invalid collect")],
+            "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), receipt)],
+            "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
+            "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
+            "improvement.retro-reconcile": [committed(reconciled_ledger(), receipt)],
+            "improvement.retro": [committed(retro_agent_output(), receipt)],
+        },
+    )
+    assert [call.semantic_node_id for call in result.semantic_calls] == ["improvement.retro-collect"]
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "failed"
+
+
+async def test_rejected_analysis_fail_closes_without_later_agents() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(
+        owner_id="assurance.improvement",
+        contracts=improvement_contracts(),
+    )
+    bundle = build_improvement_graphs(context)
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.retro,
+        input=retro_graph_input(),
+        script={
+            "improvement.retro-collect": [committed(complete_collect_payload(), receipt)],
+            "improvement.retro-eval-analysis": [RejectedTaskResult(reason="eval analysis rejected")],
+            "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
+            "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
+            "improvement.retro-reconcile": [committed(reconciled_ledger(), receipt)],
+            "improvement.retro": [committed(retro_agent_output(), receipt)],
+        },
+    )
+    assert [call.semantic_node_id for call in result.semantic_calls] == [
+        "improvement.retro-collect",
+        "improvement.retro-eval-analysis",
+    ]
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "failed"

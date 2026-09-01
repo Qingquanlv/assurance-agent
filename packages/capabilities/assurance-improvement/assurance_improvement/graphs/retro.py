@@ -36,6 +36,11 @@ _ISSUE_ID = "assurance.improvement.agent.retro-issue-analysis.v1"
 _WORKFLOW_ID = "assurance.improvement.agent.retro-workflow-analysis.v1"
 _RETRO_ID = "assurance.improvement.agent.retro.v1"
 _COMMITTED_PATHS: dict[Hashable, str] = {"done": "done", "failed": "failed"}
+_AFTER_COLLECT: dict[Hashable, str] = {"done": "improvement.retro-eval-analysis", "failed": "failed"}
+_AFTER_EVAL: dict[Hashable, str] = {"done": "improvement.retro-issue-analysis", "failed": "failed"}
+_AFTER_ISSUE: dict[Hashable, str] = {"done": "improvement.retro-workflow-analysis", "failed": "failed"}
+_AFTER_WORKFLOW: dict[Hashable, str] = {"done": "assemble", "failed": "failed"}
+_AFTER_RECONCILE: dict[Hashable, str] = {"done": "improvement.retro", "failed": "failed"}
 
 
 def _attempt(
@@ -121,12 +126,24 @@ def build_retro_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder.add_node("done", cast(Callable[..., Any], terminal_done))
     builder.add_node("failed", cast(Callable[..., Any], terminal_failed))
     builder.add_edge(START, "improvement.retro-collect")
-    builder.add_edge("improvement.retro-collect", "improvement.retro-eval-analysis")
-    builder.add_edge("improvement.retro-eval-analysis", "improvement.retro-issue-analysis")
-    builder.add_edge("improvement.retro-issue-analysis", "improvement.retro-workflow-analysis")
-    builder.add_edge("improvement.retro-workflow-analysis", "assemble")
+    builder.add_conditional_edges(
+        "improvement.retro-collect", cast(Callable[..., Any], route_committed), _AFTER_COLLECT
+    )
+    builder.add_conditional_edges(
+        "improvement.retro-eval-analysis", cast(Callable[..., Any], route_committed), _AFTER_EVAL
+    )
+    builder.add_conditional_edges(
+        "improvement.retro-issue-analysis", cast(Callable[..., Any], route_committed), _AFTER_ISSUE
+    )
+    builder.add_conditional_edges(
+        "improvement.retro-workflow-analysis",
+        cast(Callable[..., Any], route_committed),
+        _AFTER_WORKFLOW,
+    )
     builder.add_edge("assemble", "improvement.retro-reconcile")
-    builder.add_edge("improvement.retro-reconcile", "improvement.retro")
+    builder.add_conditional_edges(
+        "improvement.retro-reconcile", cast(Callable[..., Any], route_committed), _AFTER_RECONCILE
+    )
     builder.add_conditional_edges(
         "improvement.retro", cast(Callable[..., Any], route_committed), _COMMITTED_PATHS
     )

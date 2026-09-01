@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal
+from typing import Any, Literal
 
 from langgraph.types import interrupt
 from pydantic import BaseModel
@@ -17,7 +17,17 @@ from assurance_improvement.contracts.attempts import (
     select_retro_collect,
     select_retro_reconcile,
 )
+from assurance_improvement.contracts.delivery import artifact_digest, same_digest
 from assurance_improvement.contracts.improvements import ImprovementLedgerProjection
+from assurance_improvement.contracts.retro import (
+    ContextSignalSet,
+    DomainAnalysisStatus,
+    DomainStatuses,
+    RetroContextV3,
+    RetroIntegrity,
+    RetroSourceManifestV3,
+    SignalDocumentV3,
+)
 
 APPLY_HUMAN_ACTIONS = ("approve", "reject", "request_rework", "supersede")
 EFFECT_IDS = frozenset(
@@ -164,6 +174,25 @@ def publish_workflow_analysis(
     return {"workflow_analysis": _output_payload(output)}
 
 
+def _signal_document(
+    analysis: Mapping[str, object],
+    *,
+    domain: str,
+    retro_id: str,
+    slice_sha256: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": analysis.get("schema_version") or "3",
+        "retro_id": analysis.get("retro_id") or retro_id,
+        "domain": analysis.get("domain") or domain,
+        "analysis_status": analysis.get("analysis_status") or "ok",
+        "failure_reason": analysis.get("failure_reason"),
+        "analyzer": analysis.get("analyzer") or f"aa-retro-{domain}-analysis",
+        "signals": analysis.get("signals") or (),
+        "slice_sha256": analysis.get("slice_sha256") or slice_sha256,
+    }
+
+
 def assemble_analyses(state: Mapping[str, object]) -> dict[str, object]:
     eval_analysis = state.get("eval_analysis")
     issue_analysis = state.get("issue_analysis")
@@ -174,12 +203,93 @@ def assemble_analyses(state: Mapping[str, object]) -> dict[str, object]:
         raise ValueError("issue analysis result is required")
     if not isinstance(workflow_analysis, Mapping):
         raise ValueError("workflow analysis result is required")
+    collected = select_retro_collect(
+        _pick(
+            state,
+            "retro_id",
+            "window",
+            "issue_slice",
+            "workflow_slice",
+            "eval_slice",
+            "discovery_slice",
+            "coverage_gap_slice",
+        )
+    )
+    issue_slice = select_analysis_slice(collected, domain="issue")
+    workflow_slice = select_analysis_slice(collected, domain="workflow")
+    evaluation = select_analysis_slice(collected, domain="eval")
+    issue_digest = artifact_digest(issue_slice)
+    workflow_digest = artifact_digest(workflow_slice)
+    eval_digest = artifact_digest(evaluation)
+    domains = (
+        ("issue", issue_slice, issue_analysis, issue_digest),
+        ("workflow", workflow_slice, workflow_analysis, workflow_digest),
+        ("eval", evaluation, eval_analysis, eval_digest),
+    )
+    statuses: dict[str, DomainAnalysisStatus] = {}
+    signals: dict[str, tuple[Any, ...]] = {}
+    reasons: list[str] = []
+    for domain, slice_, analysis, digest in domains:
+        signal_doc = SignalDocumentV3.model_validate(
+            _signal_document(
+                analysis,
+                domain=domain,
+                retro_id=collected.retro_id,
+                slice_sha256=digest,
+            )
+        )
+        if slice_.window != collected.window or slice_.retro_id != signal_doc.retro_id:
+            raise ValueError(f"{domain} assembly identity mismatch")
+        actual = artifact_digest(slice_)
+        if not same_digest(actual, digest) or not same_digest(actual, signal_doc.slice_sha256):
+            raise ValueError(f"{domain} slice digest is not authenticated")
+        if signal_doc.analysis_status == "failed":
+            statuses[domain] = DomainAnalysisStatus(status="failed", failure_reason=signal_doc.failure_reason)
+            signals[domain] = slice_.deterministic_signals
+            reasons.append(f"{domain}_signal_analysis_failed")
+        else:
+            statuses[domain] = DomainAnalysisStatus(status="ok")
+            merged: dict[str, object] = {signal.signal_id: signal for signal in slice_.deterministic_signals}
+            for signal in signal_doc.signals:
+                merged[signal.signal_id] = signal
+            signals[domain] = tuple(merged.values())
+        for reason in slice_.integrity.reasons:
+            if reason not in reasons:
+                reasons.append(reason)
+    context = RetroContextV3(
+        retro_id=collected.retro_id,
+        generated_at=str(state["ts"]),
+        dry_run=bool(state.get("dry_run") or False),
+        window=collected.window,
+        source_manifest=RetroSourceManifestV3(
+            issue_slice_sha256=issue_digest,
+            workflow_slice_sha256=workflow_digest,
+            eval_slice_sha256=eval_digest,
+            issue_sources=issue_slice.sources,
+            workflow_sources=workflow_slice.sources,
+            eval_sources=evaluation.sources,
+        ),
+        integrity=(
+            RetroIntegrity(status="incomplete", reasons=tuple(dict.fromkeys(reasons)))
+            if reasons
+            else RetroIntegrity(status="complete")
+        ),
+        domain_status=DomainStatuses(
+            issue=statuses["issue"],
+            workflow=statuses["workflow"],
+            eval=statuses["eval"],
+        ),
+        signals=ContextSignalSet.model_validate(
+            {"issue": signals["issue"], "workflow": signals["workflow"], "eval": signals["eval"]}
+        ),
+        signal_count=sum(len(items) for items in signals.values()),
+    )
     candidates: list[object] = []
     for payload in (issue_analysis, workflow_analysis, eval_analysis):
         items = payload.get("candidates") or ()
         if isinstance(items, list):
             candidates.extend(items)
-    return {"candidates": candidates}
+    return {"context": context.model_dump(mode="json"), "candidates": candidates}
 
 
 def select_reconcile(state: Mapping[str, object]):
