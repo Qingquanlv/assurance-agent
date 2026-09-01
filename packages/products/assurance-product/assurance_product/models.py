@@ -447,6 +447,7 @@ FAMILY_EMPTY_ENTRYPOINTS = frozenset(
     }
 )
 PRODUCT_ENTRYPOINTS = FAMILY_NONEMPTY_ENTRYPOINTS | FAMILY_EMPTY_ENTRYPOINTS
+THIN_ENTRYPOINTS = PRODUCT_ENTRYPOINTS - FAMILY_NONEMPTY_ENTRYPOINTS
 
 
 def _canonical_token(value: str, label: str) -> str:
@@ -656,6 +657,22 @@ def authenticate_product_input_resources(value: ProductInputV1, composition: obj
         raise ValueError("capability catalog is missing typed_leafs")
     if value.capability_leafs != tuple(leafs):
         raise ValueError("product capability_leafs disagree with the authenticated catalog")
+
+
+class ProductReceiptRefV1(FrozenModel):
+    receipt_id: str = Field(min_length=1)
+    receipt_digest: str = Field(pattern=_SHA256)
+
+
+class ProductPublicOutput(FrozenModel):
+    change_id: str
+    status: Literal["completed", "failed"]
+    receipts: tuple[ProductReceiptRefV1, ...] = ()
+
+    @field_validator("change_id")
+    @classmethod
+    def _change_id(cls, value: str) -> str:
+        return _canonical_token(value, "change_id")
 
 
 class GraphStatusV1(FrozenModel):
