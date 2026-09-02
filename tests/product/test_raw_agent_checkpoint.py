@@ -263,9 +263,13 @@ def _operator_provider_config() -> dict[str, Any]:
 
 def _live_provider_model(*, provider: str, model: str) -> str:
     override = os.environ.get("OPENCODE_MODEL")
-    if override:
-        return override
-    return f"{provider}/{model}"
+    assert override, (
+        f"live Checkpoint R needs OPENCODE_MODEL to name a model the operator's provider really "
+        f"serves. The binding row carries the fixture placeholder {provider}/{model}, which no "
+        f"provider resolves, and an unresolvable model surfaces only as the observation horizon "
+        f"expiring several minutes later."
+    )
+    return override
 
 
 class _ExactSecretPort:
@@ -447,12 +451,15 @@ def _direct_loopback_opencode_server(project_root: Path, state_root: Path) -> It
     env["XDG_CONFIG_HOME"] = str(xdg_config)
     env["XDG_DATA_HOME"] = str(xdg_data)
     env.pop("OPENCODE_SERVER_PASSWORD", None)
+    # Keep the server's own log readable after a failure, and off a pipe that nothing drains.
+    log_path = state_root / "serve.log"
+    log_handle = log_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(
         [binary, "serve", "--port", str(port), "--hostname", "127.0.0.1"],
         cwd=str(project_root),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
         text=True,
     )
     endpoint = f"http://127.0.0.1:{port}"
@@ -461,9 +468,9 @@ def _direct_loopback_opencode_server(project_root: Path, state_root: Path) -> It
         ready = False
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                stdout, stderr = proc.communicate()
+                proc.communicate()
                 raise AssertionError(
-                    f"official OpenCode serve exited before health: stdout={stdout!r} stderr={stderr!r}"
+                    f"official OpenCode serve exited before health: {log_path.read_text(encoding='utf-8')!r}"
                 )
             try:
                 import urllib.request
@@ -483,6 +490,7 @@ def _direct_loopback_opencode_server(project_root: Path, state_root: Path) -> It
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.communicate(timeout=5)
+        log_handle.close()
 
 
 def _execute_live_cutover(

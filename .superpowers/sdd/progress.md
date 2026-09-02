@@ -210,6 +210,16 @@ Rename completion (uncommitted at time of writing)
 - Scope `tests/agent_runtime` + `tests/phase4` + the two adapter packages went from 3 uncollectable
   modules and 83 failures to 0 collection errors and 15 failures.
 
+Checkpoint R live row: GREEN (29s against the operator's own provider), so Product T5b is unblocked
+- The row had been failing as `observation horizon exceeded`, which read like an adapter defect but
+  was the model id: the binding row carries the fixture placeholder `opencode/fixture-model`, which
+  no real provider resolves, and OpenCode never closes such a session. `OPENCODE_MODEL` is now
+  required rather than silently defaulting to that placeholder.
+- Operator contract for the row: `AA_CHECKPOINT_R_LIVE=1`, `OPENCODE_MODEL` naming a served model,
+  `OPENCODE_SERVER_PASSWORD` (or `OPENCODE_API_KEY`) as the redaction canary,
+  `AA_CHECKPOINT_R_PROVIDER_CONFIG`, `AA_CHECKPOINT_R_AUTH_FILE`, and OpenCode >= 1.18.26.
+- The loopback server now logs to a file instead of an undrained pipe.
+
 Deferred debt (operator decision: record, do not fix now; T5b takes priority)
 - benchmark/agent-runtime-phase3/manifest.json pins the pre-R1 request shape. It documents a real
   live run, so it stays stale until the phase3 benchmark is genuinely re-run rather than rewritten.
