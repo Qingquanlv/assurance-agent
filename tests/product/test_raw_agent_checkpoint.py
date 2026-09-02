@@ -1,12 +1,41 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import shutil
+import socket
 import subprocess
+import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
+from agent_runtime_contracts import (
+    AgentRunRequest,
+    AgentRunResult,
+    AgentWorkspaceV1,
+    FrozenExecutionSelection,
+    InstructionPart,
+    ResultContract,
+)
+from agent_runtime_contracts.schema import canonical_digest, thaw_json
+from agent_runtime_opencode.config import OpenCodeAdapterConfig
+from agent_runtime_opencode.discovery import OpenCodeActivityReference, OpenCodeDispatchIncomplete
+from agent_runtime_opencode.handler import OpenCodeHandler
+from agent_runtime_opencode.observation import prompt_admission_body
+from graph_engine.plugin_api import (
+    InvocationMetadata,
+    SecretHandleUnauthorized,
+    SecretPort,
+    TaskActivitySnapshot,
+    TaskContext,
+    TaskOutcome,
+    TaskRequest,
+    TaskWorkspaceIdentity,
+)
 
 from tests.product.composition_harness import request_for
 from tests.product.test_feature_graph_bundles import PUBLIC_BUNDLE_FIELDS, _build_owner
@@ -164,6 +193,17 @@ def test_checkpoint_r_proves_no_structured_artifact_pipeline() -> None:
     assert "json_schema" not in adapter_text
 
 
+_LIVE_RESULT_SCHEMA = {
+    "additionalProperties": False,
+    "properties": {"ok": {"const": True, "type": "boolean"}},
+    "required": ["ok"],
+    "type": "object",
+}
+_SHA = "a" * 64
+_WRITE_ROOT = "qa/changes/CH-1/.staging/task-1/attempt-1"
+_ALLOWED_OUTPUTS = ("qa/changes/CH-1/result.json",)
+
+
 def _live_opencode_ready() -> bool:
     if shutil.which("opencode") is None:
         return False
@@ -172,11 +212,274 @@ def _live_opencode_ready() -> bool:
     return bool(os.environ.get("OPENCODE_API_KEY") or os.environ.get("OPENCODE_SERVER_PASSWORD"))
 
 
+def _live_secret() -> bytes:
+    token = os.environ.get("OPENCODE_API_KEY") or os.environ.get("OPENCODE_SERVER_PASSWORD") or ""
+    return token.encode("utf-8")
+
+
+def _live_provider_model(*, provider: str, model: str) -> str:
+    override = os.environ.get("OPENCODE_MODEL")
+    if override:
+        return override
+    return f"{provider}/{model}"
+
+
+class _ExactSecretPort:
+    def __init__(self, authorized: dict[str, bytes]) -> None:
+        self._authorized = dict(authorized)
+
+    def resolve(self, handle: str) -> bytes:
+        try:
+            return bytes(self._authorized[handle])
+        except KeyError as error:
+            raise SecretHandleUnauthorized(f"unauthorized secret handle: {handle}") from error
+
+
+class _LiveActivityPort:
+    def __init__(self, snapshot: TaskActivitySnapshot) -> None:
+        self._snapshot = snapshot
+
+    @property
+    def snapshot(self) -> TaskActivitySnapshot:
+        return self._snapshot
+
+    def mark_dispatch_started(self, fingerprint: object) -> TaskActivitySnapshot:
+        digest = canonical_digest(fingerprint)
+        current = self._snapshot.dispatch_fingerprint_digest
+        if current is not None:
+            if current != digest:
+                raise ValueError("dispatch fingerprint drifted from the durable activity")
+            return self._snapshot
+        self._snapshot = self._snapshot.model_copy(
+            update={
+                "state": "dispatch_started",
+                "dispatch_fingerprint": fingerprint,
+                "dispatch_fingerprint_digest": digest,
+            }
+        )
+        return self._snapshot
+
+    def bind(self, reference: object) -> TaskActivitySnapshot:
+        digest = canonical_digest(reference)
+        current = self._snapshot.reference_digest
+        if current is not None:
+            if current != digest:
+                raise ValueError("activity reference changed after bind")
+            return self._snapshot
+        self._snapshot = self._snapshot.model_copy(
+            update={
+                "state": "bound",
+                "reference": reference,
+                "reference_digest": digest,
+            }
+        )
+        return self._snapshot
+
+
+def _live_agent_run(*, provider_model: str) -> AgentRunRequest:
+    schema = _LIVE_RESULT_SCHEMA
+    workspace_payload = {
+        "schema_version": "1",
+        "agent_profile": "assurance-v1-doc-author",
+        "scope_id": "CH-1",
+        "write_root": _WRITE_ROOT,
+        "allowed_outputs": list(_ALLOWED_OUTPUTS),
+    }
+    return AgentRunRequest(
+        schema_version="1",
+        instructions=(
+            InstructionPart.text(
+                "text/plain",
+                'Reply with exactly one JSON object and nothing else: {"ok": true}',
+            ),
+        ),
+        result_contract=ResultContract(
+            schema_id="checkpoint-r.live.result.v1",
+            schema_digest=canonical_digest(schema),
+            delivery_mode="assistant_json_local_v1",
+            schema_document=schema,
+        ),
+        execution=FrozenExecutionSelection(
+            provider_model=provider_model,
+            worker_profile="checkpoint-r-live",
+            permission_profile_digest=_SHA,
+            limits={"max_seconds": 180},  # type: ignore[arg-type]
+        ),
+        workspace=AgentWorkspaceV1.model_validate(
+            {**workspace_payload, "identity_digest": canonical_digest(workspace_payload)}
+        ),
+        request_policy_digest=_SHA,
+        request_config_digest=_SHA,
+    )
+
+
+def _live_task_request(agent_run: AgentRunRequest, config: OpenCodeAdapterConfig) -> TaskRequest:
+    return TaskRequest.model_validate(
+        {
+            "invocation_id": "inv-checkpoint-r-live",
+            "task_id": "task-1",
+            "graph_instance_id": "graph-1",
+            "node_id": "run",
+            "capability_id": "runtime.opencode.execute",
+            "invocation": InvocationMetadata(
+                invocation_id="inv-checkpoint-r-live",
+                lock_digest=_SHA,
+                composition_digest="b" * 64,
+                entrypoint="runtime.opencode.execute",
+            ),
+            "attempt": 1,
+            "input": agent_run.model_dump(mode="json"),
+            "binding_data": config.model_dump(mode="json"),
+        }
+    )
+
+
+def _live_workspace_identity() -> TaskWorkspaceIdentity:
+    payload = {
+        "task_id": "task-1",
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": list(_ALLOWED_OUTPUTS),
+        "baseline_files": [],
+        "project_digest": _SHA,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    return TaskWorkspaceIdentity(**payload, identity_digest=canonical_digest(payload))
+
+
+def _assert_admission_is_raw(body: dict[str, Any]) -> None:
+    encoded = json.dumps(body)
+    assert "format" not in body
+    assert "json_schema" not in encoded
+    assert "opencode_structured_output" not in encoded
+
+
+@contextmanager
+def _direct_loopback_opencode_server(project_root: Path) -> Iterator[str]:
+    binary = shutil.which("opencode")
+    assert binary is not None
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    home = project_root / ".home"
+    home.mkdir()
+    xdg_config = project_root / ".xdg-config"
+    opencode_config = xdg_config / "opencode"
+    opencode_config.mkdir(parents=True)
+    agent_config = json.dumps(
+        {
+            "agent": {
+                "assurance-v1-doc-author": {
+                    "description": "Checkpoint R live raw-agent probe",
+                    "mode": "all",
+                    "prompt": "Execute the supplied instructions and return exactly one JSON object.",
+                }
+            }
+        }
+    )
+    (opencode_config / "opencode.json").write_text(agent_config, encoding="utf-8")
+    (project_root / "opencode.json").write_text(agent_config, encoding="utf-8")
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["XDG_CONFIG_HOME"] = str(xdg_config)
+    env["XDG_DATA_HOME"] = str(project_root / ".xdg-data")
+    env.pop("OPENCODE_SERVER_PASSWORD", None)
+    proc = subprocess.Popen(
+        [binary, "serve", "--port", str(port), "--hostname", "127.0.0.1"],
+        cwd=str(project_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    endpoint = f"http://127.0.0.1:{port}"
+    try:
+        deadline = time.monotonic() + 15
+        ready = False
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                stdout, stderr = proc.communicate()
+                raise AssertionError(
+                    f"official OpenCode serve exited before health: stdout={stdout!r} stderr={stderr!r}"
+                )
+            try:
+                import urllib.request
+
+                with urllib.request.urlopen(f"{endpoint}/global/health", timeout=1) as response:
+                    if response.status == 200:
+                        ready = True
+                        break
+            except OSError:
+                time.sleep(0.1)
+        assert ready, f"official OpenCode serve did not become healthy at {endpoint}"
+        yield endpoint
+    finally:
+        proc.terminate()
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate(timeout=5)
+
+
+def _execute_live_cutover(
+    *,
+    endpoint: str,
+    project_root: Path,
+    agent_run: AgentRunRequest,
+    secret: bytes,
+) -> tuple[TaskOutcome, TaskActivitySnapshot]:
+    write_root = project_root / _WRITE_ROOT
+    write_root.mkdir(parents=True)
+    config = OpenCodeAdapterConfig.model_validate(
+        {
+            "schema_version": "1",
+            "endpoint": endpoint,
+            "tls_identity_digest": _SHA,
+            "secret_handle": "opencode.token",
+            "protocol_profile": "opencode-http-v1",
+            "project_scope": str(project_root.resolve()),
+            "request_timeout_seconds": 60,
+            "observation_horizon_seconds": 180,
+            "poll_interval_seconds": 1,
+            "cancel_timeout_seconds": 15,
+            "max_response_bytes": 65536,
+            "adapter_configuration_digest": _SHA,
+        }
+    )
+    request = _live_task_request(agent_run, config)
+    snapshot = TaskActivitySnapshot(
+        activity_id="activity-checkpoint-r-live",
+        request_digest=canonical_digest(request.model_dump(mode="json")),
+        workspace_identity=_live_workspace_identity(),
+        state="prepared",
+    )
+    port = _LiveActivityPort(snapshot)
+    secrets: SecretPort = _ExactSecretPort({"opencode.token": secret})
+    context = TaskContext(
+        project_root=project_root,
+        write_root=write_root,
+        workspace_identity=snapshot.workspace_identity,
+        heartbeat=lambda: None,
+        cancel_requested=lambda: False,
+        invocation=request.invocation,
+        activity=port,
+        secrets=secrets,
+    )
+    outcome = asyncio.run(OpenCodeHandler().execute(request, context))
+    return outcome, port.snapshot
+
+
 @pytest.mark.skipif(
     not _live_opencode_ready(),
     reason="official OpenCode binary plus AA_CHECKPOINT_R_LIVE=1 and operator credentials are required",
 )
-def test_live_opencode_cutover_binding_records_checkpoint_r(installed_sources) -> None:
+def test_live_opencode_cutover_binding_records_checkpoint_r(
+    installed_sources,
+    tmp_path: Path,
+) -> None:
     from assurance_product.product import (
         coexistence_graph_manifest,
         product_lock_from_composition,
@@ -187,15 +490,48 @@ def test_live_opencode_cutover_binding_records_checkpoint_r(installed_sources) -
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     product_lock = product_lock_from_composition(composition)
     manifest = coexistence_graph_manifest(composition, product_lock)
-    row = RAW_AGENT_RUNTIME_BINDING_ROWS[0]
-    assert row.adapter == "opencode"
-    assert row.provider == "opencode"
-    assert row.model == "fixture-model"
-    assert shutil.which("opencode") is not None
+    rows = RAW_AGENT_RUNTIME_BINDING_ROWS
+    assert {row.adapter for row in rows} == {"opencode"}
+    assert {row.provider for row in rows} == {"opencode"}
+    assert {row.model for row in rows} == {"fixture-model"}
+    row = rows[0]
+    provider_model = _live_provider_model(provider=row.provider, model=row.model)
+    agent_run = _live_agent_run(provider_model=provider_model)
+    admission = prompt_admission_body(agent_run, "msg_checkpoint_r_live")
+    _assert_admission_is_raw(admission)
+
+    project_root = tmp_path / "isolated"
+    project_root.mkdir()
+    with _direct_loopback_opencode_server(project_root) as endpoint:
+        assert endpoint.startswith("http://127.0.0.1:")
+        try:
+            outcome, snapshot = _execute_live_cutover(
+                endpoint=endpoint,
+                project_root=project_root,
+                agent_run=agent_run,
+                secret=_live_secret(),
+            )
+        except OpenCodeDispatchIncomplete as error:
+            raise AssertionError(
+                f"live OpenCode cutover row did not observe a closed terminal: {error}"
+            ) from error
+
+    assert snapshot.reference is not None
+    reference = OpenCodeActivityReference.model_validate(thaw_json(snapshot.reference))
+    assert reference.session_id
+    assert outcome.status == "succeeded", (
+        f"live OpenCode cutover row failed: status={outcome.status} failure={outcome.failure}"
+    )
+    result = AgentRunResult.model_validate(outcome.output)
+    assert thaw_json(result.result_payload) == {"ok": True}
+    assert result.adapter_id == "runtime.opencode"
     print(
         "checkpoint-r-live "
         f"candidate_sha={_candidate_sha()} "
         f"product_lock={product_lock.digest} "
         f"graph_revision={manifest.revision.revision_id} "
-        f"adapter={row.adapter} provider={row.provider} model={row.model}"
+        f"adapter={row.adapter} provider={row.provider} model={row.model} "
+        f"live_provider_model={provider_model} "
+        f"session_id={reference.session_id} "
+        f"result_digest={result.result_digest}"
     )
