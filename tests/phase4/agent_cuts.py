@@ -94,7 +94,7 @@ class CuttingTaskHost(SixWheelTaskHost):
             if self.cut == "result-truncated":
                 return self._execute_result(
                     call,
-                    TaskOutcome.succeeded({"schema_version": "1", "structured_result": {}}),
+                    TaskOutcome.succeeded({"schema_version": "1", "result_payload": {}}),
                 )
             if self.cut == "terminal-observed":
                 structured: JSONValue = {"ok": True}
@@ -105,7 +105,7 @@ class CuttingTaskHost(SixWheelTaskHost):
                             JSONValue,
                             {
                                 "schema_version": "1",
-                                "structured_result": structured,
+                                "result_payload": structured,
                                 "result_digest": canonical_digest(structured),
                                 "evidence_digest": "a" * 64,
                                 "adapter_id": "test.fake",
@@ -234,12 +234,12 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
         base["agent_result"] = {"status": "running", "adapter_id": "test.fake"}
         return cast(JSONValue, base)
     if cut == "result-truncated":
-        base["agent_result"] = {"schema_version": "1", "structured_result": {}}
+        base["agent_result"] = {"schema_version": "1", "result_payload": {}}
         return cast(JSONValue, base)
     structured = {"ok": True}
     base["agent_result"] = {
         "schema_version": "1",
-        "structured_result": structured,
+        "result_payload": structured,
         "result_digest": canonical_digest(structured),
         "evidence_digest": _HEX,
         "adapter_id": "test.fake",

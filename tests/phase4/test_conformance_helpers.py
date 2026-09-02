@@ -172,7 +172,7 @@ class _PrepareHandler:
             result_contract=ResultContract(
                 schema_id="test.phase4.result.v1",
                 schema_digest=canonical_digest(schema),
-                extraction_mode="structured",
+                delivery_mode="assistant_json_local_v1",
             ),
             execution=FrozenExecutionSelection.model_validate(binding["execution"]),
             workspace=_agent_workspace(),
@@ -187,7 +187,7 @@ class _FinalizeHandler:
         del context
         payload = cast(Mapping[str, JSONValue], thaw_json(request.input))
         result = cast(Mapping[str, JSONValue], payload["agent_result"])
-        return TaskOutcome.succeeded(result["structured_result"])
+        return TaskOutcome.succeeded(result["result_payload"])
 
 
 class _RejectingValidator:
@@ -291,7 +291,7 @@ def test_fake_adapter_records_canonical_request_bytes_and_digest() -> None:
         result_contract=ResultContract(
             schema_id="test.phase4.result.v1",
             schema_digest=canonical_digest(schema),
-            extraction_mode="structured",
+            delivery_mode="assistant_json_local_v1",
         ),
         execution=FrozenExecutionSelection.model_validate(
             {

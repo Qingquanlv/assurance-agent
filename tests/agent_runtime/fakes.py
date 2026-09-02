@@ -123,7 +123,7 @@ def agent_run_request() -> AgentRunRequest:
         result_contract=ResultContract(
             schema_id="fixture.result.v1",
             schema_digest=schema_digest,
-            extraction_mode="structured",
+            delivery_mode="assistant_json_local_v1",
         ),
         execution=FrozenExecutionSelection(
             provider_model="provider_default",

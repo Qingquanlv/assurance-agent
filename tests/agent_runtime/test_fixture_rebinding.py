@@ -575,7 +575,7 @@ async def test_fixture_rebinds_without_engine_change(target: str) -> None:
     result = await run_fixture(fixture)
     assert canonical_json_bytes(_workflow_input(fixture.composition)) == EXPECTED_AGENT_RUN_REQUEST_BYTES
     assert fixture.captured_request_bytes == EXPECTED_AGENT_RUN_REQUEST_BYTES
-    assert result.structured_result == _STRUCTURED
+    assert result.result_payload == _STRUCTURED
 
 
 async def test_same_manifest_lock_is_stable_across_two_resolves() -> None:
@@ -596,7 +596,7 @@ async def test_adapter_rebinding_changes_lock_and_evidence_not_request() -> None
     )
     assert opencode.lock_digest != cursor.lock_digest
     assert opencode.result is not None and cursor.result is not None
-    assert opencode.result.structured_result == cursor.result.structured_result == _STRUCTURED
+    assert opencode.result.result_payload == cursor.result.result_payload == _STRUCTURED
     assert opencode.result.evidence_digest != cursor.result.evidence_digest
     assert opencode.composition.manifest.workflow == cursor.composition.manifest.workflow
     assert (

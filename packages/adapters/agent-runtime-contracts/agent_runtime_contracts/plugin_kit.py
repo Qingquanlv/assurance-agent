@@ -66,10 +66,10 @@ RUNTIME_RESULT_SCHEMA = canonical_json_bytes(
         "properties": {
             "adapter_id": {"minLength": 1, "type": "string"},
             "result_digest": {"maxLength": 64, "minLength": 64, "type": "string"},
+            "result_payload": {"additionalProperties": False, "type": "object"},
             "schema_version": {"const": "1", "type": "string"},
-            "structured_result": {"additionalProperties": False, "type": "object"},
         },
-        "required": ["adapter_id", "result_digest", "schema_version", "structured_result"],
+        "required": ["adapter_id", "result_digest", "result_payload", "schema_version"],
         "type": "object",
     }
 )

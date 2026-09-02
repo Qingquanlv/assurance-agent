@@ -29,7 +29,7 @@ class FakeAgentAdapter:
     def execute_request(self, request: AgentRunRequest) -> AgentRunResult:
         self.recorded_request_bytes = request.canonical_bytes()
         return AgentRunResult(
-            structured_result=self.structured_result,
+            result_payload=self.structured_result,
             result_digest=canonical_digest(self.structured_result),
             evidence_digest=self.EVIDENCE_DIGEST,
             adapter_id=self.adapter_id,
