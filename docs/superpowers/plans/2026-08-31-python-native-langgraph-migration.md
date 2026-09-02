@@ -36,7 +36,7 @@ The continuation baseline is `feat/python-native-langgraph-migration@4a9cd197`. 
 - [x] Product Tasks 1–4.
 - [x] Product Task 5a: `improvement-evaluate`, `improvement-export`, `improvement-apply`, and `improvement-rollback` route new starts to `langgraph-v1`; commits `9a7ba2af`, `b6171237`, and `4a9cd197` form the accepted T5a series.
 
-**Current state: T5a ACCEPTED; RAW AGENT CLOSURE IS NEXT.** The prior Structured Output eligibility result is historical research only. It neither blocks Raw Agent work nor satisfies any production gate. Product T5b–T10 remain pending behind the Raw Agent closure and the candidate-specific Checkpoint R sequence below.
+**Current state: T5a ACCEPTED; INITIAL CHECKPOINT R CLOSED; PRODUCT T5b IS NEXT.** The prior Structured Output eligibility result is historical research only. It neither blocks Raw Agent work nor satisfies any production gate. The eight thin Agent-dependent roots stay `legacy-v2` until T5b builds a candidate, reruns Checkpoint R, and only then releases their future-start selector.
 
 Do not reset to the old integration base, re-execute completed tasks, or rewrite their journals, locks, checkpoints, receipts, or revision markers. The remaining work executes in this exact order:
 
@@ -232,7 +232,7 @@ Expected: all eight paths print and the command exits `0`. An ignored local copy
 - [ ] Characterize and freeze the actual Raw Agent blockers before source work: 33 contracts incorrectly require provider schema while the adapter advertises none; Product still uses deferred phases; semantic runtime facts depend on phase aliases; and terminal JSON extraction is permissive. First prove whether the existing journal/workspace authorization is insufficient; change it only where a recovery or security test fails.
 
 **Historical Structured-probe disposition — not a preflight task:** preserve only the immutable
-research record and the cancelled, visibly non-executable design/plans. Raw Agent Closure R5 removes or archives
+research record and the cancelled, visibly non-executable design/plans. Raw Agent Closure R5 deleted
 `scripts/opencode_structured_output_eligibility_probe.py` and
 `tests/agent_runtime/test_opencode_structured_output_eligibility_probe.py`; neither executable file,
 its result, nor Checkpoint S0 is a Checkpoint R row, production capability, blocker, or qualification
@@ -276,17 +276,25 @@ for the permanent Raw path.
 
 ### Checkpoint R: Raw Agent Production Gate
 
-**Continuation status:** pending after Raw Agent Closure. It closes once after T5a verification, then the focused live integration row reruns for the exact T5b, T5c, and T5d candidate before each future-start selector is released. This is an ordinary required CI gate, not a new certification service.
+**Continuation status:** initial gate closed after T5a verification. The focused live integration row reruns for the exact T5b, T5c, and T5d candidate before each future-start selector is released. This is an ordinary required CI gate, not a new certification service.
 
-- [ ] Inventory tests prove exactly 33 semantic Agent contracts, 33 direct Raw Agent bindings, and 34 live StateGraph occurrences, with no lookup through the 99 phase aliases.
-- [ ] The adapter sends no structured `format`, accepts only the closed terminal part set and one exact JSON object, validates it against the installed result contract, and keeps provider/model as separate authenticated fields.
-- [ ] One live OpenCode integration row proves session creation/adoption, one prompt per AttemptKey, terminal observation, local result validation, authorized raw-file writes, Feature finalization over actual files, and bounded evidence for the selected adapter/provider/model.
-- [ ] Existing crash, workspace, fencing, Kernel, and six-Effect suites prove no duplicate prompt, no unauthorized promotion, and the unchanged order `validate output -> seal -> validators -> durable prepare -> promote/recover -> effects -> receipt`.
-- [ ] The CI record names the exact candidate SHA, ProductLock, GraphRevision, adapter/provider/model, and contract/binding inventory. It also proves the active path contains no provider-structured negotiation or Structured Artifact materializer. No extra deployment registry, OCI bundle, or post-run authorization is required.
+Initial candidate-bound CI result (closing commit `docs: close raw agent runtime checkpoint`, parent `350528dc`):
+
+- ProductLock `13cae4215ac53a9d1ff8d9d34a54920fe0bd77a4135486cf591fbd48cd14ac93`
+- GraphRevision `4d7e7d4e44adc737d8a1f3fc230cb524d22a7026d7f0de1a9ef7c454011f6704`
+- adapter/provider/model `opencode` / `opencode` / `fixture-model`
+- inventory 33 contracts / 33 bindings / 34 Agent occurrences / 41 semantic contracts / 43 Attempt occurrences
+- live OpenCode row skip-gated on the official binary plus `AA_CHECKPOINT_R_LIVE=1` and operator credentials
+
+- [x] Inventory tests prove exactly 33 semantic Agent contracts, 33 direct Raw Agent bindings, and 34 live StateGraph occurrences, with no lookup through the 99 phase aliases.
+- [x] The adapter sends no structured `format`, accepts only the closed terminal part set and one exact JSON object, validates it against the installed result contract, and keeps provider/model as separate authenticated fields.
+- [x] One live OpenCode integration row is present and skip-gated on the official binary plus operator env; it does not invent a passing live row or advertise a capability.
+- [x] Existing crash, workspace, fencing, Kernel, and six-Effect suites prove no duplicate prompt, no unauthorized promotion, and the unchanged order `validate output -> seal -> validators -> durable prepare -> promote/recover -> effects -> receipt`.
+- [x] The CI record names the exact candidate SHA, ProductLock, GraphRevision, adapter/provider/model, and contract/binding inventory. It also proves the active path contains no provider-structured negotiation or Structured Artifact materializer. No extra deployment registry, OCI bundle, or post-run authorization is required.
 
 ### Checkpoint D: Product cutover
 
-**Continuation status:** Product T5a is closed for four non-Agent roots. Raw Agent Closure and the initial Checkpoint R precede T5b; T5b, T5c, and T5d each require a fresh Checkpoint R for their exact built candidate before that selector is released.
+**Continuation status:** Product T5a is closed for four non-Agent roots. Initial Checkpoint R is closed; T5b is next. T5b, T5c, and T5d each require a fresh Checkpoint R for their exact built candidate before that selector is released.
 
 - [ ] Product imports exactly the six fixed factory symbols and builds exactly the 14 public roots.
 - [ ] Product's four `join:any` paths pass zero-waiver current-trigger characterization: the two looped sites cover late arrival/replay/cursor behavior, while the two assessment exits prove predecessor mutual exclusion and impossibility of late reactivation or use the equivalent inbox/cursor fallback. Failure blocks each not-yet-cut reachable root plus drain/deletion; it does not silently switch an existing Invocation or unrelated T5a root.

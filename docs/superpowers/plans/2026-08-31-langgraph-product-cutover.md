@@ -16,7 +16,7 @@
 
 - Foundation, Attempt Kernel and all six Feature graph plans are complete and reviewed. Product Tasks 1–4 and T5a are also complete at continuation baseline `4a9cd197`. Execute remaining work in a clean continuation worktree; preserve the original dirty worktree and do not replay completed tasks.
 - Every Product root state inherits `CheckpointBridgeState`; public input/output and semantic parity projections exclude `assurance_checkpoint_markers`, while restart tests retain checkpoint-integrity coverage for it.
-- Remaining work executes in this order: Raw Agent Runtime Closure; T5a verification on the existing production composition; initial Checkpoint R; T5b candidate → Checkpoint R → release; T5c candidate → Checkpoint R → release; T5d candidate → Checkpoint R → release; then Tasks 6–10. Task 8 deletes Assurance YAML and all 99 phase aliases while retaining the 33 semantic Raw Agent contracts, bindings, and executor; Task 9 deletes the compiler/Runtime after the normal post-deletion gate; Task 10 removes migration switches while retaining the focused Raw Agent checks in CI.
+- Remaining work executes in this order: T5b candidate → Checkpoint R → release; T5c candidate → Checkpoint R → release; T5d candidate → Checkpoint R → release; then Tasks 6–10. Raw Agent Runtime Closure, T5a verification, and the initial Checkpoint R are already closed. Task 8 deletes Assurance YAML and all 99 phase aliases while retaining the 33 semantic Raw Agent contracts, bindings, and executor; Task 9 deletes the compiler/Runtime after the normal post-deletion gate; Task 10 removes migration switches while retaining the focused Raw Agent checks in CI.
 - Keep public entrypoint names and public input/output/Status schemas stable. Internal graph/node/token IDs are not parity contracts.
 - Product imports exactly six authenticated factory symbols and is the only cross-Feature graph composer. Boot remains generic: it consumes Product-provided owner-keyed factories/bundles and does not hard-code Assurance keyword arguments.
 - Feature subgraphs are compiled with `checkpointer=None`. Product roots alone receive the anchored saver. Schema-different child invocation goes through a pure adapter; no side effect runs before an interrupting child call.
@@ -418,13 +418,13 @@ The accepted Raw Agent amendment adds one child plan before the unfinished Produ
 - unchanged LangGraph topology: Raw Agent closure adds no node or edge and preserves the nine `join:any`, seven SCC-anchor, three `min_matches`, 50 exclusive-route, interrupt, budget, revision, and public-schema gates;
 - T5a verification followed by a normal candidate-bound Checkpoint R result.
 
-Any earlier provider-result eligibility probe is historical research only: it is absent from active dependencies and required CI, cannot advertise a Product capability, and cannot satisfy or block Checkpoint R. Raw Closure R5 removes or archives executable eligibility-probe code after preserving the research record; cancelled Structured plans remain non-executable history.
+Any earlier provider-result eligibility probe is historical research only: it is absent from active dependencies and required CI, cannot advertise a Product capability, and cannot satisfy or block Checkpoint R. Raw Closure R5 deleted the executable eligibility-probe script and test after preserving the research record; cancelled Structured plans remain non-executable history.
 
 Checkpoint R is a prerequisite, not a replacement for closure. A partial contract sample or permissive JSON parsing cannot satisfy it.
 
 ### Task 5: Cut over entrypoints without switching existing Invocations
 
-**Continuation status:** Task 5 is partial. T5a is complete at `4a9cd197`; Raw Agent Runtime Closure, initial Checkpoint R, and T5b–T5d are unexecuted. The four accepted T5a roots retain their recorded revisions while closure is implemented.
+**Continuation status:** Task 5 is partial. T5a is complete at `4a9cd197`; Raw Agent Runtime Closure and the initial Checkpoint R are closed. T5b–T5d remain unexecuted. The four accepted T5a roots stay `langgraph-v1`; the other ten stay `legacy-v2` until their Product task is released.
 
 **Files:**
 
@@ -445,7 +445,7 @@ First start records runtime kind/revision with the Task 3 `initializing → back
 
 Only Product code/release data can change new-start selection. `.aa/`, SUT, environment variables and CLI flags cannot select runtime/factory/revision. Switch keys equal the exact 14 public names; missing/extra values fail Boot.
 
-- [ ] **Step 3: Close Raw Agent production and establish the initial Checkpoint R.**
+- [x] **Step 3: Close Raw Agent production and establish the initial Checkpoint R.**
 
 The authoritative sequence is:
 
@@ -454,20 +454,22 @@ T5a — complete at 4a9cd197: 4 non-Agent thin roots
   improvement-evaluate, improvement-export,
   improvement-apply, improvement-rollback
 
-Raw Agent Runtime Closure — pending
-  Install the 33 semantic contracts/bindings, ResolvedRawAgentExecutor,
+Raw Agent Runtime Closure — complete
+  33 semantic contracts/bindings, ResolvedRawAgentExecutor,
   strict local result protocol, and recovery through existing production ports.
 
-T5a verification — pending
-  Re-run the four accepted roots through the current production composition and preserve
-  their shadow, Validator, effect, lifecycle, and revision-retention evidence.
+T5a verification — complete
+  The four accepted roots remain langgraph-v1 on the unchanged production
+  composition; the other ten remain legacy-v2.
 
-Initial Checkpoint R — pending
-  Verify the exact closure candidate and OpenCode raw protocol,
-  all 33 contracts/33 bindings/34 occurrences, Kernel transaction,
-  recovery, lifecycle, workspace, and security matrix.
+Initial Checkpoint R — closed
+  ProductLock 13cae4215ac53a9d1ff8d9d34a54920fe0bd77a4135486cf591fbd48cd14ac93
+  GraphRevision 4d7e7d4e44adc737d8a1f3fc230cb524d22a7026d7f0de1a9ef7c454011f6704
+  adapter/provider/model opencode/opencode/fixture-model
+  inventory 33/33/34/41/43
+  live OpenCode row skip-gated on official binary + operator env
 
-T5b — pending: 8 Agent-dependent thin roots
+T5b — next: 8 Agent-dependent thin roots
   intake, case, archive, retro,
   issue-review, issue-analyze, issue-reconcile,
   improvement-review
