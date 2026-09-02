@@ -130,9 +130,7 @@ def test_all_plan_reviews_route_bounded_defects_to_replan() -> None:
 
 def test_plan_reviews_do_not_block_codegen_on_a_source_proven_sut_defect() -> None:
     for family in ("api", "e2e", "fuzz", "performance"):
-        reviewer = " ".join(
-            resource_text(f"skills/aa-{family}-plan-reviewer/SKILL.md").split()
-        )
+        reviewer = " ".join(resource_text(f"skills/aa-{family}-plan-reviewer/SKILL.md").split())
 
         assert "A source-proven SUT defect is test evidence, not a missing product decision" in reviewer
         assert "Do not require the SUT defect to be corrected before codegen" in reviewer

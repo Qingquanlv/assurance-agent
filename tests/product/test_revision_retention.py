@@ -220,9 +220,7 @@ def test_resume_file_asserts_revision_before_opening_ports(tmp_path: Path, monke
     assert order == ["assert"]
 
 
-def test_reopen_bind_keeps_recorded_lock_instead_of_current_composition(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_reopen_bind_keeps_recorded_lock_instead_of_current_composition(tmp_path: Path, monkeypatch) -> None:
     from assurance_product.application import _bind_revision
 
     workspace = _workspace(tmp_path)

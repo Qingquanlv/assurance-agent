@@ -447,9 +447,7 @@ def _validate_case_repair_document(
                 raise OutputError(f"review repair changed non-target case: {case_id}")
             continue
         changed = _changed_paths(before_entry, after_entry)
-        allowed = tuple(
-            _case_allowed_path(path) for action in case_actions for path in action.allowed_paths
-        )
+        allowed = tuple(_case_allowed_path(path) for action in case_actions for path in action.allowed_paths)
         outside = sorted(".".join(path) for path in changed if not _path_allowed(path, allowed))
         if outside:
             raise OutputError(f"review repair changed fields outside allowed_paths for {case_id}: {outside}")

@@ -1070,18 +1070,14 @@ def _bind_revision(
             raise
         if current.product_lock_digest != build_identity:
             raise RevisionRegistryError(
-                "required artifact: "
-                f"graph revision {build_identity} "
-                f"product lock {build_identity}"
+                f"required artifact: graph revision {build_identity} product lock {build_identity}"
             ) from error
         registry.remember(current)
         registry.bind(invocation_id, runtime="langgraph-v1", revision_id=current.revision_id)
         return
     if bound_runtime != "langgraph-v1":
         raise RevisionRegistryError(
-            "required artifact: "
-            f"graph revision {bound_id} "
-            f"product lock {build_identity}"
+            f"required artifact: graph revision {bound_id} product lock {build_identity}"
         )
     recorded = registry.get(bound_id)
     if recorded.revision_id != current.revision_id:

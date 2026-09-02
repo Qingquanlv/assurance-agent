@@ -30,7 +30,6 @@ from graph_engine.testing import GraphHarness, committed
 from test_healing_graph_factory import (  # type: ignore[import-not-found]
     coverage_agent_output,
     coverage_graph_input,
-    failure_agent_output,
     failure_graph_input,
     healing_contracts,
 )

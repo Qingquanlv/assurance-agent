@@ -77,6 +77,8 @@ def test_shadow_validator_clone_is_absent_from_binding_coverage(installed_source
     evict_generated_binding_modules()
     from assurance_product.product import resolve_assurance_composition
 
-    projection = project_binding_coverage(resolve_assurance_composition(request_for("opencode", installed_sources)))
+    projection = project_binding_coverage(
+        resolve_assurance_composition(request_for("opencode", installed_sources))
+    )
     assert SHADOW_VALIDATOR_CLONE_ID not in projection
     assert SHADOW_VALIDATOR_CLONE_ID not in ALL_BINDING_IDS
