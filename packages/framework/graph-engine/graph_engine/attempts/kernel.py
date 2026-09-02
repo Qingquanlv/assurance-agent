@@ -208,6 +208,8 @@ class AssuranceAttemptKernel:
         )
         if isinstance(output, (RejectedTaskResult, PermanentTaskFailure)):
             return await self._fail_closed(attempt_key, context, snapshot, authorization, output, cut)
+        if _is_resolution(output):
+            return cast(AttemptResolution, output)
         if not isinstance(output, BaseModel):
             return output
         trace.append("execute")
@@ -226,6 +228,7 @@ class AssuranceAttemptKernel:
                 cut,
             )
         trace.append("validate_output")
+        cut("after_finalize_before_seal")
 
         if snapshot.prepared_digest is None:
             sealed = await self.workspace.seal(binding)
@@ -376,6 +379,9 @@ class AssuranceAttemptKernel:
                     snapshot,
                 )
             output = await reconcile(validated_input, context, snapshot)
+            snapshot = await self._reload(attempt_key, snapshot)
+            if _is_resolution(output):
+                return output, snapshot
             return await self._observe_terminal(attempt_key, context, snapshot, activity_id, output)
         snapshot = await self.journal.append(
             attempt_key,
@@ -401,6 +407,9 @@ class AssuranceAttemptKernel:
             fencing_token=context.fencing_token,
         )
         output = await contract.executor.execute(validated_input, context)
+        snapshot = await self._reload(attempt_key, snapshot)
+        if _is_resolution(output):
+            return output, snapshot
         return await self._observe_terminal(attempt_key, context, snapshot, activity_id, output)
 
     async def _observe_terminal(
@@ -561,6 +570,10 @@ class AssuranceAttemptKernel:
         cut(f"fence:{name}")
         await self.arbiter.assert_usable(attempt_key, fencing_token=context.fencing_token)
 
+    async def _reload(self, attempt_key: AttemptKey, snapshot: AttemptSnapshot) -> AttemptSnapshot:
+        latest = await self.journal.load(attempt_key)
+        return latest if latest is not None else snapshot
+
     async def _release_if_held(
         self,
         attempt_key: AttemptKey,
@@ -570,6 +583,20 @@ class AssuranceAttemptKernel:
             await self.arbiter.release(attempt_key, fencing_token=context.fencing_token)
         except StaleFencingToken:
             return
+
+
+_RESOLUTION_TYPES = (
+    RejectedTaskResult,
+    PermanentTaskFailure,
+    PendingTaskResult,
+    IndeterminateTaskResult,
+    CommittedEffectFailure,
+    CommittedTaskResult,
+)
+
+
+def _is_resolution(value: object) -> bool:
+    return isinstance(value, _RESOLUTION_TYPES)
 
 
 def _identity(

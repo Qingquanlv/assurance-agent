@@ -9,6 +9,8 @@ from pydantic import BaseModel
 
 from graph_engine.attempts import (
     AttemptExecutionContext,
+    IndeterminateTaskResult,
+    PermanentTaskFailure,
     ResolvedAttemptContract,
     TaskAttemptContract,
     resolve_contract,
@@ -138,6 +140,33 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
     ) -> OutputT:
         prepared = await self._prepare.execute(validated_input, context)
         outcome = await self._runtime.execute(prepared, context)
+        return await self._finalize_outcome(validated_input, prepared, outcome, context)
+
+    async def reconcile(
+        self,
+        validated_input: InputT,
+        context: AttemptExecutionContext,
+        snapshot: object,
+    ) -> OutputT | IndeterminateTaskResult | PermanentTaskFailure:
+        prepared = await self._prepare.execute(validated_input, context)
+        runtime_reconcile = getattr(self._runtime, "reconcile", None)
+        if runtime_reconcile is None:
+            return PermanentTaskFailure(
+                kind="internal",
+                message="in-flight activity cannot be adopted",
+            )
+        outcome = await runtime_reconcile(prepared, context, snapshot)
+        if isinstance(outcome, (IndeterminateTaskResult, PermanentTaskFailure)):
+            return outcome
+        return await self._finalize_outcome(validated_input, prepared, outcome, context)
+
+    async def _finalize_outcome(
+        self,
+        validated_input: InputT,
+        prepared: PreparedT,
+        outcome: RawAgentRuntimeOutcome,
+        context: AttemptExecutionContext,
+    ) -> OutputT:
         _exact, _digest, agent_result = validate_local_agent_result(
             thaw_json(outcome.run_result.result_payload),
             result_model=self._contract.agent_result_model,

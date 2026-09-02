@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent_runtime_contracts import AgentRunResult
+from agent_runtime_opencode.protocol import canonical_json_text
 from graph_engine.plugin_api import TaskActivityReconcileResult, TaskOutcome
 from harness import (  # pyright: ignore[reportMissingImports]
     _SECRET_TEXT,
@@ -46,6 +47,28 @@ async def test_prompt_cuts_converge_to_one_admission(cut: str) -> None:
     try:
         await fixture.run_and_reconcile()
         assert fixture.fake.accepted_message_count(fixture.reference.expected_message_id) == 1
+    finally:
+        fixture.close()
+
+
+async def test_bound_recovery_facts_exclude_secrets_and_transcripts() -> None:
+    fixture = _terminal_success_fixture()
+    try:
+        result = _reconcile(await fixture.reconcile())
+        assert result.status == "terminal"
+        reference = fixture.reference
+        assert reference.session_id
+        assert reference.expected_message_id
+        assert reference.prompt_body_digest
+        assert reference.adapter_version
+        encoded = canonical_json_text(reference.model_dump(mode="json"))
+        assert _SECRET_TEXT not in encoded
+        assert "transcript" not in encoded
+        assert "messages" not in encoded
+        canceled = await fixture.handler.cancel(fixture.request, fixture.context, fixture.activity)
+        assert canceled.status == "terminal"
+        again = await fixture.handler.cancel(fixture.request, fixture.context, fixture.activity)
+        assert again.status == "terminal"
     finally:
         fixture.close()
 

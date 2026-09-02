@@ -252,6 +252,33 @@ async def test_ensure_durable_establishes_visibility_barrier() -> None:
     assert journal.durable_revision(key) == loaded.revision
 
 
+def test_activity_bound_folds_minimum_recovery_reference() -> None:
+    reference = {
+        "adapter": "opencode",
+        "provider": "opencode",
+        "model": "fixture-model",
+        "session_id": "ses_raw_1",
+        "message_id": "msg_raw_1",
+        "prompt_digest": _digest("prompt"),
+        "result_digest": _digest("result"),
+    }
+    snapshot = fold_attempt_events(
+        _attempt_key(),
+        (
+            _opened(),
+            ActivityBound(
+                activity_id="activity-1",
+                reference=reference,
+                reference_digest=_digest("reference"),
+            ),
+        ),
+    )
+    assert snapshot.activity_state == "bound"
+    assert snapshot.activity_reference == reference
+    assert snapshot.activity_reference_digest == _digest("reference")
+    assert "secret" not in snapshot.activity_reference
+
+
 def test_journal_record_digest_is_canonical_projection() -> None:
     key = _attempt_key()
     record = AttemptJournalRecord.build(
