@@ -364,7 +364,7 @@ def test_start_does_not_create_tree_store_directories(
         composition=composition,
         invocation_id="inv-layout-001",
         change_id="CH-LAYOUT-001",
-        entrypoint="execute",
+        entrypoint="full",
         families=("api",),
     )
     result = cli_runner.invoke(app, ["start", *args])

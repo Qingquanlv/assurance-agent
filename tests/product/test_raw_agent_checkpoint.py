@@ -60,8 +60,9 @@ _T5B_LANGGRAPH = frozenset(
         "improvement-review",
     }
 )
-_LANGGRAPH = _T5A_LANGGRAPH | _T5B_LANGGRAPH
-_LEFTOVER = frozenset({"execute", "full"})
+_T5C_LANGGRAPH = frozenset({"execute"})
+_LANGGRAPH = _T5A_LANGGRAPH | _T5B_LANGGRAPH | _T5C_LANGGRAPH
+_LEFTOVER = frozenset({"full"})
 _CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
 _EVALUATE_ID = "assurance.improvement.task.evaluate-memory-improvement"
 _STRUCTURED_ARTIFACT_MARKERS = (
@@ -134,7 +135,7 @@ def test_checkpoint_r_inventory_is_33_33_34_41_43() -> None:
     assert len(contracts) + len(tasks) + 2 == 43
 
 
-def test_twelve_roots_stay_langgraph_and_execute_full_stay_legacy() -> None:
+def test_thirteen_roots_stay_langgraph_and_full_stays_legacy() -> None:
     from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS
     from assurance_product.runtime_selection import ENTRYPOINT_AGENT_CONTRACT_IDS, select_runtime
 
@@ -146,7 +147,7 @@ def test_twelve_roots_stay_langgraph_and_execute_full_stay_legacy() -> None:
     for name in _T5A_LANGGRAPH:
         assert select_runtime(name) == "langgraph-v1"
         assert ENTRYPOINT_AGENT_CONTRACT_IDS[name] == ()
-    for name in _T5B_LANGGRAPH:
+    for name in _T5B_LANGGRAPH | _T5C_LANGGRAPH:
         assert select_runtime(name) == "langgraph-v1"
         assert ENTRYPOINT_AGENT_CONTRACT_IDS[name]
     for name in leftover:

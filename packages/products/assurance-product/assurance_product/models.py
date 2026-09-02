@@ -454,6 +454,7 @@ _WAVE_A_LANGGRAPH: frozenset[str] = frozenset(
     {
         "archive",
         "case",
+        "execute",
         "improvement-apply",
         "improvement-evaluate",
         "improvement-export",

@@ -52,7 +52,7 @@ def _load_selection(path: Path) -> dict[str, object]:
     return payload
 
 
-def test_entrypoint_runtime_cutover_flips_twelve_names_and_leaves_execute_full() -> None:
+def test_entrypoint_runtime_cutover_flips_thirteen_names_and_leaves_full() -> None:
     from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS
 
     assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
@@ -62,6 +62,7 @@ def test_entrypoint_runtime_cutover_flips_twelve_names_and_leaves_execute_full()
     assert flipped == {
         "archive",
         "case",
+        "execute",
         "improvement-apply",
         "improvement-evaluate",
         "improvement-export",
@@ -73,7 +74,7 @@ def test_entrypoint_runtime_cutover_flips_twelve_names_and_leaves_execute_full()
         "issue-review",
         "retro",
     }
-    assert leftover == {"execute", "full"}
+    assert leftover == {"full"}
 
 
 def test_cli_environment_and_config_cannot_override_cutover(
@@ -91,7 +92,7 @@ def test_cli_environment_and_config_cannot_override_cutover(
         installed_sources=installed_sources,
         composition=composition,
         invocation_id="inv-cutover-override-001",
-        entrypoint="execute",
+        entrypoint="full",
         families=("api",),
     )
     rejected = cli_runner.invoke(app, ["start", *args, "--runtime", "langgraph-v1"])
@@ -117,7 +118,7 @@ def test_production_start_writes_initialized_legacy_selection(
         installed_sources=installed_sources,
         composition=composition,
         invocation_id="inv-select-legacy-001",
-        entrypoint="execute",
+        entrypoint="full",
         families=("api",),
     )
     result = cli_runner.invoke(app, ["start", *args])
@@ -126,7 +127,7 @@ def test_production_start_writes_initialized_legacy_selection(
     record = LegacyRuntimeRecord.model_validate_json(path.read_bytes())
     assert record.phase == "initialized"
     assert record.runtime == "legacy-v2"
-    assert record.entrypoint == "execute"
+    assert record.entrypoint == "full"
     assert len(record.root_input_digest) == 64
     assert len(record.identity_digest) == 64
 

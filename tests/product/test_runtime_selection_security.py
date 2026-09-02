@@ -189,7 +189,7 @@ def test_both_runtime_artifacts_fail_closed(
         installed_sources=installed_sources,
         composition=composition,
         invocation_id="inv-both-runtime",
-        entrypoint="execute",
+        entrypoint="full",
         families=("api",),
     )
     started = cli_runner.invoke(app, ["start", *args])

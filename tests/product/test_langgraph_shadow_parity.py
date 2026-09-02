@@ -252,6 +252,7 @@ def test_production_cutover_is_not_mutated_by_shadow() -> None:
     assert flipped == {
         "archive",
         "case",
+        "execute",
         "improvement-apply",
         "improvement-evaluate",
         "improvement-export",
@@ -263,7 +264,7 @@ def test_production_cutover_is_not_mutated_by_shadow() -> None:
         "issue-review",
         "retro",
     }
-    assert leftover == {"execute", "full"}
+    assert leftover == {"full"}
     assert all(frozen[name] == "legacy-v2" for name in leftover)
 
 

@@ -35,8 +35,9 @@ _T5B_FLIP = frozenset(
         "improvement-review",
     }
 )
-_LANGGRAPH_FLIP = _T5A_FLIP | _T5B_FLIP
-_LEFTOVER = frozenset({"execute", "full"})
+_T5C_FLIP = frozenset({"execute"})
+_LANGGRAPH_FLIP = _T5A_FLIP | _T5B_FLIP | _T5C_FLIP
+_LEFTOVER = frozenset({"full"})
 
 _INTAKE_ADVANCE = (
     "packages/capabilities/assurance-intake/tests/test_graph_join_any.py"
@@ -88,8 +89,6 @@ class WaveRecord:
 
 
 def _leftover_reason(name: str) -> str:
-    if name == "execute":
-        return "schema-capability-red: execute is the T5c tranche and is not yet released"
     if name == "full":
         return "schema-capability-red: full is the T5d tranche and is not yet released"
     raise AssertionError(f"unexpected leftover name: {name}")
@@ -140,7 +139,7 @@ def _reset_runtime_selector() -> None:
     use_test_runtime_selector(None)
 
 
-def test_production_cutover_flips_twelve_names_and_leaves_execute_full() -> None:
+def test_production_cutover_flips_thirteen_names_and_leaves_full() -> None:
     assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
     assert len(ENTRYPOINT_RUNTIME_CUTOVER) == 14
     flipped = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "langgraph-v1"}
@@ -156,10 +155,10 @@ def test_production_cutover_flips_twelve_names_and_leaves_execute_full() -> None
 
 def test_test_only_selector_may_choose_langgraph_without_mutating_production() -> None:
     use_test_runtime_selector(lambda _name: "langgraph-v1")
-    assert select_runtime("execute") == "langgraph-v1"
-    assert ENTRYPOINT_RUNTIME_CUTOVER["execute"] == "legacy-v2"
+    assert select_runtime("full") == "langgraph-v1"
+    assert ENTRYPOINT_RUNTIME_CUTOVER["full"] == "legacy-v2"
     use_test_runtime_selector(None)
-    assert select_runtime("execute") == "legacy-v2"
+    assert select_runtime("full") == "legacy-v2"
 
 
 def test_wave_records_cover_every_name_without_a_waiver_field() -> None:
@@ -209,21 +208,38 @@ def test_t5b_names_are_green_even_with_agent_contracts() -> None:
         assert select_runtime(name) == "langgraph-v1"
 
 
-def test_execute_and_full_stay_legacy_as_unreleased_tranches() -> None:
+def test_t5c_execute_is_green_even_with_agent_contracts() -> None:
+    record = WAVE_RECORDS["execute"]
+    assert record.runtime == "langgraph-v1"
+    assert record.schema_capability == "green"
+    assert record.schema_capability_reason is None
+    assert ENTRYPOINT_AGENT_CONTRACT_IDS["execute"] == (
+        "assurance.execution.agent.execute.v1",
+        "assurance.execution.agent.run.v1",
+        "assurance.generation.agent.api.plan.v1",
+        "assurance.healing.agent.coverage-repair.v1",
+        "assurance.healing.agent.fix-proposal.v1",
+        "assurance.quality.agent.fact-baseline.v1",
+        "assurance.quality.agent.inspect.v1",
+        "assurance.quality.agent.report.v1",
+    )
+    assert select_runtime("execute") == "langgraph-v1"
+
+
+def test_full_stays_legacy_as_unreleased_tranche() -> None:
     from assurance_product.agent_contracts import all_feature_agent_contracts
 
     contracts = all_feature_agent_contracts()
     assert all(not hasattr(contract, "requires_provider_schema") for contract in contracts.values())
     assert len(contracts) == 33
-    for name in _LEFTOVER:
-        record = WAVE_RECORDS[name]
-        assert record.runtime == "legacy-v2"
-        assert record.schema_capability == "red"
-        assert record.schema_capability_reason == _leftover_reason(name)
-        assert "schema-capability-red" in record.schema_capability_reason
-        assert "provider_schema" not in record.schema_capability_reason
-        assert "waiver" not in record.schema_capability_reason
-        assert ENTRYPOINT_AGENT_CONTRACT_IDS[name]
+    record = WAVE_RECORDS["full"]
+    assert record.runtime == "legacy-v2"
+    assert record.schema_capability == "red"
+    assert record.schema_capability_reason == _leftover_reason("full")
+    assert "schema-capability-red" in record.schema_capability_reason
+    assert "provider_schema" not in record.schema_capability_reason
+    assert "waiver" not in record.schema_capability_reason
+    assert ENTRYPOINT_AGENT_CONTRACT_IDS["full"]
 
 
 def test_vacuous_provider_schema_gate_is_removed_from_the_run_path() -> None:
