@@ -118,10 +118,10 @@ def test_opencode_config_rejects_credentials_defaults_unknowns_and_unbounded_val
 
 
 def test_opencode_advertises_no_provider_schema_enforcement() -> None:
-    expected = AgentRuntimeCapabilities(provider_schema=False)
+    expected = AgentRuntimeCapabilities()
     assert OPENCODE_RUNTIME_CAPABILITIES == expected
     assert OpenCodePlugin.spec.capabilities == expected
-    assert OPENCODE_RUNTIME_CAPABILITIES.provider_schema is False
+    assert "provider_schema" not in OPENCODE_RUNTIME_CAPABILITIES.model_dump()
 
 
 def test_plugin_registers_only_execute_capability_and_request_result_schemas() -> None:

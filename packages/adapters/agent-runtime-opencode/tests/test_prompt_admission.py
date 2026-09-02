@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from agent_runtime_contracts import ResultContract
+from agent_runtime_contracts import InstructionPart, ResultContract
 from agent_runtime_contracts.schema import canonical_digest
 from agent_runtime_opencode.discovery import OpenCodeDispatchIncomplete, expected_message_id
 from agent_runtime_opencode.observation import (
@@ -159,13 +161,61 @@ def test_prompt_body_embeds_the_locked_result_schema_when_available() -> None:
             "result_contract": ResultContract(
                 schema_id="fixture.result.v1",
                 schema_digest=canonical_digest(schema),
-                extraction_mode="structured",
+                delivery_mode="assistant_json_local_v1",
                 schema_document=schema,
             )
         }
     )
     body = build_prompt_admission_body(run, "msg_contract")
     assert '"required":["output_files"]' in body["parts"][-1]["text"]
+
+
+def test_prompt_renders_authenticated_schema_after_business_text_without_format() -> None:
+    schema = {
+        "additionalProperties": False,
+        "properties": {"ok": {"const": True, "type": "boolean"}},
+        "required": ["ok"],
+        "type": "object",
+    }
+    run = agent_run_request().model_copy(
+        update={
+            "instructions": (
+                InstructionPart.text("text/plain", "business instructions"),
+                InstructionPart.from_json({"context": "authenticated-input"}),
+            ),
+            "result_contract": ResultContract(
+                schema_id="fixture.result.v1",
+                schema_digest=canonical_digest(schema),
+                delivery_mode="assistant_json_local_v1",
+                schema_document=schema,
+            ),
+        }
+    )
+    body = build_prompt_admission_body(run, "msg_contract")
+
+    assert "format" not in body
+    assert set(body) <= {"messageID", "parts", "agent", "model", "tools"}
+    texts = [part["text"] for part in body["parts"]]
+    assert texts[0] == "business instructions"
+    assert '"context":"authenticated-input"' in texts[1]
+    contract_text = texts[-1]
+    assert contract_text.startswith("# Runtime result contract\n")
+    assert "exactly one JSON object" in contract_text
+    assert "delivery_mode: assistant_json_local_v1" in contract_text
+    assert '"const":true' in contract_text
+    assert '"required":["ok"]' in contract_text
+
+
+async def test_admitted_prompt_never_sends_opencode_json_schema_format() -> None:
+    fixture = _bound_fixture(terminal_mode="success")
+    try:
+        await fixture.handler.execute(fixture.request, fixture.context)
+        assert fixture.fake.prompt_posts == 1
+        body = fixture.fake.prompt_bodies[0]
+        assert "format" not in body
+        assert "json_schema" not in json.dumps(body)
+    finally:
+        fixture.close()
 
 
 def test_prompt_body_does_not_add_agent_policy_without_a_bound_agent() -> None:

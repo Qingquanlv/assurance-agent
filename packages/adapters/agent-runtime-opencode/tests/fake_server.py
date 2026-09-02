@@ -586,8 +586,17 @@ class OpenCodeFakeServer:
         if mode == "mixed_result_busy":
             return [
                 {
-                    "info": {"id": "msg_valid_receipt", "role": "assistant"},
-                    "parts": [{"type": "text", "text": json.dumps({"ok": True})}],
+                    "info": {
+                        "id": "msg_valid_receipt",
+                        "role": "assistant",
+                        "time": {"created": 1, "completed": 2},
+                        "finish": "stop",
+                    },
+                    "parts": [
+                        {"type": "step-start"},
+                        {"type": "text", "text": json.dumps({"ok": True})},
+                        {"type": "step-finish", "reason": "stop"},
+                    ],
                 },
                 {
                     "info": {"id": "msg_later_artifact", "role": "assistant"},
@@ -628,8 +637,9 @@ class OpenCodeFakeServer:
                 }
             ]
         parts: list[dict[str, object]] = [
-            {"type": "reasoning", "text": "internal chain-of-thought"},
+            {"type": "step-start"},
             {"type": "text", "text": json.dumps(self.structured_result)},
+            {"type": "step-finish", "reason": "stop"},
         ]
         if mode == "open_tools":
             parts.append({"type": "tool", "state": {"status": "running"}})
@@ -638,6 +648,8 @@ class OpenCodeFakeServer:
                 "info": {
                     "id": "msg_terminal_result",
                     "role": "assistant",
+                    "time": {"created": 1, "completed": 2},
+                    "finish": "stop",
                     "cost": 1.25,
                     "token_count": 9,
                     "model_history": ["hidden"],

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent_runtime_contracts import AgentRunRequest
 from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
-from agent_runtime_contracts.schema import thaw_json
+from agent_runtime_contracts.schema import resolve_result_schema, thaw_json
 from graph_engine.plugin_api import FrozenModel
 from agent_runtime_opencode.protocol import OPENCODE_RUNTIME_CAPABILITIES, canonical_json_text
 
@@ -83,12 +83,11 @@ def prompt_admission_body(agent_run: AgentRunRequest, message_id: str) -> dict[s
             parts.append(OpenCodeTextPart(text=instruction.text_content))
         else:
             parts.append(OpenCodeTextPart(text=canonical_json_text(thaw_json(instruction.json_content))))
-    schema_document = agent_run.result_contract.schema_document
-    schema_text = (
-        "not embedded; obey the named locked result contract"
-        if schema_document is None
-        else canonical_json_text(thaw_json(schema_document))
+    schema_document = resolve_result_schema(
+        agent_run.result_contract.schema_digest,
+        schema_document=agent_run.result_contract.schema_document,
     )
+    schema_text = canonical_json_text(thaw_json(schema_document))
     parts.append(
         OpenCodeTextPart(
             text=(
@@ -100,6 +99,7 @@ def prompt_admission_body(agent_run: AgentRunRequest, message_id: str) -> dict[s
                 "only the final assistant text and does not replace required tool calls or file "
                 "writes. Complete and verify every required side effect before returning the final "
                 "JSON object.\n\n"
+                f"delivery_mode: {agent_run.result_contract.delivery_mode}\n"
                 f"schema_id: {agent_run.result_contract.schema_id}\n"
                 f"schema_digest: {agent_run.result_contract.schema_digest}\n"
                 f"schema: {schema_text}"
@@ -345,7 +345,11 @@ def classify_provider_state(
 ) -> ProviderTerminal:
     error_kind = _terminal_error_kind(session, messages)
     _idle_from_status_map(status_map, session_id)
-    has_result = structured_result_from_messages(messages) is not None
+    try:
+        parse_closed_terminal_result(messages)
+        has_result = True
+    except ValueError:
+        has_result = False
     open_tools = _has_open_tool_work(messages)
     if has_result and not open_tools and error_kind != "failed":
         return "succeeded"
@@ -356,80 +360,105 @@ def classify_provider_state(
     return "running"
 
 
-def structured_result_from_messages(
-    messages: Sequence[object],
-    *,
-    accept: Callable[[Mapping[str, Any]], bool] | None = None,
-) -> dict[str, Any] | None:
-    found: dict[str, Any] | None = None
+_SUCCESS_FINISH_REASONS = frozenset({"stop", "end-turn"})
+_RESULT_PART_TYPES = frozenset({"text", "step-start", "step-finish", "patch"})
+
+
+def parse_closed_terminal_result(messages: Sequence[object]) -> dict[str, Any]:
+    result_bearing: list[Mapping[str, object]] = []
     for message in messages:
-        if not isinstance(message, dict):
-            continue
+        if not isinstance(message, Mapping):
+            raise ValueError("terminal message is not an object")
         info = message.get("info")
-        if not isinstance(info, dict):
+        if not isinstance(info, Mapping):
+            raise ValueError("terminal message is missing info")
+        role = info.get("role")
+        if role == "user":
             continue
-        if info.get("role") != "assistant":
-            continue
-        error = info.get("error")
-        if isinstance(error, dict) and not _is_abort_error(error):
-            continue
+        if role != "assistant":
+            raise ValueError("terminal message role is not assistant")
         parts = message.get("parts")
         if not isinstance(parts, list):
+            raise ValueError("terminal message parts are missing")
+        if _nonempty_text_parts(parts):
+            result_bearing.append(message)
             continue
         for part in parts:
-            if not isinstance(part, dict):
+            if not isinstance(part, Mapping):
+                raise ValueError("terminal part is not an object")
+            kind = part.get("type")
+            if kind in {"text", "step-start", "step-finish", "patch", "tool"}:
                 continue
-            if part.get("type") == "text":
-                text = part.get("text")
-                if not isinstance(text, str):
-                    continue
-                parsed = _json_object_from_text(text)
-                if parsed is not None and (accept is None or accept(parsed)):
-                    found = parsed
-                continue
-            if part.get("type") != "tool":
-                continue
-            parsed = _json_object_from_completed_tool(part)
-            if parsed is not None and (accept is None or accept(parsed)):
-                found = parsed
-    return found
+            raise ValueError(f"forbidden intermediate part type {kind!r}")
+    if len(result_bearing) != 1:
+        raise ValueError("expected exactly one result-bearing assistant message")
+    return _parse_result_bearing_message(result_bearing[0])
 
 
-def _json_object_from_completed_tool(part: Mapping[str, object]) -> dict[str, Any] | None:
-    state = part.get("state")
-    if not isinstance(state, dict) or state.get("status") != "completed":
-        return None
-    payload = state.get("input")
-    if not isinstance(payload, dict):
-        return None
-    content = payload.get("content")
-    if isinstance(content, dict):
-        return content
-    if isinstance(content, str):
-        return _json_object_from_text(content)
-    return None
+def _nonempty_text_parts(parts: Sequence[object]) -> tuple[Mapping[str, object], ...]:
+    found: list[Mapping[str, object]] = []
+    for part in parts:
+        if not isinstance(part, Mapping) or part.get("type") != "text":
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and text.strip():
+            found.append(part)
+    return tuple(found)
 
 
-def _json_object_from_text(text: str) -> dict[str, Any] | None:
-    stripped = text.strip()
+def _parse_result_bearing_message(message: Mapping[str, object]) -> dict[str, Any]:
+    info = message.get("info")
+    if not isinstance(info, Mapping):
+        raise ValueError("terminal message is missing info")
+    error = info.get("error")
+    if isinstance(error, dict):
+        raise ValueError("terminal assistant message has an error")
+    finish = info.get("finish")
+    timestamp = info.get("time")
+    completed = timestamp.get("completed") if isinstance(timestamp, Mapping) else None
+    if finish is not None and finish not in _SUCCESS_FINISH_REASONS:
+        raise ValueError("terminal assistant message is truncated or incomplete")
+    if completed is None and finish not in _SUCCESS_FINISH_REASONS:
+        raise ValueError("terminal assistant message is truncated or incomplete")
+    parts = message.get("parts")
+    if not isinstance(parts, list):
+        raise ValueError("terminal message parts are missing")
+    step_starts = 0
+    step_finishes = 0
+    text_parts: list[str] = []
+    for part in parts:
+        if not isinstance(part, Mapping):
+            raise ValueError("terminal part is not an object")
+        kind = part.get("type")
+        if kind not in _RESULT_PART_TYPES:
+            raise ValueError(f"forbidden terminal part type {kind!r}")
+        if kind == "step-start":
+            step_starts += 1
+            continue
+        if kind == "step-finish":
+            step_finishes += 1
+            if part.get("reason") not in _SUCCESS_FINISH_REASONS:
+                raise ValueError("step-finish is not successful")
+            continue
+        if kind == "patch":
+            continue
+        text = part.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text part must be non-empty")
+        text_parts.append(text)
+    if step_starts != 1 or step_finishes != 1 or len(text_parts) != 1:
+        raise ValueError("closed terminal response must have one text, one step-start, and one step-finish")
+    return _exact_json_object(text_parts[0])
+
+
+def _exact_json_object(text: str) -> dict[str, Any]:
     try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError:
-        parsed = None
-    else:
-        return parsed if isinstance(parsed, dict) else None
-    decoder = json.JSONDecoder()
-    found: dict[str, Any] | None = None
-    for index, char in enumerate(text):
-        if char != "{":
-            continue
-        try:
-            candidate, _end = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(candidate, dict):
-            found = candidate
-    return found
+        parsed = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ValueError("terminal text is not one JSON object") from error
+    if not isinstance(parsed, dict):
+        raise ValueError("terminal text is not one JSON object")
+    return parsed
 
 
 def provider_error_message(
