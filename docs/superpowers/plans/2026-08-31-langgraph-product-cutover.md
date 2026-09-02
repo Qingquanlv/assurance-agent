@@ -14,19 +14,19 @@
 
 ## Global Constraints
 
-- Foundation, Attempt Kernel and all six Feature graph plans are complete and reviewed. Execute in the same clean integration worktree; preserve the original dirty worktree.
+- Foundation, Attempt Kernel and all six Feature graph plans are complete and reviewed. Product Tasks 1–4 and T5a are also complete at continuation baseline `4a9cd197`. Execute remaining work in a clean continuation worktree; preserve the original dirty worktree and do not replay completed tasks.
 - Every Product root state inherits `CheckpointBridgeState`; public input/output and semantic parity projections exclude `assurance_checkpoint_markers`, while restart tests retain checkpoint-integrity coverage for it.
-- Tasks execute in document order. Task 7 migrates every compiler/Runtime consumer and creates compatibility wrappers without deleting authority; Task 8 may then delete Assurance YAML/phase aliases; Task 9 atomically removes compiler and Runtime authority. Every intermediate commit must pass its stated gate.
+- Remaining tasks execute in this order: OpenCode Task 0 / Checkpoint S0, Structured R1–R5 / Checkpoint S, T5b, T5c, T5d, then Tasks 6–10. A red S0 parks the Structured retrofit before production implementation; a green S0 only authorizes that implementation and does not authorize Agent cutover. Task 7 migrates every compiler/Runtime consumer and creates compatibility wrappers without deleting authority; Task 8 may then delete Assurance YAML/phase aliases; Task 9 atomically removes compiler and Runtime authority. Every intermediate commit must pass its stated gate.
 - Keep public entrypoint names and public input/output/Status schemas stable. Internal graph/node/token IDs are not parity contracts.
 - Product imports exactly six authenticated factory symbols and is the only cross-Feature graph composer. Boot remains generic: it consumes Product-provided owner-keyed factories/bundles and does not hard-code Assurance keyword arguments.
 - Feature subgraphs are compiled with `checkpointer=None`. Product roots alone receive the anchored saver. Schema-different child invocation goes through a pure adapter; no side effect runs before an interrupting child call.
 - One production Invocation has one immutable discriminated selection record: `LegacyRuntimeRecord(invocation_lock_digest, root_input_digest, entrypoint)` or `LangGraphRuntimeRecord(graph_revision_id, product_lock_digest, root_input_digest, entrypoint)`. Old/new runtimes may process different Invocations but never the same ID; a v2 lock digest is never relabeled as a GraphRevision.
 - Shadow uses scripted/snapshotted data or separately named Invocations and cannot publish canonical SUT mutation twice. Compare semantic behavior, not private IDs.
 - A new entrypoint switch affects only future starts. Existing Invocations always reopen their recorded runtime/revision. Rollback is a new-start routing change, never an in-place engine change.
-- Current OpenCode prompt-only schema handling advertises `provider_schema=False`. A contract with `requires_provider_schema=True` cannot cut over until a pinned adapter/OpenCode integration test proves provider-side schema transport/enforcement. Do not work around this with a private source fork or a false capability flag.
+- Agent contracts use provider-neutral `requires_structured_output`; Product maps it to `opencode_structured_output` only for an exact OpenCode release/adapter/provider/model/schema certification promoted by Checkpoint S. Checkpoint S0's minimal canary report is non-promotable and cannot satisfy Product. OpenCode implements this through its internal `StructuredOutput` tool and terminal `info.structured`, not provider-native `response_format`. Official v1.18.26 remains `message-roundtrip-red`, so the current program state is parked at S0; do not work around this with speculative Structured implementation, a private source fork, or a false capability flag.
 - SQLite is local single-host only. A multi-worker deployment requires a separately qualified transactional anchored backend, not SQLite mounted on shared storage.
-- The nine-site `join:any` migration has zero semantic waivers. A Feature current-trigger failure blocks this entire Product plan while production stays on the complete immutable `legacy-v2` runtime. Product's typed assessment-trigger optimization is accepted only after predecessor exclusion and no-late-reactivation are proven; falling back to the same typed inbox/cursor is an equivalent implementation, not an exception. Never embed a point-level legacy join, discard a late arrival, or substitute predecessor-map/last-write-wins state.
-- Legacy deletion starts only after all 14 cutover records pass, no active legacy Invocation can resume, original revision artifacts have satisfied retention policy, and replacement crash/interrupt/export/archive tests are green.
+- The nine-site `join:any` migration has zero semantic waivers. A Feature current-trigger regression blocks every not-yet-cut reachable root plus T5b–T10, drain, and deletion; it does not roll back the four accepted T5a roots or switch any existing Invocation away from its recorded runtime/revision. Product's typed assessment-trigger optimization is accepted only after predecessor exclusion and no-late-reactivation are proven; falling back to the same typed inbox/cursor is an equivalent implementation, not an exception. Never embed a point-level legacy join, discard a late arrival, or substitute predecessor-map/last-write-wins state.
+- Legacy deletion starts only after Checkpoint S and T5d are green, all 14 cutover records pass, no active legacy Invocation can resume, original revision artifacts have satisfied retention policy, and replacement crash/interrupt/export/archive tests are green. Legacy drain and old LangGraph revision retention are independent gates.
 
 ## Exact Product contract table
 
@@ -159,7 +159,7 @@ Incoming sources are `quality` and `quality-recheck`; downstream coverage repair
 
 Prove both required facts for `assess-satisfied` and `assess-unsatisfied`: satisfied/unsatisfied are mutually exclusive for each assessment, and the `quality` versus `quality-recheck` predecessors cannot both reach the same exit or arrive late after that exit has routed. Characterization must show that an initial satisfied/unsatisfied result terminates without scheduling repair, while `quality-recheck` is reachable only after an earlier `repair_required` result and its satisfied/unsatisfied exit schedules no later recheck. Then use one typed `AssessmentTrigger(source, coverage_state, rounds, evidence)` set by the current assessment and route immediately to report/report-unsatisfied. Tests prove exact trigger identity, at-most-one arrival, and fail closed if a crafted update claims both outcomes. If either predecessor-exclusion or late-reactivation characterization fails, use the same inbox/cursor pattern; do not silently choose one.
 
-All four Product rows are zero-waiver commit gates. A mismatch leaves Product and production on `legacy-v2` and blocks shadow approval, cutover, drain, and deletion. The inbox fallback is the specified equivalent implementation, not permission to weaken current-trigger behavior.
+All four Product rows are zero-waiver commit gates. A mismatch blocks every not-yet-cut root that can reach the row plus T5b–T10, shadow approval, drain, and deletion; the four accepted T5a roots and all existing Invocations retain their recorded runtime/revision. The inbox fallback is the specified equivalent implementation, not permission to weaken current-trigger behavior.
 
 - [ ] **Step 5: Test Product coverage interrupt and parent restart.**
 
@@ -258,9 +258,9 @@ Add `--resume-file PATH` containing one human/system envelope or an interrupt-ID
 
 For a LangGraph Invocation, `export` and CLI `archive` read the revision-pinned anchored terminal snapshot plus authenticated receipt/evidence references; they never call legacy `Engine`, `driver` or `fold_events`. Existing legacy records keep their legacy adapter until drain. `bindings build` continues to use authenticated catalogs and `lock show` renders v2 for a legacy record or ProductLock v3/GraphRevision for a LangGraph record, failing on ambiguity. Add restart and tampered-receipt tests before any old driver deletion.
 
-- [ ] **Step 5: Enforce structured-output capability before dispatch/cutover.**
+- [x] **Step 5: Install the historical fail-closed dispatch/cutover hook.**
 
-Test that Boot/runtime refuses a `requires_provider_schema=True` contract when the chosen binding advertises false, before OpenCode dispatch. This plan implements the truthful `provider_schema=False` gate only. Provider-side schema enablement is an explicit release prerequisite for Task 5, not an unspecified code step: once a qualifying upstream release exists, amend the dependency pins and this plan with that exact version plus an integration test that inspects the provider request's structured-output schema and rejects invalid structured results locally. Until then, affected entrypoints remain blocked and no private fork/false capability is permitted.
+Task 3 installed the Product-owned place where a reachable Agent requirement blocks before dispatch/cutover. Its original `provider_schema` interpretation is superseded by Checkpoint S and is not a second implementation task. The Structured Artifact tranche replaces that hook atomically with provider-neutral `requires_structured_output -> opencode_structured_output` resolution, exact release certification, terminal `info.structured` observation, and independent Kernel validation. Product Boot continues to compile/authenticate direct roots; only a selected reachable Agent dispatch/cutover fails closed while the capability is absent.
 
 - [ ] **Step 6: Test CLI security and exit codes.**
 
@@ -399,6 +399,8 @@ git commit -m "test: prove semantic LangGraph parity"
 
 ### Task 5: Cut over entrypoints without switching existing Invocations
 
+**Continuation status:** Task 5 is partial. T5a is complete at `4a9cd197`; Checkpoint S0, Checkpoint S, and T5b–T5d are unexecuted. While S0 is red, only plan synchronization and OpenCode Task 0 are authorized.
+
 **Files:**
 
 - Modify: `packages/products/assurance-product/assurance_product/runtime_selection.py`
@@ -410,39 +412,55 @@ git commit -m "test: prove semantic LangGraph parity"
 
 **Interfaces:** code-owned temporary `ENTRYPOINT_RUNTIME_CUTOVER`, immutable Invocation runtime marker, active-revision registry, rollback for future starts only.
 
-- [ ] **Step 1: Test immutable runtime/revision selection.**
+- [x] **Step 1: Test immutable runtime/revision selection.**
 
 First start records runtime kind/revision with the Task 3 `initializing → backend identity → initialized` recovery handshake. Reopening ignores the current switch even while initialization is incomplete and resumes only that recorded choice. Same Invocation ID cannot acquire both runtime directories/markers. Revision mismatch reports the required artifact before checkpoint read or Kernel call.
 
-- [ ] **Step 2: Test switch authority.**
+- [x] **Step 2: Test switch authority.**
 
 Only Product code/release data can change new-start selection. `.aa/`, SUT, environment variables and CLI flags cannot select runtime/factory/revision. Switch keys equal the exact 14 public names; missing/extra values fail Boot.
 
-- [ ] **Step 3: Execute reviewed waves.**
+- [ ] **Step 3: Execute the remaining reviewed tranches around Checkpoint S.**
 
-Cut over new starts only after each name's parity/crash/schema-capability record is green:
+The authoritative sequence is:
 
 ```text
-Wave A: 12 thin roots
+T5a — complete at 4a9cd197: 4 non-Agent thin roots
+  improvement-evaluate, improvement-export,
+  improvement-apply, improvement-rollback
+
+Checkpoint S0 — pending; current v1.18.26 candidate is red
+  Run only the standalone exact-release OpenCode eligibility probe.
+  Red: park Structured R1–R6 and all Product work below.
+  Green: authorize Structured implementation, but no Product cutover.
+
+Checkpoint S — pending
+  Retrofit Structured Artifact transport/contracts/Kernel into the existing graphs,
+  re-certify T5a and the pre-S/post-S revision fence,
+  fully certify one exact OpenCode release and all 33 contracts on the final candidate.
+
+T5b — pending: 8 Agent-dependent thin roots
   intake, case, archive, retro,
   issue-review, issue-analyze, issue-reconcile,
-  improvement-review, improvement-evaluate, improvement-export,
-  improvement-apply, improvement-rollback
-Wave B: execute
-Wave C: full
+  improvement-review
+
+T5c — pending: execute
+T5d — pending: full
 ```
 
-After each wave, run its public behavior, restart, interrupt and export/archive prerequisites. Rollback changes only the switch for future starts; already-started LangGraph Invocations remain on their revision.
+T5a is not a completed twelve-root Wave A. The four roots stay on LangGraph because their reachable Agent-contract set is empty. Checkpoint S0 blocks the start of Structured R1–R6; S0 or Checkpoint S being red blocks T5b–T5d and downstream drain/deletion. Neither condition rolls back T5a or globally fails direct/non-Agent Product Boot. After each pending cutover tranche, run its public behavior, restart, interrupt and export/archive prerequisites. Rollback changes only the switch for future starts; already-started LangGraph Invocations remain on their recorded revision.
 
-Every wave record must reference passing rows from the exact nine-site `join:any` inventory that the entrypoint can reach, with current-trigger evidence and no waiver field/value. A missing, failed, xfailed, or waived row blocks that wave. Wave A also requires the cross-runtime test-only Validator accept/reject parity record and the standalone/apply `evaluate-memory-improvement` committed/pending/publication-indeterminate evidence above; no production contract may gain a binding to satisfy it.
+Every T5b/T5c/T5d selector change creates a new candidate SHA. Before release, rerun the protected Checkpoint S aggregate gate for that exact candidate; external OpenCode qualification may be reused only when the authenticated adapter/server/provider/model/schema/limits and contract catalog closure are unchanged. The cutover record binds `candidate_sha`, `graph_revision_id`, `product_lock_digest`, `structured_output_certification_digest`, `binding_wheel_digest`, `attempt_site_catalog_digest`, entrypoint/runtime, and passing parity/crash/join citations from that same candidate. A missing, failed, xfailed, waived, cross-candidate, or drifted row blocks the tranche. T5a's post-S regression record must retain the cross-runtime test-only Validator evidence and standalone/apply `evaluate-memory-improvement` committed/pending/publication-indeterminate evidence; no production contract gains a Validator binding to satisfy it.
 
-- [ ] **Step 4: Track active revision retention.**
+- [ ] **Step 4: Extend active revision retention across the pre-S/post-S fence.**
 
-Registry reports active Invocation counts by runtime/revision and refuses artifact retirement while a resumable Invocation exists. Initial implementation resumes old revisions using their original deployment artifact/container and never imports two versions of the same wheel in one process.
+Structured source/schema/binding closure changes the authenticated wheel sources/ProductLock and therefore produces a distinct post-S GraphRevision; the post-S `GraphBuildManifest` must authenticate the structured Attempt digests. Existing pre-S Invocations retain their original selection, revision, lock, checkpoint, journal and receipt and resume only through the original deployment artifact/container. Missing artifact fails before checkpoint or Kernel access; relabel/backfill is forbidden. New starts use the post-S revision, and one process never imports two versions of the same wheel.
 
-- [ ] **Step 5: Verify and commit each wave.**
+The current conservative binding-file counts protect artifacts from premature removal but do not prove an Invocation is terminal. Task 6 adds the authenticated resumable/terminal scan required for retirement and drain authorization.
 
-For each wave run:
+- [ ] **Step 5: Verify and commit each remaining tranche.**
+
+For each remaining tranche run:
 
 ```bash
 uv run pytest -q \
@@ -453,15 +471,15 @@ uv run pytest -q \
   tests/product/test_runtime_selection_security.py
 ```
 
-Use one explicit commit per wave:
+Use one explicit commit per remaining tranche:
 
 ```text
-feat: cut over thin Product entrypoints
+feat: cut over structured thin Product entrypoints
 feat: cut over Product execute
 feat: cut over Product full
 ```
 
-For each wave, stage only the following code-owned selector/registry/application and cutover evidence files, then inspect the staged diff before using the matching commit message:
+For each remaining tranche, stage only the following code-owned selector/registry/application and cutover evidence files, then inspect the staged diff before using the matching commit message:
 
 ```bash
 git add \
@@ -476,6 +494,8 @@ git diff --cached --name-only
 ```
 
 ### Task 6: Stop legacy starts and prove the drain gate
+
+**Dependency:** Checkpoint S and T5b/T5c/T5d are green, and the authenticated selector is already `14/14 langgraph-v1` for future starts. Task 6 must not begin from T5a partial state.
 
 **Files:**
 
@@ -496,9 +516,9 @@ Deletion authorization fails when any legacy Invocation is running, blocked, int
 
 Authorization also fails if any of the exact nine `join:any` rows is missing, failed, xfailed, or carries a semantic waiver; if the exact seven loop-SCC anchor inventory no longer matches; if any of the three `min_matches` sites is implemented outside the frozen one-`Send`/two-Composite mapping; or if cross-runtime test-only Validator accept/reject parity is absent. These are migration evidence gates even when active legacy count is zero.
 
-- [ ] **Step 2: Disable new legacy starts.**
+- [ ] **Step 2: Freeze the already-complete 14/14 new-start cutover.**
 
-Set all 14 switches to `langgraph-v1`, remove rollback-to-legacy for new starts, and retain only legacy reopen/resume. Test a legacy-marked Invocation still opens with its old artifact while a new same-entrypoint Invocation always records LangGraph.
+Verify all 14 switches are already `langgraph-v1`, remove rollback-to-legacy for new starts, and retain only legacy reopen/resume. Test a legacy-marked Invocation still opens with its old artifact while a new same-entrypoint Invocation always records LangGraph. Do not retire a pre-S LangGraph artifact merely because legacy active count is zero; its own authenticated resumable scan is independent.
 
 - [ ] **Step 3: Run full crash/export/archive coverage before authorization.**
 
@@ -766,6 +786,8 @@ git commit -m "refactor: prepare atomic Workflow Runtime deletion"
 - Modify: `tests/product/test_full_graph_audit.py`
 
 **Interfaces:** Python factories are the only topology source; 33 Agent contracts/34 occurrences, eight direct Attempt contracts/nine occurrences, four pure functions/16 occurrences; zero aliases/phase slots/YAML resources.
+
+Checkpoint S's 33 `AgentExecutionContract[InputT, PreparedT, AgentResultT, OutputT]` values, `ArtifactContract`/slot registries, result/document schemas, structured runtime binding identities, serializers, materialization receipts, and Attempt-site catalog are permanent Python-native authority. Task 8 removes only legacy YAML/module/phase-alias representations and their consumers; it must not redefine, flatten, or delete the Structured Artifact closure or restore composite/provider-schema fields.
 
 **Dependency:** Foundation Task 3's coexistence `ProductManifest.graph_factory_symbol` branch is already green. Switch Assurance declarations to that branch here. Task 7 has already migrated the generic examples; only the framework's explicitly allowlisted legacy composition/compiler implementation remains until atomic Task 9.
 
@@ -1097,16 +1119,16 @@ git commit -m "docs: make Python StateGraphs the sole workflow source"
 
 - [ ] Exactly 14 public roots compile from the authenticated Product/six Feature factory code and expose the exact public names.
 - [ ] Product's four former `join:any` sites preserve current-trigger behavior; looped failure/coverage inboxes cover same-epoch late arrivals and replay; assessment exits prove outcome and predecessor mutual exclusion plus no late reactivation, or use the inbox fallback.
-- [ ] All nine Feature/Product `join:any` rows are present and green with zero xfails or semantic waivers. Any failure blocks cutover/drain/deletion while production stays wholly on `legacy-v2`; the Product inbox fallback is an equivalent implementation, not an exception.
+- [ ] All nine Feature/Product `join:any` rows are present and green with zero xfails or semantic waivers. Any failure blocks each not-yet-cut reachable root plus drain/deletion; it never switches an existing Invocation in place. The Product inbox fallback is an equivalent implementation, not an exception.
 - [ ] The loop inventory still equals the exact seven `(graph_id, join:any node_id)` anchors derived from assembled `CompiledGraph.sccs`, with passing current-trigger evidence attached and full SCC membership available in failure diagnostics.
-- [ ] Exactly one Generation `min_matches` site uses four-value `Send`; exactly two Intake sites are Composite internal two-consumer dataflow; no extra `Send`, generic fanout helper, or phase shim exists.
+- [ ] Exactly one Generation `min_matches` site uses four-value `Send`; exactly two Intake sites are Feature-owned prepare/finalize two-consumer dataflow behind `ResolvedStructuredAgentExecutor`; no extra `Send`, generic fanout helper, compatibility executor, or phase shim exists.
 - [ ] The authenticated test-only evidence Validator accepts/promotes and rejects/blocks promotion exactly once on both legacy and LangGraph paths, while shipped production contracts remain 25 registered / 0 bound.
 - [ ] Standalone `improvement-evaluate` and the evaluate occurrence inside apply both emit `assurance.improvement.effect.delivery.v1` with payload discriminator `memory_eval`; committed/pending/publication-indeterminate recovery parity proves no early success or duplicate evaluator dispatch.
 - [ ] The exact 50-site exclusive-route migration inventory is complete; every route's declared-fallback/multiple-match parameterization passes and no route uses first-match priority.
 - [ ] All 13 human interrupts and system interrupt replay pass restart tests; multiple pending human interrupts require ID mapping.
-- [ ] Structured-output capability is truthful and every `requires_provider_schema=True` contract has a qualifying pinned adapter/provider test before its entrypoint cutover.
+- [ ] Checkpoints S0 and S are green. S cites the same exact S0 release identity or a newer identity that reran S0, and every `requires_structured_output=True` contract resolves a qualifying pinned `opencode_structured_output` adapter/server/provider/model/schema record before its entrypoint cutover; the non-promotable S0 report is not that record, and Kernel independently revalidates `info.structured`.
 - [ ] Semantic shadow and crash matrix pass for all 14 entrypoints; no Invocation was dual-driven.
-- [ ] Zero resumable legacy Invocations is authenticated before deletion.
+- [ ] Zero resumable legacy Invocations is authenticated before deletion, and every still-resumable pre-S LangGraph revision retains its original deployment artifact independently of the legacy drain result.
 - [ ] No Workflow YAML, phase alias, compiler/projection DSL, planner/token scheduler, custom Workflow checkpoint authority or engine settle loop remains.
 - [ ] `aa compile/start/run/resume/status/export/archive/bindings build/lock show` and wheel smoke pass against the Python-native Application.
 - [ ] Full repository gate passes and a final code review verifies spec acceptance criteria and deletion inventory.
