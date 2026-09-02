@@ -220,6 +220,22 @@ def test_resume_file_asserts_revision_before_opening_ports(tmp_path: Path, monke
     assert order == ["assert"]
 
 
+def test_zero_legacy_drain_does_not_retire_pre_closure_langgraph_revision(tmp_path: Path) -> None:
+    from assurance_product.revision_registry import authorize_legacy_deletion, collect_drain_evidence
+
+    workspace = _workspace(tmp_path)
+    registry = RevisionRegistry(workspace)
+    revision = _revision(lock="a" * 64)
+    registry.remember(revision)
+    registry.bind("inv-lg-pre-closure", runtime="langgraph-v1", revision_id=revision.revision_id)
+    result = authorize_legacy_deletion(workspace, evidence=collect_drain_evidence())
+    assert result.authorized is True
+    assert result.active_legacy == 0
+    with pytest.raises(RevisionRegistryError, match="resumable Invocation"):
+        registry.retire(revision.revision_id)
+    assert registry.get(revision.revision_id).revision_id == revision.revision_id
+
+
 def test_reopen_bind_keeps_recorded_lock_instead_of_current_composition(tmp_path: Path, monkeypatch) -> None:
     from assurance_product.application import _bind_revision
 

@@ -121,9 +121,9 @@ def validate_entrypoint_runtime_cutover(mapping: Mapping[str, str]) -> None:
             "runtime cutover keys must be the exact 14 public names; "
             f"missing={sorted(missing)} extra={sorted(extra)}"
         )
-    invalid = {name: kind for name, kind in mapping.items() if kind not in {"legacy-v2", "langgraph-v1"}}
+    invalid = {name: kind for name, kind in mapping.items() if kind != "langgraph-v1"}
     if invalid:
-        raise BootValidationError(f"runtime cutover values must be legacy-v2 or langgraph-v1: {invalid}")
+        raise BootValidationError(f"runtime cutover values must be langgraph-v1: {invalid}")
 
 
 def select_runtime(entrypoint: str) -> RuntimeKind:

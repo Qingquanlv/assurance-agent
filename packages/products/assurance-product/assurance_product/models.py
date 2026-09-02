@@ -450,29 +450,8 @@ FAMILY_EMPTY_ENTRYPOINTS = frozenset(
 PRODUCT_ENTRYPOINTS = FAMILY_NONEMPTY_ENTRYPOINTS | FAMILY_EMPTY_ENTRYPOINTS
 THIN_ENTRYPOINTS = PRODUCT_ENTRYPOINTS - FAMILY_NONEMPTY_ENTRYPOINTS
 RuntimeKind = Literal["legacy-v2", "langgraph-v1"]
-_WAVE_A_LANGGRAPH: frozenset[str] = frozenset(
-    {
-        "archive",
-        "case",
-        "execute",
-        "full",
-        "improvement-apply",
-        "improvement-evaluate",
-        "improvement-export",
-        "improvement-review",
-        "improvement-rollback",
-        "intake",
-        "issue-analyze",
-        "issue-reconcile",
-        "issue-review",
-        "retro",
-    }
-)
 ENTRYPOINT_RUNTIME_CUTOVER: MappingProxyType[str, RuntimeKind] = MappingProxyType(
-    {
-        name: "langgraph-v1" if name in _WAVE_A_LANGGRAPH else "legacy-v2"
-        for name in sorted(PRODUCT_ENTRYPOINTS)
-    }
+    {name: "langgraph-v1" for name in sorted(PRODUCT_ENTRYPOINTS)}
 )
 
 

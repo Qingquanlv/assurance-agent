@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+from graph_engine.composition import InvocationLock
+from graph_engine.errors import GraphEngineError
+from graph_engine.runtime.events import EventEnvelope
+from graph_engine.runtime.ledger import Ledger
+from graph_engine.runtime.models import InvocationProjection, fold_events
+
+
+class LegacyEvidenceError(GraphEngineError):
+    """Raised when leftover-v2 historical evidence cannot be authenticated."""
+
+
+def authenticate_invocation_lock_v2(raw: bytes) -> InvocationLock:
+    """Authenticate leftover InvocationLock v2 from stored canonical bytes."""
+    if not raw:
+        raise LegacyEvidenceError("invocation lock v2 is empty")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise LegacyEvidenceError("invocation lock v2 is not JSON") from error
+    if not isinstance(payload, dict):
+        raise LegacyEvidenceError("invocation lock v2 is not an object")
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        lock = InvocationLock.model_validate({**payload, "canonical_bytes": raw, "digest": digest})
+    except Exception as error:
+        raise LegacyEvidenceError("invocation lock v2 failed authentication") from error
+    if lock.canonical_bytes != raw:
+        raise LegacyEvidenceError("invocation lock v2 is not byte-exact")
+    return lock
+
+
+def read_legacy_ledger(root: Path) -> tuple[EventEnvelope, ...]:
+    """Read leftover ledger batches without appending or reconciling."""
+    return Ledger(root).read_all()
+
+
+def fold_legacy_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjection:
+    """Fold leftover events for historical export, archive, and lock show."""
+    return fold_events(envelopes)
+
+
+__all__ = [
+    "LegacyEvidenceError",
+    "authenticate_invocation_lock_v2",
+    "fold_legacy_events",
+    "read_legacy_ledger",
+]
