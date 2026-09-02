@@ -1,5 +1,16 @@
 # OpenCode Structured Output Gate Implementation Plan
 
+> ## CANCELLED / SUPERSEDED — Historical Record Only
+>
+> **Effective 2026-09-02:** this plan is permanently cancelled and superseded by
+> [Permanent Raw Agent Runtime Cutover](../specs/2026-09-02-raw-agent-runtime-cutover-design.md)
+> and its replacement implementation plan,
+> [Raw Agent Runtime Closure](./2026-09-02-raw-agent-runtime-closure.md).
+>
+> The text below is retained only as decision history. **Every checkbox in this file is
+> non-authoritative and non-executable**: do not use it to start work, infer current program
+> status, define a gate, or make a release claim.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make OpenCode a fail-closed implementation of the provider-neutral structured Agent activity seam: send the authenticated `AgentResultT` schema through `format.type=json_schema`/`format.schema`, observe only terminal assistant `info.structured`, survive activity recovery, advertise `opencode_structured_output` only for a certified server/provider/model/schema matrix, and deny OpenCode raw writes to Kernel-owned typed paths.

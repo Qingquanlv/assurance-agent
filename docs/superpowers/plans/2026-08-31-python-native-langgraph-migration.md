@@ -2,26 +2,26 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace YAML-authored Assurance Workflow topology and the custom Workflow Runtime with authenticated, Feature-owned Python `StateGraph` factories, upgrade every Agent Attempt to the Structured Artifact Pipeline, and preserve reliable commit/recovery, the 14 public entrypoints, and revision-pinned CLI resume.
+**Goal:** Replace YAML-authored Assurance Workflow topology and the custom Workflow Runtime with authenticated, Feature-owned Python `StateGraph` factories, make strict locally validated Raw Agent execution permanent for all 33 Agent contracts, and preserve reliable commit/recovery, the 14 public entrypoints, and revision-pinned CLI resume.
 
-**Architecture:** LangGraph becomes the only Workflow progression and checkpoint authority. `graph-engine` remains as a Boot/application/Attempt/persistence framework; each Capability wheel owns its typed subgraphs, semantic Attempt contracts, and artifact projections; `assurance-product` owns the fixed six-factory allowlist, Agent runtime bindings, 14 root graphs, and CLI. Effectful nodes call one idempotent `AssuranceAttemptKernel`; the Structured Artifact Pipeline is retrofitted behind that existing graph-facing seam and adds no LangGraph node or edge.
+**Architecture:** LangGraph becomes the only Workflow progression and checkpoint authority. `graph-engine` remains as a Boot/application/Attempt/persistence framework; each Capability wheel owns its typed subgraphs, semantic Attempt contracts, local result models, prepare/finalize handlers, and raw-file validation; `assurance-product` owns the fixed six-factory allowlist, 33 authenticated Raw Agent runtime bindings, 14 root graphs, and CLI. Effectful nodes call one idempotent `AssuranceAttemptKernel`; `ResolvedRawAgentExecutor` appends the installed JSON Schema to an ordinary OpenCode prompt, validates the one exact assistant JSON object locally, and closes prepare/runtime/finalize behind the existing graph-facing seam without adding a LangGraph node or edge.
 
-**Tech Stack:** Python 3.11, uv workspace, LangGraph `1.2.11`, LangGraph Checkpoint `4.2.0`, LangGraph SQLite Checkpoint `3.1.1`, Pydantic v2, OpenCode Structured Output, canonical JSON/YAML codecs, pytest, Click, SQLite, existing authenticated wheel composition and append-only journal primitives.
+**Tech Stack:** Python 3.11, uv workspace, LangGraph `1.2.11`, LangGraph Checkpoint `4.2.0`, LangGraph SQLite Checkpoint `3.1.1`, Pydantic v2, OpenCode raw sessions and messages, local JSON-Schema/Pydantic validation, canonical JSON/YAML codecs, pytest, Click, SQLite, authenticated wheel composition, durable compare-and-swap journals, and fenced workspace/effect primitives.
 
-**Spec:** `docs/superpowers/specs/2026-08-31-python-native-langgraph-assurance-design.md`, extended by `docs/superpowers/specs/2026-09-01-structured-artifact-pipeline-design.md`
+**Spec:** `docs/superpowers/specs/2026-08-31-python-native-langgraph-assurance-design.md`, amended by `docs/superpowers/specs/2026-09-02-raw-agent-runtime-cutover-design.md`
 
 ---
 
 ## Plan Suite
 
-This migration crosses five independently reviewable workstreams. This document is the **only** program dependency map and exit gate. Detailed plans own their interfaces and task bodies, but none may redefine program order or create a second master plan.
+This migration crosses five independently reviewable workstreams. This document is the **only** program dependency map and exit gate. Detailed plans own their interfaces and task bodies, but none may redefine program order or create a second master plan. The cancelled Structured Artifact plans are historical records only and have no active task, checkpoint, CI, completion, or release dependency here.
 
 | Plan | Detailed plan | Outcome |
 |---|---|---|
 | Foundation | [Python-native LangGraph Foundation](./2026-08-31-python-native-langgraph-foundation.md) | Pinned dependencies, authenticated graph revisions, anchored checkpointer, runner fencing, Boot/Application skeleton |
-| Attempt | [Semantic Attempt Kernel](./2026-08-31-semantic-attempt-kernel.md) | 41 effectful semantic contracts plus 4 proven-pure functions, stable Attempt identity, base Agent execution, workspace/effect recovery, node adapter; extended in place by Checkpoint S |
+| Attempt | [Semantic Attempt Kernel](./2026-08-31-semantic-attempt-kernel.md) | 41 effectful semantic contracts plus 4 proven-pure functions, stable Attempt identity, base Agent execution, workspace/effect recovery, and the one graph-facing node adapter; hardened in place by Raw Agent Closure |
 | Feature | [Feature StateGraph Migration](./2026-08-31-feature-stategraph-migration.md) | Six Feature graph bundles, Execution tracer, five Feature `join:any` rewrites, and all 3 `min_matches` obligations |
-| Structured retrofit | [Structured Artifact Pipeline Resume Tranche](./2026-09-01-structured-artifact-pipeline.md) | Checkpoint S0 exact-release eligibility probe, then—only when S0 is green—OpenCode Structured Output transport, provider-neutral artifact contracts, deterministic materialization, durable structured recovery, and migration of 33 Agent contracts/34 occurrences |
+| Raw Agent closure | [Raw Agent Runtime Closure](./2026-09-02-raw-agent-runtime-closure.md) | Local result contract, 33 semantic runtime bindings, strict OpenCode parsing, reuse of existing recovery primitives, and Checkpoint R |
 | Product | [LangGraph Product Cutover](./2026-08-31-langgraph-product-cutover.md) | 14 Product roots, four Product `join:any` rewrites, shadow/parity, per-entrypoint cutover, drain, deletion of YAML Runtime |
 
 Foundation and Attempt originally interleaved because the revision/Boot types consume core Attempt types, while the Kernel later consumes the saver/lease/Boot seams. That interleave, all Feature work, and the first Product cutover slice have already been implemented. They are historical prerequisites, not tasks to replay.
@@ -36,17 +36,17 @@ The continuation baseline is `feat/python-native-langgraph-migration@4a9cd197`. 
 - [x] Product Tasks 1–4.
 - [x] Product Task 5a: `improvement-evaluate`, `improvement-export`, `improvement-apply`, and `improvement-rollback` route new starts to `langgraph-v1`; commits `9a7ba2af`, `b6171237`, and `4a9cd197` form the accepted T5a series.
 
-**Current state: PARKED AT CHECKPOINT S0.** Official OpenCode v1.18.26 is a valid negative fixture. Authorized now: plan synchronization and OpenCode Task 0 only. While S0 is red, OpenCode Tasks 1–7, Artifact Tasks 1–10, Capability Tasks 1–12, Structured R1–R6, and Product T5b–T10 remain deferred.
+**Current state: T5a ACCEPTED; RAW AGENT CLOSURE IS NEXT.** The prior Structured Output eligibility result is historical research only. It neither blocks Raw Agent work nor satisfies any production gate. Product T5b–T10 remain pending behind the Raw Agent closure and the candidate-specific Checkpoint R sequence below.
 
 Do not reset to the old integration base, re-execute completed tasks, or rewrite their journals, locks, checkpoints, receipts, or revision markers. The remaining work executes in this exact order:
 
-1. Synchronize this corrected plan suite and the Structured Artifact spec/research onto a clean continuation worktree from `4a9cd197` or an explicitly reviewed successor; record all intervening code as an accepted baseline rather than reconstructing it.
-2. Execute OpenCode Task 0 only and close **Checkpoint S0: OpenCode Release Eligibility** for one exact official release. If S0 is red, stop the Structured tranche here: do not start R1–R6, Product T5b–T5d, drain, or deletion.
-3. Only after S0 is green, execute the Structured Artifact Pipeline resume tranche R1–R3: migrate the **existing** executor/Kernel/33 contracts and adapt the already-existing Feature/Product factories without changing their topology.
-4. Execute R4: re-run the complete Foundation/Attempt/Feature regression gates plus Product Tasks 1–4 and coexistence tests; this is re-certification of implemented behavior, not task replay.
-5. Execute R5: run the complete exact-release OpenCode qualification and close **Checkpoint S: Structured Agent Production Gate** on the final integrated candidate revision. S0 evidence is only an investment gate and cannot satisfy or be promoted by Checkpoint S.
-6. Execute Product Task 5b for the remaining eight thin Agent-dependent roots, Task 5c for `execute`, and Task 5d for `full`. Checkpoint S blocks these ten future-start cutovers only.
-7. After all 14 entrypoints route new starts to `langgraph-v1`, execute Product Tasks 6–10 in order. Task 7 prepares every consumer/primitive, Task 8 atomically switches `aa compile` to v3-only while removing YAML/module packaging and aliases, and Task 9 then deletes the compiler/custom Runtime.
+1. Synchronize the accepted Raw Agent amendment and this corrected active plan suite onto a clean continuation worktree from `4a9cd197` or an explicitly reviewed successor; record all intervening code as an accepted baseline rather than reconstructing it.
+2. Execute the [Raw Agent Runtime Closure](./2026-09-02-raw-agent-runtime-closure.md): remove provider-structured capability policy, bind all 33 contracts directly by semantic ID, install `ResolvedRawAgentExecutor`, enforce exact-object parsing, and prove raw transaction recovery with the existing journal/workspace/Kernel primitives. Re-run the already-cut T5a roots without changing their recorded Invocations or topology.
+3. Close the initial **Checkpoint R: Raw Agent Production Gate** as a normal candidate-bound CI result covering the exact OpenCode raw binding, 33 contracts/33 bindings/34 live occurrences, ProductLock, GraphRevision, candidate SHA, and unchanged Kernel transaction tail.
+4. Build the Product T5b candidate for the remaining eight thin Agent-dependent roots, rerun Checkpoint R for that exact candidate, and only then release the T5b selector for future starts.
+5. Build the Product T5c candidate for `execute`, rerun Checkpoint R for that exact candidate, and only then release the T5c selector for future starts.
+6. Build the Product T5d candidate for `full`, rerun Checkpoint R for that exact candidate, and only then release the T5d selector for future starts.
+7. After all 14 entrypoints route new starts to `langgraph-v1`, execute Product Tasks 6–10 in order. Task 7 migrates remaining consumers, Task 8 atomically switches `aa compile` to ProductLock v3-only while deleting Workflow YAML/module packaging and all 99 aliases, Task 9 deletes the compiler/custom Runtime after a post-deletion Checkpoint R, and Task 10 removes migration selectors while retaining the revision registry and focused Raw Agent CI checks.
 
 The resulting dependency graph is:
 
@@ -57,35 +57,37 @@ completed Foundation/Attempt/Feature/Product T1–4
 Product T5a: four non-Agent roots on LangGraph
                │
                ▼
-OpenCode O0 exact-release eligibility probe → Checkpoint S0
-               │
-               ├── red: freeze Structured R1–R6; retain 4 LangGraph / 10 legacy
-               │
-               └── green
-                     │
-                     ▼
-Structured executor/Kernel/artifact retrofit behind AttemptNodeFactory
+Raw Agent Runtime Closure behind AttemptNodeFactory
                │
                ▼
-33 Agent contracts + existing Feature/Product factory re-certification
+33 contracts + 33 semantic bindings + existing production ports
                │
                ▼
-exact OpenCode release qualification → Checkpoint S
+T5a verification → initial Checkpoint R
                │
                ▼
-Product T5b/T5c/T5d → legacy drain → YAML/compiler/Runtime deletion
+T5b candidate → Checkpoint R → release T5b
+               │
+               ▼
+T5c candidate → Checkpoint R → release T5c
+               │
+               ▼
+T5d candidate → Checkpoint R → release T5d
+               │
+               ▼
+T6–T10 → post-deletion Checkpoint R → focused Raw checks stay in CI
 ```
 
-The existing Feature graphs and four non-Agent cutovers remain valid while S0 is red or the later retrofit is underway. S0 red freezes all Structured implementation after Task 0; Checkpoint S later blocks Agent-dependent cutover, legacy drain, and deletion until the fully implemented pipeline is certified. Neither gate may globally fail Product Boot or roll back a root whose reachable contract set contains no Agent Attempt.
+The existing Feature graphs and four non-Agent T5a cutovers remain valid while Raw Agent closure is underway. Checkpoint R blocks release of each Agent-dependent future-start selector, and legacy drain/deletion remain blocked until T5d has passed its exact-candidate Checkpoint R. A failed candidate never switches an existing revision-pinned Invocation or rolls back an accepted T5a root.
 
 ## Global Constraints
 
 - Run every command from `/Users/lvqingquan/agent/assurance-agent` through `uv run` where applicable; the workspace uses pinned CPython 3.11.
 - Before remaining implementation, invoke `superpowers:using-git-worktrees` and create a clean isolated continuation worktree from `4a9cd197` or an explicitly reviewed successor containing this corrected plan suite. The current planning worktree has unrelated user changes; do not copy, clean, overwrite, stage, or commit them.
-- `docs/` is ignored by the repository. The plan authoring handoff must force-add exactly this master, its eight linked detailed plans, both accepted specs, and the OpenCode source audit; the continuation preflight below verifies they are tracked before implementation resumes. Never use a broad forced add.
+- `docs/` is ignored by the repository. The plan authoring handoff must force-add exactly this master, its five linked active detailed plans, and both accepted active specs; the continuation preflight below verifies they are tracked before implementation resumes. Cancelled Structured records may be preserved in a separate reviewed historical-doc change but are not execution authority. Never use a broad forced add.
 - The original Generation/Intake/Workflow inventory is already captured in completed migration history. Any code after `4a9cd197` enters the continuation base only through an explicit reviewed successor; never reconstruct or cherry-pick an inferred subset from the dirty planning worktree.
-- Before Checkpoint S0 is green, the only authorized Structured source task is OpenCode Task 0's standalone exact-release eligibility probe. Do not create the provider-neutral activity seam, modify the production OpenCode adapter, extend the Kernel, add artifact registries/materializers, or migrate any of the 33 Agent contracts speculatively.
-- Checkpoint S0 evidence is non-promotable planning evidence. It never advertises `opencode_structured_output`, never satisfies a production binding, and never substitutes for OpenCode Tasks 4–7 or the full 33-row Checkpoint S certification.
+- The Raw Agent result schema is generated from authenticated installed `AgentResultT` code, appended last to the ordinary prompt, and reused for local validation. It is never loaded from a skill/project, sent through OpenCode `format.type == "json_schema"`, or treated as a provider capability.
+- Raw Agent closure must not add an artifact registry, typed-slot ownership, Kernel JSON/YAML materializer, materialization manifest, or materialization receipt. Capability finalizers retain responsibility for parsing and validating actual raw files.
 - Use test-driven development for every Task: add the narrow failing test, run it and record the expected failure, add the smallest implementation, rerun the focused suite, then commit only that Task's explicit paths.
 - Never use `git add .`, `git add -A`, broad globs, or destructive Git commands. Every detailed plan lists exact add paths.
 - Topology is direct Python `StateGraph`. Do not introduce `GraphDef` lowering, a YAML adapter, `AgentLeafSpec`, a generic token scheduler, a dynamic graph-provider registry, or a Product-wide dispatcher graph.
@@ -93,15 +95,18 @@ The existing Feature graphs and four non-Agent cutovers remain valid while S0 is
 - Product owns the fixed six authenticated factory references. A Capability graph may resolve only contracts authenticated for its own owner; Product is the only cross-Feature graph composer.
 - `graph-engine` must not import `agent_runtime_contracts`, concrete runtime adapters, Capability packages, or Product code.
 - The production validator baseline is 25 registered and zero bound. Every shipped target contract declares `validators` explicitly, including `()`. A non-empty production binding is a separately reviewed behavior change and is not introduced by this migration. One authenticated test-only core contract clone reuses the resolved Execution executor, binds `assurance.execution.validator.evidence.v1`, and gives both legacy and LangGraph paths the identical `ResourceClaims(writes=("tests", "src"))` envelope solely to prove accept/reject parity; it creates no new runtime binding and never enters contributions, locks, manifests, wheels, or production counts.
-- Preserve all 99 legacy phase aliases and the old Runtime through shadow and rollback. Delete them only after the Phase 7 drain gate.
+- Preserve all 99 legacy phase aliases and the old Runtime through shadow and rollback, but forbid Raw Agent binding or execution from consulting them. Delete the aliases in Product T8 only after the authenticated drain gate.
 - One production Invocation is permanently pinned to one runtime kind and that runtime's authenticated build identity: legacy uses its byte-exact `InvocationLock` v2 digest; LangGraph uses `GraphRevision` plus ProductLock v3 digest. It is never advanced by both runtimes or switched in place.
 - Preserve the exact 14 public entrypoint names: `intake`, `case`, `full`, `execute`, `archive`, `retro`, `issue-review`, `issue-analyze`, `issue-reconcile`, `improvement-review`, `improvement-evaluate`, `improvement-export`, `improvement-apply`, and `improvement-rollback`.
 - A compiled graph is never serialized. `aa compile` emits `GraphBuildManifest`; runtime Boot authenticates the same sources and recompiles roots with the real checkpointer into `BootArtifact`.
 - One Invocation has one runner lease and monotonically increasing fencing token. Checkpoint, journal, Kernel dispatch, promotion, effects, and receipt publication reject a stale token.
 - Checkpoint state contains control data and receipt references, not workspaces, project files, secrets, raw sessions, unbounded event history, or service objects.
 - A Feature-owned `join:any` current-trigger mismatch is a migration-stop defect with zero waivers. A regression blocks every not-yet-cut reachable entrypoint plus legacy drain/deletion; it never switches an existing revision-pinned Invocation in place or invalidates the four already-cut non-Agent roots without evidence that they reach the defect.
-- The generic Feature requirement is `requires_structured_output`; the selected OpenCode binding may satisfy it only with a promoted `opencode_structured_output` certification for the exact server/adapter/provider/model/schema matrix. `provider_schema`, `requires_provider_schema`, and provider-native `response_format` are not this interface.
-- Product Boot may compile and authenticate all 14 roots while an Agent capability is absent. Fail closed when selecting/cutting over a root whose reachable Agent contract requires the absent capability, and before dispatch of such an Attempt; do not turn one unavailable Agent binding into a global Boot failure for direct/non-Agent roots.
+- Local Agent-result validation is unconditional. Remove `requires_provider_schema`, `provider_schema`, `requires_structured_output`, `opencode_structured_output`, and equivalent negotiation flags from the new production contract rather than pinning them false or retaining compatibility branches.
+- The release candidate publishes exactly one authenticated Raw Agent runtime binding for each of the 33 semantic Agent contract IDs. Product Boot rejects missing, duplicate, extra, wrong-owner, wrong-source, alias-derived, or contract-digest-drifting bindings; the SUT, `.aa/`, environment variables, and CLI cannot supply or override one.
+- One AttemptKey binds one OpenCode root session and at most one admitted prompt. Recovery adopts/observes/reconciles that activity; an unprovable admission or external completion becomes indeterminate, never an automatic redispatch. A policy-authorized business retry requires a new `BusinessActivation` and therefore a new AttemptKey.
+- `prepare` and `finalize` are deterministic and cannot publish effects or mutate promotable bytes. OpenCode alone mutates Agent-authorized raw paths; the finalizer reads them through `RawFinalizeBundle`, and the Kernel retains resource authorization, output validation, seal, ordered validators, durable prepare, promote/recover, all six effects, and receipt ordering.
+- Reuse the existing Attempt journal, activity, workspace, secret, fencing, and effect primitives. Do not move them or add parallel production-host abstractions during Raw Agent closure. Product T9 may delete or relocate a legacy Runtime module only after every retained consumer has an equivalent existing home and tests prove reopen still works.
 
 ## Program Baseline
 
@@ -201,34 +206,37 @@ git commit -m "test: align legacy capability-slot ownership"
 
 Expected after the edit: the six-suite command exits `0`. If the selected integration base does not contain the accepted YAML changes, stop and regenerate this suite instead of applying these test edits to a different topology.
 
-The old internal node count is not a target. Semantic Agent Attempts intentionally collapse prepare/activity/materialize/finalize plumbing behind `AttemptNodeFactory` and the Kernel. External behavior, semantic Attempt calls, decisions, interrupts, receipts, terminal states, crash recovery, and public contracts are the parity surface.
+The old internal node count is not a target. Semantic Agent Attempts intentionally collapse prepare/activity/finalize plumbing behind `AttemptNodeFactory` and the Kernel. External behavior, semantic Attempt calls, decisions, interrupts, receipts, terminal states, crash recovery, and public contracts are the parity surface.
 
-### Structured continuation and Checkpoint S0 preflight — pending
+### Raw Agent continuation preflight — pending
 
 - [ ] Start from `feat/python-native-langgraph-migration@4a9cd197` or an explicitly reviewed successor that contains the complete T5a series. Record the selected full SHA and prove the worktree is clean before source work.
-- [ ] Prove both accepted specs, this unique program master, all eight detailed plans, and the pinned OpenCode source audit are tracked in that continuation branch:
+- [ ] Prove both accepted active specs, this unique program master, and all five active detailed plans are tracked in that continuation branch:
 
 ```bash
 git ls-files --error-unmatch \
   docs/superpowers/specs/2026-08-31-python-native-langgraph-assurance-design.md \
-  docs/superpowers/specs/2026-09-01-structured-artifact-pipeline-design.md \
-  docs/research/2026-09-02-opencode-current-structured-output-source-audit.md \
+  docs/superpowers/specs/2026-09-02-raw-agent-runtime-cutover-design.md \
   docs/superpowers/plans/2026-08-31-python-native-langgraph-migration.md \
   docs/superpowers/plans/2026-08-31-python-native-langgraph-foundation.md \
   docs/superpowers/plans/2026-08-31-semantic-attempt-kernel.md \
   docs/superpowers/plans/2026-08-31-feature-stategraph-migration.md \
   docs/superpowers/plans/2026-08-31-langgraph-product-cutover.md \
-  docs/superpowers/plans/2026-09-01-structured-artifact-pipeline.md \
-  docs/superpowers/plans/2026-09-01-opencode-structured-output-gate.md \
-  docs/superpowers/plans/2026-09-01-artifact-kernel-foundation.md \
-  docs/superpowers/plans/2026-09-01-agent-artifact-contract-migration.md
+  docs/superpowers/plans/2026-09-02-raw-agent-runtime-closure.md
 ```
 
-Expected: all twelve paths print and the command exits `0`. The four `2026-09-01` plan files are currently ignored unless explicitly force-added; an ignored local copy is not execution authority.
+Expected: all eight paths print and the command exits `0`. An ignored local copy is not execution authority. Cancelled Structured plans are not included in this active-plan proof.
 
-- [ ] Freeze active Invocation counts by `(runtime_kind, revision_id)` and the exact pre-Structured GraphRevision/ProductLock/deployment-artifact digest. Existing Invocations retain those identities and can reopen only through that original artifact/container.
+- [ ] Freeze active Invocation counts by `(runtime_kind, revision_id)` and the exact pre-Raw-closure GraphRevision/ProductLock digest. Existing Invocations retain those identities and reopen through the already-planned revision registry; Raw Agent closure adds no new deployment registry or container authority.
 - [ ] Verify the cutover map is exactly four `langgraph-v1` non-Agent roots and ten `legacy-v2` Agent-dependent roots. A broader cutover, global Product Boot failure, missing old-revision artifact, or a status claiming all of Task 5 is complete is a preflight failure.
-- [ ] Record OpenCode `v1.18.26 / 774cc7c1914e4329eefde5a669f938b0cf566661` as `message-roundtrip-red`: `prompt_async + noReply + format.json_schema` admits with `204`, but V1 list and single-message reads return `400`. Do not spend provider quota or advertise `opencode_structured_output` until this fail-fast probe passes for a later exact release.
+- [ ] Characterize and freeze the actual Raw Agent blockers before source work: 33 contracts incorrectly require provider schema while the adapter advertises none; Product still uses deferred phases; semantic runtime facts depend on phase aliases; and terminal JSON extraction is permissive. First prove whether the existing journal/workspace authorization is insufficient; change it only where a recovery or security test fails.
+
+**Historical Structured-probe disposition — not a preflight task:** preserve only the immutable
+research record and the cancelled, visibly non-executable design/plans. Raw Agent Closure R5 removes or archives
+`scripts/opencode_structured_output_eligibility_probe.py` and
+`tests/agent_runtime/test_opencode_structured_output_eligibility_probe.py`; neither executable file,
+its result, nor Checkpoint S0 is a Checkpoint R row, production capability, blocker, or qualification
+for the permanent Raw path.
 
 ## Integration Checkpoints
 
@@ -244,10 +252,10 @@ Expected: all twelve paths print and the command exits `0`. The four `2026-09-01
 
 ### Checkpoint B: Attempt freeze
 
-**Continuation status:** closed for the original Attempt interface before `4a9cd197`. Checkpoint S extends the implementation behind this seam; it does not reopen or invalidate the historical task sequence.
+**Continuation status:** closed for the original Attempt interface before `4a9cd197`. Raw Agent Closure hardens production execution behind this seam; it does not reopen or invalidate the historical task sequence.
 
 - [ ] The 33 Agent contracts and 8 effectful Improvement direct-task contracts resolve into immutable core contracts while all legacy aliases remain usable; the 4 other direct capability IDs are frozen as deterministic pure functions and later run as ordinary graph nodes.
-- [ ] `AgentExecutionContract[InputT, AgentResultT, OutputT]` keeps provider result validation separate from finalize output validation.
+- [ ] `AgentExecutionContract[InputT, AgentResultT, OutputT]` keeps strict locally validated Agent-result parsing/model validation separate from finalize output validation; provider-side schema enforcement is not part of the contract.
 - [ ] Stable Attempt keys, sealed staged writes, explicit validator ordering, durable prepare/promotion, all six effects, resource authorization, and system-interrupt ordinal replay pass crash tests.
 - [ ] `AttemptNodeFactory.attempt(contract, semantic_node_id=..., activation=..., select=..., publish=...)` is the only effectful graph-node seam; activation comes only from stable typed business state.
 - [ ] Commit the Attempt series before the Execution tracer switches from scripted to real Kernel execution.
@@ -258,40 +266,27 @@ Expected: all twelve paths print and the command exits `0`. The four `2026-09-01
 
 - [ ] Each Capability exposes one typed bundle from `assurance_<feature>.graphs.factory` and compiles with `checkpointer=None`.
 - [ ] Spy build-context tests inventory the expected owner-scoped contract IDs and reject handler, validator, or runtime-binding injection at node sites.
-- [ ] The five Feature-owned `join:any` replacements preserve current-trigger identity; all five are looped and cover epoch, late arrival, replay, deduplication, and dispatch cursor behavior. Every row is green with zero waivers; a regression blocks each not-yet-cut reachable root plus Checkpoints S–E without switching existing Invocations in place.
+- [ ] The five Feature-owned `join:any` replacements preserve current-trigger identity; all five are looped and cover epoch, late arrival, replay, deduplication, and dispatch cursor behavior. Every row is green with zero waivers; a regression blocks each not-yet-cut reachable root plus Checkpoints R–E without switching existing Invocations in place.
 - [ ] The loop inventory is derived from assembled `CompiledGraph.sccs` and equals the exact seven `(graph_id, join:any node_id)` anchors; the five Feature rows link to green tests and the two Product rows remain explicit pending entries. Full SCC membership is retained in failure diagnostics but is not substituted for anchor equality.
-- [ ] Exactly `generation/fanout` becomes one typed four-value `Send` route that fails before dispatch. Exactly Intake `case-design/prepare` and `repair-prepare` disappear into fixed Feature-owned semantic-Attempt two-consumer dataflow, later served by `ResolvedStructuredAgentExecutor`. No other target `Send`, generic helper, compatibility executor, or phase-fanout shim is allowed.
+- [ ] Exactly `generation/fanout` becomes one typed four-value `Send` route that fails before dispatch. Exactly Intake `case-design/prepare` and `repair-prepare` disappear into fixed Feature-owned semantic-Attempt two-consumer dataflow, served by `ResolvedRawAgentExecutor`. No other target `Send`, generic helper, compatibility executor, or phase-fanout shim is allowed.
 - [ ] The authenticated test-only Execution clone binds `assurance.execution.validator.evidence.v1` and proves one accept/promote plus one reject/no-promote through the real LangGraph/Kernel path; all shipped contracts remain explicit `validators=()` and production stays 25 registered / 0 bound.
 - [ ] Retro and `improvement-evaluate` input/output contracts close end-to-end; the latter is an effectful `evaluate-memory-improvement` Attempt that settles `assurance.improvement.effect.delivery.v1` with payload discriminator `memory_eval`. Nightly remains out of scope, and only the separate offline benchmark Eval comparator remains pure.
 - [ ] The checked migration inventory accounts for all 50 legacy exclusive-routing nodes across task/subgraph/interrupt/gate kinds; every target route calls `select_exclusive_route(named_matches, otherwise=...)`, proves zero selects the declared fallback, and proves multiple matches fail instead of using priority `if/elif`.
 - [ ] Commit the six Feature bundles before Product root cutover work.
 
-### Checkpoint S0: OpenCode Release Eligibility
+### Checkpoint R: Raw Agent Production Gate
 
-**Continuation status:** pending. Execute only OpenCode Task 0 after the continuation preflight. No Structured R1–R6 source work is authorized while this checkpoint is red.
+**Continuation status:** pending after Raw Agent Closure. It closes once after T5a verification, then the focused live integration row reruns for the exact T5b, T5c, and T5d candidate before each future-start selector is released. This is an ordinary required CI gate, not a new certification service.
 
-- [ ] A trusted operator records one exact official OpenCode release tag/commit/asset, platform/architecture, local candidate-binary digest, direct loopback endpoint, local data-root identity, workspace `directory` query scope, provider/model, and minimal canary schema. This is explicitly operator-trusted eligibility evidence, not authenticated serving-process identity; `current`, `latest`, version ranges, source-only feature detection, gateways, and hand-edited pass flags are rejected.
-- [ ] Before any provider call, a no-model request proves `prompt_async + noReply + format.json_schema == 204`, V1 message list `== 200`, and V1 single-message `== 200`. Both successful `WithParts.info.format` reads retain canonical-equal `type/schema` and the only server-added field is required `retryCount == 2`; the request omits `retryCount`. Official `v1.18.26` remains the fixed `204/400/400` negative fixture and must consume zero provider prompts.
-- [ ] Exactly one real provider/model canary reaches a terminal assistant message with no error and a schema-valid object read only from `info.structured`; text JSON, tool input, guessed structured fields, a missing/wrong canary, or an oversized result fails.
-- [ ] After the trusted operator restarts the declared local candidate with the same OpenCode data root and workspace `directory` query scope, a fresh probe process re-reads the same session, user message, assistant message, and structured-candidate digest through both V1 list and single-message endpoints. The post-restart phase has no POST-capable path. The report labels this `operator_executed_unverified`; only the later controller-backed gate may claim restart proof.
-- [ ] The canonical pre-state/final eligibility reports contain no password or Authorization value and are explicitly non-promotable: they cannot create an installed certification record, cannot be consumed by Product Boot, and cannot advertise `opencode_structured_output`. Passing S0 proves only that implementation investment may begin; it does not prove authenticated server identity, in-flight activity recovery, boundary isolation, all 33 schemas, or Checkpoint S.
-- [ ] If any row is red, retain the accepted map of four T5a roots on `langgraph-v1` and ten Agent-dependent roots on `legacy-v2`; defer Structured R1–R6, Product T5b–T5d, drain, YAML/compiler deletion, and custom Runtime deletion until a later exact official release passes Task 0.
-
-### Checkpoint S: Structured Agent Production Gate
-
-**Continuation status:** pending and blocked on Checkpoint S0. After S0 is green, execute the [Structured Artifact Pipeline Resume Tranche](./2026-09-01-structured-artifact-pipeline.md) after Product T5a and before T5b.
-
-- [ ] The existing `CompositeAttemptExecutor` implementation has been migrated in place to the closed `ResolvedDirectExecutor | ResolvedStructuredAgentExecutor` model; no second Kernel, graph-facing adapter, or compatibility executor remains authoritative.
-- [ ] All 33 Agent contracts/34 semantic occurrences/69 artifact slots close through authenticated `AgentResultT`, deterministic typed materialization or explicit raw authority, structured recovery, and the unchanged validator/prepare/promote/effect/receipt tail.
-- [ ] The already-existing Feature and Product factories emit the exact live `AttemptSiteCatalog`; live sites, Artifact contract domain, and frozen inventory are set-equal without adding or removing topology.
-- [ ] A final integrated candidate—not the S0 canary or a pre-Feature snapshot—passes the exact OpenCode release gate for `opencode_structured_output`, including a fresh no-model `204 -> 200 list -> 200 single` fail-fast probe, controller-proven recovery, and the complete 33-row matrix. S0 output is never promoted or counted as a passing row.
-- [ ] Product composition proves a missing structured capability blocks only a selected reachable Agent Attempt/cutover. The four T5a non-Agent roots still start and recover; the remaining ten roots stay `legacy-v2` until this checkpoint closes.
-- [ ] A pre-S Invocation reopens only with its recorded pre-S GraphRevision/ProductLock/deployment artifact. The post-S source/ProductLock produces a distinct GraphRevision; its manifest authenticates the structured Attempt digests, and only new starts bind that revision.
-- [ ] The protected Checkpoint S aggregate gate and complete repository gate pass for one immutable `candidate_sha`. Any later change to the Adapter, structured schemas/contracts, Kernel, Product binding closure, or relevant Feature factory invalidates that evidence and requires re-certification.
+- [ ] Inventory tests prove exactly 33 semantic Agent contracts, 33 direct Raw Agent bindings, and 34 live StateGraph occurrences, with no lookup through the 99 phase aliases.
+- [ ] The adapter sends no structured `format`, accepts only the closed terminal part set and one exact JSON object, validates it against the installed result contract, and keeps provider/model as separate authenticated fields.
+- [ ] One live OpenCode integration row proves session creation/adoption, one prompt per AttemptKey, terminal observation, local result validation, authorized raw-file writes, Feature finalization over actual files, and bounded evidence for the selected adapter/provider/model.
+- [ ] Existing crash, workspace, fencing, Kernel, and six-Effect suites prove no duplicate prompt, no unauthorized promotion, and the unchanged order `validate output -> seal -> validators -> durable prepare -> promote/recover -> effects -> receipt`.
+- [ ] The CI record names the exact candidate SHA, ProductLock, GraphRevision, adapter/provider/model, and contract/binding inventory. It also proves the active path contains no provider-structured negotiation or Structured Artifact materializer. No extra deployment registry, OCI bundle, or post-run authorization is required.
 
 ### Checkpoint D: Product cutover
 
-**Continuation status:** Product T5a is closed for four non-Agent roots; T5b–T5d are pending and depend on Checkpoint S.
+**Continuation status:** Product T5a is closed for four non-Agent roots. Raw Agent Closure and the initial Checkpoint R precede T5b; T5b, T5c, and T5d each require a fresh Checkpoint R for their exact built candidate before that selector is released.
 
 - [ ] Product imports exactly the six fixed factory symbols and builds exactly the 14 public roots.
 - [ ] Product's four `join:any` paths pass zero-waiver current-trigger characterization: the two looped sites cover late arrival/replay/cursor behavior, while the two assessment exits prove predecessor mutual exclusion and impossibility of late reactivation or use the equivalent inbox/cursor fallback. Failure blocks each not-yet-cut reachable root plus drain/deletion; it does not silently switch an existing Invocation or unrelated T5a root.
@@ -301,19 +296,21 @@ Expected: all twelve paths print and the command exits `0`. The four `2026-09-01
 - [ ] CLI start/run/resume/status use the revision-pinned Application; multiple interrupts resume by interrupt ID and ambiguous scalar resume is rejected.
 - [ ] Semantic shadow compares separate Invocations or scripted snapshots only; no production Invocation is dual-driven.
 - [ ] Each public entrypoint records a reviewed parity result referencing the zero-waiver 9-site join evidence before its cutover flag changes.
+- [ ] The cutover journal proves the exact order `T5b candidate → Checkpoint R → T5b release → T5c candidate → Checkpoint R → T5c release → T5d candidate → Checkpoint R → T5d release`; selectors affect only future starts and never rebind an existing Invocation.
 
 ### Checkpoint E: Drain and delete
 
-**Continuation status:** pending; depends on Checkpoint S and Product T5d (14/14 new-start cutover).
+**Continuation status:** pending; depends on the released T5d candidate having passed Checkpoint R and therefore 14/14 new-start cutover.
 
 - [ ] Creation of new legacy Invocations is disabled only after all 14 entrypoints pass cutover gates.
 - [ ] Drain authorization rejects any missing, failed, or waived join-parity row; there is no per-site legacy exception inside a LangGraph Invocation.
 - [ ] Drain authorization also rejects a changed seven-anchor SCC inventory, any deviation from the one-Generation-`Send`/two-Intake-Composite `min_matches` mapping, or missing cross-runtime test-only Validator accept/reject parity.
 - [ ] The registry proves there are no active resumable legacy Invocations; unresolved legacy Invocations have an explicit operator decision and receipt.
-- [ ] Revision retention is checked independently from legacy drain: a pre-S LangGraph deployment artifact cannot retire while any resumable Invocation remains pinned to it, even after legacy runtime deletion is authorized.
-- [ ] After the authenticated zero-active gate, atomically switch `aa compile` to ProductLock v3/`GraphBuildManifest` only and delete Workflow YAML/module packaging/phase aliases; then delete graph schema/compiler/projection DSL, old planner/token scheduler/subgraph loop, Workflow checkpoint authority, and engine settle loop in the exact order in the Product plan.
+- [ ] Revision retention is checked independently from legacy drain: a pre-Raw-closure or earlier LangGraph deployment artifact cannot retire while any resumable Invocation remains pinned to it, even after legacy runtime deletion is authorized.
+- [ ] After the authenticated zero-active gate, T7 first migrates every retained production primitive and consumer out of deletion-bound modules. T8 then atomically switches `aa compile` to ProductLock v3/`GraphBuildManifest` only and deletes Workflow YAML/module packaging/all 99 phase aliases. T9 deletes graph schema/compiler/projection DSL, old planner/token scheduler/subgraph loop, Workflow checkpoint authority, engine settle loop, and custom Runtime only after the post-deletion candidate passes Checkpoint R.
 - [ ] Remove temporary runtime-selection switches after the final legacy artifact drains.
 - [ ] Wheel-content tests prove no Workflow YAML or graph inventory ships.
+- [ ] T10 retains ProductLock v3, GraphRevision/deployment retention, 33 semantic contracts/bindings, permanent Attempt/activity/workspace/effect modules, and Checkpoint R while removing migration-only selectors and any Structured-only code with no remaining consumer.
 
 ## Cross-plan Contract Freeze
 
@@ -324,10 +321,11 @@ The following interface names are shared across plans. If an implementation disc
 | `GraphRevision`, `GraphBuildManifest`, `BootArtifact` | Foundation Task 2 | Use the complete field layouts shown there; compiled graphs and callables never enter canonical projections. |
 | `TaskAttemptContract`, `ResolvedAttemptContract`, `AttemptResolution` | Attempt Tasks 1–2 | Feature code declares data-only contracts; Boot alone resolves authenticated executors. |
 | `BusinessActivation` | Attempt Task 1 | Frozen value object with `kind: Literal["root", "round", "trigger"]` and canonical `value`; use only typed business identity. |
-| `StructuredAgentActivityPort` | Structured OpenCode Task 1 | Provider-neutral dispatch/adopt/observe seam; OpenCode-specific capability names never enter core or Feature code. |
-| `ArtifactContract`, `ArtifactSlot`, `MaterializationEntryReceipt`, `MaterializationReceipt` | Structured Artifact Tasks 1–4 | The only artifact authority and deterministic materialization receipt family. |
-| `BoundAttemptDispatch` and `AttemptKernelPort.execute_or_recover` | Structured Artifact Tasks 5 and 9 | Node adapter binds validated input, resources, artifact paths/policy, activation/phase and requirement closure before key derivation; the Kernel accepts the frozen dispatch and fenced runtime context and resolves none of them again. |
-| `AttemptNodeFactory.attempt` and `CapabilityBuildContext.attempt` | Attempt Task 10 / Foundation Task 8, extended by Checkpoint S | Existing graph-facing interface remains the only effectful node seam. Structured transport, materialization and finalization stay behind it and add zero graph nodes. |
+| `AgentExecutionContract[InputT, AgentResultT, OutputT]` and `AgentExecutionContractProjectionV1` | Attempt Task 3, finalized by Raw Agent Closure | Feature owns inputs/results/outputs, handlers, resources, path policy, validators, timeout and retry. The closed projection uses `schema_version == "raw-agent-contract-v1"`; local result validation is unconditional. |
+| `RawAgentRuntimeBindingProjectionV1` | Raw Agent Runtime Closure | Product owns only runtime/adapter/provider/model/policy/secret handles/activity recovery, references the exact Feature contract digest, uses `schema_version == "raw-agent-runtime-binding-v1"`, and supplies exactly 33 canonically ordered rows. |
+| `ResultContract`, `AgentRunResult`, `RawFinalizeBundle`, `ResolvedRawAgentExecutor` | Raw Agent Runtime Closure | Delivery mode is `assistant_json_local_v1`; business payload is `result_payload`; active source has no `extraction_mode == "structured"` or `structured_result` alias; every finalizer receives validated input, prepared value, validated result, complete run evidence, and a read-only raw workspace through one closed bundle. |
+| `BoundAttemptDispatch` and `AttemptKernelPort.execute_or_recover` | Attempt Tasks 8–10, hardened by Raw Agent Closure | Node adapter binds validated input, resources/path policy, activation and authenticated contract/binding closure before key derivation; the Kernel accepts the frozen dispatch and fenced runtime context, drives initial execution or in-flight reconcile, and resolves none of those authorities again. |
+| `AttemptNodeFactory.attempt` and `CapabilityBuildContext.attempt` | Attempt Task 10 / Foundation Task 8, retained by Raw Agent Closure | Existing graph-facing interface remains the only effectful node seam. Raw session transport, strict local validation and finalization stay behind it and add zero graph nodes. |
 | `ProductGraphs` | Product Tasks 1–2 | Frozen `entrypoints: Mapping[str, CompiledStateGraph]` plus `contracts: Mapping[str, EntrypointGraphContract]`, with exactly 14 matching keys. |
 
 Feature code never constructs `ResolvedAttemptContract` or chooses deployment runtime/model/provider values. The child task named above is the single copy of each concrete field layout and test fixture; this master intentionally does not publish a second, drift-prone skeleton.
@@ -370,10 +368,12 @@ uv run pytest -q \
 
 Expected: exit `0`, with all 14 entrypoints represented in the parity matrix and the deletion gate reporting zero legacy production surfaces.
 
+Checkpoint R must also pass for the same `candidate_sha`, ProductLock, GraphRevision, OpenCode adapter/provider/model identity, 33 contracts, 33 bindings, and 34 live occurrences. Its CI output proves raw lifecycle/transaction/recovery closure and zero provider-structured or typed-materializer production paths. Evidence from a different candidate is not reusable. After T10 the focused gate remains part of normal CI.
+
 ### Planning interpretation for the Intake `min_matches` sites
 
-The accepted design contains two statements that meet at the Intake `case-design` graph: it requires direct handling of all three legacy `min_matches` sites, and it also collapses prepare → Agent runtime → finalize into one semantic Attempt. The latter is the target authority. Therefore `case-design/prepare` and `case-design/repair-prepare` are characterized as fail-closed legacy fanouts, but are not recreated as LangGraph `Send` sites. Their two consumers become fixed Feature-owned prepare/finalize dataflow behind `ResolvedStructuredAgentExecutor`, with primary and repair tests proving finalize receives both the prepared value and validated Agent result. Only `generation/fanout` remains a target graph fanout and raises `InsufficientRouteMatches` before returning any `Send` values. This interpretation prevents phase plumbing from being reintroduced under a new name.
+The accepted design contains two statements that meet at the Intake `case-design` graph: it requires direct handling of all three legacy `min_matches` sites, and it also collapses prepare → Agent runtime → finalize into one semantic Attempt. The latter is the target authority. Therefore `case-design/prepare` and `case-design/repair-prepare` are characterized as fail-closed legacy fanouts, but are not recreated as LangGraph `Send` sites. Their two consumers become fixed Feature-owned prepare/finalize dataflow behind `ResolvedRawAgentExecutor`, with primary and repair tests proving the one `RawFinalizeBundle` contains validated input, prepared value, validated Agent result, complete run evidence, and read-only raw workspace. Only `generation/fanout` remains a target graph fanout and raises `InsufficientRouteMatches` before returning any `Send` values. This interpretation prevents phase plumbing from being reintroduced under a new name.
 
 ## Program Completion Definition
 
-This program is complete only when all five workstreams—including all three Structured Artifact child plans—are checked off, their focused and repository gates pass, all live Invocations are revision-pinned to retained deployment artifacts, and the old Workflow Runtime is physically absent. “New graphs work while legacy remains indefinitely” is an intermediate migration state, not completion.
+This program is complete only when all five active workstreams are checked off; six authenticated Python Feature factories build all 14 Product LangGraph roots; all 33 semantic Agent contracts and bindings pass Checkpoint R with strict local JSON/result/file validation and one-session recovery; the one `AssuranceAttemptKernel` transaction preserves authorization, seal, validators, durable prepare, promotion, six effects, receipt and fencing; every live Invocation remains revision-pinned; and Workflow YAML, all 99 phase aliases, the compiler/planner/scheduler/settle loop, custom Graph Runtime, provider-structured capability promises, typed materializers, and materialization receipts are absent. “New graphs work while legacy remains indefinitely” is an intermediate migration state, not completion.

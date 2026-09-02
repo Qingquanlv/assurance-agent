@@ -1,5 +1,16 @@
 # 33-Agent Artifact Contract Retrofit and Checkpoint S Closure Implementation Plan
 
+> ## CANCELLED / SUPERSEDED — Historical Record Only
+>
+> **Effective 2026-09-02:** this plan is permanently cancelled and superseded by
+> [Permanent Raw Agent Runtime Cutover](../specs/2026-09-02-raw-agent-runtime-cutover-design.md)
+> and its replacement implementation plan,
+> [Raw Agent Runtime Closure](./2026-09-02-raw-agent-runtime-closure.md).
+>
+> The text below is retained only as decision history. **Every checkbox in this file is
+> non-authoritative and non-executable**: do not use it to start work, infer current program
+> status, define a gate, or make a release claim.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close the Capability-owned part of the Structured Artifact Pipeline by retrofitting all 33 Agent contracts and 34 semantic Agent occurrences already referenced by Python StateGraphs with a machine-readable, fail-closed artifact contract; migrating every Feature's result/skill/projector/finalizer/permission/parity closure; consuming the separately qualified OpenCode and Artifact/Kernel gates; correcting the parent plans; and making the aggregate Checkpoint S gate part of CI.

@@ -1,5 +1,10 @@
 # Semantic Attempt Kernel Implementation Plan
 
+> **2026-09-02 continuation note:** this completed Attempt plan records the original baseline.
+> Its provider-schema and `CompositeAttemptExecutor` references are superseded by
+> [Permanent Raw Agent Runtime Cutover](../specs/2026-09-02-raw-agent-runtime-cutover-design.md)
+> and [Raw Agent Runtime Closure](./2026-09-02-raw-agent-runtime-closure.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace 99 deployment phase aliases with 41 immutable effectful semantic Attempt contracts, four proven-pure graph functions, and one reliable `AssuranceAttemptKernel`/`AttemptNodeFactory` seam, while retaining legacy aliases for shadow rollback until final drain.

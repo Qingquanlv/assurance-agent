@@ -1,5 +1,10 @@
 # Feature StateGraph Migration Implementation Plan
 
+> **2026-09-02 continuation note:** this completed Feature plan is not reopened. Raw Agent work
+> adds no graph node or edge and is governed by
+> [Permanent Raw Agent Runtime Cutover](../specs/2026-09-02-raw-agent-runtime-cutover-design.md)
+> and [Raw Agent Runtime Closure](./2026-09-02-raw-agent-runtime-closure.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace all 50 Capability-owned YAML graphs with six authenticated Python `StateGraph` bundles, including the Execution tracer, typed business state, 12 Feature human interrupts, four Generation/one Intake `join:any` rewrites, Generation fanout, and repaired Improvement Retro/evaluate contracts.

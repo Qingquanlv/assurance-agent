@@ -1,6 +1,17 @@
 # Structured Artifact Pipeline
 
-**Status:** Proposed amendment to the Python-native LangGraph Assurance design
+> ## CANCELLED / SUPERSEDED — Historical Record Only
+>
+> **Effective 2026-09-02:** this proposal is permanently cancelled and superseded by
+> [Permanent Raw Agent Runtime Cutover](./2026-09-02-raw-agent-runtime-cutover-design.md).
+> Its replacement implementation authority is
+> [Raw Agent Runtime Closure](../plans/2026-09-02-raw-agent-runtime-closure.md).
+>
+> The text below is retained only as decision history. **Every checkbox in this file is
+> non-authoritative and non-executable**: do not use it to start work, infer current program
+> status, define a gate, or make a release claim.
+
+**Status:** CANCELLED / SUPERSEDED — historical record only
 
 **Date:** 2026-09-01
 

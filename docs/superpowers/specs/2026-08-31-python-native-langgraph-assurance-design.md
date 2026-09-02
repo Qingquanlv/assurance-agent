@@ -1,5 +1,12 @@
 # Python-native LangGraph Assurance Runtime
 
+> **2026-09-02 amendment:** Agent transport and cutover are governed by
+> [Permanent Raw Agent Runtime Cutover](./2026-09-02-raw-agent-runtime-cutover-design.md).
+> Where the historical baseline below mentions provider-schema negotiation, Structured Output,
+> `CompositeAttemptExecutor`, or Checkpoint S0/S, the Raw amendment controls. It uses prompt-carried
+> result Schema, strict local validation, authorized raw files, `ResolvedRawAgentExecutor`, and
+> Checkpoint R without adding LangGraph nodes or a Structured Artifact Pipeline.
+
 - **Status:** Accepted
 - **Date:** 2026-08-31
 - **Supersedes:** [LangGraph-first Assurance Boot Runtime](./2026-08-31-langgraph-assurance-boot-runtime-design.md)

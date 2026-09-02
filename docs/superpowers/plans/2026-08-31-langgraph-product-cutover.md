@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Compose the six Feature bundles into 14 revision-pinned Product `StateGraph` roots, move the `aa` lifecycle to `AssuranceApplication`, prove semantic parity through isolated shadow Invocations, cut over every entrypoint, drain legacy revisions, and physically delete Workflow YAML plus the custom Graph Runtime.
+**Goal:** Compose the six Feature bundles into 14 revision-pinned Product `StateGraph` roots, close the permanent Raw Agent production path, move the `aa` lifecycle to `AssuranceApplication`, prove semantic parity through isolated shadow Invocations, cut over every entrypoint behind Checkpoint R, drain legacy revisions, and physically delete Workflow YAML plus the custom Graph Runtime.
 
-**Architecture:** `assurance-product` owns the fixed Feature factory allowlist, exact 14 public entrypoint contracts, Product-level state/adapters/routes, Product runtime bindings, local SQLite backend, and CLI assembly. Each Invocation is immutably marked `legacy-v2` or `langgraph-v1` and pinned to that runtime's authenticated build artifact: `InvocationLock` v2 for legacy or GraphRevision/ProductLock v3 for LangGraph. Temporary code-owned entrypoint switches control only new Invocation creation. After parity/cutover and a zero-active-legacy drain proof, deletion removes YAML assembly/compiler/projection/planner/token/scheduler authority; LangGraph remains the only Workflow engine.
+**Architecture:** `assurance-product` owns the fixed Feature factory allowlist, exact 14 public entrypoint contracts, Product-level state/adapters/routes, 33 authenticated semantic Raw Agent runtime bindings, local SQLite backend, and CLI assembly. Each Raw Agent Attempt uses one recoverable OpenCode root session, one exact assistant JSON result validated locally against the installed contract, Feature-owned finalization over authorized raw workspace files, and the existing Kernel transaction from seal through receipt. Each Invocation is immutably marked `legacy-v2` or `langgraph-v1` and pinned to that runtime's authenticated build artifact: `InvocationLock` v2 for legacy or GraphRevision/ProductLock v3 for LangGraph. Temporary code-owned entrypoint switches control only new Invocation creation. After Checkpoint R, parity/cutover, and a zero-active-legacy drain proof, deletion removes YAML assembly/compiler/projection/planner/token/scheduler authority; LangGraph remains the only Workflow engine and the focused Raw Agent tests remain in normal CI.
 
 **Tech Stack:** Python 3.11, LangGraph `1.2.11`, Async SQLite checkpointer `3.1.1`, Pydantic v2, Click, pytest, existing Product lock/source authentication/export/archive contracts and wheel smoke script.
 
-**Spec:** `docs/superpowers/specs/2026-08-31-python-native-langgraph-assurance-design.md`, sections 8, 16–27, Product/revision/persistence tests, acceptance criteria, and explicit deletion target.
+**Spec:** `docs/superpowers/specs/2026-08-31-python-native-langgraph-assurance-design.md`, sections 8, 16–27, Product/revision/persistence tests, acceptance criteria, and explicit deletion target; amended by the accepted `docs/superpowers/specs/2026-09-02-raw-agent-runtime-cutover-design.md`, which is authoritative for Agent transport, runtime closure, Checkpoint R, and cutover order.
 
 ---
 
@@ -16,17 +16,18 @@
 
 - Foundation, Attempt Kernel and all six Feature graph plans are complete and reviewed. Product Tasks 1–4 and T5a are also complete at continuation baseline `4a9cd197`. Execute remaining work in a clean continuation worktree; preserve the original dirty worktree and do not replay completed tasks.
 - Every Product root state inherits `CheckpointBridgeState`; public input/output and semantic parity projections exclude `assurance_checkpoint_markers`, while restart tests retain checkpoint-integrity coverage for it.
-- Remaining tasks execute in this order: OpenCode Task 0 / Checkpoint S0, Structured R1–R5 / Checkpoint S, T5b, T5c, T5d, then Tasks 6–10. A red S0 parks the Structured retrofit before production implementation; a green S0 only authorizes that implementation and does not authorize Agent cutover. Task 7 migrates every compiler/Runtime consumer and creates compatibility wrappers without deleting authority; Task 8 may then delete Assurance YAML/phase aliases; Task 9 atomically removes compiler and Runtime authority. Every intermediate commit must pass its stated gate.
+- Remaining work executes in this order: Raw Agent Runtime Closure; T5a verification on the existing production composition; initial Checkpoint R; T5b candidate → Checkpoint R → release; T5c candidate → Checkpoint R → release; T5d candidate → Checkpoint R → release; then Tasks 6–10. Task 8 deletes Assurance YAML and all 99 phase aliases while retaining the 33 semantic Raw Agent contracts, bindings, and executor; Task 9 deletes the compiler/Runtime after the normal post-deletion gate; Task 10 removes migration switches while retaining the focused Raw Agent checks in CI.
 - Keep public entrypoint names and public input/output/Status schemas stable. Internal graph/node/token IDs are not parity contracts.
 - Product imports exactly six authenticated factory symbols and is the only cross-Feature graph composer. Boot remains generic: it consumes Product-provided owner-keyed factories/bundles and does not hard-code Assurance keyword arguments.
 - Feature subgraphs are compiled with `checkpointer=None`. Product roots alone receive the anchored saver. Schema-different child invocation goes through a pure adapter; no side effect runs before an interrupting child call.
 - One production Invocation has one immutable discriminated selection record: `LegacyRuntimeRecord(invocation_lock_digest, root_input_digest, entrypoint)` or `LangGraphRuntimeRecord(graph_revision_id, product_lock_digest, root_input_digest, entrypoint)`. Old/new runtimes may process different Invocations but never the same ID; a v2 lock digest is never relabeled as a GraphRevision.
 - Shadow uses scripted/snapshotted data or separately named Invocations and cannot publish canonical SUT mutation twice. Compare semantic behavior, not private IDs.
 - A new entrypoint switch affects only future starts. Existing Invocations always reopen their recorded runtime/revision. Rollback is a new-start routing change, never an in-place engine change.
-- Agent contracts use provider-neutral `requires_structured_output`; Product maps it to `opencode_structured_output` only for an exact OpenCode release/adapter/provider/model/schema certification promoted by Checkpoint S. Checkpoint S0's minimal canary report is non-promotable and cannot satisfy Product. OpenCode implements this through its internal `StructuredOutput` tool and terminal `info.structured`, not provider-native `response_format`. Official v1.18.26 remains `message-roundtrip-red`, so the current program state is parked at S0; do not work around this with speculative Structured implementation, a private source fork, or a false capability flag.
+- Raw Agent local result validation is unconditional, not a negotiable runtime capability. Runtime appends the installed contract's immutable JSON Schema and digest to prompt text, sends no OpenCode response-format field, accepts only one exact terminal assistant JSON object, validates it locally, and then invokes the Feature finalizer over the authorized raw workspace. Skills, project files, environment variables, and the SUT cannot replace result schemas, handlers, validators, paths, or runtime bindings.
 - SQLite is local single-host only. A multi-worker deployment requires a separately qualified transactional anchored backend, not SQLite mounted on shared storage.
 - The nine-site `join:any` migration has zero semantic waivers. A Feature current-trigger regression blocks every not-yet-cut reachable root plus T5b–T10, drain, and deletion; it does not roll back the four accepted T5a roots or switch any existing Invocation away from its recorded runtime/revision. Product's typed assessment-trigger optimization is accepted only after predecessor exclusion and no-late-reactivation are proven; falling back to the same typed inbox/cursor is an equivalent implementation, not an exception. Never embed a point-level legacy join, discard a late arrival, or substitute predecessor-map/last-write-wins state.
-- Legacy deletion starts only after Checkpoint S and T5d are green, all 14 cutover records pass, no active legacy Invocation can resume, original revision artifacts have satisfied retention policy, and replacement crash/interrupt/export/archive tests are green. Legacy drain and old LangGraph revision retention are independent gates.
+- Legacy drain starts only after Checkpoint R is green for the exact released T5d candidate, all 14 selectors are `langgraph-v1` for future starts, all 14 cutover records pass, no active legacy Invocation can resume, original revision artifacts have satisfied retention policy, and replacement crash/interrupt/export/archive tests are green. Legacy drain and old LangGraph revision retention are independent gates.
+- Checkpoint R is a normal candidate-bound CI result. It records the candidate SHA, ProductLock, GraphRevision, adapter/provider/model, 33 contracts, 33 bindings, and 34 Agent occurrences; then proves strict result parsing, raw write authority, one prompt per AttemptKey, and the existing Kernel recovery path. It creates no separate certification or deployment authority.
 
 ## Exact Product contract table
 
@@ -260,7 +261,7 @@ For a LangGraph Invocation, `export` and CLI `archive` read the revision-pinned 
 
 - [x] **Step 5: Install the historical fail-closed dispatch/cutover hook.**
 
-Task 3 installed the Product-owned place where a reachable Agent requirement blocks before dispatch/cutover. Its original `provider_schema` interpretation is superseded by Checkpoint S and is not a second implementation task. The Structured Artifact tranche replaces that hook atomically with provider-neutral `requires_structured_output -> opencode_structured_output` resolution, exact release certification, terminal `info.structured` observation, and independent Kernel validation. Product Boot continues to compile/authenticate direct roots; only a selected reachable Agent dispatch/cutover fails closed while the capability is absent.
+Task 3 installed the Product-owned place where a reachable Agent binding blocks before dispatch/cutover. The accepted Raw Agent amendment supersedes its original capability-flag interpretation without reopening Task 3. Raw Agent Runtime Closure replaces the temporary hook with exact semantic contract/binding resolution, strict local Agent-result validation, and recoverable session dispatch/adoption using existing runtime primitives. Product Boot continues to compile/authenticate direct roots; a selected reachable Agent root fails closed on any missing, duplicate, extra, wrong-owner, wrong-source, or digest-drifting binding, while non-Agent roots remain independently bootable.
 
 - [ ] **Step 6: Test CLI security and exit codes.**
 
@@ -315,6 +316,14 @@ git commit -m "feat: add revision-pinned Product Application coexistence"
 
 ### Task 4: Build semantic shadow parity for all 14 entrypoints
 
+**Continuation status:** completed and accepted at baseline `4a9cd197`. Every step in this Task is
+historical completion evidence, not pending implementation. The accepted fixture used the
+then-current authenticated Execution executor behind the completed semantic Attempt seam. Raw Agent
+Raw Agent Closure Task R3 owns introduction of `ResolvedRawAgentExecutor` and the
+retrofit of every remaining Product shadow/Validator fixture and test from
+`CompositeAttemptExecutor`/deferred compatibility to that executor. Do not replay or rewrite Product
+Task 4 to perform that future retrofit.
+
 **Files:**
 
 - Create: `tests/product/shadow_harness.py`
@@ -332,7 +341,7 @@ git commit -m "feat: add revision-pinned Product Application coexistence"
 
 **Interfaces:** `SemanticTrace` and normalized comparators for Attempt calls, pure transforms, route decisions, ordered validator calls, interrupts, receipts, terminal/output; separate Invocation identities; per-entrypoint parity record; test-only cloned legacy/new contracts binding the same authenticated validator.
 
-- [ ] **Step 1: Define the normalized trace.**
+- [x] **Step 1: Define the normalized trace.**
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -349,21 +358,21 @@ class SemanticTrace:
 
 Map each legacy prepare/execute/finalize triple to one Agent contract call and map the four pure legacy handlers to pure decisions. Ignore alias IDs, activation/token IDs, checkpoint IDs, node names and internal graph count.
 
-- [ ] **Step 2: Prove shadow isolation.**
+- [x] **Step 2: Prove shadow isolation.**
 
 Legacy and new traces use different Invocation IDs and isolated workspaces or a no-promotion scripted Kernel. A guard rejects an attempt to attach both drivers to one Invocation. No external effect handler is applied twice; effect traces are scripted or separately namespaced.
 
-- [ ] **Step 3: Parameterize all public roots and meaningful branches.**
+- [x] **Step 3: Parameterize all public roots and meaningful branches.**
 
 For all 14 names compare valid input/output/status plus failure and interrupt paths. For `execute/full`, cover generation family selection, execution failure/healing/rerun, coverage repair/human decision, report satisfied/unsatisfied, effect pending, and budget exhaustion. For looped joins compare downstream current-trigger inputs and repeat activation count. For standalone `improvement-evaluate` and the evaluate occurrence inside `improvement-apply`, compare the full effect kind `assurance.improvement.effect.delivery.v1`, payload discriminator `memory_eval`, and `MemoryEvalReceipt`. Standalone evaluate must cover committed, pending, and publication-indeterminate/recover traces; it cannot report success before effect settlement, and recovery cannot dispatch the evaluator twice.
 
-- [ ] **Step 4: Prove one real test-only Validator binding on both runtimes.**
+- [x] **Step 4: Prove one real test-only Validator binding on both runtimes.**
 
-`validator_parity_fixture.py` resolves the authenticated `assurance.execution.validator.evidence.v1` registry entry and Boot-resolved core contract for `assurance.execution.agent.execute.v1` once. For the legacy adapter, clone one test-owned task definition with `ResourceClaims(writes=("tests", "src"))` and bind that validator. For LangGraph, clone the resolved contract's data-only `TaskAttemptContract` as `test.assurance.execution.validator-parity.v1`, give it the identical resources and validator tuple, then construct a test-only `ResolvedAttemptContract` with the existing authenticated Execution executor. Neither clone may create a new Agent runtime binding or enter a contribution, production catalog, ProductLock, GraphBuildManifest, wheel, or production inventory.
+`validator_parity_fixture.py` resolved the authenticated `assurance.execution.validator.evidence.v1` registry entry and Boot-resolved core contract for `assurance.execution.agent.execute.v1` once. For the legacy adapter, it cloned one test-owned task definition with `ResourceClaims(writes=("tests", "src"))` and bound that validator. For LangGraph, it cloned the resolved contract's data-only `TaskAttemptContract` as `test.assurance.execution.validator-parity.v1`, gave it the identical resources and validator tuple, then constructed a test-only `ResolvedAttemptContract` with the authenticated executor available at the accepted baseline. Neither clone created a new Agent runtime binding or entered a contribution, production catalog, ProductLock, GraphBuildManifest, wheel, or production inventory. Raw Closure R3 later replaces the fixture's Composite/deferred dependency with the authenticated `ResolvedRawAgentExecutor` while preserving the same assertions and production counts.
 
 Run identical accepted and rejected candidates through the actual legacy commit path and actual LangGraph/Kernel path. `tests/test_validator_parity.py` and `src/validator_parity.py` must both pass resource/seal admission. The first calls the validator exactly once and promotes on both sides. The second calls it exactly once, returns the equivalent typed rejection, and performs zero durable commit-prepare (`workspace.prepare`/prepared journal event) plus zero canonical promotion on either side; Agent prepare/runtime/finalize needed to produce the sealed staged set may already have run. Assert afterward that all shipped contracts still declare `validators=()` and the authenticated production inventory remains exactly 25 registered / 0 bound.
 
-- [ ] **Step 5: Run RED then implement trace adapters.**
+- [x] **Step 5: Run RED then implement trace adapters.**
 
 ```bash
 uv run pytest -q \
@@ -374,11 +383,11 @@ uv run pytest -q \
 
 Expected: missing shadow harness/parity records; mismatches are reported by semantic field, not raw event diff.
 
-- [ ] **Step 6: Port/freeze existing Product black-box cases.**
+- [x] **Step 6: Port/freeze existing Product black-box cases.**
 
 Run current intake/triplet/generation/parallel/execution-quality/coverage/healing/interrupt/Retro/report/replay/terminal behavioral suites against both adapters where meaningful. Replace YAML structure expectations only after an equivalent behavior test exists.
 
-- [ ] **Step 7: Commit shadow parity.**
+- [x] **Step 7: Commit shadow parity.**
 
 ```bash
 git add \
@@ -397,9 +406,25 @@ git add \
 git commit -m "test: prove semantic LangGraph parity"
 ```
 
+## Raw Agent Runtime Closure prerequisite
+
+The accepted Raw Agent amendment adds one child plan before the unfinished Product Task 5 tranches. That child plan owns the implementation and focused integration tests; this Product plan consumes, and must not duplicate or weaken, these outputs:
+
+- exactly 33 installed `AgentExecutionContract[InputT, AgentResultT, OutputT]` projections and 33 matching `RawAgentRuntimeBindingProjectionV1` records, covering 34 live Agent occurrences without phase-alias lookup;
+- one unconditional `assistant_json_local_v1` result contract, one `ResolvedRawAgentExecutor`, and one closed finalizer bundle for every Agent contract;
+- prompt composition that appends the installed result schema last, sends no OpenCode `format`, and validates one exact assistant JSON object locally;
+- one recoverable OpenCode root session and at most one prompt per AttemptKey using the existing journal, activity, workspace, secret, fencing, and effect primitives;
+- Feature finalization over actual authorized raw files followed by the unchanged Kernel transaction;
+- unchanged LangGraph topology: Raw Agent closure adds no node or edge and preserves the nine `join:any`, seven SCC-anchor, three `min_matches`, 50 exclusive-route, interrupt, budget, revision, and public-schema gates;
+- T5a verification followed by a normal candidate-bound Checkpoint R result.
+
+Any earlier provider-result eligibility probe is historical research only: it is absent from active dependencies and required CI, cannot advertise a Product capability, and cannot satisfy or block Checkpoint R. Raw Closure R5 removes or archives executable eligibility-probe code after preserving the research record; cancelled Structured plans remain non-executable history.
+
+Checkpoint R is a prerequisite, not a replacement for closure. A partial contract sample or permissive JSON parsing cannot satisfy it.
+
 ### Task 5: Cut over entrypoints without switching existing Invocations
 
-**Continuation status:** Task 5 is partial. T5a is complete at `4a9cd197`; Checkpoint S0, Checkpoint S, and T5b–T5d are unexecuted. While S0 is red, only plan synchronization and OpenCode Task 0 are authorized.
+**Continuation status:** Task 5 is partial. T5a is complete at `4a9cd197`; Raw Agent Runtime Closure, initial Checkpoint R, and T5b–T5d are unexecuted. The four accepted T5a roots retain their recorded revisions while closure is implemented.
 
 **Files:**
 
@@ -420,7 +445,7 @@ First start records runtime kind/revision with the Task 3 `initializing → back
 
 Only Product code/release data can change new-start selection. `.aa/`, SUT, environment variables and CLI flags cannot select runtime/factory/revision. Switch keys equal the exact 14 public names; missing/extra values fail Boot.
 
-- [ ] **Step 3: Execute the remaining reviewed tranches around Checkpoint S.**
+- [ ] **Step 3: Close Raw Agent production and establish the initial Checkpoint R.**
 
 The authoritative sequence is:
 
@@ -429,36 +454,50 @@ T5a — complete at 4a9cd197: 4 non-Agent thin roots
   improvement-evaluate, improvement-export,
   improvement-apply, improvement-rollback
 
-Checkpoint S0 — pending; current v1.18.26 candidate is red
-  Run only the standalone exact-release OpenCode eligibility probe.
-  Red: park Structured R1–R6 and all Product work below.
-  Green: authorize Structured implementation, but no Product cutover.
+Raw Agent Runtime Closure — pending
+  Install the 33 semantic contracts/bindings, ResolvedRawAgentExecutor,
+  strict local result protocol, and recovery through existing production ports.
 
-Checkpoint S — pending
-  Retrofit Structured Artifact transport/contracts/Kernel into the existing graphs,
-  re-certify T5a and the pre-S/post-S revision fence,
-  fully certify one exact OpenCode release and all 33 contracts on the final candidate.
+T5a verification — pending
+  Re-run the four accepted roots through the current production composition and preserve
+  their shadow, Validator, effect, lifecycle, and revision-retention evidence.
+
+Initial Checkpoint R — pending
+  Verify the exact closure candidate and OpenCode raw protocol,
+  all 33 contracts/33 bindings/34 occurrences, Kernel transaction,
+  recovery, lifecycle, workspace, and security matrix.
 
 T5b — pending: 8 Agent-dependent thin roots
   intake, case, archive, retro,
   issue-review, issue-analyze, issue-reconcile,
   improvement-review
 
+  build candidate → Checkpoint R for that SHA → release selector
+
 T5c — pending: execute
+  build candidate → Checkpoint R for that SHA → release selector
+
 T5d — pending: full
+  build candidate → Checkpoint R for that SHA → release selector
 ```
 
-T5a is not a completed twelve-root Wave A. The four roots stay on LangGraph because their reachable Agent-contract set is empty. Checkpoint S0 blocks the start of Structured R1–R6; S0 or Checkpoint S being red blocks T5b–T5d and downstream drain/deletion. Neither condition rolls back T5a or globally fails direct/non-Agent Product Boot. After each pending cutover tranche, run its public behavior, restart, interrupt and export/archive prerequisites. Rollback changes only the switch for future starts; already-started LangGraph Invocations remain on their recorded revision.
+T5a is not a completed twelve-root Wave A. The four roots stay on LangGraph because their reachable Agent-contract set is empty. An incomplete Raw Agent closure or a red Checkpoint R blocks T5b–T5d and downstream drain/deletion; neither condition rolls back T5a or globally fails direct/non-Agent Product Boot. After each pending cutover tranche, run its public behavior, restart, interrupt, status, export, and archive prerequisites. Rollback changes only the switch for future starts; already-started LangGraph Invocations remain on their recorded revision.
 
-Every T5b/T5c/T5d selector change creates a new candidate SHA. Before release, rerun the protected Checkpoint S aggregate gate for that exact candidate; external OpenCode qualification may be reused only when the authenticated adapter/server/provider/model/schema/limits and contract catalog closure are unchanged. The cutover record binds `candidate_sha`, `graph_revision_id`, `product_lock_digest`, `structured_output_certification_digest`, `binding_wheel_digest`, `attempt_site_catalog_digest`, entrypoint/runtime, and passing parity/crash/join citations from that same candidate. A missing, failed, xfailed, waived, cross-candidate, or drifted row blocks the tranche. T5a's post-S regression record must retain the cross-runtime test-only Validator evidence and standalone/apply `evaluate-memory-improvement` committed/pending/publication-indeterminate evidence; no production contract gains a Validator binding to satisfy it.
+- [ ] **Step 4: Build, verify, then release each remaining candidate.**
 
-- [ ] **Step 4: Extend active revision retention across the pre-S/post-S fence.**
+Each T5b/T5c/T5d selector change is first built as an unreleased candidate. Run the normal Checkpoint R CI gate for that exact candidate SHA; only the passing candidate may switch future starts. The focused live OpenCode row may be reused only when the adapter/provider/model and result contract are unchanged and the CI record proves that identity.
 
-Structured source/schema/binding closure changes the authenticated wheel sources/ProductLock and therefore produces a distinct post-S GraphRevision; the post-S `GraphBuildManifest` must authenticate the structured Attempt digests. Existing pre-S Invocations retain their original selection, revision, lock, checkpoint, journal and receipt and resume only through the original deployment artifact/container. Missing artifact fails before checkpoint or Kernel access; relabel/backfill is forbidden. New starts use the post-S revision, and one process never imports two versions of the same wheel.
+Each cutover record binds `candidate_sha`, `graph_revision_id`, `product_lock_digest`, the 33 contract/binding rows, 34-occurrence inventory, adapter/provider/model, entrypoint/runtime, and passing focused CI rows. A missing, failed, skipped, waived, cross-candidate, or stale row blocks the tranche. The gate also asserts that the request carries no provider response-format field and the result is one exact locally validated assistant JSON object.
+
+T5a's post-closure regression record retains the cross-runtime test-only Validator evidence and standalone/apply `evaluate-memory-improvement` committed/pending/publication-indeterminate evidence; no production contract gains a Validator binding to satisfy it. Releasing a candidate changes only future-start selection. Existing Invocations never change runtime, ProductLock, GraphRevision, checkpoint, journal, receipt, or deployment artifact in place.
+
+- [ ] **Step 5: Extend active revision retention across the Raw Agent closure fence.**
+
+Raw Agent contract/schema/binding/executor closure changes authenticated wheel sources and ProductLock, and therefore produces a distinct post-closure GraphRevision. The post-closure `GraphBuildManifest` authenticates the 33 contract and binding rows plus the 34-site inventory. Existing pre-closure Invocations retain their original selection, revision, lock, checkpoint, journal, and receipt; relabel/backfill is forbidden. New starts use the released post-closure revision.
 
 The current conservative binding-file counts protect artifacts from premature removal but do not prove an Invocation is terminal. Task 6 adds the authenticated resumable/terminal scan required for retirement and drain authorization.
 
-- [ ] **Step 5: Verify and commit each remaining tranche.**
+- [ ] **Step 6: Verify, create the immutable candidate, pass Checkpoint R, and release each tranche.**
 
 For each remaining tranche run:
 
@@ -471,10 +510,10 @@ uv run pytest -q \
   tests/product/test_runtime_selection_security.py
 ```
 
-Use one explicit commit per remaining tranche:
+Use one explicit candidate commit per remaining tranche. The Checkpoint R CI check for that exact SHA must succeed before deployment exposes its selector to future starts:
 
 ```text
-feat: cut over structured thin Product entrypoints
+feat: cut over raw Agent thin Product entrypoints
 feat: cut over Product execute
 feat: cut over Product full
 ```
@@ -495,7 +534,7 @@ git diff --cached --name-only
 
 ### Task 6: Stop legacy starts and prove the drain gate
 
-**Dependency:** Checkpoint S and T5b/T5c/T5d are green, and the authenticated selector is already `14/14 langgraph-v1` for future starts. Task 6 must not begin from T5a partial state.
+**Dependency:** Raw Agent Runtime Closure is complete, Checkpoint R is green for the exact released T5d candidate, T5b/T5c/T5d are released, and the authenticated selector is already `14/14 langgraph-v1` for future starts. Task 6 must not begin from T5a partial state, an unreleased candidate, stale Checkpoint R evidence, or a partial 14-root selector.
 
 **Files:**
 
@@ -514,11 +553,11 @@ git diff --cached --name-only
 
 Deletion authorization fails when any legacy Invocation is running, blocked, interrupted, stopped-but-resumable, publication-indeterminate, or has unreadable identity. It succeeds only at zero active legacy, with every nonterminal old Invocation explicitly resumed to terminal or terminated by an authenticated operator record.
 
-Authorization also fails if any of the exact nine `join:any` rows is missing, failed, xfailed, or carries a semantic waiver; if the exact seven loop-SCC anchor inventory no longer matches; if any of the three `min_matches` sites is implemented outside the frozen one-`Send`/two-Composite mapping; or if cross-runtime test-only Validator accept/reject parity is absent. These are migration evidence gates even when active legacy count is zero.
+Authorization also fails if Checkpoint R does not bind the exact released candidate, ProductLock, GraphRevision, adapter/provider/model, 33 semantic contracts, 33 raw bindings, and 34 Agent occurrences; if any of the exact nine `join:any` rows is missing, failed, xfailed, or carries a semantic waiver; if the exact seven loop-SCC anchor inventory no longer matches; if any of the three `min_matches` sites is implemented outside the frozen one-`Send`/two-Composite mapping; or if cross-runtime test-only Validator accept/reject parity is absent. These are migration evidence gates even when active legacy count is zero.
 
 - [ ] **Step 2: Freeze the already-complete 14/14 new-start cutover.**
 
-Verify all 14 switches are already `langgraph-v1`, remove rollback-to-legacy for new starts, and retain only legacy reopen/resume. Test a legacy-marked Invocation still opens with its old artifact while a new same-entrypoint Invocation always records LangGraph. Do not retire a pre-S LangGraph artifact merely because legacy active count is zero; its own authenticated resumable scan is independent.
+Verify all 14 switches are already `langgraph-v1`, remove rollback-to-legacy for new starts, and retain only legacy reopen/resume. Test a legacy-marked Invocation still opens with its old artifact while a new same-entrypoint Invocation always records LangGraph. Do not retire a pre-closure LangGraph artifact merely because legacy active count is zero; its own authenticated resumable scan is independent.
 
 - [ ] **Step 3: Run full crash/export/archive coverage before authorization.**
 
@@ -552,7 +591,7 @@ git commit -m "chore: close legacy Invocation creation"
 
 ### Task 7: Prepare one atomic compiler/Runtime authority deletion
 
-**Dependency and execution position:** Execute this section immediately after Task 6 and before Task 8. It deletes no compiler/Runtime authority, so legacy historical paths remain usable for the subsequent YAML/alias cleanup commit.
+**Dependency and execution position:** Execute this section immediately after Task 6 and before Task 8. Raw Agent Runtime Closure has already installed and exercised every permanent production port under `graph_engine.attempts.*`, `graph_engine.persistence`, and `graph_engine.effects` before T5b; Task 7 must not defer, recopy, or replace that authority. This Task migrates the remaining compiler/Runtime consumers and preserves narrowly allowlisted legacy compatibility wrappers until Task 9. It deletes no compiler/Runtime authority, so legacy characterization paths remain usable for the subsequent YAML/alias cleanup commit.
 
 **Files:**
 
@@ -612,38 +651,38 @@ git commit -m "chore: close legacy Invocation creation"
 - Modify: `packages/framework/graph-engine/tests/composition/test_registry_platform.py`
 - Modify: `tests/product/test_composition_authority.py`
 - Modify: `tests/product/test_full_graph_audit.py`
-- Create: `packages/framework/graph-engine/graph_engine/attempts/activity.py`
-- Create: `packages/framework/graph-engine/graph_engine/attempts/workspace.py`
-- Create: `packages/framework/graph-engine/graph_engine/attempts/production_host.py`
-- Create: `packages/framework/graph-engine/graph_engine/attempts/production_worker.py`
-- Create: `packages/framework/graph-engine/graph_engine/attempts/host_protocol.py`
-- Create: `packages/framework/graph-engine/graph_engine/attempts/host_receipts.py`
-- Create: `packages/framework/graph-engine/graph_engine/attempts/secret_sources.py`
+- Create in Task 7: `packages/framework/graph-engine/graph_engine/attempts/activity.py`
+- Create in Task 7: `packages/framework/graph-engine/graph_engine/attempts/workspace.py`
+- Create in Task 7 only if retained consumers require them: `packages/framework/graph-engine/graph_engine/attempts/production_host.py`
+- Create in Task 7 only if retained consumers require them: `packages/framework/graph-engine/graph_engine/attempts/production_worker.py`
+- Create in Task 7 only if retained consumers require them: `packages/framework/graph-engine/graph_engine/attempts/host_protocol.py`
+- Create in Task 7 only if retained consumers require them: `packages/framework/graph-engine/graph_engine/attempts/host_receipts.py`
+- Create in Task 7 only if retained consumers require them: `packages/framework/graph-engine/graph_engine/attempts/secret_sources.py`
 - Modify as temporary re-export wrappers: `packages/framework/graph-engine/graph_engine/runtime/activity.py`
 - Modify as temporary re-export wrappers: `packages/framework/graph-engine/graph_engine/runtime/task_workspace.py`
-- Modify as temporary re-export wrappers: `packages/framework/graph-engine/graph_engine/runtime/production_host.py`
-- Modify as temporary re-export wrappers: `packages/framework/graph-engine/graph_engine/runtime/production_worker.py`
-- Modify as temporary re-export wrappers: `packages/framework/graph-engine/graph_engine/runtime/host_protocol.py`
-- Modify as temporary re-export wrappers: `packages/framework/graph-engine/graph_engine/runtime/host_receipts.py`
-- Modify as temporary re-export wrappers: `packages/framework/graph-engine/graph_engine/runtime/secret_sources.py`
+- Modify as temporary re-export wrappers only for modules actually moved above: `packages/framework/graph-engine/graph_engine/runtime/production_host.py`
+- Modify as temporary re-export wrappers only for modules actually moved above: `packages/framework/graph-engine/graph_engine/runtime/production_worker.py`
+- Modify as temporary re-export wrappers only for modules actually moved above: `packages/framework/graph-engine/graph_engine/runtime/host_protocol.py`
+- Modify as temporary re-export wrappers only for modules actually moved above: `packages/framework/graph-engine/graph_engine/runtime/host_receipts.py`
+- Modify as temporary re-export wrappers only for modules actually moved above: `packages/framework/graph-engine/graph_engine/runtime/secret_sources.py`
 - Modify: `packages/framework/graph-engine/graph_engine/__init__.py`
 - Modify: `packages/framework/graph-engine/graph_engine/__main__.py`
 - Modify: `benchmark/agent-runtime-phase3/run_item.py`
 - Modify: `scripts/graph_engine_smoke_test.sh`
 - Modify: `.github/workflows/ci.yml`
 - Modify: `packages/products/assurance-product/assurance_product/runtime_ports.py`
-- Modify: `tests/product/test_product_runtime_ports.py`
+- Modify only to cover the remaining consumer migration; preserve the focused Checkpoint R runtime tests: `tests/product/test_product_runtime_ports.py`
 - Retain as an explicitly allowlisted temporary legacy execution adapter until Task 9: `packages/products/assurance-product/assurance_product/application.py`
 - Retain as an explicitly allowlisted temporary legacy execution adapter until Task 9: `packages/products/assurance-product/assurance_product/cli.py`
 - Retain as an explicitly allowlisted temporary legacy execution adapter until Task 9: `packages/products/assurance-product/assurance_product/status.py`
-- Modify: `packages/framework/graph-engine/graph_engine/attempts/kernel.py`
-- Modify: `packages/framework/graph-engine/graph_engine/attempts/context.py`
-- Modify: `packages/framework/graph-engine/graph_engine/attempts/resource_arbiter.py`
-- Modify: `packages/framework/graph-engine/graph_engine/persistence/attempt_journal.py`
-- Modify: `packages/framework/graph-engine/graph_engine/persistence/resource_authorization.py`
+- Modify only if Task 7 import migration requires it: `packages/framework/graph-engine/graph_engine/attempts/kernel.py`
+- Modify only if Task 7 import migration requires it: `packages/framework/graph-engine/graph_engine/attempts/context.py`
+- Modify only if Task 7 import migration requires it: `packages/framework/graph-engine/graph_engine/attempts/resource_arbiter.py`
+- Modify only if Task 7 import migration requires it: `packages/framework/graph-engine/graph_engine/persistence/attempt_journal.py`
+- Modify only if Task 7 import migration requires it: `packages/framework/graph-engine/graph_engine/persistence/resource_authorization.py`
 - Modify every exact path in the “Task 7 retained-consumer migration set” below; those paths are part of Task 7 even though grouped beside the Task 9 precondition.
 
-**Interfaces:** migrated generic Python Product factory examples whose effectful nodes use authenticated `TaskAttemptContract`s; new `graph_engine.attempts` homes for retained activity/host/workspace/security primitives; Boot/Application CLI and smoke path; checked zero-external-consumer inventory. The legacy compiler and Runtime remain behaviorally executable through retained legacy composition branches for this compatibility commit and are removed together in Task 9.
+**Interfaces:** migrated generic Python Product factory examples whose effectful nodes use authenticated `TaskAttemptContract`s; minimum retained activity/workspace/host/security modules moved out of the deletion target; Boot/Application CLI and smoke path; checked zero-external-consumer inventory. The legacy compiler and Runtime remain behaviorally executable through retained legacy composition branches for this compatibility commit and are removed together in Task 9.
 
 - [ ] **Step 1: Add the future negative import/symbol tests without deleting authority yet.**
 
@@ -655,13 +694,13 @@ ProductLock v3/new paths contain no Workflow/module/slot fields or compiled Work
 
 - [ ] **Step 3: Migrate every compiler/Runtime consumer while compatibility wrappers still exist.**
 
-Copy the retained activity/workspace/host/security implementations into `graph_engine.attempts`; the repository already provides the reusable top-level JSON-Schema utility and its temporary `runtime/json_schema.py` re-export, and Semantic Attempt Task 9 has already moved both effect engines to the retained import. Migrate `runtime_ports.py`, its test, and all retained tests/helpers in the exact Task 9 consumer set to the new imports. Rewrite `graph_engine.__main__`, the generic smoke script and benchmark driver to Boot/Application/Attempt APIs while the old Product execution adapter remains available only to already drained compatibility tests. Keep PyYAML if closed Product/config declarations still need it.
+Move only the activity/workspace/host/security implementations that still have retained consumers out of `graph_engine.runtime` and into `graph_engine.attempts`. Migrate Product and test imports, then leave temporary re-export wrappers for explicitly allowlisted legacy characterization consumers until Task 9. Do not create a replacement module with no retained consumer. Keep Attempt/resource journals under `graph_engine.persistence`, effects under their existing retained package, and the reusable top-level JSON-Schema utility. Rewrite `graph_engine.__main__`, the generic smoke script, and benchmark driver to Boot/Application/Attempt APIs while the old Product execution adapter remains available only to drained compatibility tests.
 
-Convert both `graph-engine-toy-a`/`toy-b` and `agent-runtime-fixture` from embedded `WorkflowDef`/Workflow declarations to explicit Product-supplied Python `StateGraph` factories built through the generic Boot/Application contracts. Move each toy's file-writing/retrying handler policy into authenticated owner contracts in its new `contracts.py`, publish those from `plugin.py`, and call them only through `CapabilityBuildContext.attempt`; direct file mutation from a graph node is forbidden. Preserve their integration role: the two toys still prove graph-engine is a reusable Spring-Boot-like framework rather than Assurance-only code, and the Agent fixture still exercises adapter rebinding through a composite Attempt. Convert the Phase 4 six-wheel fixture/declarations and delete only its test-owned Workflow YAML after its StateGraph replacement passes. Update the import inventory; do not remove `graph.schema` in this Task.
+Convert both `graph-engine-toy-a`/`toy-b` and `agent-runtime-fixture` from embedded `WorkflowDef`/Workflow declarations to explicit Product-supplied Python `StateGraph` factories built through the generic Boot/Application contracts. Move each toy's file-writing/retrying handler policy into authenticated owner contracts in its new `contracts.py`, publish those from `plugin.py`, and call them only through `CapabilityBuildContext.attempt`; direct file mutation from a graph node is forbidden. Preserve their integration role: the two toys still prove graph-engine is a reusable Spring-Boot-like framework rather than Assurance-only code, and the Agent fixture exercises semantic raw runtime rebinding, local result validation, and same-session recovery through `ResolvedRawAgentExecutor`. Convert the Phase 4 six-wheel fixture/declarations and delete only its test-owned Workflow YAML after its StateGraph replacement passes. Update the import inventory; do not remove `graph.schema` in this Task.
 
 Pin `langgraph==1.2.11` directly in all three example `pyproject.toml` files and the Phase 4 six-wheel fixture, then regenerate `uv.lock`. Migrate the four composition tests, Product composition-authority test and full-graph audit listed in `Files` to the Python Product/Application surface before compatibility modules disappear.
 
-- [ ] **Step 4: Verify and commit.**
+- [ ] **Step 4: Verify, create the compatibility-migration candidate, and re-run Checkpoint R when invalidated.**
 
 ```bash
 uv run pytest -q tests/architecture/test_legacy_workflow_deleted.py \
@@ -678,15 +717,17 @@ uv run lint-imports
 uv run pyright
 ```
 
-Stage every modified/created/deleted Task 7 `Files` path except the lines explicitly marked “Retain unchanged until Task 9”; include the three example Products/declarations, both toy integration tests, Phase 4 fixture conversion/deletion, seven new Attempt homes and wrappers, Product `runtime_ports.py`/its test, CLI/smoke/benchmark/CI, retained-consumer imports and inventory updates. Inspect `git diff --cached --name-status`, then:
+Stage every modified/created/deleted Task 7 `Files` path except the lines explicitly marked “Retain unchanged until Task 9”; include the three example Products/declarations, both toy integration tests, Phase 4 fixture conversion/deletion, only the Attempt homes and wrappers justified by retained consumers, Product `runtime_ports.py`/its test, CLI/smoke/benchmark/CI, retained-consumer imports, and inventory updates. Inspect `git diff --cached --name-status`, then:
 
 ```bash
 git commit -m "refactor: prepare atomic Workflow Runtime deletion"
 ```
 
+If this candidate changes the adapter, parser, executor, result contract, binding, Kernel, Feature factory, or Product composition, run Checkpoint R for the exact SHA before release. A consumer-only refactor runs the normal affected CI suites.
+
 ### Task 8: Atomically switch compile to v3-only and delete Workflow YAML, module packaging, and phase aliases
 
-**Dependency:** Task 6 has authenticated zero active legacy Invocations, and Task 7 has committed the Python Product/example/consumer migration with the legacy import inventory clean outside explicitly retained implementation/compatibility modules. Do not execute Task 8 unless both gates are green. The v3-only compile transition and removal of the YAML inputs needed by v2 compilation are one commit; neither half may land alone.
+**Dependency:** Task 6 has authenticated zero active legacy Invocations, Task 7 has released its Checkpoint-R-qualified Python Product/example/consumer migration, and the legacy import inventory is clean outside explicitly retained implementation/compatibility modules. Do not execute Task 8 unless all gates are green. The v3-only compile transition and removal of the YAML inputs needed by v2 compilation are one candidate; neither half may land or release alone.
 
 **Files:**
 
@@ -725,16 +766,16 @@ git commit -m "refactor: prepare atomic Workflow Runtime deletion"
 - Modify: `packages/products/assurance-product/assurance_product/application.py`
 - Modify: `packages/products/assurance-product/assurance_product/cli.py`
 - Modify: `tests/product/test_cli_compile.py`
-- Modify: `packages/adapters/agent-runtime-contracts/agent_runtime_contracts/execution_contract.py`
-- Modify: `packages/adapters/agent-runtime-contracts/agent_runtime_contracts/__init__.py`
+- Modify only to remove legacy phase-slot expansion; retain the Raw Closure contract projection: `packages/adapters/agent-runtime-contracts/agent_runtime_contracts/execution_contract.py`
+- Modify only to remove legacy phase-slot exports; retain the Raw Closure public API: `packages/adapters/agent-runtime-contracts/agent_runtime_contracts/__init__.py`
 - Modify: `packages/adapters/agent-runtime-contracts/tests/test_models.py`
 - Modify: `packages/adapters/agent-runtime-contracts/tests/test_schema.py`
-- Modify: `packages/products/assurance-product/assurance_product/agent_contracts.py`
-- Retain/verify against the redefined 33-contract mapping: `packages/products/assurance-product/assurance_product/opencode_agents.py`
+- Modify only to delete legacy alias compatibility; retain all 33 semantic Raw Agent contracts: `packages/products/assurance-product/assurance_product/agent_contracts.py`
+- Retain/verify against the 33 semantic Raw Agent contracts and bindings: `packages/products/assurance-product/assurance_product/opencode_agents.py`
 - Modify: `packages/products/assurance-product/assurance_product/models.py`
 - Modify: `packages/products/assurance-product/assurance_product/product.py`
 - Modify: `packages/products/assurance-product/assurance_product/output_routes.py`
-- Modify: `packages/products/assurance-product/assurance_product/binding_builder.py`
+- Modify only to delete legacy alias-manifest compatibility; retain the 33-row Raw Agent binding projection builder: `packages/products/assurance-product/assurance_product/binding_builder.py`
 - Delete/replace: `packages/capabilities/assurance-intake/tests/test_workflow_module.py`
 - Delete/replace: `packages/capabilities/assurance-generation/tests/test_workflow_module.py`
 - Delete/replace: `packages/capabilities/assurance-execution/tests/test_workflow_module.py`
@@ -785,11 +826,11 @@ git commit -m "refactor: prepare atomic Workflow Runtime deletion"
 - Modify: `tests/product/test_composition_authority.py`
 - Modify: `tests/product/test_full_graph_audit.py`
 
-**Interfaces:** Python factories are the only topology source; 33 Agent contracts/34 occurrences, eight direct Attempt contracts/nine occurrences, four pure functions/16 occurrences; zero aliases/phase slots/YAML resources.
+**Interfaces:** Python factories are the only topology source; 33 `AgentExecutionContract[InputT, AgentResultT, OutputT]` projections and 33 matching `RawAgentRuntimeBindingProjectionV1` records serve 34 Agent occurrences through one `ResolvedRawAgentExecutor`; eight direct Attempt contracts serve nine occurrences; four pure functions serve 16 occurrences; zero aliases/phase slots/YAML resources.
 
-Checkpoint S's 33 `AgentExecutionContract[InputT, PreparedT, AgentResultT, OutputT]` values, `ArtifactContract`/slot registries, result/document schemas, structured runtime binding identities, serializers, materialization receipts, and Attempt-site catalog are permanent Python-native authority. Task 8 removes only legacy YAML/module/phase-alias representations and their consumers; it must not redefine, flatten, or delete the Structured Artifact closure or restore composite/provider-schema fields.
+Raw Agent Runtime Closure's 33 semantic contracts, local result schemas, 33 Product runtime bindings, prepare/finalize handlers, `RawFinalizeBundle`, `ResolvedRawAgentExecutor`, raw path/resource authority, validators, ProductLock projection tables, and Attempt-site catalog are permanent Python-native authority. Task 8 removes only legacy YAML/module/99-alias representations and their consumers. It must not redefine, flatten, or delete the Raw Agent closure, add an alternate result channel, loosen exact-object parsing, or make local validation optional.
 
-**Dependency:** Foundation Task 3's coexistence `ProductManifest.graph_factory_symbol` branch is already green. Switch Assurance declarations to that branch here. Task 7 has already migrated the generic examples; only the framework's explicitly allowlisted legacy composition/compiler implementation remains until atomic Task 9.
+**Dependency:** Foundation Task 3's coexistence `ProductManifest.graph_factory_symbol` branch is already green. Switch Assurance declarations to that branch here. Task 7 has already migrated the generic examples and every Raw Agent production consumer; only the framework's explicitly allowlisted legacy composition/compiler implementation and characterization consumers remain until atomic Task 9.
 
 - [ ] **Step 1: Add the deletion test while it is red.**
 
@@ -802,6 +843,9 @@ def test_production_wheels_have_no_workflow_topology_resources(wheel_contents) -
 def test_semantic_agent_nodes_have_no_phase_aliases(boot_artifact) -> None:
     assert len(boot_artifact.attempt_contracts) == 41
     assert count_agent_occurrences() == 34
+    assert count_semantic_agent_contracts() == 33
+    assert count_raw_agent_runtime_bindings() == 33
+    assert all_agent_contracts_resolve_with_raw_executor()
     assert not registered_ids_with_prefix("assurance.product.agent.")
 
 
@@ -823,9 +867,9 @@ Delete `expand_agent_job_slots` from `agent_runtime_contracts/execution_contract
 
 Move `AGENT_JOB_CONTRACTS` consumers to the six owner `contracts/attempts.py` catalogs and `OUTPUT_ROUTE_TEMPLATES` consumers to owner graph/domain route contracts. Create Quality `contracts/decisions.py` for `CoverageAssessmentPublicV1`, `IssueAnalysisPublicV1` and their decision-only closed vocabularies, reusing `CoverageState` from `contracts/coverage.py` rather than duplicating it. Create Improvement `contracts/decisions.py` for `APPLY_HUMAN_ACTIONS`, `AUTO_REVIEW_DECISIONS`, and `APPLY_EVALUATION_OUTCOMES`. Export both modules through their package `contracts/__init__.py`. Update the six `test_contracts.py`, Quality coverage/issues tests, Improvement review operation, and Product Agent-contract test listed in `Files`; no deleted `contracts.workflow` import may survive the Task 8 scanner.
 
-Retain Product `AGENT_EXECUTION_CONTRACTS` as the exact 33 semantic-Agent mapping so `opencode_agents.py` keeps validating every profile reference without learning phase aliases. `test_opencode_staging_boundary.py` proves exact profile closure and absence of prepare/finalize alias IDs.
+Retain Product `AGENT_EXECUTION_CONTRACTS` as the exact 33 semantic Raw Agent mapping and retain the matching 33-row Product runtime-binding table so `opencode_agents.py` keeps validating every profile, provider/model, policy, secret-handle, and recovery reference without learning phase aliases. `test_opencode_staging_boundary.py` proves exact profile closure, exact raw path/resource authority, and absence of prepare/execute/finalize alias IDs.
 
-Rewrite `binding_builder.py` from phase `PREPARE_IDS`/99 aliases to an exact 33-record semantic runtime-binding manifest keyed by Agent contract ID while preserving `aa bindings build`. The builder still authenticates each contract's prepare/finalize handlers from `AgentExecutionContract`, but it does not emit them as independently selectable phase bindings. Migrate `benchmark/assurance-product/manifest.json` from 33 legacy prepare-ID route keys to the 33 semantic contract IDs and update the checked benchmark/Phase 5 tests. Remove `expand_agent_job_slots` from both implementation and `agent_runtime_contracts.__init__`; update model/schema public-export tests, builder/security/output-routing, CLI bindings, runtime layout and Phase 5 manifest/ledger/fault tests listed in `Files`. Before deleting `tests/product/graph_inventory.py`, migrate `test_graph_intake_and_triplets.py` and `test_product_entrypoints.py` to Python bundle/entrypoint contracts plus the checked route inventory.
+Raw Agent Runtime Closure has already made `binding_builder.py` emit the exact closed 33-record semantic runtime-binding manifest keyed by Agent contract ID, with each `RawAgentRuntimeBindingProjectionV1` authenticating its matching Feature-contract digest. Task 8 removes only the drained phase `PREPARE_IDS`/99-alias manifest branch while preserving `aa bindings build` and the raw projection bytes/digests. The builder authenticates each contract's prepare/finalize handlers from `AgentExecutionContract`, but never emits them as independently selectable phase bindings. Migrate any still-historical `benchmark/assurance-product/manifest.json` route keys from legacy prepare IDs to the 33 semantic contract IDs and update the checked benchmark/Phase 5 tests. Remove `expand_agent_job_slots` from both implementation and `agent_runtime_contracts.__init__`; update model/schema public-export tests, builder/security/output-routing, CLI bindings, runtime layout and Phase 5 manifest/ledger/fault tests listed in `Files`. Before deleting `tests/product/graph_inventory.py`, migrate `test_graph_intake_and_triplets.py` and `test_product_entrypoints.py` to Python bundle/entrypoint contracts plus the checked route inventory.
 
 Because Task 7 already moved Product helpers off the legacy assembler, finish the alias cut here: remove the drained legacy binding branch from `product_runner.py`/`composition_harness.py`; replace live `PREPARE_IDS`/`ALL_BINDING_IDS` in `tests/product/conformance.py` with exact semantic contract/runtime-binding IDs while keeping any old Phase 5 ledger identifiers in a clearly historical fixture; replace `test_binding_coverage.py` with exact 33 semantic-binding coverage; and migrate composition/full-graph audits to the 14 Python roots before deleting graph inventory.
 
@@ -835,9 +879,9 @@ Keep behavior tests now backed by StateGraphs. Delete tests that only parse modu
 
 Use Task 7's checked AST/import inventory across `packages/`, `tests/`, `examples/`, `benchmark/`, and `scripts/`. Remove every Task 8 resource/alias consumer row as its replacement lands, then assert the only remaining allowlisted rows are the implementation/wrappers and characterization tests deleted by Task 9. Any unlisted consumer or scanner read/parse failure blocks the commit; a broad full-suite run is not a substitute for this proof.
 
-Rewrite `test_product_composition.py` and `test_product_providers.py` in this Task: remove assertions for `workflow_module_resources`, `workflow_slot_bindings`, and the exact 6/99 legacy values; replace them with six factory refs, 41 Attempt contracts, 33 runtime bindings and 14 root contracts. Update `test_no_whole_tree_residuals.py` toy manifests to ProductLock v3/graph factories before deleting Product manifest fields.
+Rewrite `test_product_composition.py` and `test_product_providers.py` in this Task: remove assertions for `workflow_module_resources`, `workflow_slot_bindings`, and the exact 6/99 legacy values; replace them with six factory refs, 41 Attempt contracts, 33 semantic Raw Agent runtime bindings, one raw executor kind, and 14 root contracts. Update `test_no_whole_tree_residuals.py` toy manifests to ProductLock v3/graph factories before deleting Product manifest fields.
 
-- [ ] **Step 5: Verify and commit resource/alias deletion.**
+- [ ] **Step 5: Verify and create the v3-only resource/alias-deletion candidate.**
 
 ```bash
 uv run pytest -q tests/product/test_python_native_cutover.py
@@ -884,7 +928,11 @@ Stage the exact `Files` paths above (including eight production resource deletio
 git commit -m "refactor: remove Workflow YAML and phase aliases"
 ```
 
+Run Checkpoint R for the Task 8 SHA because Product composition, runtime bindings, and ProductLock changed. The report covers 33 contracts, 33 bindings, 34 Agent occurrences, local result/file validation, recovery, the Kernel transaction, and 14-root lifecycle. Deleting legacy aliases is not evidence that semantic binding remained intact.
+
 ### Task 9: Atomically delete the Workflow compiler and custom Runtime
+
+**Dependency and release rule:** Task 8's v3-only/YAML/99-alias deletion candidate has passed Checkpoint R and been released, Task 6's zero-resumable-legacy authorization is still valid, and Task 7's consumer inventory is clean outside the exact implementation/wrapper/characterization rows deleted here. Task 9 first builds an immutable candidate in which the compiler and Runtime are physically absent, then runs a **post-deletion Checkpoint R** against that exact SHA. The deletion candidate cannot be merged or deployed until the post-deletion gate is green.
 
 **Files:**
 
@@ -978,13 +1026,13 @@ git commit -m "refactor: remove Workflow YAML and phase aliases"
 - Product tests: `tests/product/test_product_runtime_ports.py`, `tests/product/test_agent_execution_contracts.py`, `test_change_runtime_layout.py`, `test_cli_fail_closed.py`, `test_cli_status_and_lock.py`, `test_generation_branches.py`, `test_no_whole_tree_residuals.py`, `test_replay_properties.py`, and `test_stop_and_interrupts.py`.
 - Non-test consumers: `benchmark/agent-runtime-phase3/run_item.py` and `scripts/graph_engine_smoke_test.sh`. The benchmark must drive the new Attempt/Application harness or be explicitly retired from the checked benchmark manifest; because it is in the Pyright include set, leaving old imports is forbidden. The smoke script must construct and drive the migrated toy StateGraphs through Boot/Application and remain enabled in CI.
 
-**Interfaces:** no custom planner, offered-token/activation readiness, scheduler wave, subgraph execution loop, legacy checkpoint projection authority, or engine-level `settle_next` loop.
+**Interfaces:** no custom planner, offered-token/activation readiness, scheduler wave, subgraph execution loop, legacy checkpoint projection authority, or engine-level `settle_next` loop. The 33 semantic Raw Agent contracts/bindings, `ResolvedRawAgentExecutor`, permanent `graph_engine.attempts.*` ports, persistence/effects, six Feature factories, 14 roots, ProductLock v3, GraphRevision, GraphBuildManifest, and read-only historical evidence reader remain live without importing `graph_engine.runtime`.
 
 - [ ] **Step 1: Extend deletion test to runtime authority.**
 
-Assert production imports no legacy modules/symbols; no event model contains Workflow token offers/consumption/activation; no CLI imports `Engine`, old `Ledger.fold_events`, planner or scheduler. Attempt journal/effect state is retained but has no next-node API.
+Assert production imports no legacy modules/symbols; no event model contains Workflow token offers/consumption/activation; no CLI imports `Engine`, old `Ledger.fold_events`, planner or scheduler. Attempt journal/effect state is retained but has no next-node API. Add a production import assertion that the Raw Agent executor, runtime bindings, Product runtime ports, OpenCode activity recovery, workspace, secret, and effect paths resolve entirely through permanent modules after the whole `graph_engine.runtime` package is absent.
 
-Before deleting the v2 runtime modules, extract the minimum read-only evidence surface to `graph_engine.evidence.legacy_v2`: byte-exact InvocationLock v2 authentication and legacy ledger/event integrity/fold needed to verify already completed/archived exports and `lock show`. It exposes no append, resume, next-node, planner, scheduler or effect-settlement operation. Golden, tamper and historical export tests prove the extracted reader accepts authentic v2 evidence and fails closed on corruption. Zero resumable legacy authorizes deletion of execution authority, not loss of historical verification.
+Task 6 has already extracted the minimum read-only evidence surface to `graph_engine.evidence.legacy_v2`: byte-exact InvocationLock v2 authentication and legacy ledger/event integrity/fold needed to verify already completed/archived exports and `lock show`. Before deleting the v2 runtime modules, rerun its golden, tamper, and historical export tests and prove the reader imports no executable legacy authority. It exposes no append, resume, next-node, planner, scheduler, or effect-settlement operation. Zero resumable legacy authorizes deletion of execution authority, not loss of historical verification.
 
 - [ ] **Step 2: Verify every removed test already has replacement evidence.**
 
@@ -996,7 +1044,7 @@ Before the atomic deletion starts, rerun Task 7's inventory. It must report zero
 
 Legacy `runtime/effects.py` may be deleted/shrunk after no caller uses it and all six effect apply/reconcile/crash cases pass through the Kernel. There must not be two effect settlement authorities.
 
-- [ ] **Step 4: Run framework/Product gates and commit.**
+- [ ] **Step 4: Run framework/Product gates and create the physical-deletion candidate.**
 
 ```bash
 uv run pytest -q \
@@ -1032,7 +1080,15 @@ Stage every exact Task 9 `Files` path and every path in the retained-consumer mi
 git commit -m "refactor: remove the custom Workflow Runtime"
 ```
 
+- [ ] **Step 5: Pass post-deletion Checkpoint R before release.**
+
+Run Checkpoint R on the Task 9 SHA after the compiler, planner, scheduler, settle loop, compatibility wrappers, and `graph_engine.runtime` package are absent. Rebuild ProductLock/GraphRevision, run the focused OpenCode integration, cover 33 contracts/33 bindings/34 Agent occurrences, rerun recovery/Kernel/lifecycle tests, and run the negative import/deletion scan. Any fallback to deleted authority or failed required row blocks release.
+
+Only the exact green candidate may be merged/deployed. A fix after the gate produces a new SHA and must rerun the post-deletion Checkpoint R.
+
 ### Task 10: Remove migration switches and update docs/packaging/smoke tests
+
+**Dependency and release rule:** Task 9's physical-deletion candidate has passed post-deletion Checkpoint R and is the released base. Task 10 may remove only migration selectors/coexistence scaffolding; it must retain revision-pinned deployment history, the permanent Raw Agent production path, and Checkpoint R as a required CI/release check.
 
 **Files:**
 
@@ -1042,7 +1098,7 @@ git commit -m "refactor: remove the custom Workflow Runtime"
 - Modify: `.importlinter`
 - Modify: `AGENTS.md`
 - Modify: `README.md`
-- Modify: `.github/workflows/ci.yml` to retain all three smoke gates on the Python-native paths
+- Modify: `.github/workflows/ci.yml` to retain all three smoke gates and the focused Raw Agent checks on the Python-native paths
 - Modify: `scripts/graph_engine_smoke_test.sh`
 - Modify: `scripts/assurance_product_wheel_smoke_test.sh`
 - Modify: `scripts/assurance_capability_wheel_smoke_test.sh`
@@ -1056,15 +1112,15 @@ git commit -m "refactor: remove the custom Workflow Runtime"
 - Modify: `examples/minimal-product/aa_sample/product.py`
 - Modify: `tests/phase6/test_final_wheel_metadata.py`
 
-**Interfaces:** permanent Python-native rule; no runtime switch, YAML override promise or CLI graph authority; wheels contain factories and no topology YAML.
+**Interfaces:** permanent Python-native and Raw Agent rule; no runtime switch, YAML override promise, CLI graph authority, alternate Agent-result channel, or migration-only gate; wheels contain factories, 33 semantic Raw Agent contracts/bindings, and no topology YAML; Checkpoint R remains permanent.
 
 - [ ] **Step 1: Make migration controls fail the deletion gate.**
 
-Add assertions that all new Invocations are LangGraph without a selection branch and `runtime_selection` is absent. Keep graph revision registry/retention because pinned resume is permanent, not migration-only. Assert that the ProductLock v3 plus `GraphBuildManifest` compile surface introduced in Task 8 is unchanged while the temporary coexistence selector/records are removed. Historical legacy evidence remains readable only through archive/evidence tooling retained by policy.
+Add assertions that all new Invocations are LangGraph without a selection branch and `runtime_selection` is absent. Keep graph revision registry/retention because pinned resume is permanent, not migration-only. Assert that the ProductLock v3 plus `GraphBuildManifest` compile surface introduced in Task 8 is unchanged, including both ordered 33-row Raw Agent projection tables, while the temporary coexistence selector/records are removed. Historical legacy evidence remains readable only through archive/evidence tooling retained by policy. Assert that removing selectors cannot disable, bypass, downgrade, or relabel Checkpoint R.
 
 - [ ] **Step 2: Rewrite repository guidance.**
 
-State: “Python wheels add capability and own `StateGraph` code; Product explicitly composes six Feature bundles; `.aa/` contains closed organization data only; changing nodes/edges requires code review, tests, wheel rebuild and authenticated deployment.” Remove promises for `.aa/workflow-schema.yaml`, `.aa/execution-contracts.yaml`, `workflow/module.yaml` and YAML graph replacement.
+State: “Python wheels own `StateGraph` topology and semantic Agent contracts. OpenCode writes authorized raw workspace files and returns one locally validated JSON result. The Kernel seals and commits the actual bytes. Product explicitly composes six Feature bundles; `.aa/` contains closed organization data only; changing nodes, edges, contracts, bindings, schemas, or runtime policy requires code review, tests, wheel rebuild, Checkpoint R, and authenticated deployment.” Remove promises for `.aa/workflow-schema.yaml`, `.aa/execution-contracts.yaml`, `workflow/module.yaml`, YAML graph replacement, provider-enforced Agent results, typed slots, or Kernel-generated document files.
 
 The non-loadable `examples/minimal-product` packaging fixture is not exempt from the final wheel-content rule. Delete both `_resources/schemas/workflow-schema.yaml` and `execution-contracts.yaml`, remove their package-data declaration/placeholder references, and update final wheel-metadata tests to prove no workspace wheel ships either obsolete orchestration contract.
 
@@ -1072,7 +1128,7 @@ Replace coexistence import-linter rules with the permanent boundary: cross-Featu
 
 - [ ] **Step 3: Strengthen wheel smoke.**
 
-Install built wheels in isolation; run `aa compile`; assert 14 roots/41 Attempt contracts/33 runtime bindings; inspect wheel members and reject `resources/workflow/module.yaml`, `resources/workflow/main.yaml`, `graph-inventory.yaml`; verify no SUT Python graph loads.
+Install built wheels in isolation; run `aa compile`; assert 14 roots/41 Attempt contracts/33 semantic Raw Agent runtime bindings and one authenticated raw executor kind; verify the ProductLock-authenticated binding-manifest resource plus both 33-row `GraphBuildManifest` tables and the matching GraphRevision build-authority digest; inspect wheel members and reject `resources/workflow/module.yaml`, `resources/workflow/main.yaml`, `graph-inventory.yaml`; verify no SUT Python graph, handler, schema, validator, or runtime binding loads.
 
 - [ ] **Step 4: Run the final negative inventory.**
 
@@ -1092,7 +1148,7 @@ uv run pytest -q tests/architecture/test_legacy_workflow_deleted.py tests/produc
 
 Expected: every command exits `0`. The architecture tests perform production-only import/symbol scans and report scanner I/O errors as failures; the shell gate does not use `! rg` or scan its own negative-test source.
 
-- [ ] **Step 5: Run full repository release gate.**
+- [ ] **Step 5: Run the full local repository release gate.**
 
 ```bash
 uv run ruff check .
@@ -1107,7 +1163,7 @@ bash scripts/assurance_capability_wheel_smoke_test.sh
 
 Expected: all exit `0`, with no unexpected skip/xpass and no legacy wheel content.
 
-- [ ] **Step 6: Commit permanent Python-native state.**
+- [ ] **Step 6: Create the permanent Python-native candidate.**
 
 Stage only the migration-switch deletion, revision-registry/Application/import-linter edits, `AGENTS.md`, `README.md`, all three smoke scripts, the exact packaging/security/CLI tests, both minimal-product resource deletions plus its `pyproject.toml`/`product.py`, the Phase 6 wheel-metadata test, and the exact CI edit; inspect `git diff --cached --name-status`, then:
 
@@ -1115,20 +1171,31 @@ Stage only the migration-switch deletion, revision-registry/Application/import-l
 git commit -m "docs: make Python StateGraphs the sole workflow source"
 ```
 
+- [ ] **Step 7: Prove Checkpoint R is permanent and release only the green candidate.**
+
+Run Checkpoint R for the Task 10 SHA after migration selectors are absent. Require the same 33-contract/33-binding/34-occurrence inventory, focused transaction/recovery/lifecycle tests, ProductLock, GraphRevision, and negative legacy scan as Task 9. Keep these commands in the normal CI workflow after migration.
+
+Only after that report is green may the Task 10 candidate release. Later changes rerun their normal affected CI rows; adapter/provider/model integration changes also rerun the live OpenCode row.
+
 ## Product cutover completion gate
 
 - [ ] Exactly 14 public roots compile from the authenticated Product/six Feature factory code and expose the exact public names.
 - [ ] Product's four former `join:any` sites preserve current-trigger behavior; looped failure/coverage inboxes cover same-epoch late arrivals and replay; assessment exits prove outcome and predecessor mutual exclusion plus no late reactivation, or use the inbox fallback.
 - [ ] All nine Feature/Product `join:any` rows are present and green with zero xfails or semantic waivers. Any failure blocks each not-yet-cut reachable root plus drain/deletion; it never switches an existing Invocation in place. The Product inbox fallback is an equivalent implementation, not an exception.
 - [ ] The loop inventory still equals the exact seven `(graph_id, join:any node_id)` anchors derived from assembled `CompiledGraph.sccs`, with passing current-trigger evidence attached and full SCC membership available in failure diagnostics.
-- [ ] Exactly one Generation `min_matches` site uses four-value `Send`; exactly two Intake sites are Feature-owned prepare/finalize two-consumer dataflow behind `ResolvedStructuredAgentExecutor`; no extra `Send`, generic fanout helper, compatibility executor, or phase shim exists.
+- [ ] Exactly one Generation `min_matches` site uses four-value `Send`; exactly two Intake sites are Feature-owned prepare/finalize two-consumer dataflow behind `ResolvedRawAgentExecutor`; no extra `Send`, generic fanout helper, compatibility executor, or phase shim exists.
+- [ ] Exactly 33 `AgentExecutionContract[InputT, AgentResultT, OutputT]` projections and 33 digest-matched `RawAgentRuntimeBindingProjectionV1` records cover the exact 34 live Agent occurrences without any prepare/execute/finalize phase-alias resolution; every finalizer accepts one closed `RawFinalizeBundle`.
+- [ ] The raw request appends the installed immutable result schema last, sends no provider response-format field, and accepts only one exact terminal assistant JSON object. Fence, prose, multiple-object, tool-input, error, truncation, ambiguity, secret/canary, and size cases fail closed before finalization or promotion.
+- [ ] `ResolvedRawAgentExecutor` creates or adopts one OpenCode root session and never knowingly admits a second prompt for one AttemptKey. Session create/bind, prompt admission, terminal observation, deadline/cancel, runner takeover, finalize, seal, prepare, promote, all-six-effect, and checkpoint crash cuts recover through durable evidence or resolve indeterminate.
 - [ ] The authenticated test-only evidence Validator accepts/promotes and rejects/blocks promotion exactly once on both legacy and LangGraph paths, while shipped production contracts remain 25 registered / 0 bound.
 - [ ] Standalone `improvement-evaluate` and the evaluate occurrence inside apply both emit `assurance.improvement.effect.delivery.v1` with payload discriminator `memory_eval`; committed/pending/publication-indeterminate recovery parity proves no early success or duplicate evaluator dispatch.
 - [ ] The exact 50-site exclusive-route migration inventory is complete; every route's declared-fallback/multiple-match parameterization passes and no route uses first-match priority.
 - [ ] All 13 human interrupts and system interrupt replay pass restart tests; multiple pending human interrupts require ID mapping.
-- [ ] Checkpoints S0 and S are green. S cites the same exact S0 release identity or a newer identity that reran S0, and every `requires_structured_output=True` contract resolves a qualifying pinned `opencode_structured_output` adapter/server/provider/model/schema record before its entrypoint cutover; the non-promotable S0 report is not that record, and Kernel independently revalidates `info.structured`.
+- [ ] Checkpoint R is green for the released candidate: candidate SHA, ProductLock, GraphRevision, adapter/provider/model, 33 contracts, 33 bindings, 34 Agent occurrences, focused transaction/recovery/lifecycle evidence, and the negative legacy scan all match.
 - [ ] Semantic shadow and crash matrix pass for all 14 entrypoints; no Invocation was dual-driven.
-- [ ] Zero resumable legacy Invocations is authenticated before deletion, and every still-resumable pre-S LangGraph revision retains its original deployment artifact independently of the legacy drain result.
+- [ ] Zero resumable legacy Invocations is authenticated before deletion, and every still-resumable pre-closure LangGraph revision retains its original deployment artifact independently of the legacy drain result.
 - [ ] No Workflow YAML, phase alias, compiler/projection DSL, planner/token scheduler, custom Workflow checkpoint authority or engine settle loop remains.
+- [ ] No typed slot registry, Kernel document generator, document codec registry, or materialization receipt exists on the permanent path; raw workspace bytes remain under Feature finalizer, seal, validator, and promotion authority.
 - [ ] `aa compile/start/run/resume/status/export/archive/bindings build/lock show` and wheel smoke pass against the Python-native Application.
-- [ ] Full repository gate passes and a final code review verifies spec acceptance criteria and deletion inventory.
+- [ ] The focused Raw Agent contract, adapter, recovery, and integration rows remain in normal CI after migration selectors disappear.
+- [ ] Full repository gate passes and a final code review verifies both specs' acceptance criteria and deletion inventory.
