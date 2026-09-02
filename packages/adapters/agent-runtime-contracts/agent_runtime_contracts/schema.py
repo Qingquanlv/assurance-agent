@@ -6,7 +6,11 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, TypeVar, cast
+
+from pydantic import BaseModel
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 _ALLOWED_SCHEMA_KEYS = frozenset(
     {
@@ -526,3 +530,30 @@ def resolve_result_schema(schema_digest: str, schema_document: object | None = N
         if canonical_digest(schema) == schema_digest:
             return schema
     raise ValueError("result schema is missing")
+
+
+def result_schema_from_model(model: type[BaseModel]) -> object:
+    schema = thaw_json(freeze_json(model.model_json_schema()))
+    validate_result_schema_document(schema)
+    return schema
+
+
+def validate_local_agent_result(
+    payload: object,
+    *,
+    result_model: type[_ModelT],
+    context: Mapping[str, object] | None = None,
+) -> tuple[object, str, _ModelT]:
+    schema = result_schema_from_model(result_model)
+    exact = validate_structured_result(
+        payload,
+        schema=schema,
+        schema_digest=canonical_digest(schema),
+    )
+    reject_credentials_in_digest_input(exact)
+    digest = canonical_digest(exact)
+    validated = result_model.model_validate(
+        exact,
+        context=None if context is None else dict(context),
+    )
+    return exact, digest, validated

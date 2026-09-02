@@ -65,8 +65,27 @@ def test_runtime_binding_rejects_feature_authority(extra: dict[str, object]) -> 
         AgentRuntimeBinding.model_validate({**_valid_binding_payload(), **extra})
 
 
-def test_runtime_capabilities_are_provider_schema_only() -> None:
-    capabilities = AgentRuntimeCapabilities(provider_schema=False)
-    assert capabilities.provider_schema is False
+def test_runtime_capabilities_reject_provider_schema() -> None:
+    capabilities = AgentRuntimeCapabilities.model_validate({})
+    assert "provider_schema" not in capabilities.model_dump()
     with pytest.raises(ValidationError, match="extra"):
-        AgentRuntimeCapabilities.model_validate({"provider_schema": False, "skill_id": "aa-case-design"})
+        AgentRuntimeCapabilities.model_validate({"provider_schema": False})
+    with pytest.raises(ValidationError, match="extra"):
+        AgentRuntimeCapabilities.model_validate({"provider_schema": True, "skill_id": "aa-case-design"})
+
+
+def test_runtime_binding_keeps_provider_and_model_separate() -> None:
+    binding = AgentRuntimeBinding.model_validate(_valid_binding_payload(provider="opencode", model="gpt-4.1"))
+    assert binding.provider == "opencode"
+    assert binding.model == "gpt-4.1"
+    dumped = binding.model_dump()
+    assert dumped["provider"] == "opencode"
+    assert dumped["model"] == "gpt-4.1"
+    assert "provider_model" not in dumped
+    with pytest.raises(ValidationError, match="extra"):
+        AgentRuntimeBinding.model_validate(_valid_binding_payload(provider_model="opencode/gpt-4.1"))
+    unparsed = AgentRuntimeBinding.model_validate(
+        _valid_binding_payload(provider="opencode", model="openai/gpt-4.1")
+    )
+    assert unparsed.provider == "opencode"
+    assert unparsed.model == "openai/gpt-4.1"

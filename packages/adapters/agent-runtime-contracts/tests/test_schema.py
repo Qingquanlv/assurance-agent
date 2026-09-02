@@ -222,7 +222,7 @@ def test_result_contract_carries_schema_document_when_digest_matches() -> None:
     contract = ResultContract(
         schema_id="assurance.intake.result.intake.v1",
         schema_digest=digest,
-        extraction_mode="structured",
+        delivery_mode="assistant_json_local_v1",
         schema_document=_INTAKE_RESULT_SCHEMA,
     )
     assert contract.schema_document is not None
@@ -232,14 +232,14 @@ def test_result_contract_carries_schema_document_when_digest_matches() -> None:
     omitted = ResultContract(
         schema_id="fixture.result.v1",
         schema_digest=canonical_digest(_STRICT_SCHEMA),
-        extraction_mode="structured",
+        delivery_mode="assistant_json_local_v1",
     )
     assert "schema_document" not in omitted.model_dump(mode="json")
     with pytest.raises(ValidationError, match="digest"):
         ResultContract(
             schema_id="assurance.intake.result.intake.v1",
             schema_digest="0" * 64,
-            extraction_mode="structured",
+            delivery_mode="assistant_json_local_v1",
             schema_document=_INTAKE_RESULT_SCHEMA,
         )
 
@@ -248,21 +248,21 @@ def test_result_contract_digest_must_match_schema() -> None:
     contract = ResultContract(
         schema_id="fixture.result.v1",
         schema_digest=canonical_digest(_STRICT_SCHEMA),
-        extraction_mode="structured",
+        delivery_mode="assistant_json_local_v1",
     )
     assert contract.schema_digest == canonical_digest(_STRICT_SCHEMA)
     with pytest.raises(ValidationError):
         ResultContract(
             schema_id="fixture.result.v1",
             schema_digest="not-a-digest",
-            extraction_mode="structured",
+            delivery_mode="assistant_json_local_v1",
         )
     unsupported = {"type": "object", "unevaluatedProperties": False}
     with pytest.raises(ValidationError, match="unsupported schema keys"):
         ResultContract(
             schema_id="fixture.result.unsupported.v1",
             schema_digest=canonical_digest(unsupported),
-            extraction_mode="structured",
+            delivery_mode="assistant_json_local_v1",
             schema_document=unsupported,
         )
 
@@ -271,7 +271,7 @@ def test_agent_run_result_requires_schema_valid_structured_output() -> None:
     structured = {"status": "ok", "artifact": "result.json"}
     result = AgentRunResult.model_validate(
         {
-            "structured_result": structured,
+            "result_payload": structured,
             "result_digest": canonical_digest(structured),
             "evidence_digest": "2" * 64,
             "adapter_id": "agent-runtime-fixture",
@@ -280,7 +280,7 @@ def test_agent_run_result_requires_schema_valid_structured_output() -> None:
     )
     assert (
         validate_structured_result(
-            result.structured_result,
+            result.result_payload,
             schema=_STRICT_SCHEMA,
             schema_digest=canonical_digest(_STRICT_SCHEMA),
         )
@@ -292,6 +292,69 @@ def test_agent_run_result_requires_schema_valid_structured_output() -> None:
             schema=_STRICT_SCHEMA,
             schema_digest=canonical_digest(_STRICT_SCHEMA),
         )
+
+
+def test_result_schema_from_model_is_derived_from_installed_result_model() -> None:
+    from pydantic import BaseModel
+
+    from agent_runtime_contracts.schema import result_schema_from_model
+
+    class ArtifactListResult(BaseModel):
+        output_files: tuple[str, ...]
+
+    schema = result_schema_from_model(ArtifactListResult)
+    assert schema == ArtifactListResult.model_json_schema()
+    assert canonical_digest(schema) == canonical_digest(ArtifactListResult.model_json_schema())
+
+
+def test_validate_local_agent_result_digests_exact_payload_before_pydantic() -> None:
+    from pydantic import BaseModel
+
+    from agent_runtime_contracts.schema import validate_local_agent_result
+
+    class ResultWithDefault(BaseModel):
+        status: str
+        note: str = "filled-by-model"
+
+    payload = {"status": "ok"}
+    exact, digest, validated = validate_local_agent_result(payload, result_model=ResultWithDefault)
+    assert exact == payload
+    assert digest == canonical_digest(payload)
+    assert digest != canonical_digest(validated.model_dump(mode="json"))
+    assert validated.note == "filled-by-model"
+    with pytest.raises(ValueError, match="missing required"):
+        validate_local_agent_result({"note": "only-default"}, result_model=ResultWithDefault)
+
+
+def test_validate_local_agent_result_forwards_feature_owned_context() -> None:
+    from typing import Self
+
+    from pydantic import BaseModel, ValidationError, ValidationInfo, model_validator
+
+    from agent_runtime_contracts.schema import validate_local_agent_result
+
+    class LeafAwareResult(BaseModel):
+        leaf: str
+
+        @model_validator(mode="after")
+        def _require_declared_leaf(self, info: ValidationInfo) -> Self:
+            context = info.context or {}
+            leafs = context.get("capability_leafs")
+            if not isinstance(leafs, frozenset) or self.leaf not in leafs:
+                raise ValueError("unknown capability leaf")
+            return self
+
+    payload = {"leaf": "e2e"}
+    with pytest.raises(ValidationError, match="capability leaf"):
+        validate_local_agent_result(payload, result_model=LeafAwareResult)
+    exact, digest, validated = validate_local_agent_result(
+        payload,
+        result_model=LeafAwareResult,
+        context={"capability_leafs": frozenset({"api", "e2e"})},
+    )
+    assert exact == payload
+    assert digest == canonical_digest(payload)
+    assert validated.leaf == "e2e"
 
 
 def test_bound_redacted_diagnostics_redact_before_limiting() -> None:

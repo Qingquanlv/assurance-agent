@@ -18,7 +18,7 @@ class AgentRuntimeBinding(FrozenModel):
 
 
 class AgentRuntimeCapabilities(FrozenModel):
-    provider_schema: bool
+    pass
 
 
 __all__ = [

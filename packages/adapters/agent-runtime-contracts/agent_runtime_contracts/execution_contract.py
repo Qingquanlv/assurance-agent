@@ -11,6 +11,10 @@ from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, Task
 from graph_engine.identifiers import validate_qualified_id
 from graph_engine.plugin_api import ResourceClaimTemplate, ResourceClaims
 
+from agent_runtime_contracts.schema import canonical_digest, result_schema_from_model
+
+RAW_AGENT_CONTRACT_SCHEMA_VERSION = "raw-agent-contract-v1"
+
 
 InputT = TypeVar("InputT", bound=BaseModel)
 AgentResultT = TypeVar("AgentResultT", bound=BaseModel)
@@ -32,7 +36,6 @@ class AgentExecutionContract(Generic[InputT, AgentResultT, OutputT]):
     input_model: type[InputT]
     agent_result_model: type[AgentResultT]
     output_model: type[OutputT]
-    requires_provider_schema: bool
     resources: ResourceClaims | ResourceClaimTemplate
     retry: AttemptRetryPolicy
     timeout: AttemptTimeoutPolicy
@@ -52,8 +55,15 @@ class AgentExecutionContract(Generic[InputT, AgentResultT, OutputT]):
         for validator_id in self.validators:
             validate_qualified_id(validator_id)
 
+    def agent_result_schema_document(self) -> object:
+        return result_schema_from_model(self.agent_result_model)
+
+    def agent_result_schema_digest(self) -> str:
+        return canonical_digest(self.agent_result_schema_document())
+
     def canonical_projection(self) -> dict[str, object]:
         return {
+            "schema_version": RAW_AGENT_CONTRACT_SCHEMA_VERSION,
             "contract_id": self.contract_id,
             "owner_id": self.owner_id,
             "prepare_handler_id": self.prepare_handler_id,
@@ -63,7 +73,7 @@ class AgentExecutionContract(Generic[InputT, AgentResultT, OutputT]):
             "input_model": _model_symbol(self.input_model),
             "agent_result_model": _model_symbol(self.agent_result_model),
             "output_model": _model_symbol(self.output_model),
-            "requires_provider_schema": self.requires_provider_schema,
+            "agent_result_schema_digest": self.agent_result_schema_digest(),
             "resources": self.resources.model_dump(mode="json"),
             "retry": self.retry.model_dump(mode="json"),
             "timeout": self.timeout.model_dump(mode="json"),
@@ -111,5 +121,6 @@ def expand_agent_job_slots(
 
 __all__ = [
     "AgentExecutionContract",
+    "RAW_AGENT_CONTRACT_SCHEMA_VERSION",
     "expand_agent_job_slots",
 ]

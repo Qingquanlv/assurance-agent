@@ -99,7 +99,7 @@ def _request() -> AgentRunRequest:
         result_contract=ResultContract(
             schema_id="fixture.result.v1",
             schema_digest=_SHA_A,
-            extraction_mode="structured",
+            delivery_mode="assistant_json_local_v1",
         ),
         execution=_selection(),
         workspace=_workspace(),
@@ -115,7 +115,7 @@ def test_agent_run_request_is_strict_frozen_and_canonical() -> None:
         result_contract=ResultContract(
             schema_id="fixture.result.v1",
             schema_digest="1" * 64,
-            extraction_mode="structured",
+            delivery_mode="assistant_json_local_v1",
         ),
         execution=FrozenExecutionSelection(
             provider_model="provider_default",
@@ -410,7 +410,7 @@ def test_result_contract_extraction_mode_is_closed() -> None:
             {
                 "schema_id": "fixture.result.v1",
                 "schema_digest": _SHA_A,
-                "extraction_mode": "transcript",
+                "delivery_mode": "transcript",
             }
         )
 
@@ -419,7 +419,7 @@ def test_agent_run_result_authenticates_digests_and_forbids_provider_payloads() 
     structured = {"status": "ok", "artifact": "result.json"}
     result = AgentRunResult.model_validate(
         {
-            "structured_result": structured,
+            "result_payload": structured,
             "result_digest": canonical_digest(structured),
             "evidence_digest": _SHA_B,
             "provider_diff_digest": _SHA_C,
@@ -435,7 +435,7 @@ def test_agent_run_result_authenticates_digests_and_forbids_provider_payloads() 
     with pytest.raises(ValidationError, match="canonical"):
         AgentRunResult.model_validate(
             {
-                "structured_result": structured,
+                "result_payload": structured,
                 "result_digest": _SHA_A,
                 "evidence_digest": _SHA_B,
                 "adapter_id": "agent-runtime-fixture",
@@ -450,7 +450,7 @@ def test_agent_run_result_authenticates_digests_and_forbids_provider_payloads() 
     with pytest.raises(ValidationError, match="credential"):
         AgentRunResult.model_validate(
             {
-                "structured_result": canary,
+                "result_payload": canary,
                 "result_digest": canonical_digest(canary),
                 "evidence_digest": _SHA_B,
                 "adapter_id": "agent-runtime-fixture",
@@ -463,7 +463,7 @@ def test_agent_run_result_bounds_and_redacts_diagnostics() -> None:
     structured = {"status": "ok"}
     result = AgentRunResult.model_validate(
         {
-            "structured_result": structured,
+            "result_payload": structured,
             "result_digest": canonical_digest(structured),
             "evidence_digest": _SHA_B,
             "adapter_id": "agent-runtime-fixture",
@@ -481,7 +481,7 @@ def test_agent_run_result_bounds_and_redacts_diagnostics() -> None:
     with pytest.raises(ValidationError, match="bound"):
         AgentRunResult.model_validate(
             {
-                "structured_result": structured,
+                "result_payload": structured,
                 "result_digest": canonical_digest(structured),
                 "evidence_digest": _SHA_B,
                 "adapter_id": "agent-runtime-fixture",
@@ -624,13 +624,198 @@ def test_agent_result_and_finalize_output_are_distinct_contracts() -> None:
         input_model=CaseDesignInput,
         agent_result_model=CaseDesignAgentResult,
         output_model=CaseDesignOutput,
-        requires_provider_schema=True,
         resources=claims,
         retry=retry,
         timeout=timeout,
         validators=(),
     )
     assert contract.agent_result_model is not contract.output_model
+
+
+def _local_agent_contract():
+    from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy
+    from graph_engine.plugin_api import ResourceClaims
+
+    from agent_runtime_contracts import AgentExecutionContract
+
+    class IntakeInput(BaseModel):
+        change_id: str
+
+    class IntakeAgentResult(BaseModel):
+        output_files: tuple[str, ...]
+        note: str = "omitted"
+
+    class IntakeOutput(BaseModel):
+        status: str
+
+    return AgentExecutionContract(
+        contract_id="assurance.intake.agent.intake.v1",
+        owner_id="assurance.intake",
+        prepare_handler_id="assurance.intake.intake.prepare",
+        finalize_handler_id="assurance.intake.intake.finalize",
+        skill_id="aa-intake",
+        agent_profile="assurance-v1-doc-author",
+        input_model=IntakeInput,
+        agent_result_model=IntakeAgentResult,
+        output_model=IntakeOutput,
+        resources=ResourceClaims(),
+        retry=AttemptRetryPolicy(max_attempts=1),
+        timeout=AttemptTimeoutPolicy(seconds=60),
+        validators=(),
+    )
+
+
+def test_agent_contract_exposes_local_result_schema_independent_of_capabilities() -> None:
+    from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
+
+    contract = _local_agent_contract()
+    schema = contract.agent_result_schema_document()
+    digest = contract.agent_result_schema_digest()
+
+    assert schema == contract.agent_result_model.model_json_schema()
+    assert digest == canonical_digest(schema)
+    assert not hasattr(contract, "requires_provider_schema")
+    capabilities = AgentRuntimeCapabilities.model_validate({})
+    assert "provider_schema" not in capabilities.model_dump()
+    assert "provider_schema" not in str(contract.canonical_projection()).lower()
+
+
+def test_agent_execution_contract_projection_is_raw_agent_contract_v1() -> None:
+    contract = _local_agent_contract()
+    projection = contract.canonical_projection()
+
+    assert projection["schema_version"] == "raw-agent-contract-v1"
+    assert projection["agent_result_schema_digest"] == canonical_digest(
+        contract.agent_result_model.model_json_schema()
+    )
+    assert "requires_provider_schema" not in projection
+    assert "provider_schema" not in projection
+
+
+def test_agent_result_validates_and_digests_exact_payload_before_pydantic() -> None:
+    from agent_runtime_contracts.schema import validate_local_agent_result
+
+    contract = _local_agent_contract()
+    payload = {"output_files": ["qa/changes/CH-1/proposal.md"]}
+    exact, digest, validated = validate_local_agent_result(
+        payload,
+        result_model=contract.agent_result_model,
+    )
+
+    assert exact == payload
+    assert digest == canonical_digest(payload)
+    assert digest != canonical_digest(validated.model_dump(mode="json"))
+    assert validated.note == "omitted"
+
+
+def test_agent_result_validation_keeps_feature_owned_context() -> None:
+    from typing import Self
+
+    from pydantic import ValidationInfo, model_validator
+
+    from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy
+    from graph_engine.plugin_api import ResourceClaims
+
+    from agent_runtime_contracts import AgentExecutionContract
+    from agent_runtime_contracts.schema import validate_local_agent_result
+
+    class LeafInput(BaseModel):
+        change_id: str
+
+    class LeafAwareResult(BaseModel):
+        leaf: str
+
+        @model_validator(mode="after")
+        def _require_declared_leaf(self, info: ValidationInfo) -> Self:
+            context = info.context or {}
+            leafs = context.get("capability_leafs")
+            if not isinstance(leafs, frozenset) or self.leaf not in leafs:
+                raise ValueError("unknown capability leaf")
+            return self
+
+    class LeafOutput(BaseModel):
+        status: str
+
+    contract = AgentExecutionContract(
+        contract_id="assurance.generation.agent.codegen.v1",
+        owner_id="assurance.generation",
+        prepare_handler_id="assurance.generation.codegen.prepare",
+        finalize_handler_id="assurance.generation.codegen.finalize",
+        skill_id="aa-codegen",
+        agent_profile="assurance-v1-executor",
+        input_model=LeafInput,
+        agent_result_model=LeafAwareResult,
+        output_model=LeafOutput,
+        resources=ResourceClaims(),
+        retry=AttemptRetryPolicy(max_attempts=1),
+        timeout=AttemptTimeoutPolicy(seconds=60),
+        validators=(),
+    )
+    payload = {"leaf": "api"}
+    with pytest.raises(ValidationError, match="capability leaf"):
+        validate_local_agent_result(payload, result_model=contract.agent_result_model)
+    exact, digest, validated = validate_local_agent_result(
+        payload,
+        result_model=contract.agent_result_model,
+        context={"capability_leafs": frozenset({"api"})},
+    )
+    assert exact == payload
+    assert digest == canonical_digest(payload)
+    assert validated.leaf == "api"
+
+
+def test_result_contract_delivery_mode_is_assistant_json_local_v1() -> None:
+    schema = {
+        "additionalProperties": False,
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "type": "object",
+    }
+    contract = ResultContract(
+        schema_id="fixture.result.v1",
+        schema_digest=canonical_digest(schema),
+        delivery_mode="assistant_json_local_v1",
+        schema_document=schema,
+    )
+    assert contract.delivery_mode == "assistant_json_local_v1"
+    assert not hasattr(contract, "extraction_mode")
+    with pytest.raises(ValidationError):
+        ResultContract.model_validate(
+            {
+                "schema_id": "fixture.result.v1",
+                "schema_digest": canonical_digest(schema),
+                "delivery_mode": "structured",
+            }
+        )
+    with pytest.raises(ValidationError, match="extra"):
+        ResultContract.model_validate(
+            {
+                "schema_id": "fixture.result.v1",
+                "schema_digest": canonical_digest(schema),
+                "delivery_mode": "assistant_json_local_v1",
+                "extraction_mode": "structured",
+            }
+        )
+
+
+def test_agent_run_result_uses_result_payload() -> None:
+    payload = {"status": "ok", "artifact": "result.json"}
+    result = AgentRunResult.model_validate(
+        {
+            "result_payload": payload,
+            "result_digest": canonical_digest(payload),
+            "evidence_digest": _SHA_B,
+            "adapter_id": "agent-runtime-fixture",
+            "adapter_version": "1.0.0",
+        }
+    )
+    assert result.result_payload == payload
+    assert result.result_digest == canonical_digest(payload)
+    assert not hasattr(result, "structured_result")
+    dumped = result.model_dump()
+    assert "structured_result" not in dumped
+    with pytest.raises(ValidationError, match="extra"):
+        AgentRunResult.model_validate({**dumped, "structured_result": payload})
 
 
 def test_agent_execution_contract_is_provider_neutral() -> None:
@@ -658,7 +843,6 @@ def test_agent_execution_contract_is_provider_neutral() -> None:
         input_model=IntakeInput,
         agent_result_model=IntakeAgentResult,
         output_model=IntakeOutput,
-        requires_provider_schema=False,
         resources=ResourceClaimTemplate(
             parameters={"change_id": "/workspace/scope_id"},
             reads=("qa",),
