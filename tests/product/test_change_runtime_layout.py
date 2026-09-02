@@ -367,7 +367,7 @@ def test_start_does_not_create_tree_store_directories(
         entrypoint="execute",
         families=("api",),
     )
-    result = cli_runner.invoke(app, ["run", *args])
+    result = cli_runner.invoke(app, ["start", *args])
     assert result.exit_code == 0, result.output
 
     change = _change_root(project_dir, change_id)
