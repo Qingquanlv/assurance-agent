@@ -126,11 +126,6 @@ def validate_entrypoint_runtime_cutover(mapping: Mapping[str, str]) -> None:
         raise BootValidationError(f"runtime cutover values must be legacy-v2 or langgraph-v1: {invalid}")
 
 
-def entrypoint_requires_provider_schema(entrypoint: str) -> bool:
-    del entrypoint
-    return False
-
-
 def select_runtime(entrypoint: str) -> RuntimeKind:
     if _TEST_SELECTOR is not None:
         return _TEST_SELECTOR(entrypoint)
@@ -311,7 +306,6 @@ __all__ = [
     "SelectionRecord",
     "backfill_legacy",
     "complete_initialized",
-    "entrypoint_requires_provider_schema",
     "load_selection",
     "maybe_crash",
     "require_initialized",

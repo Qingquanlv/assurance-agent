@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from agent_runtime_contracts import AgentRuntimeCapabilities
-from agent_runtime_contracts.plugin_kit import negotiate_provider_schema
 from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext
 from graph_engine.boot.graph_revision import GraphBuildManifest
 from graph_engine.canonical import JSONValue, canonical_digest
@@ -174,27 +172,6 @@ def parse_resume_file(path: Path, pending_ids: Sequence[str] = ()) -> object:
     if "wakeup" in payload or "reconciliation" in payload or "action" in payload:
         return payload
     raise ValueError("resume file is missing a validated envelope")
-
-
-def assert_structured_output_capability(
-    composition: object,
-    *,
-    entrypoint: str | None = None,
-    requires_provider_schema: bool | None = None,
-) -> None:
-    if requires_provider_schema is None:
-        if entrypoint is None:
-            required = _contracts_require_provider_schema(composition)
-        else:
-            from assurance_product.runtime_selection import entrypoint_requires_provider_schema
-
-            required = entrypoint_requires_provider_schema(entrypoint)
-    else:
-        required = requires_provider_schema
-    negotiate_provider_schema(
-        required=required,
-        capabilities=_advertised_binding_capabilities(composition),
-    )
 
 
 class AssuranceProductApplication:
@@ -796,8 +773,6 @@ class AssuranceProductApplication:
         invocation_id: str,
         record: SelectionRecord,
     ) -> str:
-        if ProductRuntimePorts.test_kernel_resolutions is None:
-            assert_structured_output_capability(composition, entrypoint=record.entrypoint)
         _assert_langgraph_revision(workspace, composition, invocation_id)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
             await ports.backend.recover_handshake(invocation_id)
@@ -831,8 +806,6 @@ class AssuranceProductApplication:
         record: SelectionRecord,
         resume: object,
     ) -> str:
-        if ProductRuntimePorts.test_kernel_resolutions is None:
-            assert_structured_output_capability(composition, entrypoint=record.entrypoint)
         _assert_langgraph_revision(workspace, composition, invocation_id)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
             await ports.backend.recover_handshake(invocation_id)
@@ -1029,26 +1002,6 @@ def _langgraph_identity_digest(workspace: ChangeWorkspace, invocation_id: str) -
     )
 
 
-def _advertised_binding_capabilities(composition: object) -> AgentRuntimeCapabilities:
-    from assurance_product.source_catalog import adapter_for_entrypoint
-
-    source = getattr(getattr(composition, "manifest", None), "source", None)
-    name = getattr(source, "entrypoint_name", None)
-    adapter = adapter_for_entrypoint(name) if isinstance(name, str) else "opencode"
-    if adapter == "opencode":
-        from agent_runtime_opencode.observation import advertised_runtime_capabilities
-
-        return advertised_runtime_capabilities()
-    from agent_runtime_cursor.plugin import CursorPlugin
-
-    return CursorPlugin.spec.capabilities
-
-
-def _contracts_require_provider_schema(composition: object) -> bool:
-    del composition
-    return False
-
-
 def _bind_revision(
     workspace: ChangeWorkspace,
     *,
@@ -1102,6 +1055,5 @@ async def _graph_snapshot(artifact: object, entrypoint: str, invocation_id: str)
 __all__ = [
     "AssuranceProductApplication",
     "CoexistenceBuildArtifacts",
-    "assert_structured_output_capability",
     "parse_resume_file",
 ]

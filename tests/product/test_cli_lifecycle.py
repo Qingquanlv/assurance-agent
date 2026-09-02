@@ -181,6 +181,8 @@ def test_start_writes_legacy_selection_record_by_default(
         installed_sources=installed_sources,
         composition=composition,
         invocation_id="inv-legacy-marker-001",
+        entrypoint="execute",
+        families=("api",),
     )
     result = cli_runner.invoke(app, ["start", *args])
     assert result.exit_code == 0, result.output

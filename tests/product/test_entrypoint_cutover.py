@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 
 import pytest
@@ -14,7 +15,7 @@ from assurance_product.runtime_selection import (
 
 from tests.product.shadow_harness import PARITY_RECORDS, required_parity_scenarios
 
-_WAVE_A_FLIP = frozenset(
+_T5A_FLIP = frozenset(
     {
         "improvement-evaluate",
         "improvement-export",
@@ -22,7 +23,20 @@ _WAVE_A_FLIP = frozenset(
         "improvement-rollback",
     }
 )
-_AGENT_USING = frozenset(PRODUCT_ENTRYPOINTS - _WAVE_A_FLIP)
+_T5B_FLIP = frozenset(
+    {
+        "intake",
+        "case",
+        "archive",
+        "retro",
+        "issue-review",
+        "issue-analyze",
+        "issue-reconcile",
+        "improvement-review",
+    }
+)
+_LANGGRAPH_FLIP = _T5A_FLIP | _T5B_FLIP
+_LEFTOVER = frozenset({"execute", "full"})
 
 _INTAKE_ADVANCE = (
     "packages/capabilities/assurance-intake/tests/test_graph_join_any.py"
@@ -73,11 +87,12 @@ class WaveRecord:
     crash_citations: tuple[str, ...]
 
 
-def _agent_reason(name: str) -> str:
-    return (
-        f"schema-capability-red: {name} reaches an Agent contract that requires "
-        "provider schema while OpenCode advertises provider_schema=False"
-    )
+def _leftover_reason(name: str) -> str:
+    if name == "execute":
+        return "schema-capability-red: execute is the T5c tranche and is not yet released"
+    if name == "full":
+        return "schema-capability-red: full is the T5d tranche and is not yet released"
+    raise AssertionError(f"unexpected leftover name: {name}")
 
 
 def _joins_for(name: str) -> tuple[str, ...]:
@@ -102,17 +117,17 @@ WAVE_RECORDS: MappingProxyType[str, WaveRecord] = MappingProxyType(
     {
         name: WaveRecord(
             entrypoint=name,
-            runtime="langgraph-v1" if name in _WAVE_A_FLIP else "legacy-v2",
+            runtime="langgraph-v1" if name in _LANGGRAPH_FLIP else "legacy-v2",
             wave=_wave_for(name),
-            schema_capability="green" if name in _WAVE_A_FLIP else "red",
-            schema_capability_reason=None if name in _WAVE_A_FLIP else _agent_reason(name),
+            schema_capability="green" if name in _LANGGRAPH_FLIP else "red",
+            schema_capability_reason=None if name in _LANGGRAPH_FLIP else _leftover_reason(name),
             join_citations=_joins_for(name),
             parity_citations=(
                 _PARITY_ROOT,
-                *(_VALIDATOR_PARITY if name in _WAVE_A_FLIP else ()),
-                *(_EVALUATE_EVIDENCE if name in _WAVE_A_FLIP else ()),
+                *(_VALIDATOR_PARITY if name in _T5A_FLIP else ()),
+                *(_EVALUATE_EVIDENCE if name in _T5A_FLIP else ()),
             ),
-            crash_citations=_CRASH_ROWS if name in _WAVE_A_FLIP else (),
+            crash_citations=_CRASH_ROWS if name in _LANGGRAPH_FLIP else (),
         )
         for name in sorted(PRODUCT_ENTRYPOINTS)
     }
@@ -125,24 +140,26 @@ def _reset_runtime_selector() -> None:
     use_test_runtime_selector(None)
 
 
-def test_production_cutover_flips_only_schema_green_wave_a_names() -> None:
+def test_production_cutover_flips_twelve_names_and_leaves_execute_full() -> None:
     assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
     assert len(ENTRYPOINT_RUNTIME_CUTOVER) == 14
     flipped = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "langgraph-v1"}
-    assert flipped == set(_WAVE_A_FLIP)
-    for name in _AGENT_USING:
+    leftover = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "legacy-v2"}
+    assert flipped == set(_LANGGRAPH_FLIP)
+    assert leftover == set(_LEFTOVER)
+    for name in _LEFTOVER:
         assert ENTRYPOINT_RUNTIME_CUTOVER[name] == "legacy-v2"
         assert select_runtime(name) == "legacy-v2"
-    for name in _WAVE_A_FLIP:
+    for name in _LANGGRAPH_FLIP:
         assert select_runtime(name) == "langgraph-v1"
 
 
 def test_test_only_selector_may_choose_langgraph_without_mutating_production() -> None:
     use_test_runtime_selector(lambda _name: "langgraph-v1")
-    assert select_runtime("intake") == "langgraph-v1"
-    assert ENTRYPOINT_RUNTIME_CUTOVER["intake"] == "legacy-v2"
+    assert select_runtime("execute") == "langgraph-v1"
+    assert ENTRYPOINT_RUNTIME_CUTOVER["execute"] == "legacy-v2"
     use_test_runtime_selector(None)
-    assert select_runtime("intake") == "legacy-v2"
+    assert select_runtime("execute") == "legacy-v2"
 
 
 def test_wave_records_cover_every_name_without_a_waiver_field() -> None:
@@ -174,7 +191,7 @@ def test_eligible_wave_a_names_have_no_agent_contract_on_the_path() -> None:
     assert delivery._ROLLBACK_ID.startswith("assurance.improvement.task.")
     assert delivery._AUTO_REVIEW_ID.startswith("assurance.improvement.task.")
     assert delivery._HUMAN_REVIEW_ID.startswith("assurance.improvement.task.")
-    for name in _WAVE_A_FLIP:
+    for name in _T5A_FLIP:
         assert ENTRYPOINT_AGENT_CONTRACT_IDS[name] == ()
         assert not any(
             contract_id.startswith("assurance.") and ".agent." in contract_id
@@ -182,19 +199,45 @@ def test_eligible_wave_a_names_have_no_agent_contract_on_the_path() -> None:
         )
 
 
-def test_agent_using_names_stay_legacy_because_schema_capability_is_red() -> None:
+def test_t5b_names_are_green_even_with_agent_contracts() -> None:
+    for name in _T5B_FLIP:
+        record = WAVE_RECORDS[name]
+        assert record.runtime == "langgraph-v1"
+        assert record.schema_capability == "green"
+        assert record.schema_capability_reason is None
+        assert ENTRYPOINT_AGENT_CONTRACT_IDS[name]
+        assert select_runtime(name) == "langgraph-v1"
+
+
+def test_execute_and_full_stay_legacy_as_unreleased_tranches() -> None:
     from assurance_product.agent_contracts import all_feature_agent_contracts
 
     contracts = all_feature_agent_contracts()
     assert all(not hasattr(contract, "requires_provider_schema") for contract in contracts.values())
     assert len(contracts) == 33
-    for name in _AGENT_USING:
+    for name in _LEFTOVER:
         record = WAVE_RECORDS[name]
         assert record.runtime == "legacy-v2"
         assert record.schema_capability == "red"
-        assert record.schema_capability_reason is not None
+        assert record.schema_capability_reason == _leftover_reason(name)
         assert "schema-capability-red" in record.schema_capability_reason
+        assert "provider_schema" not in record.schema_capability_reason
+        assert "waiver" not in record.schema_capability_reason
         assert ENTRYPOINT_AGENT_CONTRACT_IDS[name]
+
+
+def test_vacuous_provider_schema_gate_is_removed_from_the_run_path() -> None:
+    from assurance_product import application, runtime_selection
+
+    assert not hasattr(application, "assert_structured_output_capability")
+    assert not hasattr(application, "_contracts_require_provider_schema")
+    assert not hasattr(application, "_advertised_binding_capabilities")
+    assert not hasattr(runtime_selection, "entrypoint_requires_provider_schema")
+    application_source = Path(application.__file__).read_text(encoding="utf-8")
+    selection_source = Path(runtime_selection.__file__).read_text(encoding="utf-8")
+    assert "negotiate_provider_schema" not in application_source
+    assert "assert_structured_output_capability" not in application_source
+    assert "entrypoint_requires_provider_schema" not in selection_source
 
 
 @pytest.mark.parametrize("entrypoint", tuple(sorted(PRODUCT_ENTRYPOINTS)))

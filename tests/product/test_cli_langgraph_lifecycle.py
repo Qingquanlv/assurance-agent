@@ -52,18 +52,28 @@ def _load_selection(path: Path) -> dict[str, object]:
     return payload
 
 
-def test_entrypoint_runtime_cutover_flips_only_schema_green_wave_a() -> None:
+def test_entrypoint_runtime_cutover_flips_twelve_names_and_leaves_execute_full() -> None:
     from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS
 
     assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
     assert len(ENTRYPOINT_RUNTIME_CUTOVER) == 14
     flipped = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "langgraph-v1"}
+    leftover = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "legacy-v2"}
     assert flipped == {
+        "archive",
+        "case",
+        "improvement-apply",
         "improvement-evaluate",
         "improvement-export",
-        "improvement-apply",
+        "improvement-review",
         "improvement-rollback",
+        "intake",
+        "issue-analyze",
+        "issue-reconcile",
+        "issue-review",
+        "retro",
     }
+    assert leftover == {"execute", "full"}
 
 
 def test_cli_environment_and_config_cannot_override_cutover(
@@ -81,6 +91,8 @@ def test_cli_environment_and_config_cannot_override_cutover(
         installed_sources=installed_sources,
         composition=composition,
         invocation_id="inv-cutover-override-001",
+        entrypoint="execute",
+        families=("api",),
     )
     rejected = cli_runner.invoke(app, ["start", *args, "--runtime", "langgraph-v1"])
     assert rejected.exit_code == 2, rejected.output
@@ -105,6 +117,8 @@ def test_production_start_writes_initialized_legacy_selection(
         installed_sources=installed_sources,
         composition=composition,
         invocation_id="inv-select-legacy-001",
+        entrypoint="execute",
+        families=("api",),
     )
     result = cli_runner.invoke(app, ["start", *args])
     assert result.exit_code == 0, result.output
@@ -112,7 +126,7 @@ def test_production_start_writes_initialized_legacy_selection(
     record = LegacyRuntimeRecord.model_validate_json(path.read_bytes())
     assert record.phase == "initialized"
     assert record.runtime == "legacy-v2"
-    assert record.entrypoint == "intake"
+    assert record.entrypoint == "execute"
     assert len(record.root_input_digest) == 64
     assert len(record.identity_digest) == 64
 

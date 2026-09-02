@@ -48,6 +48,20 @@ _T5A_LANGGRAPH = frozenset(
         "improvement-rollback",
     }
 )
+_T5B_LANGGRAPH = frozenset(
+    {
+        "intake",
+        "case",
+        "archive",
+        "retro",
+        "issue-review",
+        "issue-analyze",
+        "issue-reconcile",
+        "improvement-review",
+    }
+)
+_LANGGRAPH = _T5A_LANGGRAPH | _T5B_LANGGRAPH
+_LEFTOVER = frozenset({"execute", "full"})
 _CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
 _EVALUATE_ID = "assurance.improvement.task.evaluate-memory-improvement"
 _STRUCTURED_ARTIFACT_MARKERS = (
@@ -120,18 +134,21 @@ def test_checkpoint_r_inventory_is_33_33_34_41_43() -> None:
     assert len(contracts) + len(tasks) + 2 == 43
 
 
-def test_t5a_roots_stay_langgraph_and_ten_agent_roots_stay_legacy() -> None:
+def test_twelve_roots_stay_langgraph_and_execute_full_stay_legacy() -> None:
     from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS
     from assurance_product.runtime_selection import ENTRYPOINT_AGENT_CONTRACT_IDS, select_runtime
 
     assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
     flipped = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "langgraph-v1"}
     leftover = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "legacy-v2"}
-    assert flipped == set(_T5A_LANGGRAPH)
-    assert len(leftover) == 10
+    assert flipped == set(_LANGGRAPH)
+    assert leftover == set(_LEFTOVER)
     for name in _T5A_LANGGRAPH:
         assert select_runtime(name) == "langgraph-v1"
         assert ENTRYPOINT_AGENT_CONTRACT_IDS[name] == ()
+    for name in _T5B_LANGGRAPH:
+        assert select_runtime(name) == "langgraph-v1"
+        assert ENTRYPOINT_AGENT_CONTRACT_IDS[name]
     for name in leftover:
         assert select_runtime(name) == "legacy-v2"
         assert ENTRYPOINT_AGENT_CONTRACT_IDS[name]
