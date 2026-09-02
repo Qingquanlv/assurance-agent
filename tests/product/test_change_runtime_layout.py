@@ -372,7 +372,16 @@ def test_start_does_not_create_tree_store_directories(
     runtime = change / ".runtime"
     assert runtime.is_dir()
     assert (runtime / "invocations" / "inv-layout-001").is_dir()
-    assert not (runtime / "langgraph").exists()
+    # The selector and the revision registry record every invocation under this root, legacy ones
+    # included, and both say so. What a legacy start must not leave behind is the checkpointer.
+    langgraph = runtime / "langgraph"
+    selection = json.loads((langgraph / "selections" / "inv-layout-001.json").read_bytes())
+    binding = json.loads(
+        (langgraph / "leases" / "revisions" / "bindings" / "inv-layout-001.json").read_bytes()
+    )
+    assert selection["runtime"] == "legacy-v2"
+    assert binding["runtime"] == "legacy-v2"
+    assert not (langgraph / "checkpoints.sqlite3").exists()
     assert (change / ".staging").is_dir()
     assert (change / "status.json").is_file()
     assert (change / "events.jsonl").is_file()
