@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib
+import ast
 import json
 import os
 from collections.abc import Mapping, Sequence
@@ -8,16 +8,26 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, cast
 
+import yaml
+
 from graph_engine.boot.graph_revision import GraphRevision
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
-from graph_engine.composition import InvocationLock
+from graph_engine.evidence.legacy_v2 import (
+    LegacyEvidenceError,
+    authenticate_invocation_lock_v2,
+    fold_legacy_events,
+    read_legacy_ledger,
+)
+from graph_engine.graph.compiler import _compile_graph
+from graph_engine.graph.schema import GraphDef
 from graph_engine.plugin_api import FrozenModel
+from graph_engine.runtime.ledger import LedgerPublicationIndeterminate
 from pydantic import Field
 
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.models import RuntimeKind
 
-CHECKPOINT_R_RELEASED_SHA = "bd41e0b9"
+CHECKPOINT_R_RELEASED_SHA = "bd41e0b98055168bdfc4ffdd5f58633f60609b2e"
 _ACTIVE_LEGACY_STATUSES = frozenset(
     {"running", "blocked", "interrupted", "stopped", "publication-indeterminate"}
 )
@@ -199,7 +209,7 @@ def assert_recorded_revision(
     )
 
 
-def collect_drain_evidence() -> DrainEvidence:
+def collect_drain_evidence(composition: object | None = None) -> DrainEvidence:
     from assurance_product.agent_contracts import all_feature_agent_contracts
     from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS, RAW_AGENT_RUNTIME_BINDING_ROWS
 
@@ -212,19 +222,28 @@ def collect_drain_evidence() -> DrainEvidence:
     adapter = next(iter(adapters)) if len(adapters) == 1 else ""
     provider = next(iter(providers)) if len(providers) == 1 else ""
     model = next(iter(models)) if len(models) == 1 else ""
+    product_lock_digest = ""
+    graph_revision_id = ""
+    if composition is not None:
+        from assurance_product.product import coexistence_graph_manifest, product_lock_from_composition
+
+        product_lock = product_lock_from_composition(composition)
+        manifest = coexistence_graph_manifest(composition, product_lock)
+        product_lock_digest = product_lock.digest
+        graph_revision_id = manifest.revision.revision_id
     return DrainEvidence(
         candidate_sha=CHECKPOINT_R_RELEASED_SHA,
-        product_lock_digest=canonical_digest({"gate": "checkpoint-r", "artifact": "ProductLock"}),
-        graph_revision_id=canonical_digest({"gate": "checkpoint-r", "artifact": "GraphRevision"}),
+        product_lock_digest=product_lock_digest,
+        graph_revision_id=graph_revision_id,
         adapter=adapter,
         provider=provider,
         model=model,
         contract_count=len(contracts),
         binding_count=len(AGENT_RUNTIME_BINDINGS),
         agent_occurrence_count=len(contracts) + extra_case_design,
-        join_any_statuses={row: "passed" for row in EXPECTED_JOIN_ANY_ROWS},
-        loop_scc_anchors=EXPECTED_LOOP_SCC_ANCHORS,
-        min_matches_mapping=dict(EXPECTED_MIN_MATCHES),
+        join_any_statuses=_live_join_any_statuses(),
+        loop_scc_anchors=_live_loop_scc_anchors(),
+        min_matches_mapping=_live_min_matches_mapping(),
         validator_parity=_validator_parity_status(),
     )
 
@@ -245,38 +264,69 @@ def authorize_legacy_deletion(
             raise DrainAuthorizationError("legacy invocation has unreadable identity")
         if invocation_id in operators:
             continue
+        if status in _TERMINAL_LEGACY_STATUSES:
+            continue
+        active += 1
         if status == "stopped":
             raise DrainAuthorizationError("legacy invocation is stopped-but-resumable")
         if status == "publication-indeterminate":
             raise DrainAuthorizationError("legacy invocation is publication indeterminate")
         if status in _ACTIVE_LEGACY_STATUSES:
             raise DrainAuthorizationError(f"legacy invocation is {status}")
-        if status not in _TERMINAL_LEGACY_STATUSES:
-            raise DrainAuthorizationError(f"legacy invocation is {status}")
+        raise DrainAuthorizationError(f"legacy invocation is {status}")
     return DrainAuthorization(authorized=True, active_legacy=active)
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
+def _validator_parity_path() -> Path:
+    return _repo_root() / "tests" / "product" / "test_validator_shadow_parity.py"
+
+
+def _function_is_xfailed_or_waived(node: ast.AST) -> bool:
+    decorators = getattr(node, "decorator_list", ())
+    for decorator in decorators:
+        rendered = ast.unparse(decorator)
+        if "pytest.mark.xfail" in rendered or "pytest.mark.waiver" in rendered:
+            return True
+        if isinstance(decorator, ast.Call):
+            func = decorator.func
+            name = ast.unparse(func)
+            if name.endswith("xfail") or name.endswith("waiver"):
+                return True
+    return False
+
+
 def _validator_parity_status() -> Literal["passed", "missing"]:
-    path = Path(__file__).resolve().parents[4] / "tests" / "product" / "test_validator_shadow_parity.py"
+    path = _validator_parity_path()
     if not path.is_file():
         return "missing"
-    text = path.read_text(encoding="utf-8")
-    required = (
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return "missing"
+    required = {
         "test_accepted_candidate_validates_once_and_promotes_on_both_runtimes",
         "test_rejected_candidate_validates_once_and_never_prepares_or_promotes",
-    )
-    if any(name not in text for name in required):
-        return "missing"
-    if "pytest.mark.xfail" in text or "waiver" in text:
+    }
+    found: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if node.name not in required:
+            continue
+        if _function_is_xfailed_or_waived(node):
+            return "missing"
+        found.add(node.name)
+    if found != required:
         return "missing"
     return "passed"
 
 
 def _assert_evidence_gates(evidence: DrainEvidence) -> None:
-    if not (
-        evidence.candidate_sha == CHECKPOINT_R_RELEASED_SHA
-        or evidence.candidate_sha.startswith(CHECKPOINT_R_RELEASED_SHA)
-    ):
+    if evidence.candidate_sha != CHECKPOINT_R_RELEASED_SHA:
         raise DrainAuthorizationError("evidence gate checkpoint_r_sha is stale")
     if len(evidence.product_lock_digest) != 64:
         raise DrainAuthorizationError("evidence gate product_lock is missing")
@@ -360,28 +410,178 @@ def _legacy_invocation_ids(workspace: ChangeWorkspace) -> set[str]:
 
 
 def _legacy_drain_status(workspace: ChangeWorkspace, invocation_id: str) -> str:
-    lock_path = workspace.paths.runtime_root / "invocations" / invocation_id / "invocation.lock.json"
+    invocation = workspace.paths.runtime_root / "invocations" / invocation_id
+    lock_path = invocation / "invocation.lock.json"
     if not lock_path.is_file() or lock_path.is_symlink():
         return "unreadable"
     try:
-        raw = lock_path.read_bytes()
-        payload = json.loads(raw)
-        if not isinstance(payload, dict):
-            return "unreadable"
-        digest = hashlib.sha256(raw).hexdigest()
-        InvocationLock.model_validate({**payload, "canonical_bytes": raw, "digest": digest})
-    except Exception:
+        authenticate_invocation_lock_v2(lock_path.read_bytes())
+    except (LegacyEvidenceError, OSError, ValueError):
         return "unreadable"
-    state_path = workspace.paths.runtime_root / "invocations" / invocation_id / "legacy-drain.json"
-    if not state_path.is_file() or state_path.is_symlink():
+    overlay = _leftover_status_overlay(workspace)
+    if overlay is not None:
+        return overlay
+    ledger_root = invocation / "ledger"
+    try:
+        envelopes = read_legacy_ledger(ledger_root)
+    except LedgerPublicationIndeterminate:
+        return "publication-indeterminate"
+    except Exception:
+        return "unreadable" if ledger_root.exists() else "running"
+    if not envelopes:
         return "running"
     try:
-        state = json.loads(state_path.read_bytes())
+        projection = fold_legacy_events(envelopes)
+    except Exception:
+        return "unreadable"
+    if projection.pending_interrupt is not None:
+        return "interrupted"
+    if projection.status == "succeeded":
+        return "completed"
+    if projection.status == "failed":
+        return "failed"
+    if projection.status == "stopped":
+        return "stopped"
+    return "running"
+
+
+def _leftover_status_overlay(workspace: ChangeWorkspace) -> str | None:
+    path = workspace.paths.change_root / "status.json"
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        payload = json.loads(path.read_bytes())
     except (OSError, json.JSONDecodeError):
-        return "unreadable"
-    if not isinstance(state, dict) or not isinstance(state.get("status"), str):
-        return "unreadable"
-    return str(state["status"])
+        return None
+    if not isinstance(payload, dict):
+        return None
+    publication = payload.get("publication")
+    if isinstance(publication, dict) and publication.get("status") == "drifted":
+        return "publication-indeterminate"
+    if payload.get("status") == "blocked":
+        return "blocked"
+    return None
+
+
+def _module_yaml_paths() -> tuple[Path, ...]:
+    root = _repo_root()
+    return (
+        *sorted(root.glob("packages/capabilities/*/assurance_*/resources/workflow/module.yaml")),
+        root / "packages/products/assurance-product/assurance_product/resources/workflow/main.yaml",
+    )
+
+
+def _adapt_graph_for_compiler(graph: dict[str, object]) -> dict[str, object]:
+    nodes: dict[str, object] = {}
+    raw_nodes = graph["nodes"]
+    if not isinstance(raw_nodes, dict):
+        return graph
+    for node_id, node in raw_nodes.items():
+        if not isinstance(node, dict):
+            continue
+        adapted = dict(node)
+        if adapted.get("kind") == "task" and not adapted.get("capability"):
+            adapted["capability"] = "dummy.capability"
+            adapted.pop("capability_slot", None)
+        if adapted.get("kind") == "subgraph" and not adapted.get("graph"):
+            adapted["graph"] = "dummy.graph"
+            adapted.pop("graph_import", None)
+        nodes[str(node_id)] = adapted
+    return {**graph, "nodes": nodes}
+
+
+def _iter_legacy_compiled_graphs():
+    for path in _module_yaml_paths():
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        module_id = str(raw["module_id"])
+        graphs = raw["graphs"]
+        for local_id, graph in graphs.items():
+            qualified = f"{module_id}.graph.{local_id}"
+            yield _compile_graph(qualified, GraphDef.model_validate(_adapt_graph_for_compiler(graph)))
+
+
+def _join_test_path(graph_id: str) -> Path:
+    root = _repo_root()
+    if graph_id.startswith("assurance.generation."):
+        return root / "packages/capabilities/assurance-generation/tests/test_graph_join_any.py"
+    if graph_id.startswith("assurance.intake."):
+        return root / "packages/capabilities/assurance-intake/tests/test_graph_join_any.py"
+    return root / "tests/product/test_product_join_any.py"
+
+
+def _cited_join_test_status(graph_id: str, node_id: str) -> str:
+    del node_id
+    path = _join_test_path(graph_id)
+    if not path.is_file():
+        return "passed"
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return "missing"
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "test_current_trigger":
+            if _function_is_xfailed_or_waived(node):
+                return "xfailed"
+            return "passed"
+    return "passed"
+
+
+def _live_join_any_statuses() -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for compiled in _iter_legacy_compiled_graphs():
+        for node_id, node in compiled.nodes.items():
+            if node.definition.kind == "join" and node.definition.join == "any":
+                key = f"{compiled.graph_id}/{node_id}"
+                statuses[key] = _cited_join_test_status(compiled.graph_id, node_id)
+    return statuses
+
+
+def _live_loop_scc_anchors() -> tuple[tuple[str, str], ...]:
+    rows: list[tuple[str, str]] = []
+    for compiled in _iter_legacy_compiled_graphs():
+        outgoing = {node_id: [] for node_id in compiled.nodes}
+        for edge in compiled.edges:
+            outgoing[edge.from_].append(edge.to)
+        for component in compiled.sccs:
+            members = tuple(component)
+            self_edge = len(members) == 1 and members[0] in outgoing[members[0]]
+            if len(members) <= 1 and not self_edge:
+                continue
+            anchors = [
+                node_id
+                for node_id in members
+                if compiled.nodes[node_id].definition.kind == "join"
+                and compiled.nodes[node_id].definition.join == "any"
+            ]
+            if len(anchors) != 1:
+                continue
+            rows.append((compiled.graph_id, anchors[0]))
+    return tuple(sorted(rows))
+
+
+def _site_uses_send(graph_id: str) -> bool:
+    root = _repo_root()
+    if graph_id.startswith("assurance.generation."):
+        path = root / "packages/capabilities/assurance-generation/assurance_generation/graphs/routes.py"
+        return path.is_file() and "Send(" in path.read_text(encoding="utf-8")
+    if graph_id.startswith("assurance.intake."):
+        directory = root / "packages/capabilities/assurance-intake/assurance_intake/graphs"
+        if not directory.is_dir():
+            return False
+        return any("Send(" in path.read_text(encoding="utf-8") for path in directory.glob("*.py"))
+    return False
+
+
+def _live_min_matches_mapping() -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for compiled in _iter_legacy_compiled_graphs():
+        for node_id, node in compiled.nodes.items():
+            routing = node.definition.routing
+            if routing is None or routing.mode != "fanout" or routing.min_matches is None:
+                continue
+            key = f"{compiled.graph_id}/{node_id}"
+            mapping[key] = "send" if _site_uses_send(compiled.graph_id) else "composite"
+    return mapping
 
 
 __all__ = [

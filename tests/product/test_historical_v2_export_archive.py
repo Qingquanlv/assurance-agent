@@ -71,10 +71,69 @@ def test_historical_ledger_fold_matches_original_export_inputs(tmp_path: Path) -
 
 
 def test_historical_export_and_archive_still_work_on_legacy_era_change(cli_runner, tmp_path: Path) -> None:
+    from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.cli import app
     from assurance_product.export import publish_achieved
+    from assurance_product.revision_registry import RevisionRegistry
+    from assurance_product.runtime_selection import (
+        LegacyRuntimeRecord,
+        complete_initialized,
+        write_initializing,
+    )
 
     project = write_achieved(tmp_path)
+    workspace = ChangeWorkspace.open(project, CHANGE_ID)
+    workspace.initialize()
+    leftover_id = "inv-leftover-v2-historical"
+    digest = "d" * 64
+    write_initializing(
+        workspace,
+        LegacyRuntimeRecord(
+            phase="initializing",
+            invocation_id=leftover_id,
+            entrypoint="archive",
+            root_input_digest="c" * 64,
+            build_identity=digest,
+        ),
+    )
+    complete_initialized(
+        workspace,
+        LegacyRuntimeRecord(
+            phase="initialized",
+            invocation_id=leftover_id,
+            entrypoint="archive",
+            root_input_digest="c" * 64,
+            build_identity=digest,
+            identity_digest=digest,
+        ),
+    )
+    RevisionRegistry(workspace).bind(leftover_id, runtime="legacy-v2", revision_id=digest)
+    invocation = workspace.paths.runtime_root / "invocations" / leftover_id
+    invocation.mkdir(parents=True, exist_ok=True)
+    raw = _golden_bytes()
+    (invocation / "invocation.lock.json").write_bytes(raw)
+    lock = authenticate_invocation_lock_v2(raw)
+    seed = empty_invocation_seed()
+    Ledger(invocation / "ledger").append_batch(
+        (
+            InvocationStarted(
+                invocation_id=leftover_id,
+                lock_digest=lock.digest,
+                entrypoint="archive",
+                event_schema_version="2",
+                runtime_authorization_digest=EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
+                root_input_digest=seed.root_input_digest,
+            ),
+            GraphStarted(graph_instance_id="root", graph_id="root"),
+            GraphCompleted(graph_instance_id="root"),
+            InvocationFinished(invocation_id=leftover_id, status="succeeded"),
+        ),
+        expected_next_seq=1,
+    )
+    envelopes = read_legacy_ledger(invocation / "ledger")
+    assert fold_legacy_events(envelopes).status == "succeeded"
+    assert not (invocation / "legacy-drain.json").exists()
+
     exported = cli_runner.invoke(
         app,
         ["export", "--json", "--project-dir", str(project), "--change", CHANGE_ID],
