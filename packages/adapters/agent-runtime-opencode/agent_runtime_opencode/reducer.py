@@ -15,6 +15,7 @@ from graph_engine.plugin_api import TaskOutcome, TaskRequest
 from agent_runtime_opencode.discovery import ADAPTER_VERSION
 from agent_runtime_opencode.observation import (
     ProviderTerminal,
+    _terminal_error_kind,
     parse_closed_terminal_result,
     provider_error_is_transient,
     provider_error_message,
@@ -47,6 +48,15 @@ def reduce_terminal(
             failure_message(provider_error_message(session, messages), canaries=canaries)
         )
     if kind == "failed":
+        if _terminal_error_kind(session, messages) is None:
+            try:
+                parse_closed_terminal_result(messages)
+            except ValueError as error:
+                return TaskOutcome.failed(
+                    "invalid_output",
+                    failure_message(str(error), canaries=canaries),
+                    retryable=False,
+                )
         retryable = provider_error_is_transient(session, messages)
         return TaskOutcome.failed(
             "transient" if retryable else "external_effect",

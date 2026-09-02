@@ -344,7 +344,7 @@ def classify_provider_state(
     messages: Sequence[object],
 ) -> ProviderTerminal:
     error_kind = _terminal_error_kind(session, messages)
-    _idle_from_status_map(status_map, session_id)
+    idle = _idle_from_status_map(status_map, session_id)
     try:
         parse_closed_terminal_result(messages)
         has_result = True
@@ -356,6 +356,8 @@ def classify_provider_state(
     if error_kind == "canceled":
         return "canceled"
     if error_kind == "failed":
+        return "failed"
+    if idle and not open_tools and not has_result and _has_result_bearing_assistant(messages):
         return "failed"
     return "running"
 
@@ -386,13 +388,22 @@ def parse_closed_terminal_result(messages: Sequence[object]) -> dict[str, Any]:
         for part in parts:
             if not isinstance(part, Mapping):
                 raise ValueError("terminal part is not an object")
-            kind = part.get("type")
-            if kind in {"text", "step-start", "step-finish", "patch", "tool"}:
-                continue
-            raise ValueError(f"forbidden intermediate part type {kind!r}")
     if len(result_bearing) != 1:
         raise ValueError("expected exactly one result-bearing assistant message")
     return _parse_result_bearing_message(result_bearing[0])
+
+
+def _has_result_bearing_assistant(messages: Sequence[object]) -> bool:
+    for message in messages:
+        if not isinstance(message, Mapping):
+            continue
+        info = message.get("info")
+        if not isinstance(info, Mapping) or info.get("role") != "assistant":
+            continue
+        parts = message.get("parts")
+        if isinstance(parts, list) and _nonempty_text_parts(parts):
+            return True
+    return False
 
 
 def _nonempty_text_parts(parts: Sequence[object]) -> tuple[Mapping[str, object], ...]:

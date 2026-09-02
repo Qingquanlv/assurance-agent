@@ -440,6 +440,94 @@ def test_embedded_json_in_assistant_prose_is_rejected() -> None:
     )
 
 
+def test_idle_non_closed_history_is_terminal_failure() -> None:
+    messages = [
+        {
+            "info": {
+                "id": "asst-1",
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "text", "text": '{"ok": true} extra commentary'},
+            ],
+        }
+    ]
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(messages)
+    assert (
+        classify_provider_state(
+            session_id="ses_idle",
+            status_map={"ses_idle": {"type": "idle"}},
+            session={"id": "ses_idle"},
+            messages=messages,
+        )
+        == "failed"
+    )
+
+
+def test_intermediate_reasoning_then_closed_terminal_succeeds() -> None:
+    messages = [
+        {
+            "info": {"id": "msg_user", "role": "user"},
+            "parts": [{"type": "text", "text": "write the result"}],
+        },
+        {
+            "info": {"id": "msg_tool", "role": "assistant"},
+            "parts": [
+                {"type": "reasoning", "text": "I will write the file first"},
+                {"type": "tool", "state": {"status": "completed"}},
+            ],
+        },
+        {
+            "info": {
+                "id": "msg_result",
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "text", "text": '{"ok": true}'},
+                {"type": "step-finish", "reason": "stop"},
+            ],
+        },
+    ]
+    assert parse_closed_terminal_result(messages) == {"ok": True}
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "idle"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "succeeded"
+    )
+
+
+@pytest.mark.parametrize("kind", ["reasoning", "file", "unknown"])
+def test_forbidden_part_on_terminal_message_fails(kind: str) -> None:
+    messages = [
+        {
+            "info": {
+                "id": "asst-1",
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "text", "text": '{"ok": true}'},
+                {"type": kind, "text": "not allowed on the terminal message"},
+                {"type": "step-finish", "reason": "stop"},
+            ],
+        }
+    ]
+    with pytest.raises(ValueError, match="forbidden terminal part type"):
+        parse_closed_terminal_result(messages)
+
+
 def test_busy_session_with_closed_result_is_succeeded() -> None:
     messages = [
         {

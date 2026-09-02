@@ -6,7 +6,7 @@ import pytest
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult, ResultContract
 from agent_runtime_contracts.schema import canonical_digest, thaw_json
-from agent_runtime_opencode.observation import parse_closed_terminal_result
+from agent_runtime_opencode.observation import classify_provider_state, parse_closed_terminal_result
 from agent_runtime_opencode.reducer import reduce_terminal
 from harness import (  # pyright: ignore[reportMissingImports]
     _completed_engine_invocation,
@@ -207,6 +207,77 @@ def test_closed_terminal_accepts_one_json_text_step_pair_and_optional_patch() ->
 def test_closed_terminal_rejects_ambiguous_or_unsafe_parts(messages: list[dict[str, object]]) -> None:
     with pytest.raises(ValueError):
         parse_closed_terminal_result(messages)
+
+
+def test_idle_non_closed_history_reduces_to_invalid_output() -> None:
+    messages = [
+        {
+            "info": {
+                "id": "asst-1",
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "text", "text": '{"ok": true}'},
+                {"type": "text", "text": "extra commentary"},
+            ],
+        }
+    ]
+    kind = classify_provider_state(
+        session_id="ses_idle",
+        status_map={"ses_idle": {"type": "idle"}},
+        session={"id": "ses_idle"},
+        messages=messages,
+    )
+    assert kind != "running"
+    outcome = reduce_terminal(
+        kind=kind,
+        session={"id": "ses_idle"},
+        messages=messages,
+        agent_run=agent_run_request(),
+        request=task_request(agent_run_request()),
+        diff=None,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.retryable is False
+
+
+def test_intermediate_reasoning_then_closed_terminal_reduces_success() -> None:
+    messages = [
+        {
+            "info": {"id": "msg_tool", "role": "assistant"},
+            "parts": [
+                {"type": "reasoning", "text": "planning the write"},
+                {"type": "file", "filename": "scratch.md"},
+                {"type": "unknown", "text": "provider noise"},
+                {"type": "tool", "state": {"status": "completed"}},
+            ],
+        },
+        *_closed_assistant({"ok": True}),
+    ]
+    assert parse_closed_terminal_result(messages) == {"ok": True}
+    kind = classify_provider_state(
+        session_id="ses_idle",
+        status_map={"ses_idle": {"type": "idle"}},
+        session={"id": "ses_idle"},
+        messages=messages,
+    )
+    assert kind == "succeeded"
+    outcome = reduce_terminal(
+        kind=kind,
+        session={"id": "ses_idle"},
+        messages=messages,
+        agent_run=agent_run_request(),
+        request=task_request(agent_run_request()),
+        diff=None,
+    )
+    assert outcome.status == "succeeded"
+    result = AgentRunResult.model_validate(outcome.output)
+    assert thaw_json(result.result_payload) == {"ok": True}
 
 
 def test_reduce_terminal_validates_local_result_and_keeps_bounded_identity_evidence() -> None:
