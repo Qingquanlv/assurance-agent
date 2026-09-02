@@ -34,9 +34,6 @@ def test_langgraph_export_and_archive_never_call_legacy_driver(
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
     from assurance_product.runtime_selection import use_test_runtime_selector
-    from graph_engine.runtime import driver, engine
-    from graph_engine.runtime.models import fold_events
-
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
@@ -54,10 +51,9 @@ def test_langgraph_export_and_archive_never_call_legacy_driver(
     def _forbid(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("LangGraph export/archive must not call legacy Engine/driver/fold_events")
 
-    monkeypatch.setattr(engine, "Engine", _forbid)
-    monkeypatch.setattr(driver, "acquire_invocation", _forbid)
-    monkeypatch.setattr("graph_engine.runtime.models.fold_events", _forbid)
-    del fold_events
+    monkeypatch.setattr("graph_engine.runtime.engine.Engine", _forbid)
+    monkeypatch.setattr("graph_engine.runtime.driver.acquire_invocation", _forbid)
+    monkeypatch.setattr("graph_engine.evidence.legacy_v2.fold_legacy_events", _forbid)
     project = write_achieved(tmp_path, project=project_dir)
     exported = cli_runner.invoke(
         app,

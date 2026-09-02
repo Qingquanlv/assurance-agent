@@ -43,7 +43,7 @@ from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS, GRAPH_NAMES_NO
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import EffectPolicy, ResourceClaims
-from graph_engine.runtime.task_workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.testing import GraphHarness, committed
 from graph_engine.testing.graph_harness import ScriptedAttempt, _prepare_anchored_backend
 from graph_engine.testing.recording_build_context import RecordingCapabilityBuildContext

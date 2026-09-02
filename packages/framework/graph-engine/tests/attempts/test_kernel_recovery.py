@@ -25,7 +25,7 @@ from graph_engine.persistence.resource_authorization import (
 )
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import ResourceClaims, TaskWorkspaceBinding
-from graph_engine.runtime.task_workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 
 
 class RunInput(BaseModel):

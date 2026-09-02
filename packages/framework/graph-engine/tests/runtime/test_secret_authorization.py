@@ -26,7 +26,7 @@ from graph_engine.plugin_api import (
 from graph_engine.runtime.engine import Engine, InvocationDrift
 from graph_engine.runtime.models import PlannedTask
 from graph_engine.runtime.scheduler import Scheduler, SchedulerStateError
-from graph_engine.runtime.secret_sources import (
+from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     empty_runtime_authorization,
@@ -45,9 +45,8 @@ _handler = _Handler()
 
 def _toy_composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FrozenComposition:
     source = tmp_path / "source"
-    repository = Path(__file__).parents[5]
     shutil.copytree(
-        repository / "examples" / "graph-engine-toy-a",
+        Path(__file__).resolve().parent / "fixtures" / "leftover-toy-a",
         source,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )

@@ -6,7 +6,7 @@ import sys
 import pytest
 
 from graph_engine.composition import SchemaEntry
-from graph_engine.runtime.json_schema import match_json_schema
+from graph_engine.json_schema import match_json_schema
 
 
 _CURRENT_BEHAVIORAL_NODES = {

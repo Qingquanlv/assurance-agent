@@ -733,6 +733,83 @@ def build_invocation_lock(
     )
 
 
+def build_product_lock(
+    *,
+    manifest: ProductManifest,
+    product_snapshot: SourceSnapshot,
+    descriptors: Mapping[str, PluginDescriptor],
+    dependency_order: tuple[str, ...],
+    registries: RegistrySet,
+    configuration: object,
+    engine_snapshot: SourceSnapshot,
+    contribution_authorities: Mapping[str, ContributionAuthority],
+) -> ProductLock:
+    validate_registry_contribution_authorities(
+        registries,
+        contribution_authorities,
+        tuple(descriptors[plugin_id] for plugin_id in dependency_order),
+    )
+    manifest_projection = _manifest_projection(manifest)
+    locked_product = LockedProduct(
+        product_id=manifest.product_id,
+        product_version=manifest.product_version,
+        manifest=manifest_projection,
+        manifest_digest=canonical_digest(manifest_projection),
+        source=_locked_source(product_snapshot),
+    )
+    locked_plugins: list[LockedPlugin] = []
+    for plugin_id in sorted(descriptors):
+        descriptor = descriptors[plugin_id]
+        role = SourceRole.PLUGIN if descriptor.source is not None else SourceRole.CONFIG
+        source_entry = registries.sources.entries.get(SourceKey(role, plugin_id))
+        if source_entry is None:
+            raise ValueError(f"locked plugin has no selected source: {plugin_id}")
+        descriptor_projection = _descriptor_projection(descriptor)
+        try:
+            authority = contribution_authorities[plugin_id]
+        except KeyError as error:
+            raise ValueError(f"locked plugin has no contribution authority: {plugin_id}") from error
+        contribution_projection = cast(JSONValue, thaw_json(authority.projection))
+        locked_plugins.append(
+            LockedPlugin(
+                plugin_id=plugin_id,
+                plugin_version=descriptor.plugin_version,
+                descriptor=descriptor,
+                descriptor_digest=canonical_digest(descriptor_projection),
+                contribution=contribution_projection,
+                contribution_digest=canonical_digest(contribution_projection),
+                dependencies=tuple(
+                    LockedDependency(
+                        plugin_id=dependency.plugin_id,
+                        version_specifier=dependency.version_specifier,
+                    )
+                    for dependency in sorted(
+                        descriptor.dependencies,
+                        key=lambda dependency: dependency.plugin_id,
+                    )
+                ),
+                source=_locked_source(source_entry.snapshot),
+            )
+        )
+    configuration_projection = cast(JSONValue, thaw_json(configuration))
+    registry_projections = compute_registry_projections(registries)
+    capability_bindings = _binding_projection_from_capabilities(registry_projections.capabilities)
+    return ProductLock.create(
+        engine_api=ENGINE_API_VERSION,
+        engine=_locked_source(engine_snapshot),
+        engine_digest=engine_snapshot.digest,
+        product=locked_product,
+        plugins=tuple(locked_plugins),
+        dependency_order=dependency_order,
+        registry_projections=registry_projections,
+        registry_digests=_registry_digests_from_projections(registry_projections),
+        configuration=configuration_projection,
+        configuration_digest=canonical_digest(configuration_projection),
+        capability_bindings=capability_bindings,
+        capability_bindings_digest=canonical_digest(capability_bindings),
+    )
+
+
 def compute_registry_projections(registries: RegistrySet) -> RegistryProjections:
     sources: list[JSONValue] = []
     for source_key, entry in registries.sources.entries.items():
@@ -903,7 +980,7 @@ def authenticate_composition_lock(
     registries: RegistrySet,
     workflow: object,
     configuration: object,
-    lock: InvocationLock,
+    lock: InvocationLock | ProductLock,
     contribution_authorities: Mapping[str, ContributionAuthority],
 ) -> None:
     validate_registry_contribution_authorities(
@@ -911,8 +988,17 @@ def authenticate_composition_lock(
         contribution_authorities,
         descriptors,
     )
-    if not isinstance(workflow, CompiledWorkflow):
-        raise TypeError("composition workflow must be compiled")
+    factory_path = manifest.graph_factory_symbol is not None
+    if factory_path:
+        if workflow is not None:
+            raise TypeError("factory composition must not carry a compiled workflow")
+        if not isinstance(lock, ProductLock):
+            raise TypeError("factory composition lock must be a ProductLock")
+    else:
+        if not isinstance(workflow, CompiledWorkflow):
+            raise TypeError("composition workflow must be compiled")
+        if not isinstance(lock, InvocationLock):
+            raise TypeError("leftover composition lock must be an InvocationLock")
     engine_source = registries.sources.entries.get(SourceKey(SourceRole.ENGINE, "graph.engine"))
     if engine_source is None or lock.engine != _locked_source(engine_source.snapshot):
         raise ValueError("invocation lock engine source disagrees with composition")
@@ -985,6 +1071,8 @@ def authenticate_composition_lock(
         raise ValueError("invocation lock capability bindings disagree with composition")
     if lock.capability_bindings_digest != canonical_digest(capability_bindings):
         raise ValueError("invocation lock capability binding digest disagrees with composition")
+    if factory_path:
+        return
     compiled_workflow = _compiled_workflow_projection(workflow)
     if thaw_json(lock.compiled_workflow) != compiled_workflow:
         raise ValueError("invocation lock workflow projection disagrees with composition")

@@ -16,7 +16,7 @@ from graph_engine.runtime.engine import Engine, RunResult
 from graph_engine.runtime.events import InvocationStarted
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import InvocationProjection, fold_events
-from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
+from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
 
 from assurance_product.binding_builder import build_deployment_wheel
 from assurance_product.change_workspace import ChangeWorkspace

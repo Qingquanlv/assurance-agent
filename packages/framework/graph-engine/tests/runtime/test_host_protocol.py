@@ -24,7 +24,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceIdentity,
 )
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
@@ -37,7 +37,7 @@ from graph_engine.runtime.host_protocol import (
     TaskHostTerminalReceipt,
     authorized_secret_port,
 )
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 
 _LOCK_DIGEST = "a" * 64
@@ -434,7 +434,7 @@ def test_activity_port_protocol_exposes_snapshot_dispatch_and_bind() -> None:
 
 def test_runtime_exports_frozen_host_protocol_not_phase2_execute() -> None:
     import graph_engine.runtime as runtime
-    from graph_engine.runtime.host_protocol import TaskExecutionHost as FrozenHost
+    from graph_engine.attempts.host_protocol import TaskExecutionHost as FrozenHost
 
     assert runtime.TaskExecutionHost is FrozenHost
     parameters = tuple(inspect.signature(runtime.TaskExecutionHost.execute).parameters)

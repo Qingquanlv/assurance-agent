@@ -17,6 +17,7 @@ from graph_engine.composition.lock import (
     LockedProduct,
     LockedSource,
     LockedSourceFile,
+    ProductLock,
     RegistryDigests,
     RegistryProjections,
 )
@@ -106,6 +107,7 @@ __all__ = [
     "MetadataProvider",
     "PluginSource",
     "PluginRequirement",
+    "ProductLock",
     "ProductManifest",
     "WorkflowModuleRequirement",
     "WorkflowSlotBinding",

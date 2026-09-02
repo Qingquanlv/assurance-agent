@@ -9,7 +9,7 @@ from graph_engine.composition import FrozenComposition
 from graph_engine.plugin_api import InvocationWorkspaceBinding
 from graph_engine.runtime.driver import StartSpec, acquire_invocation
 from graph_engine.runtime.engine import Engine, EngineError
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 
 

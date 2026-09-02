@@ -22,7 +22,7 @@ from graph_engine.composition import (
 from graph_engine.plugin_api import InvocationWorkspaceBinding
 from graph_engine.runtime.engine import Engine, EngineError
 from graph_engine.runtime.events import GraphStarted, InvocationStarted, TokenOffered
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
 
 
@@ -41,9 +41,8 @@ _BOOTSTRAP_APPEND_BOUNDARIES = (
 @pytest.fixture
 def composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FrozenComposition:
     source = tmp_path / "source"
-    repository = Path(__file__).parents[5]
     shutil.copytree(
-        repository / "examples" / "graph-engine-toy-a",
+        Path(__file__).resolve().parent / "fixtures" / "leftover-toy-a",
         source,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )

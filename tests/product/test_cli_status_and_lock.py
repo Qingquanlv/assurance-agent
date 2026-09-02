@@ -104,7 +104,7 @@ def test_render_status_projects_started_invocation(
     from graph_engine.runtime.engine import Engine
     from graph_engine.runtime.ledger import Ledger
     from graph_engine.runtime.models import fold_events
-    from graph_engine.runtime.secret_sources import (
+    from graph_engine.attempts.secret_sources import (
         InvocationRuntimeAuthorization,
         SecretSourceBinding,
         runtime_authorization_digest,

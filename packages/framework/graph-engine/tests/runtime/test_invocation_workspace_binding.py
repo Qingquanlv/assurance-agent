@@ -19,15 +19,14 @@ from graph_engine.composition import (
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.invocation_lock import InvocationDrift
 from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import InvocationSeed
 
 
 def _composition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FrozenComposition:
     source = tmp_path / "composition-source"
-    repository = Path(__file__).parents[5]
     shutil.copytree(
-        repository / "examples" / "graph-engine-toy-a",
+        Path(__file__).resolve().parent / "fixtures" / "leftover-toy-a",
         source,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )

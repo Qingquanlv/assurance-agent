@@ -1,14 +1,31 @@
 from __future__ import annotations
 
 import argparse
-from importlib import metadata
+import asyncio
 import json
-from pathlib import Path
 import sys
 from collections.abc import Mapping, Sequence
+from importlib import metadata
+from pathlib import Path
 from typing import cast
 
-from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.attempts.host_protocol import (
+    TaskHostCallIdentity,
+    TaskHostCallResult,
+    TaskHostCancelCall,
+    TaskHostExecuteCall,
+    TaskHostReconcileCall,
+    TaskHostTerminalReceipt,
+)
+from graph_engine.attempts.workspace import TaskWorkspaceStore
+from graph_engine.boot.generic import (
+    boot_factory_product,
+    contract_resolver_from_plugins,
+    invocation_values,
+    run_factory_product,
+    workspace_provider_for,
+)
+from graph_engine.canonical import JSONValue
 from graph_engine.composition import (
     FrozenComposition,
     PluginSource,
@@ -18,9 +35,9 @@ from graph_engine.composition import (
     WheelPluginSource,
     WheelProductSource,
 )
+from graph_engine.composition.lock import ProductLock
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
-    InvocationWorkspaceBinding,
     RecoverableTaskHandler,
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
@@ -28,19 +45,6 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
 )
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
-from graph_engine.runtime.engine import Engine, RunResult
-from graph_engine.runtime.host_protocol import (
-    TaskHostCallIdentity,
-    TaskHostCallResult,
-    TaskHostCancelCall,
-    TaskHostExecuteCall,
-    TaskHostReconcileCall,
-    TaskHostTerminalReceipt,
-)
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
 
 
 class _CliSourceError(GraphEngineError):
@@ -182,13 +186,6 @@ def _declaration_path(entrypoint: metadata.EntryPoint, kind: str) -> str:
 
 
 def _require_installed_wheel(distribution: metadata.Distribution) -> None:
-    """Reject ambient editable inference at the CLI boundary.
-
-    Task 8's explicit distribution/entry-point flags can describe an installed
-    wheel source.  An editable source additionally requires the physical root
-    and exact closed file tuple, neither of which these flags can express.
-    """
-
     direct_url_text = distribution.read_text("direct_url.json")
     if direct_url_text is None:
         return
@@ -205,39 +202,31 @@ def _require_installed_wheel(distribution: metadata.Distribution) -> None:
         raise _CliSourceError("editable distribution requires an explicit source root and file tuple")
 
 
-def _product_source(
-    distribution_name: str,
-    entrypoint_name: str,
-) -> ProductSource:
+def _product_source(distribution_name: str, entrypoint_name: str) -> ProductSource:
     distribution, entrypoint = _selected_entrypoint(
         distribution_name,
         "graph_engine.products",
         entrypoint_name,
     )
     _require_installed_wheel(distribution)
-    declaration_path = _declaration_path(entrypoint, "product")
     return WheelProductSource(
         distribution=distribution_name,
         entrypoint_name=entrypoint_name,
-        declaration_path=declaration_path,
+        declaration_path=_declaration_path(entrypoint, "product"),
     )
 
 
-def _plugin_source(
-    distribution_name: str,
-    entrypoint_name: str,
-) -> PluginSource:
+def _plugin_source(distribution_name: str, entrypoint_name: str) -> PluginSource:
     distribution, entrypoint = _selected_entrypoint(
         distribution_name,
         "graph_engine.plugins",
         entrypoint_name,
     )
     _require_installed_wheel(distribution)
-    declaration_path = _declaration_path(entrypoint, "plugin")
     return WheelPluginSource(
         distribution=distribution_name,
         entrypoint_name=entrypoint_name,
-        declaration_path=declaration_path,
+        declaration_path=_declaration_path(entrypoint, "plugin"),
     )
 
 
@@ -257,8 +246,14 @@ def _resolve_bundle(
             strict=True,
         )
     )
-    request = ResolutionRequest(product=product, plugins=plugins)
-    return RegistryPlatform().resolve(request)
+    return RegistryPlatform().resolve(ResolutionRequest(product=product, plugins=plugins))
+
+
+def _require_factory_composition(composition: FrozenComposition) -> None:
+    if composition.manifest.graph_factory_symbol is None or not isinstance(composition.lock, ProductLock):
+        raise GraphEngineError("graph-engine CLI runs Product factory compositions")
+    if composition.workflow is not None:
+        raise GraphEngineError("factory composition must not carry a compiled workflow")
 
 
 def _compile_document(
@@ -269,6 +264,7 @@ def _compile_document(
     plugin_distributions: Sequence[str],
     plugin_entrypoints: Sequence[str],
 ) -> dict[str, JSONValue]:
+    _require_factory_composition(composition)
     return {
         "product_distribution": product_distribution,
         "product_entrypoint": product_entrypoint,
@@ -278,24 +274,10 @@ def _compile_document(
         "product_version": composition.manifest.product_version,
         "lock_digest": composition.lock_digest,
         "composition_digest": composition.digest,
-        "compiled_digest": composition.workflow.digest,
     }
 
 
-def _workspace_binding(root: Path) -> InvocationWorkspaceBinding:
-    project_root = root.parent / f".{root.name}-project"
-    attempts_root = root.parent / f".{root.name}-attempts"
-    receipts_root = root.parent / f".{root.name}-receipts"
-    for path in (project_root, attempts_root, receipts_root):
-        path.mkdir(exist_ok=True)
-    return InvocationWorkspaceBinding(
-        project_root=project_root,
-        attempts_root=attempts_root,
-        receipts_root=receipts_root,
-    )
-
-
-def _run_document(
+async def _run_document(
     composition: FrozenComposition,
     *,
     product_distribution: str,
@@ -305,24 +287,27 @@ def _run_document(
     entrypoint: str,
     invocation_id: str,
     root: Path,
-) -> tuple[RunResult, dict[str, JSONValue]]:
-    workspace_binding = _workspace_binding(root)
-    with Engine(root, host=_TrustedWheelPluginHost()) as engine:
-        with engine.start(
-            composition,
-            entrypoint=entrypoint,
-            invocation_id=invocation_id,
-            seed=empty_invocation_seed(),
-            authorization=empty_runtime_authorization(),
-            workspace_binding=workspace_binding,
-        ) as handle:
-            result = engine.run_until_blocked(handle)
-            envelopes = Ledger(handle.invocation_root / "ledger").read_all()
-            ledger_document = cast(
-                JSONValue,
-                [envelope.model_dump(mode="json") for envelope in envelopes],
-            )
-
+    graph_input: Mapping[str, object] | None = None,
+) -> tuple[object, dict[str, JSONValue]]:
+    _require_factory_composition(composition)
+    workspace, _project_root = workspace_provider_for(root)
+    resolver = contract_resolver_from_plugins(composition.descriptors, workspace)
+    artifact, kernel = boot_factory_product(
+        composition,
+        workspace=workspace,
+        contract_resolver=resolver,
+    )
+    result = await run_factory_product(
+        artifact,
+        kernel=kernel,
+        workspace=workspace,
+        entrypoint=entrypoint,
+        invocation_id=invocation_id,
+        graph_input={} if graph_input is None else graph_input,
+        lease_root=root / "leases",
+    )
+    values = await invocation_values(artifact, invocation_id, entrypoint)
+    output = {key: value for key, value in values.items() if key in {"message", "review", "combined"}}
     document = _compile_document(
         composition,
         product_distribution=product_distribution,
@@ -333,11 +318,8 @@ def _run_document(
     document.update(
         {
             "invocation_id": invocation_id,
-            "status": result.status,
-            "terminal_reason": result.terminal_reason,
-            "actions": list(result.actions),
-            "output": cast(JSONValue, result.model_dump(mode="json")["output"]),
-            "ledger_digest": canonical_digest(ledger_document),
+            "status": getattr(result, "status", "unknown"),
+            "output": cast(JSONValue, output),
         }
     )
     return result, document
@@ -353,14 +335,12 @@ def _add_source_arguments(parser: argparse.ArgumentParser) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m graph_engine", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
-
     compile_parser = commands.add_parser(
         "compile",
         help="compile one explicit product bundle",
         allow_abbrev=False,
     )
     _add_source_arguments(compile_parser)
-
     run_parser = commands.add_parser(
         "run",
         help="run one explicit product bundle",
@@ -400,7 +380,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             plugin_entrypoints=arguments.plugin_entrypoint,
         )
         if arguments.command == "compile":
-            result: RunResult | None = None
+            result: object | None = None
             document = _compile_document(
                 composition,
                 product_distribution=arguments.product_dist,
@@ -409,24 +389,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 plugin_entrypoints=arguments.plugin_entrypoint,
             )
         else:
-            result, document = _run_document(
-                composition,
-                product_distribution=arguments.product_dist,
-                product_entrypoint=arguments.product_entrypoint,
-                plugin_distributions=arguments.plugin_dist,
-                plugin_entrypoints=arguments.plugin_entrypoint,
-                entrypoint=arguments.entrypoint,
-                invocation_id=arguments.invocation_id,
-                root=arguments.root,
+            result, document = asyncio.run(
+                _run_document(
+                    composition,
+                    product_distribution=arguments.product_dist,
+                    product_entrypoint=arguments.product_entrypoint,
+                    plugin_distributions=arguments.plugin_dist,
+                    plugin_entrypoints=arguments.plugin_entrypoint,
+                    entrypoint=arguments.entrypoint,
+                    invocation_id=arguments.invocation_id,
+                    root=arguments.root,
+                )
             )
     except (GraphEngineError, OSError, ValueError) as error:
         print(f"graph-engine: {error}", file=sys.stderr)
         return 1
 
     print(json.dumps(document, sort_keys=True, separators=(",", ":")))
-    if result is None or result.status == "succeeded":
+    status = getattr(result, "status", "completed") if result is not None else "completed"
+    if result is None or status in {"completed", "succeeded"}:
         return 0
-    if result.status == "interrupted":
+    if status == "interrupted":
         return 3
     return 1
 

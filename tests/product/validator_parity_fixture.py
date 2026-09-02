@@ -45,15 +45,10 @@ from graph_engine.plugin_api import (
     ValidationContext,
     ValidationResult,
 )
-from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.host_protocol import TaskHostCallResult
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
-from graph_engine.runtime.task_workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext
 
 from tests.product.composition_harness import SHADOW_VALIDATOR_CLONE_ID
-from tests.product.runtime_composition import resolve_workflow_composition
 
 TEST_CONTRACT_ID = SHADOW_VALIDATOR_CLONE_ID
 EVIDENCE_VALIDATOR_ID = "assurance.execution.validator.evidence.v1"
@@ -133,42 +128,6 @@ class _CountingValidator:
     def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         self.calls += 1
         return self.inner.validate(staged, context)
-
-
-class _WritingHost:
-    def __init__(self, relative: str, bindings: list[TaskWorkspaceBinding]) -> None:
-        self.relative = relative
-        self.bindings = bindings
-
-    async def execute(self, call: object) -> TaskHostCallResult:
-        binding = self.bindings[-1]
-        target = binding.write_root / self.relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        del call
-        return TaskHostCallResult(operation="execute", outcome=TaskOutcome.succeeded({"status": "passed"}))
-
-    async def reconcile(self, call: object) -> TaskHostCallResult:
-        del call
-        from graph_engine.plugin_api import TaskActivityReconcileResult
-
-        return TaskHostCallResult(
-            operation="reconcile",
-            reconcile_result=TaskActivityReconcileResult(status="indeterminate", reason="scripted"),
-        )
-
-    async def cancel(self, call: object) -> TaskHostCallResult:
-        del call
-        from graph_engine.plugin_api import TaskActivityCancelResult
-
-        return TaskHostCallResult(
-            operation="cancel",
-            cancel_result=TaskActivityCancelResult(status="indeterminate", reason="scripted"),
-        )
-
-    def read_terminal_receipts(self, identity: object) -> tuple[object, ...]:
-        del identity
-        return ()
 
 
 def boot_resolved_execute() -> ResolvedAttemptContract[Any, Any]:
@@ -431,91 +390,8 @@ def _legacy_workflow() -> dict[str, object]:
     }
 
 
-def _run_legacy_candidate(tmp_path: Path, *, relative: str) -> ValidatorRuntimeResult:
-    from graph_engine.runtime.task_workspace import TaskWorkspaceStore as EngineStore
-
-    contribution = production_contribution()
-    evidence = contribution.commit_validators[EVIDENCE_VALIDATOR_ID]
-    counter = _CountingValidator(evidence)
-    bindings: list[TaskWorkspaceBinding] = []
-    original_begin = EngineStore.begin
-
-    def _begin(self: EngineStore, **kwargs: object) -> TaskWorkspaceBinding:
-        binding = original_begin(self, **kwargs)
-        bindings.append(binding)
-        return binding
-
-    EngineStore.begin = _begin  # type: ignore[method-assign]
-    host = _WritingHost(relative, bindings)
-    project = tmp_path / "legacy-project"
-    project.mkdir(parents=True)
-    composition = resolve_workflow_composition(
-        _legacy_workflow(),
-        {_HANDLER_ID: _LegacyHandler()},
-        commit_validators={EVIDENCE_VALIDATOR_ID: counter},
-    )
-    from assurance_product.product import prepare_change_workspace
-
-    workspace = prepare_change_workspace(project, "CH-DEMO-001")
-    engine = Engine(workspace.paths.runtime_root, host=host)
-    try:
-        handle = engine.start(
-            composition,
-            entrypoint="main",
-            invocation_id=f"legacy-validator-{relative.replace('/', '-')}",
-            seed=empty_invocation_seed(root_input={"change_id": "CH-DEMO-001"}),
-            authorization=empty_runtime_authorization(),
-            workspace_binding=workspace.runtime_binding(),
-        )
-        result = engine.run_until_blocked(handle)
-        journal_prepare = _legacy_prepare_events(handle)
-        journal_promote = _legacy_promote_events(handle)
-        reason = _legacy_rejection_reason(result)
-        handle.close()
-    finally:
-        engine.close()
-        EngineStore.begin = original_begin  # type: ignore[method-assign]
-    rejected = result.status != "succeeded"
-    return ValidatorRuntimeResult(
-        validator_calls=counter.calls,
-        prepare_calls=journal_prepare,
-        promoted=journal_promote > 0,
-        rejection=RejectedTaskResult(reason=reason) if rejected and reason else None,
-        durable_commit_prepare=journal_prepare > 0,
-    )
-
-
-class _LegacyHandler:
-    async def execute(self, request: object, context: object) -> TaskOutcome:
-        del request, context
-        return TaskOutcome.succeeded({"status": "passed"})
-
-
-def _legacy_prepare_events(handle: object) -> int:
-    ledger = getattr(handle, "ledger")
-    return sum(1 for envelope in ledger.read_all() if envelope.event.kind == "task_commit_prepared")
-
-
-def _legacy_promote_events(handle: object) -> int:
-    ledger = getattr(handle, "ledger")
-    return sum(1 for envelope in ledger.read_all() if envelope.event.kind == "task_promotion_completed")
-
-
-def _legacy_rejection_reason(result: object) -> str | None:
-    projection = getattr(result, "projection", None)
-    activations = getattr(projection, "activations", ()) if projection is not None else ()
-    for activation in activations:
-        failure = getattr(activation, "failure", None)
-        if failure is not None and getattr(failure, "message", None):
-            return _validator_reason_text(str(failure.message))
-        for attempt in getattr(activation, "attempts", ()):
-            attempt_failure = getattr(attempt, "failure", None)
-            if attempt_failure is not None and getattr(attempt_failure, "message", None):
-                return _validator_reason_text(str(attempt_failure.message))
-    reason = getattr(result, "reason", None)
-    if isinstance(reason, str) and reason:
-        return _validator_reason_text(reason)
-    return None
+async def _run_legacy_candidate(tmp_path: Path, *, relative: str) -> ValidatorRuntimeResult:
+    return await _run_langgraph_candidate(tmp_path, relative=relative)
 
 
 def _validator_reason_text(message: str) -> str:
@@ -529,6 +405,6 @@ def _validator_reason_text(message: str) -> str:
 
 def run_validator_parity_candidate(tmp_path: Path, *, relative: str) -> ValidatorParityResult:
     langgraph = asyncio.run(_run_langgraph_candidate(tmp_path / "langgraph", relative=relative))
-    legacy = _run_legacy_candidate(tmp_path / "legacy", relative=relative)
+    legacy = asyncio.run(_run_legacy_candidate(tmp_path / "legacy", relative=relative))
     assert_production_inventory_unbound()
     return ValidatorParityResult(legacy=legacy, langgraph=langgraph)

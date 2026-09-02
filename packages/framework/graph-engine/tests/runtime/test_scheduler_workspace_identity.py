@@ -23,7 +23,7 @@ from graph_engine.runtime.events import GraphStarted, NodeActivated
 from graph_engine.runtime.ledger import Ledger, LedgerPublicationIndeterminate
 from graph_engine.runtime.models import PlannedTask, activity_id_for_attempt
 from graph_engine.runtime.scheduler import FakeClock, Scheduler
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore, TaskWorkspaceViolation
+from graph_engine.attempts.workspace import TaskWorkspaceStore, TaskWorkspaceViolation
 
 
 _LOCK_DIGEST = "a" * 64

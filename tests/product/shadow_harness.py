@@ -845,7 +845,7 @@ def _evaluate_kernel_bundle(
     )
     from dataclasses import replace
 
-    from graph_engine.runtime.task_workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+    from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 
     class _Observed:
         def __init__(self, inner: ImprovementDeliveryEffect) -> None:

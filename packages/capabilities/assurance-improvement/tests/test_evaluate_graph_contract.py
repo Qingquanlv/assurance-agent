@@ -46,7 +46,7 @@ from graph_engine.plugin_api import (
     EffectReconcileResult,
     ResourceClaims,
 )
-from graph_engine.runtime.task_workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from tests.product.test_change_local_output_routing import execute_task
 
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]

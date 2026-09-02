@@ -34,7 +34,7 @@ from graph_engine.plugin_api import (
     SealedWriteSet,
     TaskWorkspaceBinding,
 )
-from graph_engine.runtime.task_workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext, committed
 
 _SHA = "a" * 64

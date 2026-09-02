@@ -13,15 +13,13 @@ import yaml
 from graph_engine.boot.graph_revision import GraphRevision
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.evidence.legacy_v2 import (
+    LedgerPublicationIndeterminate,
     LegacyEvidenceError,
     authenticate_invocation_lock_v2,
     fold_legacy_events,
     read_legacy_ledger,
 )
-from graph_engine.graph.compiler import _compile_graph
-from graph_engine.graph.schema import GraphDef
 from graph_engine.plugin_api import FrozenModel
-from graph_engine.runtime.ledger import LedgerPublicationIndeterminate
 from pydantic import Field
 
 from assurance_product.change_workspace import ChangeWorkspace
@@ -469,14 +467,79 @@ def _adapt_graph_for_compiler(graph: dict[str, object]) -> dict[str, object]:
     return {**graph, "nodes": nodes}
 
 
-def _iter_legacy_compiled_graphs():
+def _iter_legacy_graphs() -> tuple[tuple[str, dict[str, object]], ...]:
+    rows: list[tuple[str, dict[str, object]]] = []
     for path in _module_yaml_paths():
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         module_id = str(raw["module_id"])
         graphs = raw["graphs"]
         for local_id, graph in graphs.items():
-            qualified = f"{module_id}.graph.{local_id}"
-            yield _compile_graph(qualified, GraphDef.model_validate(_adapt_graph_for_compiler(graph)))
+            if not isinstance(graph, dict):
+                continue
+            rows.append((f"{module_id}.graph.{local_id}", _adapt_graph_for_compiler(graph)))
+    return tuple(rows)
+
+
+def _graph_nodes(graph: dict[str, object]) -> dict[str, dict[str, object]]:
+    raw = graph.get("nodes")
+    if not isinstance(raw, dict):
+        return {}
+    return {str(node_id): dict(node) for node_id, node in raw.items() if isinstance(node, dict)}
+
+
+def _graph_edges(graph: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    raw = graph.get("edges")
+    if not isinstance(raw, list):
+        return ()
+    edges: list[tuple[str, str]] = []
+    for item in raw:
+        if isinstance(item, dict) and item.get("from") and item.get("to"):
+            edges.append((str(item["from"]), str(item["to"])))
+    return tuple(edges)
+
+
+def _strongly_connected_components(
+    nodes: Sequence[str],
+    edges: Sequence[tuple[str, str]],
+) -> tuple[tuple[str, ...], ...]:
+    index = 0
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    indices: dict[str, int] = {}
+    lowlinks: dict[str, int] = {}
+    outgoing: dict[str, list[str]] = {node_id: [] for node_id in nodes}
+    for source, target in edges:
+        if source in outgoing:
+            outgoing[source].append(target)
+    components: list[tuple[str, ...]] = []
+
+    def _strongconnect(node_id: str) -> None:
+        nonlocal index
+        indices[node_id] = index
+        lowlinks[node_id] = index
+        index += 1
+        stack.append(node_id)
+        on_stack.add(node_id)
+        for target in outgoing[node_id]:
+            if target not in indices:
+                _strongconnect(target)
+                lowlinks[node_id] = min(lowlinks[node_id], lowlinks[target])
+            elif target in on_stack:
+                lowlinks[node_id] = min(lowlinks[node_id], indices[target])
+        if lowlinks[node_id] == indices[node_id]:
+            component: list[str] = []
+            while True:
+                member = stack.pop()
+                on_stack.remove(member)
+                component.append(member)
+                if member == node_id:
+                    break
+            components.append(tuple(reversed(component)))
+
+    for node_id in nodes:
+        if node_id not in indices:
+            _strongconnect(node_id)
+    return tuple(components)
 
 
 def _join_test_path(graph_id: str) -> Path:
@@ -507,34 +570,34 @@ def _cited_join_test_status(graph_id: str, node_id: str) -> str:
 
 def _live_join_any_statuses() -> dict[str, str]:
     statuses: dict[str, str] = {}
-    for compiled in _iter_legacy_compiled_graphs():
-        for node_id, node in compiled.nodes.items():
-            if node.definition.kind == "join" and node.definition.join == "any":
-                key = f"{compiled.graph_id}/{node_id}"
-                statuses[key] = _cited_join_test_status(compiled.graph_id, node_id)
+    for graph_id, graph in _iter_legacy_graphs():
+        for node_id, node in _graph_nodes(graph).items():
+            if node.get("kind") == "join" and node.get("join") == "any":
+                statuses[f"{graph_id}/{node_id}"] = _cited_join_test_status(graph_id, node_id)
     return statuses
 
 
 def _live_loop_scc_anchors() -> tuple[tuple[str, str], ...]:
     rows: list[tuple[str, str]] = []
-    for compiled in _iter_legacy_compiled_graphs():
-        outgoing = {node_id: [] for node_id in compiled.nodes}
-        for edge in compiled.edges:
-            outgoing[edge.from_].append(edge.to)
-        for component in compiled.sccs:
+    for graph_id, graph in _iter_legacy_graphs():
+        nodes = _graph_nodes(graph)
+        edges = _graph_edges(graph)
+        outgoing: dict[str, list[str]] = {node_id: [] for node_id in nodes}
+        for source, target in edges:
+            outgoing.setdefault(source, []).append(target)
+        for component in _strongly_connected_components(tuple(nodes), edges):
             members = tuple(component)
-            self_edge = len(members) == 1 and members[0] in outgoing[members[0]]
+            self_edge = len(members) == 1 and members[0] in outgoing.get(members[0], ())
             if len(members) <= 1 and not self_edge:
                 continue
             anchors = [
                 node_id
                 for node_id in members
-                if compiled.nodes[node_id].definition.kind == "join"
-                and compiled.nodes[node_id].definition.join == "any"
+                if nodes[node_id].get("kind") == "join" and nodes[node_id].get("join") == "any"
             ]
             if len(anchors) != 1:
                 continue
-            rows.append((compiled.graph_id, anchors[0]))
+            rows.append((graph_id, anchors[0]))
     return tuple(sorted(rows))
 
 
@@ -553,13 +616,14 @@ def _site_uses_send(graph_id: str) -> bool:
 
 def _live_min_matches_mapping() -> dict[str, str]:
     mapping: dict[str, str] = {}
-    for compiled in _iter_legacy_compiled_graphs():
-        for node_id, node in compiled.nodes.items():
-            routing = node.definition.routing
-            if routing is None or routing.mode != "fanout" or routing.min_matches is None:
+    for graph_id, graph in _iter_legacy_graphs():
+        for node_id, node in _graph_nodes(graph).items():
+            routing = node.get("routing")
+            if not isinstance(routing, dict) or routing.get("mode") != "fanout":
                 continue
-            key = f"{compiled.graph_id}/{node_id}"
-            mapping[key] = "send" if _site_uses_send(compiled.graph_id) else "composite"
+            if routing.get("min_matches") is None:
+                continue
+            mapping[f"{graph_id}/{node_id}"] = "send" if _site_uses_send(graph_id) else "composite"
     return mapping
 
 

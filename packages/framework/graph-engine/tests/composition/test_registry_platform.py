@@ -82,7 +82,7 @@ from graph_engine.plugin_api import (
     ValidationContext,
     ValidationResult,
 )
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.invocation_lock import InvocationDrift
@@ -375,7 +375,20 @@ def _manifest(
     plugins: tuple[PluginRequirement, ...] | None = None,
     workflow: WorkflowDef | None = None,
     configuration: dict[str, dict[str, object]] | None = None,
+    graph_factory_symbol: str | None = None,
 ) -> ProductManifest:
+    if graph_factory_symbol is not None:
+        return ProductManifest(
+            schema_version="1",
+            source=None,
+            product_id=product_id,
+            product_version="1.0.0",
+            engine_api=ENGINE_API_VERSION,
+            plugins=plugins or (PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.0.0"),),
+            entrypoints={"hello": "root"},
+            configuration=configuration or {},
+            graph_factory_symbol=graph_factory_symbol,
+        )
     selected_workflow = workflow or _workflow()
     return ProductManifest(
         schema_version="1",
@@ -3644,6 +3657,27 @@ def test_modular_resolve_rejects_wrong_namespaced_entrypoint_graph(
     monkeypatch.setattr(resolver_runtime, "assemble_product_workflow", _wrong_graph)
     with pytest.raises(ResolutionError, match="entrypoints"):
         _resolve_modular(tmp_path / "wrong-entry", monkeypatch)
+
+
+def test_graph_factory_symbol_resolve_emits_product_lock_without_compiled_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from graph_engine.composition.lock import ProductLock
+
+    platform, plugins, product_source = _platform(
+        tmp_path,
+        monkeypatch,
+        product=_ProductProvider(_manifest(graph_factory_symbol="toy_product:provider")),
+        plugins={"toy.runtime": _PluginProvider("toy.runtime")},
+    )
+    assert product_source is not None
+    composition = platform.resolve(
+        ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],))
+    )
+    assert composition.workflow is None
+    assert isinstance(composition.lock, ProductLock)
+    assert composition.lock.schema_version == "3"
+    assert not hasattr(composition.lock, "compiled_workflow")
 
 
 def test_resolve_legacy_and_modular_products_return_compiled_workflow(

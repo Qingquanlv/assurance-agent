@@ -1,20 +1,33 @@
 {
   "descriptor": {
+    "attempt_contracts": [
+      {
+        "contract_id": "toy.a.greet",
+        "digest": "da3aa66ac0f99eaa408a27d3bb233d966dcd4c64cd815589a6e6bf5e5985d47a"
+      }
+    ],
+    "bindings": [],
     "commit_validators": [],
+    "dependencies": [],
+    "effects": [],
     "engine_api": "2.0",
     "plugin_id": "toy.a",
     "plugin_version": "1.0.0",
+    "resources": [],
     "schema_version": "1",
+    "schemas": [],
     "source": {
       "declaration_path": "graph_engine_toy_a/plugin-declaration.json",
       "distribution": "graph-engine-toy-a",
       "entrypoint_group": "graph_engine.plugins",
       "entrypoint_name": "toy-a",
       "entrypoint_value": "graph_engine_toy_a.plugin:ToyAPlugin",
-      "import_roots": [""],
+      "import_roots": [
+        ""
+      ],
       "version": "1.0.0"
     },
-    "task_handlers": ["toy.a.greet"]
+    "task_handlers": []
   },
   "kind": "plugin",
   "schema_version": "1",
@@ -24,7 +37,9 @@
     "entrypoint_group": "graph_engine.plugins",
     "entrypoint_name": "toy-a",
     "entrypoint_value": "graph_engine_toy_a.plugin:ToyAPlugin",
-    "import_roots": [""],
+    "import_roots": [
+      ""
+    ],
     "version": "1.0.0"
   }
 }

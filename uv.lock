@@ -71,12 +71,14 @@ source = { editable = "examples/agent-runtime-fixture" }
 dependencies = [
     { name = "agent-runtime-contracts" },
     { name = "graph-engine" },
+    { name = "langgraph" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/adapters/agent-runtime-contracts" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
+    { name = "langgraph", specifier = "==1.2.11" },
 ]
 
 [[package]]
@@ -685,10 +687,14 @@ version = "1.0.0"
 source = { editable = "examples/graph-engine-toy-a" }
 dependencies = [
     { name = "graph-engine" },
+    { name = "langgraph" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "graph-engine", editable = "packages/framework/graph-engine" }]
+requires-dist = [
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
+    { name = "langgraph", specifier = "==1.2.11" },
+]
 
 [[package]]
 name = "graph-engine-toy-b"
@@ -696,10 +702,14 @@ version = "1.0.0"
 source = { editable = "examples/graph-engine-toy-b" }
 dependencies = [
     { name = "graph-engine" },
+    { name = "langgraph" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "graph-engine", editable = "packages/framework/graph-engine" }]
+requires-dist = [
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
+    { name = "langgraph", specifier = "==1.2.11" },
+]
 
 [[package]]
 name = "grimp"

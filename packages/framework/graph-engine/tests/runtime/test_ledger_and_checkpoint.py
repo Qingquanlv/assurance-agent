@@ -1724,3 +1724,134 @@ def test_checkpoint_round_trips_bound_activity_projection(tmp_path: Path) -> Non
     assert loaded is not None
     assert loaded.projection == projection
     assert loaded.projection.activations[-1].attempts[-1].activity == attempt.activity
+
+
+EventIDValue = str | tuple[str, ...] | None
+EventIDFields = tuple[tuple[str, EventIDValue], ...]
+EventIDSignature = tuple[int, str, EventIDFields]
+
+_ID_FIELDS_BY_EVENT_KIND: dict[str, tuple[str, ...]] = {
+    "invocation_started": ("invocation_id",),
+    "graph_started": (
+        "graph_instance_id",
+        "graph_id",
+        "parent_graph_instance_id",
+        "parent_node_id",
+        "parent_activation_id",
+    ),
+    "token_offered": ("token_id", "graph_instance_id"),
+    "token_consumed": ("token_id", "graph_instance_id", "node_id"),
+    "node_activated": ("activation_id", "graph_instance_id", "node_id", "token_ids"),
+    "task_attempt_started": ("activation_id",),
+    "task_lease_acquired": ("task_id", "activation_id", "owner_id"),
+    "task_lease_heartbeat": ("task_id", "activation_id", "owner_id"),
+    "task_activity_prepared": ("activity_id", "task_id", "activation_id"),
+    "task_activity_dispatch_started": ("activity_id",),
+    "task_activity_bound": ("activity_id",),
+    "task_activity_cancel_requested": ("activity_id",),
+    "task_activity_terminal_observed": ("activity_id",),
+    "task_lease_adopted": ("activity_id", "task_id", "activation_id", "owner_id"),
+    "task_commit_prepared": ("task_id", "activation_id", "effect_ids"),
+    "task_promotion_completed": ("task_id", "activation_id"),
+    "effect_intent_committed": ("effect_id", "activation_id"),
+    "effect_apply_started": ("effect_id",),
+    "effect_receipt_recorded": ("effect_id",),
+    "task_attempt_succeeded": ("activation_id",),
+    "task_attempt_committed_effect_failed": ("activation_id",),
+    "task_attempt_failed": ("activation_id",),
+    "task_attempt_stopped": ("activation_id",),
+    "node_completed": ("activation_id",),
+    "node_failed": ("activation_id",),
+    "node_interrupted": ("activation_id", "interrupt_id", "graph_instance_id"),
+    "interrupt_resumed": ("interrupt_id",),
+    "graph_completed": ("graph_instance_id",),
+    "graph_failed": ("graph_instance_id",),
+    "invocation_finished": ("invocation_id",),
+}
+
+
+def _runtime_event_types() -> tuple[type, ...]:
+    from typing import get_args
+
+    from graph_engine.runtime.events import RuntimeEvent, RuntimeEventModel
+
+    event_union = get_args(RuntimeEvent)[0]
+    return cast(tuple[type, ...], get_args(event_union))
+
+
+def _runtime_event_id_schema() -> dict[str, tuple[str, ...]]:
+    schema: dict[str, tuple[str, ...]] = {}
+    for event_type in _runtime_event_types():
+        event_kind = cast(str, event_type.model_fields["kind"].default)
+        schema[event_kind] = tuple(
+            field_name for field_name in event_type.model_fields if field_name.endswith(("_id", "_ids"))
+        )
+    return schema
+
+
+def _event_id_fields(event: object) -> EventIDFields:
+    kind = cast(str, getattr(event, "kind"))
+    try:
+        field_names = _ID_FIELDS_BY_EVENT_KIND[kind]
+    except KeyError as error:
+        raise AssertionError(f"event ID schema does not cover {kind!r}") from error
+    return tuple((field_name, cast(EventIDValue, getattr(event, field_name))) for field_name in field_names)
+
+
+def _event_id_sequence(envelopes: tuple[EventEnvelope, ...]) -> tuple[EventIDSignature, ...]:
+    return tuple((envelope.seq, envelope.event.kind, _event_id_fields(envelope.event)) for envelope in envelopes)
+
+
+def test_event_id_projection_preserves_parent_and_complete_token_bindings() -> None:
+    parent_activation_id = "parent-activation"
+    child_graph_id = canonical_digest(
+        {"parent_activation_id": parent_activation_id, "graph_id": "child"}
+    )
+    envelopes = (
+        EventEnvelope.from_event(
+            1,
+            GraphStarted(
+                graph_instance_id=child_graph_id,
+                graph_id="child",
+                parent_graph_instance_id="root",
+                parent_node_id="child-subgraph",
+                parent_activation_id=parent_activation_id,
+            ),
+        ),
+        EventEnvelope.from_event(
+            2,
+            NodeActivated(
+                activation_id="joined-activation",
+                graph_instance_id="root",
+                node_id="joined",
+                token_ids=("left-token", "child-token"),
+            ),
+        ),
+    )
+    assert _event_id_sequence(envelopes) == (
+        (
+            1,
+            "graph_started",
+            (
+                ("graph_instance_id", child_graph_id),
+                ("graph_id", "child"),
+                ("parent_graph_instance_id", "root"),
+                ("parent_node_id", "child-subgraph"),
+                ("parent_activation_id", parent_activation_id),
+            ),
+        ),
+        (
+            2,
+            "node_activated",
+            (
+                ("activation_id", "joined-activation"),
+                ("graph_instance_id", "root"),
+                ("node_id", "joined"),
+                ("token_ids", ("left-token", "child-token")),
+            ),
+        ),
+    )
+
+
+def test_event_id_projection_covers_every_runtime_event_id_field() -> None:
+    assert _ID_FIELDS_BY_EVENT_KIND == _runtime_event_id_schema()

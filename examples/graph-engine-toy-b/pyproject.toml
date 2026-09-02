@@ -2,7 +2,7 @@
 name = "graph-engine-toy-b"
 version = "1.0.0"
 requires-python = ">=3.11,<4.0"
-dependencies = ["graph-engine"]
+dependencies = ["graph-engine", "langgraph==1.2.11"]
 
 [project.entry-points."graph_engine.products"]
 toy-b = "graph_engine_toy_b.product:ToyBProduct"

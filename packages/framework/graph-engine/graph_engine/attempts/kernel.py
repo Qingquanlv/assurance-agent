@@ -49,12 +49,12 @@ from graph_engine.plugin_api import (
     WorkspaceProvider,
     run_validators,
 )
-from graph_engine.runtime.activity import (
+from graph_engine.attempts.activity import (
     attempt_activity_in_flight,
     attempt_activity_is_terminal,
     bounded_canonical_json,
 )
-from graph_engine.runtime import task_workspace as task_workspace_runtime
+from graph_engine.attempts import workspace as task_workspace_runtime
 
 
 class AttemptIdentityDrift(GraphEngineError):

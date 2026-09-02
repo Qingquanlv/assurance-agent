@@ -6,9 +6,20 @@ from pathlib import Path
 
 from graph_engine.composition import InvocationLock
 from graph_engine.errors import GraphEngineError
-from graph_engine.runtime.events import EventEnvelope
+from graph_engine.runtime.events import (
+    EventEnvelope,
+    GraphCompleted,
+    GraphStarted,
+    InvocationFinished,
+    InvocationStarted,
+    NodeActivated,
+    NodeInterrupted,
+    TaskAttemptStarted,
+    TaskAttemptStopped,
+)
 from graph_engine.runtime.ledger import Ledger, LedgerPublicationIndeterminate
 from graph_engine.runtime.models import InvocationProjection, fold_events
+from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
 
 
 class LegacyEvidenceError(GraphEngineError):
@@ -55,8 +66,21 @@ def fold_legacy_events(envelopes: tuple[EventEnvelope, ...]) -> InvocationProjec
 
 
 __all__ = [
+    "EMPTY_RUNTIME_AUTHORIZATION_DIGEST",
+    "EventEnvelope",
+    "GraphCompleted",
+    "GraphStarted",
+    "InvocationFinished",
+    "InvocationStarted",
+    "Ledger",
+    "LedgerPublicationIndeterminate",
     "LegacyEvidenceError",
+    "NodeActivated",
+    "NodeInterrupted",
+    "TaskAttemptStarted",
+    "TaskAttemptStopped",
     "authenticate_invocation_lock_v2",
+    "empty_invocation_seed",
     "fold_legacy_events",
     "read_legacy_ledger",
 ]

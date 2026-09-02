@@ -40,7 +40,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     TaskHostCallResult,
     TaskHostCancelCall,
     TaskHostExecuteCall,
@@ -48,7 +48,7 @@ from graph_engine.runtime.host_protocol import (
     TaskHostTerminalReceipt,
 )
 from graph_engine.runtime.models import InvocationProjection
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.plugin_api import (
     TaskActivityCancelResult,

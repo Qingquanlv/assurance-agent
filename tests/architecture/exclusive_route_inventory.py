@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import yaml
-
-from graph_engine.graph.compiler import CompiledGraph, _compile_graph
-from graph_engine.graph.schema import GraphDef
 
 NodeKind = Literal["task", "subgraph", "interrupt", "gate"]
 OwnerKind = Literal["feature", "product"]
@@ -56,27 +53,37 @@ def _adapt_graph_for_compiler(graph: dict[str, object]) -> dict[str, object]:
     return {**graph, "nodes": nodes}
 
 
-def iter_legacy_compiled_graphs() -> Iterator[CompiledGraph]:
+def iter_legacy_graphs() -> Iterator[tuple[str, dict[str, object]]]:
     for path in _module_yaml_paths():
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         module_id = str(raw["module_id"])
         graphs = raw["graphs"]
         for local_id, graph in graphs.items():
-            qualified = f"{module_id}.graph.{local_id}"
-            yield _compile_graph(qualified, GraphDef.model_validate(_adapt_graph_for_compiler(graph)))
+            if isinstance(graph, dict):
+                yield f"{module_id}.graph.{local_id}", _adapt_graph_for_compiler(graph)
 
 
 def collect_legacy_exclusive_routes() -> frozenset[tuple[str, str, str, str]]:
     rows: set[tuple[str, str, str, str]] = set()
-    for compiled in iter_legacy_compiled_graphs():
-        for node_id, node in compiled.nodes.items():
-            routing = node.definition.routing
-            if routing is None or routing.mode != "exclusive":
+    for graph_id, graph in iter_legacy_graphs():
+        nodes = graph.get("nodes")
+        edges = graph.get("edges")
+        if not isinstance(nodes, dict) or not isinstance(edges, list):
+            continue
+        for node_id, node in nodes.items():
+            if not isinstance(node, dict):
                 continue
-            otherwise = [edge.to for edge in node.outgoing if edge.otherwise]
+            routing = node.get("routing")
+            if not isinstance(routing, Mapping) or routing.get("mode") != "exclusive":
+                continue
+            otherwise = [
+                str(edge["to"])
+                for edge in edges
+                if isinstance(edge, dict) and edge.get("from") == node_id and edge.get("otherwise")
+            ]
             if len(otherwise) != 1:
-                raise AssertionError(f"{compiled.graph_id}/{node_id} exclusive otherwise={otherwise}")
-            rows.add((compiled.graph_id, node_id, node.definition.kind, otherwise[0]))
+                raise AssertionError(f"{graph_id}/{node_id} exclusive otherwise={otherwise}")
+            rows.add((graph_id, str(node_id), str(node.get("kind")), otherwise[0]))
     return frozenset(rows)
 
 

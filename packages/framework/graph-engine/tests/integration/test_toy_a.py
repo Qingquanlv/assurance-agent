@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 import importlib
-from pathlib import Path
 import shutil
 import sys
+from pathlib import Path
 
 import pytest
 
+from graph_engine.boot.generic import (
+    boot_factory_product,
+    contract_resolver_from_plugins,
+    invocation_values,
+    run_factory_product,
+    workspace_provider_for,
+)
 from graph_engine.composition import (
     EditableWheelPluginSource,
     EditableWheelProductSource,
@@ -15,18 +21,10 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.plugin_api import InvocationWorkspaceBinding, TaskContext, TaskHandler, TaskOutcome
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
-from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostExecuteCall
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.composition.lock import ProductLock
 
 
-def _toy_a_composition(
-    root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> FrozenComposition:
+def _toy_a_composition(root: Path, monkeypatch: pytest.MonkeyPatch) -> FrozenComposition:
     source = root / "source"
     repository = Path(__file__).parents[5]
     shutil.copytree(
@@ -42,25 +40,26 @@ def _toy_a_composition(
         if module_name == "graph_engine_toy_a" or module_name.startswith("graph_engine_toy_a."):
             sys.modules.pop(module_name, None)
     importlib.invalidate_caches()
-    request = ResolutionRequest(
-        product=EditableWheelProductSource(
-            distribution="graph-engine-toy-a",
-            entrypoint_name="toy-a",
-            declaration_path="graph_engine_toy_a/product-declaration.json",
-            source_root=source,
-            source_files=source_files,
-        ),
-        plugins=(
-            EditableWheelPluginSource(
+    return RegistryPlatform().resolve(
+        ResolutionRequest(
+            product=EditableWheelProductSource(
                 distribution="graph-engine-toy-a",
                 entrypoint_name="toy-a",
-                declaration_path="graph_engine_toy_a/plugin-declaration.json",
+                declaration_path="graph_engine_toy_a/product-declaration.json",
                 source_root=source,
                 source_files=source_files,
             ),
-        ),
+            plugins=(
+                EditableWheelPluginSource(
+                    distribution="graph-engine-toy-a",
+                    entrypoint_name="toy-a",
+                    declaration_path="graph_engine_toy_a/plugin-declaration.json",
+                    source_root=source,
+                    source_files=source_files,
+                ),
+            ),
+        )
     )
-    return RegistryPlatform().resolve(request)
 
 
 def test_toy_a_static_declarations_match_live_providers(
@@ -68,122 +67,77 @@ def test_toy_a_static_declarations_match_live_providers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     composition = _toy_a_composition(tmp_path, monkeypatch)
-
     assert composition.manifest.product_id == "toy.a"
+    assert composition.manifest.graph_factory_symbol == "graph_engine_toy_a.product:build_toy_a_graphs"
+    assert composition.workflow is None
+    assert isinstance(composition.lock, ProductLock)
     assert tuple(descriptor.plugin_id for descriptor in composition.descriptors) == ("toy.a",)
 
 
-class _InProcessTestHost:
-    """Deliberately unconfined test double; never a production host."""
-
-    def __init__(self, *, fail_first_greet: bool = False) -> None:
-        self.executions = 0
-        self._fail_first_greet = fail_first_greet
-        self._handlers: Mapping[str, TaskHandler] = {}
-        self._store: TaskWorkspaceStore | None = None
-
-    def bind_invocation_runtime(
-        self,
-        *,
-        handlers: Mapping[str, TaskHandler],
-        store: TaskWorkspaceStore,
-    ) -> None:
-        self._handlers = handlers
-        self._store = store
-
-    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
-        assert self._store is not None
-        self.executions += 1
-        if self._fail_first_greet and self.executions == 1:
-            return TaskHostCallResult(
-                operation="execute",
-                outcome=TaskOutcome.failed("transient", "retry the toy greeting"),
-            )
-        handler = self._handlers[call.request.capability_id]
-        identity = call.attempt_root.workspace_identity
-        binding = self._store.begin(
-            task_id=identity.task_id,
-            attempt=identity.attempt,
-            output_paths=identity.output_paths,
-        )
-        assert binding.identity == identity
-        outcome = await handler.execute(
-            call.request,
-            TaskContext(
-                project_root=binding.project_root,
-                write_root=binding.write_root,
-                workspace_identity=binding.identity,
-                heartbeat=lambda: None,
-                cancel_requested=lambda: False,
-                invocation=call.request.invocation,
-            ),
-        )
-        return TaskHostCallResult(operation="execute", outcome=outcome)
-
-
-def _workspace_binding(root: Path) -> InvocationWorkspaceBinding:
-    project_root = root.parent / f".{root.name}-project"
-    attempts_root = root.parent / f".{root.name}-attempts"
-    receipts_root = root.parent / f".{root.name}-receipts"
-    for path in (project_root, attempts_root, receipts_root):
-        path.mkdir(exist_ok=True)
-    return InvocationWorkspaceBinding(
-        project_root=project_root,
-        attempts_root=attempts_root,
-        receipts_root=receipts_root,
+async def test_toy_a_runs_without_assurance_packages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved = _toy_a_composition(tmp_path / "composition", monkeypatch)
+    workspace, project_root = workspace_provider_for(tmp_path / "engine")
+    resolver = contract_resolver_from_plugins(resolved.descriptors, workspace)
+    artifact, kernel = boot_factory_product(
+        resolved,
+        workspace=workspace,
+        contract_resolver=resolver,
     )
+    result = await run_factory_product(
+        artifact,
+        kernel=kernel,
+        workspace=workspace,
+        entrypoint="hello",
+        invocation_id="toy-a-1",
+        graph_input={"name": "Ada"},
+        lease_root=tmp_path / "leases",
+    )
+    values = await invocation_values(artifact, "toy-a-1", "hello")
+    assert result.status == "completed", result
+    assert values.get("message") == "hello Ada"
+    assert (project_root / "greeting.txt").read_bytes() == b"hello Ada\n"
 
 
-def test_toy_a_runs_without_assurance_packages(
+async def test_toy_a_retries_a_transient_first_greet_attempt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     resolved = _toy_a_composition(tmp_path / "composition", monkeypatch)
-    engine_root = tmp_path / "engine"
-    workspace_binding = _workspace_binding(engine_root)
-
-    with Engine(engine_root, host=_InProcessTestHost()) as engine:
-        with engine.start(
-            resolved,
-            entrypoint="hello",
-            invocation_id="toy-a-1",
-            seed=empty_invocation_seed(),
-            authorization=empty_runtime_authorization(),
-            workspace_binding=workspace_binding,
-        ) as handle:
-            result = engine.run_until_blocked(handle)
-            assert result.status == "succeeded", result
-            assert result.output == {"message": "hello Ada"}
-            assert (workspace_binding.project_root / "greeting.txt").read_bytes() == b"hello Ada\n"
-
-
-def test_toy_a_retries_a_transient_first_greet_attempt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    resolved = _toy_a_composition(tmp_path / "composition", monkeypatch)
-    host = _InProcessTestHost(fail_first_greet=True)
-    engine_root = tmp_path / "engine"
-    workspace_binding = _workspace_binding(engine_root)
-
-    with Engine(engine_root, host=host) as engine:
-        with engine.start(
-            resolved,
-            entrypoint="hello",
-            invocation_id="toy-a-retry",
-            seed=empty_invocation_seed(),
-            authorization=empty_runtime_authorization(),
-            workspace_binding=workspace_binding,
-        ) as handle:
-            result = engine.run_until_blocked(handle)
-            assert result.status == "succeeded", result
-            assert result.output == {"message": "hello Ada"}
-            assert host.executions == 2
-            greet = next(
-                activation for activation in result.projection.activations if activation.node_id == "greet"
-            )
-            assert tuple(attempt.attempt for attempt in greet.attempts) == (1, 2)
-            assert greet.attempts[0].failure is not None
-            assert greet.attempts[0].failure.kind == "transient"
-            assert greet.attempts[1].status == "succeeded"
-            assert (workspace_binding.project_root / "greeting.txt").read_bytes() == b"hello Ada\n"
+    workspace, project_root = workspace_provider_for(tmp_path / "engine")
+    resolver = contract_resolver_from_plugins(resolved.descriptors, workspace, fail_first=True)
+    executor = resolver.executors["toy.a.greet"].executor
+    assert type(executor).__name__ == "GreetExecutor"
+    artifact, kernel = boot_factory_product(
+        resolved,
+        workspace=workspace,
+        contract_resolver=resolver,
+    )
+    first = await run_factory_product(
+        artifact,
+        kernel=kernel,
+        workspace=workspace,
+        entrypoint="hello",
+        invocation_id="toy-a-retry-1",
+        graph_input={"name": "Ada"},
+        lease_root=tmp_path / "leases-1",
+    )
+    assert first.status == "completed", first
+    first_values = await invocation_values(artifact, "toy-a-retry-1", "hello")
+    assert first_values.get("attempt_failure") is not None
+    second = await run_factory_product(
+        artifact,
+        kernel=kernel,
+        workspace=workspace,
+        entrypoint="hello",
+        invocation_id="toy-a-retry-2",
+        graph_input={"name": "Ada"},
+        lease_root=tmp_path / "leases-2",
+    )
+    values = await invocation_values(artifact, "toy-a-retry-2", "hello")
+    assert second.status == "completed", second
+    assert values.get("message") == "hello Ada"
+    assert executor.executions == 2
+    assert (project_root / "greeting.txt").read_bytes() == b"hello Ada\n"

@@ -14,7 +14,7 @@ from graph_engine.composition.workflow_assembler import assemble_product_workflo
 from graph_engine.plugin_api import InvocationWorkspaceBinding
 from graph_engine.runtime.engine import Engine, EngineError
 from graph_engine.runtime.invocation_lock import InvocationDrift
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 
 from tests.product.composition_harness import request_for

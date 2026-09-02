@@ -28,7 +28,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceBinding,
 )
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
     TaskHostCallIdentity,
@@ -46,16 +46,16 @@ from graph_engine.runtime.events import (
     TokenConsumed,
     TokenOffered,
 )
-from graph_engine.runtime.host_receipts import (
+from graph_engine.attempts.host_receipts import (
     TerminalReceiptError,
     TerminalReceiptStore,
     prove_call_quiescent,
 )
-from graph_engine.runtime.activity import LedgerTaskActivityPort
+from graph_engine.attempts.activity import LedgerTaskActivityPort
 from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.production_host import ProductionHostError, _ProductionTaskExecutionHost
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.production_host import ProductionHostError, _ProductionTaskExecutionHost
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 
 def _write_handler(tmp_path: Path, *, class_name: str, body: str) -> tuple[str, tuple[str, ...]]:
@@ -1262,7 +1262,7 @@ def test_worker_attestation_rejects_source_drift_after_spawn_before_dispatch(
         store=store,
         handler_import_roots={"test.echo.run": roots},
     )
-    worker_source = Path(production_worker.__file__).resolve()
+    worker_source = Path(production_host.__file__).resolve().parents[1] / "runtime" / "production_worker.py"
     original_source = worker_source.read_bytes()
     drifted = {"value": False}
 

@@ -14,7 +14,7 @@ from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskHandler, TaskOutcome
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 

@@ -1,28 +1,12 @@
-from graph_engine.runtime.activity import (
-    AttemptWorkspaceLost,
-    LedgerTaskActivityPort,
-    TaskActivityConflict,
-    TaskActivityIndeterminate,
-    TaskActivityProtocolViolation,
-    TaskActivityRecoveryUnsupported,
-    TaskActivityReferenceInvalid,
-)
+from importlib import import_module
+
 from graph_engine.runtime.checkpoint import Checkpoint, load_checkpoint, write_checkpoint
-from graph_engine.runtime.driver import StartSpec, acquire_invocation
 from graph_engine.runtime.effects import (
     EffectExecutor,
     EffectPublicationIndeterminate,
     EffectSettlement,
     EffectStateError,
     needs_settlement,
-)
-from graph_engine.runtime.engine import (
-    Engine,
-    EngineConflictError,
-    EngineError,
-    EnginePublicationIndeterminate,
-    InvocationHandle,
-    RunResult,
 )
 from graph_engine.runtime.events import (
     EffectApplyStarted,
@@ -90,40 +74,11 @@ from graph_engine.runtime.models import (
     TokenRecord,
     fold_events,
 )
-from graph_engine.runtime.host_protocol import (
-    AttemptRootDescriptor,
-    TaskActivityRpcIdentity,
-    TaskExecutionHost,
-    TaskHostCancelCall,
-    TaskHostCallIdentity,
-    TaskHostCallResult,
-    TaskHostExecuteCall,
-    TaskHostReconcileCall,
-    TaskHostTerminalReceipt,
-    authorized_secret_port,
-)
 from graph_engine.runtime.planner import PlanningError, activation_id, plan_next, task_id
-from graph_engine.runtime.scheduler import (
-    AttemptResult,
-    Clock,
-    FakeClock,
-    LedgerPublicationIndeterminate,
-    Lease,
-    LeaseUnavailableError,
-    Scheduler,
-    SchedulerStateError,
-    SystemClock,
-    select_wave,
-)
 from graph_engine.runtime.seed import (
     EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
     InvocationSeed,
     empty_invocation_seed,
-)
-from graph_engine.runtime.task_workspace import (
-    PromotionPublicationIndeterminate,
-    TaskWorkspaceStore,
-    TaskWorkspaceViolation,
 )
 from graph_engine.plugin_api import (
     PromotionReceipt,
@@ -132,6 +87,55 @@ from graph_engine.plugin_api import (
     TaskWorkspaceBinding,
     TaskWorkspaceIdentity,
 )
+
+_LAZY_EXPORTS = {
+    "AttemptWorkspaceLost": "graph_engine.runtime.activity",
+    "LedgerTaskActivityPort": "graph_engine.runtime.activity",
+    "TaskActivityConflict": "graph_engine.runtime.activity",
+    "TaskActivityIndeterminate": "graph_engine.runtime.activity",
+    "TaskActivityProtocolViolation": "graph_engine.runtime.activity",
+    "TaskActivityRecoveryUnsupported": "graph_engine.runtime.activity",
+    "TaskActivityReferenceInvalid": "graph_engine.runtime.activity",
+    "AttemptRootDescriptor": "graph_engine.runtime.host_protocol",
+    "TaskActivityRpcIdentity": "graph_engine.runtime.host_protocol",
+    "TaskExecutionHost": "graph_engine.runtime.host_protocol",
+    "TaskHostCancelCall": "graph_engine.runtime.host_protocol",
+    "TaskHostCallIdentity": "graph_engine.runtime.host_protocol",
+    "TaskHostCallResult": "graph_engine.runtime.host_protocol",
+    "TaskHostExecuteCall": "graph_engine.runtime.host_protocol",
+    "TaskHostReconcileCall": "graph_engine.runtime.host_protocol",
+    "TaskHostTerminalReceipt": "graph_engine.runtime.host_protocol",
+    "authorized_secret_port": "graph_engine.runtime.host_protocol",
+    "PromotionPublicationIndeterminate": "graph_engine.runtime.task_workspace",
+    "TaskWorkspaceStore": "graph_engine.runtime.task_workspace",
+    "TaskWorkspaceViolation": "graph_engine.runtime.task_workspace",
+    "StartSpec": "graph_engine.runtime.driver",
+    "acquire_invocation": "graph_engine.runtime.driver",
+    "Engine": "graph_engine.runtime.engine",
+    "EngineConflictError": "graph_engine.runtime.engine",
+    "EngineError": "graph_engine.runtime.engine",
+    "EnginePublicationIndeterminate": "graph_engine.runtime.engine",
+    "InvocationHandle": "graph_engine.runtime.engine",
+    "RunResult": "graph_engine.runtime.engine",
+    "AttemptResult": "graph_engine.runtime.scheduler",
+    "Clock": "graph_engine.runtime.scheduler",
+    "FakeClock": "graph_engine.runtime.scheduler",
+    "LedgerPublicationIndeterminate": "graph_engine.runtime.scheduler",
+    "Lease": "graph_engine.runtime.scheduler",
+    "LeaseUnavailableError": "graph_engine.runtime.scheduler",
+    "Scheduler": "graph_engine.runtime.scheduler",
+    "SchedulerStateError": "graph_engine.runtime.scheduler",
+    "SystemClock": "graph_engine.runtime.scheduler",
+    "select_wave": "graph_engine.runtime.scheduler",
+}
+
+
+def __getattr__(name: str) -> object:
+    module_name = _LAZY_EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(name)
+    return getattr(import_module(module_name), name)
+
 
 __all__ = [
     "ActivationRecord",

@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-import graph_engine.runtime.task_workspace as task_workspace
+import graph_engine.attempts.workspace as task_workspace
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import StagedWriteSet, TaskWorkspaceBinding
-from graph_engine.runtime.task_workspace import (
+from graph_engine.attempts.workspace import (
     PromotionPublicationIndeterminate,
     TaskWorkspaceProvider,
     TaskWorkspaceStore,
@@ -117,7 +117,7 @@ def test_second_file_replace_failure_rolls_back_the_whole_promotion_and_can_repl
             raise OSError("injected second replace failure")
         real_replace(source, target, *args, **kwargs)
 
-    monkeypatch.setattr("graph_engine.runtime.task_workspace.os.replace", fail_second_replace)
+    monkeypatch.setattr("graph_engine.attempts.workspace.os.replace", fail_second_replace)
 
     with pytest.raises(OSError, match="injected"):
         store.promote(binding.identity, staged)
@@ -192,7 +192,7 @@ def test_pending_retry_rejects_a_third_target_state(tmp_path: Path, monkeypatch:
             raise OSError("injected second target failure")
         real_replace(source, target, *args, **kwargs)
 
-    monkeypatch.setattr("graph_engine.runtime.task_workspace.os.replace", fail_second_target)
+    monkeypatch.setattr("graph_engine.attempts.workspace.os.replace", fail_second_target)
     with pytest.raises(OSError, match="injected second target"):
         store.promote(binding.identity, staged)
     monkeypatch.undo()

@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import TypedDict, cast
+
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+
 from graph_engine import ENGINE_API_VERSION
+from graph_engine.attempts.keys import BusinessActivation
+from graph_engine.boot.boot import GraphBuildContext
+from graph_engine.boot.generic import entrypoint_digest
+from graph_engine.boot.graph_revision import EntrypointGraphContract
 from graph_engine.composition import PluginRequirement, ProductManifest
-from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import ProviderSource
 
-from agent_runtime_fixture import (
-    RUN_CAPABILITY_ID,
-    assemble_request,
-    fixture_config,
-    fixture_resources,
-)
+from agent_runtime_fixture import fixture_config
+from agent_runtime_fixture.contracts import RUN_CONTRACT, frozen_run_request
 
 _SOURCE = ProviderSource(
     distribution="agent-runtime-fixture",
@@ -21,43 +27,73 @@ _SOURCE = ProviderSource(
     declaration_path="agent_runtime_fixture/product-declaration.json",
     import_roots=("",),
 )
+_FACTORY_SYMBOL = "agent_runtime_fixture.product:build_fixture_graphs"
 
 
-def _workflow() -> WorkflowDef:
-    request = assemble_request(fixture_resources(), fixture_config())
-    return WorkflowDef.model_validate(
-        {
-            "name": "agent-runtime-fixture",
-            "entrypoints": {"run": "root"},
-            "retry": {"once": {"max_attempts": 1}},
-            "timeout": {"short": {"run_seconds": 120}},
-            "graphs": {
-                "root": {
-                    "max_activations": 2,
-                    "start": "run",
-                    "nodes": {
-                        "run": {
-                            "kind": "task",
-                            "capability": RUN_CAPABILITY_ID,
-                            "input": request.model_dump(mode="json"),
-                            "input_projection": {"type": "config_pointer", "pointer": ""},
-                            "retry": "once",
-                            "timeout": "short",
-                            "resources": {"writes": ["result.json"]},
-                        },
-                        "done": {"kind": "end"},
-                    },
-                    "edges": [{"from": "run", "to": "done"}],
-                }
-            },
-        }
+class FixtureState(TypedDict, total=False):
+    artifact: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class FixtureGraphs:
+    entrypoints: Mapping[str, CompiledStateGraph]
+    contracts: Mapping[str, EntrypointGraphContract]
+
+
+def _select_run(_state: FixtureState) -> object:
+    return frozen_run_request()
+
+
+def _publish_run(_state: FixtureState, output: object, _receipt: object) -> dict[str, object]:
+    return {
+        "artifact": str(getattr(output, "artifact", "result.json")),
+        "status": str(getattr(output, "status", "ok")),
+    }
+
+
+def build_fixture_graphs(
+    context: GraphBuildContext,
+    features: Mapping[str, object] | None = None,
+) -> FixtureGraphs:
+    del features
+    capability = context.for_capability("fixture.binding")
+    builder: StateGraph[FixtureState] = StateGraph(FixtureState)
+    builder.add_node(
+        "run",
+        cast(
+            object,
+            capability.attempt(
+                RUN_CONTRACT.contract_id,
+                semantic_node_id="run",
+                activation=BusinessActivation.one_shot(),
+                select=_select_run,
+                publish=_publish_run,
+            ),
+        ),
     )
+    builder.add_edge(START, "run")
+    builder.add_edge("run", END)
+    entrypoints = {"run": context.compile_root(builder)}
+    contracts = {
+        "run": EntrypointGraphContract(
+            name="run",
+            input_model="agent_runtime_fixture.product.FixtureState",
+            output_model="agent_runtime_fixture.product.FixtureState",
+            state_model="agent_runtime_fixture.product.FixtureState",
+            input_schema_digest=entrypoint_digest("run", "input"),
+            output_schema_digest=entrypoint_digest("run", "output"),
+            state_schema_digest=entrypoint_digest("run", "state"),
+            state_schema_version="1",
+            recursion_limit=32,
+        )
+    }
+    return FixtureGraphs(entrypoints=entrypoints, contracts=contracts)
 
 
 class FixtureProduct:
     @staticmethod
     def manifest() -> ProductManifest:
-        workflow = _workflow()
         return ProductManifest(
             schema_version="1",
             source=_SOURCE,
@@ -68,7 +104,7 @@ class FixtureProduct:
                 PluginRequirement(plugin_id="fixture.binding", version_specifier="==1.0.0"),
                 PluginRequirement(plugin_id="fixture.runtime", version_specifier="==1.0.0"),
             ),
-            entrypoints=dict(workflow.entrypoints),
+            entrypoints={"run": "root"},
             configuration={"fixture.runtime": fixture_config()},
-            workflow=workflow,
+            graph_factory_symbol=_FACTORY_SYMBOL,
         )

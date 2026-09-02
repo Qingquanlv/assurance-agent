@@ -36,8 +36,8 @@ from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import EffectApplyResult, EffectIntent, ResourceClaims, TaskWorkspaceBinding
-from graph_engine.runtime.activity import BoundedCanonicalJson, bounded_canonical_json
-from graph_engine.runtime.task_workspace import (
+from graph_engine.attempts.activity import BoundedCanonicalJson, bounded_canonical_json
+from graph_engine.attempts.workspace import (
     TaskWorkspaceProvider,
     TaskWorkspaceStore,
     TaskWorkspaceViolation,

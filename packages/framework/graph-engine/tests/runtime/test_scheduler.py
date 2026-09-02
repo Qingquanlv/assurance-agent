@@ -75,7 +75,7 @@ from graph_engine.runtime.events import (
 )
 from graph_engine.runtime.ledger import Ledger, LedgerConflictError
 from graph_engine.runtime.models import PlannedTask, ProjectionError, fold_events
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     TaskActivityRpcIdentity,
     TaskHostCallIdentity,
     TaskHostCallResult,
@@ -90,8 +90,8 @@ from graph_engine.runtime.scheduler import (
     _match_json_schema,
     select_wave,
 )
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
-from graph_engine.runtime.task_workspace import TaskWorkspaceViolation
+from graph_engine.attempts.workspace import TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceViolation
 
 
 Handler = Callable[[TaskRequest, TaskContext], Awaitable[object]]

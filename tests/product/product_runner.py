@@ -23,7 +23,7 @@ from graph_engine.plugin_api import (
 )
 from graph_engine.runtime import planner as _planner
 from graph_engine.runtime.engine import Engine, EngineError, InvocationHandle
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
     TaskHostCancelCall,
@@ -32,7 +32,7 @@ from graph_engine.runtime.host_protocol import (
     TaskHostTerminalReceipt,
 )
 from graph_engine.runtime.models import InvocationProjection
-from graph_engine.runtime.secret_sources import (
+from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     runtime_authorization_digest,

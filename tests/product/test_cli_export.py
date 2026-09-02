@@ -116,13 +116,11 @@ def test_cli_export_explicit_change_wins(cli_runner, tmp_path: Path) -> None:
 
 def test_cli_export_does_not_import_legacy_engine(cli_runner, tmp_path: Path, monkeypatch) -> None:
     from assurance_product.cli import app
-    from graph_engine.runtime import driver, engine
-
     def _forbid(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("export must not call legacy Engine or driver")
+        raise AssertionError("export must not call leftover Engine or driver")
 
-    monkeypatch.setattr(engine, "Engine", _forbid)
-    monkeypatch.setattr(driver, "acquire_invocation", _forbid)
+    monkeypatch.setattr("graph_engine.runtime.engine.Engine", _forbid)
+    monkeypatch.setattr("graph_engine.runtime.driver.acquire_invocation", _forbid)
     project = write_achieved(tmp_path)
     result = cli_runner.invoke(
         app,

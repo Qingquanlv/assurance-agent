@@ -31,7 +31,7 @@ from graph_engine.plugin_api import (
     TaskWorkspaceBinding,
     ValidationResult,
 )
-from graph_engine.runtime.task_workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 
 
 class RunInput(BaseModel):

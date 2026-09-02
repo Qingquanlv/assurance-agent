@@ -12,17 +12,17 @@ from click.testing import CliRunner
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition import FrozenComposition
 from graph_engine.plugin_api import TaskActivitySnapshot, TaskHandler, TaskOutcome
-from graph_engine.runtime.activity import LedgerTaskActivityPort
+from graph_engine.attempts.activity import LedgerTaskActivityPort
 from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
     TaskHostExecuteCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.runtime.host_receipts import TerminalReceiptStore, prove_call_quiescent
+from graph_engine.attempts.host_receipts import TerminalReceiptStore, prove_call_quiescent
 from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.secret_sources import (
+from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     runtime_authorization_digest,

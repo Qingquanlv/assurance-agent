@@ -8,18 +8,19 @@ import pytest
 
 from graph_engine.boot.boot import BootValidationError
 from graph_engine.canonical import canonical_digest
-from graph_engine.runtime.events import (
+from graph_engine.evidence.legacy_v2 import (
+    EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
     GraphCompleted,
     GraphStarted,
     InvocationFinished,
     InvocationStarted,
+    Ledger,
     NodeActivated,
     NodeInterrupted,
     TaskAttemptStarted,
     TaskAttemptStopped,
+    empty_invocation_seed,
 )
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
 
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS

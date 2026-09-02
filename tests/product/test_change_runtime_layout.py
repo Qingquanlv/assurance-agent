@@ -5,8 +5,8 @@ from pathlib import Path
 
 from graph_engine.plugin_api import TaskOutcome
 from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostExecuteCall
-from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
+from graph_engine.attempts.host_protocol import TaskHostCallResult, TaskHostExecuteCall
+from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
 
 from tests.product.cli_support import (
     SECRET_ENV,

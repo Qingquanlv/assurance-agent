@@ -8,7 +8,7 @@ import pytest
 import graph_engine.runtime.ledger as ledger_runtime
 from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import TaskActivityPort, TaskOutcome, TaskWorkspaceIdentity
-from graph_engine.runtime.activity import (
+from graph_engine.attempts.activity import (
     LedgerTaskActivityPort,
     MAX_ACTIVITY_VALUE_BYTES,
     TaskActivityConflict,
@@ -26,7 +26,7 @@ from graph_engine.runtime.events import (
     TokenConsumed,
     TokenOffered,
 )
-from graph_engine.runtime.host_protocol import TaskActivityRpcIdentity
+from graph_engine.attempts.host_protocol import TaskActivityRpcIdentity
 from graph_engine.runtime.ledger import Ledger, LedgerConflictError
 from graph_engine.runtime.models import fold_events
 

@@ -53,16 +53,16 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
-from graph_engine.runtime.activity import LedgerTaskActivityPort
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.activity import LedgerTaskActivityPort
+from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
     TaskHostExecuteCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.runtime.host_receipts import TerminalReceiptStore, prove_call_quiescent
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.secret_sources import InvocationRuntimeAuthorization
+from graph_engine.attempts.host_receipts import TerminalReceiptStore, prove_call_quiescent
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
 from graph_engine.runtime.seed import InvocationSeed, empty_invocation_seed
 from graph_engine.runtime.engine import (
     Engine as RuntimeEngine,
@@ -98,7 +98,7 @@ from graph_engine.runtime.models import ProjectionError, fold_events
 from graph_engine.runtime.planner import activation_id, plan_next, task_id
 from graph_engine.runtime.scheduler import FakeClock
 from graph_engine.runtime.scheduler import Scheduler
-from graph_engine.runtime.task_workspace import (
+from graph_engine.attempts.workspace import (
     PromotionPublicationIndeterminate,
     TaskWorkspaceStore,
 )

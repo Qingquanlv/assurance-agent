@@ -102,6 +102,10 @@ def test_sut_and_cross_owner_symbols_fail_before_import(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     sys.path.insert(0, str(hostile))
+    sys.modules.pop("sut_graphs", None)
+    sys.modules.pop("assurance_generation", None)
+    sys.modules.pop("assurance_generation.graphs", None)
+    sys.modules.pop("assurance_generation.graphs.factory", None)
     try:
         with pytest.raises(FactoryAuthenticationError):
             authenticate_factory_ref(

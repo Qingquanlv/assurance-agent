@@ -34,6 +34,7 @@ from graph_engine.boot.source_authentication import (
 )
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import ProductLock
+from graph_engine.composition.models import SourceSnapshot
 from graph_engine.composition.source_fs import DeclaredTreePolicy, capture_declared_tree
 from graph_engine.errors import GraphEngineError
 
@@ -373,7 +374,8 @@ def _authenticated_sources(
 def _assert_source_bytes(source: AuthenticatedFactorySource) -> None:
     policy = DeclaredTreePolicy(kind=source.snapshot.identity.kind)
     after = capture_declared_tree(source.snapshot.identity.root, source.source_files, policy)
-    if after.digest != source.snapshot.digest:
+    rebuilt = SourceSnapshot.from_identity(source.snapshot.identity, after.files)
+    if rebuilt.digest != source.snapshot.digest:
         raise BootValidationError("source drift")
 
 

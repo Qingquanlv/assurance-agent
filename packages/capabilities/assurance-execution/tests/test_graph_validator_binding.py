@@ -47,7 +47,7 @@ from graph_engine.plugin_api import (
     ValidationContext,
     ValidationResult,
 )
-from graph_engine.runtime.task_workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext
 
 _TEST_CONTRACT_ID = "test.assurance.execution.validator-parity.v1"

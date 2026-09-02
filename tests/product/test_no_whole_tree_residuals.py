@@ -14,14 +14,14 @@ import pytest
 from graph_engine.plugin_api import InvocationWorkspaceBinding, TaskContext, TaskHandler
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.events import RuntimeEvent
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
     TaskHostExecuteCall,
 )
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 from tests.product.cli_support import start_lifecycle_invocation
 from tests.product.composition_harness import InstalledSources

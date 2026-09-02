@@ -39,13 +39,13 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
 )
-from graph_engine.runtime.activity import LedgerTaskActivityPort
+from graph_engine.attempts.activity import LedgerTaskActivityPort
 from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import RunResult
-from graph_engine.runtime.host_receipts import prove_call_quiescent
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_receipts import prove_call_quiescent
+from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
     TaskHostCancelCall,
@@ -148,7 +148,6 @@ _REQUIRED_PATHS = (
     PRODUCT_PACKAGE / "product.py",
     PRODUCT_PACKAGE / "product-opencode-declaration.json",
     PRODUCT_PACKAGE / "product-cursor-declaration.json",
-    PRODUCT_PACKAGE / "workflow.yaml",
     FIXTURE_ROOT / "bindings-opencode" / "plugin.yaml",
     FIXTURE_ROOT / "bindings-opencode" / "model-policy.json",
     FIXTURE_ROOT / "bindings-cursor" / "plugin.yaml",
@@ -200,9 +199,6 @@ def refresh_product_declarations(product_root: Path) -> None:
                 sys.modules.pop(name, None)
         importlib.invalidate_caches()
         module = importlib.import_module("test_assurance_phase4_product.product")
-        workflow_raw = __import__("yaml").safe_load(
-            (package_root / "workflow.yaml").read_text(encoding="utf-8")
-        )
         for cls, filename in (
             (module.Phase4OpenCodeProduct, "product-opencode-declaration.json"),
             (module.Phase4CursorProduct, "product-cursor-declaration.json"),
@@ -212,7 +208,6 @@ def refresh_product_declarations(product_root: Path) -> None:
             if source is None:
                 raise ValueError("phase4 product source must be declared")
             dumped = manifest.model_dump(mode="json", by_alias=True, exclude_none=True)
-            dumped["workflow"] = workflow_raw
             document = {
                 "kind": "product",
                 "manifest": dumped,

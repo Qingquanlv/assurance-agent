@@ -264,5 +264,6 @@ def _factory_module_name(loaded: object) -> str:
 def _revalidate_source_bytes(snapshot: SourceSnapshot, source_files: tuple[str, ...]) -> None:
     policy = DeclaredTreePolicy(kind=snapshot.identity.kind)
     after = capture_declared_tree(snapshot.identity.root, source_files, policy)
-    if after.digest != snapshot.digest:
+    rebuilt = SourceSnapshot.from_identity(snapshot.identity, after.files)
+    if rebuilt.digest != snapshot.digest:
         raise FactoryAuthenticationError("factory source changed while authenticating its symbol")

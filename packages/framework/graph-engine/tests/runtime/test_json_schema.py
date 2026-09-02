@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from graph_engine.runtime.json_schema import match_json_schema, validate_json_schema
+from graph_engine.json_schema import match_json_schema, validate_json_schema
 
 
 _OVERFLOWING_PATTERN = "a{999999999999999999999999999999999999}"

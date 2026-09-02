@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from graph_engine.canonical import canonical_digest
-from graph_engine.runtime.secret_sources import empty_runtime_authorization, runtime_authorization_digest
+from graph_engine.attempts.secret_sources import empty_runtime_authorization, runtime_authorization_digest
 from graph_engine.runtime.seed import (
     EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
     InvocationSeed,

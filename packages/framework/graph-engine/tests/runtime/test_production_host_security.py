@@ -15,7 +15,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
     TaskHostCallIdentity,
@@ -23,18 +23,18 @@ from graph_engine.runtime.host_protocol import (
     TaskHostProtocolError,
     scan_for_secret_leaks,
 )
-from graph_engine.runtime.production_host import (
+from graph_engine.attempts.production_host import (
     ProductionHostError,
     _ProcessSupervisor,
     _ProductionTaskExecutionHost,
 )
-from graph_engine.runtime.secret_sources import (
+from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     empty_runtime_authorization,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 
 _CANARY = b"canary-secret-material"
@@ -165,7 +165,7 @@ def test_production_spawn_never_puts_secret_in_worker_argv(
             del timeout
             return 0
 
-    monkeypatch.setattr("graph_engine.runtime.production_host.subprocess.Popen", _RecordingPopen)
+    monkeypatch.setattr("graph_engine.attempts.production_host.subprocess.Popen", _RecordingPopen)
     supervisor = _ProcessSupervisor.for_platform()
     supervisor.spawn(attempt_root=tmp_path / "attempt", call_digest="d" * 64)
     kwargs = captured["kwargs"]

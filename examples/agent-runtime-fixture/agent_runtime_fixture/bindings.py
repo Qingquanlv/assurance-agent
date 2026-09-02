@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import cast
 
 from graph_engine import ENGINE_API_VERSION
+from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
     CapabilityBindingContribution,
@@ -12,9 +14,11 @@ from graph_engine.plugin_api import (
     PluginDescriptor,
     ProviderSource,
     RegistryPorts,
+    WorkspaceProvider,
 )
 
 from agent_runtime_fixture import RESULT_SCHEMA_RESOURCE_ID, RUN_CAPABILITY_ID, package_resource_bytes
+from agent_runtime_fixture.contracts import RUN_CONTRACT, RUN_CONTRACT_REF, bind_run_executor
 
 _OPENCODE_SOURCE = ProviderSource(
     distribution="agent-runtime-fixture",
@@ -57,6 +61,7 @@ def _descriptor(source: ProviderSource, adapter_plugin_id: str) -> PluginDescrip
             PluginDependency(plugin_id=adapter_plugin_id, version_specifier="==0.1.0"),
         ),
         bindings=(RUN_CAPABILITY_ID,),
+        attempt_contracts=(RUN_CONTRACT_REF,),
     )
 
 
@@ -72,7 +77,19 @@ def _contribute(target: str, adapter: dict[str, JSONValue]) -> PluginContributio
                 },
             ),
         ),
+        attempt_contracts=(RUN_CONTRACT_REF,),
     )
+
+
+def published_attempt_contracts() -> tuple[TaskAttemptContract[object, object], ...]:
+    return (RUN_CONTRACT,)
+
+
+def bind_attempt_executors(
+    workspace: WorkspaceProvider,
+) -> Mapping[str, ResolvedAttemptContract[object, object]]:
+    resolved = bind_run_executor(workspace)
+    return {resolved.contract.contract_id: resolved}
 
 
 class OpenCodeBindingPlugin:
@@ -93,6 +110,9 @@ class OpenCodeBindingPlugin:
             },
         )
 
+    published_attempt_contracts = staticmethod(published_attempt_contracts)
+    bind_attempt_executors = staticmethod(bind_attempt_executors)
+
 
 class CursorBindingPlugin:
     @staticmethod
@@ -111,3 +131,6 @@ class CursorBindingPlugin:
                 "protocol_profile": "confined_process",
             },
         )
+
+    published_attempt_contracts = staticmethod(published_attempt_contracts)
+    bind_attempt_executors = staticmethod(bind_attempt_executors)

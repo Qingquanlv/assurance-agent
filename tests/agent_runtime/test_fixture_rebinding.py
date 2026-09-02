@@ -38,7 +38,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceIdentity,
 )
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
     TaskHostCallIdentity,

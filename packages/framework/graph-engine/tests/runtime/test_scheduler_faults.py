@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from graph_engine.plugin_api import ResourceClaims, TaskContext, TaskOutcome, TaskRequest
-from graph_engine.runtime.task_workspace import PromotionPublicationIndeterminate
+from graph_engine.attempts.workspace import PromotionPublicationIndeterminate
 
 from test_scheduler import _dual_root_scheduler, _task
 

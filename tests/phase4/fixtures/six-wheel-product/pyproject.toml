@@ -5,6 +5,7 @@ description = "Test-only six-wheel product for OpenCode/Cursor rebinding"
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "graph-engine",
+    "langgraph==1.2.11",
 ]
 
 [project.entry-points."graph_engine.products"]

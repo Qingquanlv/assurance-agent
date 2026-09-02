@@ -47,7 +47,7 @@ from graph_engine.plugin_api import (
 )
 
 if TYPE_CHECKING:
-    from graph_engine.composition.lock import InvocationLock
+    from graph_engine.composition.lock import InvocationLock, ProductLock
     from graph_engine.graph.compiler import CompiledWorkflow
 
 
@@ -1624,7 +1624,7 @@ class FrozenComposition:
     manifest: ProductManifest
     descriptors: tuple[PluginDescriptor, ...]
     registries: RegistrySet
-    workflow: CompiledWorkflow
+    workflow: CompiledWorkflow | None
     configuration: object
     contribution_authorities: Mapping[str, ContributionAuthority] = dataclass_field(
         compare=False,
@@ -1633,12 +1633,13 @@ class FrozenComposition:
     providers: Mapping[str, object]
     product_provider: object | None
     declarative_sources: Mapping[str, SourceSnapshot]
-    lock: InvocationLock
+    lock: InvocationLock | ProductLock
     digest: str
 
     def __post_init__(self) -> None:
         from graph_engine.composition.lock import (
             InvocationLock,
+            ProductLock,
             authenticate_composition_lock,
             pinned_execution_host_lock,
         )
@@ -1654,10 +1655,16 @@ class FrozenComposition:
             raise TypeError("frozen composition descriptors must contain PluginDescriptor values")
         if not isinstance(self.registries, RegistrySet):
             raise TypeError("frozen composition registries must be a RegistrySet")
-        if not isinstance(self.workflow, CompiledWorkflow):
-            raise TypeError("frozen composition workflow must be a CompiledWorkflow")
-        if not isinstance(self.lock, InvocationLock):
-            raise TypeError("frozen composition lock must be an InvocationLock")
+        if self.manifest.graph_factory_symbol is not None:
+            if self.workflow is not None:
+                raise TypeError("factory composition must not carry a compiled workflow")
+            if not isinstance(self.lock, ProductLock):
+                raise TypeError("factory composition lock must be a ProductLock")
+        else:
+            if not isinstance(self.workflow, CompiledWorkflow):
+                raise TypeError("frozen composition workflow must be a CompiledWorkflow")
+            if not isinstance(self.lock, InvocationLock):
+                raise TypeError("frozen composition lock must be an InvocationLock")
         providers = _immutable_mapping(self.providers)
         contribution_authorities = _immutable_mapping(self.contribution_authorities)
         declarative_sources = _immutable_mapping(self.declarative_sources)
@@ -1713,7 +1720,7 @@ class FrozenComposition:
             self.lock,
             contribution_authorities,
         )
-        if self.lock.execution_host != pinned_execution_host_lock():
+        if isinstance(self.lock, InvocationLock) and self.lock.execution_host != pinned_execution_host_lock():
             raise ValueError("frozen composition execution host disagrees with the pinned engine host")
         expected_digest = canonical_digest({"lock_digest": self.lock.digest})
         if self.digest != expected_digest:
@@ -1803,8 +1810,8 @@ class FrozenComposition:
         cls,
         manifest: ProductManifest,
         registries: RegistrySet,
-        workflow: CompiledWorkflow,
-        lock: InvocationLock,
+        workflow: CompiledWorkflow | None,
+        lock: InvocationLock | ProductLock,
         *,
         descriptors: tuple[PluginDescriptor, ...] = (),
         configuration: object | None = None,
@@ -1946,9 +1953,9 @@ def _validate_product_graph_factory_symbol(symbol: str, source: ProviderSource |
 
 
 def _module_belongs_to_import_roots(module_name: str, import_roots: tuple[str, ...]) -> bool:
+    if not import_roots or any(not import_root for import_root in import_roots):
+        return True
     for import_root in import_roots:
-        if not import_root:
-            continue
         if module_name == import_root or module_name.startswith(f"{import_root}."):
             return True
     return False

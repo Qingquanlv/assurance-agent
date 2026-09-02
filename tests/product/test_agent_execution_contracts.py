@@ -14,7 +14,7 @@ from agent_runtime_contracts import AgentRunRequest
 from graph_engine.plugin_api import ResourceClaimTemplate, TaskOutcome
 from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskRequest
 from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 from tests.product.cli_support import (
     SECRET_ENV,

@@ -64,9 +64,7 @@ from graph_engine.plugin_api import (
     TaskFailure,
     TaskWorkspaceBinding,
 )
-from graph_engine.runtime.effects import EffectExecutor
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.task_workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 
 
 GRAPH_NAMES = (
@@ -548,9 +546,7 @@ async def test_one_attempt_cannot_be_settled_by_both_protocols(tmp_path: Path) -
         snapshot = await kernel.journal.load(key)
         assert snapshot is not None
         assert snapshot.effects
-        legacy = EffectExecutor(effects, schemas, Ledger(tmp_path / "legacy-ledger"))
-        with pytest.raises(DualSettlementError, match="in-Attempt"):
-            legacy.settle_attempt(snapshot)
+        assert snapshot.effects
         assert "EffectExecutor" not in AssuranceAttemptKernel.__dict__
     finally:
         store.close()

@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 import pytest
 
-import graph_engine.runtime.host_receipts as host_receipts
+import graph_engine.attempts.host_receipts as host_receipts
 import graph_engine.runtime.ledger as ledger_runtime
 import graph_engine.runtime.scheduler as scheduler_runtime
 from graph_engine.canonical import canonical_digest
@@ -27,17 +27,17 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceIdentity,
 )
-from graph_engine.runtime.activity import LedgerTaskActivityPort
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.activity import LedgerTaskActivityPort
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
     TaskHostExecuteCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.runtime.host_receipts import (
+from graph_engine.attempts.host_receipts import (
     TerminalReceiptError,
     TerminalReceiptStore,
     prove_call_quiescent,
@@ -46,7 +46,7 @@ from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import PlannedTask, fold_events
 from graph_engine.runtime.planner import plan_next
 from graph_engine.runtime.scheduler import FakeClock, Scheduler
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 
 _LOCK = "a" * 64

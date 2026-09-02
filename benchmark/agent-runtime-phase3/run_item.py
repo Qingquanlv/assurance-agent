@@ -36,7 +36,7 @@ from graph_engine.runtime.driver import StartSpec, acquire_invocation
 from graph_engine.runtime.engine import Engine
 from graph_engine.runtime.models import attempt_directory_id
 from graph_engine.runtime.planner import _start_token_id, activation_id, task_id
-from graph_engine.runtime.secret_sources import (
+from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     runtime_authorization_digest,

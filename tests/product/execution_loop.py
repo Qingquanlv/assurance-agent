@@ -15,7 +15,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
 )
 from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     TaskHostCallResult,
     TaskHostCancelCall,
     TaskHostExecuteCall,

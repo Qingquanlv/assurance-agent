@@ -13,7 +13,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskWorkspaceIdentity,
 )
-from graph_engine.runtime.activity import (
+from graph_engine.attempts.activity import (
     AttemptWorkspaceLost,
     TaskActivityConflict,
     TaskActivityIndeterminate,

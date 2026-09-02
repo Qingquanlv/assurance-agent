@@ -22,7 +22,7 @@ from graph_engine.composition.declarative import (
     load_product_file,
 )
 from graph_engine.composition.dependencies import resolve_dependency_order
-from graph_engine.composition.lock import build_invocation_lock
+from graph_engine.composition.lock import build_invocation_lock, build_product_lock
 from graph_engine.composition.models import (
     AuthenticatedContribution,
     ContributionAuthority,
@@ -197,21 +197,32 @@ class RegistryPlatform:
         # 11. Validate and freeze namespaced product configuration.
         configuration = self._validate_configuration(manifest, loaded.descriptors)
 
-        # 12. Resolve a frozen inline/resource workflow and compile every entrypoint.
-        workflow = self._compile_product_workflow(manifest, registries, loaded.descriptors)
-
-        # 13-14. Compute canonical projections/digests and construct the immutable lock.
-        lock = build_invocation_lock(
-            manifest=manifest,
-            product_snapshot=captured.product,
-            descriptors=loaded.descriptors,
-            dependency_order=dependency_order,
-            registries=registries,
-            configuration=configuration,
-            workflow=workflow,
-            engine_snapshot=captured.engine,
-            contribution_authorities=contribution_authorities,
-        )
+        # 12. Factory path skips leftover compile; leftover forms still compile every entrypoint.
+        if manifest.graph_factory_symbol is not None:
+            workflow = None
+            lock = build_product_lock(
+                manifest=manifest,
+                product_snapshot=captured.product,
+                descriptors=loaded.descriptors,
+                dependency_order=dependency_order,
+                registries=registries,
+                configuration=configuration,
+                engine_snapshot=captured.engine,
+                contribution_authorities=contribution_authorities,
+            )
+        else:
+            workflow = self._compile_product_workflow(manifest, registries, loaded.descriptors)
+            lock = build_invocation_lock(
+                manifest=manifest,
+                product_snapshot=captured.product,
+                descriptors=loaded.descriptors,
+                dependency_order=dependency_order,
+                registries=registries,
+                configuration=configuration,
+                workflow=workflow,
+                engine_snapshot=captured.engine,
+                contribution_authorities=contribution_authorities,
+            )
 
         # 15. Return the sole complete composition value; no runtime path was touched.
         return FrozenComposition.freeze(

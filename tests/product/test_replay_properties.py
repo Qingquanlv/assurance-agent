@@ -125,7 +125,7 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
     from graph_engine.plugin_api import InvocationWorkspaceBinding
     from graph_engine.runtime.engine import Engine, EngineError
     from graph_engine.runtime.invocation_lock import InvocationDrift
-    from graph_engine.runtime.secret_sources import empty_runtime_authorization
+    from graph_engine.attempts.secret_sources import empty_runtime_authorization
     from graph_engine.runtime.seed import empty_invocation_seed
 
     from tests.product.product_runner import adapter_product_composition, modular_product_composition

@@ -22,18 +22,18 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
-from graph_engine.runtime.activity import LedgerTaskActivityPort
+from graph_engine.attempts.activity import LedgerTaskActivityPort
 from graph_engine.runtime.events import TaskActivityCancelRequested, TaskActivityDispatchStarted
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.runtime.engine import Engine, EngineConflictError
-from graph_engine.runtime.host_protocol import TaskHostCallResult, TaskHostTerminalReceipt
-from graph_engine.runtime.host_receipts import TerminalReceiptStore, prove_call_quiescent
+from graph_engine.attempts.host_protocol import TaskHostCallResult, TaskHostTerminalReceipt
+from graph_engine.attempts.host_receipts import TerminalReceiptStore, prove_call_quiescent
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import fold_events
 from graph_engine.runtime.planner import plan_next
 from graph_engine.runtime.scheduler import FakeClock, Scheduler
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 
 _ReconcileStatus = Literal["not_dispatched", "running", "terminal", "absent", "indeterminate"]

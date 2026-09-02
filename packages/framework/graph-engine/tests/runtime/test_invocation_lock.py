@@ -26,7 +26,7 @@ from graph_engine.composition import (
     ResolutionRequest,
 )
 from graph_engine.plugin_api import InvocationWorkspaceBinding
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
 from graph_engine.runtime.engine import Engine as RuntimeEngine
 from graph_engine.runtime.engine import EngineError, EnginePublicationIndeterminate
@@ -48,7 +48,7 @@ from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import fold_events
 from graph_engine.runtime.planner import plan_next
 from graph_engine.runtime.scheduler import FakeClock, Scheduler
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 
 _LOCK_NAME = "invocation.lock.json"
@@ -158,9 +158,8 @@ def _toy_a_composition(
     interrupt: bool = False,
 ) -> FrozenComposition:
     source = root / "source"
-    repository = Path(__file__).parents[5]
     shutil.copytree(
-        repository / "examples" / "graph-engine-toy-a",
+        Path(__file__).resolve().parent / "fixtures" / "leftover-toy-a",
         source,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
