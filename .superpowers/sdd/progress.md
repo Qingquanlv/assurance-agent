@@ -220,6 +220,17 @@ Checkpoint R live row: GREEN (29s against the operator's own provider), so Produ
   `AA_CHECKPOINT_R_PROVIDER_CONFIG`, `AA_CHECKPOINT_R_AUTH_FILE`, and OpenCode >= 1.18.26.
 - The loopback server now logs to a file instead of an undrained pipe.
 
+Handed to Product T5b: the provider-schema apparatus is vacuous but still wired in
+- `entrypoint_requires_provider_schema` and `_contracts_require_provider_schema` both discard their
+  argument and return False, `AgentRuntimeCapabilities` is an empty husk, and
+  `negotiate_provider_schema` therefore can never raise, yet `application.py` still calls the gate
+  on the run and resume paths. The test that asserted the refusal now fails as DID NOT RAISE and
+  has been deleted, since its subject no longer exists.
+- Removing the rest belongs to T5b, not here: `test_entrypoint_cutover.py` still requires
+  `schema-capability-red` in each cutover record, and that reason is exactly what T5b re-decides
+  when it moves the remaining ten entrypoints. Deleting the gate and rewriting those reasons is one
+  change, and it is T5b's to make.
+
 Deferred debt (operator decision: record, do not fix now; T5b takes priority)
 - benchmark/agent-runtime-phase3/manifest.json pins the pre-R1 request shape. It documents a real
   live run, so it stays stale until the phase3 benchmark is genuinely re-run rather than rewritten.
