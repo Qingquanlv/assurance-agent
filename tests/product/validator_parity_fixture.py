@@ -9,7 +9,7 @@ from typing import Any, cast
 from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables.config import RunnableConfig
 
-from agent_runtime_contracts import AgentRuntimeCapabilities, CompositeAttemptExecutor
+from agent_runtime_contracts import ResolvedRawAgentExecutor
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_execution.contracts.execution import ExecutionManifest
 from assurance_execution.contracts.selection import SelectedTargets
@@ -173,12 +173,11 @@ class _WritingHost:
 
 def boot_resolved_execute() -> ResolvedAttemptContract[Any, Any]:
     agent = AGENT_JOB_CONTRACTS["execute"]
-    return CompositeAttemptExecutor(
+    return ResolvedRawAgentExecutor(
         agent,
         prepare=_DeferredPhase(),
         runtime=_DeferredPhase(),
         finalize=_DeferredPhase(),
-        capabilities=AgentRuntimeCapabilities(provider_schema=False),
     ).resolve()
 
 

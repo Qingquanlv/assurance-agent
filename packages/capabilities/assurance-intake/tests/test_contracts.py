@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from copy import deepcopy
 from collections.abc import Mapping
 from pathlib import Path
@@ -390,7 +391,7 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
         assert contract.agent_profile == agent_profile
         assert contract.resources.writes == writes
         assert OUTPUT_ROUTE_TEMPLATES[base] == routes
-        dumped = contract.model_dump_json().lower()
+        dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped
     assert forbidden_imports("assurance_intake", "assurance_product") == set()

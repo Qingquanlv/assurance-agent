@@ -89,9 +89,7 @@ class RuntimeAdapterSpec:
     engine_api: str
     source: ProviderSource
     handler: Callable[[], TaskHandler]
-    capabilities: AgentRuntimeCapabilities = field(
-        default_factory=lambda: AgentRuntimeCapabilities(provider_schema=False)
-    )
+    capabilities: AgentRuntimeCapabilities = field(default_factory=AgentRuntimeCapabilities)
 
     @property
     def plugin_id(self) -> str:

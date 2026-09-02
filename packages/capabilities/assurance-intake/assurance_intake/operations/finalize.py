@@ -70,7 +70,7 @@ def _leafs(values: Iterable[str]) -> frozenset[str]:
 
 
 def _structured(payload: AgentFinalizeInputV1) -> object:
-    return thaw_json(payload.agent_result.structured_result)
+    return thaw_json(payload.agent_result.result_payload)
 
 
 def _validate_case_review_repair_scope(

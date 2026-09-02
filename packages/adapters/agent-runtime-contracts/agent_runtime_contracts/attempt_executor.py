@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Generic, Protocol, TypeVar
+from pathlib import Path, PurePosixPath
+from typing import Generic, Protocol, TypeVar
 
 from pydantic import BaseModel
 
@@ -14,8 +15,8 @@ from graph_engine.attempts import (
 )
 
 from agent_runtime_contracts.execution_contract import AgentExecutionContract
-from agent_runtime_contracts.plugin_kit import StructuredOutputCapabilityError, negotiate_provider_schema
-from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
+from agent_runtime_contracts.models import AgentRunResult
+from agent_runtime_contracts.schema import thaw_json, validate_local_agent_result
 
 
 InputT = TypeVar("InputT", bound=BaseModel)
@@ -28,10 +29,60 @@ _PreparedT_co = TypeVar("_PreparedT_co", covariant=True)
 _OutputT_co = TypeVar("_OutputT_co", bound=BaseModel, covariant=True)
 
 
+def _canonical_relative(path: str) -> bool:
+    posix = PurePosixPath(path)
+    return not (
+        posix.is_absolute()
+        or "\\" in path
+        or (len(path) >= 2 and path[1] == ":")
+        or posix.as_posix() != path
+        or any(part in {"", ".", ".."} for part in posix.parts)
+    )
+
+
 @dataclass(frozen=True, slots=True)
-class TypedPhaseBundle(Generic[PreparedT, AgentResultT]):
+class ReadOnlyRawWorkspace:
+    root: Path
+
+    def _resolved(self, relative: str) -> Path:
+        if not _canonical_relative(relative):
+            raise ValueError(f"raw workspace path must be canonical and relative: {relative}")
+        path = self.root
+        for part in PurePosixPath(relative).parts:
+            path = path / part
+            if path.is_symlink():
+                raise ValueError(f"raw workspace path is a symlink: {relative}")
+        try:
+            path.resolve().relative_to(self.root.resolve())
+        except ValueError as error:
+            raise ValueError(
+                f"raw workspace path must stay inside the authorized root: {relative}"
+            ) from error
+        return path
+
+    def read_bytes(self, relative: str) -> bytes:
+        path = self._resolved(relative)
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(relative)
+        return path.read_bytes()
+
+    def read_text(self, relative: str, encoding: str = "utf-8") -> str:
+        return self.read_bytes(relative).decode(encoding)
+
+
+@dataclass(frozen=True, slots=True)
+class RawAgentRuntimeOutcome:
+    run_result: AgentRunResult
+    raw_workspace: ReadOnlyRawWorkspace
+
+
+@dataclass(frozen=True, slots=True)
+class RawFinalizeBundle(Generic[InputT, PreparedT, AgentResultT]):
+    validated_input: InputT
     prepared: PreparedT
     agent_result: AgentResultT
+    run_evidence: AgentRunResult
+    raw_workspace: ReadOnlyRawWorkspace
 
 
 class PreparePhase(Protocol[_InputT_contra, _PreparedT_co]):
@@ -47,34 +98,32 @@ class RuntimePhase(Protocol[_PreparedT_contra]):
         self,
         prepared: _PreparedT_contra,
         context: AttemptExecutionContext,
-        *,
-        schema: Mapping[str, Any],
-    ) -> object: ...
+    ) -> RawAgentRuntimeOutcome: ...
 
 
-class FinalizePhase(Protocol[PreparedT, AgentResultT, _OutputT_co]):
+class FinalizePhase(Protocol[InputT, PreparedT, AgentResultT, _OutputT_co]):
     async def execute(
         self,
-        bundle: TypedPhaseBundle[PreparedT, AgentResultT],
+        bundle: RawFinalizeBundle[InputT, PreparedT, AgentResultT],
         context: AttemptExecutionContext,
     ) -> _OutputT_co: ...
 
 
-class CompositeAttemptExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]):
+class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]):
     def __init__(
         self,
         contract: AgentExecutionContract[InputT, AgentResultT, OutputT],
         *,
         prepare: PreparePhase[InputT, PreparedT],
         runtime: RuntimePhase[PreparedT],
-        finalize: FinalizePhase[PreparedT, AgentResultT, OutputT],
-        capabilities: AgentRuntimeCapabilities,
+        finalize: FinalizePhase[InputT, PreparedT, AgentResultT, OutputT],
+        result_context: Mapping[str, object] | None = None,
     ) -> None:
         self._contract = contract
         self._prepare = prepare
         self._runtime = runtime
         self._finalize = finalize
-        self._capabilities = capabilities
+        self._result_context = None if result_context is None else dict(result_context)
 
     def to_task_contract(self) -> TaskAttemptContract[InputT, OutputT]:
         return self._contract.to_task_contract()
@@ -87,24 +136,30 @@ class CompositeAttemptExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         validated_input: InputT,
         context: AttemptExecutionContext,
     ) -> OutputT:
-        negotiate_provider_schema(
-            required=self._contract.requires_provider_schema,
-            capabilities=self._capabilities,
-        )
         prepared = await self._prepare.execute(validated_input, context)
-        schema = self._contract.agent_result_model.model_json_schema()
-        raw_result = await self._runtime.execute(prepared, context, schema=schema)
-        agent_result = self._contract.agent_result_model.model_validate(raw_result)
-        bundle = TypedPhaseBundle(prepared=prepared, agent_result=agent_result)
+        outcome = await self._runtime.execute(prepared, context)
+        _exact, _digest, agent_result = validate_local_agent_result(
+            thaw_json(outcome.run_result.result_payload),
+            result_model=self._contract.agent_result_model,
+            context=self._result_context,
+        )
+        bundle = RawFinalizeBundle(
+            validated_input=validated_input,
+            prepared=prepared,
+            agent_result=agent_result,
+            run_evidence=outcome.run_result,
+            raw_workspace=outcome.raw_workspace,
+        )
         output = await self._finalize.execute(bundle, context)
         return self._contract.output_model.model_validate(output)
 
 
 __all__ = [
-    "CompositeAttemptExecutor",
-    "PreparePhase",
-    "RuntimePhase",
     "FinalizePhase",
-    "StructuredOutputCapabilityError",
-    "TypedPhaseBundle",
+    "PreparePhase",
+    "RawAgentRuntimeOutcome",
+    "RawFinalizeBundle",
+    "ReadOnlyRawWorkspace",
+    "ResolvedRawAgentExecutor",
+    "RuntimePhase",
 ]

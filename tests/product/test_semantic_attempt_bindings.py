@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from pydantic import ValidationError
 
@@ -89,3 +91,95 @@ def test_semantic_registry_omits_pure_functions_and_keeps_validators_unbound(
     assert all(isinstance(item, ResolvedAttemptContract) for item in resolved.values())
     assert all(item.contract.validators == () for item in resolved.values())
     assert all(pure_id not in resolved for pure_id in _PURE_FUNCTION_IDS)
+
+
+def test_raw_runtime_rows_are_canonical_and_digest_locked() -> None:
+    from agent_runtime_contracts import RawAgentRuntimeBindingProjectionV1
+    from graph_engine.canonical import canonical_digest
+
+    from assurance_product.agent_contracts import all_feature_agent_contracts
+    from assurance_product.runtime_bindings import RAW_AGENT_RUNTIME_BINDING_ROWS
+
+    contracts = all_feature_agent_contracts()
+    rows = RAW_AGENT_RUNTIME_BINDING_ROWS
+    assert len(rows) == 33
+    assert tuple(row.contract_id for row in rows) == tuple(sorted(contracts))
+    assert all(isinstance(row, RawAgentRuntimeBindingProjectionV1) for row in rows)
+    assert all(row.schema_version == "raw-agent-runtime-binding-v1" for row in rows)
+    assert all(row.activity_recovery == "adopt-observe-reconcile-v1" for row in rows)
+    for row in rows:
+        contract = contracts[row.contract_id]
+        assert row.contract_digest == canonical_digest(contract.canonical_projection())
+        assert row.adapter == row.provider
+        assert row.runtime_handler_id == f"runtime.{row.adapter}.execute"
+
+
+def test_raw_bindings_do_not_resolve_through_legacy_aliases() -> None:
+    from assurance_product import runtime_bindings
+
+    source = inspect.getsource(runtime_bindings.runtime_bindings_from_composition)
+    assert "alias_ids_for_prepare" not in source
+    assert "LEGACY_AGENT_PHASE_ALIASES" not in source
+    assert "bindings[" not in source
+
+
+def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(installed_sources) -> None:
+    from agent_runtime_contracts import ResolvedRawAgentExecutor
+
+    from assurance_product.agent_contracts import all_feature_agent_contracts, all_feature_task_contracts
+    from assurance_product.product import resolve_assurance_composition
+
+    request = request_for("opencode", installed_sources)
+    composition = resolve_assurance_composition(request)
+    agents = all_feature_agent_contracts()
+    tasks = all_feature_task_contracts()
+    resolved = composition.semantic_attempt_contracts
+    assert len(agents) == 33
+    assert len(tasks) == 8
+    task_ids = {contract.contract_id for contract in tasks.values()}
+    assert set(agents) | task_ids == set(resolved)
+    for contract_id in agents:
+        assert isinstance(resolved[contract_id].executor, ResolvedRawAgentExecutor)
+    for contract_id in task_ids:
+        assert not isinstance(resolved[contract_id].executor, ResolvedRawAgentExecutor)
+        assert type(resolved[contract_id].executor).__name__ == "_DeferredTaskExecutor"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        ("missing", "missing"),
+        ("duplicate", "duplicate"),
+        ("extra", "extra"),
+        ("wrong-owner", "wrong-owner"),
+        ("wrong-adapter", "wrong-adapter"),
+        ("contract-digest-drift", "contract-digest-drift"),
+    ],
+)
+def test_raw_binding_rows_reject_invalid_catalog(mutate: str, match: str) -> None:
+    from assurance_product.agent_contracts import all_feature_agent_contracts
+    from assurance_product.runtime_bindings import (
+        RAW_AGENT_RUNTIME_BINDING_ROWS,
+        authenticate_raw_agent_runtime_bindings,
+    )
+
+    contracts = all_feature_agent_contracts()
+    rows = list(RAW_AGENT_RUNTIME_BINDING_ROWS)
+    if mutate == "missing":
+        rows = rows[1:]
+    elif mutate == "duplicate":
+        rows.append(rows[0])
+    elif mutate == "extra":
+        extra = rows[0].model_copy(update={"contract_id": "assurance.intake.agent.forged.v1"})
+        rows.append(extra)
+    elif mutate == "wrong-owner":
+        rows[0] = rows[0].model_copy(update={"runtime_handler_id": "assurance.generation.forged.execute"})
+    elif mutate == "wrong-adapter":
+        rows[0] = rows[0].model_copy(
+            update={"adapter": "cursor", "provider": "cursor", "runtime_handler_id": "runtime.cursor.execute"}
+        )
+    else:
+        rows[0] = rows[0].model_copy(update={"contract_digest": "c" * 64})
+
+    with pytest.raises(ValueError, match=match):
+        authenticate_raw_agent_runtime_bindings(rows, contracts, adapter="opencode")

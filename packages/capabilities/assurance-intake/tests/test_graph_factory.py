@@ -9,7 +9,14 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from agent_runtime_contracts import AgentRuntimeCapabilities, CompositeAttemptExecutor, TypedPhaseBundle
+from agent_runtime_contracts import (
+    RawAgentRuntimeOutcome,
+    RawFinalizeBundle,
+    ReadOnlyRawWorkspace,
+    ResolvedRawAgentExecutor,
+    canonical_digest,
+)
+from agent_runtime_contracts.models import AgentRunResult
 from assurance_intake.contracts.agent import ArtifactListResultV1, CaseDesignInputV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs
@@ -198,20 +205,32 @@ class _RecordingRuntime:
         self.result = result
         self.seen_prepared: dict[str, object] | None = None
 
-    async def execute(self, prepared: dict[str, object], context: object, *, schema: object) -> object:
-        del context, schema
+    async def execute(self, prepared: dict[str, object], context: object) -> RawAgentRuntimeOutcome:
+        del context
         self.seen_prepared = prepared
-        return self.result
+        payload = self.result.model_dump(mode="json")
+        return RawAgentRuntimeOutcome(
+            run_result=AgentRunResult.model_validate(
+                {
+                    "result_payload": payload,
+                    "result_digest": canonical_digest(payload),
+                    "evidence_digest": _SHA,
+                    "adapter_id": "agent-runtime-fixture",
+                    "adapter_version": "1.0.0",
+                }
+            ),
+            raw_workspace=ReadOnlyRawWorkspace(Path(".")),
+        )
 
 
 class _RecordingFinalize:
     def __init__(self, output: ArtifactListResultV1) -> None:
         self.output = output
-        self.seen: TypedPhaseBundle[dict[str, object], ArtifactListResultV1] | None = None
+        self.seen: RawFinalizeBundle[CaseDesignInputV1, dict[str, object], ArtifactListResultV1] | None = None
 
     async def execute(
         self,
-        bundle: TypedPhaseBundle[dict[str, object], ArtifactListResultV1],
+        bundle: RawFinalizeBundle[CaseDesignInputV1, dict[str, object], ArtifactListResultV1],
         context: object,
     ) -> ArtifactListResultV1:
         del context
@@ -260,12 +279,11 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
     runtime = _RecordingRuntime(agent_result)
     finalize = _RecordingFinalize(agent_result)
     contract = AGENT_JOB_CONTRACTS["case-design"]
-    executor = CompositeAttemptExecutor(
+    executor = ResolvedRawAgentExecutor(
         contract,
         prepare=prepare,
         runtime=runtime,
         finalize=finalize,
-        capabilities=AgentRuntimeCapabilities(provider_schema=True),
     )
     writable = ResourceClaims()
     del writable

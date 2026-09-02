@@ -255,7 +255,7 @@ def result_contract(schema_id: str) -> ResultContract:
     return ResultContract(
         schema_id=schema_id,
         schema_digest=canonical_digest(payload),
-        extraction_mode="structured",
+        delivery_mode="assistant_json_local_v1",
         schema_document=payload,
     )
 

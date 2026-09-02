@@ -120,7 +120,7 @@ def result_contract(schema_id: str) -> ResultContract:
     return ResultContract(
         schema_id=schema_id,
         schema_digest=canonical_digest(payload),
-        extraction_mode="structured",
+        delivery_mode="assistant_json_local_v1",
         schema_document=payload,
     )
 
@@ -162,7 +162,7 @@ def prepare_outcome(
 
 
 def _structured(payload: AgentFinalizeInputV1) -> object:
-    return thaw_json(payload.agent_result.structured_result)
+    return thaw_json(payload.agent_result.result_payload)
 
 
 def _prepare(

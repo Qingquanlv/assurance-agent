@@ -135,6 +135,7 @@ def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> Non
         assert contract.validators == ()
         assert contract.retry.max_attempts == 1
         assert contract.timeout.seconds == 60
+        assert not hasattr(contract, "requires_provider_schema")
 
 
 def test_agent_contract_omitting_validators_is_invalid() -> None:
@@ -150,7 +151,6 @@ def test_agent_contract_omitting_validators_is_invalid() -> None:
             input_model=sample.input_model,
             agent_result_model=sample.agent_result_model,
             output_model=sample.output_model,
-            requires_provider_schema=sample.requires_provider_schema,
             resources=sample.resources,
             retry=sample.retry,
             timeout=sample.timeout,

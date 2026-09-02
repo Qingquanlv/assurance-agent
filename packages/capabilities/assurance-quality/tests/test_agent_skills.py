@@ -105,7 +105,7 @@ def issue_candidate(*, evidence_ids: list[str], possible_problem_ids: list[str] 
 
 def fake_agent_result(structured_result: JSONValue, **locks: JSONValue) -> JSONValue:
     result = AgentRunResult(
-        structured_result=structured_result,
+        result_payload=structured_result,
         result_digest=canonical_digest(structured_result),
         evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
         adapter_id="test.fake",

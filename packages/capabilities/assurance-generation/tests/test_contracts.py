@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 from typing import cast
 
@@ -348,7 +349,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             expected_claims = tuple(sorted((*writes, f"qa/changes/{{change_id}}/generated/{family}/files")))
         assert contract.resources.writes == expected_claims
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
-        dumped = contract.model_dump_json().lower()
+        dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped
     found = forbidden_generation_imports()

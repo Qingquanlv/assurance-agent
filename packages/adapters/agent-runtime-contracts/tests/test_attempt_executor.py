@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Literal
+from pathlib import Path
+from typing import Literal
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -15,13 +16,14 @@ from graph_engine.attempts import (
 )
 from graph_engine.plugin_api import ResourceClaims
 
-from agent_runtime_contracts import AgentExecutionContract
+from agent_runtime_contracts import AgentExecutionContract, AgentRunResult, canonical_digest
 from agent_runtime_contracts.attempt_executor import (
-    CompositeAttemptExecutor,
-    StructuredOutputCapabilityError,
-    TypedPhaseBundle,
+    RawAgentRuntimeOutcome,
+    RawFinalizeBundle,
+    ReadOnlyRawWorkspace,
+    ResolvedRawAgentExecutor,
 )
-from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
+from agent_runtime_contracts.schema import thaw_json
 
 
 class CaseDesignInput(BaseModel):
@@ -45,9 +47,26 @@ class CaseDesignOutput(BaseModel):
     path: Literal["primary", "repair"]
 
 
+_EVIDENCE = "b" * 64
+
+
+def _run_result(payload: object) -> AgentRunResult:
+    thawed = thaw_json(payload)
+    return AgentRunResult.model_validate(
+        {
+            "result_payload": thawed,
+            "result_digest": canonical_digest(thawed),
+            "evidence_digest": _EVIDENCE,
+            "adapter_id": "agent-runtime-fixture",
+            "adapter_version": "1.0.0",
+        }
+    )
+
+
 class RecordingPrepare:
-    def __init__(self, prepared: CaseDesignPrepared) -> None:
+    def __init__(self, prepared: CaseDesignPrepared, order: list[str]) -> None:
         self.prepared = prepared
+        self.order = order
         self.seen_input: CaseDesignInput | None = None
 
     async def execute(
@@ -56,40 +75,49 @@ class RecordingPrepare:
         context: AttemptExecutionContext,
     ) -> CaseDesignPrepared:
         del context
+        self.order.append("prepare")
         self.seen_input = validated_input
         return self.prepared
 
 
 class RecordingRuntime:
-    def __init__(self, result: object) -> None:
+    def __init__(
+        self,
+        result: object,
+        workspace: ReadOnlyRawWorkspace,
+        order: list[str],
+    ) -> None:
         self.result = result
+        self.workspace = workspace
+        self.order = order
         self.seen_prepared: CaseDesignPrepared | None = None
-        self.seen_schema: dict[str, Any] | None = None
+        self.seen_schema: object = None
 
     async def execute(
         self,
         prepared: CaseDesignPrepared,
         context: AttemptExecutionContext,
-        *,
-        schema: dict[str, Any],
-    ) -> object:
+    ) -> RawAgentRuntimeOutcome:
         del context
+        self.order.append("runtime")
         self.seen_prepared = prepared
-        self.seen_schema = schema
-        return self.result
+        run_result = self.result if isinstance(self.result, AgentRunResult) else _run_result(self.result)
+        return RawAgentRuntimeOutcome(run_result=run_result, raw_workspace=self.workspace)
 
 
 class RecordingFinalize:
-    def __init__(self, output: CaseDesignOutput) -> None:
+    def __init__(self, output: object, order: list[str]) -> None:
         self.output = output
-        self.seen: TypedPhaseBundle[CaseDesignPrepared, CaseDesignAgentResult] | None = None
+        self.order = order
+        self.seen: RawFinalizeBundle[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult] | None = None
 
     async def execute(
         self,
-        bundle: TypedPhaseBundle[CaseDesignPrepared, CaseDesignAgentResult],
+        bundle: RawFinalizeBundle[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult],
         context: AttemptExecutionContext,
-    ) -> CaseDesignOutput:
+    ) -> object:
         del context
+        self.order.append("finalize")
         self.seen = bundle
         return self.output
 
@@ -104,9 +132,7 @@ def _context() -> AttemptExecutionContext:
     )
 
 
-def _contract(
-    *, requires_provider_schema: bool
-) -> AgentExecutionContract[CaseDesignInput, CaseDesignAgentResult, CaseDesignOutput]:
+def _contract() -> AgentExecutionContract[CaseDesignInput, CaseDesignAgentResult, CaseDesignOutput]:
     return AgentExecutionContract(
         contract_id="assurance.intake.agent.case-design.v1",
         owner_id="assurance.intake",
@@ -117,7 +143,6 @@ def _contract(
         input_model=CaseDesignInput,
         agent_result_model=CaseDesignAgentResult,
         output_model=CaseDesignOutput,
-        requires_provider_schema=requires_provider_schema,
         resources=ResourceClaims(),
         retry=AttemptRetryPolicy(max_attempts=1),
         timeout=AttemptTimeoutPolicy(seconds=60),
@@ -125,24 +150,29 @@ def _contract(
     )
 
 
+def _workspace(tmp_path: Path) -> ReadOnlyRawWorkspace:
+    root = tmp_path / "raw-workspace"
+    root.mkdir()
+    (root / "qa").mkdir()
+    (root / "qa" / "proposal.md").write_text("design", encoding="utf-8")
+    return ReadOnlyRawWorkspace(root)
+
+
 def _executor(
     *,
-    requires_provider_schema: bool,
-    provider_schema: bool,
     prepare: RecordingPrepare,
     runtime: RecordingRuntime,
     finalize: RecordingFinalize,
-) -> CompositeAttemptExecutor[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult, CaseDesignOutput]:
-    return CompositeAttemptExecutor(
-        contract=_contract(requires_provider_schema=requires_provider_schema),
+) -> ResolvedRawAgentExecutor[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult, CaseDesignOutput]:
+    return ResolvedRawAgentExecutor(
+        _contract(),
         prepare=prepare,
         runtime=runtime,
         finalize=finalize,
-        capabilities=AgentRuntimeCapabilities(provider_schema=provider_schema),
     )
 
 
-def test_composite_executor_passes_typed_phase_bundle_to_finalize() -> None:
+def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1", path="primary")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases")
     expected_agent_result = CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",))
@@ -151,87 +181,95 @@ def test_composite_executor_passes_typed_phase_bundle_to_finalize() -> None:
         output_files=expected_agent_result.output_files,
         path="primary",
     )
-    prepare = RecordingPrepare(prepared_value)
-    runtime = RecordingRuntime(expected_agent_result)
-    finalize = RecordingFinalize(expected_output)
-    executor = _executor(
-        requires_provider_schema=False,
-        provider_schema=False,
-        prepare=prepare,
-        runtime=runtime,
-        finalize=finalize,
+    order: list[str] = []
+    prepare = RecordingPrepare(prepared_value, order)
+    runtime = RecordingRuntime(expected_agent_result.model_dump(), _workspace(tmp_path), order)
+    finalize = RecordingFinalize(expected_output, order)
+
+    output = asyncio.run(
+        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(validated_input, _context())
     )
-    context = _context()
 
-    output = asyncio.run(executor.execute(validated_input, context))
-
+    assert order == ["prepare", "runtime", "finalize"]
     assert prepare.seen_input == validated_input
-    assert runtime.seen_schema == CaseDesignAgentResult.model_json_schema()
+    assert runtime.seen_prepared == prepared_value
+    assert runtime.seen_schema is None
     assert finalize.seen is not None
+    assert finalize.seen.validated_input == validated_input
     assert finalize.seen.prepared == prepared_value
     assert finalize.seen.agent_result == expected_agent_result
+    assert finalize.seen.run_evidence.result_digest == canonical_digest(expected_agent_result.model_dump())
+    assert finalize.seen.raw_workspace.read_text("qa/proposal.md") == "design"
     assert output == expected_output
 
 
-def test_required_provider_schema_fails_closed_when_adapter_lacks_it() -> None:
+def test_invalid_raw_result_fails_before_finalize(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1")
-    context = _context()
-    prepare = RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"))
-    runtime = RecordingRuntime(CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)))
+    order: list[str] = []
+    prepare = RecordingPrepare(
+        CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"), order
+    )
+    runtime = RecordingRuntime({"not": "an-agent-result"}, _workspace(tmp_path), order)
     finalize = RecordingFinalize(
-        CaseDesignOutput(status="committed", output_files=("qa/changes/CH-1/proposal.md",), path="primary")
-    )
-    executor_without_schema = _executor(
-        requires_provider_schema=True,
-        provider_schema=False,
-        prepare=prepare,
-        runtime=runtime,
-        finalize=finalize,
+        CaseDesignOutput(status="committed", output_files=("qa/changes/CH-1/proposal.md",), path="primary"),
+        order,
     )
 
-    with pytest.raises(StructuredOutputCapabilityError):
-        asyncio.run(executor_without_schema.execute(validated_input, context))
+    with pytest.raises((ValidationError, ValueError)):
+        asyncio.run(
+            _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
+                validated_input, _context()
+            )
+        )
 
-    assert prepare.seen_input is None
-    assert runtime.seen_schema is None
+    assert order == ["prepare", "runtime"]
     assert finalize.seen is None
 
 
-def test_composite_executor_validates_agent_result_locally_even_when_provider_schema_is_advertised() -> None:
+def test_invalid_output_fails_after_finalize(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1")
-    prepare = RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"))
-    runtime = RecordingRuntime({"not": "an-agent-result"})
-    finalize = RecordingFinalize(
-        CaseDesignOutput(status="committed", output_files=("qa/changes/CH-1/proposal.md",), path="primary")
-    )
-    executor = _executor(
-        requires_provider_schema=True,
-        provider_schema=True,
-        prepare=prepare,
-        runtime=runtime,
-        finalize=finalize,
-    )
+    prepared_value = CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases")
+    expected_agent_result = CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",))
+    order: list[str] = []
+    prepare = RecordingPrepare(prepared_value, order)
+    runtime = RecordingRuntime(expected_agent_result.model_dump(), _workspace(tmp_path), order)
+    finalize = RecordingFinalize({"status": "missing-required-fields"}, order)
 
     with pytest.raises(ValidationError):
-        asyncio.run(executor.execute(validated_input, context=_context()))
+        asyncio.run(
+            _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
+                validated_input, _context()
+            )
+        )
 
-    assert runtime.seen_schema == CaseDesignAgentResult.model_json_schema()
-    assert finalize.seen is None
+    assert order == ["prepare", "runtime", "finalize"]
+    assert finalize.seen is not None
 
 
-def test_adapter_constructs_core_resolved_attempt_contract() -> None:
-    prepare = RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"))
-    runtime = RecordingRuntime(CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)))
+def test_raw_workspace_is_read_only(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    assert workspace.read_bytes("qa/proposal.md") == b"design"
+    with pytest.raises(AttributeError):
+        workspace.write_text("qa/proposal.md", "mutated")  # type: ignore[attr-defined]
+    assert not hasattr(workspace, "write_bytes")
+    assert workspace.read_text("qa/proposal.md") == "design"
+
+
+def test_raw_executor_resolves_single_graph_facing_task_contract(tmp_path: Path) -> None:
+    order: list[str] = []
+    prepare = RecordingPrepare(
+        CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"), order
+    )
+    runtime = RecordingRuntime(
+        CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)).model_dump(),
+        _workspace(tmp_path),
+        order,
+    )
     finalize = RecordingFinalize(
-        CaseDesignOutput(status="committed", output_files=("qa/changes/CH-1/proposal.md",), path="primary")
+        CaseDesignOutput(status="committed", output_files=("qa/changes/CH-1/proposal.md",), path="primary"),
+        order,
     )
-    executor = _executor(
-        requires_provider_schema=False,
-        provider_schema=False,
-        prepare=prepare,
-        runtime=runtime,
-        finalize=finalize,
-    )
+    executor = _executor(prepare=prepare, runtime=runtime, finalize=finalize)
 
     resolved = executor.resolve()
     again = resolve_contract(executor.to_task_contract(), executor=executor)
@@ -242,9 +280,10 @@ def test_adapter_constructs_core_resolved_attempt_contract() -> None:
     assert resolved.contract.input_model is CaseDesignInput
     assert resolved.contract.output_model is CaseDesignOutput
     assert resolved.contract.handler_id == "assurance.intake.case-design.prepare"
+    assert not hasattr(executor, "negotiate_provider_schema")
 
 
-def test_case_design_composite_attempt_preserves_both_legacy_prepare_consumers() -> None:
+def test_case_design_raw_attempt_preserves_both_legacy_prepare_consumers(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1", path="primary")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="primary", prompt="primary case-design")
     expected_agent_result = CaseDesignAgentResult(
@@ -255,18 +294,14 @@ def test_case_design_composite_attempt_preserves_both_legacy_prepare_consumers()
         output_files=expected_agent_result.output_files,
         path="primary",
     )
-    prepare = RecordingPrepare(prepared_value)
-    runtime = RecordingRuntime(expected_agent_result.model_dump())
-    finalize = RecordingFinalize(expected_output)
-    executor = _executor(
-        requires_provider_schema=False,
-        provider_schema=False,
-        prepare=prepare,
-        runtime=runtime,
-        finalize=finalize,
-    )
+    order: list[str] = []
+    prepare = RecordingPrepare(prepared_value, order)
+    runtime = RecordingRuntime(expected_agent_result.model_dump(), _workspace(tmp_path), order)
+    finalize = RecordingFinalize(expected_output, order)
 
-    output = asyncio.run(executor.execute(validated_input, _context()))
+    output = asyncio.run(
+        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(validated_input, _context())
+    )
 
     assert runtime.seen_prepared == prepared_value
     assert finalize.seen is not None
@@ -275,7 +310,7 @@ def test_case_design_composite_attempt_preserves_both_legacy_prepare_consumers()
     assert output == expected_output
 
 
-def test_case_design_repair_composite_attempt_preserves_both_legacy_prepare_consumers() -> None:
+def test_case_design_repair_raw_attempt_preserves_both_legacy_prepare_consumers(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1", path="repair")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="repair", prompt="repair case-design")
     expected_agent_result = CaseDesignAgentResult(output_files=("qa/changes/CH-1/cases/api/case.yaml",))
@@ -284,21 +319,18 @@ def test_case_design_repair_composite_attempt_preserves_both_legacy_prepare_cons
         output_files=expected_agent_result.output_files,
         path="repair",
     )
-    prepare = RecordingPrepare(prepared_value)
-    runtime = RecordingRuntime(expected_agent_result.model_dump())
-    finalize = RecordingFinalize(expected_output)
-    executor = _executor(
-        requires_provider_schema=False,
-        provider_schema=False,
-        prepare=prepare,
-        runtime=runtime,
-        finalize=finalize,
-    )
+    order: list[str] = []
+    prepare = RecordingPrepare(prepared_value, order)
+    runtime = RecordingRuntime(expected_agent_result.model_dump(), _workspace(tmp_path), order)
+    finalize = RecordingFinalize(expected_output, order)
 
-    output = asyncio.run(executor.execute(validated_input, _context()))
+    output = asyncio.run(
+        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(validated_input, _context())
+    )
 
     assert runtime.seen_prepared == prepared_value
     assert finalize.seen is not None
     assert finalize.seen.prepared == prepared_value
     assert finalize.seen.agent_result == expected_agent_result
+    assert finalize.seen.validated_input.path == "repair"
     assert output == expected_output

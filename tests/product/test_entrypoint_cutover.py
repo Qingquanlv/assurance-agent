@@ -186,7 +186,7 @@ def test_agent_using_names_stay_legacy_because_schema_capability_is_red() -> Non
     from assurance_product.agent_contracts import all_feature_agent_contracts
 
     contracts = all_feature_agent_contracts()
-    assert all(contract.requires_provider_schema for contract in contracts.values())
+    assert all(not hasattr(contract, "requires_provider_schema") for contract in contracts.values())
     assert len(contracts) == 33
     for name in _AGENT_USING:
         record = WAVE_RECORDS[name]

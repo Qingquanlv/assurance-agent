@@ -333,6 +333,7 @@ def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
     assert set(LEGACY_AGENT_PHASE_ALIASES) == set(expanded) == set(all_binding_ids())
     assert len(all_feature_agent_contracts()) == 33
     assert set(AGENT_RUNTIME_BINDINGS) == set(all_feature_agent_contracts())
+    assert all(not hasattr(contract, "requires_provider_schema") for contract in all_contracts)
     assert all(
         "opencode" not in json.dumps(contract.canonical_projection()).lower() for contract in all_contracts
     )

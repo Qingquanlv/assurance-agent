@@ -50,7 +50,6 @@ def _job(
         input_model=input_model,
         agent_result_model=result_model,
         output_model=output_model,
-        requires_provider_schema=True,
         resources=ResourceClaimTemplate(
             parameters={"change_id": "/workspace/scope_id"},
             reads=("qa",),

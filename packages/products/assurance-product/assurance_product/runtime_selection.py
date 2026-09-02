@@ -127,13 +127,7 @@ def validate_entrypoint_runtime_cutover(mapping: Mapping[str, str]) -> None:
 
 
 def entrypoint_requires_provider_schema(entrypoint: str) -> bool:
-    from assurance_product.agent_contracts import all_feature_agent_contracts
-
-    contracts = all_feature_agent_contracts()
-    for contract_id in ENTRYPOINT_AGENT_CONTRACT_IDS[entrypoint]:
-        contract = contracts.get(contract_id)
-        if contract is not None and contract.requires_provider_schema:
-            return True
+    del entrypoint
     return False
 
 

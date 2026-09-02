@@ -93,7 +93,7 @@ async def run_finalize(
 
 def fake_agent_result(structured_result: JSONValue) -> AgentRunResult:
     return AgentRunResult(
-        structured_result=structured_result,
+        result_payload=structured_result,
         result_digest=canonical_digest(structured_result),
         evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
         adapter_id="test.fake",

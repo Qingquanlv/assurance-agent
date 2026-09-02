@@ -1045,10 +1045,8 @@ def _advertised_binding_capabilities(composition: object) -> AgentRuntimeCapabil
 
 
 def _contracts_require_provider_schema(composition: object) -> bool:
-    from assurance_product.agent_contracts import all_feature_agent_contracts
-
     del composition
-    return any(contract.requires_provider_schema for contract in all_feature_agent_contracts().values())
+    return False
 
 
 def _bind_revision(

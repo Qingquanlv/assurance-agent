@@ -1,6 +1,8 @@
 from agent_runtime_contracts.attempt_executor import (
-    CompositeAttemptExecutor,
-    TypedPhaseBundle,
+    RawAgentRuntimeOutcome,
+    RawFinalizeBundle,
+    ReadOnlyRawWorkspace,
+    ResolvedRawAgentExecutor,
 )
 from agent_runtime_contracts.execution_contract import AgentExecutionContract, expand_agent_job_slots
 from agent_runtime_contracts.models import (
@@ -15,6 +17,8 @@ from agent_runtime_contracts.runtime_binding import (
     AgentRuntimeBinding,
     AgentRuntimeCapabilities,
     AgentRuntimePolicy,
+    RAW_AGENT_RUNTIME_BINDING_SCHEMA_VERSION,
+    RawAgentRuntimeBindingProjectionV1,
 )
 from agent_runtime_contracts.schema import (
     bound_redacted_diagnostics,
@@ -33,12 +37,16 @@ __all__ = [
     "AgentRuntimeBinding",
     "AgentRuntimeCapabilities",
     "AgentRuntimePolicy",
+    "RAW_AGENT_RUNTIME_BINDING_SCHEMA_VERSION",
+    "RawAgentRuntimeBindingProjectionV1",
     "AgentWorkspaceV1",
-    "CompositeAttemptExecutor",
     "FrozenExecutionSelection",
     "InstructionPart",
+    "RawAgentRuntimeOutcome",
+    "RawFinalizeBundle",
+    "ReadOnlyRawWorkspace",
+    "ResolvedRawAgentExecutor",
     "ResultContract",
-    "TypedPhaseBundle",
     "bound_redacted_diagnostics",
     "canonical_digest",
     "canonical_json_bytes",

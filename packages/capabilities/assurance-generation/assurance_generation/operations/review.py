@@ -86,7 +86,7 @@ class PlanReviewFinalizeHandler:
             payload = AgentFinalizeInputV1.model_validate(stripped)
             try:
                 document = PlanReviewAuthoring.model_validate(
-                    thaw_json(payload.agent_result.structured_result),
+                    thaw_json(payload.agent_result.result_payload),
                     context={"capability_leafs": leafs_of(payload.capability_leafs)},
                 )
             except ValidationError as error:

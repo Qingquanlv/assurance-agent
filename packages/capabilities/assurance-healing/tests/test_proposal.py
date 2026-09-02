@@ -157,7 +157,7 @@ def fake_agent_result(structured: dict[str, Any], **extra: Any) -> dict[str, Any
 
     payload = cast(JSONValue, structured)
     result = AgentRunResult(
-        structured_result=payload,
+        result_payload=payload,
         result_digest=canonical_digest(payload),
         evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
         adapter_id="test.fake",
@@ -360,7 +360,7 @@ async def test_coverage_repair_prepare_and_finalize(tmp_path: Path) -> None:
 
     payload = cast(JSONValue, summary)
     result = AgentRunResult(
-        structured_result=payload,
+        result_payload=payload,
         result_digest=canonical_digest(payload),
         evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
         adapter_id="test.fake",
@@ -423,7 +423,7 @@ async def test_coverage_repair_finalize_rejects_unknown_locator(tmp_path: Path) 
 
     payload = cast(JSONValue, summary)
     result = AgentRunResult(
-        structured_result=payload,
+        result_payload=payload,
         result_digest=canonical_digest(payload),
         evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
         adapter_id="test.fake",

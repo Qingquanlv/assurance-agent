@@ -79,7 +79,7 @@ def result_contract(schema_id: str, relative: str) -> ResultContract:
     return ResultContract(
         schema_id=schema_id,
         schema_digest=canonical_digest(payload),
-        extraction_mode="structured",
+        delivery_mode="assistant_json_local_v1",
         schema_document=payload,
     )
 
@@ -242,7 +242,7 @@ class FixProposalFinalizeHandler:
                 raise OutputError(f"unknown capability: {unknown[0]}")
             try:
                 proposal = FixProposalResultV1.model_validate(
-                    _structured(payload.agent_result.structured_result)
+                    _structured(payload.agent_result.result_payload)
                 )
             except ValidationError as error:
                 raise OutputError(str(error)) from error
@@ -304,7 +304,7 @@ class CoverageRepairFinalizeHandler:
                 raise InputError("finalize digests do not match the locked prepare payload")
             try:
                 summary = CoverageRepairApplySummary.model_validate(
-                    _structured(payload.agent_result.structured_result)
+                    _structured(payload.agent_result.result_payload)
                 )
             except ValidationError as error:
                 raise OutputError(str(error)) from error

@@ -38,6 +38,7 @@ _ALLOWED_SCHEMA_KEYS = frozenset(
         "title",
         "description",
         "default",
+        "format",
         "discriminator",
         "prompt_notes",
     }
