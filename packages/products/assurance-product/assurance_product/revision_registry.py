@@ -418,9 +418,6 @@ def _legacy_drain_status(workspace: ChangeWorkspace, invocation_id: str) -> str:
         authenticate_invocation_lock_v2(lock_path.read_bytes())
     except (LegacyEvidenceError, OSError, ValueError):
         return "unreadable"
-    overlay = _leftover_status_overlay(workspace)
-    if overlay is not None:
-        return overlay
     ledger_root = invocation / "ledger"
     try:
         envelopes = read_legacy_ledger(ledger_root)
@@ -443,24 +440,6 @@ def _legacy_drain_status(workspace: ChangeWorkspace, invocation_id: str) -> str:
     if projection.status == "stopped":
         return "stopped"
     return "running"
-
-
-def _leftover_status_overlay(workspace: ChangeWorkspace) -> str | None:
-    path = workspace.paths.change_root / "status.json"
-    if not path.is_file() or path.is_symlink():
-        return None
-    try:
-        payload = json.loads(path.read_bytes())
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    publication = payload.get("publication")
-    if isinstance(publication, dict) and publication.get("status") == "drifted":
-        return "publication-indeterminate"
-    if payload.get("status") == "blocked":
-        return "blocked"
-    return None
 
 
 def _module_yaml_paths() -> tuple[Path, ...]:
@@ -513,7 +492,7 @@ def _cited_join_test_status(graph_id: str, node_id: str) -> str:
     del node_id
     path = _join_test_path(graph_id)
     if not path.is_file():
-        return "passed"
+        return "missing"
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError):
@@ -523,7 +502,7 @@ def _cited_join_test_status(graph_id: str, node_id: str) -> str:
             if _function_is_xfailed_or_waived(node):
                 return "xfailed"
             return "passed"
-    return "passed"
+    return "missing"
 
 
 def _live_join_any_statuses() -> dict[str, str]:

@@ -21,7 +21,7 @@ from graph_engine.runtime.events import (
     InvocationFinished,
     InvocationStarted,
 )
-from graph_engine.runtime.ledger import Ledger
+from graph_engine.runtime.ledger import Ledger, LedgerPublicationIndeterminate
 from graph_engine.runtime.models import fold_events
 from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
 
@@ -120,6 +120,15 @@ def test_legacy_ledger_read_and_fold_match_original(tmp_path: Path) -> None:
     assert projection == fold_events(envelopes)
     assert projection.status == "succeeded"
     assert projection.invocation_id == events[0].invocation_id
+
+
+def test_leftover_pending_batch_is_publication_indeterminate(tmp_path: Path) -> None:
+    started = _started()
+    ledger = Ledger(tmp_path / "ledger")
+    ledger.append_batch((started,), expected_next_seq=1)
+    (tmp_path / "ledger" / ".pending-drain.json").write_text("[]\n", encoding="utf-8")
+    with pytest.raises(LedgerPublicationIndeterminate, match="indeterminate"):
+        read_legacy_ledger(tmp_path / "ledger")
 
 
 def test_tampered_legacy_ledger_is_rejected(tmp_path: Path) -> None:

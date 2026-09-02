@@ -7,7 +7,7 @@ from pathlib import Path
 from graph_engine.composition import InvocationLock
 from graph_engine.errors import GraphEngineError
 from graph_engine.runtime.events import EventEnvelope
-from graph_engine.runtime.ledger import Ledger
+from graph_engine.runtime.ledger import Ledger, LedgerPublicationIndeterminate
 from graph_engine.runtime.models import InvocationProjection, fold_events
 
 
@@ -37,6 +37,15 @@ def authenticate_invocation_lock_v2(raw: bytes) -> InvocationLock:
 
 def read_legacy_ledger(root: Path) -> tuple[EventEnvelope, ...]:
     """Read leftover ledger batches without appending or reconciling."""
+    if root.is_dir():
+        try:
+            names = [name for name in root.iterdir() if name.name.startswith(".pending-")]
+        except OSError as error:
+            raise LedgerPublicationIndeterminate(
+                "leftover ledger publication outcome is indeterminate"
+            ) from error
+        if any(path.is_file() and not path.is_symlink() for path in names):
+            raise LedgerPublicationIndeterminate("leftover ledger publication outcome is indeterminate")
     return Ledger(root).read_all()
 
 

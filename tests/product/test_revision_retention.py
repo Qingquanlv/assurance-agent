@@ -7,12 +7,19 @@ import pytest
 from graph_engine.boot.graph_revision import GraphRevision
 
 from assurance_product.change_workspace import ChangeWorkspace
-from assurance_product.revision_registry import RevisionRegistry, RevisionRegistryError
+from assurance_product.product import resolve_assurance_composition
+from assurance_product.revision_registry import (
+    RevisionRegistry,
+    RevisionRegistryError,
+    authorize_legacy_deletion,
+    collect_drain_evidence,
+)
 from assurance_product.runtime_selection import (
     LangGraphRuntimeRecord,
     complete_initialized,
     write_initializing,
 )
+from tests.product.composition_harness import request_for
 
 
 def _workspace(tmp_path: Path) -> ChangeWorkspace:
@@ -220,15 +227,16 @@ def test_resume_file_asserts_revision_before_opening_ports(tmp_path: Path, monke
     assert order == ["assert"]
 
 
-def test_zero_legacy_drain_does_not_retire_pre_closure_langgraph_revision(tmp_path: Path) -> None:
-    from assurance_product.revision_registry import authorize_legacy_deletion, collect_drain_evidence
-
+def test_zero_legacy_drain_does_not_retire_pre_closure_langgraph_revision(
+    tmp_path: Path, installed_sources
+) -> None:
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     workspace = _workspace(tmp_path)
     registry = RevisionRegistry(workspace)
     revision = _revision(lock="a" * 64)
     registry.remember(revision)
     registry.bind("inv-lg-pre-closure", runtime="langgraph-v1", revision_id=revision.revision_id)
-    result = authorize_legacy_deletion(workspace, evidence=collect_drain_evidence())
+    result = authorize_legacy_deletion(workspace, evidence=collect_drain_evidence(composition))
     assert result.authorized is True
     assert result.active_legacy == 0
     with pytest.raises(RevisionRegistryError, match="resumable Invocation"):

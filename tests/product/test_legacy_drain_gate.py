@@ -55,7 +55,6 @@ _GOLDEN_LOCK = (
 )
 _ACTIVE_STATES = (
     "running",
-    "blocked",
     "interrupted",
     "stopped",
     "publication-indeterminate",
@@ -159,35 +158,9 @@ def _events_for_status(invocation_id: str, status: str) -> tuple[object, ...]:
             TaskAttemptStopped(activation_id="act-1", attempt=1, reason="stop"),
             InvocationFinished(invocation_id=invocation_id, status="stopped"),
         )
-    if status in {"blocked", "publication-indeterminate"}:
+    if status == "publication-indeterminate":
         return (started, graph_started)
     raise ValueError(f"unsupported leftover status plant: {status}")
-
-
-def _write_leftover_status(workspace: ChangeWorkspace, invocation_id: str, *, status: str) -> None:
-    payload: dict[str, object] = {
-        "schema_version": "1",
-        "invocation_id": invocation_id,
-        "lock_digest": _lock_digest(),
-        "root_input_digest": empty_invocation_seed().root_input_digest,
-        "status": "blocked" if status == "blocked" else "running",
-        "entrypoint": "archive",
-        "graph_hierarchy": (),
-        "node_states": (),
-        "selected_test_families": (),
-        "coverage_progress": None,
-        "durable_effects": (),
-        "adapter_evidence": (),
-        "pending_interrupt": None,
-        "terminal_reason": None,
-        "change": {"change_id": workspace.paths.change_root.name, "state": "running"},
-        "apply": {"manifest_digest": None, "file_count": 0},
-        "publication": {"status": "drifted" if status == "publication-indeterminate" else "not_ready"},
-    }
-    (workspace.paths.change_root / "status.json").write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
 
 
 def _write_legacy(
@@ -234,8 +207,8 @@ def _write_legacy(
             _events_for_status(invocation_id, status),  # type: ignore[arg-type]
             expected_next_seq=1,
         )
-    if status in {"blocked", "publication-indeterminate"}:
-        _write_leftover_status(workspace, invocation_id, status=status)
+    if status == "publication-indeterminate":
+        (invocation / "ledger" / ".pending-drain.json").write_text("[]\n", encoding="utf-8")
     if sidecar_status is not None:
         (invocation / "legacy-drain.json").write_text(
             json.dumps({"status": sidecar_status}, sort_keys=True) + "\n",
@@ -311,11 +284,59 @@ def test_operator_terminal_record_clears_stopped_legacy(tmp_path: Path, live_com
     )
 
 
+def test_operator_terminal_record_clears_running_leftover_without_change_root_status(
+    tmp_path: Path, live_composition
+) -> None:
+    workspace = _workspace(tmp_path)
+    _write_legacy(workspace, "inv-running-cleared", status="running")
+    assert not (workspace.paths.change_root / "status.json").exists()
+    with pytest.raises(DrainAuthorizationError, match="running"):
+        authorize_legacy_deletion(workspace, evidence=_green_evidence(live_composition))
+    authorize_legacy_deletion(
+        workspace,
+        evidence=_green_evidence(live_composition),
+        operator_records=(_operator_record("inv-running-cleared"),),
+    )
+
+
 def test_succeeded_leftover_ledger_does_not_block_authorization(tmp_path: Path, live_composition) -> None:
     workspace = _workspace(tmp_path)
     _write_legacy(workspace, "inv-succeeded-fold", status="completed")
     sidecar = workspace.paths.runtime_root / "invocations" / "inv-succeeded-fold" / "legacy-drain.json"
     assert not sidecar.exists()
+    result = authorize_legacy_deletion(workspace, evidence=_green_evidence(live_composition))
+    assert result.authorized is True
+    assert result.active_legacy == 0
+
+
+@pytest.mark.parametrize(
+    "status_payload",
+    (
+        {"status": "blocked", "publication": {"status": "not_ready"}},
+        {"status": "running", "publication": {"status": "drifted"}},
+    ),
+    ids=("blocked", "publication-drifted"),
+)
+def test_succeeded_leftover_ledger_authorizes_when_change_root_status_json_is_blocked_or_drifted(
+    tmp_path: Path, live_composition, status_payload: dict[str, object]
+) -> None:
+    workspace = _workspace(tmp_path)
+    invocation_id = "inv-succeeded-vs-change-status"
+    _write_legacy(workspace, invocation_id, status="completed")
+    (workspace.paths.change_root / "status.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "invocation_id": "inv-current-langgraph",
+                "status": status_payload["status"],
+                "publication": status_payload["publication"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     result = authorize_legacy_deletion(workspace, evidence=_green_evidence(live_composition))
     assert result.authorized is True
     assert result.active_legacy == 0
@@ -433,6 +454,34 @@ def test_checkpoint_r_sha_is_exact_released_t5d(tmp_path: Path, live_composition
     assert evidence.candidate_sha == _T5D_RELEASED_SHA
     result = authorize_legacy_deletion(_workspace(tmp_path), evidence=evidence)
     assert result.authorized is True
+
+
+def test_cited_join_test_status_is_missing_when_file_or_trigger_absent(tmp_path: Path, monkeypatch) -> None:
+    from assurance_product.revision_registry import _cited_join_test_status
+
+    missing = tmp_path / "absent_join_test.py"
+    monkeypatch.setattr(
+        "assurance_product.revision_registry._join_test_path",
+        lambda _graph_id: missing,
+    )
+    assert (
+        _cited_join_test_status("assurance.product.workflow.graph.product-execute", "failed-join")
+        == "missing"
+    )
+    missing.write_text("def test_other():\n    return None\n", encoding="utf-8")
+    assert (
+        _cited_join_test_status("assurance.product.workflow.graph.product-execute", "failed-join")
+        == "missing"
+    )
+
+
+def test_drain_scan_does_not_read_change_root_status_json() -> None:
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "packages/products/assurance-product/assurance_product/revision_registry.py"
+    ).read_text(encoding="utf-8")
+    assert "_leftover_status_overlay" not in source
+    assert 'change_root / "status.json"' not in source
 
 
 def test_validator_parity_does_not_use_file_substring_waiver() -> None:
