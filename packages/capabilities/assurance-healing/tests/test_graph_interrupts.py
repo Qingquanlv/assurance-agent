@@ -18,7 +18,7 @@ from assurance_healing.graphs.state import HealingState
 from graph_engine.testing import GraphHarness, committed
 from graph_engine.testing.graph_harness import _prepare_anchored_backend
 
-from test_graph_factory import (  # type: ignore[import-not-found]
+from test_healing_graph_factory import (  # type: ignore[import-not-found]
     EFFECT_IDS,
     coverage_agent_output,
     coverage_graph_input,

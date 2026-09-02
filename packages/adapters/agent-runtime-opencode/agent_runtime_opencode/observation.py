@@ -363,7 +363,10 @@ def classify_provider_state(
 
 
 _SUCCESS_FINISH_REASONS = frozenset({"stop", "end-turn"})
-_RESULT_PART_TYPES = frozenset({"text", "step-start", "step-finish", "patch"})
+# `reasoning` carries model deliberation rather than response content, and providers
+# emit it alongside the final text of the same message. Content-bearing part types such
+# as `file` stay forbidden: they would mean the terminal response is not a lone JSON object.
+_RESULT_PART_TYPES = frozenset({"text", "step-start", "step-finish", "patch", "reasoning"})
 
 
 def parse_closed_terminal_result(messages: Sequence[object]) -> dict[str, Any]:
@@ -451,7 +454,7 @@ def _parse_result_bearing_message(message: Mapping[str, object]) -> dict[str, An
             if part.get("reason") not in _SUCCESS_FINISH_REASONS:
                 raise ValueError("step-finish is not successful")
             continue
-        if kind == "patch":
+        if kind in {"patch", "reasoning"}:
             continue
         text = part.get("text")
         if not isinstance(text, str) or not text.strip():
@@ -539,12 +542,17 @@ def _is_identity_bearing_name(name: str | None) -> bool:
 
 
 def _idle_from_status_map(status_map: object, session_id: str) -> bool:
+    """A session is idle unless the provider is actively reporting it busy.
+
+    OpenCode drops a session from the status map once its loop finishes rather than
+    reporting an explicit idle record, so absence has to count as idle.
+    """
     if not isinstance(status_map, dict):
         return False
     record = status_map.get(session_id)
     if not isinstance(record, dict):
-        return False
-    return record.get("type") == "idle"
+        return True
+    return record.get("type") != "busy"
 
 
 def _has_open_tool_work(messages: Sequence[object]) -> bool:

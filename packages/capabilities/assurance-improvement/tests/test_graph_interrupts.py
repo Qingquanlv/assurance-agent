@@ -25,7 +25,7 @@ from test_graph_delivery import (  # type: ignore[import-not-found]
     evaluate_receipt,
     human_review_output,
 )
-from test_graph_factory import (  # type: ignore[import-not-found]
+from test_improvement_graph_factory import (  # type: ignore[import-not-found]
     EFFECT_IDS,
     improvement_contracts,
 )

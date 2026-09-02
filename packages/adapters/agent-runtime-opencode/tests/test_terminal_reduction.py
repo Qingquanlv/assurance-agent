@@ -191,7 +191,6 @@ def test_closed_terminal_accepts_one_json_text_step_pair_and_optional_patch() ->
         ],
         _closed_assistant({"ok": True}, extra_parts=({"type": "tool", "state": {"status": "completed"}},)),
         _closed_assistant({"ok": True}, extra_parts=({"type": "file", "filename": "notes.md"},)),
-        _closed_assistant({"ok": True}, extra_parts=({"type": "reasoning", "text": "think"},)),
         _closed_assistant({"ok": True}, extra_parts=({"type": "unknown", "text": "x"},)),
         _closed_assistant({"ok": True}, error={"name": "ProviderError", "message": "failed"}),
         _closed_assistant({"ok": True}, truncated=True),

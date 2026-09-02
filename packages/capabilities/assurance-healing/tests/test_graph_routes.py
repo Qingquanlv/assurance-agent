@@ -27,7 +27,7 @@ from graph_engine.attempts.resolutions import ReceiptRef, RejectedTaskResult
 from graph_engine.stategraph.routing import AmbiguousRouteMatch, select_exclusive_route
 from graph_engine.testing import GraphHarness, committed
 
-from test_graph_factory import (  # type: ignore[import-not-found]
+from test_healing_graph_factory import (  # type: ignore[import-not-found]
     coverage_agent_output,
     coverage_graph_input,
     failure_agent_output,

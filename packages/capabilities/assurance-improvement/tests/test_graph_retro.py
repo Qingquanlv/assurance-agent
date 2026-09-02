@@ -33,7 +33,7 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     candidate_payload,
     improvement_projection,
 )
-from test_graph_factory import (  # type: ignore[import-not-found]
+from test_improvement_graph_factory import (  # type: ignore[import-not-found]
     TASK_COLLECT_ID,
     TASK_RECONCILE_ID,
     _RETRO_EVAL_ID,

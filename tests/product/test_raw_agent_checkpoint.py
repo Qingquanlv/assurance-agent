@@ -217,6 +217,50 @@ def _live_secret() -> bytes:
     return token.encode("utf-8")
 
 
+# Sessions never reach a closed terminal on older builds: the loop keeps emitting empty
+# assistant turns and the session stays busy, so the adapter only ever sees the horizon
+# expire. Verified broken on 1.18.4 and 1.18.11, verified closed on 1.18.26.
+_MIN_LIVE_OPENCODE_VERSION = (1, 18, 26)
+
+
+def _require_live_opencode_version(binary: str) -> tuple[int, ...]:
+    raw = subprocess.check_output([binary, "--version"], text=True).strip().splitlines()[-1]
+    version = tuple(int(part) for part in raw.strip().lstrip("v").split(".")[:3])
+    assert version >= _MIN_LIVE_OPENCODE_VERSION, (
+        f"live Checkpoint R needs OpenCode >= "
+        f"{'.'.join(str(part) for part in _MIN_LIVE_OPENCODE_VERSION)}; "
+        f"{binary} reports {raw}. Older builds never close the session loop and the row "
+        f"can only time out."
+    )
+    return version
+
+
+def _require_operator_file(variable: str, purpose: str) -> Path:
+    raw = os.environ.get(variable)
+    assert raw, (
+        f"live Checkpoint R needs {variable} to point at {purpose}; the loopback server runs "
+        f"under an isolated HOME/XDG root and cannot see the operator's own OpenCode config."
+    )
+    path = Path(raw).expanduser()
+    assert path.is_file(), f"{variable} does not point at a readable file: {path}"
+    return path
+
+
+def _operator_provider_config() -> dict[str, Any]:
+    path = _require_operator_file(
+        "AA_CHECKPOINT_R_PROVIDER_CONFIG",
+        "a JSON file holding the operator's OpenCode `provider` block",
+    )
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(document, dict) and isinstance(document.get("provider"), dict), (
+        f"{path} must be a JSON object carrying a `provider` object"
+    )
+    config: dict[str, Any] = {"provider": document["provider"]}
+    if isinstance(document.get("model"), str):
+        config["model"] = document["model"]
+    return config
+
+
 def _live_provider_model(*, provider: str, model: str) -> str:
     override = os.environ.get("OPENCODE_MODEL")
     if override:
@@ -356,35 +400,52 @@ def _assert_admission_is_raw(body: dict[str, Any]) -> None:
 
 
 @contextmanager
-def _direct_loopback_opencode_server(project_root: Path) -> Iterator[str]:
+def _direct_loopback_opencode_server(project_root: Path, state_root: Path) -> Iterator[str]:
     binary = shutil.which("opencode")
     assert binary is not None
+    _require_live_opencode_version(binary)
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
-    home = project_root / ".home"
-    home.mkdir()
-    xdg_config = project_root / ".xdg-config"
+    # The server's own database and logs must stay out of the scanned project, otherwise
+    # OpenCode folds them back into the prompt context and the exchange balloons past any
+    # sane response bound.
+    home = state_root / "home"
+    home.mkdir(parents=True)
+    xdg_config = state_root / "xdg-config"
+    xdg_data = state_root / "xdg-data"
     opencode_config = xdg_config / "opencode"
     opencode_config.mkdir(parents=True)
-    agent_config = json.dumps(
-        {
-            "agent": {
-                "assurance-v1-doc-author": {
-                    "description": "Checkpoint R live raw-agent probe",
-                    "mode": "all",
-                    "prompt": "Execute the supplied instructions and return exactly one JSON object.",
-                }
+    agents = {
+        "agent": {
+            "assurance-v1-doc-author": {
+                "description": "Checkpoint R live raw-agent probe",
+                "mode": "all",
+                "prompt": "Execute the supplied instructions and return exactly one JSON object.",
             }
         }
+    }
+    (opencode_config / "opencode.json").write_text(
+        json.dumps({**agents, **_operator_provider_config()}), encoding="utf-8"
     )
-    (opencode_config / "opencode.json").write_text(agent_config, encoding="utf-8")
-    (project_root / "opencode.json").write_text(agent_config, encoding="utf-8")
+    (project_root / "opencode.json").write_text(json.dumps(agents), encoding="utf-8")
+    auth_target = xdg_data / "opencode" / "auth.json"
+    auth_target.parent.mkdir(parents=True)
+    shutil.copyfile(
+        _require_operator_file(
+            "AA_CHECKPOINT_R_AUTH_FILE",
+            "the operator's OpenCode auth.json holding provider credentials",
+        ),
+        auth_target,
+    )
+    # Without a repository boundary OpenCode resolves the project root to "/" and walks the
+    # whole filesystem for context.
+    subprocess.run(["git", "init", "-q"], cwd=str(project_root), check=True)
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["XDG_CONFIG_HOME"] = str(xdg_config)
-    env["XDG_DATA_HOME"] = str(project_root / ".xdg-data")
+    env["XDG_DATA_HOME"] = str(xdg_data)
     env.pop("OPENCODE_SERVER_PASSWORD", None)
     proc = subprocess.Popen(
         [binary, "serve", "--port", str(port), "--hostname", "127.0.0.1"],
@@ -445,7 +506,7 @@ def _execute_live_cutover(
             "observation_horizon_seconds": 180,
             "poll_interval_seconds": 1,
             "cancel_timeout_seconds": 15,
-            "max_response_bytes": 65536,
+            "max_response_bytes": 262_144,
             "adapter_configuration_digest": _SHA,
         }
     )
@@ -502,7 +563,7 @@ def test_live_opencode_cutover_binding_records_checkpoint_r(
 
     project_root = tmp_path / "isolated"
     project_root.mkdir()
-    with _direct_loopback_opencode_server(project_root) as endpoint:
+    with _direct_loopback_opencode_server(project_root, tmp_path / "opencode-state") as endpoint:
         assert endpoint.startswith("http://127.0.0.1:")
         try:
             outcome, snapshot = _execute_live_cutover(

@@ -53,7 +53,7 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     IMPROVEMENT_ID,
     improvement_projection,
 )
-from test_graph_factory import (  # type: ignore[import-not-found]
+from test_improvement_graph_factory import (  # type: ignore[import-not-found]
     EFFECT_IDS,
     TASK_APPLY_ID,
     TASK_AUTO_REVIEW_ID,

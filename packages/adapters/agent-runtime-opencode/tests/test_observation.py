@@ -506,7 +506,7 @@ def test_intermediate_reasoning_then_closed_terminal_succeeds() -> None:
     )
 
 
-@pytest.mark.parametrize("kind", ["reasoning", "file", "unknown"])
+@pytest.mark.parametrize("kind", ["file", "unknown"])
 def test_forbidden_part_on_terminal_message_fails(kind: str) -> None:
     messages = [
         {
@@ -526,6 +526,66 @@ def test_forbidden_part_on_terminal_message_fails(kind: str) -> None:
     ]
     with pytest.raises(ValueError, match="forbidden terminal part type"):
         parse_closed_terminal_result(messages)
+
+
+def _live_shaped_terminal(text: str) -> list[dict[str, object]]:
+    return [
+        {
+            "info": {"id": "msg_user", "role": "user"},
+            "parts": [{"type": "text", "text": "write the result"}],
+        },
+        {
+            "info": {
+                "id": "msg_result",
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "reasoning", "text": "The user wants exactly one JSON object."},
+                {"type": "text", "text": text},
+                {"type": "step-finish", "reason": "stop"},
+                {"type": "patch"},
+            ],
+        },
+    ]
+
+
+def test_reasoning_beside_the_terminal_text_is_a_closed_result() -> None:
+    messages = _live_shaped_terminal('{"ok": true}')
+
+    assert parse_closed_terminal_result(messages) == {"ok": True}
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "idle"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "succeeded"
+    )
+
+
+def test_session_absent_from_status_map_counts_as_idle() -> None:
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={},
+            session={"id": "ses_live"},
+            messages=_live_shaped_terminal('{"ok": true}'),
+        )
+        == "succeeded"
+    )
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={},
+            session={"id": "ses_live"},
+            messages=_live_shaped_terminal('{"ok": true} and some commentary'),
+        )
+        == "failed"
+    )
 
 
 def test_busy_session_with_closed_result_is_succeeded() -> None:
