@@ -168,7 +168,7 @@ def test_export_uses_project_dir_and_change(cli_runner, tmp_path: Path):
     assert document["files"]
 
 
-def test_start_writes_legacy_selection_record_by_default(
+def test_start_writes_langgraph_selection_record_by_default(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ):
     from assurance_product.cli import app
@@ -180,17 +180,17 @@ def test_start_writes_legacy_selection_record_by_default(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
         composition=composition,
-        invocation_id="inv-legacy-marker-001",
+        invocation_id="inv-langgraph-marker-001",
         entrypoint="full",
         families=("api",),
     )
     result = cli_runner.invoke(app, ["start", *args])
     assert result.exit_code == 0, result.output
     selection = (
-        _change_runtime(project_dir, change_id) / "langgraph" / "selections" / "inv-legacy-marker-001.json"
+        _change_runtime(project_dir, change_id) / "langgraph" / "selections" / "inv-langgraph-marker-001.json"
     )
     document = parse_json_output(selection.read_text(encoding="utf-8"))
-    assert document["runtime"] == "legacy-v2"
+    assert document["runtime"] == "langgraph-v1"
     assert document["phase"] == "initialized"
 
 

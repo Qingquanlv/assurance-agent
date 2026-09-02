@@ -249,23 +249,9 @@ def test_production_cutover_is_not_mutated_by_shadow() -> None:
     frozen = dict(ENTRYPOINT_RUNTIME_CUTOVER)
     flipped = {name for name, kind in frozen.items() if kind == "langgraph-v1"}
     leftover = {name for name, kind in frozen.items() if kind == "legacy-v2"}
-    assert flipped == {
-        "archive",
-        "case",
-        "execute",
-        "improvement-apply",
-        "improvement-evaluate",
-        "improvement-export",
-        "improvement-review",
-        "improvement-rollback",
-        "intake",
-        "issue-analyze",
-        "issue-reconcile",
-        "issue-review",
-        "retro",
-    }
-    assert leftover == {"full"}
-    assert all(frozen[name] == "legacy-v2" for name in leftover)
+    assert flipped == set(PRODUCT_ENTRYPOINTS)
+    assert leftover == set()
+    assert all(frozen[name] == "langgraph-v1" for name in flipped)
 
 
 def test_delivery_kind_is_not_a_seventh_effect() -> None:

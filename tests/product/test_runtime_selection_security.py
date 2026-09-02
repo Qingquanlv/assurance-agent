@@ -180,7 +180,6 @@ def test_both_runtime_artifacts_fail_closed(
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_selection import use_test_runtime_selector
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
@@ -194,11 +193,11 @@ def test_both_runtime_artifacts_fail_closed(
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
-    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
-    path = _selection_path(project_dir, change_id, "inv-both-runtime")
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["runtime"] = "langgraph-v1"
-    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    leftover_lock = (
+        _runtime_root(project_dir, change_id) / "invocations" / "inv-both-runtime" / "invocation.lock.json"
+    )
+    leftover_lock.parent.mkdir(parents=True, exist_ok=True)
+    leftover_lock.write_text("{}\n", encoding="utf-8")
     status = cli_runner.invoke(
         app,
         [

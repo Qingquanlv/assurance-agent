@@ -52,29 +52,15 @@ def _load_selection(path: Path) -> dict[str, object]:
     return payload
 
 
-def test_entrypoint_runtime_cutover_flips_thirteen_names_and_leaves_full() -> None:
+def test_entrypoint_runtime_cutover_flips_all_fourteen_names() -> None:
     from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS
 
     assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
     assert len(ENTRYPOINT_RUNTIME_CUTOVER) == 14
     flipped = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "langgraph-v1"}
     leftover = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "legacy-v2"}
-    assert flipped == {
-        "archive",
-        "case",
-        "execute",
-        "improvement-apply",
-        "improvement-evaluate",
-        "improvement-export",
-        "improvement-review",
-        "improvement-rollback",
-        "intake",
-        "issue-analyze",
-        "issue-reconcile",
-        "issue-review",
-        "retro",
-    }
-    assert leftover == {"full"}
+    assert flipped == set(PRODUCT_ENTRYPOINTS)
+    assert leftover == set()
 
 
 def test_cli_environment_and_config_cannot_override_cutover(
@@ -100,16 +86,16 @@ def test_cli_environment_and_config_cannot_override_cutover(
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
     record = _load_selection(_selection_path(project_dir, change_id, "inv-cutover-override-001"))
-    assert record["runtime"] == "legacy-v2"
+    assert record["runtime"] == "langgraph-v1"
     assert record["phase"] == "initialized"
 
 
-def test_production_start_writes_initialized_legacy_selection(
+def test_production_start_writes_initialized_langgraph_selection(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_selection import LegacyRuntimeRecord
+    from assurance_product.runtime_selection import LangGraphRuntimeRecord
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
@@ -117,16 +103,16 @@ def test_production_start_writes_initialized_legacy_selection(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
         composition=composition,
-        invocation_id="inv-select-legacy-001",
+        invocation_id="inv-select-langgraph-full-001",
         entrypoint="full",
         families=("api",),
     )
     result = cli_runner.invoke(app, ["start", *args])
     assert result.exit_code == 0, result.output
-    path = _selection_path(project_dir, change_id, "inv-select-legacy-001")
-    record = LegacyRuntimeRecord.model_validate_json(path.read_bytes())
+    path = _selection_path(project_dir, change_id, "inv-select-langgraph-full-001")
+    record = LangGraphRuntimeRecord.model_validate_json(path.read_bytes())
     assert record.phase == "initialized"
-    assert record.runtime == "legacy-v2"
+    assert record.runtime == "langgraph-v1"
     assert record.entrypoint == "full"
     assert len(record.root_input_digest) == 64
     assert len(record.identity_digest) == 64
