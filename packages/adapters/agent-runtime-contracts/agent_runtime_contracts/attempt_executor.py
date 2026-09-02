@@ -12,6 +12,7 @@ from graph_engine.attempts import (
     IndeterminateTaskResult,
     PermanentTaskFailure,
     ResolvedAttemptContract,
+    SystemReference,
     TaskAttemptContract,
     resolve_contract,
 )
@@ -29,6 +30,13 @@ _InputT_contra = TypeVar("_InputT_contra", bound=BaseModel, contravariant=True)
 _PreparedT_contra = TypeVar("_PreparedT_contra", contravariant=True)
 _PreparedT_co = TypeVar("_PreparedT_co", covariant=True)
 _OutputT_co = TypeVar("_OutputT_co", bound=BaseModel, covariant=True)
+
+
+def _unprovable_raw_admission(snapshot: object) -> bool:
+    reference = getattr(snapshot, "activity_reference", None)
+    if not isinstance(reference, dict) or not reference.get("session_id"):
+        return False
+    return reference.get("terminal_status") == "running"
 
 
 def _canonical_relative(path: str) -> bool:
@@ -158,6 +166,10 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         outcome = await runtime_reconcile(prepared, context, snapshot)
         if isinstance(outcome, (IndeterminateTaskResult, PermanentTaskFailure)):
             return outcome
+        if _unprovable_raw_admission(snapshot):
+            return IndeterminateTaskResult(
+                reconciliation=SystemReference(reference_id="unprovable-admission")
+            )
         return await self._finalize_outcome(validated_input, prepared, outcome, context)
 
     async def _finalize_outcome(

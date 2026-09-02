@@ -16,6 +16,9 @@ from agent_runtime_contracts import (
 )
 from agent_runtime_contracts.execution_contract import AgentExecutionContract
 from agent_runtime_contracts.schema import canonical_digest, thaw_json
+from agent_runtime_opencode.observation import parse_closed_terminal_result
+from agent_runtime_opencode.redaction import reject_canaries_in_payload, scan_for_canaries
+from agent_runtime_opencode.workspace_binding import reject_isolated_root_discovery
 from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import AttemptRetryPolicy, AttemptTimeoutPolicy
 from graph_engine.attempts.events import ActivityBound
@@ -79,6 +82,31 @@ _MODEL = "fixture-model"
 _SESSION = "ses_raw_1"
 _MESSAGE = "msg_raw_1"
 _EVIDENCE = "c" * 64
+_UNPROVABLE_CUT = "after_session_create_before_prompt_ack"
+_COMMITTED_CRASH_CUTS = (
+    "before_session_create",
+    "after_prompt_ack",
+    "after_terminal_before_finalize",
+    "after_finalize_before_seal",
+    "before_durable_prepare",
+    "after_prepare_before_promotion",
+)
+_MALFORMED_TERMINAL = (
+    {
+        "info": {
+            "id": "asst-1",
+            "role": "assistant",
+            "time": {"created": 1, "completed": 2},
+            "finish": "stop",
+        },
+        "parts": [
+            {"type": "step-start"},
+            {"type": "text", "text": '{"status":"ok"}'},
+            {"type": "tool", "state": {"status": "completed"}},
+            {"type": "step-finish", "reason": "stop"},
+        ],
+    },
+)
 
 
 class _RecordingWorkspace:
@@ -269,6 +297,10 @@ class LiveRawRuntime:
             or reference.get("model") != _MODEL
         ):
             return IndeterminateTaskResult(reconciliation=SystemReference(reference_id="identity-drift"))
+        if reference.get("terminal_status") == "running":
+            return IndeterminateTaskResult(
+                reconciliation=SystemReference(reference_id="unprovable-admission")
+            )
         self._apply_fault()
         if self.fault != "result_file_disagreement":
             self._write_authorized()
@@ -294,16 +326,21 @@ class LiveRawRuntime:
             return
         if self.fault == "project_instruction_discovery":
             (binding.write_root / "AGENTS.md").write_text("follow project instructions")
-            raise ValueError("isolated execution root must not contain AGENTS.md")
+            reject_isolated_root_discovery(binding.write_root)
+            return
         if self.fault == "secret_leakage":
-            leaked = ActivityBound(
-                activity_id="leaked",
-                reference={"token": self.secret, "transcript": "x" * 100},
-                reference_digest=canonical_digest({"token": self.secret}),
+            leaked = {"token": self.secret, "transcript": "x" * 100}
+            (binding.write_root / "out.txt").write_text(self.secret)
+            reject_canaries_in_payload(leaked, canaries=(self.secret,))
+            scan_for_canaries(
+                texts=(str(leaked),),
+                roots=(binding.write_root,),
+                canaries=(self.secret.encode("utf-8"),),
             )
-            raise AssertionError(f"secrets must not be journaled: {leaked}")
+            return
         if self.fault == "malformed_terminal":
-            raise ValueError("malformed terminal parts")
+            parse_closed_terminal_result(_MALFORMED_TERMINAL)
+            return
 
 
 def _contract() -> AgentExecutionContract[RawInput, RawAgentResult, RawOutput]:
@@ -395,7 +432,7 @@ def _build(
     "cut",
     [
         "before_session_create",
-        "after_session_create_before_prompt_ack",
+        _UNPROVABLE_CUT,
         "after_prompt_ack",
         "after_terminal_before_finalize",
         "after_finalize_before_seal",
@@ -436,6 +473,30 @@ async def test_raw_crash_windows_adopt_recorded_session_without_second_prompt(
             )
         runtime.cut = None
         recovered = await kernel.execute_or_recover(key, resolved, validated, context, transaction_cut=None)
+        snapshot = await kernel.journal.load(key)
+        assert snapshot is not None
+        reference = snapshot.activity_reference
+        assert isinstance(reference, dict)
+        assert reference["session_id"] == _SESSION
+        assert reference["adapter"] == _ADAPTER
+        assert reference["provider"] == _PROVIDER
+        assert reference["model"] == _MODEL
+        if cut == _UNPROVABLE_CUT:
+            assert isinstance(recovered, IndeterminateTaskResult)
+            assert runtime.session_creates == 1
+            assert runtime.prompt_admissions == 0
+            assert runtime.reconciles == 1
+            assert workspace.promotions == 0
+            assert snapshot.terminal is None
+            assert reference["terminal_status"] == "running"
+            assert not (project / "out.txt").exists()
+            assert finalize.calls == 0
+            replay = await kernel.execute_or_recover(key, resolved, validated, context)
+            assert isinstance(replay, IndeterminateTaskResult)
+            assert runtime.session_creates == 1
+            assert runtime.prompt_admissions == 0
+            return
+        assert cut in _COMMITTED_CRASH_CUTS
         assert isinstance(recovered, CommittedTaskResult)
         assert recovered.output.status == "ok"
         assert runtime.session_creates <= 1
@@ -449,14 +510,6 @@ async def test_raw_crash_windows_adopt_recorded_session_without_second_prompt(
             "after_prepare_before_promotion",
         }:
             assert runtime.prompt_admissions == 1
-        snapshot = await kernel.journal.load(key)
-        assert snapshot is not None
-        reference = snapshot.activity_reference
-        assert isinstance(reference, dict)
-        assert reference["session_id"] == _SESSION
-        assert reference["adapter"] == _ADAPTER
-        assert reference["provider"] == _PROVIDER
-        assert reference["model"] == _MODEL
         assert snapshot.terminal is not None
         assert (project / "out.txt").read_bytes() == b"committed"
         assert workspace.promotions == 1
@@ -465,7 +518,7 @@ async def test_raw_crash_windows_adopt_recorded_session_without_second_prompt(
         assert replay.receipt == recovered.receipt
         assert runtime.session_creates <= 1
         assert runtime.prompt_admissions <= 1
-        assert finalize.calls == (1 if cut != "before_session_create" else 1)
+        assert finalize.calls == 1
     finally:
         store.close()
 
@@ -525,9 +578,13 @@ async def test_unprovable_admission_is_indeterminate_never_automatic_redispatch(
         with pytest.raises(TransactionCrash, match="after_session_create_before_prompt_ack"):
             await kernel.execute_or_recover(key, resolved, validated, context)
         runtime.cut = None
-        runtime.fault = "unprovable_admission"
         result = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(result, IndeterminateTaskResult)
+        assert runtime.session_creates == 1
+        assert runtime.prompt_admissions == 0
+        assert runtime.reconciles == 1
+        again = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(again, IndeterminateTaskResult)
         assert runtime.session_creates == 1
         assert runtime.prompt_admissions == 0
     finally:
@@ -540,6 +597,7 @@ async def test_unprovable_admission_is_indeterminate_never_automatic_redispatch(
         "unauthorized_write",
         "symlink_escape",
         "project_instruction_discovery",
+        "secret_leakage",
         "malformed_terminal",
         "result_file_disagreement",
     ],
@@ -560,6 +618,12 @@ async def test_security_failures_fail_before_promote(tmp_path: Path, fault: str)
             assert getattr(result, "writes_promoted", False) is False
         if fault != "result_file_disagreement":
             assert runtime.prompt_admissions <= 1
+        if fault == "secret_leakage":
+            snapshot = await kernel.journal.load(key)
+            assert snapshot is not None
+            encoded = str(snapshot.activity_reference) + str(snapshot.terminal)
+            assert _SECRET not in encoded
+            assert "transcript" not in str(snapshot.activity_reference)
     finally:
         store.close()
 
