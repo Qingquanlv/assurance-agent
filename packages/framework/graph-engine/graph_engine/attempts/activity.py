@@ -48,6 +48,7 @@ from graph_engine.attempts.host_protocol import (
     TaskHostExecuteCall,
     TaskHostReconcileCall,
 )
+from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.evidence.ledger import (
     Ledger,
     LedgerConflictError,
@@ -343,6 +344,9 @@ class JournalBackedTaskActivityPort:
         "_assert_live_fence",
         "_owner_loop",
         "_remaining_deadline",
+        "_expected_request_digest",
+        "_expected_product_lock_digest",
+        "_expected_handler_id",
     )
 
     def __init__(
@@ -355,15 +359,14 @@ class JournalBackedTaskActivityPort:
         assert_live_fence: Callable[[], Awaitable[None]],
         owner_loop: asyncio.AbstractEventLoop,
         remaining_deadline: float,
+        expected_request_digest: str | None = None,
+        expected_product_lock_digest: str | None = None,
+        expected_handler_id: str | None = None,
     ) -> None:
         if identity.activity_id is None:
             raise TaskActivityConflict("activity port requires an activity id")
         if identity.wire_schema_version != TASK_HOST_WIRE_SCHEMA_VERSION:
             raise TaskActivityConflict("activity rpc identity version is not current")
-        if attempt_key.digest != identity.attempt_key_digest:
-            raise TaskActivityConflict("attempt key digest mismatch")
-        if workspace_identity.identity_digest != identity.workspace_identity_digest:
-            raise TaskActivityConflict("workspace identity mismatch")
         if remaining_deadline <= 0:
             raise TaskActivityIndeterminate("activity journal deadline elapsed")
         self._journal = journal
@@ -373,6 +376,9 @@ class JournalBackedTaskActivityPort:
         self._assert_live_fence = assert_live_fence
         self._owner_loop = owner_loop
         self._remaining_deadline = remaining_deadline
+        self._expected_request_digest = expected_request_digest or identity.request_digest
+        self._expected_product_lock_digest = expected_product_lock_digest or identity.product_lock_digest
+        self._expected_handler_id = expected_handler_id or identity.handler_id
 
     @property
     def activity_id(self) -> str:
@@ -476,14 +482,34 @@ class JournalBackedTaskActivityPort:
         if snapshot is None:
             raise TaskActivityConflict("activity identity does not match the live attempt")
         identity = self._identity
+        if self._attempt_key.digest != identity.attempt_key_digest:
+            raise TaskActivityConflict("attempt key digest mismatch")
         if snapshot.attempt_key.digest != identity.attempt_key_digest:
             raise TaskActivityConflict("attempt key digest mismatch")
         if snapshot.authorization_id != identity.authorization_id:
             raise TaskActivityConflict("authorization id mismatch")
-        if snapshot.fencing_token > identity.fencing_token:
-            raise StaleFencingToken("fencing token is stale")
+        if snapshot.fencing_token != identity.fencing_token:
+            if snapshot.fencing_token > identity.fencing_token:
+                raise StaleFencingToken("fencing token is stale")
+            raise TaskActivityConflict("fencing token mismatch")
+        if identity.phase != "runtime":
+            raise TaskActivityConflict("activity phase mismatch")
+        if self._workspace_identity.identity_digest != identity.workspace_identity_digest:
+            raise TaskActivityConflict("workspace identity mismatch")
+        if identity.request_digest != self._expected_request_digest:
+            raise TaskActivityConflict("request digest mismatch")
         if snapshot.graph_revision != identity.graph_revision:
             raise TaskActivityConflict("graph revision mismatch")
+        if identity.product_lock_digest != self._expected_product_lock_digest:
+            raise TaskActivityConflict("product lock mismatch")
+        if identity.handler_id != self._expected_handler_id:
+            raise TaskActivityConflict("handler identity mismatch")
+        pinned = pinned_execution_host_lock()
+        if (
+            identity.host_implementation_id != pinned.implementation_id
+            or identity.host_implementation_digest != pinned.implementation_digest
+        ):
+            raise TaskActivityConflict("host implementation mismatch")
         if snapshot.invocation_id != identity.invocation_id:
             raise TaskActivityConflict("activity identity does not match the invocation")
         if snapshot.activity_id != identity.activity_id:
@@ -540,6 +566,9 @@ def journal_backed_activity_factory(
             assert_live_fence=assert_live_fence,
             owner_loop=owner_loop,
             remaining_deadline=remaining_deadline,
+            expected_request_digest=canonical_digest(cast(JSONValue, call.request.model_dump(mode="json"))),
+            expected_product_lock_digest=call.request.invocation.lock_digest,
+            expected_handler_id=call.request.capability_id,
         )
 
     return factory  # type: ignore[return-value]

@@ -27,7 +27,6 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
     DirectoryIdentity,
     InvocationMetadata,
@@ -43,6 +42,7 @@ from graph_engine.attempts.host_protocol import (
     TaskActivityRpcIdentity,
     TaskHostCallIdentity,
     TaskHostExecuteCall,
+    current_bound_identity,
 )
 from tests.agent_runtime.fakes import ConfinedTestHost
 
@@ -382,7 +382,22 @@ async def _dispatch_target(
         handlers={binding.target_capability_id: handler},
         store=SimpleNamespace(root=workspace.parent),  # type: ignore[arg-type]
     )
-    host_lock = pinned_execution_host_lock()
+    attempt_root = _attempt_root_descriptor(workspace)
+    bound = current_bound_identity(
+        attempt_key_digest=canonical_digest(
+            {
+                "attempt": request.attempt,
+                "invocation_id": request.invocation_id,
+                "task_id": request.task_id,
+            }
+        ),
+        authorization_id=canonical_digest({"authorization": request.invocation_id}),
+        workspace_identity_digest=attempt_root.workspace_identity.identity_digest,
+        request_digest=canonical_digest(request.model_dump(mode="json")),
+        graph_revision=canonical_digest({"composition": fixture.composition.digest}),
+        product_lock_digest=request.invocation.lock_digest,
+        handler_id=binding.target_capability_id,
+    )
     outcome = await host.execute(
         TaskHostExecuteCall(
             identity=TaskHostCallIdentity(
@@ -392,19 +407,19 @@ async def _dispatch_target(
                 attempt=1,
                 activity_id="fixture-activity",
                 operation="execute",
-                host_implementation_id=host_lock.implementation_id,
-                host_implementation_digest=host_lock.implementation_digest,
+                **bound,  # type: ignore[arg-type]
             ),
             capability_id=binding.target_capability_id,
             capability_entrypoint=binding.target_capability_id,
             request=request,
-            attempt_root=_attempt_root_descriptor(workspace),
+            attempt_root=attempt_root,
             activity_rpc=TaskActivityRpcIdentity(
                 invocation_id=request.invocation_id,
                 task_id=request.task_id,
                 activation_id="fixture-run",
                 attempt=1,
                 activity_id="fixture-activity",
+                **bound,  # type: ignore[arg-type]
             ),
             authorized_secret_handles=tuple(sorted(secrets)),
         )

@@ -23,8 +23,6 @@ from agent_runtime_contracts import (
     ResultContract,
 )
 from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes, thaw_json
-from agent_runtime_cursor import CursorAdapterConfig, CursorHandler
-from agent_runtime_cursor.handler import CursorDispatchIncomplete
 from agent_runtime_opencode import OpenCodeAdapterConfig, OpenCodeHandler
 from agent_runtime_opencode.discovery import OpenCodeDispatchIncomplete
 from graph_engine import ENGINE_API_VERSION
@@ -38,7 +36,6 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
     CommitValidator,
     DirectoryIdentity,
@@ -66,6 +63,7 @@ from graph_engine.attempts.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
     authorized_secret_port,
+    current_bound_identity,
 )
 from graph_engine.attempts.host_receipts import TerminalReceiptStore, prove_call_quiescent
 from graph_engine.attempts.activity import Ledger
@@ -512,6 +510,13 @@ class ConfinedTestHost:
                 attempt=identity.attempt,
                 activity_id=identity.activity_id,
                 operation=identity.operation,
+                attempt_key_digest=identity.attempt_key_digest,
+                authorization_id=identity.authorization_id,
+                fencing_token=identity.fencing_token,
+                phase=identity.phase,
+                graph_revision=identity.graph_revision,
+                product_lock_digest=identity.product_lock_digest,
+                handler_id=identity.handler_id,
                 request_digest=activity.request_digest,
                 workspace_identity_digest=activity.workspace_identity.identity_digest,
                 project_root_digest=activity.workspace_identity.project_digest,
@@ -684,8 +689,33 @@ class _AdapterHarness:
             }
         )
 
+    def _bound_fields(
+        self,
+        *,
+        request: TaskRequest,
+        workspace_identity: TaskWorkspaceIdentity,
+        composition: FrozenComposition,
+    ) -> dict[str, object]:
+        return current_bound_identity(
+            attempt_key_digest=engine_digest(
+                {
+                    "attempt": request.attempt,
+                    "invocation_id": request.invocation_id,
+                    "task_id": request.task_id,
+                }
+            ),
+            authorization_id=engine_digest({"authorization": request.invocation_id}),
+            workspace_identity_digest=workspace_identity.identity_digest,
+            request_digest=engine_digest(request.model_dump(mode="json")),
+            graph_revision=engine_digest({"composition": composition.digest}),
+            product_lock_digest=request.invocation.lock_digest,
+            handler_id=self.capability_id,
+        )
+
     def _host_identity(self, invocation_id: str, operation: str) -> TaskHostCallIdentity:
-        host_lock = pinned_execution_host_lock()
+        scenario = self._scenario
+        if scenario is None:
+            raise RuntimeError("host identity requires an open scenario")
         return TaskHostCallIdentity(
             invocation_id=invocation_id,
             task_id="adapter-task",
@@ -693,8 +723,11 @@ class _AdapterHarness:
             attempt=1,
             activity_id="adapter-activity",
             operation=operation,  # type: ignore[arg-type]
-            host_implementation_id=host_lock.implementation_id,
-            host_implementation_digest=host_lock.implementation_digest,
+            **self._bound_fields(  # type: ignore[arg-type]
+                request=scenario.request,
+                workspace_identity=scenario.attempt_root.workspace_identity,
+                composition=scenario.composition,
+            ),
         )
 
     def _prepared_activity(
@@ -759,12 +792,18 @@ class _AdapterHarness:
         request = self._task_request(composition, invocation_id)
         activity = self._prepared_activity(request, project_root, write_root)
         host._activity_snapshot = activity
+        attempt_root = self._attempt_root(project_root, write_root)
         activity_rpc = TaskActivityRpcIdentity(
             invocation_id=invocation_id,
             task_id="adapter-task",
             activation_id="adapter-run",
             attempt=1,
             activity_id="adapter-activity",
+            **self._bound_fields(  # type: ignore[arg-type]
+                request=request,
+                workspace_identity=attempt_root.workspace_identity,
+                composition=composition,
+            ),
         )
         scenario = _Scenario(
             composition=composition,
@@ -780,7 +819,7 @@ class _AdapterHarness:
             invocation_id=invocation_id,
             project_root=project_root,
             write_root=write_root,
-            attempt_root=self._attempt_root(project_root, write_root),
+            attempt_root=attempt_root,
             activity_rpc=activity_rpc,
             roots=(engine_root, invocation_root),
         )
@@ -805,14 +844,10 @@ class _AdapterHarness:
     def _is_incomplete(self, error: BaseException) -> bool:
         if isinstance(
             error,
-            OpenCodeDispatchIncomplete
-            | CursorDispatchIncomplete
-            | TimeoutError
-            | asyncio.TimeoutError
-            | httpx.TransportError,
+            OpenCodeDispatchIncomplete | TimeoutError | asyncio.TimeoutError | httpx.TransportError,
         ):
             return True
-        return error.__class__.__name__ == "ProcessDispatchCut"
+        return error.__class__.__name__ in {"CursorDispatchIncomplete", "ProcessDispatchCut"}
 
     def _execute_call(self, scenario: _Scenario) -> TaskHostExecuteCall:
         return TaskHostExecuteCall(
@@ -1168,7 +1203,9 @@ class CursorRuntimeHarness(_AdapterHarness):
 
     def _fake_and_handler(
         self, *, cut: str | None = None, status: str = "exited"
-    ) -> tuple[Any, CursorHandler]:
+    ) -> tuple[Any, Any]:
+        from agent_runtime_cursor import CursorHandler
+
         fake_mod = _load_adapter_test_module("agent-runtime-cursor", "fake_process_host")
         root = self._temp()
         executable, digest = self._cursor_bin(root)
@@ -1181,6 +1218,8 @@ class CursorRuntimeHarness(_AdapterHarness):
         return host, CursorHandler(host)
 
     def _adapter_binding_data(self) -> dict[str, Any]:
+        from agent_runtime_cursor import CursorAdapterConfig
+
         executable, digest, _host = getattr(self, "_last_cursor")
         config = CursorAdapterConfig.model_validate(
             {

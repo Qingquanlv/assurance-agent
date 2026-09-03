@@ -59,20 +59,9 @@ def _identity_filename(identity: TaskHostCallIdentity) -> str:
         "activation_id": identity.activation_id,
         "activity_id": identity.activity_id,
         "attempt": identity.attempt,
-        "attempt_key_digest": identity.attempt_key_digest,
-        "authorization_id": identity.authorization_id,
-        "fencing_token": identity.fencing_token,
-        "graph_revision": identity.graph_revision,
-        "handler_id": identity.handler_id,
-        "host_implementation_digest": identity.host_implementation_digest,
         "invocation_id": identity.invocation_id,
         "operation": identity.operation,
-        "phase": identity.phase,
-        "product_lock_digest": identity.product_lock_digest,
-        "request_digest": identity.request_digest,
         "task_id": identity.task_id,
-        "wire_schema_version": identity.wire_schema_version,
-        "workspace_identity_digest": identity.workspace_identity_digest,
     }
     return f"{canonical_digest(payload)}.json"
 
@@ -263,6 +252,8 @@ class TerminalReceiptStore:
             if expected not in names:
                 return ()
             receipt = self._read_final(directory_fd, expected)
+            if receipt.fencing_token > identity.fencing_token:
+                raise TerminalReceiptError("fencing token is stale")
             if not _receipt_matches_identity(receipt, identity):
                 raise TerminalReceiptError("foreign terminal receipt")
             return (receipt,)

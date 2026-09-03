@@ -225,7 +225,8 @@ def test_terminal_receipt_rejects_mismatched_identity_fields(
     sink = store.sink_for(identity)
     sink.install(_receipt(identity, activity, outcome, prove_call_quiescent(), host_call_id=1))
     mismatched = _identity(**{field: value})
-    assert store.authenticate(mismatched) == ()
+    with pytest.raises(TerminalReceiptError, match="foreign|stale"):
+        store.authenticate(mismatched)
 
 
 def test_terminal_receipt_rejects_stale_fence(tmp_path: Path) -> None:
@@ -234,7 +235,8 @@ def test_terminal_receipt_rejects_stale_fence(tmp_path: Path) -> None:
     activity = _prepared_snapshot()
     sink = store.sink_for(identity)
     sink.install(_receipt(identity, activity, _outcome(), prove_call_quiescent(), host_call_id=1))
-    assert store.authenticate(_identity(fencing_token=1)) == ()
+    with pytest.raises(TerminalReceiptError, match="foreign|stale"):
+        store.authenticate(_identity(fencing_token=1))
 
 
 def test_prior_receipt_schema_is_not_parsed(tmp_path: Path) -> None:

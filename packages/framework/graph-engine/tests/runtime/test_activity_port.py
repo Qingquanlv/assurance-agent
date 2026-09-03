@@ -357,7 +357,10 @@ def _start_loop() -> asyncio.AbstractEventLoop:
     return loop
 
 
-def _journal_port() -> tuple[JournalBackedTaskActivityPort, MemoryAttemptJournal, AttemptKey]:
+def _journal_port(
+    *,
+    identity_overrides: dict[str, object] | None = None,
+) -> tuple[JournalBackedTaskActivityPort, MemoryAttemptJournal, AttemptKey]:
     journal = MemoryAttemptJournal()
     attempt_key = AttemptKey(digest="a" * 64)
     authorization_id = "b" * 64
@@ -388,21 +391,25 @@ def _journal_port() -> tuple[JournalBackedTaskActivityPort, MemoryAttemptJournal
     async def _assert_live_fence() -> None:
         return None
 
+    live = current_bound_identity(
+        attempt_key_digest=attempt_key.digest,
+        authorization_id=authorization_id,
+        workspace_identity_digest=workspace.identity_digest,
+        request_digest="0" * 64,
+        graph_revision=graph_revision,
+        product_lock_digest=_LOCK,
+        handler_id="test.echo.run",
+    )
+    fields = dict(live)
+    if identity_overrides:
+        fields.update(identity_overrides)
     identity = TaskActivityRpcIdentity(
         invocation_id="inv-1",
         task_id="task-1",
         activation_id="a1",
         attempt=1,
         activity_id="activity-1",
-        **current_bound_identity(  # type: ignore[arg-type]
-            attempt_key_digest=attempt_key.digest,
-            authorization_id=authorization_id,
-            workspace_identity_digest=workspace.identity_digest,
-            request_digest="0" * 64,
-            graph_revision=graph_revision,
-            product_lock_digest=_LOCK,
-            handler_id="test.echo.run",
-        ),
+        **fields,  # type: ignore[arg-type]
     )
     port = JournalBackedTaskActivityPort(
         journal=journal,
@@ -412,6 +419,9 @@ def _journal_port() -> tuple[JournalBackedTaskActivityPort, MemoryAttemptJournal
         assert_live_fence=_assert_live_fence,
         owner_loop=_OWNER_LOOP,
         remaining_deadline=5.0,
+        expected_request_digest=str(live["request_digest"]),
+        expected_product_lock_digest=str(live["product_lock_digest"]),
+        expected_handler_id=str(live["handler_id"]),
     )
     return port, journal, attempt_key
 
@@ -435,6 +445,28 @@ def test_journal_backed_port_rejects_fingerprint_drift() -> None:
     port.mark_dispatch_started(_FINGERPRINT)
     with pytest.raises(TaskActivityConflict):
         port.mark_dispatch_started({"endpoint": "https://example.invalid", "profile": "v1"})
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("attempt_key_digest", "0" * 64),
+        ("authorization_id", "1" * 64),
+        ("fencing_token", 99),
+        ("phase", "prepare"),
+        ("workspace_identity_digest", "2" * 64),
+        ("request_digest", "3" * 64),
+        ("graph_revision", "4" * 64),
+        ("product_lock_digest", "5" * 64),
+        ("handler_id", "runtime.other.execute"),
+        ("host_implementation_digest", "6" * 64),
+        ("host_implementation_id", "graph.engine.other-host"),
+    ],
+)
+def test_journal_backed_port_rejects_mismatched_bound_fields(field: str, value: object) -> None:
+    port, _, _ = _journal_port(identity_overrides={field: value})
+    with pytest.raises((TaskActivityConflict, StaleFencingToken)):
+        port.mark_dispatch_started(_FINGERPRINT)
 
 
 def test_journal_backed_port_rejects_stale_fence() -> None:
