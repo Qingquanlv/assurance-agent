@@ -295,7 +295,7 @@ class RegistryProjections(FrozenModel):
     schemas: FrozenJSONValue
     resources: FrozenJSONValue
     effects: FrozenJSONValue
-    attempt_contracts: FrozenJSONValue = ()
+    attempt_contracts: FrozenJSONValue
 
     @model_validator(mode="after")
     def _validate_projection_shapes(self) -> RegistryProjections:
@@ -731,6 +731,8 @@ def authenticate_composition_lock(
     lock: ProductLock,
     contribution_authorities: Mapping[str, ContributionAuthority],
 ) -> None:
+    if not isinstance(lock, ProductLock):
+        raise TypeError("composition lock must be a ProductLock")
     validate_registry_contribution_authorities(
         registries,
         contribution_authorities,

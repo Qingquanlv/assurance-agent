@@ -678,6 +678,7 @@ def test_invocation_lock_rejects_self_consistent_missing_binding_target() -> Non
         schemas=thaw_json(lock.registry_projections.schemas),
         resources=thaw_json(lock.registry_projections.resources),
         effects=thaw_json(lock.registry_projections.effects),
+        attempt_contracts=thaw_json(lock.registry_projections.attempt_contracts),
     )
     digests = lock.registry_digests.model_copy(update={"capabilities": canonical_digest(capabilities)})
 
@@ -745,6 +746,7 @@ def test_lock_rejects_an_extra_unsupported_executable_projection_kind() -> None:
         schemas=lock.registry_projections.schemas,
         resources=lock.registry_projections.resources,
         effects=lock.registry_projections.effects,
+        attempt_contracts=lock.registry_projections.attempt_contracts,
     )
     digests = lock.registry_digests.model_copy(update={"capabilities": canonical_digest(capabilities)})
 
@@ -935,6 +937,51 @@ def test_product_lock_requires_attempt_registry_fields() -> None:
         ProductLock.model_validate(document)
 
 
+def test_product_lock_requires_attempt_registry_projections() -> None:
+    document = current_product_lock_document()
+    registry_projections = document["registry_projections"]
+    assert isinstance(registry_projections, dict)
+    registry_projections.pop("attempt_contracts")
+    with pytest.raises(ValidationError):
+        ProductLock.model_validate(document)
+
+
 def test_historical_invocation_lock_is_not_a_composition_lock() -> None:
-    with pytest.raises((TypeError, ValidationError)):
-        ProductLock.model_validate(load_old_invocation_lock_fixture())
+    from graph_engine.composition.lock import authenticate_composition_lock
+    from graph_engine.composition.models import (
+        CapabilityRegistry,
+        EffectRegistry,
+        ProductManifest,
+        RegistrySet,
+        ResourceRegistry,
+        SchemaRegistry,
+        SourceRegistry,
+    )
+
+    manifest = ProductManifest(
+        schema_version="1",
+        source=None,
+        product_id="toy.a",
+        product_version="1.0.0",
+        engine_api="2.0",
+        plugins=({"plugin_id": "toy.runtime", "version_specifier": "==1.0.0"},),
+        entrypoints={"default": "graph"},
+        configuration={},
+        graph_factory_symbol="toy:provider",
+    )
+    registries = RegistrySet(
+        sources=SourceRegistry({}),
+        capabilities=CapabilityRegistry.empty(),
+        schemas=SchemaRegistry({}),
+        resources=ResourceRegistry({}),
+        effects=EffectRegistry({}),
+    )
+    with pytest.raises(TypeError):
+        authenticate_composition_lock(
+            manifest,
+            (),
+            registries,
+            {},
+            load_old_invocation_lock_fixture(),
+            {},
+        )
