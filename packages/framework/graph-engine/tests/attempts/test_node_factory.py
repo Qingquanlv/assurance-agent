@@ -124,8 +124,8 @@ def _contract() -> TaskAttemptContract[RunInput, RunOutput]:
 
 def _resolved():
     class _Executor:
-        async def execute(self, validated_input: RunInput, context: object) -> RunOutput:
-            del validated_input, context
+        async def execute(self, validated_input: RunInput, scope: object) -> RunOutput:
+            del validated_input, scope
             return OUTPUT
 
     return resolve_contract(_contract(), executor=_Executor())

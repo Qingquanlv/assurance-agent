@@ -11,6 +11,8 @@ from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    AuthorizedAttemptScope,
+    ExecutedAttemptResult,
     TaskAttemptContract,
     resolve_contract,
 )
@@ -177,19 +179,19 @@ class _WritingExecutor:
         self,
         workspace: _RecordingWorkspace,
         *,
-        declared_effects: tuple[EffectIntent, ...] = (),
+        effects: tuple[EffectIntent, ...] = (),
     ) -> None:
         self.workspace = workspace
-        self.declared_effects = declared_effects
+        self.effects = effects
         self.calls = 0
 
-    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> RunOutput:
-        del validated_input, context
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[RunOutput]:
+        del validated_input
         self.calls += 1
-        binding = self.workspace.binding
-        assert binding is not None
-        (binding.write_root / "out.txt").write_bytes(b"committed")
-        return RunOutput(status="ok")
+        (scope.workspace.write_root / "out.txt").write_bytes(b"committed")
+        return ExecutedAttemptResult(output=RunOutput(status="ok"), effects=self.effects)
 
 
 def _queued(
@@ -390,7 +392,7 @@ def make_effect_kernel(
     workspace = _RecordingWorkspace(TaskWorkspaceProvider(store))
     writer = _WritingExecutor(
         workspace,
-        declared_effects=(EffectIntent(kind=kind, payload={"n": 1}),),
+        effects=(EffectIntent(kind=kind, payload={"n": 1}),),
     )
     resolved = resolve_contract(contract(), executor=writer)
     kernel = AssuranceAttemptKernel(

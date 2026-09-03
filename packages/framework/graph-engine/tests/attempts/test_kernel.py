@@ -12,12 +12,16 @@ from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    AuthorizedAttemptScope,
+    ExecutedAttemptResult,
     TaskAttemptContract,
+    TerminalReceiptRef,
     resolve_contract,
 )
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import CommittedTaskResult, PermanentTaskFailure, RejectedTaskResult
+from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
@@ -27,6 +31,7 @@ from graph_engine.persistence.resource_authorization import (
 )
 from graph_engine.plugin_api import (
     CommitValidator,
+    EffectIntent,
     ResourceClaims,
     TaskWorkspaceBinding,
     ValidationResult,
@@ -70,13 +75,13 @@ class _WritingExecutor:
         self.content = content
         self.calls = 0
 
-    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> RunOutput:
-        del validated_input, context
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[RunOutput]:
+        del validated_input
         self.calls += 1
-        binding = self.workspace.binding
-        assert binding is not None
-        (binding.write_root / "out.txt").write_bytes(self.content)
-        return RunOutput(status="ok")
+        (scope.workspace.write_root / "out.txt").write_bytes(self.content)
+        return ExecutedAttemptResult(output=RunOutput(status="ok"))
 
 
 class _OtherOutput(BaseModel):
@@ -88,14 +93,13 @@ class _InvalidOutputExecutor:
         self.workspace: _RecordingWorkspace | None = None
         self.calls = 0
 
-    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> _OtherOutput:
-        del validated_input, context
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[_OtherOutput]:
+        del validated_input
         self.calls += 1
-        assert self.workspace is not None
-        binding = self.workspace.binding
-        assert binding is not None
-        (binding.write_root / "out.txt").write_bytes(b"invalid")
-        return _OtherOutput(unexpected="nope")
+        (scope.workspace.write_root / "out.txt").write_bytes(b"invalid")
+        return ExecutedAttemptResult(output=_OtherOutput(unexpected="nope"))
 
 
 class _CrashWithoutReconcile:
@@ -103,13 +107,10 @@ class _CrashWithoutReconcile:
         self.workspace: _RecordingWorkspace | None = None
         self.calls = 0
 
-    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> RunOutput:
-        del validated_input, context
+    async def execute(self, validated_input: RunInput, scope: AuthorizedAttemptScope) -> RunOutput:
+        del validated_input
         self.calls += 1
-        assert self.workspace is not None
-        binding = self.workspace.binding
-        assert binding is not None
-        (binding.write_root / "out.txt").write_bytes(b"partial")
+        (scope.workspace.write_root / "out.txt").write_bytes(b"partial")
         raise RuntimeError("in-flight activity")
 
 
@@ -320,3 +321,168 @@ async def test_unadoptable_in_flight_activity_terminates_releases_and_replays(tm
         assert executor.calls == 1
     finally:
         store.close()
+
+
+DELIVERY_KIND = "assurance.improvement.effect.delivery.v1"
+
+
+class ValidOutput(BaseModel):
+    value: str
+
+
+class TransactionCrash(RuntimeError):
+    pass
+
+
+def valid_delivery_payload() -> dict[str, int]:
+    return {"n": 1}
+
+
+class _ConfigurableExecutor:
+    def __init__(self) -> None:
+        self.result: object | None = None
+        self.calls = 0
+        self.seen_scope: AuthorizedAttemptScope | None = None
+
+    async def execute(self, validated_input: RunInput, scope: AuthorizedAttemptScope) -> object:
+        del validated_input
+        self.calls += 1
+        self.seen_scope = scope
+        (scope.workspace.write_root / "out.txt").write_bytes(b"done")
+        assert self.result is not None
+        return self.result
+
+
+class _KernelFixture:
+    def __init__(
+        self,
+        *,
+        kernel: AssuranceAttemptKernel,
+        attempt_key: AttemptKey,
+        resolved: Any,
+        validated: RunInput,
+        context: AttemptExecutionContext,
+        executor: _ConfigurableExecutor,
+        store: TaskWorkspaceStore,
+    ) -> None:
+        self.kernel = kernel
+        self.journal = kernel.journal
+        self.attempt_key = attempt_key
+        self.resolved = resolved
+        self.validated = validated
+        self.context = context
+        self.executor = executor
+        self.store = store
+
+    async def run_until_cut(self, name: str) -> None:
+        def cut(cut_name: str) -> None:
+            if cut_name == name:
+                raise TransactionCrash(name)
+
+        with pytest.raises(TransactionCrash, match=name):
+            await self.kernel.execute_or_recover(
+                self.attempt_key,
+                self.resolved,
+                self.validated,
+                self.context,
+                transaction_cut=cut,
+            )
+
+
+def _effect_helpers() -> Any:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "test_kernel_effects",
+        Path(__file__).with_name("test_kernel_effects.py"),
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def kernel_fixture(tmp_path: Path) -> Any:
+    helpers = _effect_helpers()
+    from graph_engine.effects.state import MemoryEffectState
+    from graph_engine.plugin_api import EffectApplyResult
+
+    handler = helpers.RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
+    effects, schemas = helpers.build_effect_registries(handler)
+    project = tmp_path / "project"
+    project.mkdir()
+    store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
+    workspace = _RecordingWorkspace(TaskWorkspaceProvider(store))
+    executor = _ConfigurableExecutor()
+    resolved = resolve_contract(
+        TaskAttemptContract(
+            contract_id="assurance.execution.run.v1",
+            owner_id="assurance.execution",
+            handler_id="assurance.execution.run",
+            input_model=RunInput,
+            output_model=ValidOutput,
+            resources=ResourceClaims(writes=("out.txt",)),
+            retry=AttemptRetryPolicy(max_attempts=1),
+            timeout=AttemptTimeoutPolicy(seconds=60),
+            validators=(),
+        ),
+        executor=executor,
+    )
+    kernel = AssuranceAttemptKernel(
+        journal=MemoryAttemptJournal(),
+        arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
+        workspace=workspace,
+        graph_revision=graph_revision(),
+        effects=effects,
+        schemas=schemas,
+        effect_state=MemoryEffectState(),
+    )
+    validated = RunInput(change_id="chg-1")
+    key = derive_attempt_key(
+        invocation_id="inv-1",
+        graph_revision=graph_revision(),
+        public_entrypoint="execute",
+        semantic_node_id="execution.run",
+        business_activation=BusinessActivation.one_shot(),
+        contract_id=resolved.contract.contract_id,
+        validated_input=validated,
+    )
+    context = AttemptExecutionContext(
+        invocation_id="inv-1",
+        public_entrypoint="execute",
+        semantic_node_id="execution.run",
+        attempt_key=key,
+        fencing_token=4,
+    )
+    assert DELIVERY_KIND in EXPECTED_EFFECT_KINDS
+    try:
+        yield _KernelFixture(
+            kernel=kernel,
+            attempt_key=key,
+            resolved=resolved,
+            validated=validated,
+            context=context,
+            executor=executor,
+            store=store,
+        )
+    finally:
+        store.close()
+
+
+async def test_output_and_effect_intents_share_one_journal_revision(kernel_fixture) -> None:
+    intent = EffectIntent(kind=DELIVERY_KIND, payload=valid_delivery_payload())
+    kernel_fixture.executor.result = ExecutedAttemptResult(
+        output=ValidOutput(value="done"),
+        effects=(intent,),
+        source_terminal_receipt=TerminalReceiptRef(
+            identity_digest="a" * 64,
+            receipt_digest="b" * 64,
+        ),
+    )
+    await kernel_fixture.run_until_cut("after_observed_result")
+    records = kernel_fixture.journal.records(kernel_fixture.attempt_key)
+    assert [event.kind for event in records[-1].events] == [
+        "activity_terminal_observed",
+        "effect_intent_recorded",
+    ]

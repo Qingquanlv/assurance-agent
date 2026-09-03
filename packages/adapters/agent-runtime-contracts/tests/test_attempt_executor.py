@@ -12,9 +12,16 @@ from graph_engine.attempts import (
     AttemptKey,
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    AuthorizedAttemptScope,
+    ExecutedAttemptResult,
     resolve_contract,
 )
-from graph_engine.plugin_api import ResourceClaims
+from graph_engine.plugin_api import (
+    DirectoryIdentity,
+    ResourceClaims,
+    TaskWorkspaceBinding,
+    TaskWorkspaceIdentity,
+)
 
 from agent_runtime_contracts import AgentExecutionContract, AgentRunResult, canonical_digest
 from agent_runtime_contracts.attempt_executor import (
@@ -132,6 +139,41 @@ def _context() -> AttemptExecutionContext:
     )
 
 
+def _scope(tmp_path: Path) -> AuthorizedAttemptScope:
+    project = tmp_path / "project"
+    write = tmp_path / "write"
+    project.mkdir(exist_ok=True)
+    write.mkdir(exist_ok=True)
+    digest = "a" * 64
+    identity = TaskWorkspaceIdentity.model_construct(
+        task_id="task",
+        attempt=1,
+        attempt_id="attempt-1",
+        output_paths=(),
+        baseline_files=(),
+        project_digest=digest,
+        write_root_digest=digest,
+        identity_digest=digest,
+        layout_schema_version="1",
+    )
+    directory = DirectoryIdentity.model_construct(
+        path_digest=digest,
+        device=1,
+        inode=1,
+        identity_digest=digest,
+    )
+    return AuthorizedAttemptScope(
+        execution=_context(),
+        workspace=TaskWorkspaceBinding(
+            identity=identity,
+            project_root=project,
+            write_root=write,
+            project_root_identity=directory,
+            write_root_identity=directory,
+        ),
+    )
+
+
 def _contract() -> AgentExecutionContract[CaseDesignInput, CaseDesignAgentResult, CaseDesignOutput]:
     return AgentExecutionContract(
         contract_id="assurance.intake.agent.case-design.v1",
@@ -187,7 +229,9 @@ def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(tmp_p
     finalize = RecordingFinalize(expected_output, order)
 
     output = asyncio.run(
-        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(validated_input, _context())
+        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
+            validated_input, _scope(tmp_path)
+        )
     )
 
     assert order == ["prepare", "runtime", "finalize"]
@@ -200,7 +244,8 @@ def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(tmp_p
     assert finalize.seen.agent_result == expected_agent_result
     assert finalize.seen.run_evidence.result_digest == canonical_digest(expected_agent_result.model_dump())
     assert finalize.seen.raw_workspace.read_text("qa/proposal.md") == "design"
-    assert output == expected_output
+    assert isinstance(output, ExecutedAttemptResult)
+    assert output.output == expected_output
 
 
 def test_invalid_raw_result_fails_before_finalize(tmp_path: Path) -> None:
@@ -218,7 +263,7 @@ def test_invalid_raw_result_fails_before_finalize(tmp_path: Path) -> None:
     with pytest.raises((ValidationError, ValueError)):
         asyncio.run(
             _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
-                validated_input, _context()
+                validated_input, _scope(tmp_path)
             )
         )
 
@@ -238,7 +283,7 @@ def test_invalid_output_fails_after_finalize(tmp_path: Path) -> None:
     with pytest.raises(ValidationError):
         asyncio.run(
             _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
-                validated_input, _context()
+                validated_input, _scope(tmp_path)
             )
         )
 
@@ -300,14 +345,17 @@ def test_case_design_raw_attempt_preserves_both_legacy_prepare_consumers(tmp_pat
     finalize = RecordingFinalize(expected_output, order)
 
     output = asyncio.run(
-        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(validated_input, _context())
+        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
+            validated_input, _scope(tmp_path)
+        )
     )
 
     assert runtime.seen_prepared == prepared_value
     assert finalize.seen is not None
     assert finalize.seen.prepared == prepared_value
     assert finalize.seen.agent_result == expected_agent_result
-    assert output == expected_output
+    assert isinstance(output, ExecutedAttemptResult)
+    assert output.output == expected_output
 
 
 def test_case_design_repair_raw_attempt_preserves_both_legacy_prepare_consumers(tmp_path: Path) -> None:
@@ -325,7 +373,9 @@ def test_case_design_repair_raw_attempt_preserves_both_legacy_prepare_consumers(
     finalize = RecordingFinalize(expected_output, order)
 
     output = asyncio.run(
-        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(validated_input, _context())
+        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
+            validated_input, _scope(tmp_path)
+        )
     )
 
     assert runtime.seen_prepared == prepared_value
@@ -333,4 +383,5 @@ def test_case_design_repair_raw_attempt_preserves_both_legacy_prepare_consumers(
     assert finalize.seen.prepared == prepared_value
     assert finalize.seen.agent_result == expected_agent_result
     assert finalize.seen.validated_input.path == "repair"
-    assert output == expected_output
+    assert isinstance(output, ExecutedAttemptResult)
+    assert output.output == expected_output

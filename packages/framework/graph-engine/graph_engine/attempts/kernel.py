@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import ResolvedAttemptContract
+from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
+from graph_engine.attempts.contracts import (
+    ExecutedAttemptResult,
+    ResolvedAttemptContract,
+    TerminalReceiptRef,
+)
 from graph_engine.attempts.events import (
     ActivityDispatchStarted,
     ActivityPrepared,
@@ -16,6 +20,7 @@ from graph_engine.attempts.events import (
     AttemptSnapshot,
     AttemptTerminated,
     CommitPrepared,
+    EffectIntentRecorded,
     ResourcesAuthorized,
     ResourcesReleased,
     SystemInterruptIssued,
@@ -38,7 +43,7 @@ from graph_engine.errors import GraphEngineError
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.composition.models import EffectRegistry, SchemaRegistry
-from graph_engine.effects.apply import AttemptEffectSettler
+from graph_engine.effects.apply import AttemptEffectSettler, recorded_effect_intent_events
 from graph_engine.effects.state import EffectStatePort
 from graph_engine.plugin_api import (
     CommitValidator,
@@ -205,21 +210,36 @@ class AssuranceAttemptKernel:
 
         binding = await self.workspace.open_or_create(attempt_key, claims)
         trace.append("begin_workspace")
+        scope = AuthorizedAttemptScope(execution=context, workspace=binding)
 
-        output, snapshot = await self._execute_or_adopt(
-            attempt_key, contract, validated_input, context, snapshot, cut
+        step, snapshot = await self._execute_or_adopt(
+            attempt_key, contract, validated_input, scope, snapshot, cut
         )
-        if isinstance(output, (RejectedTaskResult, PermanentTaskFailure)):
-            return await self._fail_closed(attempt_key, context, snapshot, authorization, output, cut)
-        if _is_resolution(output):
-            return cast(AttemptResolution, output)
-        if not isinstance(output, BaseModel):
-            return output
+        if isinstance(step, (RejectedTaskResult, PermanentTaskFailure)):
+            return await self._fail_closed(attempt_key, context, snapshot, authorization, step, cut)
+        if _is_resolution(step):
+            return cast(AttemptResolution, step)
+        if not isinstance(step, ExecutedAttemptResult):
+            return await self._fail_closed(
+                attempt_key,
+                context,
+                snapshot,
+                authorization,
+                PermanentTaskFailure(
+                    kind="invalid_output",
+                    message="executor did not return ExecutedAttemptResult",
+                ),
+                cut,
+            )
         trace.append("execute")
 
         try:
-            validated_output = contract.contract.output_model.model_validate(
-                output.model_dump(mode="json") if isinstance(output, BaseModel) else output
+            validated_output, intent_events, observed = _validated_observed_batch(
+                contract,
+                step,
+                self.effects,
+                self.schemas,
+                snapshot.activity_id or attempt_key.digest,
             )
         except ValidationError as error:
             return await self._fail_closed(
@@ -230,7 +250,24 @@ class AssuranceAttemptKernel:
                 PermanentTaskFailure(kind="invalid_output", message=str(error)),
                 cut,
             )
+        except (KeyError, ValueError) as error:
+            return await self._fail_closed(
+                attempt_key,
+                context,
+                snapshot,
+                authorization,
+                PermanentTaskFailure(kind="configuration", message=str(error)),
+                cut,
+            )
         trace.append("validate_output")
+        if snapshot.activity_state != "terminal_observed":
+            snapshot = await self.journal.append(
+                attempt_key,
+                (observed, *intent_events),
+                expected_revision=snapshot.revision,
+                fencing_token=context.fencing_token,
+            )
+        cut("after_observed_result")
         cut("after_finalize_before_seal")
 
         if snapshot.prepared_digest is None:
@@ -285,11 +322,9 @@ class AssuranceAttemptKernel:
         await self._assert_fence(attempt_key, context, "effect_application", cut)
         settled, snapshot = await self._settle_effects(
             attempt_key,
-            contract,
             context,
             snapshot,
             receipt,
-            validated_output,
             cut,
         )
         trace.append("settle_effects")
@@ -363,16 +398,14 @@ class AssuranceAttemptKernel:
         attempt_key: AttemptKey,
         contract: ResolvedAttemptContract[Any, Any],
         validated_input: BaseModel,
-        context: AttemptExecutionContext,
+        scope: AuthorizedAttemptScope,
         snapshot: AttemptSnapshot,
         cut: Callable[[str], None],
-    ) -> tuple[BaseModel | AttemptResolution, AttemptSnapshot]:
+    ) -> tuple[object, AttemptSnapshot]:
+        context = scope.execution
         activity_id = snapshot.activity_id or attempt_key.digest
         if attempt_activity_is_terminal(snapshot.activity_state) and snapshot.activity_outcome is not None:
-            try:
-                return contract.contract.output_model.model_validate(snapshot.activity_outcome), snapshot
-            except ValidationError as error:
-                return PermanentTaskFailure(kind="invalid_output", message=str(error)), snapshot
+            return _executed_from_snapshot(contract, snapshot), snapshot
         if attempt_activity_in_flight(snapshot.activity_state):
             await self._assert_fence(attempt_key, context, "external_dispatch", cut)
             reconcile = getattr(contract.executor, "reconcile", None)
@@ -381,11 +414,9 @@ class AssuranceAttemptKernel:
                     PermanentTaskFailure(kind="internal", message="in-flight activity cannot be adopted"),
                     snapshot,
                 )
-            output = await reconcile(validated_input, context, snapshot)
+            output = await reconcile(validated_input, scope, snapshot)
             snapshot = await self._reload(attempt_key, snapshot)
-            if _is_resolution(output):
-                return output, snapshot
-            return await self._observe_terminal(attempt_key, context, snapshot, activity_id, output)
+            return output, snapshot
         snapshot = await self.journal.append(
             attempt_key,
             (ActivityPrepared(activity_id=activity_id),),
@@ -409,33 +440,8 @@ class AssuranceAttemptKernel:
             expected_revision=snapshot.revision,
             fencing_token=context.fencing_token,
         )
-        output = await contract.executor.execute(validated_input, context)
+        output = await contract.executor.execute(validated_input, scope)
         snapshot = await self._reload(attempt_key, snapshot)
-        if _is_resolution(output):
-            return output, snapshot
-        return await self._observe_terminal(attempt_key, context, snapshot, activity_id, output)
-
-    async def _observe_terminal(
-        self,
-        attempt_key: AttemptKey,
-        context: AttemptExecutionContext,
-        snapshot: AttemptSnapshot,
-        activity_id: str,
-        output: BaseModel,
-    ) -> tuple[BaseModel, AttemptSnapshot]:
-        payload: JSONValue = output.model_dump(mode="json")
-        snapshot = await self.journal.append(
-            attempt_key,
-            (
-                ActivityTerminalObserved(
-                    activity_id=activity_id,
-                    outcome=payload,
-                    outcome_digest=canonical_digest(payload),
-                ),
-            ),
-            expected_revision=snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
         return output, snapshot
 
     async def _promote(
@@ -495,15 +501,12 @@ class AssuranceAttemptKernel:
     async def _settle_effects(
         self,
         attempt_key: AttemptKey,
-        contract: ResolvedAttemptContract[Any, Any],
         context: AttemptExecutionContext,
         snapshot: AttemptSnapshot,
         receipt: PromotionReceipt,
-        validated_output: BaseModel,
         cut: Callable[[str], None],
     ) -> tuple[AttemptResolution | None, AttemptSnapshot]:
-        intents = _declared_intents(snapshot, contract.executor, validated_output)
-        if not intents:
+        if not snapshot.effects:
             return None, snapshot
         if self.effects is None or self.schemas is None or self.effect_state is None:
             raise AttemptIdentityDrift("declared effects require an effect registry and state port")
@@ -513,7 +516,6 @@ class AssuranceAttemptKernel:
             snapshot=snapshot,
             journal=self.journal,
             context=context,
-            intents=intents,
             promotion=receipt,
             cut=cut,
         )
@@ -626,17 +628,53 @@ def _assert_identity(snapshot: AttemptSnapshot, identity: Mapping[str, str]) -> 
         raise AttemptIdentityDrift("revision digest drifted")
 
 
-def _declared_intents(
+def _executed_from_snapshot(
+    contract: ResolvedAttemptContract[Any, Any],
     snapshot: AttemptSnapshot,
-    executor: object,
-    validated_output: BaseModel,
-) -> tuple[EffectIntent, ...]:
-    if snapshot.effects:
-        return tuple(EffectIntent(kind=item.kind, payload=item.payload) for item in snapshot.effects)
-    declared = getattr(executor, "declared_effects", ())
-    if callable(declared):
-        return tuple(cast(Sequence[EffectIntent], declared(validated_output)))
-    return tuple(cast(Sequence[EffectIntent], declared))
+) -> ExecutedAttemptResult[Any] | PermanentTaskFailure:
+    try:
+        output = contract.contract.output_model.model_validate(snapshot.activity_outcome)
+    except ValidationError as error:
+        return PermanentTaskFailure(kind="invalid_output", message=str(error))
+    receipt = None
+    if snapshot.source_identity_digest and snapshot.source_receipt_digest:
+        receipt = TerminalReceiptRef(
+            identity_digest=snapshot.source_identity_digest,
+            receipt_digest=snapshot.source_receipt_digest,
+        )
+    return ExecutedAttemptResult(
+        output=output,
+        effects=tuple(EffectIntent(kind=item.kind, payload=item.payload) for item in snapshot.effects),
+        source_terminal_receipt=receipt,
+    )
+
+
+def _validated_observed_batch(
+    contract: ResolvedAttemptContract[Any, Any],
+    step: ExecutedAttemptResult[Any],
+    effects: EffectRegistry | None,
+    schemas: SchemaRegistry | None,
+    activity_id: str,
+) -> tuple[BaseModel, tuple[EffectIntentRecorded, ...], ActivityTerminalObserved]:
+    validated_output = contract.contract.output_model.model_validate(
+        step.output.model_dump(mode="json") if isinstance(step.output, BaseModel) else step.output
+    )
+    if step.effects:
+        if effects is None or schemas is None:
+            raise ValueError("declared effects require an effect registry")
+        intent_events = recorded_effect_intent_events(effects, schemas, step.effects)
+    else:
+        intent_events = ()
+    payload: JSONValue = validated_output.model_dump(mode="json")
+    receipt = step.source_terminal_receipt
+    observed = ActivityTerminalObserved(
+        activity_id=activity_id,
+        outcome=payload,
+        outcome_digest=canonical_digest(payload),
+        source_identity_digest=receipt.identity_digest if receipt is not None else "",
+        source_receipt_digest=receipt.receipt_digest if receipt is not None else "",
+    )
+    return validated_output, intent_events, observed
 
 
 def _resolved_claims(

@@ -9,6 +9,8 @@ from pydantic import BaseModel
 
 from graph_engine.attempts import (
     AttemptExecutionContext,
+    AuthorizedAttemptScope,
+    ExecutedAttemptResult,
     IndeterminateTaskResult,
     PermanentTaskFailure,
     ResolvedAttemptContract,
@@ -16,6 +18,7 @@ from graph_engine.attempts import (
     TaskAttemptContract,
     resolve_contract,
 )
+from graph_engine.plugin_api import EffectIntent
 
 from agent_runtime_contracts.execution_contract import AgentExecutionContract
 from agent_runtime_contracts.models import AgentRunResult
@@ -134,6 +137,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         self._runtime = runtime
         self._finalize = finalize
         self._result_context = None if result_context is None else dict(result_context)
+        self.effects: tuple[EffectIntent, ...] = ()
 
     def to_task_contract(self) -> TaskAttemptContract[InputT, OutputT]:
         return self._contract.to_task_contract()
@@ -144,18 +148,21 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
     async def execute(
         self,
         validated_input: InputT,
-        context: AttemptExecutionContext,
-    ) -> OutputT:
+        scope: AuthorizedAttemptScope,
+    ) -> ExecutedAttemptResult[OutputT]:
+        context = scope.execution
         prepared = await self._prepare.execute(validated_input, context)
         outcome = await self._runtime.execute(prepared, context)
-        return await self._finalize_outcome(validated_input, prepared, outcome, context)
+        output = await self._finalize_outcome(validated_input, prepared, outcome, context)
+        return ExecutedAttemptResult(output=output, effects=self.effects)
 
     async def reconcile(
         self,
         validated_input: InputT,
-        context: AttemptExecutionContext,
+        scope: AuthorizedAttemptScope,
         snapshot: object,
-    ) -> OutputT | IndeterminateTaskResult | PermanentTaskFailure:
+    ) -> ExecutedAttemptResult[OutputT] | IndeterminateTaskResult | PermanentTaskFailure:
+        context = scope.execution
         prepared = await self._prepare.execute(validated_input, context)
         runtime_reconcile = getattr(self._runtime, "reconcile", None)
         if runtime_reconcile is None:
@@ -170,7 +177,8 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
             return IndeterminateTaskResult(
                 reconciliation=SystemReference(reference_id="unprovable-admission")
             )
-        return await self._finalize_outcome(validated_input, prepared, outcome, context)
+        output = await self._finalize_outcome(validated_input, prepared, outcome, context)
+        return ExecutedAttemptResult(output=output, effects=self.effects)
 
     async def _finalize_outcome(
         self,

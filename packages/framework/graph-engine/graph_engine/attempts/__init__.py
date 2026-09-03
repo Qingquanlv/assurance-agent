@@ -1,10 +1,14 @@
-from graph_engine.attempts.context import AttemptExecutionContext
+from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
 from graph_engine.attempts.contracts import (
     AttemptExecutor,
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    ExecutedAttemptResult,
+    ExecutorResolution,
+    ExecutorStepResult,
     ResolvedAttemptContract,
     TaskAttemptContract,
+    TerminalReceiptRef,
     resolve_contract,
 )
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
@@ -27,9 +31,13 @@ __all__ = [
     "AttemptResolution",
     "AttemptRetryPolicy",
     "AttemptTimeoutPolicy",
+    "AuthorizedAttemptScope",
     "BusinessActivation",
     "CommittedEffectFailure",
     "CommittedTaskResult",
+    "ExecutedAttemptResult",
+    "ExecutorResolution",
+    "ExecutorStepResult",
     "IndeterminateTaskResult",
     "PendingTaskResult",
     "PermanentTaskFailure",
@@ -38,6 +46,7 @@ __all__ = [
     "ResolvedAttemptContract",
     "SystemReference",
     "TaskAttemptContract",
+    "TerminalReceiptRef",
     "derive_attempt_key",
     "resolve_contract",
 ]

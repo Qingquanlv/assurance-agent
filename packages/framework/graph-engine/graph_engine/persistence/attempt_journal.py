@@ -256,6 +256,9 @@ class MemoryAttemptJournal:
     def durable_revision(self, attempt_key: AttemptKey) -> int:
         return self._durable.get(attempt_key.digest, 0)
 
+    def records(self, attempt_key: AttemptKey) -> tuple[AttemptJournalRecord, ...]:
+        return tuple(self._logs.get(attempt_key.digest, ()))
+
     def _snapshot(self, attempt_key: AttemptKey, records: Sequence[AttemptJournalRecord]) -> AttemptSnapshot:
         events = tuple(event for record in records for event in record.events)
         return fold_attempt_events(

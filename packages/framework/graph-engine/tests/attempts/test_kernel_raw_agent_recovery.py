@@ -32,6 +32,7 @@ from graph_engine.attempts.resolutions import (
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
+from graph_engine.effects.state import MemoryEffectState
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.persistence.runner_lease import StaleFencingToken
@@ -396,7 +397,7 @@ def _build(
         finalize=finalize,
     )
     if declared_effects:
-        executor.declared_effects = declared_effects  # type: ignore[attr-defined]
+        executor.effects = declared_effects
     resolved = executor.resolve()
     kernel = AssuranceAttemptKernel(
         journal=journal,
@@ -405,6 +406,7 @@ def _build(
         graph_revision=_revision(),
         effects=effects,
         schemas=schemas,
+        effect_state=MemoryEffectState() if effects is not None else None,
     )
     validated = RawInput(change_id="chg-1")
     key = derive_attempt_key(

@@ -6,7 +6,6 @@ from collections.abc import Callable, Sequence
 from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.events import (
     AttemptEffectState,
-    AttemptEvent,
     AttemptSnapshot,
     EffectApplied,
     EffectIntentRecorded,
@@ -63,12 +62,10 @@ class AttemptEffectSettler:
         snapshot: AttemptSnapshot,
         journal: AttemptJournalPort,
         context: AttemptExecutionContext,
-        intents: Sequence[EffectIntent],
         promotion: PromotionReceipt,
         cut: Callable[[str], None],
     ) -> tuple[AttemptResolution | None, AttemptSnapshot]:
         cut("after_promotion_before_effect")
-        snapshot = await self._record_intents(attempt_key, snapshot, journal, context, tuple(intents))
         promotion_receipt = ReceiptRef(
             receipt_id=promotion.identity_digest,
             receipt_digest=promotion.receipt_digest,
@@ -112,43 +109,6 @@ class AttemptEffectSettler:
             if resolution is not None:
                 return resolution, snapshot
         return None, snapshot
-
-    async def _record_intents(
-        self,
-        attempt_key: AttemptKey,
-        snapshot: AttemptSnapshot,
-        journal: AttemptJournalPort,
-        context: AttemptExecutionContext,
-        intents: tuple[EffectIntent, ...],
-    ) -> AttemptSnapshot:
-        recorded = {item.ordinal: item for item in snapshot.effects}
-        events: list[AttemptEvent] = []
-        for ordinal, intent in enumerate(intents, start=1):
-            if intent.kind not in self._effects.entries or intent.kind not in EXPECTED_EFFECT_KINDS:
-                raise KeyError(f"unknown effect kind: {intent.kind}")
-            self._validate_intent(self._effects.require(intent.kind), intent)
-            digest = _intent_digest(intent)
-            existing = recorded.get(ordinal)
-            if existing is not None:
-                if existing.kind != intent.kind or existing.intent_digest != digest:
-                    raise ValueError("declared effect intent drifted")
-                continue
-            events.append(
-                EffectIntentRecorded(
-                    effect_ordinal=ordinal,
-                    effect_kind=intent.kind,
-                    intent_digest=digest,
-                    payload=thaw_json(intent.payload),
-                )
-            )
-        if not events:
-            return snapshot
-        return await journal.append(
-            attempt_key,
-            tuple(events),
-            expected_revision=snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
 
     async def _apply(
         self,
@@ -363,12 +323,6 @@ class AttemptEffectSettler:
             fencing_token=context.fencing_token,
         )
 
-    def _validate_intent(self, registration: EffectEntry, intent: EffectIntent) -> None:
-        schema = self._schemas.entries.get(registration.intent_schema_id)
-        if schema is None:
-            raise ValueError(f"effect intent schema is not registered: {registration.intent_schema_id}")
-        validate_json_schema(thaw_json(intent.payload), schema.content)
-
     def _validate_receipt(self, registration: EffectEntry, receipt: object) -> None:
         schema = self._schemas.entries.get(registration.receipt_schema_id)
         if schema is None:
@@ -388,8 +342,29 @@ class AttemptEffectSettler:
             return None
 
 
-def _intent_digest(intent: EffectIntent) -> str:
-    return effect_intent_digest(intent.kind, intent.payload)
+def recorded_effect_intent_events(
+    effects: EffectRegistry,
+    schemas: SchemaRegistry,
+    intents: Sequence[EffectIntent],
+) -> tuple[EffectIntentRecorded, ...]:
+    events: list[EffectIntentRecorded] = []
+    for ordinal, intent in enumerate(intents, start=1):
+        if intent.kind not in effects.entries or intent.kind not in EXPECTED_EFFECT_KINDS:
+            raise KeyError(f"unknown effect kind: {intent.kind}")
+        registration = effects.require(intent.kind)
+        schema = schemas.entries.get(registration.intent_schema_id)
+        if schema is None:
+            raise ValueError(f"effect intent schema is not registered: {registration.intent_schema_id}")
+        validate_json_schema(thaw_json(intent.payload), schema.content)
+        events.append(
+            EffectIntentRecorded(
+                effect_ordinal=ordinal,
+                effect_kind=intent.kind,
+                intent_digest=effect_intent_digest(intent.kind, intent.payload),
+                payload=thaw_json(intent.payload),
+            )
+        )
+    return tuple(events)
 
 
-__all__ = ["AttemptEffectSettler"]
+__all__ = ["AttemptEffectSettler", "recorded_effect_intent_events"]
