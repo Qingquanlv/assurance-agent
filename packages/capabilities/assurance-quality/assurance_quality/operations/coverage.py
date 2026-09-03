@@ -321,9 +321,9 @@ def join_minimum_coverage(payload: MinimumCoverageInput) -> MinimumCoverageResul
             MinimumCoverageItem(
                 mrc_id=row.mrc_id,
                 key=row.key,
-                category=row.category or "api",
+                category=row.category,
                 required=row.required,
-                layer=row.layer or "api",
+                layer=row.layer,
                 status=status,
                 case_ids=tuple(row.covered_by_cases),
                 executed_case_ids=tuple(case_id for case_id in row.covered_by_cases if case_id in executed),

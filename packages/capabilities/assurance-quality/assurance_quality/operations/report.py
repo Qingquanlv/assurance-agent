@@ -208,12 +208,33 @@ def _recommendation(status: str, defects: ReportDefects) -> str:
     return "Safe to release."
 
 
+def _empty_issue_report(
+    *, analysis_status: str = "failed", project_sync_status: str = "pending"
+) -> IssueReport:
+    return IssueReport(
+        analysis_status=analysis_status,
+        project_sync_status=project_sync_status,
+        total_occurrences=0,
+        counts_by_status={},
+        counts_by_classification={},
+        counts_by_severity={},
+        new_count=0,
+        repeated_count=0,
+        regressed_count=0,
+        resolved_count=0,
+        accepted_risk_count=0,
+        not_an_issue_count=0,
+        issue_risk="unknown",
+        issue_risk_rationale="Issue analysis failed or incomplete",
+    )
+
+
 def _issue_report(
     snapshot_raw: dict[str, Any] | None,
     problems_raw: dict[str, Any] | None,
-) -> IssueReport | None:
+) -> IssueReport:
     if snapshot_raw is None:
-        return None
+        return _empty_issue_report()
     snapshot = ChangeIssueSnapshot.model_validate(snapshot_raw)
     projection = ProblemProjection.model_validate(problems_raw) if problems_raw else None
     analysis_status = snapshot.analysis_status.status if snapshot.analysis_status else "failed"
@@ -376,7 +397,7 @@ class DashboardHandler:
                 "batch_id": payload.batch_id,
                 "final_status": report.final_status,
                 "quality_score": report.quality_score,
-                "issue_risk": report.issues.issue_risk if report.issues else "unknown",
+                "issue_risk": report.issues.issue_risk,
                 "metrics_digest": payload.metrics_digest,
                 "report_digest": payload.report_digest,
             }

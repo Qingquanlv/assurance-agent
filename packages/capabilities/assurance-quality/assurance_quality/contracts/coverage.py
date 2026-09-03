@@ -220,10 +220,8 @@ class MinimumCoverageMatrixRow(BaseModel):
     covered_by_cases: list[str] = []
     status: MrcMatrixRowStatus = "covered"
     skip_reason: str | None = None
-    # Optional on legacy matrices; materialize prefers these when present,
-    # otherwise resolves from advisory ``minimum_required_coverage`` maps.
-    category: MrcCategory | None = None
-    layer: MrcLayer | None = None
+    category: MrcCategory
+    layer: MrcLayer
 
 
 class MinimumCoverageMatrix(RootModel[list[MinimumCoverageMatrixRow]]):
@@ -308,7 +306,6 @@ class MinimumCoverageResult(BaseModel):
     change_id: NonEmptyStr
     summary: MinimumCoverageSummary
     items: tuple[MinimumCoverageItem, ...]
-    # Spec §12.12 closed-key / mapping findings. Default empty for legacy skill JSON.
     findings: tuple[MrcFinding, ...] = ()
 
     @classmethod

@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
 from assurance_healing.contracts import (
     CoverageRepairBrief,
@@ -22,7 +22,67 @@ from assurance_healing.contracts import (
     SafetyCheck,
     TestChangePolicyV1,
 )
+from assurance_healing.operations.status import project_episode
 from assurance_healing.plugin import HealingPlugin
+
+_CURRENT_HEALING_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
+    "assurance.healing.schema.allocation-intent.v2": (
+        "1",
+        "dbd980c555b0bafa38e59c565f3da7eac505ae0b98bd8cfb8d8c00a5002aef84",
+    ),
+    "assurance.healing.schema.allocation-receipt.v2": (
+        "1",
+        "ae557d2183dff15c740fd2262dae40521e97f09736c3172a2ca9392be975d8d4",
+    ),
+    "assurance.healing.schema.coverage-repair.v1": (
+        "1",
+        "51bdecc0456894314c5cae7c3d508481cdb7b43834ca1c761c3e759bcc1aa422",
+    ),
+    "assurance.healing.schema.fix-proposal.v1": (
+        "1",
+        "45baef416a046697f7c9f7634c16f42a2fd765429a44be8e816119d7567020e4",
+    ),
+    "assurance.healing.schema.heal-apply-intent.v2": (
+        "1",
+        "1addb595efda8616f8e9fbaea045677abb9f733ad7bdc7d292dc6a719acad047",
+    ),
+    "assurance.healing.schema.heal-apply-receipt.v2": (
+        "1",
+        "3cb28116878785cdab7e4a9ccf40b584c611c417a3faa7b4a08481bec7b1d8e7",
+    ),
+    "assurance.healing.schema.healing-safety.v1": (
+        "1",
+        "de2609cbef7eff4f3fb644b21bfd688e6dbc5819618a14bf0bdb07ac1176ec47",
+    ),
+    "assurance.healing.schema.healing-status.v1": (
+        "1",
+        "6b7c39e35175fff1918929cbd51076b55d29173125905a95f9e04b6b688d9f27",
+    ),
+    "assurance.healing.schema.proposal-approved-intent.v1": (
+        "1",
+        "24f3d28027912dab7a3f699f82b1bd6dd6f745b3986bd0eacdde7a8230a54e0d",
+    ),
+    "assurance.healing.schema.proposal-approved-receipt.v1": (
+        "1",
+        "01b1eebdd76326a97e32f7de1b15cf63ada1b769f4140fcaa36946fd770b7f4d",
+    ),
+    "assurance.healing.workflow.repair-coverage.input.v1": (
+        "1",
+        "590d0fd34463cb229d10571ff2ed4d37dbc2bf2526d9a22926ce5bf47e95990d",
+    ),
+    "assurance.healing.workflow.repair-coverage.output.v1": (
+        "1",
+        "274c1aecb03147846bc6dba1ff42a6fddcdd80fbc62073a944badfd93d1b2765",
+    ),
+    "assurance.healing.workflow.repair-failure.input.v1": (
+        "1",
+        "0ae06c1eb1e5fd7a6da1709cad051dc7c20c0a51af4ee6a9befde553f973f810",
+    ),
+    "assurance.healing.workflow.repair-failure.output.v1": (
+        "1",
+        "bcaef7eae9ed8711e3df5044e1f7608e24a42668cd7e0bb71805123b11cc47e0",
+    ),
+}
 
 _TESTS_ROOT = Path(__file__).resolve().parent
 _WHEEL_ROOT = _TESTS_ROOT.parent
@@ -163,6 +223,72 @@ def _imported_modules(tree: ast.AST) -> tuple[str, ...]:
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
             names.append(node.module)
     return tuple(names)
+
+
+def _installed_schema_mapping() -> dict[str, tuple[str, str]]:
+    contribution = HealingPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
+    return {
+        schema.schema_id: (
+            "1",
+            canonical_digest(cast(JSONValue, json.loads(schema.content))),
+        )
+        for schema in contribution.schemas
+    }
+
+
+def test_healing_product_lock_schema_mapping_is_current_only() -> None:
+    assert _installed_schema_mapping() == _CURRENT_HEALING_SCHEMA_MAPPING
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    ["healing_attempt_allocated", "healing_entry_baseline_pinned", "heal_record_apply"],
+)
+def test_episode_rejects_old_event_kinds(event_type: str) -> None:
+    with pytest.raises(ValueError, match="current schema"):
+        project_episode(
+            [
+                {
+                    "type": event_type,
+                    "seq": 1,
+                    "episode_id": "ep-1",
+                    "attempt_key": "legacy-key",
+                    "artifact_sha256": _HEX_A,
+                }
+            ]
+        )
+
+
+def test_episode_rejects_missing_record_key() -> None:
+    with pytest.raises(ValueError, match="current schema"):
+        project_episode(
+            [
+                {
+                    "type": "heal_record_apply_v2",
+                    "seq": 2,
+                    "target": "api",
+                    "outcome": "applied",
+                    "claimed_modified_paths": ["tests/api/test_users.py"],
+                }
+            ]
+        )
+
+
+def test_episode_rejects_former_approval_field_aliases() -> None:
+    with pytest.raises(ValueError, match="current schema"):
+        project_episode(
+            [
+                {
+                    "type": "fixer_proposal_approved",
+                    "seq": 1,
+                    "approval_id": "apr-1",
+                    "proposal_digest": _HEX_A,
+                    "fixer_authority_digest": _HEX_B,
+                    "baseline_digest": _HEX_C,
+                    "policy_digest": _HEX_D,
+                }
+            ]
+        )
 
 
 def test_override_token_is_bound_to_policy_and_candidate() -> None:

@@ -438,8 +438,7 @@ class AdversarialYieldEvidence(BaseModel):
 
     ``unclosed_count`` (Phase 1, discovery-only): confirmed CEs that do not yet
     resolve through the issue snapshot's Observation → Occurrence → Problem
-    projection (with the historical setup link retained as compatibility input).
-    Task 2's ``adversarial_clean`` hard rule consumes this count.
+    projection. Task 2's ``adversarial_clean`` hard rule consumes this count.
 
     Optional C3 summary (M3 Task 3): ``seed_replay_*`` fields are attached only
     when immutable attempt receipts exist under discovery. Absence → all three

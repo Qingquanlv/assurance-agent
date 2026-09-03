@@ -13,7 +13,7 @@ from assurance_intake.contracts import NonEmptyStr
 
 
 class SourceCodeEvidence(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     id: NonEmptyStr
     source: Literal["source_code"]
@@ -24,7 +24,7 @@ class SourceCodeEvidence(BaseModel):
 
 
 class Advisory(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     schema_version: NonEmptyStr
     watchlist: list[Any]
@@ -40,7 +40,7 @@ class Advisory(BaseModel):
 
 
 class FactBaselineUnavailable(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     source: Literal["unavailable"]
     warnings: list[Any]
@@ -48,7 +48,7 @@ class FactBaselineUnavailable(BaseModel):
 
 
 class FactBaselineFull(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     source: Literal["seed_file", "db_probe", "both"]
     schema_version: NonEmptyStr
@@ -97,7 +97,7 @@ FactBaselineAuthoringVariant = Annotated[
 
 
 class FactBaselineAuthoring(RootModel[FactBaselineAuthoringVariant]):
-    """Authoring-only overlay; historical FactBaseline documents stay compatible."""
+    """Authoring contract for current FactBaseline documents."""
 
     model_config = ConfigDict(
         json_schema_extra={

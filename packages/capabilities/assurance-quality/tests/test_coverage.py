@@ -9,10 +9,13 @@ from graph_engine.canonical import JSONValue
 
 from tests.phase4.conformance import execute_task
 
+from pydantic import ValidationError
+
 from assurance_quality.contracts.coverage import (
     CoverageGap,
     CoverageGapLocator,
     CoverageGapsDocument,
+    MinimumCoverageMatrix,
     MinimumCoverageResult,
 )
 from assurance_quality.contracts.c_layer import CLayerMetricsDocument
@@ -415,6 +418,21 @@ def test_classify_coverage_state_table(
         )
         == expected
     )
+
+
+def test_minimum_coverage_matrix_requires_structured_rows() -> None:
+    with pytest.raises(ValidationError):
+        MinimumCoverageMatrix.model_validate(
+            [
+                {
+                    "mrc_id": "MRC-API-001",
+                    "key": "menus.create",
+                    "required": True,
+                    "covered_by_cases": ["TC_A"],
+                    "status": "covered",
+                }
+            ]
+        )
 
 
 def test_coverage_states_are_exactly_the_closed_set() -> None:
