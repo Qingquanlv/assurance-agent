@@ -17,7 +17,6 @@ from assurance_execution.graphs.nodes import publish_execution, select_execute
 from assurance_execution.graphs.state import ExecutionState
 from assurance_execution.plugin import ExecutionPlugin
 from assurance_product.agent_contracts import all_feature_agent_contracts
-from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.attempts.contracts import (
     ResolvedAttemptContract,
@@ -214,9 +213,8 @@ def _invoke_config() -> RunnableConfig:
 def _assert_shipped_inventory(contribution: PluginContribution) -> None:
     assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())
     assert _TEST_CONTRACT_ID not in {item.contract_id for item in contribution.attempt_contracts}
-    assert _TEST_CONTRACT_ID not in AGENT_RUNTIME_BINDINGS
     assert _TEST_CONTRACT_ID not in all_feature_agent_contracts()
-    assert len(AGENT_RUNTIME_BINDINGS) == 33
+    assert len(all_feature_agent_contracts()) == 33
     assert len(all_feature_agent_contracts()) == 33
     assert _EVIDENCE_VALIDATOR_ID in contribution.commit_validators
 

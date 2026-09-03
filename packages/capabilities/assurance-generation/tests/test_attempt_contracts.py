@@ -47,6 +47,8 @@ def test_generation_owns_fourteen_agent_contracts() -> None:
         assert contract.validators == ()
         assert contract.retry.max_attempts == 1
         assert contract.timeout.seconds == 60
+        claims = contract.phase_write_claims
+        assert set(claims.prepare) | set(claims.runtime) | set(claims.finalize) <= set(contract.resources.writes)
 
 
 def test_generation_agent_catalog_preserves_semantic_ids_and_models() -> None:

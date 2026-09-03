@@ -35,18 +35,6 @@ from agent_runtime_contracts.schema import canonical_json_bytes
 _SCHEMA_MEDIA_TYPE = "application/schema+json"
 
 
-class StructuredOutputCapabilityError(ValueError):
-    """Raised when a contract requires provider schema the adapter does not advertise."""
-
-
-def negotiate_provider_schema(*, required: bool, capabilities: AgentRuntimeCapabilities) -> None:
-    del capabilities
-    if required:
-        raise StructuredOutputCapabilityError(
-            "adapter does not advertise provider-enforced structured output"
-        )
-
-
 RUNTIME_REQUEST_SCHEMA = canonical_json_bytes(
     {
         "additionalProperties": False,
@@ -156,6 +144,4 @@ __all__ = [
     "RUNTIME_RESULT_SCHEMA",
     "RuntimeAdapterPlugin",
     "RuntimeAdapterSpec",
-    "StructuredOutputCapabilityError",
-    "negotiate_provider_schema",
 ]

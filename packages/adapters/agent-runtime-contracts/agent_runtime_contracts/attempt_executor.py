@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Generic, Protocol, TypeVar
@@ -8,7 +8,7 @@ from typing import Generic, Protocol, TypeVar
 from pydantic import BaseModel
 
 from graph_engine.attempts import (
-    AttemptExecutionContext,
+    AttemptKey,
     AuthorizedAttemptScope,
     ExecutedAttemptResult,
     IndeterminateTaskResult,
@@ -18,11 +18,12 @@ from graph_engine.attempts import (
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.plugin_api import EffectIntent
+from graph_engine.plugin_api import EffectIntent, ResourceClaimTemplate
 
-from agent_runtime_contracts.execution_contract import AgentExecutionContract
+from agent_runtime_contracts.schema import canonical_digest, thaw_json, validate_local_agent_result
+
+from agent_runtime_contracts.execution_contract import AgentExecutionContract, AgentPhaseWriteClaims
 from agent_runtime_contracts.models import AgentRunResult
-from agent_runtime_contracts.schema import thaw_json, validate_local_agent_result
 
 
 InputT = TypeVar("InputT", bound=BaseModel)
@@ -33,6 +34,7 @@ _InputT_contra = TypeVar("_InputT_contra", bound=BaseModel, contravariant=True)
 _PreparedT_contra = TypeVar("_PreparedT_contra", contravariant=True)
 _PreparedT_co = TypeVar("_PreparedT_co", covariant=True)
 _OutputT_co = TypeVar("_OutputT_co", bound=BaseModel, covariant=True)
+PhaseName = str
 
 
 def _unprovable_raw_admission(snapshot: object) -> bool:
@@ -53,20 +55,59 @@ def _canonical_relative(path: str) -> bool:
     )
 
 
+def phase_task_id(attempt_key: AttemptKey, phase: str, handler_id: str) -> str:
+    return canonical_digest(
+        {
+            "attempt_key": attempt_key.digest,
+            "handler_id": handler_id,
+            "phase": phase,
+        }
+    )
+
+
+def _list_relative_files(root: Path) -> set[str]:
+    if not root.exists():
+        return set()
+    files: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            files.add(path.relative_to(root).as_posix())
+    return files
+
+
+def _resolve_claim_paths(
+    templates: tuple[str, ...],
+    resolved_writes: tuple[str, ...],
+) -> set[str]:
+    resolved: set[str] = set()
+    for template in templates:
+        if "{" not in template:
+            resolved.add(template)
+            continue
+        prefix, _, suffix = template.partition("{change_id}")
+        for path in resolved_writes:
+            if path.startswith(prefix) and path.endswith(suffix):
+                middle = path[len(prefix) : len(path) - len(suffix) if suffix else len(path)]
+                if middle and "/" not in middle:
+                    resolved.add(path)
+    return resolved
+
+
 @dataclass(frozen=True, slots=True)
 class ReadOnlyRawWorkspace:
-    root: Path
+    _root: Path
+    identity_digest: str = ""
 
     def _resolved(self, relative: str) -> Path:
         if not _canonical_relative(relative):
             raise ValueError(f"raw workspace path must be canonical and relative: {relative}")
-        path = self.root
+        path = self._root
         for part in PurePosixPath(relative).parts:
             path = path / part
             if path.is_symlink():
                 raise ValueError(f"raw workspace path is a symlink: {relative}")
         try:
-            path.resolve().relative_to(self.root.resolve())
+            path.resolve().relative_to(self._root.resolve())
         except ValueError as error:
             raise ValueError(
                 f"raw workspace path must stay inside the authorized root: {relative}"
@@ -98,11 +139,14 @@ class RawFinalizeBundle(Generic[InputT, PreparedT, AgentResultT]):
     raw_workspace: ReadOnlyRawWorkspace
 
 
+_T = TypeVar("_T")
+
+
 class PreparePhase(Protocol[_InputT_contra, _PreparedT_co]):
     async def execute(
         self,
         validated_input: _InputT_contra,
-        context: AttemptExecutionContext,
+        scope: AuthorizedAttemptScope,
     ) -> _PreparedT_co: ...
 
 
@@ -110,7 +154,7 @@ class RuntimePhase(Protocol[_PreparedT_contra]):
     async def execute(
         self,
         prepared: _PreparedT_contra,
-        context: AttemptExecutionContext,
+        scope: AuthorizedAttemptScope,
     ) -> RawAgentRuntimeOutcome: ...
 
 
@@ -118,7 +162,7 @@ class FinalizePhase(Protocol[InputT, PreparedT, AgentResultT, _OutputT_co]):
     async def execute(
         self,
         bundle: RawFinalizeBundle[InputT, PreparedT, AgentResultT],
-        context: AttemptExecutionContext,
+        scope: AuthorizedAttemptScope,
     ) -> _OutputT_co: ...
 
 
@@ -138,6 +182,17 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         self._finalize = finalize
         self._result_context = None if result_context is None else dict(result_context)
         self.effects: tuple[EffectIntent, ...] = ()
+        self.phase_log: list[str] = []
+        self.phase_deltas: dict[str, set[str]] = {
+            "prepare": set(),
+            "runtime": set(),
+            "finalize": set(),
+        }
+        self.phase_task_ids: dict[str, str] = {}
+
+    @property
+    def claims(self) -> AgentPhaseWriteClaims:
+        return self._contract.phase_write_claims
 
     def to_task_contract(self) -> TaskAttemptContract[InputT, OutputT]:
         return self._contract.to_task_contract()
@@ -150,10 +205,34 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         validated_input: InputT,
         scope: AuthorizedAttemptScope,
     ) -> ExecutedAttemptResult[OutputT]:
-        context = scope.execution
-        prepared = await self._prepare.execute(validated_input, context)
-        outcome = await self._runtime.execute(prepared, context)
-        output = await self._finalize_outcome(validated_input, prepared, outcome, context)
+        self.phase_log = []
+        self.phase_deltas = {"prepare": set(), "runtime": set(), "finalize": set()}
+        self.phase_task_ids = {
+            "prepare": phase_task_id(
+                scope.execution.attempt_key, "prepare", self._contract.prepare_handler_id
+            ),
+            "runtime": phase_task_id(
+                scope.execution.attempt_key, "runtime", getattr(self._runtime, "handler_id", "runtime")
+            ),
+            "finalize": phase_task_id(
+                scope.execution.attempt_key, "finalize", self._contract.finalize_handler_id
+            ),
+        }
+        prepared = await self._run_phase(
+            "prepare",
+            lambda: self._prepare.execute(validated_input, scope),
+            scope,
+        )
+        outcome = await self._run_phase(
+            "runtime",
+            lambda: self._runtime.execute(prepared, scope),
+            scope,
+        )
+        output = await self._run_phase(
+            "finalize",
+            lambda: self._finalize_outcome(validated_input, prepared, outcome, scope),
+            scope,
+        )
         return ExecutedAttemptResult(output=output, effects=self.effects)
 
     async def reconcile(
@@ -163,7 +242,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         snapshot: object,
     ) -> ExecutedAttemptResult[OutputT] | IndeterminateTaskResult | PermanentTaskFailure:
         context = scope.execution
-        prepared = await self._prepare.execute(validated_input, context)
+        prepared = await self._prepare.execute(validated_input, scope)
         runtime_reconcile = getattr(self._runtime, "reconcile", None)
         if runtime_reconcile is None:
             return PermanentTaskFailure(
@@ -177,15 +256,41 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
             return IndeterminateTaskResult(
                 reconciliation=SystemReference(reference_id="unprovable-admission")
             )
-        output = await self._finalize_outcome(validated_input, prepared, outcome, context)
+        output = await self._finalize_outcome(validated_input, prepared, outcome, scope)
         return ExecutedAttemptResult(output=output, effects=self.effects)
+
+    async def _run_phase(
+        self,
+        phase: PhaseName,
+        action: Callable[[], Awaitable[_T]],
+        scope: AuthorizedAttemptScope,
+    ) -> _T:
+        before = _list_relative_files(scope.workspace.write_root)
+        self.phase_log.append(phase)
+        result = await action()
+        after = _list_relative_files(scope.workspace.write_root)
+        delta = after - before
+        allowed = self._allowed_paths(phase, scope)
+        if not delta <= allowed:
+            raise ValueError(f"{phase} wrote undeclared staging paths: {sorted(delta - allowed)}")
+        self.phase_deltas[phase] = delta
+        return result
+
+    def _allowed_paths(self, phase: PhaseName, scope: AuthorizedAttemptScope) -> set[str]:
+        claims = getattr(self._contract.phase_write_claims, phase)
+        writes = scope.workspace.identity.output_paths
+        if not writes:
+            writes = tuple(self._contract.resources.writes)
+            if isinstance(self._contract.resources, ResourceClaimTemplate):
+                return _resolve_claim_paths(claims, writes) | set(claims)
+        return _resolve_claim_paths(claims, writes) | set(claims)
 
     async def _finalize_outcome(
         self,
         validated_input: InputT,
         prepared: PreparedT,
         outcome: RawAgentRuntimeOutcome,
-        context: AttemptExecutionContext,
+        scope: AuthorizedAttemptScope,
     ) -> OutputT:
         _exact, _digest, agent_result = validate_local_agent_result(
             thaw_json(outcome.run_result.result_payload),
@@ -199,7 +304,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
             run_evidence=outcome.run_result,
             raw_workspace=outcome.raw_workspace,
         )
-        output = await self._finalize.execute(bundle, context)
+        output = await self._finalize.execute(bundle, scope)
         return self._contract.output_model.model_validate(output)
 
 
@@ -211,4 +316,5 @@ __all__ = [
     "ReadOnlyRawWorkspace",
     "ResolvedRawAgentExecutor",
     "RuntimePhase",
+    "phase_task_id",
 ]

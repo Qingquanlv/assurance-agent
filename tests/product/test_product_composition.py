@@ -51,12 +51,11 @@ def test_composition_binds_semantic_agent_contracts_not_phase_aliases(
 ) -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
 
     composition = resolve_assurance_composition(request_for(adapter, installed_sources))
     entries = composition.registries.capabilities.entries
     bindings = {key: value for key, value in entries.items() if isinstance(value, CapabilityBindingEntry)}
-    assert set(bindings) == set(AGENT_EXECUTION_CONTRACTS) == set(AGENT_RUNTIME_BINDINGS)
+    assert set(bindings) == set(AGENT_EXECUTION_CONTRACTS)
     assert not any(item.startswith("assurance.product.agent.") for item in bindings)
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         binding = bindings[contract_id]

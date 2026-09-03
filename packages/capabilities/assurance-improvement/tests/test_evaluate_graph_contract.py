@@ -362,7 +362,7 @@ async def test_kernel_settles_delivery_inside_same_attempt_before_receipt(tmp_pa
         assert snapshot.effects
         assert snapshot.effects[0].kind == _DELIVERY_KIND
         assert snapshot.effects[0].receipt_digest
-        intents = closed.declared_effects(result.output)
+        intents = snapshot.effects
         assert len(intents) == 1
         assert intents[0].kind == _DELIVERY_KIND
         intent = ImprovementEffectIntentV1.model_validate(intents[0].payload)

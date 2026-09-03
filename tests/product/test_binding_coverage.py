@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from tests.product.composition_harness import (
     SHADOW_VALIDATOR_CLONE_ID,
     coverage_bytes,
@@ -56,16 +58,10 @@ def test_resolved_bindings_use_semantic_contract_ids(installed_sources):
         assert entry.contract_id == binding_id
 
 
-def test_cursor_resolution_repeats_semantic_bindings(installed_sources):
+def test_cursor_adapter_is_rejected(installed_sources):
     evict_generated_binding_modules()
-    from assurance_product.product import resolve_assurance_composition
-
-    first = project_binding_coverage(resolve_assurance_composition(request_for("cursor", installed_sources)))
-    second = project_binding_coverage(resolve_assurance_composition(request_for("cursor", installed_sources)))
-    assert coverage_bytes(first) == coverage_bytes(second)
-    assert set(first) == set(ALL_BINDING_IDS)
-    assert len(first) == 33
-    assert not any(item.endswith(".finalize") for item in first)
+    with pytest.raises(ValueError, match="unsupported adapter"):
+        request_for("cursor", installed_sources)
 
 
 def test_shadow_validator_clone_is_absent_from_binding_coverage(installed_sources):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from agent_runtime_contracts.models import AgentRunRequest, AgentWorkspaceV1
 from agent_runtime_contracts.schema import canonical_digest
@@ -36,4 +36,24 @@ def rebind_agent_run_workspace(
     )
 
 
-__all__ = ["rebind_agent_run_workspace"]
+class AuthenticatedStagingWriter:
+    """Write only declared staging paths under the authenticated write root."""
+
+    def __init__(self, write_root: Path, claims: tuple[str, ...]) -> None:
+        self._root = write_root
+        self._claims = frozenset(claims)
+
+    def write_bytes(self, relative: str, data: bytes) -> Path:
+        if relative not in self._claims:
+            raise ValueError(f"undeclared staging write: {relative}")
+        path = self._root
+        for part in PurePosixPath(relative).parts:
+            path = path / part
+            if path.is_symlink():
+                raise ValueError(f"staging write path is a symlink: {relative}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+
+__all__ = ["AuthenticatedStagingWriter", "rebind_agent_run_workspace"]

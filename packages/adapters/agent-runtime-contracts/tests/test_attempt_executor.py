@@ -23,7 +23,12 @@ from graph_engine.plugin_api import (
     TaskWorkspaceIdentity,
 )
 
-from agent_runtime_contracts import AgentExecutionContract, AgentRunResult, canonical_digest
+from agent_runtime_contracts import (
+    AgentExecutionContract,
+    AgentPhaseWriteClaims,
+    AgentRunResult,
+    canonical_digest,
+)
 from agent_runtime_contracts.attempt_executor import (
     RawAgentRuntimeOutcome,
     RawFinalizeBundle,
@@ -79,9 +84,9 @@ class RecordingPrepare:
     async def execute(
         self,
         validated_input: CaseDesignInput,
-        context: AttemptExecutionContext,
+        scope: AuthorizedAttemptScope,
     ) -> CaseDesignPrepared:
-        del context
+        del scope
         self.order.append("prepare")
         self.seen_input = validated_input
         return self.prepared
@@ -103,9 +108,9 @@ class RecordingRuntime:
     async def execute(
         self,
         prepared: CaseDesignPrepared,
-        context: AttemptExecutionContext,
+        scope: AuthorizedAttemptScope,
     ) -> RawAgentRuntimeOutcome:
-        del context
+        del scope
         self.order.append("runtime")
         self.seen_prepared = prepared
         run_result = self.result if isinstance(self.result, AgentRunResult) else _run_result(self.result)
@@ -121,12 +126,16 @@ class RecordingFinalize:
     async def execute(
         self,
         bundle: RawFinalizeBundle[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult],
-        context: AttemptExecutionContext,
-    ) -> object:
-        del context
+        scope: AuthorizedAttemptScope,
+    ) -> CaseDesignOutput:
+        del scope
         self.order.append("finalize")
         self.seen = bundle
-        return self.output
+        return (
+            self.output
+            if isinstance(self.output, CaseDesignOutput)
+            else CaseDesignOutput.model_validate(self.output)
+        )
 
 
 def _context() -> AttemptExecutionContext:
@@ -189,6 +198,7 @@ def _contract() -> AgentExecutionContract[CaseDesignInput, CaseDesignAgentResult
         retry=AttemptRetryPolicy(max_attempts=1),
         timeout=AttemptTimeoutPolicy(seconds=60),
         validators=(),
+        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=(), finalize=()),
     )
 
 
@@ -385,3 +395,182 @@ def test_case_design_repair_raw_attempt_preserves_both_legacy_prepare_consumers(
     assert finalize.seen.validated_input.path == "repair"
     assert isinstance(output, ExecutedAttemptResult)
     assert output.output == expected_output
+
+
+class _WritingPrepare(RecordingPrepare):
+    def __init__(
+        self,
+        prepared: CaseDesignPrepared,
+        order: list[str],
+        write_relative: str,
+        payload: bytes,
+    ) -> None:
+        super().__init__(prepared, order)
+        self.write_relative = write_relative
+        self.payload = payload
+
+    async def execute(
+        self,
+        validated_input: CaseDesignInput,
+        scope: AuthorizedAttemptScope,
+    ) -> CaseDesignPrepared:
+        target = scope.workspace.write_root.joinpath(*self.write_relative.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(self.payload)
+        return await super().execute(validated_input, scope)
+
+
+class _WritingRuntime(RecordingRuntime):
+    def __init__(
+        self,
+        result: object,
+        workspace: ReadOnlyRawWorkspace,
+        order: list[str],
+        write_relative: str,
+        payload: bytes,
+        write_root: Path,
+    ) -> None:
+        super().__init__(result, workspace, order)
+        self.write_relative = write_relative
+        self.payload = payload
+        self.write_root = write_root
+
+    async def execute(
+        self,
+        prepared: CaseDesignPrepared,
+        scope: AuthorizedAttemptScope,
+    ) -> RawAgentRuntimeOutcome:
+        target = scope.workspace.write_root.joinpath(*self.write_relative.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(self.payload)
+        return await super().execute(prepared, scope)
+
+
+class _WritingFinalize(RecordingFinalize):
+    def __init__(
+        self,
+        output: object,
+        order: list[str],
+        write_relative: str,
+        payload: bytes,
+    ) -> None:
+        super().__init__(output, order)
+        self.write_relative = write_relative
+        self.payload = payload
+
+    async def execute(
+        self,
+        bundle: RawFinalizeBundle[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult],
+        scope: AuthorizedAttemptScope,
+    ) -> CaseDesignOutput:
+        target = scope.workspace.write_root.joinpath(*self.write_relative.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(self.payload)
+        return await super().execute(bundle, scope)
+
+
+class _RawExecutorFixture:
+    def __init__(
+        self,
+        executor: ResolvedRawAgentExecutor[
+            CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult, CaseDesignOutput
+        ],
+        claims: object,
+        validated_input: CaseDesignInput,
+        scope: AuthorizedAttemptScope,
+    ) -> None:
+        self.executor = executor
+        self.claims = claims
+        self.validated_input = validated_input
+        self.scope = scope
+        self.phase_log: list[str] = []
+        self.prepare_delta: set[str] = set()
+        self.runtime_delta: set[str] = set()
+        self.finalize_delta: set[str] = set()
+
+    async def execute(self) -> ExecutedAttemptResult[CaseDesignOutput]:
+        result = await self.executor.execute(self.validated_input, self.scope)
+        self.phase_log = list(self.executor.phase_log)
+        deltas = self.executor.phase_deltas
+        self.prepare_delta = set(deltas["prepare"])
+        self.runtime_delta = set(deltas["runtime"])
+        self.finalize_delta = set(deltas["finalize"])
+        return result
+
+
+@pytest.fixture
+def raw_executor_fixture(tmp_path: Path) -> _RawExecutorFixture:
+    from agent_runtime_contracts import AgentPhaseWriteClaims
+
+    claims = AgentPhaseWriteClaims(
+        prepare=("qa/prepare.txt",),
+        runtime=("qa/runtime.txt",),
+        finalize=("qa/finalize.txt",),
+    )
+    from graph_engine.plugin_api import ResourceClaims
+
+    contract = AgentExecutionContract(
+        contract_id="assurance.intake.agent.case-design.v1",
+        owner_id="assurance.intake",
+        prepare_handler_id="assurance.intake.case-design.prepare",
+        finalize_handler_id="assurance.intake.case-design.finalize",
+        skill_id="aa-case-design",
+        agent_profile="assurance-v1-doc-author",
+        input_model=CaseDesignInput,
+        agent_result_model=CaseDesignAgentResult,
+        output_model=CaseDesignOutput,
+        resources=ResourceClaims(writes=(*claims.prepare, *claims.runtime, *claims.finalize)),
+        retry=AttemptRetryPolicy(max_attempts=1),
+        timeout=AttemptTimeoutPolicy(seconds=60),
+        validators=(),
+        phase_write_claims=claims,
+    )
+    scope = _scope(tmp_path)
+    order: list[str] = []
+    prepare = _WritingPrepare(
+        CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"),
+        order,
+        "qa/prepare.txt",
+        b"prepare\n",
+    )
+    runtime = _WritingRuntime(
+        CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)).model_dump(),
+        _workspace(tmp_path),
+        order,
+        "qa/runtime.txt",
+        b"runtime\n",
+        scope.workspace.write_root,
+    )
+    finalize = _WritingFinalize(
+        CaseDesignOutput(status="committed", output_files=("qa/changes/CH-1/proposal.md",), path="primary"),
+        order,
+        "qa/finalize.txt",
+        b"finalize\n",
+    )
+    executor = ResolvedRawAgentExecutor(contract, prepare=prepare, runtime=runtime, finalize=finalize)
+    return _RawExecutorFixture(
+        executor,
+        claims,
+        CaseDesignInput(change_id="CH-1", path="primary"),
+        scope,
+    )
+
+
+def test_raw_executor_uses_three_disjoint_staging_phases(raw_executor_fixture) -> None:
+    result = asyncio.run(raw_executor_fixture.execute())
+    assert raw_executor_fixture.phase_log == ["prepare", "runtime", "finalize"]
+    assert isinstance(result, ExecutedAttemptResult)
+    assert raw_executor_fixture.prepare_delta <= set(raw_executor_fixture.claims.prepare)
+    assert raw_executor_fixture.runtime_delta <= set(raw_executor_fixture.claims.runtime)
+    assert raw_executor_fixture.finalize_delta <= set(raw_executor_fixture.claims.finalize)
+    assert not (
+        raw_executor_fixture.prepare_delta & raw_executor_fixture.runtime_delta
+        | raw_executor_fixture.prepare_delta & raw_executor_fixture.finalize_delta
+        | raw_executor_fixture.runtime_delta & raw_executor_fixture.finalize_delta
+    )
+
+
+def test_raw_workspace_hides_public_path(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    assert not hasattr(workspace, "root")
+    assert workspace.read_text("qa/proposal.md") == "design"

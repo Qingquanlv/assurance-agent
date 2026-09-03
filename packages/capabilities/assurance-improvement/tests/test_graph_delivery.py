@@ -789,7 +789,7 @@ async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_pa
         assert hybrid.traces["improvement.evaluate"].index("settle_effects") < hybrid.traces[
             "improvement.evaluate"
         ].index("publish_receipt")
-        intents = closed.declared_effects(receipt_model)
+        intents = snapshot.effects
         assert len(intents) == 1
         assert intents[0].kind == _DELIVERY_KIND
         intent = ImprovementEffectIntentV1.model_validate(intents[0].payload)
@@ -837,7 +837,7 @@ async def test_apply_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: P
         assert receipt_model.outcome == "passed"
         trace = hybrid.traces["improvement.apply-evaluate"]
         assert trace.index("settle_effects") < trace.index("publish_receipt")
-        intents = closed.declared_effects(receipt_model)
+        intents = snapshot.effects
         assert len(intents) == 1
         assert intents[0].kind == _DELIVERY_KIND
         intent = ImprovementEffectIntentV1.model_validate(intents[0].payload)

@@ -38,6 +38,8 @@ def test_quality_owns_five_agent_contracts() -> None:
         assert contract.owner_id == "assurance.quality"
         assert contract.prepare_handler_id == f"assurance.quality.{base}.prepare"
         assert contract.finalize_handler_id == f"assurance.quality.{base}.finalize"
+        claims = contract.phase_write_claims
+        assert set(claims.runtime) == set(contract.resources.writes)
         assert contract.skill_id == skill_id
         assert contract.agent_profile == profile
         assert contract.input_model is QualitySkillInputV1

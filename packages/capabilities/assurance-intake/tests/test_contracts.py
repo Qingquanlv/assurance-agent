@@ -486,7 +486,10 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
         "explore": (
             "aa-explore",
             "assurance-v1-explorer",
-            ("qa/changes/{change_id}/explore/exploration.json",),
+            (
+                "qa/changes/{change_id}/explore/context.json",
+                "qa/changes/{change_id}/explore/exploration.json",
+            ),
             ("qa/changes/{change_id}/explore/exploration.json",),
         ),
         "intake": (

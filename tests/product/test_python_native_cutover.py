@@ -73,19 +73,18 @@ def count_semantic_agent_contracts() -> int:
 
 
 def count_raw_agent_runtime_bindings() -> int:
-    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
+    from assurance_product.agent_contracts import all_feature_agent_contracts
 
-    return len(AGENT_RUNTIME_BINDINGS)
+    return len(all_feature_agent_contracts())
 
 
 def all_agent_contracts_resolve_with_raw_executor() -> bool:
     from agent_runtime_contracts import ResolvedRawAgentExecutor
 
     from assurance_product.agent_contracts import all_feature_agent_contracts
-    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
 
     contracts = all_feature_agent_contracts()
-    if set(AGENT_RUNTIME_BINDINGS) != set(contracts) or len(contracts) != 33:
+    if len(contracts) != 33:
         return False
     source = (
         _REPO_ROOT

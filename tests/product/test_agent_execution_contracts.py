@@ -313,12 +313,11 @@ def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
         all_feature_agent_contracts,
     )
     from assurance_product.models import all_binding_ids
-    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
 
     all_contracts = [contract for catalog in FEATURE_AGENT_JOB_CATALOGS for contract in catalog.values()]
     assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 33
     assert len(all_feature_agent_contracts()) == 33
-    assert set(AGENT_RUNTIME_BINDINGS) == set(all_feature_agent_contracts()) == set(all_binding_ids())
+    assert set(all_feature_agent_contracts()) == set(all_binding_ids())
     assert all(not hasattr(contract, "requires_provider_schema") for contract in all_contracts)
     assert all(
         "opencode" not in json.dumps(contract.canonical_projection()).lower() for contract in all_contracts
@@ -382,6 +381,7 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
     )
     extra_claims = {
         "assurance.intake.agent.case-design.v1": (f"qa/changes/{change_id}/cases",),
+        "assurance.intake.agent.explore.v1": (f"qa/changes/{change_id}/explore/context.json",),
     }
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         assert isinstance(contract.resources, ResourceClaimTemplate)
@@ -466,8 +466,11 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     assert resources.parameters == {"change_id": "/workspace/scope_id"}
     assert resources.reads == ("qa",)
     claims = resources.resolve({"workspace": {"scope_id": current_id}}).writes
-    assert claims == (f"qa/changes/{current_id}/explore/exploration.json",)
     context_claim = f"qa/changes/{current_id}/explore/context.json"
+    assert claims == (
+        context_claim,
+        f"qa/changes/{current_id}/explore/exploration.json",
+    )
 
     store = TaskWorkspaceStore(project, current / ".staging", current / ".runtime" / "receipts")
     try:

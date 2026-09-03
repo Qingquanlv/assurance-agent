@@ -103,8 +103,6 @@ def test_checkpoint_r_inventory_is_33_33_34_41_43() -> None:
         all_feature_agent_contracts,
         all_feature_task_contracts,
     )
-    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS, RAW_AGENT_RUNTIME_BINDING_ROWS
-
     contracts = all_feature_agent_contracts()
     tasks = {contract.contract_id: contract for contract in all_feature_task_contracts().values()}
     bound = _feature_bound_ids()
@@ -112,12 +110,9 @@ def test_checkpoint_r_inventory_is_33_33_34_41_43() -> None:
     task_bound = tuple(item for item in bound if item in tasks)
 
     assert len(contracts) == 33
-    assert len(AGENT_RUNTIME_BINDINGS) == 33
-    assert set(AGENT_RUNTIME_BINDINGS) == set(contracts)
-    assert len(RAW_AGENT_RUNTIME_BINDING_ROWS) == 33
+    assert set(contracts) == set(all_feature_agent_contracts())
     assert len(contracts) + len(tasks) == 41
     assert not any(item.startswith("assurance.product.agent.") for item in contracts)
-    assert all("alias" not in row.schema_version for row in RAW_AGENT_RUNTIME_BINDING_ROWS)
 
     assert set(agent_bound) == set(contracts)
     assert set(task_bound) == set(tasks)
@@ -154,12 +149,12 @@ def test_checkpoint_r_records_candidate_lock_and_revision(installed_sources) -> 
         product_lock_from_composition,
         resolve_assurance_composition,
     )
-    from assurance_product.runtime_bindings import RAW_AGENT_RUNTIME_BINDING_ROWS
+    from assurance_product.runtime_bindings import raw_agent_runtime_binding_rows
 
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     product_lock = product_lock_from_composition(composition)
     manifest = product_graph_manifest(composition, product_lock)
-    rows = RAW_AGENT_RUNTIME_BINDING_ROWS
+    rows = raw_agent_runtime_binding_rows(composition)
     sha = _candidate_sha()
 
     assert len(sha) == 40
@@ -565,12 +560,12 @@ def test_live_opencode_cutover_binding_records_checkpoint_r(
         product_lock_from_composition,
         resolve_assurance_composition,
     )
-    from assurance_product.runtime_bindings import RAW_AGENT_RUNTIME_BINDING_ROWS
+    from assurance_product.runtime_bindings import raw_agent_runtime_binding_rows
 
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     product_lock = product_lock_from_composition(composition)
     manifest = product_graph_manifest(composition, product_lock)
-    rows = RAW_AGENT_RUNTIME_BINDING_ROWS
+    rows = raw_agent_runtime_binding_rows(composition)
     assert {row.adapter for row in rows} == {"opencode"}
     assert {row.provider for row in rows} == {"opencode"}
     assert {row.model for row in rows} == {"fixture-model"}

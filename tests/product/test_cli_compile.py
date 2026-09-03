@@ -228,7 +228,7 @@ def test_compile_keeps_v3_lock_and_both_33_row_raw_agent_tables(cli_runner, inst
     from assurance_product.application import AssuranceProductApplication
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS, RAW_AGENT_RUNTIME_BINDING_ROWS
+    from assurance_product.runtime_bindings import raw_agent_runtime_binding_rows
     from tests.product.test_python_native_cutover import (
         count_agent_occurrences,
         count_raw_agent_runtime_bindings,
@@ -247,8 +247,7 @@ def test_compile_keeps_v3_lock_and_both_33_row_raw_agent_tables(cli_runner, inst
     assert isinstance(artifacts.product_lock, ProductLock)
     assert artifacts.product_lock.schema_version == "3"
     assert isinstance(artifacts.graph_manifest, GraphBuildManifest)
-    assert len(AGENT_RUNTIME_BINDINGS) == 33
-    assert len(RAW_AGENT_RUNTIME_BINDING_ROWS) == 33
+    assert len(raw_agent_runtime_binding_rows(composition)) == 33
     assert count_semantic_agent_contracts() == 33
     assert count_raw_agent_runtime_bindings() == 33
     assert count_agent_occurrences() == 34

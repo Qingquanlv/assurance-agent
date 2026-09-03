@@ -14,7 +14,7 @@ from agent_runtime_contracts import (
     ReadOnlyRawWorkspace,
     ResolvedRawAgentExecutor,
 )
-from agent_runtime_contracts.execution_contract import AgentExecutionContract
+from agent_runtime_contracts.execution_contract import AgentExecutionContract, AgentPhaseWriteClaims
 from agent_runtime_contracts.schema import canonical_digest, thaw_json
 from agent_runtime_opencode.observation import parse_closed_terminal_result
 from agent_runtime_opencode.redaction import reject_canaries_in_payload, scan_for_canaries
@@ -359,6 +359,7 @@ def _contract() -> AgentExecutionContract[RawInput, RawAgentResult, RawOutput]:
         retry=AttemptRetryPolicy(max_attempts=1),
         timeout=AttemptTimeoutPolicy(seconds=60),
         validators=(),
+        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=("out.txt",), finalize=()),
     )
 
 

@@ -136,6 +136,12 @@ def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> Non
         assert contract.retry.max_attempts == 1
         assert contract.timeout.seconds == 60
         assert not hasattr(contract, "requires_provider_schema")
+        claims = contract.phase_write_claims
+        claimed = set(claims.prepare) | set(claims.runtime) | set(claims.finalize)
+        assert claimed <= set(contract.resources.writes)
+        assert not (set(claims.prepare) & set(claims.runtime))
+        assert not (set(claims.prepare) & set(claims.finalize))
+        assert not (set(claims.runtime) & set(claims.finalize))
 
 
 def test_agent_contract_omitting_validators_is_invalid() -> None:
@@ -154,6 +160,7 @@ def test_agent_contract_omitting_validators_is_invalid() -> None:
             resources=sample.resources,
             retry=sample.retry,
             timeout=sample.timeout,
+            phase_write_claims=sample.phase_write_claims,
         )  # type: ignore[call-arg]
 
 

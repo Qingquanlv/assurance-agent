@@ -86,6 +86,8 @@ def test_improvement_owns_six_agent_contracts() -> None:
         assert contract.validators == ()
         assert contract.retry.max_attempts == 1
         assert contract.timeout.seconds == 60
+        claims = contract.phase_write_claims
+        assert set(claims.runtime) == set(contract.resources.writes)
 
 
 def test_eight_effectful_improvement_ids_are_task_contracts() -> None:

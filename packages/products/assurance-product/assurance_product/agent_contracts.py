@@ -45,6 +45,10 @@ def all_feature_task_contracts() -> Mapping[str, TaskAttemptContract]:
     return FEATURE_TASK_ATTEMPT_CONTRACTS
 
 
+def is_agent_contract(contract: TaskAttemptContract) -> bool:
+    return ".agent." in contract.contract_id
+
+
 __all__ = [
     "AGENT_EXECUTION_CONTRACTS",
     "FEATURE_AGENT_JOB_CATALOGS",
@@ -52,4 +56,5 @@ __all__ = [
     "AgentExecutionContract",
     "all_feature_agent_contracts",
     "all_feature_task_contracts",
+    "is_agent_contract",
 ]
