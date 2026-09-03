@@ -225,7 +225,7 @@ def test_plan_review_pass_auto_fix_reject_human_and_not_ready() -> None:
     from assurance_generation.graphs.routes import route_plan_review
 
     assert route_plan_review(_review_state(decision="pass", codegen_readiness="ready")) == "codegen"
-    assert route_plan_review(_review_state(decision="approved", codegen_readiness="ready")) == "codegen"
+    assert route_plan_review(_review_state(decision="approved", codegen_readiness="ready")) == "exhausted"
     assert route_plan_review(_review_state(decision="pass", codegen_readiness="not_ready")) == "exhausted"
     assert (
         route_plan_review(

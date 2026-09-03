@@ -204,7 +204,7 @@ async def test_pass_completes_without_advance(family: str) -> None:
     )
     terminal = cast(dict[str, object], result.terminal)
     assert terminal.get("rounds_used") == 0
-    assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") in {"pass", "approved"}
+    assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") == "pass"
 
 
 @pytest.mark.parametrize("family", _FAMILIES)
@@ -362,7 +362,7 @@ async def test_human_action_on_family_graph(family: str, action: str) -> None:
             f"generation.{family}.plan"
         ) == 2
     elif action == "approve":
-        assert resumed.get("status") in {"passed", "done"} or resumed.get("decision") in {"pass", "approved"}
+        assert resumed.get("status") in {"passed", "done"} or resumed.get("decision") == "pass"
     else:
         assert resumed.get("decision") == "reject" or resumed.get("status") == "rejected"
 

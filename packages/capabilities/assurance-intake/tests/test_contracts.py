@@ -12,10 +12,47 @@ import yaml
 from pydantic import ValidationError
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
 from assurance_intake.contracts import CaseReviewResultV1, CaseYaml, CaseYamlAuthoring, QaYaml
+from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.review import normalized_auto_fix_edits
 from assurance_intake.plugin import IntakePlugin
+
+_CURRENT_INTAKE_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
+    "assurance.intake.schema.case-authoring.v1": (
+        "1",
+        "93b83ab51c63145bc1d7a90f6be6c79ccef64e106aabcb5eee4d9ef75bbcbe2f",
+    ),
+    "assurance.intake.schema.case-review.v1": (
+        "1",
+        "f39c10af39534ae25c7daa7be0044c5082d82ab8a4108ad92725219fececefea",
+    ),
+    "assurance.intake.schema.case.v1": (
+        "1",
+        "93b83ab51c63145bc1d7a90f6be6c79ccef64e106aabcb5eee4d9ef75bbcbe2f",
+    ),
+    "assurance.intake.schema.qa-change.v1": (
+        "1",
+        "c0053b53d8d5358e7818694c5313e7632a62e379113c161c959f2ed46e2ea1f5",
+    ),
+    "assurance.intake.workflow.case.input.v1": (
+        "1",
+        "a092fe28e54f550001e021c726350a082bb5797c8868abd13730baae4c54585a",
+    ),
+    "assurance.intake.workflow.case.output.v1": (
+        "1",
+        "acdb88e9650b96d7305d3919cb0a9280af3224495e3bd341af2deb5d2cf2075e",
+    ),
+    "assurance.intake.workflow.prepare.input.v1": (
+        "1",
+        "9784c26ac8e68916b6961943bd38c2b26082c1ff0b19d525a427844bcd70ca46",
+    ),
+    "assurance.intake.workflow.prepare.output.v1": (
+        "1",
+        "acdb88e9650b96d7305d3919cb0a9280af3224495e3bd341af2deb5d2cf2075e",
+    ),
+}
 
 _TESTS_ROOT = Path(__file__).resolve().parent
 _WHEEL_ROOT = _TESTS_ROOT.parent
@@ -209,6 +246,93 @@ def test_performance_case_requires_concrete_http_endpoint() -> None:
         CaseYamlAuthoring.model_validate(raw, context={"capability_leafs": VALID_LEAFS})
 
 
+def _installed_schema_mapping() -> dict[str, tuple[str, str]]:
+    contribution = IntakePlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
+    return {
+        schema.schema_id: (
+            "1",
+            canonical_digest(cast(JSONValue, json.loads(schema.content))),
+        )
+        for schema in contribution.schemas
+    }
+
+
+def test_intake_product_lock_schema_mapping_is_current_only() -> None:
+    assert _installed_schema_mapping() == _CURRENT_INTAKE_SCHEMA_MAPPING
+
+
+def valid_case_review() -> dict[str, object]:
+    return _review_payload(decision="pass", auto_fix_allowed=False, human_review_required=False)
+
+
+@pytest.mark.parametrize("decision", ["approved", "changes_requested"])
+def test_case_review_rejects_old_decisions(decision: str) -> None:
+    payload = {
+        **valid_case_review(),
+        "decision": decision,
+        **(
+            {"auto_fix_allowed": True, "auto_fix_plan": [{"fix": "tighten assertion"}]}
+            if decision == "changes_requested"
+            else {}
+        ),
+    }
+    with pytest.raises(ValidationError):
+        CaseReviewResultV1.model_validate(payload)
+
+
+@pytest.mark.parametrize("old_key", ["action", "instructions"])
+def test_auto_fix_requires_edits(old_key: str) -> None:
+    with pytest.raises(ValueError, match="edits"):
+        normalized_auto_fix_edits({old_key: ["replace value"]})
+
+
+def test_case_yaml_read_requires_authoring_fields() -> None:
+    with pytest.raises(ValidationError):
+        CaseYaml.model_validate(
+            {
+                "schema_version": "1.0",
+                "added": [
+                    {
+                        "case_id": "TC_MENU_001",
+                        "title": "create menu happy path",
+                        "status": "active",
+                        "priority": "P1",
+                        "severity": "major",
+                        "type": "API",
+                        "module": "menus",
+                    }
+                ],
+                "modified": [],
+                "removed": [],
+            },
+            context={"capability_leafs": VALID_LEAFS},
+        )
+
+
+def test_explore_rejects_wrong_schema_version() -> None:
+    with pytest.raises(ValidationError):
+        ExploreAdvisoryV1.model_validate(
+            {
+                "schema_version": "0.9",
+                "change_id": "CH-DEMO-001",
+                "context_ref": "explore/context.json",
+                "generated_at": "2026-08-23T00:00:00Z",
+                "executive_summary": "Department API source was inspected.",
+                "watchlist": [],
+                "evidence_inventory": {"available": [], "missing": [], "not_inspected": []},
+                "source_code_evidence": [],
+                "case_design_guidance": {
+                    "priority_hints": [],
+                    "suggested_scenarios": [],
+                    "regression_focus": [],
+                },
+                "minimum_required_coverage": {"api": []},
+                "open_questions_for_case_design": [],
+                "test_strategy": {"layer_recommendation": [{"layer": "API", "recommended": True}]},
+            }
+        )
+
+
 def test_intake_schema_bytes_equal_model_schema() -> None:
     assert schema_bytes("assurance.intake.schema.case-authoring.v1") == canonical_json_bytes(
         cast(JSONValue, CaseYamlAuthoring.model_json_schema())
@@ -267,11 +391,8 @@ def _review_payload(
     ("decision", "auto_fix_allowed", "human_review_required", "expected"),
     [
         ("pass", False, False, "pass"),
-        ("approved", False, False, "pass"),
         ("needs_fix", True, False, "needs_fix"),
-        ("changes_requested", True, False, "needs_fix"),
         ("needs_fix", False, True, "needs_human"),
-        ("changes_requested", False, True, "needs_human"),
         ("needs_human_review", False, True, "needs_human"),
         ("reject", False, False, "reject"),
     ],
@@ -302,10 +423,8 @@ def test_raw_review_decisions_normalize_to_public_outcomes(
     ("decision", "auto_fix_allowed", "human_review_required"),
     [
         ("pass", True, False),
-        ("approved", False, True),
         ("needs_fix", True, True),
         ("needs_fix", False, False),
-        ("changes_requested", True, True),
         ("needs_human_review", True, True),
         ("needs_human_review", False, False),
         ("reject", True, False),

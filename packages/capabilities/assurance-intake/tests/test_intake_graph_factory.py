@@ -331,4 +331,4 @@ async def test_prepare_graph_binds_four_agent_ids_across_five_occurrences() -> N
     assert result.promotion_decision == "committed"
     terminal = result.terminal
     assert isinstance(terminal, dict)
-    assert terminal.get("decision") in {"pass", "approved"}
+    assert terminal.get("decision") == "pass"

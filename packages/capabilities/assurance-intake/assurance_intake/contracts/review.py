@@ -9,13 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assurance_intake.contracts.common import NonEmptyStr
 
-ReviewDecision = Literal["pass", "approved", "needs_fix", "needs_human_review", "changes_requested", "reject"]
+ReviewDecision = Literal["pass", "needs_fix", "needs_human_review", "reject"]
 PublicReviewOutcome = Literal["pass", "needs_fix", "needs_human", "reject"]
 PUBLIC_REVIEW_OUTCOMES: tuple[PublicReviewOutcome, ...] = ("pass", "needs_fix", "needs_human", "reject")
 FindingSeverity = Literal["low", "medium", "high", "critical", "blocking"]
 
-_PASS_DECISIONS = frozenset({"pass", "approved"})
-_FIX_DECISIONS = frozenset({"needs_fix", "changes_requested"})
+_PASS_DECISIONS = frozenset({"pass"})
+_FIX_DECISIONS = frozenset({"needs_fix"})
 _HUMAN_DECISIONS = frozenset({"needs_human_review"})
 _REJECT_DECISIONS = frozenset({"reject"})
 
@@ -33,16 +33,6 @@ def normalized_auto_fix_edits(item: Mapping[str, object]) -> tuple[str, ...]:
     raw = item.get("edits")
     if isinstance(raw, list) and raw and all(isinstance(edit, str) and edit.strip() for edit in raw):
         return tuple(edit.strip() for edit in raw)
-    for legacy_key in ("action", "instructions"):
-        legacy = item.get(legacy_key)
-        if isinstance(legacy, str) and legacy.strip():
-            return (legacy.strip(),)
-        if (
-            isinstance(legacy, list)
-            and legacy
-            and all(isinstance(edit, str) and edit.strip() for edit in legacy)
-        ):
-            return tuple(edit.strip() for edit in legacy)
     raise ValueError("automatic repair edits must be a non-empty string list")
 
 
@@ -158,7 +148,7 @@ class CaseReviewResultV1(BaseModel):
         },
     )
 
-    schema_version: NonEmptyStr
+    schema_version: Literal["1.0"]
     review_type: Literal["case"]
     change_id: NonEmptyStr
     decision: ReviewDecision

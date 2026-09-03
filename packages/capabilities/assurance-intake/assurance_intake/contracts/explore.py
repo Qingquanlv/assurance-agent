@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class SourceCodeEvidenceV1(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1)
     source: Literal["source_code"]
@@ -18,7 +18,7 @@ class SourceCodeEvidenceV1(BaseModel):
 
 
 class EvidenceInventoryV1(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     available: list[Any]
     missing: list[Any]
@@ -26,7 +26,7 @@ class EvidenceInventoryV1(BaseModel):
 
 
 class CaseDesignGuidanceV1(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     priority_hints: list[Any]
     suggested_scenarios: list[Any]
@@ -34,17 +34,17 @@ class CaseDesignGuidanceV1(BaseModel):
 
 
 class TestStrategyV1(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     layer_recommendation: list[Any] = Field(min_length=1)
 
 
 class ExploreAdvisoryV1(BaseModel):
-    """Complete newly-authored Explore advisory; historical readers stay permissive."""
+    """Current Explore advisory; the read model equals the authoring contract."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = Field(min_length=1)
+    schema_version: Literal["1"]
     change_id: str = Field(min_length=1)
     context_ref: str = Field(min_length=1)
     generated_at: str = Field(min_length=1)

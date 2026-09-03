@@ -22,7 +22,7 @@ from assurance_intake.contracts.decisions import (
     ReviewRoundAdvanceOutput,
     advance_review_round,
 )
-from assurance_intake.contracts.review import CaseReviewFindingV1, CaseReviewResultV1
+from assurance_intake.contracts.review import CaseReviewFindingV1, CaseReviewResultV1, ReviewDecision
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
@@ -43,6 +43,7 @@ __all__ = [
     "QaTargets",
     "QaWorkflow",
     "QaYaml",
+    "ReviewDecision",
     "ReviewRoundAdvanceInput",
     "ReviewRoundAdvanceOutput",
     "RiskTier",

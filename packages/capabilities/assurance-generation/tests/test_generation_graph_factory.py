@@ -342,7 +342,7 @@ async def test_selected_family_runs_plan_review_codegen_without_phase_nodes() ->
     ]
     terminal = result.terminal
     assert isinstance(terminal, dict)
-    assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") in {"pass", "approved"}
+    assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") == "pass"
 
 
 @pytest.mark.parametrize("family", ("fuzz", "performance"))

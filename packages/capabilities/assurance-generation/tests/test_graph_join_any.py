@@ -566,7 +566,7 @@ async def test_last_budgeted_plan_retry_reaches_join(family: str) -> None:
     assert current["predecessor"] == "plan-review-round-advance-retry"
     assert terminal["current_trigger"] == current
     assert terminal["rounds_used"] == 2
-    assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") in {"pass", "approved"}
+    assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") == "pass"
     assert [call.semantic_node_id for call in result.semantic_calls].count(f"generation.{family}.plan") == 3
     assert [call.semantic_node_id for call in result.semantic_calls].count(
         f"generation.{family}.plan-review"

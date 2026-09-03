@@ -96,7 +96,7 @@ authorization, credential, or safety decision.
 ## Domain Notes
 
 Emit `codegen_readiness`, `auto_fix_allowed`, `human_review_required`, and
-`risk_level`. Use decision `pass`, never `approved`. Each finding must include
+`risk_level`. Use decision `pass` when the plan is codegen-ready. Each finding must include
 `id`, `severity`, `category`, `message`, and `locator` (`artifact` plus optional
 `case_id` / `key`). Point locators at `plans/api-codegen-mapping.json` when the
 defect is a mapping row.

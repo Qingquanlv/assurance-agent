@@ -20,6 +20,21 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
 )
 
 
+@pytest.mark.parametrize(
+    "skill_id",
+    (
+        "aa-api-plan-reviewer",
+        "aa-e2e-plan-reviewer",
+        "aa-fuzz-plan-reviewer",
+        "aa-performance-plan-reviewer",
+    ),
+)
+def test_plan_reviewer_skills_do_not_instruct_removed_decisions(skill_id: str) -> None:
+    skill = resource_text(f"skills/{skill_id}/SKILL.md")
+    assert '"approved"' not in skill
+    assert "changes_requested" not in skill
+
+
 def test_e2e_reviewer_skill_outputs_use_family_prefixed_names() -> None:
     skill = resource_text("skills/aa-e2e-plan-reviewer/SKILL.md")
     assert "qa/changes/<change-id>/review/e2e-plan-review.json" in skill

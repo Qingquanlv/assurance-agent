@@ -17,9 +17,9 @@ Do not rely on prior conversation context.
    - `run_context.interaction_mode == autonomous` (default when absent) → do not run planned clarification dialogue or require user approval; generate from Explore `test_strategy` + resolved `open_questions`, then hand off to `aa-case-reviewer`.
    - `run_context.interaction_mode == interactive` → keep the existing clarification dialogue and explicit user approval before writing files.
 2. **Explore input:** consume the graph-provided typed `exploration` object when it
-   is non-null. Never inspect `.qa.yaml` `phases.explore`, and do not reopen a
-   legacy advisory filename. A null `exploration` means the standalone `case`
-   entrypoint supplied no Explore result; continue without advisory.
+   is non-null. Never inspect `.qa.yaml` for Explore state. A null `exploration`
+   means the standalone `case` entrypoint supplied no Explore result; continue
+   without advisory.
 3. Read **Required** inputs:
    - user requirement text
    - relevant backend and/or frontend product source files under the project source root

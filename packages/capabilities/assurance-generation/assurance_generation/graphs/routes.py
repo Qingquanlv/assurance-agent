@@ -33,7 +33,7 @@ def _within_spent_budget(state: Mapping[str, object]) -> bool:
 
 def _is_pass(state: Mapping[str, object]) -> bool:
     return (
-        state.get("decision") in {"pass", "approved"}
+        state.get("decision") == "pass"
         and state.get("human_review_required") is not True
         and state.get("codegen_readiness") != "not_ready"
     )
@@ -41,7 +41,7 @@ def _is_pass(state: Mapping[str, object]) -> bool:
 
 def _is_auto_fix(state: Mapping[str, object]) -> bool:
     return (
-        state.get("decision") in {"needs_fix", "changes_requested"}
+        state.get("decision") == "needs_fix"
         and state.get("auto_fix_allowed") is True
         and state.get("human_review_required") is not True
         and _has_budget(state)

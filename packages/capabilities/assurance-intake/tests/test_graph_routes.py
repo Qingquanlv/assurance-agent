@@ -81,7 +81,7 @@ def test_exclusive_route_zero_and_two_simultaneous_named_matches(
 
 def test_case_review_pass_and_automatic_fix_and_reject_and_human() -> None:
     assert route_case_review(_review_state(decision="pass")) == "done"
-    assert route_case_review(_review_state(decision="approved")) == "done"
+    assert route_case_review(_review_state(decision="approved")) == "exhausted"
     assert (
         route_case_review(
             _review_state(decision="needs_fix", auto_fix_allowed=True, rounds_used=0, rounds_budget=2)

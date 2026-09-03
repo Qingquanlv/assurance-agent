@@ -206,7 +206,7 @@ async def test_pass_completes_without_advance() -> None:
         },
     )
     assert result.terminal is not None
-    assert cast(dict[str, object], result.terminal).get("decision") in {"pass", "approved"}
+    assert cast(dict[str, object], result.terminal).get("decision") == "pass"
     assert cast(dict[str, object], result.terminal).get("rounds_used") == 0
 
 
@@ -233,7 +233,7 @@ async def test_automatic_fix_advances_exactly_once() -> None:
     )
     terminal = cast(dict[str, object], result.terminal)
     assert terminal.get("rounds_used") == 1
-    assert terminal.get("decision") in {"pass", "approved"}
+    assert terminal.get("decision") == "pass"
     assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 2
 
 
@@ -260,7 +260,7 @@ async def test_automatic_fix_advances_when_review_result_nulls_rounds() -> None:
     )
     terminal = cast(dict[str, object], result.terminal)
     assert terminal.get("rounds_used") == 1
-    assert terminal.get("decision") in {"pass", "approved"}
+    assert terminal.get("decision") == "pass"
     assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 2
 
 
@@ -362,7 +362,7 @@ async def test_request_rework_on_prepare_graph_advances_once_through_inbox() -> 
     assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
     assert resumed["current_trigger"] == current
     assert [call.semantic_node_id for call in harness._kernel.semantic_calls].count("intake.case-design") == 2
-    assert resumed.get("decision") in {"pass", "approved"}
+    assert resumed.get("decision") == "pass"
 
 
 async def test_request_rework_advances_when_review_result_nulls_rounds() -> None:
@@ -405,7 +405,7 @@ async def test_request_rework_advances_when_review_result_nulls_rounds() -> None
     assert current["predecessor"] == "review-round-advance"
     assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
     assert [call.semantic_node_id for call in harness._kernel.semantic_calls].count("intake.case-design") == 2
-    assert resumed.get("decision") in {"pass", "approved"}
+    assert resumed.get("decision") == "pass"
 
 
 async def test_request_rework_validates_after_restart_and_advances_once() -> None:
