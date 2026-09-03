@@ -290,7 +290,7 @@ async def test_status_and_coverage_repair_handlers() -> None:
                     "operation_id": "op-1",
                     "source_batch_id": "batch-1",
                     "entry_batch_id": "batch-1",
-                    "baseline_sha256": _HEX_A,
+                    "baseline_digest": _HEX_A,
                     "baseline_embedded": True,
                 }
             ]

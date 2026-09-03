@@ -186,6 +186,7 @@ _FORMER_APPROVAL_FIELDS = frozenset(
     }
 )
 _FORMER_APPLY_FIELDS = frozenset({"attempt_key", "safety_payload_sha256", "files_modified"})
+_FORMER_ALLOCATION_FIELDS = frozenset({"baseline_sha256"})
 
 
 def _require_current_event(event: Mapping[str, Any]) -> str:
@@ -205,6 +206,8 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
     for event in ordered:
         event_type = _require_current_event(event)
         if event_type == "healing_attempt_allocated_v2":
+            if _FORMER_ALLOCATION_FIELDS.intersection(event):
+                raise ValueError("healing event is not a current schema")
             allocations.append(
                 {
                     "operation_id": event.get("operation_id"),
@@ -213,7 +216,7 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
                     "attempt_number": event.get("attempt_number"),
                     "source_batch_id": event.get("source_batch_id"),
                     "entry_batch_id": event.get("entry_batch_id"),
-                    "baseline_sha256": event.get("baseline_sha256"),
+                    "baseline_digest": event.get("baseline_digest"),
                 }
             )
             allocation_floor = max(allocation_floor, _event_seq(event))
@@ -221,7 +224,7 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
                 baseline = {
                     "episode_id": event.get("episode_id"),
                     "entry_batch_id": event.get("entry_batch_id"),
-                    "artifact_sha256": event.get("baseline_sha256"),
+                    "artifact_sha256": event.get("baseline_digest"),
                     "form": "v2",
                 }
         elif event_type == "fixer_proposal_approved":

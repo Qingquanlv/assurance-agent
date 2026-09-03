@@ -252,6 +252,27 @@ def test_exclusive_document_versions_are_locked_on_models() -> None:
     assert HealingAllocationIntentV2.model_fields["schema_version"].annotation == Literal["2"]
 
 
+def current_allocation_event(*, seq: int = 1) -> dict[str, object]:
+    return {
+        "type": "healing_attempt_allocated_v2",
+        "seq": seq,
+        "schema_version": "2",
+        "episode_id": "ep-1",
+        "attempt_id": "at-1",
+        "attempt_number": 1,
+        "operation_id": "op-1",
+        "change_id": "CH-DEMO-001",
+        "owner_id": "assurance.healing",
+        "source_batch_id": "batch-src",
+        "entry_batch_id": "batch-entry",
+        "candidate_digest": _HEX_A,
+        "baseline_digest": _HEX_B,
+        "policy_digest": _HEX_C,
+        "execution_evidence_digest": _HEX_D,
+        "baseline_embedded": True,
+    }
+
+
 def current_proposal_approved_event(*, seq: int = 1) -> dict[str, object]:
     return {
         "type": "fixer_proposal_approved",
@@ -345,6 +366,50 @@ def test_episode_rejects_former_apply_field_aliases() -> None:
                 }
             ]
         )
+
+
+def test_episode_rejects_former_allocation_field_aliases() -> None:
+    with pytest.raises(ValueError, match="current schema"):
+        project_episode(
+            [
+                {
+                    "type": "healing_attempt_allocated_v2",
+                    "seq": 1,
+                    "episode_id": "ep-1",
+                    "attempt_id": "at-1",
+                    "attempt_number": 1,
+                    "operation_id": "op-1",
+                    "source_batch_id": "batch-src",
+                    "entry_batch_id": "batch-entry",
+                    "baseline_sha256": _HEX_B,
+                    "baseline_embedded": True,
+                }
+            ]
+        )
+
+
+def test_episode_projects_current_allocation_document() -> None:
+    event = current_allocation_event()
+    document = {key: value for key, value in event.items() if key not in {"type", "seq"}}
+    HealingAllocationIntentV2.model_validate(document)
+    projection = project_episode([event])
+    dumped = json.dumps(projection)
+    assert "legacy:" not in dumped
+    assert '"form": "legacy"' not in dumped
+    allocations = projection["allocations"]
+    assert isinstance(allocations, list) and len(allocations) == 1
+    allocation = allocations[0]
+    assert isinstance(allocation, dict)
+    assert allocation["operation_id"] == "op-1"
+    assert allocation["episode_id"] == "ep-1"
+    assert allocation["attempt_id"] == "at-1"
+    assert allocation["baseline_digest"] == _HEX_B
+    assert "baseline_sha256" not in allocation
+    assert projection["attempts_used"] == 1
+    baseline = projection["baseline"]
+    assert isinstance(baseline, dict)
+    assert baseline["artifact_sha256"] == _HEX_B
+    assert baseline.get("form") != "legacy"
 
 
 def test_episode_projects_current_proposal_approved_document() -> None:
