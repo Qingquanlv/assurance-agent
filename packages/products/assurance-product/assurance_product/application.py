@@ -12,7 +12,7 @@ from typing import Any, cast
 from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext, StartedInvocation
 from graph_engine.boot.graph_revision import GraphBuildManifest
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.composition.lock import InvocationLock, ProductLock
+from graph_engine.composition.lock import ProductLock
 from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
 
 from assurance_product.binding_builder import build_deployment_wheel
@@ -132,7 +132,7 @@ class ProductBuildArtifacts:
 
 
 class _LockView:
-    def __init__(self, lock: InvocationLock | ProductLock | Mapping[str, object]) -> None:
+    def __init__(self, lock: ProductLock | Mapping[str, object]) -> None:
         if isinstance(lock, Mapping):
             self._data = dict(lock)
             self.schema_version = str(lock["schema_version"])

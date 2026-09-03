@@ -35,6 +35,33 @@ _C = "c" * 64
 _D = "d" * 64
 _E = "e" * 64
 _F = "f" * 64
+_EMPTY_ATTEMPT_CONTRACTS_DIGEST = canonical_digest([])
+
+
+def current_product_lock_document() -> dict[str, object]:
+    return json.loads(_lock().canonical_bytes)
+
+
+def load_old_invocation_lock_fixture() -> dict[str, object]:
+    return {
+        "schema_version": "2",
+        "digest_algorithm": "graph-engine-source-v1",
+        "engine_api": "2.0",
+        "registry_digests": {
+            "capabilities": "a" * 64,
+            "effects": "b" * 64,
+            "resources": "c" * 64,
+            "schemas": "d" * 64,
+            "sources": "e" * 64,
+        },
+        "registry_projections": {
+            "capabilities": [],
+            "effects": [],
+            "resources": [],
+            "schemas": [],
+            "sources": [],
+        },
+    }
 
 
 def _empty_contribution(plugin_id: str, source_digest: str) -> dict[str, object]:
@@ -233,6 +260,7 @@ def _lock(*, reverse_manifest: bool = False) -> ProductLock:
             }
         ],
         effects=[],
+        attempt_contracts=(),
     )
     registry_digests = RegistryDigests(
         sources=canonical_digest(
@@ -277,6 +305,7 @@ def _lock(*, reverse_manifest: bool = False) -> ProductLock:
             ]
         ),
         effects=canonical_digest([]),
+        attempt_contracts=_EMPTY_ATTEMPT_CONTRACTS_DIGEST,
     )
     configuration = {"toy.runtime": {"greeting": "你好"}}
     capability_bindings = [
@@ -897,3 +926,15 @@ def test_attempt_projection_stays_stable_when_only_callables_swap() -> None:
     )
     assert first.digest == second.digest
     assert first.projection() == second.projection()
+
+
+def test_product_lock_requires_attempt_registry_fields() -> None:
+    document = current_product_lock_document()
+    document["registry_digests"].pop("attempt_contracts")
+    with pytest.raises(ValidationError):
+        ProductLock.model_validate(document)
+
+
+def test_historical_invocation_lock_is_not_a_composition_lock() -> None:
+    with pytest.raises((TypeError, ValidationError)):
+        ProductLock.model_validate(load_old_invocation_lock_fixture())

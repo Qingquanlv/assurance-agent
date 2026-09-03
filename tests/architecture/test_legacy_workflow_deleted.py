@@ -33,7 +33,6 @@ PRODUCTION_ROOTS = (
 )
 EVIDENCE_ALLOWLIST = frozenset(
     {
-        "packages/framework/graph-engine/graph_engine/evidence/legacy_v2.py",
         "packages/framework/graph-engine/graph_engine/evidence/events.py",
         "packages/framework/graph-engine/graph_engine/evidence/ledger.py",
         "packages/framework/graph-engine/graph_engine/evidence/models.py",
@@ -63,7 +62,6 @@ PERMANENT_MODULES = (
     "graph_engine.attempts.secret_sources",
     "graph_engine.attempts.workspace",
     "graph_engine.effects.apply",
-    "graph_engine.evidence.legacy_v2",
     "graph_engine.persistence.attempt_journal",
     "assurance_product.application",
     "assurance_product.cli",
@@ -175,21 +173,3 @@ def test_permanent_modules_resolve_without_runtime_package() -> None:
             failed.append(f"{name}:source-imports-graph_engine.runtime")
         assert failed == []
 
-
-def test_evidence_reader_imports_no_runtime_or_compiler() -> None:
-    path = _repo_root() / "packages/framework/graph-engine/graph_engine/evidence/legacy_v2.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    imported: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.append(node.module)
-        leftover = [
-            name
-            for name in imported
-            if name == "graph_engine.runtime"
-            or name.startswith("graph_engine.runtime.")
-            or name.startswith("graph_engine.graph.")
-        ]
-        assert leftover == []

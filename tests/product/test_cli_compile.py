@@ -278,15 +278,7 @@ def test_removing_selectors_cannot_disable_bypass_downgrade_or_relabel_checkpoin
     assert "bypass checkpoint" not in ci.lower()
 
 
-def test_historical_leftover_evidence_is_readable_only_through_the_evidence_reader() -> None:
-    from graph_engine.evidence import legacy_v2
-
-    assert hasattr(legacy_v2, "authenticate_invocation_lock_v2")
-    assert hasattr(legacy_v2, "read_legacy_ledger")
-    assert hasattr(legacy_v2, "fold_legacy_events")
-    assert "Ledger" not in legacy_v2.__all__
-    source = Path(legacy_v2.__file__).read_text(encoding="utf-8")
-    assert "graph_engine.runtime" not in source
+def test_application_uses_invocation_identity_for_lifecycle() -> None:
     from assurance_product.application import AssuranceProductApplication
 
     start_source = inspect.getsource(AssuranceProductApplication.start)

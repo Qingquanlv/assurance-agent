@@ -36,10 +36,6 @@ def test_langgraph_export_and_archive_never_call_legacy_driver(
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
 
-    def _forbid(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("LangGraph export/archive must not call legacy Engine/driver/fold_events")
-
-    monkeypatch.setattr("graph_engine.evidence.legacy_v2.fold_legacy_events", _forbid)
     project = write_achieved(tmp_path, project=project_dir)
     exported = cli_runner.invoke(
         app,

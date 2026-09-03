@@ -1252,16 +1252,6 @@ class TaskWorkspaceStore:
         )
 
     @staticmethod
-    def _legacy_receipt_temporary_name(expected_receipt: PromotionReceipt) -> str:
-        return f".{expected_receipt.identity_digest}.{expected_receipt.receipt_digest}.receipt.tmp"
-
-    @staticmethod
-    def _legacy_pending_construction_prefix(expected_receipt: PromotionReceipt) -> str:
-        # Fix Round 2 passed a leading-dot pending name to ``_atomic_write_at``,
-        # which prepended its own dot to the construction name.
-        return f"..{expected_receipt.identity_digest}.pending.json."
-
-    @staticmethod
     def _is_construction_name(name: str, prefix: str) -> bool:
         if not name.startswith(prefix) or not name.endswith(".tmp"):
             return False
@@ -1304,8 +1294,6 @@ class TaskWorkspaceStore:
         purpose: str,
     ) -> None:
         prefixes = [self._publication_construction_prefix(expected_receipt, purpose)]
-        if purpose == "pending":
-            prefixes.append(self._legacy_pending_construction_prefix(expected_receipt))
         try:
             names = sorted(os.listdir(self._receipts_fd), key=os.fsencode)
         except OSError as error:
@@ -1338,8 +1326,6 @@ class TaskWorkspaceStore:
     ) -> str | None:
         prepared_name = self._publication_prepared_name(expected_receipt, purpose)
         candidates = [prepared_name]
-        if purpose == "receipt":
-            candidates.append(self._legacy_receipt_temporary_name(expected_receipt))
         for name in candidates:
             state = self._publication_temporary_state(
                 name,
@@ -1415,8 +1401,6 @@ class TaskWorkspaceStore:
             purpose=purpose,
         )
         names = [self._publication_prepared_name(expected_receipt, purpose)]
-        if purpose == "receipt":
-            names.append(self._legacy_receipt_temporary_name(expected_receipt))
         removed = False
         for name in names:
             state = self._publication_temporary_state(

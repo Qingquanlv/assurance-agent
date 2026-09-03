@@ -1342,13 +1342,6 @@ class PluginDescriptor(FrozenModel):
             raise ValueError("source version must equal plugin version")
         return self
 
-    @model_serializer(mode="wrap")
-    def _omit_empty_attempt_contracts(self, serializer: SerializerFunctionWrapHandler) -> object:
-        data = serializer(self)
-        if isinstance(data, dict) and not data.get("attempt_contracts"):
-            data.pop("attempt_contracts", None)
-        return data
-
 
 class PluginProvider(Protocol):
     def descriptor(self) -> PluginDescriptor: ...

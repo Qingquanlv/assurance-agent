@@ -11,7 +11,6 @@ from graph_engine.composition.declarative import (
 from graph_engine.composition.dependencies import DependencyConflict, resolve_dependency_order
 from graph_engine.composition.lock import (
     ExecutionHostLock,
-    InvocationLock,
     LockedDependency,
     LockedPlugin,
     LockedProduct,
@@ -97,7 +96,6 @@ __all__ = [
     "ExecutableProvenance",
     "ExecutionHostLock",
     "FrozenComposition",
-    "InvocationLock",
     "LockedDependency",
     "LockedPlugin",
     "LockedProduct",

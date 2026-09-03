@@ -304,10 +304,10 @@ def test_product_lock_v3_digest_changes_with_attempt_registry() -> None:
     assert base_lock.registry_digests.attempt_contracts != changed_lock.registry_digests.attempt_contracts
 
 
-def test_product_lock_omits_empty_attempt_contracts() -> None:
+def test_product_lock_includes_empty_attempt_contract_registry() -> None:
     lock = _lock()
     assert lock.schema_version == "3"
-    assert b"attempt_contracts" not in lock.canonical_bytes
+    assert b'"attempt_contracts":[]' in lock.canonical_bytes
 
 
 def _product_lock_with_attempt_registry(registry: AttemptContractRegistry) -> ProductLock:
