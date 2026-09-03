@@ -75,7 +75,7 @@ def test_historical_export_and_archive_still_work_on_legacy_era_change(cli_runne
     from assurance_product.cli import app
     from assurance_product.export import publish_achieved
     from assurance_product.revision_registry import RevisionRegistry
-    from assurance_product.runtime_selection import (
+    from assurance_product.application import (
         LegacyRuntimeRecord,
         complete_initialized,
         write_initializing,

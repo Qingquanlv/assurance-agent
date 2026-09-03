@@ -18,12 +18,9 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
 @pytest.fixture(autouse=True)
-def _reset_runtime_selector() -> None:
+def _reset_runtime_ports() -> None:
     yield
     try:
-        from assurance_product.runtime_selection import use_test_runtime_selector
-
-        use_test_runtime_selector(None)
         from assurance_product.runtime_ports import ProductRuntimePorts
 
         ProductRuntimePorts.test_kernel_resolutions = None
@@ -95,7 +92,7 @@ def test_production_start_writes_initialized_langgraph_selection(
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_selection import LangGraphRuntimeRecord
+    from assurance_product.application import LangGraphRuntimeRecord
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
@@ -121,14 +118,13 @@ def test_production_start_writes_initialized_langgraph_selection(
 def test_test_owned_selector_can_choose_langgraph(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
-    from assurance_product import runtime_selection
+    from assurance_product import application
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_selection import LangGraphRuntimeRecord, use_test_runtime_selector
+    from assurance_product.application import LangGraphRuntimeRecord
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", None)
+    monkeypatch.setattr(application, "_TEST_CRASH_AT", None)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
@@ -179,13 +175,12 @@ def _existing_lifecycle_args(
 def test_selection_handshake_restart_completes_or_fails_closed(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch, crash_at: str
 ) -> None:
-    from assurance_product import runtime_selection
+    from assurance_product import application as runtime_selection
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_selection import SelectionCrash, use_test_runtime_selector
+    from assurance_product.application import SelectionCrash
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    use_test_runtime_selector(None)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
@@ -217,10 +212,10 @@ def test_selection_handshake_restart_completes_or_fails_closed(
 def test_aa_run_finishes_interrupted_handshake_before_driving(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch, crash_at: str
 ) -> None:
-    from assurance_product import runtime_selection
+    from assurance_product import application as runtime_selection
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_selection import SelectionCrash
+    from assurance_product.application import SelectionCrash
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
@@ -332,14 +327,12 @@ def test_langgraph_run_maps_six_statuses_and_survives_reopen(
     from assurance_product import cli
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_selection import use_test_runtime_selector
-
+    
     from assurance_product.runtime_ports import ProductRuntimePorts
     from graph_engine.attempts.resolutions import CommittedTaskResult, ReceiptRef
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     monkeypatch.setattr(cli, "create_engine", scripted_engine_factory())
-    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     ProductRuntimePorts.test_kernel_resolutions = [
         CommittedTaskResult(
             output={"status": "completed"},
@@ -433,12 +426,11 @@ def test_langgraph_run_does_not_map_integrity_errors_to_failed(
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
     from assurance_product.runtime_ports import ProductRuntimePorts
-    from assurance_product.runtime_selection import RuntimeSelectionError, use_test_runtime_selector
+    from assurance_product.application import RuntimeSelectionError
     from graph_engine.application import AssuranceApplication
     from graph_engine.attempts.resolutions import CommittedTaskResult, ReceiptRef
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     ProductRuntimePorts.test_kernel_resolutions = [
         CommittedTaskResult(
             output={"status": "completed"},

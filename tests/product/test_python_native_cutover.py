@@ -188,6 +188,13 @@ def test_semantic_agent_nodes_have_no_phase_aliases(boot_artifact: BootArtifact)
     assert not hasattr(agent_contracts, "product_workflow_slot_bindings")
 
 
+def test_runtime_selection_module_is_gone() -> None:
+    import importlib.util
+
+    assert importlib.util.find_spec("assurance_product.runtime_selection") is None
+    assert not (_PRODUCT_ROOT / "runtime_selection.py").exists()
+
+
 def test_compile_emits_only_v3_product_artifacts(compiled_artifacts) -> None:
     import assurance_product.application as application_module
 

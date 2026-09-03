@@ -12,14 +12,11 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
 @pytest.fixture(autouse=True)
-def _reset_runtime_selector() -> None:
+def _reset_handshake_crash() -> None:
     yield
-    try:
-        from assurance_product.runtime_selection import use_test_runtime_selector
+    from assurance_product import application
 
-        use_test_runtime_selector(None)
-    except ImportError:
-        return
+    application._TEST_CRASH_AT = None
 
 
 def _runtime_root(project_dir: Path, change_id: str) -> Path:
@@ -33,7 +30,7 @@ def _selection_path(project_dir: Path, change_id: str, invocation_id: str) -> Pa
 def test_initializing_record_is_not_resumable(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
-    from assurance_product import runtime_selection
+    from assurance_product import application
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
 
@@ -45,10 +42,10 @@ def test_initializing_record_is_not_resumable(
         composition=composition,
         invocation_id="inv-init-not-resumable",
     )
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", "after_initializing")
+    monkeypatch.setattr(application, "_TEST_CRASH_AT", "after_initializing")
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 40, started.output
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", None)
+    monkeypatch.setattr(application, "_TEST_CRASH_AT", None)
     resume = cli_runner.invoke(
         app,
         [
@@ -319,10 +316,8 @@ def test_langgraph_initialized_record_disagrees_with_checkpoint_evidence(
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_selection import use_test_runtime_selector
-
+    
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     invocation_id = f"inv-lg-disagree-{field}"
     args, project_dir, change_id = common_lifecycle_args(
@@ -366,35 +361,27 @@ def test_langgraph_initialized_record_disagrees_with_checkpoint_evidence(
     assert status.exit_code == 40, status.output
 
 
-def test_cutover_missing_or_extra_keys_fail_boot() -> None:
-    from graph_engine.boot.boot import BootValidationError
+def test_cutover_validator_and_runtime_selector_are_gone() -> None:
+    import importlib.util
 
+    from assurance_product import application
     from assurance_product.models import PRODUCT_ENTRYPOINTS
-    from assurance_product.runtime_selection import validate_entrypoint_runtime_cutover
 
-    complete = {name: "langgraph-v1" for name in PRODUCT_ENTRYPOINTS}
-    missing = {name: kind for name, kind in complete.items() if name != "intake"}
-    extra = {**complete, "shadow": "langgraph-v1"}
-    leftover = {name: "legacy-v2" for name in PRODUCT_ENTRYPOINTS}
-    with pytest.raises(BootValidationError, match="missing"):
-        validate_entrypoint_runtime_cutover(missing)
-    with pytest.raises(BootValidationError, match="extra"):
-        validate_entrypoint_runtime_cutover(extra)
-    with pytest.raises(BootValidationError, match="langgraph-v1"):
-        validate_entrypoint_runtime_cutover(leftover)
-    validate_entrypoint_runtime_cutover(complete)
+    assert importlib.util.find_spec("assurance_product.runtime_selection") is None
+    assert not hasattr(application, "select_runtime")
+    assert not hasattr(application, "use_test_runtime_selector")
+    assert not hasattr(application, "validate_entrypoint_runtime_cutover")
+    assert set(PRODUCT_ENTRYPOINTS) == set(application.ENTRYPOINT_AGENT_CONTRACT_IDS)
 
 
 def test_reopen_ignores_current_switch_during_initializing(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
-    from assurance_product import runtime_selection
+    from assurance_product import application
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_selection import use_test_runtime_selector
-
+    
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
@@ -403,14 +390,13 @@ def test_reopen_ignores_current_switch_during_initializing(
         invocation_id="inv-reopen-switch",
         entrypoint="archive",
     )
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", "after_initializing")
+    monkeypatch.setattr(application, "_TEST_CRASH_AT", "after_initializing")
     crashed = cli_runner.invoke(app, ["start", *args])
     assert crashed.exit_code == 40, crashed.output
     payload = json.loads(_selection_path(project_dir, change_id, "inv-reopen-switch").read_text())
     assert payload["runtime"] == "langgraph-v1"
     assert payload["phase"] == "initializing"
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", None)
-    use_test_runtime_selector(lambda _entrypoint: "legacy-v2")
+    monkeypatch.setattr(application, "_TEST_CRASH_AT", None)
     restarted = cli_runner.invoke(app, ["start", *args])
     assert restarted.exit_code == 0, restarted.output
     completed = json.loads(_selection_path(project_dir, change_id, "inv-reopen-switch").read_text())

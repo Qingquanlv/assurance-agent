@@ -14,7 +14,7 @@ from assurance_product.revision_registry import (
     authorize_legacy_deletion,
     collect_drain_evidence,
 )
-from assurance_product.runtime_selection import (
+from assurance_product.application import (
     LangGraphRuntimeRecord,
     complete_initialized,
     write_initializing,

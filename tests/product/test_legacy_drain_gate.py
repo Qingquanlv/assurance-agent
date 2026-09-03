@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from graph_engine.boot.boot import BootValidationError
 from graph_engine.canonical import canonical_digest
 from graph_engine.evidence.legacy_v2 import (
     EMPTY_RUNTIME_AUTHORIZATION_DIGEST,
@@ -39,13 +38,11 @@ from assurance_product.revision_registry import (
     authorize_legacy_deletion,
     collect_drain_evidence,
 )
-from assurance_product.runtime_selection import (
+from assurance_product.application import (
     LangGraphRuntimeRecord,
     LegacyRuntimeRecord,
     complete_initialized,
     load_selection,
-    select_runtime,
-    validate_entrypoint_runtime_cutover,
     write_initializing,
 )
 from tests.product.composition_harness import request_for
@@ -248,9 +245,7 @@ def test_production_cutover_forbids_legacy_values() -> None:
     assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
     assert set(ENTRYPOINT_RUNTIME_CUTOVER.values()) == {"langgraph-v1"}
     for name in PRODUCT_ENTRYPOINTS:
-        assert select_runtime(name) == "langgraph-v1"
-    with pytest.raises(BootValidationError, match="langgraph-v1"):
-        validate_entrypoint_runtime_cutover({name: "legacy-v2" for name in PRODUCT_ENTRYPOINTS})
+        assert ENTRYPOINT_RUNTIME_CUTOVER[name] == "langgraph-v1"
 
 
 @pytest.mark.parametrize("status", _ACTIVE_STATES)
@@ -551,7 +546,7 @@ def test_legacy_marked_reopen_keeps_old_artifact_while_new_start_is_langgraph(
     existing = load_selection(workspace, leftover.invocation_id)
     assert existing is not None
     assert existing.runtime == "legacy-v2"
-    assert select_runtime("archive") == "langgraph-v1"
+    assert ENTRYPOINT_RUNTIME_CUTOVER["archive"] == "langgraph-v1"
     write_initializing(
         workspace,
         LangGraphRuntimeRecord(

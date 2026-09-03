@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import zipfile
 
 import pytest
 
@@ -63,6 +64,28 @@ def test_product_wheel_owns_aa_and_rejects_legacy_names(built_product_wheel: Pat
     assert "aa-next" not in metadata.entry_points["console_scripts"]
     assert all("assurance-agent" not in item for item in metadata.requires_dist)
     assert all("assurance-kernel" not in item for item in metadata.requires_dist)
+
+
+def test_no_workspace_wheel_ships_obsolete_orchestration_contracts(
+    repo_root: Path, built_product_wheel: Path
+) -> None:
+    forbidden = (
+        "workflow-schema.yaml",
+        "execution-contracts.yaml",
+        "resources/workflow/module.yaml",
+        "resources/workflow/main.yaml",
+        "graph-inventory.yaml",
+        "runtime_selection.py",
+    )
+    with zipfile.ZipFile(built_product_wheel) as archive:
+        names = archive.namelist()
+    assert all(not any(item in name for item in forbidden) for name in names)
+    sample = repo_root / "examples" / "minimal-product"
+    assert not (sample / "aa_sample" / "_resources" / "schemas" / "workflow-schema.yaml").exists()
+    assert not (sample / "aa_sample" / "_resources" / "schemas" / "execution-contracts.yaml").exists()
+    pyproject = (sample / "pyproject.toml").read_text(encoding="utf-8")
+    assert "workflow-schema" not in pyproject
+    assert "execution-contracts" not in pyproject
 
 
 def test_final_smoke_builds_eleven_wheels_and_installs_aa(smoke_script: str) -> None:

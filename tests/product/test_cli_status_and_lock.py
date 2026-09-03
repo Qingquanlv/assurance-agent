@@ -232,7 +232,7 @@ def test_lock_show_keeps_v2_for_legacy_records(cli_runner, installed_sources, tm
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
     from assurance_product.revision_registry import RevisionRegistry
-    from assurance_product.runtime_selection import (
+    from assurance_product.application import (
         LegacyRuntimeRecord,
         complete_initialized,
         write_initializing,

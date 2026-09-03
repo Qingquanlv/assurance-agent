@@ -36,7 +36,7 @@ from assurance_product.product import (
     reopen_change_workspace,
     resolve_assurance_composition,
 )
-from assurance_product.runtime_selection import RuntimeSelectionError, SelectionCrash
+from assurance_product.application import RuntimeSelectionError, SelectionCrash
 from assurance_product.status import ArchiveError, archive_published
 
 _SOURCE_FLAGS = (

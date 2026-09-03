@@ -12,13 +12,11 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
 @pytest.fixture(autouse=True)
-def _reset_runtime_selector() -> None:
+def _reset_runtime_ports() -> None:
     yield
     try:
         from assurance_product.runtime_ports import ProductRuntimePorts
-        from assurance_product.runtime_selection import use_test_runtime_selector
 
-        use_test_runtime_selector(None)
         ProductRuntimePorts.test_kernel_resolutions = None
         ProductRuntimePorts._last_scripted_committed = None
     except ImportError:
@@ -55,7 +53,6 @@ def test_cli_sqlite_system_interrupt_survives_reopen_and_replays_ordinal(
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
     from assurance_product.runtime_ports import ProductRuntimePorts
-    from assurance_product.runtime_selection import use_test_runtime_selector
     from graph_engine.attempts.events import (
         SystemInterruptCompletionCheckpointed,
         SystemInterruptIssuanceAnchored,
@@ -68,7 +65,6 @@ def test_cli_sqlite_system_interrupt_survives_reopen_and_replays_ordinal(
     )
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
@@ -134,7 +130,6 @@ def test_cli_sqlite_completion_pending_write_replays_before_aput(
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
     from assurance_product.runtime_ports import ProductRuntimePorts
-    from assurance_product.runtime_selection import use_test_runtime_selector
     from graph_engine.attempts.resolutions import (
         CommittedTaskResult,
         PendingTaskResult,
@@ -144,7 +139,6 @@ def test_cli_sqlite_completion_pending_write_replays_before_aput(
     from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,

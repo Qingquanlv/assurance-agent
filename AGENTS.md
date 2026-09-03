@@ -20,8 +20,10 @@ Non-obvious notes:
 - Run everything through `uv run ...` (e.g. `uv run aa --help`, `uv run pytest -v`,
   `uv run ruff check .`, `uv run pyright`, `uv run lint-imports`).
 - The full CI gate is: `ruff check .`, `ruff format --check .`, `pyright`, `lint-imports`,
-  `pytest`, and
-  `bash scripts/assurance_product_wheel_smoke_test.sh`.
+  `pytest`, focused Raw Agent checks, and the three smoke scripts
+  (`scripts/graph_engine_smoke_test.sh`,
+  `scripts/assurance_capability_wheel_smoke_test.sh`,
+  `scripts/assurance_product_wheel_smoke_test.sh`).
 - Installed commands are `aa compile`, `aa start`, `aa run`, `aa status`,
   `aa resume`, `aa export`, `aa archive`, `aa bindings build`, and
   `aa lock show`. Delivery is `aa run` to achieved, then `aa export`, then
@@ -30,21 +32,19 @@ Non-obvious notes:
   (default `http://127.0.0.1:4096`); it is not required for building, testing,
   or the deterministic scheduler.
 
-## Custom orchestration is not a plugin platform
+## Python wheels own topology and Agent contracts
 
-YAML only changes how the graph walks. Do not turn skills, operations,
-pre-commit validators, or gate functions into project-loadable plugins. Add
-capability by shipping an installed product (`graph_engine.products` entry
-points). Organization configuration stays in the project's `.aa/`. The engine
-loads only installed wheel products and does not scan the SUT.
+Python wheels own `StateGraph` topology and semantic Agent contracts. OpenCode
+writes authorized raw workspace files and returns one locally validated JSON
+result. The Kernel seals and commits the actual bytes. Product explicitly
+composes six Feature bundles; `.aa/` contains closed organization data only;
+changing nodes, edges, contracts, bindings, schemas, or runtime policy requires
+code review, tests, wheel rebuild, Checkpoint R, and authenticated deployment.
 
-Project-replaceable internal orchestration files:
-
-- Workflow graph: packaged `schemas/workflow-schema.yaml`, replaceable by the
-  project's `.aa/workflow-schema.yaml`.
-- Execution contracts: packaged `schemas/execution-contracts.yaml`, likewise
-  replaceable as a whole file.
+The engine loads only installed wheel products and does not scan the SUT for
+graphs, handlers, schemas, validators, or runtime bindings. Organization
+configuration stays in the project's `.aa/`.
 
 Do not load operations, pre-commit validators, gate builtins, or new artifact
-shapes from the SUT. One sentence: YAML replaces the graph; Python wheels add
-capability; `.aa/` holds organization configuration.
+shapes from the SUT. One sentence: Python wheels own the graph; OpenCode
+returns one raw JSON result; `.aa/` holds organization configuration.

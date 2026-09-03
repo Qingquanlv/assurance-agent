@@ -189,6 +189,8 @@ def inspect_wheel_archive(wheel: Path, *, deployment: bool) -> None:
         if dist_name == "assurance-product":
             if any("result-export" in member for member in names):
                 raise SystemExit(f"result-export schema in {wheel.name}")
+            if any(member.endswith("runtime_selection.py") for member in names):
+                raise SystemExit(f"runtime_selection.py leaked into {wheel.name}")
             entry_points_name = next(
                 (name for name in names if name.endswith(".dist-info/entry_points.txt")),
                 None,
@@ -200,6 +202,13 @@ def inspect_wheel_archive(wheel: Path, *, deployment: bool) -> None:
                 raise SystemExit("product wheel must not ship the retired console script")
             if "\naa =" not in f"\n{entry_points_text}":
                 raise SystemExit("product wheel is missing the aa console script")
+        forbidden_topology = (
+            "resources/workflow/module.yaml",
+            "resources/workflow/main.yaml",
+            "graph-inventory.yaml",
+        )
+        if any(any(member.endswith(item) for item in forbidden_topology) for member in names):
+            raise SystemExit(f"topology YAML leaked into {wheel.name}")
 
 
 def check_archives(dist_root: Path) -> None:
@@ -382,22 +391,41 @@ def check_compile_ok(
     config_tree: str,
 ) -> None:
     document = json.loads(output)
-    if document.get("engine_api") != "2.0":
-        raise SystemExit(f"compile engine_api {document.get('engine_api')!r} != '2.0'")
-    if document.get("product") != product:
-        raise SystemExit(f"compile product {document.get('product')!r} != {product!r}")
-    if not document.get("lock_digest"):
-        raise SystemExit("compile output is missing lock_digest")
-    audit = document.get("audit") or {}
-    for key in (
-        "unreachable_nodes",
-        "dead_ends",
-        "forbidden_direct_targets",
-        "missing_bindings",
-        "uninventoried_nodes",
-    ):
-        if audit.get(key):
-            raise SystemExit(f"compile audit {key} is not empty: {audit.get(key)}")
+    if set(document) != {"product_lock", "graph_manifest"}:
+        raise SystemExit(f"compile keys {sorted(document)} != ['graph_manifest', 'product_lock']")
+    product_lock = document["product_lock"]
+    graph_manifest = document["graph_manifest"]
+    if product_lock.get("schema_version") != "3":
+        raise SystemExit(f"compile product_lock schema {product_lock.get('schema_version')!r} != '3'")
+    if len(str(product_lock.get("digest") or "")) != 64:
+        raise SystemExit("compile product_lock digest is missing")
+    revision = graph_manifest.get("revision") or {}
+    if len(str(revision.get("revision_id") or "")) != 64:
+        raise SystemExit("compile graph_manifest revision is missing")
+    if revision.get("product_lock_digest") != product_lock["digest"]:
+        raise SystemExit("compile GraphRevision does not match ProductLock digest")
+    from assurance_product.agent_contracts import (
+        all_feature_agent_contracts,
+        all_feature_task_contracts,
+    )
+    from assurance_product.models import PRODUCT_ENTRYPOINTS
+    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS, RAW_AGENT_RUNTIME_BINDING_ROWS
+
+    contracts = all_feature_agent_contracts()
+    tasks = all_feature_task_contracts()
+    if len(PRODUCT_ENTRYPOINTS) != 14:
+        raise SystemExit(f"14 roots expected, found {len(PRODUCT_ENTRYPOINTS)}")
+    if len(contracts) + len(tasks) != 41:
+        raise SystemExit(f"41 Attempt contracts expected, found {len(contracts) + len(tasks)}")
+    if len(AGENT_RUNTIME_BINDINGS) != 33 or len(RAW_AGENT_RUNTIME_BINDING_ROWS) != 33:
+        raise SystemExit("33 semantic Raw Agent runtime bindings expected")
+    binding_source = Path(sys.modules["assurance_product.runtime_bindings"].__file__ or "").read_text(
+        encoding="utf-8"
+    )
+    if "ResolvedRawAgentExecutor" not in binding_source:
+        raise SystemExit("ResolvedRawAgentExecutor is missing from runtime bindings")
+    if "Compatibility" in binding_source or "phase shim" in binding_source:
+        raise SystemExit("compatibility executor leaked into runtime bindings")
     selected_sources = resolve_selected_sources(
         product,
         binding_distribution,
@@ -405,7 +433,12 @@ def check_compile_ok(
         config_tree,
     )
     check_selected_closure(selected_sources, selected_adapter, binding_distribution)
-    print(f"COMPILE_OK product={product} lock_digest={document['lock_digest']}")
+    print(
+        "COMPILE_OK "
+        f"product={product} "
+        f"product_lock={product_lock['digest']} "
+        f"graph_manifest={revision['revision_id']}"
+    )
 
 
 def main(argv: list[str]) -> int:
@@ -835,7 +868,7 @@ add_authenticated_extra_binding extra-binding \
   "$opencode_binding_distribution" "$opencode_binding_declaration"
 expect_compile_fail extra-binding assurance-opencode \
   "$opencode_binding_distribution" "$opencode_binding_declaration" \
-  "exact 99 aliases"
+  "exact 33 semantic contracts"
 
 install_env source-drift "${product_wheel}[opencode]"
 inspect_prefix source-drift \

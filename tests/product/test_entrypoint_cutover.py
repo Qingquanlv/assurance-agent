@@ -6,12 +6,8 @@ from types import MappingProxyType
 
 import pytest
 
+from assurance_product.application import ENTRYPOINT_AGENT_CONTRACT_IDS
 from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS, RuntimeKind
-from assurance_product.runtime_selection import (
-    ENTRYPOINT_AGENT_CONTRACT_IDS,
-    select_runtime,
-    use_test_runtime_selector,
-)
 
 from tests.product.shadow_harness import PARITY_RECORDS, required_parity_scenarios
 
@@ -128,12 +124,6 @@ WAVE_RECORDS: MappingProxyType[str, WaveRecord] = MappingProxyType(
 )
 
 
-@pytest.fixture(autouse=True)
-def _reset_runtime_selector() -> None:
-    yield
-    use_test_runtime_selector(None)
-
-
 def test_production_cutover_flips_all_fourteen_names() -> None:
     assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
     assert len(ENTRYPOINT_RUNTIME_CUTOVER) == 14
@@ -145,15 +135,17 @@ def test_production_cutover_flips_all_fourteen_names() -> None:
     assert flipped == set(_LANGGRAPH_FLIP)
     for name in PRODUCT_ENTRYPOINTS:
         assert ENTRYPOINT_RUNTIME_CUTOVER[name] == "langgraph-v1"
-        assert select_runtime(name) == "langgraph-v1"
 
 
-def test_test_only_selector_may_choose_legacy_without_mutating_production() -> None:
-    use_test_runtime_selector(lambda _name: "legacy-v2")
-    assert select_runtime("full") == "legacy-v2"
+def test_runtime_selector_module_is_absent() -> None:
+    import importlib.util
+
+    from assurance_product import application
+
+    assert importlib.util.find_spec("assurance_product.runtime_selection") is None
+    assert not hasattr(application, "select_runtime")
+    assert not hasattr(application, "use_test_runtime_selector")
     assert ENTRYPOINT_RUNTIME_CUTOVER["full"] == "langgraph-v1"
-    use_test_runtime_selector(None)
-    assert select_runtime("full") == "langgraph-v1"
 
 
 def test_wave_records_cover_every_name_without_a_waiver_field() -> None:
@@ -200,7 +192,7 @@ def test_t5b_names_are_green_even_with_agent_contracts() -> None:
         assert record.schema_capability == "green"
         assert record.schema_capability_reason is None
         assert ENTRYPOINT_AGENT_CONTRACT_IDS[name]
-        assert select_runtime(name) == "langgraph-v1"
+        assert ENTRYPOINT_RUNTIME_CUTOVER[name] == "langgraph-v1"
 
 
 def test_t5c_execute_is_green_even_with_agent_contracts() -> None:
@@ -218,7 +210,7 @@ def test_t5c_execute_is_green_even_with_agent_contracts() -> None:
         "assurance.quality.agent.inspect.v1",
         "assurance.quality.agent.report.v1",
     )
-    assert select_runtime("execute") == "langgraph-v1"
+    assert ENTRYPOINT_RUNTIME_CUTOVER["execute"] == "langgraph-v1"
 
 
 def test_t5d_full_is_green_even_with_agent_contracts() -> None:
@@ -238,21 +230,19 @@ def test_t5d_full_is_green_even_with_agent_contracts() -> None:
         "assurance.intake.agent.intake.v1",
         "assurance.quality.agent.report.v1",
     )
-    assert select_runtime("full") == "langgraph-v1"
+    assert ENTRYPOINT_RUNTIME_CUTOVER["full"] == "langgraph-v1"
 
 
 def test_vacuous_provider_schema_gate_is_removed_from_the_run_path() -> None:
-    from assurance_product import application, runtime_selection
+    from assurance_product import application
 
     assert not hasattr(application, "assert_structured_output_capability")
     assert not hasattr(application, "_contracts_require_provider_schema")
     assert not hasattr(application, "_advertised_binding_capabilities")
-    assert not hasattr(runtime_selection, "entrypoint_requires_provider_schema")
     application_source = Path(application.__file__).read_text(encoding="utf-8")
-    selection_source = Path(runtime_selection.__file__).read_text(encoding="utf-8")
     assert "negotiate_provider_schema" not in application_source
     assert "assert_structured_output_capability" not in application_source
-    assert "entrypoint_requires_provider_schema" not in selection_source
+    assert "entrypoint_requires_provider_schema" not in application_source
 
 
 @pytest.mark.parametrize("entrypoint", tuple(sorted(PRODUCT_ENTRYPOINTS)))
@@ -290,7 +280,7 @@ def test_wave_a_records_cite_validator_and_evaluate_evidence() -> None:
 
 def test_rollback_changes_only_future_starts(tmp_path) -> None:
     from assurance_product.change_workspace import ChangeWorkspace
-    from assurance_product.runtime_selection import (
+    from assurance_product.application import (
         LangGraphRuntimeRecord,
         load_selection,
         write_initializing,
@@ -308,8 +298,6 @@ def test_rollback_changes_only_future_starts(tmp_path) -> None:
         build_identity="b" * 64,
     )
     write_initializing(workspace, recorded)
-    use_test_runtime_selector(lambda _name: "legacy-v2")
-    assert select_runtime("improvement-evaluate") == "legacy-v2"
     existing = load_selection(workspace, "inv-already-started")
     assert existing is not None
     assert existing.runtime == "langgraph-v1"

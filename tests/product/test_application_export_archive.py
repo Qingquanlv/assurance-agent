@@ -17,25 +17,12 @@ from tests.product.test_result_export import CHANGE_ID, write_achieved
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
-@pytest.fixture(autouse=True)
-def _reset_runtime_selector() -> None:
-    yield
-    try:
-        from assurance_product.runtime_selection import use_test_runtime_selector
-
-        use_test_runtime_selector(None)
-    except ImportError:
-        return
-
-
 def test_langgraph_export_and_archive_never_call_legacy_driver(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_selection import use_test_runtime_selector
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
@@ -71,10 +58,9 @@ def test_lock_show_renders_v2_for_legacy_and_v3_for_langgraph(
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
     from assurance_product.revision_registry import RevisionRegistry
-    from assurance_product.runtime_selection import (
+    from assurance_product.application import (
         LegacyRuntimeRecord,
         complete_initialized,
-        use_test_runtime_selector,
         write_initializing,
     )
 
@@ -152,7 +138,6 @@ def test_lock_show_renders_v2_for_legacy_and_v3_for_langgraph(
     assert leftover_document["lock"]["schema_version"] == "2"
     assert "compiled_workflow" in leftover_document["lock"]
 
-    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     lg_args, lg_project, lg_change = common_lifecycle_args(
         tmp_path=tmp_path / "langgraph",
         installed_sources=installed_sources,

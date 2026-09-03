@@ -15,8 +15,7 @@ root_packages =
     agent_runtime_fixture
     assurance_product
 
-# Coexistence: Features keep both .workflow (legacy YAML) and .graphs (Python
-# StateGraph) forbidden across peers. Do not drop .workflow until final deletion.
+# Permanent boundary: cross-Feature .graphs imports remain forbidden.
 [importlinter:contract:generation-intake-contracts-only]
 name = generation may import only intake contracts
 type = forbidden
@@ -29,7 +28,6 @@ forbidden_modules =
     assurance_intake.effects
     assurance_intake.resource_loader
     assurance_intake.resources
-    assurance_intake.workflow
     assurance_intake.graphs
 
 [importlinter:contract:execution-assurance-contracts-only]
@@ -44,7 +42,6 @@ forbidden_modules =
     assurance_intake.effects
     assurance_intake.resource_loader
     assurance_intake.resources
-    assurance_intake.workflow
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -52,7 +49,6 @@ forbidden_modules =
     assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
-    assurance_generation.workflow
     assurance_generation.graphs
 
 [importlinter:contract:healing-assurance-contracts-only]
@@ -67,7 +63,6 @@ forbidden_modules =
     assurance_intake.effects
     assurance_intake.resource_loader
     assurance_intake.resources
-    assurance_intake.workflow
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -75,7 +70,6 @@ forbidden_modules =
     assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
-    assurance_generation.workflow
     assurance_generation.graphs
     assurance_execution.plugin
     assurance_execution.operations
@@ -83,7 +77,6 @@ forbidden_modules =
     assurance_execution.effects
     assurance_execution.resource_loader
     assurance_execution.resources
-    assurance_execution.workflow
     assurance_execution.graphs
 
 [importlinter:contract:healing-no-quality]
@@ -106,7 +99,6 @@ forbidden_modules =
     assurance_intake.effects
     assurance_intake.resource_loader
     assurance_intake.resources
-    assurance_intake.workflow
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -114,7 +106,6 @@ forbidden_modules =
     assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
-    assurance_generation.workflow
     assurance_generation.graphs
     assurance_execution.plugin
     assurance_execution.operations
@@ -122,7 +113,6 @@ forbidden_modules =
     assurance_execution.effects
     assurance_execution.resource_loader
     assurance_execution.resources
-    assurance_execution.workflow
     assurance_execution.graphs
     assurance_healing.plugin
     assurance_healing.operations
@@ -130,7 +120,6 @@ forbidden_modules =
     assurance_healing.effects
     assurance_healing.resource_loader
     assurance_healing.resources
-    assurance_healing.workflow
     assurance_healing.graphs
 
 [importlinter:contract:improvement-assurance-contracts-only]
@@ -145,7 +134,6 @@ forbidden_modules =
     assurance_intake.effects
     assurance_intake.resource_loader
     assurance_intake.resources
-    assurance_intake.workflow
     assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
@@ -153,7 +141,6 @@ forbidden_modules =
     assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
-    assurance_generation.workflow
     assurance_generation.graphs
     assurance_execution.plugin
     assurance_execution.operations
@@ -161,7 +148,6 @@ forbidden_modules =
     assurance_execution.effects
     assurance_execution.resource_loader
     assurance_execution.resources
-    assurance_execution.workflow
     assurance_execution.graphs
     assurance_healing.plugin
     assurance_healing.operations
@@ -169,7 +155,6 @@ forbidden_modules =
     assurance_healing.effects
     assurance_healing.resource_loader
     assurance_healing.resources
-    assurance_healing.workflow
     assurance_healing.graphs
     assurance_quality.plugin
     assurance_quality.operations
@@ -177,7 +162,6 @@ forbidden_modules =
     assurance_quality.effects
     assurance_quality.resource_loader
     assurance_quality.resources
-    assurance_quality.workflow
     assurance_quality.graphs
 
 [importlinter:contract:features-downward]

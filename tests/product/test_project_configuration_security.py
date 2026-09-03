@@ -279,3 +279,16 @@ def test_aa_cannot_select_module_or_schema_implementation(config_document, key):
     config_document[key] = "forged-source"
     with pytest.raises(ProjectConfigurationError, match="unknown configuration|runtime authority"):
         parse_project_config(config_document)
+
+
+def test_importlinter_contains_no_legacy_workflow_contract_or_module_rule() -> None:
+    config = Path(__file__).resolve().parents[2] / ".importlinter"
+    text = config.read_text(encoding="utf-8")
+    assert "Coexistence:" not in text
+    assert ".workflow" not in text
+    assert "workflow-schema" not in text
+    assert "execution-contracts" not in text
+    assert "workflow/module.yaml" not in text
+    assert "workflow/main.yaml" not in text
+    assert "assurance_intake.graphs" in text
+    assert "assurance_generation.graphs" in text

@@ -21,13 +21,11 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
 @pytest.fixture(autouse=True)
-def _reset_runtime_selector() -> None:
+def _reset_runtime_ports() -> None:
     yield
     try:
         from assurance_product.runtime_ports import ProductRuntimePorts
-        from assurance_product.runtime_selection import use_test_runtime_selector
 
-        use_test_runtime_selector(None)
         ProductRuntimePorts.test_kernel_resolutions = None
         ProductRuntimePorts._last_scripted_committed = None
     except ImportError:
@@ -546,11 +544,9 @@ def test_application_resume_file_rejects_unknown_interrupt_id(
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
     from assurance_product.runtime_ports import ProductRuntimePorts
-    from assurance_product.runtime_selection import use_test_runtime_selector
     from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     ProductRuntimePorts.test_kernel_resolutions = [
         PendingTaskResult(wakeup=SystemReference(reference_id="wake-unknown")),
     ]

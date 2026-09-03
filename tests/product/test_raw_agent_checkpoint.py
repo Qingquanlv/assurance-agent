@@ -136,8 +136,8 @@ def test_checkpoint_r_inventory_is_33_33_34_41_43() -> None:
 
 
 def test_all_fourteen_roots_select_langgraph() -> None:
+    from assurance_product.application import ENTRYPOINT_AGENT_CONTRACT_IDS
     from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS
-    from assurance_product.runtime_selection import ENTRYPOINT_AGENT_CONTRACT_IDS, select_runtime
 
     assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
     flipped = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "langgraph-v1"}
@@ -147,10 +147,10 @@ def test_all_fourteen_roots_select_langgraph() -> None:
     assert leftover == set(_LEFTOVER)
     assert flipped == set(_LANGGRAPH)
     for name in _T5A_LANGGRAPH:
-        assert select_runtime(name) == "langgraph-v1"
+        assert ENTRYPOINT_RUNTIME_CUTOVER[name] == "langgraph-v1"
         assert ENTRYPOINT_AGENT_CONTRACT_IDS[name] == ()
     for name in _T5B_LANGGRAPH | _T5C_LANGGRAPH | _T5D_LANGGRAPH:
-        assert select_runtime(name) == "langgraph-v1"
+        assert ENTRYPOINT_RUNTIME_CUTOVER[name] == "langgraph-v1"
         assert ENTRYPOINT_AGENT_CONTRACT_IDS[name]
 
 
