@@ -39,7 +39,8 @@
       "entrypoint_name": "fixture",
       "entrypoint_value": "agent_runtime_fixture.product:FixtureProduct",
       "import_roots": [
-        ""
+        "",
+        "agent_runtime_fixture"
       ],
       "version": "1.0.0"
     },
@@ -57,7 +58,8 @@
     "entrypoint_name": "fixture",
     "entrypoint_value": "agent_runtime_fixture.product:FixtureProduct",
     "import_roots": [
-      ""
+      "",
+      "agent_runtime_fixture"
     ],
     "version": "1.0.0"
   }

@@ -26,7 +26,7 @@ _SOURCE = ProviderSource(
     entrypoint_name="toy-a",
     entrypoint_value="graph_engine_toy_a.plugin:ToyAPlugin",
     declaration_path="graph_engine_toy_a/plugin-declaration.json",
-    import_roots=("",),
+    import_roots=("", "graph_engine_toy_a"),
 )
 
 

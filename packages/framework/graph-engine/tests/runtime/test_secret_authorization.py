@@ -23,16 +23,16 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
-from graph_engine.runtime.engine import Engine, InvocationDrift
-from graph_engine.runtime.models import PlannedTask
-from graph_engine.runtime.scheduler import Scheduler, SchedulerStateError
+from bootstrap_fixtures import Engine, InvocationDrift
+from graph_engine.attempts.activity import PlannedTask
+from bootstrap_fixtures import Scheduler, SchedulerStateError
 from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     empty_runtime_authorization,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.seed import empty_invocation_seed
+from bootstrap_fixtures import empty_invocation_seed
 
 
 class _Handler:

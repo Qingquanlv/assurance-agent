@@ -302,7 +302,7 @@ def test_active_run_conflict_fails_closed(cli_runner, installed_sources, tmp_pat
     from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from graph_engine.runtime.engine import Engine
+    from tests.product.product_runner import Engine
     from graph_engine.attempts.secret_sources import (
         InvocationRuntimeAuthorization,
         SecretSourceBinding,
@@ -437,9 +437,8 @@ def test_modular_runner_rejects_legacy_lock_without_mutating_ledger(
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
     from graph_engine.plugin_api import InvocationWorkspaceBinding
-    from graph_engine.runtime.engine import Engine
     from graph_engine.attempts.secret_sources import empty_runtime_authorization
-    from graph_engine.runtime.seed import empty_invocation_seed
+    from tests.product.product_runner import Engine, empty_invocation_seed
 
     from tests.product.product_runner import adapter_product_composition
 

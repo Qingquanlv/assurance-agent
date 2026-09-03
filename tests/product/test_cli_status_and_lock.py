@@ -101,9 +101,8 @@ def test_render_status_projects_started_invocation(
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
     from assurance_product.status import render_status
-    from graph_engine.runtime.engine import Engine
-    from graph_engine.runtime.ledger import Ledger
-    from graph_engine.runtime.models import fold_events
+    from graph_engine.attempts.activity import Ledger, fold_events
+    from tests.product.product_runner import Engine
     from graph_engine.attempts.secret_sources import (
         InvocationRuntimeAuthorization,
         SecretSourceBinding,

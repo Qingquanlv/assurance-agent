@@ -223,3 +223,10 @@ def test_product_manifest_rejects_mixed_or_empty_graph_factory_forms(payload: di
 def test_product_manifest_rejects_sut_config_or_foreign_factory_symbols(symbol: str) -> None:
     with pytest.raises(ValidationError):
         ProductManifest.model_validate(_product_manifest_values(graph_factory_symbol=symbol))
+
+
+def test_empty_import_root_does_not_allow_all_factory_modules() -> None:
+    values = _product_manifest_values()
+    values["source"] = _product_source(import_roots=("",)).model_dump(mode="json")
+    with pytest.raises(ValidationError, match="outside the authenticated Product import roots"):
+        ProductManifest.model_validate(values)

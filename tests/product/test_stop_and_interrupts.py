@@ -18,7 +18,7 @@ from graph_engine.plugin_api import (
     TaskHandler,
     TaskOutcome,
 )
-from graph_engine.runtime.engine import Engine, EngineError
+from tests.product.product_runner import Engine, EngineError
 from graph_engine.attempts.host_protocol import (
     TaskHostCallResult,
     TaskHostCancelCall,
@@ -26,9 +26,9 @@ from graph_engine.attempts.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.runtime.models import InvocationProjection
+from graph_engine.attempts.activity import InvocationProjection
 from graph_engine.attempts.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
+from tests.product.product_runner import empty_invocation_seed
 
 from tests.product.composition_harness import request_for
 

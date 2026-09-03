@@ -622,7 +622,9 @@ def _platform(
             entrypoint_name=initial_manifest.product_id,
             entrypoint_value="toy_product:provider",
             declaration_path=declaration_path,
-            import_roots=("",),
+            import_roots=(
+                ("", "toy_product") if initial_manifest.graph_factory_symbol is not None else ("",)
+            ),
         )
         product._manifest = initial_manifest.model_copy(update={"source": source_expectation})
         if isinstance(product, _DriftingProductProvider):

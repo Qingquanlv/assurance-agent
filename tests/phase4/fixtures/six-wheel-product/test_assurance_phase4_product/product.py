@@ -118,7 +118,7 @@ def _source(*, entrypoint_name: str, entrypoint_value: str, declaration_path: st
         entrypoint_name=entrypoint_name,
         entrypoint_value=entrypoint_value,
         declaration_path=declaration_path,
-        import_roots=("",),
+        import_roots=("", "test_assurance_phase4_product"),
     )
 
 

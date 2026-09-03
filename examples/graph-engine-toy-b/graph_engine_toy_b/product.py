@@ -31,7 +31,7 @@ _SOURCE = ProviderSource(
     entrypoint_name="toy-b",
     entrypoint_value="graph_engine_toy_b.product:ToyBProduct",
     declaration_path="graph_engine_toy_b/product-declaration.json",
-    import_roots=("",),
+    import_roots=("", "graph_engine_toy_b"),
 )
 _FACTORY_SYMBOL = "graph_engine_toy_b.product:build_toy_b_graphs"
 

@@ -27,7 +27,7 @@ _OPENCODE_SOURCE = ProviderSource(
     entrypoint_name="opencode-binding",
     entrypoint_value="agent_runtime_fixture.bindings:OpenCodeBindingPlugin",
     declaration_path="agent_runtime_fixture/opencode-binding-declaration.json",
-    import_roots=("",),
+    import_roots=("", "agent_runtime_fixture"),
 )
 _CURSOR_SOURCE = ProviderSource(
     distribution="agent-runtime-fixture",
@@ -36,7 +36,7 @@ _CURSOR_SOURCE = ProviderSource(
     entrypoint_name="cursor-binding",
     entrypoint_value="agent_runtime_fixture.bindings:CursorBindingPlugin",
     declaration_path="agent_runtime_fixture/cursor-binding-declaration.json",
-    import_roots=("",),
+    import_roots=("", "agent_runtime_fixture"),
 )
 
 

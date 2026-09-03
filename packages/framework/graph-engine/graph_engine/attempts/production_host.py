@@ -1082,6 +1082,7 @@ def _linux_workspace_writers(attempt_root: Path) -> set[str]:
 
 
 __all__ = [
+    "Ledger",
     "ProductionHostError",
     "UnsupportedProductionPlatform",
 ]

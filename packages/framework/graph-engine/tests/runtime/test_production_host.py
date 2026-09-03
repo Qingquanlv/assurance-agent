@@ -17,10 +17,10 @@ from graph_engine.composition import (
     ResolutionRequest,
 )
 from graph_engine.plugin_api import InvocationWorkspaceBinding
-from graph_engine.runtime.engine import Engine
+from bootstrap_fixtures import Engine
 from graph_engine.attempts.production_host import UnsupportedProductionPlatform
 from graph_engine.attempts.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
+from bootstrap_fixtures import empty_invocation_seed
 
 
 @pytest.fixture

@@ -23,16 +23,16 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 from graph_engine.attempts.activity import LedgerTaskActivityPort
-from graph_engine.runtime.events import TaskActivityCancelRequested, TaskActivityDispatchStarted
+from graph_engine.attempts.activity import TaskActivityCancelRequested, TaskActivityDispatchStarted
 from graph_engine.attempts.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
-from graph_engine.runtime.engine import Engine, EngineConflictError
+from bootstrap_fixtures import empty_invocation_seed
+from bootstrap_fixtures import Engine, EngineConflictError
 from graph_engine.attempts.host_protocol import TaskHostCallResult, TaskHostTerminalReceipt
 from graph_engine.attempts.host_receipts import TerminalReceiptStore, prove_call_quiescent
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.models import fold_events
-from graph_engine.runtime.planner import plan_next
-from graph_engine.runtime.scheduler import FakeClock, Scheduler
+from graph_engine.attempts.activity import Ledger
+from graph_engine.attempts.activity import fold_events
+from bootstrap_fixtures import plan_next
+from bootstrap_fixtures import FakeClock, Scheduler
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 
@@ -643,9 +643,9 @@ async def _assert_checkpoints_and_effects_cannot_authorize(tmp_path: Path) -> No
         assert fixture.observed_decision(second) == first_decision
         extra = fixture.calls.order[len(first_calls) :]
         assert "task_attempt_started" not in extra
-        from graph_engine.runtime.events import EffectIntentCommitted
-        from graph_engine.runtime.ledger import append_validated_batch
-        from graph_engine.runtime.models import ProjectionError
+        from graph_engine.attempts.activity import EffectIntentCommitted
+        from graph_engine.attempts.activity import append_validated_batch
+        from graph_engine.attempts.activity import ProjectionError
 
         with pytest.raises((ProjectionError, ValueError, TypeError)):
             append_validated_batch(

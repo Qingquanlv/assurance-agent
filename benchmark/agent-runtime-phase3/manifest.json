@@ -56,7 +56,7 @@
     "distribution": "agent-runtime-fixture",
     "version": "1.0.0",
     "source_root": "examples/agent-runtime-fixture",
-    "source_digest": "24d56a00c5a1ba2b2083e11bd236d297ede9326724b8c3a2d765456982110542",
+    "source_digest": "bf4c7fcb684235b9406dcfbbc754809991a1b1321238f390bf7fb77674904b4c",
     "wheel_name": "agent_runtime_fixture-1.0.0-py3-none-any.whl",
     "wheel_sha256": "820c1059f0ca50780949900d36a15e9966d1da42ab5879177e0b99fdb1562d67"
   },

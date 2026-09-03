@@ -222,7 +222,7 @@ def test_production_host_rejects_unauthorized_secret_handle(tmp_path: Path) -> N
 def test_production_host_revokes_parent_secrets_after_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from graph_engine.runtime import production_host as module
+    from graph_engine.attempts import production_host as module
 
     handler_path = tmp_path / "secret_handler.py"
     handler_path.write_text(
@@ -270,7 +270,7 @@ def test_spawn_failure_revokes_secrets_resolved_by_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from graph_engine.runtime import production_host as module
+    from graph_engine.attempts import production_host as module
 
     secret_path = tmp_path / "secret.txt"
     secret_path.write_bytes(_CANARY)
@@ -302,7 +302,7 @@ def test_secret_channel_disconnect_revokes_parent_material_and_cleans_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from graph_engine.runtime import production_host as module
+    from graph_engine.attempts import production_host as module
 
     handler_path = tmp_path / "secret_handler.py"
     handler_path.write_text(

@@ -54,7 +54,8 @@
       "entrypoint_name": "phase4-opencode",
       "entrypoint_value": "test_assurance_phase4_product.product:Phase4OpenCodeProduct",
       "import_roots": [
-        ""
+        "",
+        "test_assurance_phase4_product"
       ],
       "version": "1.0.0"
     },
@@ -72,7 +73,8 @@
     "entrypoint_name": "phase4-opencode",
     "entrypoint_value": "test_assurance_phase4_product.product:Phase4OpenCodeProduct",
     "import_roots": [
-      ""
+      "",
+      "test_assurance_phase4_product"
     ],
     "version": "1.0.0"
   }

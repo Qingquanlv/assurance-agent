@@ -149,6 +149,7 @@ def _write_product_file(
     workflow: dict[str, object] | None = None,
     workflow_resource_id: str | None = None,
     workflow_module: dict[str, object] | None = None,
+    graph_factory_symbol: str | None = None,
     config_plugin_paths: list[str] | None = None,
 ) -> None:
     document: dict[str, object] = {
@@ -164,7 +165,9 @@ def _write_product_file(
         "configuration": {"toy.runtime": {"greeting": "hello"}},
         "config_plugin_paths": config_plugin_paths or [],
     }
-    if workflow_module is not None:
+    if graph_factory_symbol is not None:
+        document["graph_factory_symbol"] = graph_factory_symbol
+    elif workflow_module is not None:
         document["workflow_module"] = workflow_module
     elif workflow_resource_id is not None:
         document["workflow_resource_id"] = workflow_resource_id

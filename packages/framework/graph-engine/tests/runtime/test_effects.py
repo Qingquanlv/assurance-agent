@@ -739,3 +739,10 @@ def test_public_executor_publishes_digest_bound_task_success_after_all_receipts(
     folded = fold_events(ledger.read_all())
     assert folded.activations[-1].attempts[-1].status == "succeeded"
     assert tuple(item.status for item in folded.effects) == ("applied", "applied")
+
+
+def leftover_settle_kernel_snapshot(snapshot, effects, schemas, ledger_root: Path):
+    from graph_engine.runtime.effects import EffectExecutor
+    from graph_engine.runtime.ledger import Ledger
+
+    return EffectExecutor(effects, schemas, Ledger(ledger_root)).settle_attempt(snapshot)

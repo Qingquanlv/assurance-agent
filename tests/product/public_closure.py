@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from graph_engine.frozen_json import freeze_json, thaw_json
-from graph_engine.graph.output_projection import project_subgraph_output
-from graph_engine.runtime.models import InvocationProjection
+from tests.product.product_runner import project_subgraph_output
+from graph_engine.attempts.activity import InvocationProjection
 
 from tests.product.product_runner import ProductRun, _product_alias
 

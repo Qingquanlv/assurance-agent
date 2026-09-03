@@ -535,6 +535,13 @@ async def test_apply_reconcile_outcomes_for_every_kind(tmp_path: Path, kind: str
 
 
 async def test_one_attempt_cannot_be_settled_by_both_protocols(tmp_path: Path) -> None:
+    import sys
+
+    runtime_tests = Path(__file__).resolve().parents[1] / "runtime"
+    if str(runtime_tests) not in sys.path:
+        sys.path.insert(0, str(runtime_tests))
+    from test_effects import leftover_settle_kernel_snapshot
+
     kind = "assurance.improvement.effect.delivery.v1"
     handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
     kernel, key, resolved, validated, context, _writer, _workspace, _project, store, effects, schemas = (
@@ -546,7 +553,8 @@ async def test_one_attempt_cannot_be_settled_by_both_protocols(tmp_path: Path) -
         snapshot = await kernel.journal.load(key)
         assert snapshot is not None
         assert snapshot.effects
-        assert snapshot.effects
+        with pytest.raises(DualSettlementError, match="in-Attempt"):
+            leftover_settle_kernel_snapshot(snapshot, effects, schemas, tmp_path / "legacy-ledger")
         assert "EffectExecutor" not in AssuranceAttemptKernel.__dict__
     finally:
         store.close()

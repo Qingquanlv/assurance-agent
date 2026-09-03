@@ -53,7 +53,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
 )
 from graph_engine.attempts.activity import LedgerTaskActivityPort
-from graph_engine.runtime.engine import InvocationHandle
+from tests.product.product_runner import InvocationHandle
 from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
@@ -64,12 +64,12 @@ from graph_engine.attempts.host_protocol import (
     authorized_secret_port,
 )
 from graph_engine.attempts.host_receipts import TerminalReceiptStore, prove_call_quiescent
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.models import PlannedTask, fold_events
-from graph_engine.runtime.planner import plan_next
-from graph_engine.runtime.scheduler import AttemptResult, Scheduler, SystemClock
+from graph_engine.attempts.activity import Ledger
+from graph_engine.attempts.activity import PlannedTask, fold_events
+from tests.product.product_runner import plan_next
+from tests.product.product_runner import AttemptResult, Scheduler, SystemClock
 from graph_engine.attempts.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
+from tests.product.product_runner import empty_invocation_seed
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 from tests.agent_runtime.conformance import (

@@ -1953,9 +1953,9 @@ def _validate_product_graph_factory_symbol(symbol: str, source: ProviderSource |
 
 
 def _module_belongs_to_import_roots(module_name: str, import_roots: tuple[str, ...]) -> bool:
-    if not import_roots or any(not import_root for import_root in import_roots):
-        return True
     for import_root in import_roots:
+        if not import_root:
+            continue
         if module_name == import_root or module_name.startswith(f"{import_root}."):
             return True
     return False

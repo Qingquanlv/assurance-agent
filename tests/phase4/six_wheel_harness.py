@@ -40,10 +40,10 @@ from graph_engine.plugin_api import (
     TaskOutcome,
 )
 from graph_engine.attempts.activity import LedgerTaskActivityPort
-from graph_engine.runtime.ledger import Ledger
+from graph_engine.attempts.activity import Ledger
 from graph_engine.attempts.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
-from graph_engine.runtime.engine import RunResult
+from graph_engine.evidence.legacy_v2 import empty_invocation_seed
+from tests.product.product_runner import RunResult
 from graph_engine.attempts.host_receipts import prove_call_quiescent
 from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,

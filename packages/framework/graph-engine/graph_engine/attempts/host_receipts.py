@@ -417,6 +417,7 @@ def _rename_no_replace_at(directory_fd: int, source: str, destination: str) -> N
 
 
 __all__ = [
+    "TaskActivityTerminalObserved",
     "TerminalReceiptError",
     "TerminalReceiptSink",
     "TerminalReceiptStore",

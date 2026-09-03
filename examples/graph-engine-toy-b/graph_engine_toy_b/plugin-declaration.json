@@ -35,7 +35,8 @@
       "entrypoint_name": "toy-b",
       "entrypoint_value": "graph_engine_toy_b.plugin:ToyBPlugin",
       "import_roots": [
-        ""
+        "",
+        "graph_engine_toy_b"
       ],
       "version": "1.0.0"
     },
@@ -50,7 +51,8 @@
     "entrypoint_name": "toy-b",
     "entrypoint_value": "graph_engine_toy_b.plugin:ToyBPlugin",
     "import_roots": [
-      ""
+      "",
+      "graph_engine_toy_b"
     ],
     "version": "1.0.0"
   }

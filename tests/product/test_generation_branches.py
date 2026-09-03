@@ -12,10 +12,10 @@ import pytest
 
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import freeze_json, thaw_json
-from graph_engine.graph.input_projection import project_task_input
-from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.models import InvocationProjection
-from graph_engine.runtime.seed import empty_invocation_seed
+from tests.product.product_runner import project_task_input
+from tests.product.product_runner import Engine
+from graph_engine.attempts.activity import InvocationProjection
+from tests.product.product_runner import empty_invocation_seed
 
 from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
 from assurance_product.product import prepare_change_workspace

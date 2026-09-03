@@ -21,7 +21,7 @@ from graph_engine.attempts.activity import (
     TaskActivityRecoveryUnsupported,
     TaskActivityReferenceInvalid,
 )
-from graph_engine.runtime.events import (
+from graph_engine.attempts.activity import (
     EventEnvelope,
     TaskActivityBound,
     TaskActivityCancelRequested,

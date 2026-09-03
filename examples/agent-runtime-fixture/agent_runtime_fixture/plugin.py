@@ -22,7 +22,7 @@ _SOURCE = ProviderSource(
     entrypoint_name="fixture",
     entrypoint_value="agent_runtime_fixture.plugin:FixturePlugin",
     declaration_path="agent_runtime_fixture/plugin-declaration.json",
-    import_roots=("",),
+    import_roots=("", "agent_runtime_fixture"),
 )
 
 

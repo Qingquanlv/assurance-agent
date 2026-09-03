@@ -34,7 +34,8 @@
       "entrypoint_name": "opencode-binding",
       "entrypoint_value": "agent_runtime_fixture.bindings:OpenCodeBindingPlugin",
       "import_roots": [
-        ""
+        "",
+        "agent_runtime_fixture"
       ],
       "version": "1.0.0"
     },
@@ -49,7 +50,8 @@
     "entrypoint_name": "opencode-binding",
     "entrypoint_value": "agent_runtime_fixture.bindings:OpenCodeBindingPlugin",
     "import_roots": [
-      ""
+      "",
+      "agent_runtime_fixture"
     ],
     "version": "1.0.0"
   }

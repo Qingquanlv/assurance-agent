@@ -25,7 +25,7 @@ _SOURCE = ProviderSource(
     entrypoint_name="fixture",
     entrypoint_value="agent_runtime_fixture.product:FixtureProduct",
     declaration_path="agent_runtime_fixture/product-declaration.json",
-    import_roots=("",),
+    import_roots=("", "agent_runtime_fixture"),
 )
 _FACTORY_SYMBOL = "agent_runtime_fixture.product:build_fixture_graphs"
 

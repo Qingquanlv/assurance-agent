@@ -51,7 +51,7 @@ def test_workspace_output_is_the_dual_root_write_set(tmp_path: Path, repo_root: 
     run_item = _load_run_item(repo_root)
     payload = {"artifact": "result.json", "status": "ok"}
     item_id = "phase3-opencode-live"
-    write_root = tmp_path / "engine" / "invocations" / item_id / "attempts" / "task-1" / "attempt-1"
+    write_root = tmp_path / ".engine-attempts" / "task-1" / "attempt-1"
     leftover_workspace = tmp_path / "engine" / "invocations" / item_id / "workspace"
     published = write_root / "result.json"
     leftover = leftover_workspace / "trees" / ("5" * 64) / "result.json"
@@ -73,7 +73,7 @@ def test_workspace_output_is_the_dual_root_write_set(tmp_path: Path, repo_root: 
     )
     run_item._validate_workspace_output(manifest, tmp_path, item)
     selected = run_item._published_workspace_output(
-        tmp_path / "engine" / "invocations" / item_id / "attempts",
+        tmp_path / ".engine-attempts",
         "result.json",
     )
     assert selected == published

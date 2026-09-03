@@ -9,8 +9,8 @@ from typing import Any, Literal
 import pytest
 
 import graph_engine.attempts.host_receipts as host_receipts
-import graph_engine.runtime.ledger as ledger_runtime
-import graph_engine.runtime.scheduler as scheduler_runtime
+from bootstrap_fixtures import leftover_ledger as ledger_runtime
+from bootstrap_fixtures import leftover_scheduler as scheduler_runtime
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
@@ -29,8 +29,7 @@ from graph_engine.plugin_api import (
 )
 from graph_engine.attempts.activity import LedgerTaskActivityPort
 from graph_engine.attempts.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
-from graph_engine.runtime.engine import Engine
+from bootstrap_fixtures import Engine, FakeClock, Scheduler, empty_invocation_seed, plan_next
 from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
@@ -42,10 +41,8 @@ from graph_engine.attempts.host_receipts import (
     TerminalReceiptStore,
     prove_call_quiescent,
 )
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.models import PlannedTask, fold_events
-from graph_engine.runtime.planner import plan_next
-from graph_engine.runtime.scheduler import FakeClock, Scheduler
+from graph_engine.attempts.activity import Ledger
+from graph_engine.attempts.activity import PlannedTask, fold_events
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 

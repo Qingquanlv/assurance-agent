@@ -20,12 +20,12 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 from graph_engine.attempts.activity import LedgerTaskActivityPort
-from graph_engine.runtime.events import GraphStarted, NodeActivated
+from graph_engine.attempts.activity import GraphStarted, NodeActivated
 from graph_engine.attempts.host_protocol import TaskActivityRpcIdentity, TaskHostCallResult
 from graph_engine.attempts.host_receipts import TerminalReceiptStore, prove_call_quiescent
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.models import PlannedTask, fold_events
-from graph_engine.runtime.scheduler import FakeClock, Scheduler
+from graph_engine.attempts.activity import Ledger
+from graph_engine.attempts.activity import PlannedTask, fold_events
+from bootstrap_fixtures import FakeClock, Scheduler
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 

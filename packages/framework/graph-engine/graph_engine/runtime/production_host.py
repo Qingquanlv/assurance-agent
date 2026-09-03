@@ -1,5 +1,8 @@
 from graph_engine.attempts.production_host import *  # noqa: F403
-from graph_engine.attempts import production_host as _impl
-import sys
+from graph_engine.attempts.production_host import (
+    UnsupportedProductionPlatform,
+    _ProductionTaskExecutionHost,
+)
+from graph_engine.attempts.production_host import __all__ as _ATTEMPT_ALL
 
-sys.modules[__name__] = _impl
+__all__ = [*_ATTEMPT_ALL, "UnsupportedProductionPlatform", "_ProductionTaskExecutionHost"]

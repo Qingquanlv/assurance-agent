@@ -13,7 +13,7 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition import FrozenComposition
 from graph_engine.plugin_api import TaskActivitySnapshot, TaskHandler, TaskOutcome
 from graph_engine.attempts.activity import LedgerTaskActivityPort
-from graph_engine.runtime.engine import Engine
+from tests.product.product_runner import Engine
 from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
@@ -21,13 +21,13 @@ from graph_engine.attempts.host_protocol import (
     TaskHostTerminalReceipt,
 )
 from graph_engine.attempts.host_receipts import TerminalReceiptStore, prove_call_quiescent
-from graph_engine.runtime.ledger import Ledger
+from graph_engine.attempts.activity import Ledger
 from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.seed import empty_invocation_seed
+from tests.product.product_runner import empty_invocation_seed
 
 from tests.product.composition_harness import InstalledSources, request_for
 from tests.product.product_runner import _ScriptedTaskHost

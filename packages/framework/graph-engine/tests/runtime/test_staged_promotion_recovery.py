@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-import graph_engine.runtime.scheduler as scheduler_runtime
+from bootstrap_fixtures import leftover_scheduler as scheduler_runtime
 from graph_engine.plugin_api import ResourceClaims, TaskContext, TaskOutcome, TaskRequest
 
 from test_scheduler import _dual_root_scheduler, _task

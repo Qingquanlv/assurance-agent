@@ -10,8 +10,7 @@ from typing import cast
 import pytest
 from graph_engine import Engine
 from graph_engine.canonical import JSONValue, canonical_json_bytes
-from graph_engine.runtime.engine import EngineError
-from graph_engine.runtime.invocation_lock import InvocationDrift
+from tests.product.product_runner import EngineError, InvocationDrift
 from graph_engine.attempts.secret_sources import empty_runtime_authorization
 
 from tests.phase4.six_wheel_harness import (

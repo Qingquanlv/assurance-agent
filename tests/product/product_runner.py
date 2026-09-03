@@ -12,8 +12,10 @@ from graph_engine.canonical import JSONValue
 from graph_engine.composition import FrozenComposition
 from graph_engine.frozen_json import freeze_json, thaw_json
 from graph_engine.graph.input_projection import project_task_input
+from graph_engine.graph.output_projection import project_subgraph_output
 from graph_engine.composition.workflow_assembler import assemble_product_workflow
 from graph_engine.graph.schema import WorkflowDef
+from graph_engine.runtime.invocation_lock import InvocationDrift
 from graph_engine.plugin_api import (
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
@@ -22,7 +24,9 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 from graph_engine.runtime import planner as _planner
-from graph_engine.runtime.engine import Engine, EngineError, InvocationHandle
+from graph_engine.runtime.engine import Engine, EngineError, InvocationHandle, RunResult
+from graph_engine.runtime.planner import plan_next
+from graph_engine.runtime.scheduler import AttemptResult, Scheduler, SystemClock
 from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,

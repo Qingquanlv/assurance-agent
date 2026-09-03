@@ -51,10 +51,6 @@ _DISPOSITION_RE = re.compile(
     r"Create): `(?P<path>[^`]+)`"
 )
 
-_CONSUMER_SET_HEADING = "Task 7 retained-consumer migration set; Task 9 precondition:"
-_BACKTICK_PATH_RE = re.compile(r"`([^`]+)`")
-
-
 @dataclass(frozen=True, slots=True)
 class InventoryHit:
     path: str
@@ -115,13 +111,27 @@ def _iter_disposition_paths(block: str) -> Iterator[tuple[str, str]]:
         yield match.group("disposition"), path
 
 
-def _task7_category_a(disposition: str) -> bool:
+_LEFTOVER_ATTEMPT_HOMES = frozenset(
+    {
+        "packages/framework/graph-engine/graph_engine/attempts/activity.py",
+        "packages/framework/graph-engine/graph_engine/attempts/host_receipts.py",
+        "packages/framework/graph-engine/graph_engine/attempts/production_host.py",
+    }
+)
+
+
+def _task7_category_a(disposition: str, path: str) -> bool:
+    if disposition.startswith("Create"):
+        return path.startswith("tests/architecture/")
     return (
         disposition.startswith("Retain")
         or disposition.startswith("Modify only to add/use the coexistence")
-        or disposition.startswith("Retain as an explicitly allowlisted")
-        or disposition.startswith("Create")
+        or "re-export wrappers" in disposition
     )
+
+
+def _task7_leftover_attempt_home(disposition: str, path: str) -> bool:
+    return disposition.startswith("Create in Task 7") and path in _LEFTOVER_ATTEMPT_HOMES
 
 
 def _task8_counted(disposition: str) -> bool:
@@ -140,7 +150,7 @@ def load_explicit_allowlist(plan_text: str | None = None) -> InventoryAllowlist:
 
     retained: set[str] = set()
     for disposition, path in _iter_disposition_paths(_files_block(task7)):
-        if _task7_category_a(disposition) or "re-export wrappers" in disposition:
+        if _task7_category_a(disposition, path) or _task7_leftover_attempt_home(disposition, path):
             retained.add(path)
 
     task8_paths = {
@@ -153,33 +163,11 @@ def load_explicit_allowlist(plan_text: str | None = None) -> InventoryAllowlist:
         elif _task9_counted(disposition):
             task9_paths.add(path)
 
-    retained.update(_consumer_set_paths(text))
     return InventoryAllowlist(
         retained_implementations=frozenset(retained),
         task8_consumers=frozenset(task8_paths),
         task9_characterization=frozenset(task9_paths),
     )
-
-
-def _consumer_set_paths(plan_text: str) -> frozenset[str]:
-    start = plan_text.find(_CONSUMER_SET_HEADING)
-    if start < 0:
-        return frozenset()
-    block = plan_text[start : plan_text.find("\n**", start)]
-    if not block:
-        block = plan_text[start:]
-    paths: list[str] = []
-    last_dir = ""
-    for raw in _BACKTICK_PATH_RE.findall(block):
-        candidate = raw.strip()
-        if "/" not in candidate and last_dir and candidate.endswith((".py", ".sh")):
-            candidate = f"{last_dir}/{candidate}"
-        path = _normalize_repo_path(candidate)
-        if path is None or "/" not in path:
-            continue
-        last_dir = path.rsplit("/", 1)[0]
-        paths.append(path)
-    return frozenset(paths)
 
 
 def _is_runtime_authority(module: str) -> bool:

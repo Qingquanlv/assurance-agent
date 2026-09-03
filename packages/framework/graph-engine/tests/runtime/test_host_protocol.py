@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from graph_engine.runtime import production_worker
+from graph_engine.attempts import production_worker
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import (
     DirectoryIdentity,
@@ -433,7 +433,7 @@ def test_activity_port_protocol_exposes_snapshot_dispatch_and_bind() -> None:
 
 
 def test_runtime_exports_frozen_host_protocol_not_phase2_execute() -> None:
-    import graph_engine.runtime as runtime
+    from graph_engine.attempts import host_protocol as runtime
     from graph_engine.attempts.host_protocol import TaskExecutionHost as FrozenHost
 
     assert runtime.TaskExecutionHost is FrozenHost

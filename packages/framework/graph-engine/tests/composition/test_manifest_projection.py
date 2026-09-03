@@ -357,6 +357,33 @@ def test_legacy_manifest_projection_matches_lock_golden_bytes() -> None:
     assert canonical_json_bytes(projection) == canonical_json_bytes(golden)
 
 
+def test_factory_manifest_projection_has_no_compiled_workflow() -> None:
+    source = ProviderSource(
+        distribution="toy-product",
+        version="1.0.0",
+        entrypoint_group="graph_engine.products",
+        entrypoint_name="toy.product",
+        entrypoint_value="toy_product:provider",
+        declaration_path="toy_product/product-declaration.json",
+        import_roots=("", "toy_product"),
+    )
+    manifest = ProductManifest(
+        schema_version="1",
+        source=source,
+        product_id="toy.product",
+        product_version="1.0.0",
+        engine_api="2.0",
+        plugins=(PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.0.0"),),
+        entrypoints={"hello": "root"},
+        graph_factory_symbol="toy_product:provider",
+    )
+    projection = _manifest_projection(manifest)
+    assert projection["graph_factory_symbol"] == "toy_product:provider"
+    assert projection.get("workflow") is None
+    assert "compiled_workflow" not in projection
+    ProductManifest.model_validate(projection)
+
+
 def test_modular_manifest_projection_authenticates_modular_values() -> None:
     manifest = _modular_manifest()
     projection = _manifest_projection(manifest)
