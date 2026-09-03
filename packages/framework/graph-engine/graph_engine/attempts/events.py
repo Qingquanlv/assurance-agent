@@ -419,6 +419,8 @@ class AttemptSnapshot:
     activity_id: str | None = None
     activity_state: str | None = None
     activity_outcome: JSONValue = None
+    activity_dispatch_fingerprint: JSONValue = None
+    activity_dispatch_fingerprint_digest: str | None = None
     activity_reference: JSONValue = None
     activity_reference_digest: str | None = None
     source_identity_digest: str | None = None
@@ -468,6 +470,8 @@ def fold_attempt_events(
                 activity_id=snapshot.activity_id,
                 activity_state=snapshot.activity_state,
                 activity_outcome=snapshot.activity_outcome,
+                activity_dispatch_fingerprint=snapshot.activity_dispatch_fingerprint,
+                activity_dispatch_fingerprint_digest=snapshot.activity_dispatch_fingerprint_digest,
                 activity_reference=snapshot.activity_reference,
                 activity_reference_digest=snapshot.activity_reference_digest,
                 source_identity_digest=snapshot.source_identity_digest,
@@ -493,10 +497,15 @@ def fold_attempt_events(
             outcome = (
                 event.outcome if isinstance(event, ActivityTerminalObserved) else snapshot.activity_outcome
             )
+            dispatch_fingerprint = snapshot.activity_dispatch_fingerprint
+            dispatch_digest = snapshot.activity_dispatch_fingerprint_digest
             reference = snapshot.activity_reference
             reference_digest = snapshot.activity_reference_digest
             source_identity = snapshot.source_identity_digest
             source_receipt = snapshot.source_receipt_digest
+            if isinstance(event, ActivityDispatchStarted):
+                dispatch_fingerprint = event.dispatch_fingerprint
+                dispatch_digest = event.dispatch_fingerprint_digest
             if isinstance(event, ActivityBound):
                 reference = event.reference
                 reference_digest = event.reference_digest
@@ -508,6 +517,8 @@ def fold_attempt_events(
                 activity_id=event.activity_id,
                 activity_state=_ACTIVITY_STATES[event.kind],
                 activity_outcome=outcome,
+                activity_dispatch_fingerprint=dispatch_fingerprint,
+                activity_dispatch_fingerprint_digest=dispatch_digest,
                 activity_reference=reference,
                 activity_reference_digest=reference_digest,
                 source_identity_digest=source_identity,
@@ -704,6 +715,8 @@ def _replace(snapshot: AttemptSnapshot, **changes: object) -> AttemptSnapshot:
         "activity_id": snapshot.activity_id,
         "activity_state": snapshot.activity_state,
         "activity_outcome": snapshot.activity_outcome,
+        "activity_dispatch_fingerprint": snapshot.activity_dispatch_fingerprint,
+        "activity_dispatch_fingerprint_digest": snapshot.activity_dispatch_fingerprint_digest,
         "activity_reference": snapshot.activity_reference,
         "activity_reference_digest": snapshot.activity_reference_digest,
         "source_identity_digest": snapshot.source_identity_digest,

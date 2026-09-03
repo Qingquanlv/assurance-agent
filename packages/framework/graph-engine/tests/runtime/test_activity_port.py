@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from bootstrap_fixtures import synthetic_invocation_started
 from pathlib import Path
 
@@ -8,12 +10,17 @@ import pytest
 from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import TaskActivityPort, TaskOutcome, TaskWorkspaceIdentity
 from graph_engine.attempts.activity import (
+    JournalBackedTaskActivityPort,
     LedgerTaskActivityPort,
     MAX_ACTIVITY_VALUE_BYTES,
     TaskActivityConflict,
     TaskActivityIndeterminate,
     TaskActivityReferenceInvalid,
 )
+from graph_engine.attempts.events import ActivityPrepared, AttemptOpened, ResourcesAuthorized
+from graph_engine.attempts.keys import AttemptKey
+from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.attempts.activity import (
     GraphStarted,
     NodeActivated,
@@ -25,7 +32,7 @@ from graph_engine.attempts.activity import (
     TokenConsumed,
     TokenOffered,
 )
-from graph_engine.attempts.host_protocol import TaskActivityRpcIdentity
+from graph_engine.attempts.host_protocol import TaskActivityRpcIdentity, current_bound_identity
 from graph_engine.attempts.activity import Ledger, LedgerConflictError
 from graph_engine.attempts.activity import fold_events
 
@@ -51,12 +58,22 @@ def _identity(*, attempt: int = 1) -> TaskWorkspaceIdentity:
 
 
 def _rpc_identity(*, activity_id: str = "activity-1", attempt: int = 1) -> TaskActivityRpcIdentity:
+    workspace = _identity(attempt=attempt)
     return TaskActivityRpcIdentity(
         invocation_id="inv-1",
         task_id="task-1",
         activation_id="a1",
         attempt=attempt,
         activity_id=activity_id,
+        **current_bound_identity(  # type: ignore[arg-type]
+            attempt_key_digest="a" * 64,
+            authorization_id="b" * 64,
+            workspace_identity_digest=workspace.identity_digest,
+            request_digest="0" * 64,
+            graph_revision="c" * 64,
+            product_lock_digest=_LOCK,
+            handler_id="test.echo.run",
+        ),
     )
 
 
@@ -331,4 +348,147 @@ def test_unreadable_publication_is_indeterminate(
     monkeypatch.setattr("graph_engine.evidence.ledger._append_boundary", fail_after_install)
     ledger.read_all = unreadable  # type: ignore[method-assign]
     with pytest.raises(TaskActivityIndeterminate):
+        port.mark_dispatch_started(_FINGERPRINT)
+
+
+def _start_loop() -> asyncio.AbstractEventLoop:
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    return loop
+
+
+def _journal_port() -> tuple[JournalBackedTaskActivityPort, MemoryAttemptJournal, AttemptKey]:
+    journal = MemoryAttemptJournal()
+    attempt_key = AttemptKey(digest="a" * 64)
+    authorization_id = "b" * 64
+    graph_revision = "c" * 64
+    future = asyncio.run_coroutine_threadsafe(
+        journal.append(
+            attempt_key,
+            (
+                AttemptOpened(
+                    contract_digest="d" * 64,
+                    input_digest="e" * 64,
+                    graph_revision=graph_revision,
+                    invocation_id="inv-1",
+                    public_entrypoint="main",
+                    semantic_node_id="run",
+                ),
+                ResourcesAuthorized(authorization_id=authorization_id),
+                ActivityPrepared(activity_id="activity-1"),
+            ),
+            expected_revision=0,
+            fencing_token=1,
+        ),
+        _OWNER_LOOP,
+    )
+    future.result(timeout=5)
+    workspace = _identity()
+
+    async def _assert_live_fence() -> None:
+        return None
+
+    identity = TaskActivityRpcIdentity(
+        invocation_id="inv-1",
+        task_id="task-1",
+        activation_id="a1",
+        attempt=1,
+        activity_id="activity-1",
+        **current_bound_identity(  # type: ignore[arg-type]
+            attempt_key_digest=attempt_key.digest,
+            authorization_id=authorization_id,
+            workspace_identity_digest=workspace.identity_digest,
+            request_digest="0" * 64,
+            graph_revision=graph_revision,
+            product_lock_digest=_LOCK,
+            handler_id="test.echo.run",
+        ),
+    )
+    port = JournalBackedTaskActivityPort(
+        journal=journal,
+        attempt_key=attempt_key,
+        identity=identity,
+        workspace_identity=workspace,
+        assert_live_fence=_assert_live_fence,
+        owner_loop=_OWNER_LOOP,
+        remaining_deadline=5.0,
+    )
+    return port, journal, attempt_key
+
+
+_OWNER_LOOP = _start_loop()
+
+
+def test_journal_backed_port_commits_dispatch_and_bind() -> None:
+    port, journal, attempt_key = _journal_port()
+    first = port.mark_dispatch_started(_FINGERPRINT)
+    assert first.state == "dispatch_started"
+    second = port.bind(_REFERENCE)
+    assert second.state == "bound"
+    snapshot = asyncio.run_coroutine_threadsafe(journal.load(attempt_key), _OWNER_LOOP).result(timeout=5)
+    assert snapshot is not None
+    assert snapshot.activity_state == "bound"
+
+
+def test_journal_backed_port_rejects_fingerprint_drift() -> None:
+    port, _, _ = _journal_port()
+    port.mark_dispatch_started(_FINGERPRINT)
+    with pytest.raises(TaskActivityConflict):
+        port.mark_dispatch_started({"endpoint": "https://example.invalid", "profile": "v1"})
+
+
+def test_journal_backed_port_rejects_stale_fence() -> None:
+    journal = MemoryAttemptJournal()
+    attempt_key = AttemptKey(digest="a" * 64)
+    asyncio.run_coroutine_threadsafe(
+        journal.append(
+            attempt_key,
+            (
+                AttemptOpened(
+                    contract_digest="d" * 64,
+                    input_digest="e" * 64,
+                    graph_revision="c" * 64,
+                    invocation_id="inv-1",
+                    public_entrypoint="main",
+                    semantic_node_id="run",
+                ),
+                ResourcesAuthorized(authorization_id="b" * 64),
+                ActivityPrepared(activity_id="activity-1"),
+            ),
+            expected_revision=0,
+            fencing_token=2,
+        ),
+        _OWNER_LOOP,
+    ).result(timeout=5)
+    workspace = _identity()
+
+    async def _assert_live_fence() -> None:
+        raise StaleFencingToken("fencing token is stale")
+
+    port = JournalBackedTaskActivityPort(
+        journal=journal,
+        attempt_key=attempt_key,
+        identity=TaskActivityRpcIdentity(
+            invocation_id="inv-1",
+            task_id="task-1",
+            activation_id="a1",
+            attempt=1,
+            activity_id="activity-1",
+            **current_bound_identity(  # type: ignore[arg-type]
+                attempt_key_digest=attempt_key.digest,
+                authorization_id="b" * 64,
+                workspace_identity_digest=workspace.identity_digest,
+                request_digest="0" * 64,
+                graph_revision="c" * 64,
+                product_lock_digest=_LOCK,
+                handler_id="test.echo.run",
+                fencing_token=1,
+            ),
+        ),
+        workspace_identity=workspace,
+        assert_live_fence=_assert_live_fence,
+        owner_loop=_OWNER_LOOP,
+        remaining_deadline=5.0,
+    )
+    with pytest.raises(StaleFencingToken):
         port.mark_dispatch_started(_FINGERPRINT)

@@ -25,7 +25,6 @@ from graph_engine.plugin_api import (
     TaskWorkspaceIdentity,
 )
 from graph_engine.attempts.host_protocol import (
-    TASK_HOST_WIRE_SCHEMA_VERSION,
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
     TaskExecutionHost,
@@ -36,6 +35,8 @@ from graph_engine.attempts.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
     authorized_secret_port,
+    current_bound_identity,
+    identities_agree,
 )
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 
@@ -79,6 +80,21 @@ def _secret_port(authorized: dict[str, bytes]) -> SecretPort:
     return authorized_secret_port(authorized)
 
 
+def _bound(**overrides: object) -> dict[str, object]:
+    workspace = _workspace_identity()
+    fields = current_bound_identity(
+        attempt_key_digest="a" * 64,
+        authorization_id="b" * 64,
+        workspace_identity_digest=workspace.identity_digest,
+        request_digest=canonical_digest(_request().model_dump(mode="json")),
+        graph_revision="c" * 64,
+        product_lock_digest=_LOCK_DIGEST,
+        handler_id="runtime.opencode.execute",
+    )
+    fields.update(overrides)
+    return fields
+
+
 def _identity(*, operation: str = "execute") -> TaskHostCallIdentity:
     return TaskHostCallIdentity(
         invocation_id="inv-1",
@@ -87,9 +103,7 @@ def _identity(*, operation: str = "execute") -> TaskHostCallIdentity:
         attempt=1,
         activity_id=None,
         operation=operation,  # type: ignore[arg-type]
-        host_implementation_id="graph.engine.task-host",
-        host_implementation_digest="f" * 64,
-        wire_schema_version=TASK_HOST_WIRE_SCHEMA_VERSION,
+        **_bound(),  # type: ignore[arg-type]
     )
 
 
@@ -145,6 +159,7 @@ def _execute_call() -> TaskHostExecuteCall:
             activation_id="activation-run",
             attempt=1,
             activity_id=None,
+            **_bound(),  # type: ignore[arg-type]
         ),
         authorized_secret_handles=("opencode.token",),
     )
@@ -211,7 +226,7 @@ def test_host_call_carries_resolved_capability_request_and_wire_identity() -> No
     assert call.attempt_root.workspace_identity == _workspace_identity()
     assert call.activity_rpc.activity_id is None
     assert call.authorized_secret_handles == ("opencode.token",)
-    assert call.identity.wire_schema_version == "1"
+    assert call.identity.wire_schema_version == "2"
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         TaskHostExecuteCall.model_validate({**call.model_dump(mode="json"), "worker_command": "python"})
 
@@ -331,6 +346,7 @@ def test_fake_host_lifecycle_methods_return_typed_results() -> None:
             task_id="task-1",
             activation_id="activation-run",
             attempt=1,
+            **_bound(),  # type: ignore[arg-type]
         ),
         activity=snapshot,
         authorized_secret_handles=("opencode.token",),
@@ -350,6 +366,7 @@ def test_fake_host_lifecycle_methods_return_typed_results() -> None:
             task_id="task-1",
             activation_id="activation-run",
             attempt=1,
+            **_bound(),  # type: ignore[arg-type]
         ),
         activity=snapshot,
         authorized_secret_handles=("opencode.token",),
@@ -441,3 +458,79 @@ def test_runtime_exports_frozen_host_protocol_not_phase2_execute() -> None:
     assert "call" in parameters
     assert "handler" not in parameters
     assert "workspace_root" not in parameters
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("wire_schema_version", "1"),
+        ("attempt_key_digest", "0" * 64),
+        ("authorization_id", "1" * 64),
+        ("fencing_token", 99),
+        ("phase", "prepare"),
+        ("workspace_identity_digest", "2" * 64),
+        ("request_digest", "3" * 64),
+        ("graph_revision", "4" * 64),
+        ("product_lock_digest", "5" * 64),
+        ("handler_id", "runtime.other.execute"),
+        ("host_implementation_digest", "6" * 64),
+    ],
+)
+def test_prior_or_mismatched_rpc_identity_is_rejected(field: str, value: object) -> None:
+    payload = TaskActivityRpcIdentity(
+        invocation_id="inv-1",
+        task_id="task-1",
+        activation_id="activation-run",
+        attempt=1,
+        activity_id="activity-1",
+        **_bound(),  # type: ignore[arg-type]
+    ).model_dump(mode="json")
+    payload[field] = value
+    if field == "wire_schema_version":
+        with pytest.raises(ValidationError):
+            TaskActivityRpcIdentity.model_validate(payload)
+        return
+    other = TaskActivityRpcIdentity.model_validate(payload)
+    assert not identities_agree(
+        other,
+        TaskActivityRpcIdentity(
+            invocation_id="inv-1",
+            task_id="task-1",
+            activation_id="activation-run",
+            attempt=1,
+            activity_id="activity-1",
+            **_bound(),  # type: ignore[arg-type]
+        ),
+    )
+
+
+def test_stale_fence_is_not_the_current_identity() -> None:
+    current = TaskHostCallIdentity(
+        invocation_id="inv-1",
+        task_id="task-1",
+        activation_id="activation-run",
+        attempt=1,
+        activity_id="activity-1",
+        operation="execute",
+        **_bound(),  # type: ignore[arg-type]
+    )
+    stale = TaskHostCallIdentity(
+        invocation_id="inv-1",
+        task_id="task-1",
+        activation_id="activation-run",
+        attempt=1,
+        activity_id="activity-1",
+        operation="execute",
+        **_bound(fencing_token=1),  # type: ignore[arg-type]
+    )
+    newer = TaskHostCallIdentity(
+        invocation_id="inv-1",
+        task_id="task-1",
+        activation_id="activation-run",
+        attempt=1,
+        activity_id="activity-1",
+        operation="execute",
+        **_bound(fencing_token=2),  # type: ignore[arg-type]
+    )
+    assert current.fencing_token == 1
+    assert not identities_agree(stale, newer)

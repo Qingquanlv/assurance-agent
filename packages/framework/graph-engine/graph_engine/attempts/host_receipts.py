@@ -12,7 +12,11 @@ from pathlib import Path
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
 from graph_engine.evidence.events import TaskActivityTerminalObserved
-from graph_engine.attempts.host_protocol import TaskHostCallIdentity, TaskHostTerminalReceipt
+from graph_engine.attempts.host_protocol import (
+    TASK_HOST_WIRE_SCHEMA_VERSION,
+    TaskHostCallIdentity,
+    TaskHostTerminalReceipt,
+)
 
 
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -55,14 +59,29 @@ def _identity_filename(identity: TaskHostCallIdentity) -> str:
         "activation_id": identity.activation_id,
         "activity_id": identity.activity_id,
         "attempt": identity.attempt,
+        "attempt_key_digest": identity.attempt_key_digest,
+        "authorization_id": identity.authorization_id,
+        "fencing_token": identity.fencing_token,
+        "graph_revision": identity.graph_revision,
+        "handler_id": identity.handler_id,
+        "host_implementation_digest": identity.host_implementation_digest,
         "invocation_id": identity.invocation_id,
         "operation": identity.operation,
+        "phase": identity.phase,
+        "product_lock_digest": identity.product_lock_digest,
+        "request_digest": identity.request_digest,
         "task_id": identity.task_id,
+        "wire_schema_version": identity.wire_schema_version,
+        "workspace_identity_digest": identity.workspace_identity_digest,
     }
     return f"{canonical_digest(payload)}.json"
 
 
 def _receipt_matches_identity(receipt: TaskHostTerminalReceipt, identity: TaskHostCallIdentity) -> bool:
+    if identity.wire_schema_version != receipt.wire_schema_version:
+        return False
+    if receipt.schema_version != "3":
+        return False
     return (
         receipt.invocation_id == identity.invocation_id
         and receipt.task_id == identity.task_id
@@ -70,6 +89,15 @@ def _receipt_matches_identity(receipt: TaskHostTerminalReceipt, identity: TaskHo
         and receipt.attempt == identity.attempt
         and receipt.activity_id == identity.activity_id
         and receipt.operation == identity.operation
+        and receipt.attempt_key_digest == identity.attempt_key_digest
+        and receipt.authorization_id == identity.authorization_id
+        and receipt.fencing_token == identity.fencing_token
+        and receipt.phase == identity.phase
+        and receipt.workspace_identity_digest == identity.workspace_identity_digest
+        and receipt.request_digest == identity.request_digest
+        and receipt.graph_revision == identity.graph_revision
+        and receipt.product_lock_digest == identity.product_lock_digest
+        and receipt.handler_id == identity.handler_id
         and receipt.host_implementation_digest == identity.host_implementation_digest
         and receipt.wire_schema_version == identity.wire_schema_version
     )
@@ -207,6 +235,8 @@ class TerminalReceiptStore:
         return self
 
     def sink_for(self, identity: TaskHostCallIdentity) -> TerminalReceiptSink:
+        if identity.wire_schema_version != TASK_HOST_WIRE_SCHEMA_VERSION:
+            raise TerminalReceiptError("host call identity version is not current")
         if identity.activity_id is None:
             raise TerminalReceiptError("terminal receipt requires an activity id")
         directory_fd = self._open_root()
@@ -222,6 +252,8 @@ class TerminalReceiptStore:
             os.close(directory_fd)
 
     def authenticate(self, identity: TaskHostCallIdentity) -> tuple[TaskHostTerminalReceipt, ...]:
+        if identity.wire_schema_version != TASK_HOST_WIRE_SCHEMA_VERSION:
+            raise TerminalReceiptError("host call identity version is not current")
         if identity.activity_id is None:
             raise TerminalReceiptError("terminal receipt requires an activity id")
         directory_fd = self._open_root()

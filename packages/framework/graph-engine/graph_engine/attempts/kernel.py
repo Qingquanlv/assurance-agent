@@ -12,7 +12,6 @@ from graph_engine.attempts.contracts import (
     TerminalReceiptRef,
 )
 from graph_engine.attempts.events import (
-    ActivityDispatchStarted,
     ActivityPrepared,
     ActivityTerminalObserved,
     AttemptEvent,
@@ -58,7 +57,6 @@ from graph_engine.plugin_api import (
 from graph_engine.attempts.activity import (
     attempt_activity_in_flight,
     attempt_activity_is_terminal,
-    bounded_canonical_json,
 )
 from graph_engine.attempts import workspace as task_workspace_runtime
 
@@ -424,22 +422,6 @@ class AssuranceAttemptKernel:
             fencing_token=context.fencing_token,
         )
         await self._assert_fence(attempt_key, context, "external_dispatch", cut)
-        fingerprint = bounded_canonical_json(
-            {"attempt_key": attempt_key.digest, "contract_digest": contract.contract_digest},
-            limit=16 * 1024,
-        )
-        snapshot = await self.journal.append(
-            attempt_key,
-            (
-                ActivityDispatchStarted(
-                    activity_id=activity_id,
-                    dispatch_fingerprint=fingerprint.value,
-                    dispatch_fingerprint_digest=fingerprint.digest,
-                ),
-            ),
-            expected_revision=snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
         output = await contract.executor.execute(validated_input, scope)
         snapshot = await self._reload(attempt_key, snapshot)
         return output, snapshot

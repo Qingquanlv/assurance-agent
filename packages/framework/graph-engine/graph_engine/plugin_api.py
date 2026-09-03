@@ -61,6 +61,8 @@ _FROZEN_MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=Fal
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _Capability = TypeVar("_Capability")
 ActivityState = Literal["prepared", "dispatch_started", "bound", "terminal_observed"]
+ActivityPhase = Literal["prepare", "runtime", "finalize"]
+TASK_ACTIVITY_IDENTITY_VERSION: Literal["2"] = "2"
 
 
 class FrozenModel(BaseModel):
@@ -1493,7 +1495,9 @@ def realize_plugin(descriptor: PluginDescriptor, contribution: PluginContributio
 
 
 __all__ = [
+    "ActivityPhase",
     "ActivityState",
+    "TASK_ACTIVITY_IDENTITY_VERSION",
     "AttemptContractRef",
     "CapabilityBindingContribution",
     "CandidateFile",

@@ -46,7 +46,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TASK_HOST_IMPLEMENTATION_ID = "graph.engine.task-host"
 
 
-TASK_HOST_WIRE_SCHEMA_VERSION: Literal["1"] = "1"
+TASK_HOST_WIRE_SCHEMA_VERSION: Literal["2"] = "2"
 
 
 def _validate_provider_source_identity(
@@ -315,7 +315,7 @@ class RegistryProjections(FrozenModel):
 class ExecutionHostLock(FrozenModel):
     implementation_id: str
     implementation_digest: str
-    wire_schema_version: Literal["1"]
+    wire_schema_version: Literal["2"]
 
     @field_validator("implementation_id")
     @classmethod

@@ -14,7 +14,7 @@ from graph_engine.attempts.contracts import (
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.events import ActivityDispatchStarted, ActivityTerminalObserved
+from graph_engine.attempts.events import ActivityPrepared, ActivityTerminalObserved
 from graph_engine.attempts.kernel import AssuranceAttemptKernel, AttemptIdentityDrift
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import CommittedTaskResult, PermanentTaskFailure
@@ -392,9 +392,9 @@ async def test_in_flight_recoverable_handler_is_adopted_with_same_key(tmp_path: 
         snapshot = await kernel.journal.load(key)
         assert snapshot is not None
         assert snapshot.activity_state in {
-            ActivityDispatchStarted.kind,
-            "dispatch_started",
-            "activity_dispatch_started",
+            ActivityPrepared.kind,
+            "prepared",
+            "activity_prepared",
         }
         recoverable.crash_during_execute = False
         result = await kernel.execute_or_recover(key, resolved, validated, context)
