@@ -140,6 +140,17 @@ CREATE TABLE IF NOT EXISTS assurance_resource_authorizations (
     record_digest TEXT NOT NULL,
     payload BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS assurance_effect_state (
+    effect_kind TEXT NOT NULL,
+    settlement_key TEXT NOT NULL,
+    business_key TEXT NOT NULL,
+    intent_digest TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    receipt BLOB NOT NULL,
+    PRIMARY KEY (effect_kind, settlement_key),
+    UNIQUE (effect_kind, business_key)
+);
 """
 
 

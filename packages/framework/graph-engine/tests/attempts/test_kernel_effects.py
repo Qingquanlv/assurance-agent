@@ -48,6 +48,7 @@ from graph_engine.effects.contracts import (
     EXPECTED_EFFECT_KINDS,
     effect_idempotency_key,
 )
+from graph_engine.effects.state import EffectCallContext, MemoryEffectState
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import (
@@ -131,16 +132,16 @@ class RecordingEffectHandler:
     def reconcile_keys(self) -> tuple[str, ...]:
         return tuple(self._reconcile_keys)
 
-    async def apply(self, _intent: EffectIntent, idempotency_key: str) -> EffectApplyResult:
-        self._apply_keys.append(idempotency_key)
+    async def apply(self, _intent: EffectIntent, context: EffectCallContext) -> EffectApplyResult:
+        self._apply_keys.append(context.settlement_key)
         if self._apply_error is not None:
             raise self._apply_error
         if self._apply_untyped is not None:
             return self._apply_untyped  # type: ignore[return-value]
         return _take(self._apply_results, "apply")
 
-    async def reconcile(self, _intent: EffectIntent, idempotency_key: str) -> EffectReconcileResult:
-        self._reconcile_keys.append(idempotency_key)
+    async def reconcile(self, _intent: EffectIntent, context: EffectCallContext) -> EffectReconcileResult:
+        self._reconcile_keys.append(context.settlement_key)
         if self._reconcile_error is not None:
             raise self._reconcile_error
         return _take(self._reconcile_results, "reconcile")
@@ -399,6 +400,7 @@ def make_effect_kernel(
         graph_revision=graph_revision(),
         effects=effects,
         schemas=schemas,
+        effect_state=MemoryEffectState(),
         transaction_cut=transaction_cut,
     )
     validated = RunInput(change_id="chg-1")

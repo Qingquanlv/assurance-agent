@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
 from graph_engine.canonical import JSONValue
+from graph_engine.effects.state import MemoryEffectState, bind_effect_call
 from graph_engine.plugin_api import EffectApplyResult, EffectIntent, EffectReconcileResult
 
 from assurance_healing.contracts import (
@@ -20,8 +21,6 @@ from assurance_healing.contracts.wire import heal_apply_intent_digest
 from assurance_healing.effects.allocation import HealingAllocationEffect
 from assurance_healing.effects.apply import HealApplyEffect
 from assurance_healing.effects.approval import ProposalApprovedEffect
-from assurance_improvement.effects.store import ImprovementStore
-from assurance_improvement.effects.store import StoreRecord as ImprovementStoreRecord
 from assurance_healing.operations.keys import (
     derive_allocation_ids,
     derive_approval_id,
@@ -108,36 +107,61 @@ class EffectCutResult:
 class FaultingEffectStore:
     def __init__(self, cut: str) -> None:
         self.cut = cut
-        self.records: dict[str, ImprovementStoreRecord] = {}
+        self._inner = MemoryEffectState()
         self.external_mutation_count = 0
         self._faulted = False
         self._reconcile_faulted = False
 
-    async def get(self, key: str) -> ImprovementStoreRecord | None:
+    async def observe(
+        self,
+        *,
+        effect_kind: str,
+        settlement_key: str,
+        business_key: str,
+        intent_digest: str,
+        fencing_token: int,
+    ):
         if self.cut == "reconcile_error" and self._faulted and not self._reconcile_faulted:
             self._reconcile_faulted = True
             raise CrashCut("reconcile_error")
-        return self.records.get(key)
+        return await self._inner.observe(
+            effect_kind=effect_kind,
+            settlement_key=settlement_key,
+            business_key=business_key,
+            intent_digest=intent_digest,
+            fencing_token=fencing_token,
+        )
 
-    async def commit(self, key: str, receipt: dict[str, object], payload: dict[str, object]) -> None:
+    async def commit(
+        self,
+        *,
+        effect_kind: str,
+        settlement_key: str,
+        business_key: str,
+        intent_digest: str,
+        payload: JSONValue,
+        receipt: JSONValue,
+        fencing_token: int,
+    ):
         if self.cut == "before_mutation" and not self._faulted:
             self._faulted = True
             raise CrashCut("before_mutation")
-        if self.cut == "after_mutation" and not self._faulted:
+        result = await self._inner.commit(
+            effect_kind=effect_kind,
+            settlement_key=settlement_key,
+            business_key=business_key,
+            intent_digest=intent_digest,
+            payload=payload,
+            receipt=receipt,
+            fencing_token=fencing_token,
+        )
+        if not self._faulted:
             self.external_mutation_count += 1
-            self.records[key] = ImprovementStoreRecord(status="pending", receipt=None, payload=payload)
             self._faulted = True
-            raise CrashCut("after_mutation")
-        if self.cut == "before_receipt" and not self._faulted:
-            self.external_mutation_count += 1
-            self.records[key] = ImprovementStoreRecord(status="applied", receipt=receipt, payload=payload)
-            self._faulted = True
-            raise CrashCut("before_receipt")
-        existing = self.records.get(key)
-        if existing is None or existing.status != "applied":
-            self.external_mutation_count += 1
-            self.records[key] = ImprovementStoreRecord(status="applied", receipt=receipt, payload=payload)
-        self._faulted = True
+            if self.cut in {"after_mutation", "before_receipt"}:
+                raise CrashCut(self.cut)
+            return result
+        return result
 
 
 def _allocation_intent() -> EffectIntent:
@@ -270,19 +294,19 @@ def _archive_intent() -> EffectIntent:
     return EffectIntent(kind="assurance.improvement.effect.archive.v1", payload=cast(JSONValue, payload))
 
 
-def _handler_for(kind: str, store: FaultingEffectStore) -> object:
+def _handler_for(kind: str) -> object:
     if kind == "assurance.healing.effect.allocation.v2":
-        return HealingAllocationEffect(store=cast(Any, store))
+        return HealingAllocationEffect()
     if kind == "assurance.healing.effect.proposal-approved.v1":
-        return ProposalApprovedEffect(store=cast(Any, store))
+        return ProposalApprovedEffect()
     if kind == "assurance.healing.effect.heal-apply.v2":
-        return HealApplyEffect(store=cast(Any, store))
+        return HealApplyEffect()
     if kind == "assurance.improvement.effect.delivery.v1":
-        return ImprovementDeliveryEffect(store=cast(ImprovementStore, store))
+        return ImprovementDeliveryEffect()
     if kind == "assurance.improvement.effect.promotion.v1":
-        return ImprovementPromotionEffect(store=cast(ImprovementStore, store))
+        return ImprovementPromotionEffect()
     if kind == "assurance.improvement.effect.archive.v1":
-        return ImprovementArchiveEffect(store=cast(ImprovementStore, store))
+        return ImprovementArchiveEffect()
     raise ValueError(kind)
 
 
@@ -313,13 +337,13 @@ def _expected_receipt(kind: str, intent: EffectIntent, key: str) -> object:
     if kind == "assurance.healing.effect.allocation.v2":
         payload = dict(cast(dict[str, object], intent.payload))
         return HealingAllocationReceiptV2.model_validate(
-            {**payload, "idempotency_key": payload["operation_id"]}
+            {**payload, "idempotency_key": payload["operation_id"], "settlement_key": "c" * 64}
         ).model_dump(mode="json")
     if kind == "assurance.healing.effect.proposal-approved.v1":
         model = ProposalApprovedIntentV1.model_validate(intent.payload)
         assert model.approval_id == key
         return ProposalApprovedReceiptV1.model_validate(
-            {**model.model_dump(), "idempotency_key": model.approval_id}
+            {**model.model_dump(), "idempotency_key": model.approval_id, "settlement_key": "c" * 64}
         ).model_dump(mode="json")
     if kind == "assurance.healing.effect.heal-apply.v2":
         model = HealApplyIntentV2.model_validate(intent.payload)
@@ -330,6 +354,7 @@ def _expected_receipt(kind: str, intent: EffectIntent, key: str) -> object:
                 **dumped,
                 "idempotency_key": model.record_key,
                 "intent_digest": heal_apply_intent_digest(dumped),
+                "settlement_key": "c" * 64,
             }
         ).model_dump(mode="json")
     model = ImprovementEffectIntentV1.model_validate(intent.payload)
@@ -342,6 +367,7 @@ def _expected_receipt(kind: str, intent: EffectIntent, key: str) -> object:
                 "schema_version": "1",
                 "kind": model.kind,
                 "improvement_id": model.improvement_id,
+                "settlement_key": "c" * 64,
                 field: document.model_dump(mode="json"),
             }
         ).model_dump(mode="json")
@@ -353,6 +379,7 @@ def _expected_receipt(kind: str, intent: EffectIntent, key: str) -> object:
                 "schema_version": "1",
                 "kind": "test_promotion",
                 "improvement_id": model.improvement_id,
+                "settlement_key": "c" * 64,
                 "promotion": model.promotion.model_dump(mode="json"),
             }
         ).model_dump(mode="json")
@@ -363,6 +390,7 @@ def _expected_receipt(kind: str, intent: EffectIntent, key: str) -> object:
                 "schema_version": "1",
                 "kind": "archive",
                 "improvement_id": model.improvement_id,
+                "settlement_key": "c" * 64,
                 "archive": ArchiveApplyReceipt(
                     invocation_id=model.invocation_id or model.improvement_id,
                     archive_digest=model.archive_digest or "0" * 64,
@@ -376,14 +404,20 @@ def _expected_receipt(kind: str, intent: EffectIntent, key: str) -> object:
 async def drive_effect_cut(kind: str, cut: str) -> EffectCutResult:
     intent, key = _intent_for(kind)
     store = FaultingEffectStore(cut=cut)
-    handler = _handler_for(kind, store)
+    handler = _handler_for(kind)
+    context = bind_effect_call(
+        state=store,
+        effect_kind=kind,
+        settlement_key="c" * 64,
+        fencing_token=3,
+    )
     apply = getattr(handler, "apply")
     reconcile = getattr(handler, "reconcile")
     expected_receipt = _expected_receipt(kind, intent, key)
     applied: EffectApplyResult | None = None
     apply_returned_applied = False
     try:
-        applied = await apply(intent, key)
+        applied = await apply(intent, context)
         if isinstance(applied, EffectApplyResult) and applied.status == "applied":
             apply_returned_applied = True
         if cut == "after_receipt":
@@ -391,9 +425,9 @@ async def drive_effect_cut(kind: str, cut: str) -> EffectCutResult:
     except CrashCut:
         pass
     try:
-        reconciled = await reconcile(intent, key)
+        reconciled = await reconcile(intent, context)
     except CrashCut:
-        reconciled = await reconcile(intent, key)
+        reconciled = await reconcile(intent, context)
     if not isinstance(reconciled, EffectReconcileResult):
         raise TypeError("reconcile must return EffectReconcileResult")
     status = reconciled.status

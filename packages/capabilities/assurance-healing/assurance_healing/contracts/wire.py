@@ -72,7 +72,11 @@ def override_token_digest(
 
 
 def heal_apply_intent_digest(payload: Mapping[str, Any]) -> str:
-    body = {key: value for key, value in payload.items() if key not in {"idempotency_key", "intent_digest"}}
+    body = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"idempotency_key", "intent_digest", "settlement_key"}
+    }
     return canonical_digest(body)
 
 

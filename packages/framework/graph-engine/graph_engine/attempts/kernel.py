@@ -39,6 +39,7 @@ from graph_engine.persistence.attempt_journal import AttemptJournalPort
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.composition.models import EffectRegistry, SchemaRegistry
 from graph_engine.effects.apply import AttemptEffectSettler
+from graph_engine.effects.state import EffectStatePort
 from graph_engine.plugin_api import (
     CommitValidator,
     EffectIntent,
@@ -79,6 +80,7 @@ class AssuranceAttemptKernel:
         validators: Mapping[str, CommitValidator] | None = None,
         effects: EffectRegistry | None = None,
         schemas: SchemaRegistry | None = None,
+        effect_state: EffectStatePort | None = None,
         transaction_cut: Callable[[str], None] | None = None,
     ) -> None:
         self.journal = journal
@@ -88,6 +90,7 @@ class AssuranceAttemptKernel:
         self.validators = dict(validators or {})
         self.effects = effects
         self.schemas = schemas
+        self.effect_state = effect_state
         self._transaction_cut = transaction_cut or _noop_cut
 
     async def execute_or_recover(
@@ -502,9 +505,9 @@ class AssuranceAttemptKernel:
         intents = _declared_intents(snapshot, contract.executor, validated_output)
         if not intents:
             return None, snapshot
-        if self.effects is None or self.schemas is None:
-            raise AttemptIdentityDrift("declared effects require an effect and schema registry")
-        settler = AttemptEffectSettler(self.effects, self.schemas)
+        if self.effects is None or self.schemas is None or self.effect_state is None:
+            raise AttemptIdentityDrift("declared effects require an effect registry and state port")
+        settler = AttemptEffectSettler(self.effects, self.schemas, self.effect_state)
         return await settler.settle(
             attempt_key=attempt_key,
             snapshot=snapshot,

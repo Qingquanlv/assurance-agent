@@ -25,6 +25,12 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.models import EffectEntry, EffectRegistry, SchemaRegistry
 from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS, effect_idempotency_key
 from graph_engine.effects.recovery import intent_from_state, next_effect_action
+from graph_engine.effects.state import (
+    EffectCallContext,
+    EffectStatePort,
+    bind_effect_call,
+    effect_intent_digest,
+)
 from graph_engine.frozen_json import thaw_json
 from graph_engine.json_schema import validate_json_schema
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
@@ -44,9 +50,11 @@ class AttemptEffectSettler:
         self,
         effects: EffectRegistry,
         schemas: SchemaRegistry,
+        state: EffectStatePort,
     ) -> None:
         self._effects = effects
         self._schemas = schemas
+        self._state = state
 
     async def settle(
         self,
@@ -71,7 +79,12 @@ class AttemptEffectSettler:
                 continue
             registration = self._effects.require(state.kind)
             intent = intent_from_state(state)
-            key = effect_idempotency_key(attempt_key, state.ordinal)
+            call = bind_effect_call(
+                state=self._state,
+                effect_kind=state.kind,
+                settlement_key=effect_idempotency_key(attempt_key, state.ordinal),
+                fencing_token=context.fencing_token,
+            )
             if action == "apply":
                 resolution, snapshot = await self._apply(
                     attempt_key,
@@ -81,7 +94,7 @@ class AttemptEffectSettler:
                     registration,
                     intent,
                     state,
-                    key,
+                    call,
                     promotion_receipt,
                 )
             else:
@@ -93,7 +106,7 @@ class AttemptEffectSettler:
                     registration,
                     intent,
                     state,
-                    key,
+                    call,
                     promotion_receipt,
                 )
             if resolution is not None:
@@ -146,11 +159,11 @@ class AttemptEffectSettler:
         registration: EffectEntry,
         intent: EffectIntent,
         state: AttemptEffectState,
-        key: str,
+        call: EffectCallContext,
         promotion_receipt: ReceiptRef,
     ) -> tuple[AttemptResolution | None, AttemptSnapshot]:
         result = await self._invoke(
-            registration.handler.apply(intent, key),
+            registration.handler.apply(intent, call),
             registration.policy.timeout_seconds,
             "apply",
         )
@@ -212,11 +225,11 @@ class AttemptEffectSettler:
         registration: EffectEntry,
         intent: EffectIntent,
         state: AttemptEffectState,
-        key: str,
+        call: EffectCallContext,
         promotion_receipt: ReceiptRef,
     ) -> tuple[AttemptResolution | None, AttemptSnapshot]:
         result = await self._invoke(
-            registration.handler.reconcile(intent, key),
+            registration.handler.reconcile(intent, call),
             registration.policy.timeout_seconds,
             "reconcile",
         )
@@ -275,7 +288,7 @@ class AttemptEffectSettler:
                 registration,
                 intent,
                 state,
-                key,
+                call,
                 promotion_receipt,
             )
         return (
@@ -376,8 +389,7 @@ class AttemptEffectSettler:
 
 
 def _intent_digest(intent: EffectIntent) -> str:
-    payload: JSONValue = thaw_json(intent.payload)
-    return canonical_digest({"kind": intent.kind, "payload": payload})
+    return effect_intent_digest(intent.kind, intent.payload)
 
 
 __all__ = ["AttemptEffectSettler"]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from assurance_improvement.contracts.declarations import DeclarationProposalReceipt
 from assurance_improvement.contracts.delivery import (
@@ -94,6 +94,7 @@ class ImprovementEffectReceiptV1(BaseModel):
     schema_version: Literal["1"] = "1"
     kind: EffectKind
     improvement_id: NonEmptyStr
+    settlement_key: str = Field(pattern=r"^[0-9a-f]{64}$")
     change_export: ChangeExportReceipt | None = None
     knowledge_export: KnowledgeExportReceipt | None = None
     memory_eval: MemoryEvalReceipt | None = None

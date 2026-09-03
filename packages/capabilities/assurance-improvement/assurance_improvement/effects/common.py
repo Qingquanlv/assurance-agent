@@ -1,4 +1,4 @@
-"""Shared apply/reconcile loop for injected improvement stores."""
+"""Shared apply/reconcile loop for context-driven improvement effects."""
 
 from __future__ import annotations
 
@@ -8,10 +8,9 @@ from typing import TypeVar, cast
 from pydantic import BaseModel, ValidationError
 
 from graph_engine.canonical import JSONValue
+from graph_engine.effects.state import EffectCallContext, EffectStateIntegrityError, effect_intent_digest
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import EffectApplyResult, EffectIntent, EffectReconcileResult, TaskFailure
-
-from assurance_improvement.effects.store import ImprovementStore
 
 _Model = TypeVar("_Model", bound=BaseModel)
 
@@ -29,13 +28,12 @@ def _payload_dict(intent: EffectIntent) -> dict[str, object]:
 
 async def apply_effect(
     *,
-    store: ImprovementStore,
+    context: EffectCallContext,
     intent: EffectIntent,
-    idempotency_key: str,
     expected_kind: str,
     intent_model: type[_Model],
     derived_key: Callable[[_Model], str],
-    build_receipt: Callable[[_Model], dict[str, object]],
+    build_receipt: Callable[[_Model, str], dict[str, object]],
     payload_key: Callable[[_Model], str] | None = None,
 ) -> EffectApplyResult:
     if intent.kind != expected_kind:
@@ -56,7 +54,7 @@ async def apply_effect(
         )
     expected = derived_key(payload)
     identity = payload_key(payload) if payload_key is not None else expected
-    if idempotency_key != expected or identity != expected:
+    if identity != expected:
         return EffectApplyResult(
             status="permanent",
             failure=TaskFailure(
@@ -65,40 +63,30 @@ async def apply_effect(
                 retryable=False,
             ),
         )
-    existing = await store.get(idempotency_key)
     dumped = payload.model_dump(mode="json")
-    if existing is not None:
-        if existing.status == "applied" and existing.receipt is not None:
-            if existing.payload is not None and existing.payload != dumped:
-                return EffectApplyResult(
-                    status="permanent",
-                    failure=TaskFailure(
-                        kind="invalid_output",
-                        message="same key drift is corruption",
-                        retryable=False,
-                    ),
-                )
-            return EffectApplyResult.applied(cast(JSONValue, existing.receipt))
-        if existing.status == "pending":
-            return EffectApplyResult(
-                status="transient",
-                failure=TaskFailure(kind="transient", message="effect is pending", retryable=True),
-            )
-        if existing.status == "permanent" and existing.failure is not None:
-            return EffectApplyResult(status="permanent", failure=existing.failure)
-        return EffectApplyResult(
-            status="transient",
-            failure=TaskFailure(kind="transient", message="effect state is pending", retryable=True),
-        )
+    digest = effect_intent_digest(intent.kind, dumped)
+    existing = await context.observe(business_key=expected, intent_digest=digest)
+    if existing.status == "committed" and existing.receipt is not None:
+        return EffectApplyResult.applied(cast(JSONValue, existing.receipt))
     try:
-        receipt = build_receipt(payload)
+        receipt = build_receipt(payload, context.settlement_key)
     except (ValidationError, ValueError) as error:
         return EffectApplyResult(
             status="permanent",
             failure=TaskFailure(kind="invalid_input", message=str(error), retryable=False),
         )
     try:
-        await store.commit(idempotency_key, receipt, dumped)
+        committed = await context.commit(
+            business_key=expected,
+            intent_digest=digest,
+            payload=cast(JSONValue, dumped),
+            receipt=cast(JSONValue, receipt),
+        )
+    except EffectStateIntegrityError as error:
+        return EffectApplyResult(
+            status="permanent",
+            failure=TaskFailure(kind="invalid_output", message=str(error), retryable=False),
+        )
     except StoreCrash:
         raise
     except RuntimeError:
@@ -108,14 +96,13 @@ async def apply_effect(
             status="transient",
             failure=TaskFailure(kind="transient", message=str(error), retryable=True),
         )
-    return EffectApplyResult.applied(cast(JSONValue, receipt))
+    return EffectApplyResult.applied(cast(JSONValue, committed.receipt or receipt))
 
 
 async def reconcile_effect(
     *,
-    store: ImprovementStore,
+    context: EffectCallContext,
     intent: EffectIntent,
-    idempotency_key: str,
     expected_kind: str,
     intent_model: type[_Model],
     derived_key: Callable[[_Model], str],
@@ -139,7 +126,7 @@ async def reconcile_effect(
         )
     expected = derived_key(payload)
     identity = payload_key(payload) if payload_key is not None else expected
-    if idempotency_key != expected or identity != expected:
+    if identity != expected:
         return EffectReconcileResult(
             status="permanently_failed",
             failure=TaskFailure(
@@ -148,21 +135,17 @@ async def reconcile_effect(
                 retryable=False,
             ),
         )
-    existing = await store.get(idempotency_key)
-    if existing is None:
+    dumped = payload.model_dump(mode="json")
+    digest = effect_intent_digest(intent.kind, dumped)
+    try:
+        existing = await context.observe(business_key=expected, intent_digest=digest)
+    except EffectStateIntegrityError as error:
+        return EffectReconcileResult(
+            status="permanently_failed",
+            failure=TaskFailure(kind="invalid_output", message=str(error), retryable=False),
+        )
+    if existing.status == "absent":
         return EffectReconcileResult(status="not_applied")
-    if existing.status == "applied" and existing.receipt is not None:
-        dumped = payload.model_dump(mode="json")
-        if existing.payload is not None and existing.payload != dumped:
-            return EffectReconcileResult(
-                status="permanently_failed",
-                failure=TaskFailure(
-                    kind="invalid_output",
-                    message="same key drift is corruption",
-                    retryable=False,
-                ),
-            )
+    if existing.status == "committed" and existing.receipt is not None:
         return EffectReconcileResult.applied(cast(JSONValue, existing.receipt))
-    if existing.status == "permanent" and existing.failure is not None:
-        return EffectReconcileResult(status="permanently_failed", failure=existing.failure)
     return EffectReconcileResult(status="pending")

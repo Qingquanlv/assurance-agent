@@ -34,7 +34,7 @@ _CURRENT_HEALING_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.healing.schema.allocation-receipt.v2": (
         "1",
-        "ae557d2183dff15c740fd2262dae40521e97f09736c3172a2ca9392be975d8d4",
+        "48e8dde3a6cefde2e027ba55886e9cb5844085983e05ad8f81935f23afdf797e",
     ),
     "assurance.healing.schema.coverage-repair.v1": (
         "1",
@@ -50,7 +50,7 @@ _CURRENT_HEALING_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.healing.schema.heal-apply-receipt.v2": (
         "1",
-        "3cb28116878785cdab7e4a9ccf40b584c611c417a3faa7b4a08481bec7b1d8e7",
+        "e0ec92d710cab2f9697a422379e91d8b5dbec7e9a3a68a97720d3a7b4fb762c1",
     ),
     "assurance.healing.schema.healing-safety.v1": (
         "1",
@@ -66,7 +66,7 @@ _CURRENT_HEALING_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.healing.schema.proposal-approved-receipt.v1": (
         "1",
-        "01b1eebdd76326a97e32f7de1b15cf63ada1b769f4140fcaa36946fd770b7f4d",
+        "01872edb626924409496458706af1258add2b7f6bb6095e3c1df9e974e24ecf1",
     ),
     "assurance.healing.workflow.repair-coverage.input.v1": (
         "1",
@@ -157,6 +157,7 @@ def valid_heal_apply_receipt(*, idempotency_key: str | None = None) -> dict[str,
     }
     payload["intent_digest"] = heal_apply_intent_digest(payload)
     payload["idempotency_key"] = record_key if idempotency_key is None else idempotency_key
+    payload["settlement_key"] = _HEX_A
     return payload
 
 
@@ -543,6 +544,7 @@ def test_proposal_approved_receipt_rejects_wrong_idempotency_key() -> None:
                 "schema_version": "1",
                 "approval_id": "apr-1",
                 "idempotency_key": "forged-approval",
+                "settlement_key": _HEX_A,
                 "change_id": "CH-DEMO-001",
                 "owner_id": "assurance.healing",
                 "root_invocation_id": "inv-1",

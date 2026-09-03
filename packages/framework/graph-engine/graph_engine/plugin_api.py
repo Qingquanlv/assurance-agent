@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from graph_engine.attempts.keys import AttemptKey
     from graph_engine.attempts.resolutions import PermanentTaskFailure, RejectedTaskResult
     from graph_engine.canonical import JSONValue
+    from graph_engine.effects.state import EffectCallContext
 else:
     JSONValue = JsonValue
 
@@ -438,9 +439,9 @@ class EffectReconcileResult(FrozenModel):
 
 
 class DurableEffectHandler(Protocol):
-    async def apply(self, intent: EffectIntent, idempotency_key: str) -> EffectApplyResult: ...
+    async def apply(self, intent: EffectIntent, context: EffectCallContext) -> EffectApplyResult: ...
 
-    async def reconcile(self, intent: EffectIntent, idempotency_key: str) -> EffectReconcileResult: ...
+    async def reconcile(self, intent: EffectIntent, context: EffectCallContext) -> EffectReconcileResult: ...
 
 
 @runtime_checkable

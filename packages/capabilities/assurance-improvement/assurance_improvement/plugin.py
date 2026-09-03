@@ -34,7 +34,6 @@ from assurance_improvement.effects.promotion import (
     PROMOTION_RECEIPT_SCHEMA,
     ImprovementPromotionEffect,
 )
-from assurance_improvement.effects.store import InMemoryImprovementStore
 from assurance_improvement.operations import improvement_handlers
 from assurance_improvement.resource_loader import resource_bytes
 from assurance_improvement.validators.archive import ArchiveIntegrityValidator
@@ -124,27 +123,26 @@ _VALIDATORS = {
 
 
 def _effect_registrations() -> tuple[EffectRegistration, ...]:
-    store = InMemoryImprovementStore()
     return (
         EffectRegistration(
             kind=ARCHIVE_KIND,
             intent_schema_id=ARCHIVE_INTENT_SCHEMA,
             receipt_schema_id=ARCHIVE_RECEIPT_SCHEMA,
-            handler=ImprovementArchiveEffect(store=store),
+            handler=ImprovementArchiveEffect(),
             policy=ARCHIVE_POLICY,
         ),
         EffectRegistration(
             kind=DELIVERY_KIND,
             intent_schema_id=DELIVERY_INTENT_SCHEMA,
             receipt_schema_id=DELIVERY_RECEIPT_SCHEMA,
-            handler=ImprovementDeliveryEffect(store=store),
+            handler=ImprovementDeliveryEffect(),
             policy=DELIVERY_POLICY,
         ),
         EffectRegistration(
             kind=PROMOTION_KIND,
             intent_schema_id=PROMOTION_INTENT_SCHEMA,
             receipt_schema_id=PROMOTION_RECEIPT_SCHEMA,
-            handler=ImprovementPromotionEffect(store=store),
+            handler=ImprovementPromotionEffect(),
             policy=PROMOTION_POLICY,
         ),
     )

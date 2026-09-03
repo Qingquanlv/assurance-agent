@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from assurance_healing.contracts.effects import ProposalApprovedIntentV1, ProposalApprovedReceiptV1
 from assurance_healing.effects.common import apply_effect, reconcile_effect
-from assurance_healing.effects.store import HealingStore
 from assurance_healing.operations.keys import derive_approval_id
+from graph_engine.effects.state import EffectCallContext
 from graph_engine.plugin_api import EffectApplyResult, EffectIntent, EffectReconcileResult
 
 APPROVAL_KIND = "assurance.healing.effect.proposal-approved.v1"
@@ -14,14 +14,10 @@ APPROVAL_RECEIPT_SCHEMA = "assurance.healing.schema.proposal-approved-receipt.v1
 
 
 class ProposalApprovedEffect:
-    def __init__(self, store: HealingStore) -> None:
-        self._store = store
-
-    async def apply(self, intent: EffectIntent, idempotency_key: str) -> EffectApplyResult:
+    async def apply(self, intent: EffectIntent, context: EffectCallContext) -> EffectApplyResult:
         return await apply_effect(
-            store=self._store,
+            context=context,
             intent=intent,
-            idempotency_key=idempotency_key,
             expected_kind=APPROVAL_KIND,
             intent_model=ProposalApprovedIntentV1,
             derived_key=_approval_formula,
@@ -29,11 +25,10 @@ class ProposalApprovedEffect:
             build_receipt=_approval_receipt,
         )
 
-    async def reconcile(self, intent: EffectIntent, idempotency_key: str) -> EffectReconcileResult:
+    async def reconcile(self, intent: EffectIntent, context: EffectCallContext) -> EffectReconcileResult:
         return await reconcile_effect(
-            store=self._store,
+            context=context,
             intent=intent,
-            idempotency_key=idempotency_key,
             expected_kind=APPROVAL_KIND,
             intent_model=ProposalApprovedIntentV1,
             derived_key=_approval_formula,
@@ -51,8 +46,12 @@ def _approval_formula(payload: ProposalApprovedIntentV1) -> str:
     )
 
 
-def _approval_receipt(payload: ProposalApprovedIntentV1) -> dict[str, object]:
+def _approval_receipt(payload: ProposalApprovedIntentV1, settlement_key: str) -> dict[str, object]:
     receipt = ProposalApprovedReceiptV1.model_validate(
-        {**payload.model_dump(mode="json"), "idempotency_key": payload.approval_id}
+        {
+            **payload.model_dump(mode="json"),
+            "idempotency_key": payload.approval_id,
+            "settlement_key": settlement_key,
+        }
     )
     return receipt.model_dump(mode="json")
